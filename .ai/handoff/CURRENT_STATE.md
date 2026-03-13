@@ -1,53 +1,46 @@
 # Current State
 
-## What Exists Today
+## Canonical Truth
 
-- Canonical project docs now describe the shipped repo state through Sprint 4O.
-- `apps/api` implements the accepted backend seams for continuity, tracing, context compilation, governed memory, memory review, embeddings, semantic retrieval, entities, policies, tools, approvals, approved proxy execution, execution budgets, execution review, tasks, task steps, and explicit manual continuation lineage.
-- The live schema now includes continuity tables, trace tables, memory tables, embedding tables, entity tables, governance tables, plus `tasks` and `task_steps`.
-- `apps/web` and `workers` remain starter scaffolds only; no workspace UI, runner, or background-job orchestration is shipped.
+- The accepted repo state is current through Sprint 5A.
+- Use [PRODUCT_BRIEF.md](/Users/samirusani/Desktop/Codex/AliceBot/PRODUCT_BRIEF.md) for product scope, [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md) for implemented technical boundaries, [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md) for forward planning, and [RULES.md](/Users/samirusani/Desktop/Codex/AliceBot/RULES.md) for durable operating rules.
+- Historical build and review reports have been moved under [docs/archive/sprints](/Users/samirusani/Desktop/Codex/AliceBot/docs/archive/sprints).
 
-## Stable / Trusted Areas
+## Implemented Repo Slice
 
-- Immutable event log and persisted trace model with per-user isolation.
-- Deterministic context compilation and deterministic prompt assembly over durable sources.
-- Governed memory admission, narrow deterministic explicit-preference extraction, explicit embedding storage, semantic retrieval, and deterministic hybrid memory merge during compile.
-- Deterministic policy evaluation, tool allowlist evaluation, tool routing, approval persistence, approval resolution, approved-only `proxy.echo` execution, durable execution review, and execution-budget enforcement.
-- Durable task and task-step reads, deterministic task-step sequencing, explicit task-step transitions, and explicit manual continuation with lineage validated against the parent step outcome.
-- Sprint 4O review verification:
-  - `./.venv/bin/python -m pytest tests/unit` -> `284 passed`
-  - `./.venv/bin/python -m pytest tests/integration` -> `95 passed`
+- `apps/api` is the only shipped product surface. It implements continuity, tracing, deterministic context compilation, governed memory admission and review, embeddings, semantic retrieval, entities, policy and tool governance, approval persistence and resolution, approved-only `proxy.echo` execution, execution budgets, task/task-step lifecycle reads and mutations, explicit manual continuation lineage, explicit task-step linkage for approval and execution synchronization, and deterministic rooted local task-workspace provisioning.
+- The live schema includes continuity, trace, memory, embedding, entity, governance, `tasks`, `task_steps`, and `task_workspaces` tables with row-level security on user-owned data.
+- `apps/web` and `workers` remain starter scaffolds only.
 
-## Incomplete / At-Risk Areas
+## Current Boundaries
 
-- Auth beyond DB user context is still unimplemented.
-- Memory extraction and retrieval quality remain major ship-gating risks.
-- Document ingestion, scoped task workspaces, artifact handling, and read-only connectors have not started in code.
-- The current multi-step boundary is still narrow: approval-resolution and execution-synchronization helpers continue to target `task_steps.sequence_no = 1`, even though manual continuation is now implemented for later steps.
+- Task workspaces are implemented only as deterministic rooted local directories plus durable `task_workspaces` records.
+- The shipped multi-step task path is still explicit and narrow: later steps are appended manually with lineage, while approval and execution synchronization use explicit linked `task_step_id` references.
+- The only execution handler in the repo is the in-process no-external-I/O `proxy.echo` path.
 
-## Current Milestone Position
+## Not Implemented
 
-- The repo has completed the implementation planned through Milestone 4.
-- Milestone 5 has not started in shipped code.
-- The project is at a truth-sync checkpoint before Milestone 5 entry.
+- Artifact storage or indexing beyond the local workspace boundary.
+- Document ingestion, chunking, or document retrieval.
+- Read-only Gmail or Calendar connectors.
+- Runner-style orchestration or automatic multi-step progression.
+- Auth beyond the current database user-context model.
 
-## Latest State Summary
+## Active Risks
 
-- Local runtime assets exist for Docker Compose, Postgres bootstrap, API startup, migrations, and backend tests.
-- `POST /v0/approvals/requests` now creates one durable task plus one initial task step for each routed governed request, with task and task-step lifecycle traces.
-- `GET /v0/tasks`, `GET /v0/tasks/{task_id}`, `GET /v0/tasks/{task_id}/steps`, and `GET /v0/task-steps/{task_step_id}` expose durable task/task-step review reads with deterministic ordering.
-- `POST /v0/tasks/{task_id}/steps` now appends exactly one manual continuation step when the latest step is appendable and explicit lineage points to that latest visible parent step.
-- `POST /v0/task-steps/{task_step_id}/transition` now advances only the latest visible step through the explicit status graph and keeps the parent task status synchronized.
-- Task-step lineage is trace-visible through `task.step.continuation.request`, `task.step.continuation.lineage`, and `task.step.continuation.summary` events.
+- Memory extraction and retrieval quality remain the main product risk.
+- Auth is still incomplete beyond database user context.
+- Workspace provisioning is intentionally narrow and local; broader artifact and document flows still need their own accepted seams.
 
-## Critical Constraints
+## Latest Accepted Verification
 
-- Do not treat planned workspace, connector, runner, or broader side-effect work as implemented.
-- Do not bypass approval boundaries for consequential actions.
-- Do not replace compiled durable context with raw transcript stuffing.
-- Appended task steps must carry explicit lineage; do not infer provenance heuristically from task history.
-- Keep the current multi-step boundary explicit until the first-step lifecycle helpers are removed or constrained.
+- Sprint 5A review status: `PASS`.
+- Accepted verification on March 13, 2026:
+  - `./.venv/bin/python -m pytest tests/unit` -> `315 passed`
+  - `./.venv/bin/python -m pytest tests/integration` -> `99 passed`
 
-## Immediate Next Move
+## Planning Guardrails
 
-- Take the smallest follow-up sprint that removes or explicitly constrains the remaining `task_steps.sequence_no = 1` approval/execution synchronization assumptions before any runner, workspace, or connector work begins.
+- Plan from the implemented Sprint 5A repo state, not from older milestone narratives.
+- Do not describe Milestone 5 document, artifact, connector, or runner work as shipped.
+- Keep live truth files compact; archive historical detail instead of re-expanding the active context set.
