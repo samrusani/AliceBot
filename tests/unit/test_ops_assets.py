@@ -1,0 +1,20 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_dev_up_waits_for_postgres_and_role_bootstrap() -> None:
+    script = (REPO_ROOT / "scripts" / "dev_up.sh").read_text()
+
+    assert "Timed out waiting for Postgres readiness and alicebot_app bootstrap" in script
+    assert "SELECT 1 FROM pg_roles WHERE rolname = %s" in script
+
+
+def test_runtime_role_init_only_grants_connect_on_alicebot_database() -> None:
+    init_sql = (REPO_ROOT / "infra" / "postgres" / "init" / "001_roles.sql").read_text()
+
+    assert "GRANT CONNECT ON DATABASE alicebot TO alicebot_app;" in init_sql
+    assert "GRANT CONNECT ON DATABASE postgres TO alicebot_app;" not in init_sql
