@@ -1,0 +1,1837 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal, TypedDict
+from uuid import UUID
+from fastapi import FastAPI, Query
+from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from urllib.parse import urlsplit, urlunsplit
+
+from alicebot_api.compiler import compile_and_persist_trace
+from alicebot_api.config import Settings, get_settings
+from alicebot_api.contracts import (
+    ApprovalApproveInput,
+    ApprovalRejectInput,
+    ApprovalRequestCreateInput,
+    ConsentStatus,
+    ConsentUpsertInput,
+    CompileContextSemanticRetrievalInput,
+    DEFAULT_MAX_EVENTS,
+    DEFAULT_MAX_ENTITY_EDGES,
+    DEFAULT_MAX_ENTITIES,
+    DEFAULT_MAX_MEMORIES,
+    DEFAULT_MEMORY_REVIEW_LIMIT,
+    DEFAULT_MAX_SESSIONS,
+    DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
+    MAX_MEMORY_REVIEW_LIMIT,
+    MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
+    ContextCompilerLimits,
+    EmbeddingConfigStatus,
+    EmbeddingConfigCreateInput,
+    ExecutionBudgetCreateInput,
+    ExecutionBudgetDeactivateInput,
+    ExecutionBudgetSupersedeInput,
+    EntityEdgeCreateInput,
+    EntityCreateInput,
+    EntityType,
+    ExplicitPreferenceExtractionRequestInput,
+    MemoryCandidateInput,
+    MemoryEmbeddingUpsertInput,
+    MemoryReviewLabelValue,
+    MemoryReviewStatusFilter,
+    PolicyCreateInput,
+    PolicyEffect,
+    PolicyEvaluationRequestInput,
+    SemanticMemoryRetrievalRequestInput,
+    TOOL_METADATA_VERSION_V0,
+    ApprovalStatus,
+    ProxyExecutionStatus,
+    ToolAllowlistEvaluationRequestInput,
+    ProxyExecutionRequestInput,
+    TaskStepKind,
+    TaskStepLineageInput,
+    TaskStepNextCreateInput,
+    TaskStepStatus,
+    TaskStepTransitionInput,
+    TaskWorkspaceCreateInput,
+    ToolRoutingDecision,
+    ToolRoutingRequestInput,
+    ToolCreateInput,
+)
+from alicebot_api.approvals import (
+    ApprovalNotFoundError,
+    ApprovalResolutionConflictError,
+    approve_approval_record,
+    get_approval_record,
+    list_approval_records,
+    reject_approval_record,
+    submit_approval_request,
+)
+from alicebot_api.db import ping_database, user_connection
+from alicebot_api.executions import (
+    ToolExecutionNotFoundError,
+    get_tool_execution_record,
+    list_tool_execution_records,
+)
+from alicebot_api.tasks import (
+    TaskNotFoundError,
+    TaskStepApprovalLinkageError,
+    TaskStepExecutionLinkageError,
+    TaskStepLifecycleBoundaryError,
+    TaskStepSequenceError,
+    TaskStepNotFoundError,
+    TaskStepTransitionError,
+    create_next_task_step_record,
+    get_task_record,
+    get_task_step_record,
+    list_task_records,
+    list_task_step_records,
+    transition_task_step_record,
+)
+from alicebot_api.workspaces import (
+    TaskWorkspaceAlreadyExistsError,
+    TaskWorkspaceNotFoundError,
+    TaskWorkspaceProvisioningError,
+    create_task_workspace_record,
+    get_task_workspace_record,
+    list_task_workspace_records,
+)
+from alicebot_api.execution_budgets import (
+    ExecutionBudgetLifecycleError,
+    ExecutionBudgetNotFoundError,
+    ExecutionBudgetValidationError,
+    create_execution_budget_record,
+    deactivate_execution_budget_record,
+    get_execution_budget_record,
+    list_execution_budget_records,
+    supersede_execution_budget_record,
+)
+from alicebot_api.embedding import (
+    EmbeddingConfigValidationError,
+    MemoryEmbeddingNotFoundError,
+    MemoryEmbeddingValidationError,
+    create_embedding_config_record,
+    get_memory_embedding_record,
+    list_embedding_config_records,
+    list_memory_embedding_records,
+    upsert_memory_embedding_record,
+)
+from alicebot_api.entity import (
+    EntityNotFoundError,
+    EntityValidationError,
+    create_entity_record,
+    get_entity_record,
+    list_entity_records,
+)
+from alicebot_api.entity_edge import (
+    EntityEdgeValidationError,
+    create_entity_edge_record,
+    list_entity_edge_records,
+)
+from alicebot_api.explicit_preferences import (
+    ExplicitPreferenceExtractionValidationError,
+    extract_and_admit_explicit_preferences,
+)
+from alicebot_api.memory import (
+    MemoryAdmissionValidationError,
+    MemoryReviewNotFoundError,
+    admit_memory_candidate,
+    create_memory_review_label_record,
+    get_memory_evaluation_summary,
+    get_memory_review_record,
+    list_memory_review_queue_records,
+    list_memory_review_label_records,
+    list_memory_review_records,
+    list_memory_revision_review_records,
+)
+from alicebot_api.policy import (
+    PolicyEvaluationValidationError,
+    PolicyNotFoundError,
+    PolicyValidationError,
+    create_policy_record,
+    evaluate_policy_request,
+    get_policy_record,
+    list_consent_records,
+    list_policy_records,
+    upsert_consent_record,
+)
+from alicebot_api.tools import (
+    ToolAllowlistValidationError,
+    ToolNotFoundError,
+    ToolRoutingValidationError,
+    ToolValidationError,
+    create_tool_record,
+    evaluate_tool_allowlist,
+    get_tool_record,
+    list_tool_records,
+    route_tool_invocation,
+)
+from alicebot_api.semantic_retrieval import (
+    SemanticMemoryRetrievalValidationError,
+    retrieve_semantic_memory_records,
+)
+from alicebot_api.response_generation import (
+    ResponseFailure,
+    generate_response,
+)
+from alicebot_api.proxy_execution import (
+    ProxyExecutionApprovalStateError,
+    ProxyExecutionHandlerNotFoundError,
+    execute_approved_proxy_request,
+)
+from alicebot_api.store import ContinuityStore, ContinuityStoreInvariantError
+
+
+app = FastAPI(title="AliceBot API", version="0.1.0")
+HealthStatus = Literal["ok", "degraded"]
+ServiceStatus = Literal["ok", "unreachable", "not_checked"]
+
+
+class DatabaseServicePayload(TypedDict):
+    status: Literal["ok", "unreachable"]
+
+
+class RedisServicePayload(TypedDict):
+    status: Literal["not_checked"]
+    url: str
+
+
+class ObjectStorageServicePayload(TypedDict):
+    status: Literal["not_checked"]
+    endpoint_url: str
+
+
+class HealthServicesPayload(TypedDict):
+    database: DatabaseServicePayload
+    redis: RedisServicePayload
+    object_storage: ObjectStorageServicePayload
+
+
+class HealthcheckPayload(TypedDict):
+    status: HealthStatus
+    environment: str
+    services: HealthServicesPayload
+
+
+class CompileContextSemanticRequest(BaseModel):
+    embedding_config_id: UUID
+    query_vector: list[float] = Field(min_length=1, max_length=20000)
+    limit: int = Field(
+        default=DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
+        ge=1,
+        le=MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
+    )
+
+
+class CompileContextRequest(BaseModel):
+    user_id: UUID
+    thread_id: UUID
+    max_sessions: int = Field(default=DEFAULT_MAX_SESSIONS, ge=0, le=25)
+    max_events: int = Field(default=DEFAULT_MAX_EVENTS, ge=0, le=200)
+    max_memories: int = Field(default=DEFAULT_MAX_MEMORIES, ge=0, le=50)
+    max_entities: int = Field(default=DEFAULT_MAX_ENTITIES, ge=0, le=50)
+    max_entity_edges: int = Field(default=DEFAULT_MAX_ENTITY_EDGES, ge=0, le=100)
+    semantic: CompileContextSemanticRequest | None = None
+
+
+class GenerateResponseRequest(BaseModel):
+    user_id: UUID
+    thread_id: UUID
+    message: str = Field(min_length=1, max_length=8000)
+    max_sessions: int = Field(default=DEFAULT_MAX_SESSIONS, ge=0, le=25)
+    max_events: int = Field(default=DEFAULT_MAX_EVENTS, ge=0, le=200)
+    max_memories: int = Field(default=DEFAULT_MAX_MEMORIES, ge=0, le=50)
+    max_entities: int = Field(default=DEFAULT_MAX_ENTITIES, ge=0, le=50)
+    max_entity_edges: int = Field(default=DEFAULT_MAX_ENTITY_EDGES, ge=0, le=100)
+
+
+class AdmitMemoryRequest(BaseModel):
+    user_id: UUID
+    memory_key: str = Field(min_length=1, max_length=200)
+    value: object | None = None
+    source_event_ids: list[UUID] = Field(min_length=1)
+    delete_requested: bool = False
+
+
+class ExtractExplicitPreferencesRequest(BaseModel):
+    user_id: UUID
+    source_event_id: UUID
+
+
+class CreateMemoryReviewLabelRequest(BaseModel):
+    user_id: UUID
+    label: MemoryReviewLabelValue
+    note: str | None = Field(default=None, min_length=1, max_length=280)
+
+
+class CreateEntityRequest(BaseModel):
+    user_id: UUID
+    entity_type: EntityType
+    name: str = Field(min_length=1, max_length=200)
+    source_memory_ids: list[UUID] = Field(min_length=1)
+
+
+class CreateEntityEdgeRequest(BaseModel):
+    user_id: UUID
+    from_entity_id: UUID
+    to_entity_id: UUID
+    relationship_type: str = Field(min_length=1, max_length=100)
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    source_memory_ids: list[UUID] = Field(min_length=1)
+
+
+class CreateEmbeddingConfigRequest(BaseModel):
+    user_id: UUID
+    provider: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=200)
+    version: str = Field(min_length=1, max_length=100)
+    dimensions: int = Field(ge=1, le=20000)
+    status: EmbeddingConfigStatus = "active"
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class UpsertMemoryEmbeddingRequest(BaseModel):
+    user_id: UUID
+    memory_id: UUID
+    embedding_config_id: UUID
+    vector: list[float] = Field(min_length=1, max_length=20000)
+
+
+class RetrieveSemanticMemoriesRequest(BaseModel):
+    user_id: UUID
+    embedding_config_id: UUID
+    query_vector: list[float] = Field(min_length=1, max_length=20000)
+    limit: int = Field(
+        default=DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
+        ge=1,
+        le=MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
+    )
+
+
+class UpsertConsentRequest(BaseModel):
+    user_id: UUID
+    consent_key: str = Field(min_length=1, max_length=200)
+    status: ConsentStatus
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class CreatePolicyRequest(BaseModel):
+    user_id: UUID
+    name: str = Field(min_length=1, max_length=200)
+    action: str = Field(min_length=1, max_length=100)
+    scope: str = Field(min_length=1, max_length=200)
+    effect: PolicyEffect
+    priority: int = Field(ge=0, le=1000000)
+    active: bool = True
+    conditions: dict[str, object] = Field(default_factory=dict)
+    required_consents: list[str] = Field(default_factory=list)
+
+
+class EvaluatePolicyRequest(BaseModel):
+    user_id: UUID
+    thread_id: UUID
+    action: str = Field(min_length=1, max_length=100)
+    scope: str = Field(min_length=1, max_length=200)
+    attributes: dict[str, object] = Field(default_factory=dict)
+
+
+class CreateToolRequest(BaseModel):
+    user_id: UUID
+    tool_key: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=500)
+    version: str = Field(min_length=1, max_length=100)
+    metadata_version: str = Field(default=TOOL_METADATA_VERSION_V0, pattern=f"^{TOOL_METADATA_VERSION_V0}$")
+    active: bool = True
+    tags: list[str] = Field(default_factory=list)
+    action_hints: list[str] = Field(default_factory=list, min_length=1)
+    scope_hints: list[str] = Field(default_factory=list, min_length=1)
+    domain_hints: list[str] = Field(default_factory=list)
+    risk_hints: list[str] = Field(default_factory=list)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class EvaluateToolAllowlistRequest(BaseModel):
+    user_id: UUID
+    thread_id: UUID
+    action: str = Field(min_length=1, max_length=100)
+    scope: str = Field(min_length=1, max_length=200)
+    domain_hint: str | None = Field(default=None, min_length=1, max_length=200)
+    risk_hint: str | None = Field(default=None, min_length=1, max_length=100)
+    attributes: dict[str, object] = Field(default_factory=dict)
+
+
+class RouteToolRequest(BaseModel):
+    user_id: UUID
+    thread_id: UUID
+    tool_id: UUID
+    action: str = Field(min_length=1, max_length=100)
+    scope: str = Field(min_length=1, max_length=200)
+    domain_hint: str | None = Field(default=None, min_length=1, max_length=200)
+    risk_hint: str | None = Field(default=None, min_length=1, max_length=100)
+    attributes: dict[str, object] = Field(default_factory=dict)
+
+
+class CreateApprovalRequest(BaseModel):
+    user_id: UUID
+    thread_id: UUID
+    tool_id: UUID
+    action: str = Field(min_length=1, max_length=100)
+    scope: str = Field(min_length=1, max_length=200)
+    domain_hint: str | None = Field(default=None, min_length=1, max_length=200)
+    risk_hint: str | None = Field(default=None, min_length=1, max_length=100)
+    attributes: dict[str, object] = Field(default_factory=dict)
+
+
+class ResolveApprovalRequest(BaseModel):
+    user_id: UUID
+
+
+class ExecuteApprovedProxyRequest(BaseModel):
+    user_id: UUID
+
+
+class CreateTaskWorkspaceRequest(BaseModel):
+    user_id: UUID
+
+
+class TaskStepRequestSnapshot(BaseModel):
+    thread_id: UUID
+    tool_id: UUID
+    action: str = Field(min_length=1, max_length=100)
+    scope: str = Field(min_length=1, max_length=200)
+    domain_hint: str | None = Field(default=None, min_length=1, max_length=200)
+    risk_hint: str | None = Field(default=None, min_length=1, max_length=100)
+    attributes: dict[str, object] = Field(default_factory=dict)
+
+
+class TaskStepOutcomeRequest(BaseModel):
+    routing_decision: ToolRoutingDecision
+    approval_id: UUID | None = None
+    approval_status: ApprovalStatus | None = None
+    execution_id: UUID | None = None
+    execution_status: ProxyExecutionStatus | None = None
+    blocked_reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+
+class TaskStepLineageRequest(BaseModel):
+    parent_step_id: UUID
+    source_approval_id: UUID | None = None
+    source_execution_id: UUID | None = None
+
+
+class CreateNextTaskStepRequest(BaseModel):
+    user_id: UUID
+    kind: TaskStepKind = "governed_request"
+    status: TaskStepStatus
+    request: TaskStepRequestSnapshot
+    outcome: TaskStepOutcomeRequest
+    lineage: TaskStepLineageRequest
+
+
+class TransitionTaskStepRequest(BaseModel):
+    user_id: UUID
+    status: TaskStepStatus
+    outcome: TaskStepOutcomeRequest
+
+
+class CreateExecutionBudgetRequest(BaseModel):
+    user_id: UUID
+    tool_key: str | None = Field(default=None, min_length=1, max_length=200)
+    domain_hint: str | None = Field(default=None, min_length=1, max_length=200)
+    max_completed_executions: int = Field(ge=1, le=1000000)
+    rolling_window_seconds: int | None = Field(default=None, ge=1)
+
+
+class DeactivateExecutionBudgetRequest(BaseModel):
+    user_id: UUID
+    thread_id: UUID
+
+
+class SupersedeExecutionBudgetRequest(BaseModel):
+    user_id: UUID
+    thread_id: UUID
+    max_completed_executions: int = Field(ge=1, le=1000000)
+
+
+def redact_url_credentials(raw_url: str) -> str:
+    parsed = urlsplit(raw_url)
+
+    if parsed.hostname is None or (parsed.username is None and parsed.password is None):
+        return raw_url
+
+    hostname = parsed.hostname
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+
+    netloc = hostname
+    if parsed.port is not None:
+        netloc = f"{hostname}:{parsed.port}"
+
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+
+def build_healthcheck_payload(settings: Settings, database_ok: bool) -> HealthcheckPayload:
+    status: HealthStatus = "ok" if database_ok else "degraded"
+    database_status: Literal["ok", "unreachable"] = "ok" if database_ok else "unreachable"
+
+    return {
+        "status": status,
+        "environment": settings.app_env,
+        "services": {
+            "database": {
+                "status": database_status,
+            },
+            "redis": {
+                "status": "not_checked",
+                "url": redact_url_credentials(settings.redis_url),
+            },
+            "object_storage": {
+                "status": "not_checked",
+                "endpoint_url": settings.s3_endpoint_url,
+            },
+        },
+    }
+
+
+@app.get("/healthz")
+def healthcheck() -> JSONResponse:
+    settings = get_settings()
+    database_ok = ping_database(
+        settings.database_url,
+        settings.healthcheck_timeout_seconds,
+    )
+    payload = build_healthcheck_payload(settings, database_ok)
+    status_code = 200 if payload["status"] == "ok" else 503
+    return JSONResponse(
+        status_code=status_code,
+        content=payload,
+    )
+
+
+@app.post("/v0/context/compile")
+def compile_context(request: CompileContextRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            result = compile_and_persist_trace(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                thread_id=request.thread_id,
+                limits=ContextCompilerLimits(
+                    max_sessions=request.max_sessions,
+                    max_events=request.max_events,
+                    max_memories=request.max_memories,
+                    max_entities=request.max_entities,
+                    max_entity_edges=request.max_entity_edges,
+                ),
+                semantic_retrieval=(
+                    None
+                    if request.semantic is None
+                    else CompileContextSemanticRetrievalInput(
+                        embedding_config_id=request.semantic.embedding_config_id,
+                        query_vector=tuple(request.semantic.query_vector),
+                        limit=request.semantic.limit,
+                    )
+                ),
+            )
+    except SemanticMemoryRetrievalValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityStoreInvariantError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "trace_id": result.trace_id,
+                "trace_event_count": result.trace_event_count,
+                "context_pack": result.context_pack,
+            }
+        ),
+    )
+
+
+@app.post("/v0/responses")
+def generate_assistant_response(request: GenerateResponseRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            result = generate_response(
+                store=ContinuityStore(conn),
+                settings=settings,
+                user_id=request.user_id,
+                thread_id=request.thread_id,
+                message_text=request.message,
+                limits=ContextCompilerLimits(
+                    max_sessions=request.max_sessions,
+                    max_events=request.max_events,
+                    max_memories=request.max_memories,
+                    max_entities=request.max_entities,
+                    max_entity_edges=request.max_entity_edges,
+                ),
+            )
+    except ContinuityStoreInvariantError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    if isinstance(result, ResponseFailure):
+        return JSONResponse(
+            status_code=502,
+            content=jsonable_encoder(
+                {
+                    "detail": result.detail,
+                    "trace": result.trace,
+                }
+            ),
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(result),
+    )
+
+
+@app.post("/v0/memories/admit")
+def admit_memory(request: AdmitMemoryRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            decision = admit_memory_candidate(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                candidate=MemoryCandidateInput(
+                    memory_key=request.memory_key,
+                    value=request.value,
+                    source_event_ids=tuple(request.source_event_ids),
+                    delete_requested=request.delete_requested,
+                ),
+            )
+    except MemoryAdmissionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "decision": decision.action,
+                "reason": decision.reason,
+                "memory": decision.memory,
+                "revision": decision.revision,
+            }
+        ),
+    )
+
+
+@app.post("/v0/consents")
+def upsert_consent(request: UpsertConsentRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = upsert_consent_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                consent=ConsentUpsertInput(
+                    consent_key=request.consent_key,
+                    status=request.status,
+                    metadata=request.metadata,
+                ),
+            )
+    except PolicyValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    status_code = 201 if payload["write_mode"] == "created" else 200
+    return JSONResponse(
+        status_code=status_code,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/consents")
+def list_consents(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_consent_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/policies")
+def create_policy(request: CreatePolicyRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_policy_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                policy=PolicyCreateInput(
+                    name=request.name,
+                    action=request.action,
+                    scope=request.scope,
+                    effect=request.effect,
+                    priority=request.priority,
+                    active=request.active,
+                    conditions=request.conditions,
+                    required_consents=tuple(request.required_consents),
+                ),
+            )
+    except PolicyValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/policies")
+def list_policies(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_policy_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/policies/{policy_id}")
+def get_policy(policy_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_policy_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                policy_id=policy_id,
+            )
+    except PolicyNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/policies/evaluate")
+def evaluate_policy(request: EvaluatePolicyRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = evaluate_policy_request(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=PolicyEvaluationRequestInput(
+                    thread_id=request.thread_id,
+                    action=request.action,
+                    scope=request.scope,
+                    attributes=request.attributes,
+                ),
+            )
+    except PolicyEvaluationValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/tools")
+def create_tool(request: CreateToolRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_tool_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                tool=ToolCreateInput(
+                    tool_key=request.tool_key,
+                    name=request.name,
+                    description=request.description,
+                    version=request.version,
+                    metadata_version=request.metadata_version,
+                    active=request.active,
+                    tags=tuple(request.tags),
+                    action_hints=tuple(request.action_hints),
+                    scope_hints=tuple(request.scope_hints),
+                    domain_hints=tuple(request.domain_hints),
+                    risk_hints=tuple(request.risk_hints),
+                    metadata=request.metadata,
+                ),
+            )
+    except ToolValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/tools")
+def list_tools(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_tool_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/tools/allowlist/evaluate")
+def evaluate_tools_allowlist(request: EvaluateToolAllowlistRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = evaluate_tool_allowlist(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ToolAllowlistEvaluationRequestInput(
+                    thread_id=request.thread_id,
+                    action=request.action,
+                    scope=request.scope,
+                    domain_hint=request.domain_hint,
+                    risk_hint=request.risk_hint,
+                    attributes=request.attributes,
+                ),
+            )
+    except ToolAllowlistValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/tools/route")
+def route_tool(request: RouteToolRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = route_tool_invocation(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ToolRoutingRequestInput(
+                    thread_id=request.thread_id,
+                    tool_id=request.tool_id,
+                    action=request.action,
+                    scope=request.scope,
+                    domain_hint=request.domain_hint,
+                    risk_hint=request.risk_hint,
+                    attributes=request.attributes,
+                ),
+            )
+    except ToolRoutingValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/approvals/requests")
+def create_approval_request(request: CreateApprovalRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = submit_approval_request(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ApprovalRequestCreateInput(
+                    thread_id=request.thread_id,
+                    tool_id=request.tool_id,
+                    action=request.action,
+                    scope=request.scope,
+                    domain_hint=request.domain_hint,
+                    risk_hint=request.risk_hint,
+                    attributes=request.attributes,
+                ),
+            )
+    except ToolRoutingValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/approvals")
+def list_approvals(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_approval_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/approvals/{approval_id}")
+def get_approval(approval_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_approval_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                approval_id=approval_id,
+            )
+    except ApprovalNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/approvals/{approval_id}/approve")
+def approve_approval(approval_id: UUID, request: ResolveApprovalRequest) -> JSONResponse:
+    settings = get_settings()
+    resolution_error: (
+        ApprovalResolutionConflictError | TaskStepApprovalLinkageError | TaskStepLifecycleBoundaryError | None
+    ) = None
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            try:
+                payload = approve_approval_record(
+                    ContinuityStore(conn),
+                    user_id=request.user_id,
+                    request=ApprovalApproveInput(approval_id=approval_id),
+                )
+            except (
+                ApprovalResolutionConflictError,
+                TaskStepApprovalLinkageError,
+                TaskStepLifecycleBoundaryError,
+            ) as exc:
+                resolution_error = exc
+                payload = None
+    except ApprovalNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    if resolution_error is not None:
+        return JSONResponse(status_code=409, content={"detail": str(resolution_error)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/approvals/{approval_id}/reject")
+def reject_approval(approval_id: UUID, request: ResolveApprovalRequest) -> JSONResponse:
+    settings = get_settings()
+    resolution_error: (
+        ApprovalResolutionConflictError | TaskStepApprovalLinkageError | TaskStepLifecycleBoundaryError | None
+    ) = None
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            try:
+                payload = reject_approval_record(
+                    ContinuityStore(conn),
+                    user_id=request.user_id,
+                    request=ApprovalRejectInput(approval_id=approval_id),
+                )
+            except (
+                ApprovalResolutionConflictError,
+                TaskStepApprovalLinkageError,
+                TaskStepLifecycleBoundaryError,
+            ) as exc:
+                resolution_error = exc
+                payload = None
+    except ApprovalNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    if resolution_error is not None:
+        return JSONResponse(status_code=409, content={"detail": str(resolution_error)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/approvals/{approval_id}/execute")
+def execute_approved_proxy(approval_id: UUID, request: ExecuteApprovedProxyRequest) -> JSONResponse:
+    settings = get_settings()
+    execution_error: (
+        ProxyExecutionApprovalStateError
+        | ProxyExecutionHandlerNotFoundError
+        | TaskStepApprovalLinkageError
+        | TaskStepExecutionLinkageError
+        | None
+    ) = None
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            try:
+                payload = execute_approved_proxy_request(
+                    ContinuityStore(conn),
+                    user_id=request.user_id,
+                    request=ProxyExecutionRequestInput(approval_id=approval_id),
+                )
+            except (
+                ProxyExecutionApprovalStateError,
+                ProxyExecutionHandlerNotFoundError,
+                TaskStepApprovalLinkageError,
+                TaskStepExecutionLinkageError,
+            ) as exc:
+                execution_error = exc
+                payload = None
+    except ApprovalNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    if execution_error is not None:
+        return JSONResponse(status_code=409, content={"detail": str(execution_error)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/tasks")
+def list_tasks(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_task_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/tasks/{task_id}")
+def get_task(task_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_task_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                task_id=task_id,
+            )
+    except TaskNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/tasks/{task_id}/workspace")
+def create_task_workspace(task_id: UUID, request: CreateTaskWorkspaceRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_task_workspace_record(
+                ContinuityStore(conn),
+                settings=settings,
+                user_id=request.user_id,
+                request=TaskWorkspaceCreateInput(
+                    task_id=task_id,
+                    status="active",
+                ),
+            )
+    except TaskNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except (TaskWorkspaceAlreadyExistsError, TaskWorkspaceProvisioningError) as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/task-workspaces")
+def list_task_workspaces(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_task_workspace_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/task-workspaces/{task_workspace_id}")
+def get_task_workspace(task_workspace_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_task_workspace_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                task_workspace_id=task_workspace_id,
+            )
+    except TaskWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/tasks/{task_id}/steps")
+def list_task_steps(task_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_task_step_records(
+                ContinuityStore(conn),
+                user_id=user_id,
+                task_id=task_id,
+            )
+    except TaskNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/task-steps/{task_step_id}")
+def get_task_step(task_step_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_task_step_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                task_step_id=task_step_id,
+            )
+    except TaskStepNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/tasks/{task_id}/steps")
+def create_next_task_step(task_id: UUID, request: CreateNextTaskStepRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_next_task_step_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=TaskStepNextCreateInput(
+                    task_id=task_id,
+                    kind=request.kind,
+                    status=request.status,
+                    request=request.request.model_dump(mode="json"),
+                    outcome=request.outcome.model_dump(mode="json"),
+                    lineage=TaskStepLineageInput(
+                        parent_step_id=request.lineage.parent_step_id,
+                        source_approval_id=request.lineage.source_approval_id,
+                        source_execution_id=request.lineage.source_execution_id,
+                    ),
+                ),
+            )
+    except TaskNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskStepSequenceError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/task-steps/{task_step_id}/transition")
+def transition_task_step(task_step_id: UUID, request: TransitionTaskStepRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = transition_task_step_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=TaskStepTransitionInput(
+                    task_step_id=task_step_id,
+                    status=request.status,
+                    outcome=request.outcome.model_dump(mode="json"),
+                ),
+            )
+    except TaskStepNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskStepTransitionError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/execution-budgets")
+def create_execution_budget(request: CreateExecutionBudgetRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_execution_budget_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ExecutionBudgetCreateInput(
+                    tool_key=request.tool_key,
+                    domain_hint=request.domain_hint,
+                    max_completed_executions=request.max_completed_executions,
+                    rolling_window_seconds=request.rolling_window_seconds,
+                ),
+            )
+    except ExecutionBudgetValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/execution-budgets")
+def list_execution_budgets(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_execution_budget_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/execution-budgets/{execution_budget_id}")
+def get_execution_budget(execution_budget_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_execution_budget_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                execution_budget_id=execution_budget_id,
+            )
+    except ExecutionBudgetNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/execution-budgets/{execution_budget_id}/deactivate")
+def deactivate_execution_budget(
+    execution_budget_id: UUID,
+    request: DeactivateExecutionBudgetRequest,
+) -> JSONResponse:
+    settings = get_settings()
+    lifecycle_error: ExecutionBudgetLifecycleError | None = None
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            try:
+                payload = deactivate_execution_budget_record(
+                    ContinuityStore(conn),
+                    user_id=request.user_id,
+                    request=ExecutionBudgetDeactivateInput(
+                        thread_id=request.thread_id,
+                        execution_budget_id=execution_budget_id,
+                    ),
+                )
+            except ExecutionBudgetLifecycleError as exc:
+                lifecycle_error = exc
+                payload = None
+    except ExecutionBudgetValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ExecutionBudgetNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    if lifecycle_error is not None:
+        return JSONResponse(status_code=409, content={"detail": str(lifecycle_error)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/execution-budgets/{execution_budget_id}/supersede")
+def supersede_execution_budget(
+    execution_budget_id: UUID,
+    request: SupersedeExecutionBudgetRequest,
+) -> JSONResponse:
+    settings = get_settings()
+    lifecycle_error: ExecutionBudgetLifecycleError | None = None
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            try:
+                payload = supersede_execution_budget_record(
+                    ContinuityStore(conn),
+                    user_id=request.user_id,
+                    request=ExecutionBudgetSupersedeInput(
+                        thread_id=request.thread_id,
+                        execution_budget_id=execution_budget_id,
+                        max_completed_executions=request.max_completed_executions,
+                    ),
+                )
+            except ExecutionBudgetLifecycleError as exc:
+                lifecycle_error = exc
+                payload = None
+    except ExecutionBudgetValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ExecutionBudgetNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    if lifecycle_error is not None:
+        return JSONResponse(status_code=409, content={"detail": str(lifecycle_error)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/tool-executions")
+def list_tool_executions(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_tool_execution_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/tool-executions/{execution_id}")
+def get_tool_execution(execution_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_tool_execution_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                execution_id=execution_id,
+            )
+    except ToolExecutionNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/tools/{tool_id}")
+def get_tool(tool_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_tool_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                tool_id=tool_id,
+            )
+    except ToolNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/memories/extract-explicit-preferences")
+def extract_explicit_preferences(request: ExtractExplicitPreferencesRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = extract_and_admit_explicit_preferences(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ExplicitPreferenceExtractionRequestInput(
+                    source_event_id=request.source_event_id,
+                ),
+            )
+    except ExplicitPreferenceExtractionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except MemoryAdmissionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/memories")
+def list_memories(
+    user_id: UUID,
+    status: MemoryReviewStatusFilter = Query(default="active"),
+    limit: int = Query(default=DEFAULT_MEMORY_REVIEW_LIMIT, ge=1, le=MAX_MEMORY_REVIEW_LIMIT),
+) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_memory_review_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+            status=status,
+            limit=limit,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/memories/review-queue")
+def list_memory_review_queue(
+    user_id: UUID,
+    limit: int = Query(default=DEFAULT_MEMORY_REVIEW_LIMIT, ge=1, le=MAX_MEMORY_REVIEW_LIMIT),
+) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_memory_review_queue_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+            limit=limit,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/memories/evaluation-summary")
+def get_memories_evaluation_summary(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = get_memory_evaluation_summary(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/memories/semantic-retrieval")
+def retrieve_semantic_memories(request: RetrieveSemanticMemoriesRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = retrieve_semantic_memory_records(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=SemanticMemoryRetrievalRequestInput(
+                    embedding_config_id=request.embedding_config_id,
+                    query_vector=tuple(request.query_vector),
+                    limit=request.limit,
+                ),
+            )
+    except SemanticMemoryRetrievalValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/memories/{memory_id}")
+def get_memory(
+    memory_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_memory_review_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                memory_id=memory_id,
+            )
+    except MemoryReviewNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/memories/{memory_id}/revisions")
+def list_memory_revisions(
+    memory_id: UUID,
+    user_id: UUID,
+    limit: int = Query(default=DEFAULT_MEMORY_REVIEW_LIMIT, ge=1, le=MAX_MEMORY_REVIEW_LIMIT),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_memory_revision_review_records(
+                ContinuityStore(conn),
+                user_id=user_id,
+                memory_id=memory_id,
+                limit=limit,
+            )
+    except MemoryReviewNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/memories/{memory_id}/labels")
+def create_memory_review_label(
+    memory_id: UUID,
+    request: CreateMemoryReviewLabelRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_memory_review_label_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                memory_id=memory_id,
+                label=request.label,
+                note=request.note,
+            )
+    except MemoryReviewNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/memories/{memory_id}/labels")
+def list_memory_review_labels(
+    memory_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_memory_review_label_records(
+                ContinuityStore(conn),
+                user_id=user_id,
+                memory_id=memory_id,
+            )
+    except MemoryReviewNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/embedding-configs")
+def create_embedding_config(request: CreateEmbeddingConfigRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_embedding_config_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                config=EmbeddingConfigCreateInput(
+                    provider=request.provider,
+                    model=request.model,
+                    version=request.version,
+                    dimensions=request.dimensions,
+                    status=request.status,
+                    metadata=request.metadata,
+                ),
+            )
+    except EmbeddingConfigValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/embedding-configs")
+def list_embedding_configs(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_embedding_config_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/memory-embeddings")
+def upsert_memory_embedding(request: UpsertMemoryEmbeddingRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = upsert_memory_embedding_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=MemoryEmbeddingUpsertInput(
+                    memory_id=request.memory_id,
+                    embedding_config_id=request.embedding_config_id,
+                    vector=tuple(request.vector),
+                ),
+            )
+    except MemoryEmbeddingValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/memories/{memory_id}/embeddings")
+def list_memory_embeddings(memory_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_memory_embedding_records(
+                ContinuityStore(conn),
+                user_id=user_id,
+                memory_id=memory_id,
+            )
+    except MemoryEmbeddingNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/memory-embeddings/{memory_embedding_id}")
+def get_memory_embedding(memory_embedding_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_memory_embedding_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                memory_embedding_id=memory_embedding_id,
+            )
+    except MemoryEmbeddingNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/entities")
+def create_entity(request: CreateEntityRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_entity_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                entity=EntityCreateInput(
+                    entity_type=request.entity_type,
+                    name=request.name,
+                    source_memory_ids=tuple(request.source_memory_ids),
+                ),
+            )
+    except EntityValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/entity-edges")
+def create_entity_edge(request: CreateEntityEdgeRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_entity_edge_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                edge=EntityEdgeCreateInput(
+                    from_entity_id=request.from_entity_id,
+                    to_entity_id=request.to_entity_id,
+                    relationship_type=request.relationship_type,
+                    valid_from=request.valid_from,
+                    valid_to=request.valid_to,
+                    source_memory_ids=tuple(request.source_memory_ids),
+                ),
+            )
+    except EntityEdgeValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/entities")
+def list_entities(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_entity_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/entities/{entity_id}/edges")
+def list_entity_edges(entity_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_entity_edge_records(
+                ContinuityStore(conn),
+                user_id=user_id,
+                entity_id=entity_id,
+            )
+    except EntityNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/entities/{entity_id}")
+def get_entity(entity_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_entity_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                entity_id=entity_id,
+            )
+    except EntityNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
