@@ -1,0 +1,2 @@
+"""AliceBot foundation API package."""
+
