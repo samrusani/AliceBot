@@ -6,35 +6,40 @@ PASS
 
 ## criteria met
 
-- The sprint stayed within the intended slice: local artifact ingestion and chunk persistence only. I did not find retrieval, embeddings, connector, runner, or UI overreach in the changed code.
-- The implementation reuses existing `task_workspaces` and `task_artifacts` records instead of scanning the filesystem.
-- Ingestion resolves the artifact path from the persisted workspace root plus stored `relative_path`, and rejects rooted-path escapes deterministically.
-- Supported text ingestion works for registered local artifacts and persists durable ordered `task_artifact_chunks` rows.
-- Chunking is deterministic and documented in code and `BUILD_REPORT.md`: normalized line endings plus fixed 1000-character windows.
-- Unsupported media types are rejected deterministically.
-- Chunk reads are deterministic and user-scoped.
-- The follow-up fixes added direct test coverage for `text/markdown` ingestion, invalid UTF-8 rejection, and idempotent re-ingestion.
-- The stale architecture and handoff docs were updated to reflect Sprint 5D behavior and boundaries.
-- Verification rerun during review:
-  - `./.venv/bin/python -m pytest tests/unit` -> `347 passed`
-  - `./.venv/bin/python -m pytest tests/integration` -> `104 passed` after rerunning with local access to Postgres and a local test socket
-  - `git diff --check` -> passed
+- Retrieval is implemented only over durable `task_artifact_chunks` rows; the new logic in `apps/api/src/alicebot_api/artifacts.py` matches against persisted chunk text and does not read raw files during retrieval.
+- Both required scopes are present and tested:
+  - task-scoped retrieval via `POST /v0/tasks/{task_id}/artifact-chunks/retrieve`
+  - artifact-scoped retrieval via `POST /v0/task-artifacts/{task_artifact_id}/chunks/retrieve`
+- Matching is deterministic and lexical-only:
+  - query normalization uses casefolded `\w+` extraction with first-occurrence deduplication
+  - ordering is explicit and stable: matched term count desc, first match start asc, relative path asc, sequence no asc, id asc
+- Non-ingested artifacts are excluded even if chunk rows exist.
+- Per-user isolation is enforced through the existing user-scoped connection/RLS path and is covered by integration tests.
+- Response shape is explicit and stable through the new retrieval contracts in `apps/api/src/alicebot_api/contracts.py`.
+- Sprint scope stayed narrow: no embeddings, semantic retrieval, compile-path integration, connectors, runner logic, or UI work entered the implementation.
+- `BUILD_REPORT.md` was updated and includes the required contracts, matching/order rules, commands, examples, and deferred scope.
+- Acceptance test gates passed in this review:
+  - `./.venv/bin/python -m pytest tests/unit` -> `358 passed in 0.53s`
+  - `./.venv/bin/python -m pytest tests/integration` -> `105 passed in 29.84s`
 
 ## criteria missed
 
-- No acceptance criteria from `SPRINT_PACKET.md` were missed.
+- None.
 
 ## quality issues
 
-- None found in the reviewed sprint scope.
+- No blocking implementation or test-quality issues found in the sprint code.
+- Non-blocking process note: `.ai/active/SPRINT_PACKET.md` is part of the working diff. If that edit came from the Builder, sprint inputs should ideally remain reviewer-controlled so implementation is not changing its own source-of-truth spec.
 
 ## regression risks
 
-- No material regression risk beyond the normal risk profile for this slice.
+- Low. The change is additive, scoped to artifact retrieval, and covered by unit plus Postgres-backed integration tests.
+- Residual risk: retrieval behavior is intentionally simple lexical overlap, so future callers may over-assume ranking quality. That is consistent with the sprint packet and documented as deferred scope, not a defect in this sprint.
 
 ## docs issues
 
-- None. `ARCHITECTURE.md`, `.ai/handoff/CURRENT_STATE.md`, and `BUILD_REPORT.md` now match the landed implementation and verification state.
+- No required docs are missing for this sprint.
+- No correction needed in `BUILD_REPORT.md` based on this review.
 
 ## should anything be added to RULES.md?
 
@@ -42,8 +47,9 @@ PASS
 
 ## should anything update ARCHITECTURE.md?
 
-- No further update required from this review pass.
+- No immediate update required for sprint acceptance. The architecture impact is narrow and already understandable from the code plus `BUILD_REPORT.md`.
 
 ## recommended next action
 
-- Accept the sprint and proceed with the normal merge path once Control Tower approves.
+- Mark Sprint 5E as accepted and move to the next milestone in a separate sprint.
+- If desired, tighten process hygiene by keeping `SPRINT_PACKET.md` outside Builder-owned changes unless Control Tower explicitly includes packet editing in scope.

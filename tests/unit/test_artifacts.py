@@ -8,32 +8,65 @@ import pytest
 
 from alicebot_api.artifacts import (
     TASK_ARTIFACT_CHUNKING_RULE,
+    TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
     TaskArtifactAlreadyExistsError,
+    TaskArtifactChunkRetrievalValidationError,
     TaskArtifactNotFoundError,
     TaskArtifactValidationError,
     build_workspace_relative_artifact_path,
     chunk_normalized_artifact_text,
     ensure_artifact_path_is_rooted,
+    extract_unique_lexical_terms,
     get_task_artifact_record,
     ingest_task_artifact_record,
     list_task_artifact_chunk_records,
     list_task_artifact_records,
+    match_artifact_chunk_text,
     normalize_artifact_text,
     register_task_artifact_record,
+    retrieve_artifact_scoped_artifact_chunk_records,
+    retrieve_task_scoped_artifact_chunk_records,
     serialize_task_artifact_row,
 )
-from alicebot_api.contracts import TaskArtifactIngestInput, TaskArtifactRegisterInput
+from alicebot_api.contracts import (
+    ArtifactScopedArtifactChunkRetrievalInput,
+    TaskArtifactIngestInput,
+    TaskArtifactRegisterInput,
+    TaskScopedArtifactChunkRetrievalInput,
+)
+from alicebot_api.tasks import TaskNotFoundError
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
 
 class ArtifactStoreStub:
     def __init__(self) -> None:
         self.base_time = datetime(2026, 3, 13, 10, 0, tzinfo=UTC)
+        self.tasks: list[dict[str, object]] = []
         self.workspaces: list[dict[str, object]] = []
         self.artifacts: list[dict[str, object]] = []
         self.artifact_chunks: list[dict[str, object]] = []
         self.locked_workspace_ids: list[UUID] = []
         self.locked_artifact_ids: list[UUID] = []
+
+    def create_task(self, *, task_id: UUID, user_id: UUID) -> dict[str, object]:
+        task = {
+            "id": task_id,
+            "user_id": user_id,
+            "thread_id": uuid4(),
+            "tool_id": uuid4(),
+            "status": "approved",
+            "request": {},
+            "tool": {},
+            "latest_approval_id": None,
+            "latest_execution_id": None,
+            "created_at": self.base_time,
+            "updated_at": self.base_time,
+        }
+        self.tasks.append(task)
+        return task
+
+    def get_task_optional(self, task_id: UUID) -> dict[str, object] | None:
+        return next((task for task in self.tasks if task["id"] == task_id), None)
 
     def create_task_workspace(self, *, task_workspace_id: UUID, task_id: UUID, user_id: UUID, local_path: str) -> dict[str, object]:
         workspace = {
@@ -97,6 +130,12 @@ class ArtifactStoreStub:
 
     def list_task_artifacts(self) -> list[dict[str, object]]:
         return sorted(self.artifacts, key=lambda artifact: (artifact["created_at"], artifact["id"]))
+
+    def list_task_artifacts_for_task(self, task_id: UUID) -> list[dict[str, object]]:
+        return sorted(
+            (artifact for artifact in self.artifacts if artifact["task_id"] == task_id),
+            key=lambda artifact: (artifact["created_at"], artifact["id"]),
+        )
 
     def get_task_artifact_optional(self, task_artifact_id: UUID) -> dict[str, object] | None:
         return next((artifact for artifact in self.artifacts if artifact["id"] == task_artifact_id), None)
@@ -668,6 +707,343 @@ def test_list_task_artifact_chunk_records_are_deterministic() -> None:
             "order": ["sequence_no_asc", "id_asc"],
         },
     }
+
+
+def test_extract_unique_lexical_terms_preserves_first_occurrence_order() -> None:
+    assert extract_unique_lexical_terms("Alpha beta, alpha\nbeta gamma") == [
+        "alpha",
+        "beta",
+        "gamma",
+    ]
+
+
+def test_match_artifact_chunk_text_returns_explicit_metadata() -> None:
+    assert match_artifact_chunk_text(
+        query_terms=["alpha", "beta", "delta"],
+        chunk_text="beta alpha release",
+    ) == {
+        "matched_query_terms": ["alpha", "beta"],
+        "matched_query_term_count": 2,
+        "first_match_char_start": 0,
+    }
+
+
+def test_task_scoped_chunk_retrieval_orders_matches_deterministically_and_skips_pending() -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    store.create_task(task_id=task_id, user_id=user_id)
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path="/tmp/alicebot/task-workspaces/user/task",
+    )
+    docs_artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="ingested",
+        relative_path="docs/a.txt",
+        media_type_hint="text/plain",
+    )
+    notes_artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="ingested",
+        relative_path="notes/b.md",
+        media_type_hint="text/markdown",
+    )
+    pending_artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="notes/hidden.txt",
+        media_type_hint="text/plain",
+    )
+    weak_match_artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="ingested",
+        relative_path="notes/c.txt",
+        media_type_hint="text/plain",
+    )
+    store.create_task_artifact_chunk(
+        task_artifact_id=docs_artifact["id"],
+        sequence_no=1,
+        char_start=0,
+        char_end_exclusive=14,
+        text="beta alpha doc",
+    )
+    store.create_task_artifact_chunk(
+        task_artifact_id=notes_artifact["id"],
+        sequence_no=1,
+        char_start=0,
+        char_end_exclusive=15,
+        text="alpha beta note",
+    )
+    store.create_task_artifact_chunk(
+        task_artifact_id=pending_artifact["id"],
+        sequence_no=1,
+        char_start=0,
+        char_end_exclusive=17,
+        text="alpha beta hidden",
+    )
+    store.create_task_artifact_chunk(
+        task_artifact_id=weak_match_artifact["id"],
+        sequence_no=1,
+        char_start=0,
+        char_end_exclusive=9,
+        text="beta only",
+    )
+
+    assert retrieve_task_scoped_artifact_chunk_records(
+        store,
+        user_id=user_id,
+        request=TaskScopedArtifactChunkRetrievalInput(
+            task_id=task_id,
+            query="Alpha beta",
+        ),
+    ) == {
+        "items": [
+            {
+                "id": str(store.artifact_chunks[0]["id"]),
+                "task_id": str(task_id),
+                "task_artifact_id": str(docs_artifact["id"]),
+                "relative_path": "docs/a.txt",
+                "media_type": "text/plain",
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 14,
+                "text": "beta alpha doc",
+                "match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+            },
+            {
+                "id": str(store.artifact_chunks[1]["id"]),
+                "task_id": str(task_id),
+                "task_artifact_id": str(notes_artifact["id"]),
+                "relative_path": "notes/b.md",
+                "media_type": "text/markdown",
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 15,
+                "text": "alpha beta note",
+                "match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+            },
+            {
+                "id": str(store.artifact_chunks[3]["id"]),
+                "task_id": str(task_id),
+                "task_artifact_id": str(weak_match_artifact["id"]),
+                "relative_path": "notes/c.txt",
+                "media_type": "text/plain",
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 9,
+                "text": "beta only",
+                "match": {
+                    "matched_query_terms": ["beta"],
+                    "matched_query_term_count": 1,
+                    "first_match_char_start": 0,
+                },
+            },
+        ],
+        "summary": {
+            "total_count": 3,
+            "searched_artifact_count": 3,
+            "query": "Alpha beta",
+            "query_terms": ["alpha", "beta"],
+            "matching_rule": TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
+            "order": [
+                "matched_query_term_count_desc",
+                "first_match_char_start_asc",
+                "relative_path_asc",
+                "sequence_no_asc",
+                "id_asc",
+            ],
+            "scope": {
+                "kind": "task",
+                "task_id": str(task_id),
+            },
+        },
+    }
+
+
+def test_artifact_scoped_chunk_retrieval_returns_empty_for_non_ingested_artifact() -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    store.create_task(task_id=task_id, user_id=user_id)
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path="/tmp/alicebot/task-workspaces/user/task",
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="docs/spec.txt",
+        media_type_hint="text/plain",
+    )
+    store.create_task_artifact_chunk(
+        task_artifact_id=artifact["id"],
+        sequence_no=1,
+        char_start=0,
+        char_end_exclusive=10,
+        text="alpha beta",
+    )
+
+    assert retrieve_artifact_scoped_artifact_chunk_records(
+        store,
+        user_id=user_id,
+        request=ArtifactScopedArtifactChunkRetrievalInput(
+            task_artifact_id=artifact["id"],
+            query="alpha",
+        ),
+    ) == {
+        "items": [],
+        "summary": {
+            "total_count": 0,
+            "searched_artifact_count": 0,
+            "query": "alpha",
+            "query_terms": ["alpha"],
+            "matching_rule": TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
+            "order": [
+                "matched_query_term_count_desc",
+                "first_match_char_start_asc",
+                "relative_path_asc",
+                "sequence_no_asc",
+                "id_asc",
+            ],
+            "scope": {
+                "kind": "artifact",
+                "task_id": str(task_id),
+                "task_artifact_id": str(artifact["id"]),
+            },
+        },
+    }
+
+
+def test_task_scoped_chunk_retrieval_returns_empty_when_no_chunks_match() -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    store.create_task(task_id=task_id, user_id=user_id)
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path="/tmp/alicebot/task-workspaces/user/task",
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="ingested",
+        relative_path="docs/spec.txt",
+        media_type_hint="text/plain",
+    )
+    store.create_task_artifact_chunk(
+        task_artifact_id=artifact["id"],
+        sequence_no=1,
+        char_start=0,
+        char_end_exclusive=11,
+        text="release plan",
+    )
+
+    response = retrieve_task_scoped_artifact_chunk_records(
+        store,
+        user_id=user_id,
+        request=TaskScopedArtifactChunkRetrievalInput(
+            task_id=task_id,
+            query="alpha",
+        ),
+    )
+
+    assert response == {
+        "items": [],
+        "summary": {
+            "total_count": 0,
+            "searched_artifact_count": 1,
+            "query": "alpha",
+            "query_terms": ["alpha"],
+            "matching_rule": TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
+            "order": [
+                "matched_query_term_count_desc",
+                "first_match_char_start_asc",
+                "relative_path_asc",
+                "sequence_no_asc",
+                "id_asc",
+            ],
+            "scope": {
+                "kind": "task",
+                "task_id": str(task_id),
+            },
+        },
+    }
+
+
+def test_task_scoped_chunk_retrieval_raises_when_task_is_missing() -> None:
+    with pytest.raises(TaskNotFoundError, match="was not found"):
+        retrieve_task_scoped_artifact_chunk_records(
+            ArtifactStoreStub(),
+            user_id=uuid4(),
+            request=TaskScopedArtifactChunkRetrievalInput(
+                task_id=uuid4(),
+                query="alpha",
+            ),
+        )
+
+
+def test_artifact_chunk_retrieval_rejects_query_without_words() -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    store.create_task(task_id=task_id, user_id=user_id)
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path="/tmp/alicebot/task-workspaces/user/task",
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="ingested",
+        relative_path="docs/spec.txt",
+        media_type_hint="text/plain",
+    )
+
+    with pytest.raises(
+        TaskArtifactChunkRetrievalValidationError,
+        match="must include at least one word",
+    ):
+        retrieve_artifact_scoped_artifact_chunk_records(
+            store,
+            user_id=user_id,
+            request=ArtifactScopedArtifactChunkRetrievalInput(
+                task_artifact_id=artifact["id"],
+                query="   ...   ",
+            ),
+        )
 
 
 def test_list_and_get_task_artifact_records_are_deterministic() -> None:

@@ -2,195 +2,223 @@
 
 ## sprint objective
 
-Implement Sprint 5D: Local Artifact Ingestion V0 by adding a narrow, deterministic ingestion path that reads one registered local text artifact from its persisted task workspace boundary, chunks normalized text into durable ordered records, and exposes stable chunk reads without adding retrieval, embeddings, connectors, runners, or UI scope.
+Implement Sprint 5E: Artifact Chunk Retrieval V0 by adding a narrow, deterministic lexical retrieval path over durable `task_artifact_chunks`, scoped to one visible task or one visible artifact, without adding embeddings, semantic ranking, compile-path integration, connectors, runners, or UI work.
 
 ## completed work
 
-- Added migration `apps/api/alembic/versions/20260314_0024_task_artifact_chunks.py`.
-- Expanded `task_artifacts.ingestion_status` from `pending` to `pending | ingested`.
-- Added durable `task_artifact_chunks` storage with user scoping, RLS, and ordered per-artifact uniqueness.
-- Added artifact-ingestion contracts in `apps/api/src/alicebot_api/contracts.py`:
-  - `TaskArtifactIngestInput`
-  - `TaskArtifactChunkRecord`
-  - `TaskArtifactChunkListSummary`
-  - `TaskArtifactChunkListResponse`
-  - `TaskArtifactIngestionResponse`
-  - `TASK_ARTIFACT_CHUNK_LIST_ORDER = ["sequence_no_asc", "id_asc"]`
-  - `TaskArtifactIngestionStatus = "pending" | "ingested"`
-- Added artifact-ingestion service behavior in `apps/api/src/alicebot_api/artifacts.py`:
-  - rooted file resolution from persisted workspace `local_path` plus artifact `relative_path`
-  - explicit supported media types only: `text/plain`, `text/markdown`
-  - strict UTF-8 text decoding
-  - line-ending normalization to `\n`
-  - deterministic fixed-window chunking rule
-  - durable ordered chunk persistence
-  - deterministic `ingestion_status` transition to `ingested`
+- Added retrieval contracts in `apps/api/src/alicebot_api/contracts.py`:
+  - `TaskScopedArtifactChunkRetrievalInput(task_id, query)`
+  - `ArtifactScopedArtifactChunkRetrievalInput(task_artifact_id, query)`
+  - `TaskArtifactChunkRetrievalMatch`
+  - `TaskArtifactChunkRetrievalItem`
+  - `TaskArtifactChunkRetrievalScope`
+  - `TaskArtifactChunkRetrievalSummary`
+  - `TaskArtifactChunkRetrievalResponse`
+  - `TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER = ["matched_query_term_count_desc", "first_match_char_start_asc", "relative_path_asc", "sequence_no_asc", "id_asc"]`
+- Added retrieval behavior in `apps/api/src/alicebot_api/artifacts.py`:
+  - explicit query validation requiring at least one lexical word
+  - query normalization via casefolded unique `\w+` terms in first-occurrence order
+  - chunk matching against persisted chunk text only
+  - task-scoped retrieval across ingested artifacts for one visible task
+  - artifact-scoped retrieval for one visible artifact
+  - exclusion of artifacts whose `ingestion_status != "ingested"`, even if chunk rows exist
+  - deterministic response ordering with explicit per-item match metadata
+- Added the minimal API routes in `apps/api/src/alicebot_api/main.py`:
+  - `POST /v0/tasks/{task_id}/artifact-chunks/retrieve`
+  - `POST /v0/task-artifacts/{task_artifact_id}/chunks/retrieve`
 - Added store support in `apps/api/src/alicebot_api/store.py`:
-  - `TaskArtifactChunkRow`
-  - advisory lock for per-artifact ingestion
-  - create/list chunk methods
-  - artifact ingestion-status update method
-- Added API routes in `apps/api/src/alicebot_api/main.py`:
-  - `POST /v0/task-artifacts/{task_artifact_id}/ingest`
-  - `GET /v0/task-artifacts/{task_artifact_id}/chunks`
+  - `list_task_artifacts_for_task(task_id)`
 - Added unit and integration coverage for:
-  - supported text ingestion
-  - direct `text/markdown` ingestion
-  - deterministic chunk ordering and boundaries
-  - rooted-path enforcement during ingestion
-  - invalid UTF-8 rejection
-  - idempotent re-ingestion
-  - unsupported media-type rejection
+  - deterministic retrieval ordering
+  - task-scoped retrieval
+  - artifact-scoped retrieval
+  - empty-result behavior
+  - exclusion of non-ingested artifacts
   - per-user isolation
-  - stable ingestion and chunk-list response shapes
-- Refreshed `ARCHITECTURE.md` and `.ai/handoff/CURRENT_STATE.md` so the documented shipped slice now matches Sprint 5D ingestion behavior and deferred scope.
+  - stable response shape
 
-Exact chunk schema introduced:
+Exact retrieval contracts introduced:
 
-- `id uuid PRIMARY KEY`
-- `user_id uuid NOT NULL`
-- `task_artifact_id uuid NOT NULL`
-- `sequence_no integer NOT NULL CHECK (sequence_no >= 1)`
-- `char_start integer NOT NULL CHECK (char_start >= 0)`
-- `char_end_exclusive integer NOT NULL CHECK (char_end_exclusive > char_start)`
-- `text text NOT NULL CHECK (length(text) > 0)`
-- `created_at timestamptz NOT NULL`
-- `updated_at timestamptz NOT NULL`
-- foreign key to `(task_artifacts.id, user_id)` with `ON DELETE CASCADE`
-- unique index on `(user_id, task_artifact_id, sequence_no)`
-- user-owned RLS policy
-- runtime grants limited to `SELECT, INSERT` on `task_artifact_chunks`
-- runtime `UPDATE` added on `task_artifacts` so ingestion can set `ingestion_status`
+- Request inputs:
+  - `TaskScopedArtifactChunkRetrievalInput(task_id: UUID, query: str)`
+  - `ArtifactScopedArtifactChunkRetrievalInput(task_artifact_id: UUID, query: str)`
+- Result item:
+  - `id`
+  - `task_id`
+  - `task_artifact_id`
+  - `relative_path`
+  - `media_type`
+  - `sequence_no`
+  - `char_start`
+  - `char_end_exclusive`
+  - `text`
+  - `match = {matched_query_terms, matched_query_term_count, first_match_char_start}`
+- Summary metadata:
+  - `total_count`
+  - `searched_artifact_count`
+  - `query`
+  - `query_terms`
+  - `matching_rule`
+  - `order`
+  - `scope = {kind, task_id, task_artifact_id?}`
 
-Supported file types and chunking rule:
+Lexical matching rule used:
 
-- Supported media types: `text/plain`, `text/markdown`
-- Text decoding: UTF-8 only
-- Line-ending normalization: `\r\n` and `\r` become `\n`
-- Chunking rule: `normalized_utf8_text_fixed_window_1000_chars_v1`
-- Chunk boundary rule: split normalized text into contiguous, non-overlapping 1000-character windows with zero-based `char_start` and exclusive `char_end_exclusive`
+- Rule id: `casefolded_unicode_word_overlap_unique_query_terms_v1`
+- Query normalization:
+  - casefold the query
+  - extract `\w+` terms
+  - deduplicate in first-occurrence order
+  - reject queries that produce zero terms
+- Chunk match rule:
+  - casefold the stored chunk text
+  - extract `\w+` chunk terms
+  - a chunk matches when at least one normalized query term is present in the chunk term set
+  - `matched_query_terms` are returned in normalized query order
+  - `matched_query_term_count` is the count of distinct matched query terms
+  - `first_match_char_start` is the earliest start offset in the chunk text of any matched term
 
-Exact ingestion contract changes introduced:
+Ordering rule used:
 
-- Request input: `TaskArtifactIngestInput(task_artifact_id)`
-- Ingestion response: `{"artifact": TaskArtifactRecord, "summary": TaskArtifactChunkListSummary}`
-- Chunk list response: `{"items": list[TaskArtifactChunkRecord], "summary": TaskArtifactChunkListSummary}`
-- Artifact detail payload remains stable except `ingestion_status` can now be `ingested`
+- `matched_query_term_count` descending
+- `first_match_char_start` ascending
+- `relative_path` ascending
+- `sequence_no` ascending
+- `id` ascending
 
-Example artifact-ingestion response:
+Example task-scoped retrieval response:
 
 ```json
 {
-  "artifact": {
-    "id": "11111111-1111-1111-1111-111111111111",
-    "task_id": "22222222-2222-2222-2222-222222222222",
-    "task_workspace_id": "33333333-3333-3333-3333-333333333333",
-    "status": "registered",
-    "ingestion_status": "ingested",
-    "relative_path": "docs/spec.txt",
-    "media_type_hint": "text/plain",
-    "created_at": "2026-03-14T10:00:00+00:00",
-    "updated_at": "2026-03-14T10:00:01+00:00"
-  },
+  "items": [
+    {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "task_id": "22222222-2222-2222-2222-222222222222",
+      "task_artifact_id": "33333333-3333-3333-3333-333333333333",
+      "relative_path": "docs/a.txt",
+      "media_type": "text/plain",
+      "sequence_no": 1,
+      "char_start": 0,
+      "char_end_exclusive": 14,
+      "text": "beta alpha doc",
+      "match": {
+        "matched_query_terms": ["alpha", "beta"],
+        "matched_query_term_count": 2,
+        "first_match_char_start": 0
+      }
+    }
+  ],
   "summary": {
-    "total_count": 2,
-    "total_characters": 1006,
-    "media_type": "text/plain",
-    "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
-    "order": ["sequence_no_asc", "id_asc"]
+    "total_count": 1,
+    "searched_artifact_count": 1,
+    "query": "Alpha beta",
+    "query_terms": ["alpha", "beta"],
+    "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+    "order": [
+      "matched_query_term_count_desc",
+      "first_match_char_start_asc",
+      "relative_path_asc",
+      "sequence_no_asc",
+      "id_asc"
+    ],
+    "scope": {
+      "kind": "task",
+      "task_id": "22222222-2222-2222-2222-222222222222"
+    }
   }
 }
 ```
 
-Example artifact-chunk list response:
+Example artifact-scoped retrieval response:
 
 ```json
 {
   "items": [
     {
       "id": "44444444-4444-4444-4444-444444444444",
-      "task_artifact_id": "11111111-1111-1111-1111-111111111111",
+      "task_id": "22222222-2222-2222-2222-222222222222",
+      "task_artifact_id": "55555555-5555-5555-5555-555555555555",
+      "relative_path": "notes/b.md",
+      "media_type": "text/markdown",
       "sequence_no": 1,
       "char_start": 0,
-      "char_end_exclusive": 4,
-      "text": "abc\n",
-      "created_at": "2026-03-14T10:00:01+00:00",
-      "updated_at": "2026-03-14T10:00:01+00:00"
-    },
-    {
-      "id": "55555555-5555-5555-5555-555555555555",
-      "task_artifact_id": "11111111-1111-1111-1111-111111111111",
-      "sequence_no": 2,
-      "char_start": 4,
-      "char_end_exclusive": 7,
-      "text": "def",
-      "created_at": "2026-03-14T10:00:01+00:00",
-      "updated_at": "2026-03-14T10:00:01+00:00"
+      "char_end_exclusive": 15,
+      "text": "alpha beta note",
+      "match": {
+        "matched_query_terms": ["alpha", "beta"],
+        "matched_query_term_count": 2,
+        "first_match_char_start": 0
+      }
     }
   ],
   "summary": {
-    "total_count": 2,
-    "total_characters": 7,
-    "media_type": "text/plain",
-    "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
-    "order": ["sequence_no_asc", "id_asc"]
+    "total_count": 1,
+    "searched_artifact_count": 1,
+    "query": "Alpha beta",
+    "query_terms": ["alpha", "beta"],
+    "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+    "order": [
+      "matched_query_term_count_desc",
+      "first_match_char_start_asc",
+      "relative_path_asc",
+      "sequence_no_asc",
+      "id_asc"
+    ],
+    "scope": {
+      "kind": "artifact",
+      "task_id": "22222222-2222-2222-2222-222222222222",
+      "task_artifact_id": "55555555-5555-5555-5555-555555555555"
+    }
   }
 }
 ```
 
 ## incomplete work
 
-- None within Sprint 5D scope.
+- None within Sprint 5E scope.
 
 ## files changed
 
-- `apps/api/alembic/versions/20260314_0024_task_artifact_chunks.py`
 - `apps/api/src/alicebot_api/artifacts.py`
 - `apps/api/src/alicebot_api/contracts.py`
 - `apps/api/src/alicebot_api/main.py`
 - `apps/api/src/alicebot_api/store.py`
-- `ARCHITECTURE.md`
-- `.ai/handoff/CURRENT_STATE.md`
-- `tests/integration/test_migrations.py`
 - `tests/integration/test_task_artifacts_api.py`
-- `tests/unit/test_20260314_0024_task_artifact_chunks.py`
 - `tests/unit/test_artifacts.py`
 - `tests/unit/test_artifacts_main.py`
-- `tests/unit/test_main.py`
 - `tests/unit/test_task_artifact_store.py`
 - `BUILD_REPORT.md`
 
 ## tests run
 
-- `./.venv/bin/python -m pytest tests/unit/test_artifacts.py tests/unit/test_artifacts_main.py tests/unit/test_task_artifact_store.py tests/unit/test_20260314_0024_task_artifact_chunks.py tests/unit/test_main.py`
-  - result: `63 passed in 0.77s`
-- `./.venv/bin/python -m pytest tests/unit/test_artifacts.py`
-  - result: `16 passed in 0.11s`
+- `./.venv/bin/python -m pytest tests/unit/test_artifacts.py tests/unit/test_artifacts_main.py tests/unit/test_task_artifact_store.py`
+  - result: `37 passed in 0.44s`
+- `./.venv/bin/python -m pytest tests/unit/test_artifacts.py tests/unit/test_artifacts_main.py`
+  - result: `35 passed in 0.25s`
 - `./.venv/bin/python -m pytest tests/integration/test_task_artifacts_api.py`
-  - rerun with local access: `5 passed in 1.72s`
+  - sandboxed attempt failed to reach local Postgres on `localhost:5432` with `Operation not permitted`
 - `./.venv/bin/python -m pytest tests/unit`
-  - result: `347 passed in 0.56s`
+  - result: `358 passed in 0.56s`
 - `./.venv/bin/python -m pytest tests/integration`
-  - first sandboxed attempt failed to reach local Postgres and open a local socket
-  - rerun with local access: `104 passed in 30.87s`
+  - rerun with local access: `105 passed in 29.62s`
 - `git diff --check`
   - result: passed
 
 ## blockers/issues
 
 - No remaining implementation blockers.
-- Local Postgres-backed integration tests required running outside the default sandbox; after rerun with local access, the full suite passed.
+- Postgres-backed integration verification required unsandboxed localhost access. After rerun with local access, the full integration suite passed.
 
 ## recommended next step
 
-Build the next milestone on top of these durable chunk records by adding retrieval over ingested chunks only, while still keeping embeddings, ranking, rich-document parsing, connectors, orchestration, and UI changes out of scope until separately sprinted.
+Build the next milestone on top of this deterministic read contract by adding richer retrieval quality or compile-path usage in a separate sprint, while keeping those changes explicitly scoped and test-backed.
 
 ## intentionally deferred
 
-- Retrieval or search over artifact chunks
 - Embeddings for artifact chunks
-- Ranking or chunk selection
-- PDF, DOCX, OCR, or rich document parsing
-- Connector ingestion
-- Runner/orchestration behavior
-- UI changes
+- Semantic retrieval or reranking
+- Compile-path integration of artifact chunks
+- PDF, DOCX, OCR, or richer document parsing
+- Connector work
+- Runner or orchestration work
+- UI work
