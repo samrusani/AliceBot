@@ -258,6 +258,18 @@ class TaskArtifactRow(TypedDict):
     updated_at: datetime
 
 
+class TaskArtifactChunkRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    task_artifact_id: UUID
+    sequence_no: int
+    char_start: int
+    char_end_exclusive: int
+    text: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class TaskStepRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -1517,6 +1529,75 @@ LIST_TASK_ARTIFACTS_SQL = """
                 ORDER BY created_at ASC, id ASC
                 """
 
+LOCK_TASK_ARTIFACT_INGESTION_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 5))"
+
+INSERT_TASK_ARTIFACT_CHUNK_SQL = """
+                INSERT INTO task_artifact_chunks (
+                  user_id,
+                  task_artifact_id,
+                  sequence_no,
+                  char_start,
+                  char_end_exclusive,
+                  text,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  task_artifact_id,
+                  sequence_no,
+                  char_start,
+                  char_end_exclusive,
+                  text,
+                  created_at,
+                  updated_at
+                """
+
+LIST_TASK_ARTIFACT_CHUNKS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  task_artifact_id,
+                  sequence_no,
+                  char_start,
+                  char_end_exclusive,
+                  text,
+                  created_at,
+                  updated_at
+                FROM task_artifact_chunks
+                WHERE task_artifact_id = %s
+                ORDER BY sequence_no ASC, id ASC
+                """
+
+UPDATE_TASK_ARTIFACT_INGESTION_STATUS_SQL = """
+                UPDATE task_artifacts
+                SET ingestion_status = %s,
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                RETURNING
+                  id,
+                  user_id,
+                  task_id,
+                  task_workspace_id,
+                  status,
+                  ingestion_status,
+                  relative_path,
+                  media_type_hint,
+                  created_at,
+                  updated_at
+                """
+
 INSERT_TASK_STEP_SQL = """
                 INSERT INTO task_steps (
                   user_id,
@@ -2649,6 +2730,40 @@ class ContinuityStore:
 
     def list_task_artifacts(self) -> list[TaskArtifactRow]:
         return self._fetch_all(LIST_TASK_ARTIFACTS_SQL)
+
+    def lock_task_artifact_ingestion(self, task_artifact_id: UUID) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(LOCK_TASK_ARTIFACT_INGESTION_SQL, (str(task_artifact_id),))
+
+    def create_task_artifact_chunk(
+        self,
+        *,
+        task_artifact_id: UUID,
+        sequence_no: int,
+        char_start: int,
+        char_end_exclusive: int,
+        text: str,
+    ) -> TaskArtifactChunkRow:
+        return self._fetch_one(
+            "create_task_artifact_chunk",
+            INSERT_TASK_ARTIFACT_CHUNK_SQL,
+            (task_artifact_id, sequence_no, char_start, char_end_exclusive, text),
+        )
+
+    def list_task_artifact_chunks(self, task_artifact_id: UUID) -> list[TaskArtifactChunkRow]:
+        return self._fetch_all(LIST_TASK_ARTIFACT_CHUNKS_SQL, (task_artifact_id,))
+
+    def update_task_artifact_ingestion_status(
+        self,
+        *,
+        task_artifact_id: UUID,
+        ingestion_status: str,
+    ) -> TaskArtifactRow:
+        return self._fetch_one(
+            "update_task_artifact_ingestion_status",
+            UPDATE_TASK_ARTIFACT_INGESTION_STATUS_SQL,
+            (ingestion_status, task_artifact_id),
+        )
 
     def lock_task_steps(self, task_id: UUID) -> None:
         with self.conn.cursor() as cur:

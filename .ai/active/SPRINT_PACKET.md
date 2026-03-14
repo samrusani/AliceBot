@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Sprint 5C: Task Artifact Records and Registration
+Sprint 5D: Local Artifact Ingestion V0
 
 ## Sprint Type
 
@@ -10,116 +10,121 @@ feature
 
 ## Sprint Reason
 
-Milestone 5 should continue on top of the shipped task-workspace boundary. Before document ingestion or connectors can safely rely on workspaces, the repo needs explicit, reviewable artifact records tied to those workspaces instead of ad hoc filesystem assumptions.
+Milestone 5 now has deterministic task-workspace boundaries and explicit task-artifact records. The next safe step is to ingest registered local artifacts into durable chunk records, so later document retrieval can operate on explicit ingested data instead of raw filesystem reads.
 
 ## Sprint Intent
 
-Add durable task-artifact records plus a narrow local artifact registration path on top of existing `task_workspaces`, so later document ingestion and retrieval can consume explicit artifact metadata instead of raw workspace scanning.
+Add a narrow, explicit local artifact-ingestion seam that reads registered text artifacts from rooted task workspaces, chunks them deterministically, and persists durable artifact-chunk records, without yet adding document retrieval, embeddings, connectors, or UI.
 
 ## Git Instructions
 
-- Branch Name: `codex/sprint-5c-task-artifacts`
+- Branch Name: `codex/sprint-5d-artifact-ingestion-v0`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR, no stacked PRs unless Control Tower explicitly opens a follow-up sprint
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- Sprint 5A shipped deterministic rooted task-workspace provisioning.
-- Sprint 5B cleaned and synchronized live project truth, so Milestone 5 planning can proceed from current facts.
-- The roadmap says artifact and workspace boundaries should be explicit before document-heavy work lands.
-- The narrowest next step is artifact records and registration only, not ingestion, chunking, connectors, or UI.
+- Sprint 5A shipped task-workspace provisioning.
+- Sprint 5C shipped explicit task-artifact registration on top of those workspaces.
+- The roadmap says document work should build on the existing artifact/workspace boundary.
+- The narrowest next step is ingestion only: turn registered local artifacts into durable chunk records before any retrieval or connector work begins.
 
 ## In Scope
 
 - Add schema and migration support for:
-  - `task_artifacts`
+  - `task_artifact_chunks`
+  - any narrow `task_artifacts.ingestion_status` expansion required to represent successful ingestion deterministically
 - Define typed contracts for:
-  - artifact registration requests
-  - artifact create responses
-  - artifact list responses
-  - artifact detail responses
-- Implement a narrow artifact seam that:
-  - registers one local file path under an existing visible task workspace
-  - persists one user-scoped artifact record linked to that workspace and task
-  - validates that the artifact path stays rooted under the workspace local path
-  - stores explicit artifact metadata such as relative path, media type hint if supplied, and status fields needed for later ingestion
-  - exposes deterministic list and detail reads
+  - artifact-ingestion requests
+  - artifact-ingestion responses
+  - artifact-chunk list responses
+  - artifact detail responses updated for ingestion status if needed
+- Implement a narrow ingestion seam that:
+  - accepts one already-registered visible artifact
+  - resolves its rooted local file path from the persisted workspace boundary plus artifact relative path
+  - supports only a small explicit text input set, for example `text/plain` and `text/markdown`
+  - reads file contents deterministically
+  - normalizes line endings and chunks text deterministically by one explicit rule
+  - persists ordered chunk rows linked to the artifact
+  - updates artifact ingestion status deterministically
 - Implement the minimal API or service paths needed for:
-  - registering one artifact for a task workspace
-  - listing artifacts
-  - reading one artifact by id
+  - ingesting one artifact
+  - listing chunks for one artifact
 - Add unit and integration tests for:
-  - artifact registration
-  - rooted path validation against the workspace boundary
-  - duplicate registration behavior for the same workspace-relative path
+  - supported text artifact ingestion
+  - deterministic chunk ordering and chunk content boundaries
+  - rooted path enforcement during ingestion
+  - unsupported media-type or file-shape rejection
   - per-user isolation
   - stable response shape
 
 ## Out of Scope
 
-- No document ingestion.
-- No chunking, embeddings, or document retrieval.
-- No background scanning of workspace directories.
+- No compile-path or search retrieval over artifact chunks yet.
+- No embeddings for artifact chunks.
+- No document ranking or chunk selection.
+- No PDF, DOCX, OCR, or rich document parsing beyond the narrow supported text set.
 - No Gmail or Calendar connector scope.
 - No runner-style orchestration.
-- No new proxy handlers or broader side-effect expansion.
 - No UI work.
 
 ## Required Deliverables
 
-- Migration for `task_artifacts`.
-- Stable artifact register/list/detail contracts.
-- Minimal deterministic artifact-registration and persistence path over existing task workspaces.
-- Unit and integration coverage for rooted-path safety, duplicate handling, ordering, and isolation.
+- Migration for `task_artifact_chunks` and any narrow ingestion-status update.
+- Stable artifact-ingestion and artifact-chunk read contracts.
+- Minimal deterministic local artifact-ingestion path over registered task artifacts.
+- Unit and integration coverage for rooted-path safety, supported-format ingestion, chunk ordering, and isolation.
 - Updated `BUILD_REPORT.md` with exact verification results and explicit deferred scope.
 
 ## Acceptance Criteria
 
-- A client can register one artifact under an existing visible task workspace.
-- Every artifact record stores a workspace-relative path and remains rooted under the persisted workspace local path.
-- Duplicate registration behavior for the same workspace-relative path is deterministic and documented.
-- Artifact list and detail reads are deterministic and user-scoped.
+- A client can ingest one supported registered local artifact into durable ordered chunk records.
+- Ingestion reads only files rooted under the persisted task workspace boundary.
+- Chunking behavior is deterministic and documented.
+- Unsupported artifact types are rejected deterministically.
+- Artifact chunk reads are deterministic and user-scoped.
 - `./.venv/bin/python -m pytest tests/unit` passes.
 - `./.venv/bin/python -m pytest tests/integration` passes.
-- No document ingestion, connector, runner, handler-expansion, or broader side-effect scope enters the sprint.
+- No retrieval, embeddings, connector, runner, UI, or broader side-effect scope enters the sprint.
 
 ## Implementation Constraints
 
-- Keep the artifact seam narrow and boring.
-- Reuse the existing `task_workspaces` boundary; do not invent a parallel storage contract.
-- Prefer explicit artifact registration over implicit directory scanning in this sprint.
-- Keep rooted-path validation deterministic and local-filesystem-only.
-- Do not parse, chunk, embed, or retrieve artifact contents in the same sprint.
+- Keep ingestion narrow and boring.
+- Reuse existing `task_workspaces` and `task_artifacts` boundaries; do not scan directories implicitly.
+- Support only a small explicit text-artifact set in this sprint.
+- Keep chunking deterministic and simple enough to test precisely.
+- Do not introduce retrieval or embedding behavior in the same sprint.
 
 ## Suggested Work Breakdown
 
-1. Add `task_artifacts` schema and migration.
-2. Define artifact register/list/detail contracts.
-3. Implement deterministic rooted artifact-path validation against the persisted workspace path.
-4. Implement artifact registration, list, and detail behavior.
-5. Add unit and integration tests.
-6. Update `BUILD_REPORT.md` with executed verification.
+1. Add `task_artifact_chunks` schema and migration.
+2. Define ingestion and chunk-read contracts.
+3. Implement deterministic rooted file resolution from artifact metadata.
+4. Implement narrow supported-format ingestion and deterministic chunk persistence.
+5. Implement artifact chunk list reads.
+6. Add unit and integration tests.
+7. Update `BUILD_REPORT.md` with executed verification.
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- the exact artifact schema and contract changes introduced
-- the artifact-path rooting and duplicate-handling rule used
+- the exact chunk schema and ingestion contract changes introduced
+- the supported file types and chunking rule used
 - exact commands run
 - unit and integration test results
-- one example artifact registration response
-- one example artifact detail response
+- one example artifact-ingestion response
+- one example artifact-chunk list response
 - what remains intentionally deferred to later milestones
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- the sprint stayed limited to task artifact records and registration
-- artifact paths are deterministic, rooted safely under existing workspaces, and user-scoped
-- duplicate handling, ordering, and isolation are test-backed
-- no hidden document ingestion, connector, runner, UI, handler-expansion, or broader side-effect scope entered the sprint
+- the sprint stayed limited to local artifact ingestion and chunk persistence
+- ingestion reuses explicit task-workspace and artifact records rather than filesystem scanning
+- rooted-path safety, chunk determinism, ordering, and isolation are test-backed
+- no hidden retrieval, embedding, connector, runner, UI, or broader side-effect scope entered the sprint
 
 ## Exit Condition
 
-This sprint is complete when the repo can persist deterministic user-scoped task-artifact records rooted under existing task workspaces, expose stable artifact reads, and verify the full path with Postgres-backed tests, while still deferring document ingestion, retrieval, and connector work.
+This sprint is complete when the repo can ingest supported registered local artifacts into deterministic durable chunk records, expose stable chunk reads, and verify the full path with Postgres-backed tests, while still deferring document retrieval, embeddings, and connector work.

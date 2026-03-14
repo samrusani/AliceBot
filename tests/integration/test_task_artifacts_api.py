@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import anyio
+import psycopg
 
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
@@ -290,4 +291,375 @@ def test_task_artifact_endpoints_register_list_detail_isolate_and_reject_duplica
     assert isolated_create_status == 404
     assert isolated_create_payload == {
         "detail": f"task workspace {workspace_payload['workspace']['id']} was not found"
+    }
+
+
+def test_task_artifact_ingestion_and_chunk_endpoints_are_deterministic_and_isolated(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    intruder = seed_task(migrated_database_urls["app"], email="intruder@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    supported_file = workspace_path / "docs" / "spec.txt"
+    supported_file.parent.mkdir(parents=True)
+    supported_file.write_text(("A" * 998) + "\r\n" + ("B" * 5) + "\rC")
+    unsupported_file = workspace_path / "docs" / "manual.pdf"
+    unsupported_file.write_text("not really a pdf")
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(supported_file),
+            "media_type_hint": "text/plain",
+        },
+    )
+    assert register_status == 201
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    chunk_list_status, chunk_list_payload = invoke_request(
+        "GET",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/chunks",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+    isolated_chunk_list_status, isolated_chunk_list_payload = invoke_request(
+        "GET",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/chunks",
+        query_params={"user_id": str(intruder["user_id"])},
+    )
+    isolated_ingest_status, isolated_ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(intruder["user_id"])},
+    )
+
+    unsupported_register_status, unsupported_register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(unsupported_file),
+            "media_type_hint": "application/pdf",
+        },
+    )
+    assert unsupported_register_status == 201
+    unsupported_ingest_status, unsupported_ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{unsupported_register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    assert ingest_status == 200
+    assert ingest_payload == {
+        "artifact": {
+            "id": register_payload["artifact"]["id"],
+            "task_id": str(owner["task_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+            "status": "registered",
+            "ingestion_status": "ingested",
+            "relative_path": "docs/spec.txt",
+            "media_type_hint": "text/plain",
+            "created_at": register_payload["artifact"]["created_at"],
+            "updated_at": ingest_payload["artifact"]["updated_at"],
+        },
+        "summary": {
+            "total_count": 2,
+            "total_characters": 1006,
+            "media_type": "text/plain",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+
+    assert chunk_list_status == 200
+    assert chunk_list_payload == {
+        "items": [
+            {
+                "id": chunk_list_payload["items"][0]["id"],
+                "task_artifact_id": register_payload["artifact"]["id"],
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 1000,
+                "text": ("A" * 998) + "\n" + "B",
+                "created_at": chunk_list_payload["items"][0]["created_at"],
+                "updated_at": chunk_list_payload["items"][0]["updated_at"],
+            },
+            {
+                "id": chunk_list_payload["items"][1]["id"],
+                "task_artifact_id": register_payload["artifact"]["id"],
+                "sequence_no": 2,
+                "char_start": 1000,
+                "char_end_exclusive": 1006,
+                "text": "BBBB\nC",
+                "created_at": chunk_list_payload["items"][1]["created_at"],
+                "updated_at": chunk_list_payload["items"][1]["updated_at"],
+            },
+        ],
+        "summary": {
+            "total_count": 2,
+            "total_characters": 1006,
+            "media_type": "text/plain",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+
+    assert isolated_chunk_list_status == 404
+    assert isolated_chunk_list_payload == {
+        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+    }
+
+    assert isolated_ingest_status == 404
+    assert isolated_ingest_payload == {
+        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+    }
+
+    assert unsupported_ingest_status == 400
+    assert unsupported_ingest_payload == {
+        "detail": (
+            "artifact docs/manual.pdf has unsupported media type application/pdf; "
+            "supported types: text/plain, text/markdown"
+        )
+    }
+
+
+def test_task_artifact_ingestion_supports_markdown_and_reingest_is_idempotent(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    markdown_file = workspace_path / "notes" / "plan.md"
+    markdown_file.parent.mkdir(parents=True)
+    markdown_file.write_text("# Plan\r\n\r\n- Ship ingestion\n- Keep scope narrow\r")
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(markdown_file),
+            "media_type_hint": "text/markdown",
+        },
+    )
+    assert register_status == 201
+
+    first_ingest_status, first_ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    second_ingest_status, second_ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    chunk_list_status, chunk_list_payload = invoke_request(
+        "GET",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/chunks",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+
+    assert first_ingest_status == 200
+    assert first_ingest_payload == {
+        "artifact": {
+            "id": register_payload["artifact"]["id"],
+            "task_id": str(owner["task_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+            "status": "registered",
+            "ingestion_status": "ingested",
+            "relative_path": "notes/plan.md",
+            "media_type_hint": "text/markdown",
+            "created_at": register_payload["artifact"]["created_at"],
+            "updated_at": first_ingest_payload["artifact"]["updated_at"],
+        },
+        "summary": {
+            "total_count": 1,
+            "total_characters": 45,
+            "media_type": "text/markdown",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+    assert second_ingest_status == 200
+    assert second_ingest_payload == first_ingest_payload
+    assert chunk_list_status == 200
+    assert chunk_list_payload == {
+        "items": [
+            {
+                "id": chunk_list_payload["items"][0]["id"],
+                "task_artifact_id": register_payload["artifact"]["id"],
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 45,
+                "text": "# Plan\n\n- Ship ingestion\n- Keep scope narrow\n",
+                "created_at": chunk_list_payload["items"][0]["created_at"],
+                "updated_at": chunk_list_payload["items"][0]["updated_at"],
+            }
+        ],
+        "summary": {
+            "total_count": 1,
+            "total_characters": 45,
+            "media_type": "text/markdown",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+
+
+def test_task_artifact_ingestion_rejects_invalid_utf8_content(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    broken_file = workspace_path / "docs" / "broken.txt"
+    broken_file.parent.mkdir(parents=True)
+    broken_file.write_bytes(b"\xff\xfe\xfd")
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(broken_file),
+            "media_type_hint": "text/plain",
+        },
+    )
+    assert register_status == 201
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    assert ingest_status == 400
+    assert ingest_payload == {
+        "detail": "artifact docs/broken.txt is not valid UTF-8 text"
+    }
+
+
+def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    safe_file = workspace_path / "docs" / "spec.txt"
+    safe_file.parent.mkdir(parents=True)
+    safe_file.write_text("spec")
+    outside_file = tmp_path / "escape.txt"
+    outside_file.write_text("escape")
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(safe_file),
+            "media_type_hint": "text/plain",
+        },
+    )
+    assert register_status == 201
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE task_artifacts
+                SET relative_path = '../../../escape.txt'
+                WHERE id = %s
+                """,
+                (register_payload["artifact"]["id"],),
+            )
+            conn.commit()
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    assert ingest_status == 400
+    assert ingest_payload == {
+        "detail": f"artifact path {outside_file.resolve()} escapes workspace root {workspace_path.resolve()}"
     }
