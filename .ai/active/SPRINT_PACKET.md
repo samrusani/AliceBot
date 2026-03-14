@@ -2,115 +2,124 @@
 
 ## Sprint Title
 
-Sprint 5B: Project Truth Compaction 01
+Sprint 5C: Task Artifact Records and Registration
 
 ## Sprint Type
 
-refactor
+feature
 
 ## Sprint Reason
 
-The live project-truth files are now materially stale and redundant relative to the accepted repo state through Sprint 5A. `ROADMAP.md` and `.ai/handoff/CURRENT_STATE.md` still describe the project as pre-Milestone-5 and pre-step-linked approval/execution/workspace work, which will degrade planning and review quality if not compacted now.
+Milestone 5 should continue on top of the shipped task-workspace boundary. Before document ingestion or connectors can safely rely on workspaces, the repo needs explicit, reviewable artifact records tied to those workspaces instead of ad hoc filesystem assumptions.
 
 ## Sprint Intent
 
-Compact and synchronize the live project-truth files so Control Tower, builders, and reviewers operate from a smaller, current, non-redundant source-of-truth set without changing product scope or runtime behavior.
+Add durable task-artifact records plus a narrow local artifact registration path on top of existing `task_workspaces`, so later document ingestion and retrieval can consume explicit artifact metadata instead of raw workspace scanning.
 
 ## Git Instructions
 
-- Branch Name: `codex/refactor-project-truth-compaction-01`
+- Branch Name: `codex/sprint-5c-task-artifacts`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR, no stacked PRs unless Control Tower explicitly opens a follow-up sprint
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
-## Why This Sprint Matters
+## Why This Sprint
 
-- `ROADMAP.md` and `.ai/handoff/CURRENT_STATE.md` are behind the accepted repo state.
-- `ARCHITECTURE.md` now reflects Sprint 5A, so the other live truth artifacts need to catch up and shed stale milestone text.
-- A narrow compaction sprint is safer than letting outdated truth leak into future planning or review work.
-- This restores clean project truth without changing product scope.
+- Sprint 5A shipped deterministic rooted task-workspace provisioning.
+- Sprint 5B cleaned and synchronized live project truth, so Milestone 5 planning can proceed from current facts.
+- The roadmap says artifact and workspace boundaries should be explicit before document-heavy work lands.
+- The narrowest next step is artifact records and registration only, not ingestion, chunking, connectors, or UI.
 
 ## In Scope
 
-- compact and synchronize `.ai/handoff/CURRENT_STATE.md`
-- compact and synchronize `ROADMAP.md`
-- prune `RULES.md` only if it contains stale or duplicate guidance after truth sync
-- slim `README.md` only if it duplicates active planning truth instead of onboarding
-- archive stale planning/history docs into `docs/archive/` when they are no longer appropriate as live context
-- update internal references so canonical files point to the right archive locations
-- update `ARCHITECTURE.md` only if a stale duplicate or outdated boundary statement remains after the Sprint 5A truth sync
+- Add schema and migration support for:
+  - `task_artifacts`
+- Define typed contracts for:
+  - artifact registration requests
+  - artifact create responses
+  - artifact list responses
+  - artifact detail responses
+- Implement a narrow artifact seam that:
+  - registers one local file path under an existing visible task workspace
+  - persists one user-scoped artifact record linked to that workspace and task
+  - validates that the artifact path stays rooted under the workspace local path
+  - stores explicit artifact metadata such as relative path, media type hint if supplied, and status fields needed for later ingestion
+  - exposes deterministic list and detail reads
+- Implement the minimal API or service paths needed for:
+  - registering one artifact for a task workspace
+  - listing artifacts
+  - reading one artifact by id
+- Add unit and integration tests for:
+  - artifact registration
+  - rooted path validation against the workspace boundary
+  - duplicate registration behavior for the same workspace-relative path
+  - per-user isolation
+  - stable response shape
 
 ## Out of Scope
 
-- new product features
-- source code changes unrelated to doc-link or archive-link integrity
-- UI improvements
-- backend refactors
-- new architecture decisions unless a current truth file is factually inaccurate
-- changing roadmap priorities beyond removing stale historical clutter
-- artifact, document, connector, or runner implementation work
+- No document ingestion.
+- No chunking, embeddings, or document retrieval.
+- No background scanning of workspace directories.
+- No Gmail or Calendar connector scope.
+- No runner-style orchestration.
+- No new proxy handlers or broader side-effect expansion.
+- No UI work.
 
-## Files / Modules In Scope
+## Required Deliverables
 
-- `.ai/handoff/CURRENT_STATE.md`
-- `ROADMAP.md`
-- `RULES.md` only if needed for stale/duplicate guidance cleanup
-- `README.md` only if needed for onboarding/truth separation
-- `docs/archive/**`
-- `ARCHITECTURE.md` only if duplicate or stale sections must be cleaned after truth sync
-
-## Constraints
-
-- do not delete information unless it is safely archived
-- preserve historical traceability
-- do not change product scope
-- do not change runtime behavior
-- keep canonical files concise, current, and durable
-- prefer archive over deletion
-- use `PRODUCT_BRIEF.md`, `ARCHITECTURE.md`, accepted build/review reports, and the implemented repo state as the truth basis
-
-## Relevant Rules
-
-- active sprint packet is the top scope boundary for implementation work
-- never represent planned architecture as implemented behavior
-- roadmap should be future-facing once historical milestone state has been distilled elsewhere
-- rules should contain only durable reusable guidance
-- when live context becomes noisy, reduce and archive instead of letting stale state accumulate
-
-## Design Source of Truth
-
-- `DESIGN_SYSTEM.md` if it is later introduced
-- otherwise N/A for this sprint
-
-## Architecture Source of Truth
-
-- `ARCHITECTURE.md`
+- Migration for `task_artifacts`.
+- Stable artifact register/list/detail contracts.
+- Minimal deterministic artifact-registration and persistence path over existing task workspaces.
+- Unit and integration coverage for rooted-path safety, duplicate handling, ordering, and isolation.
+- Updated `BUILD_REPORT.md` with exact verification results and explicit deferred scope.
 
 ## Acceptance Criteria
 
-- `.ai/handoff/CURRENT_STATE.md` is concise, current, and non-redundant through Sprint 5A.
-- `ROADMAP.md` no longer presents stale pre-Sprint-5 state and is future-facing from the current repo position.
-- `RULES.md` contains only durable rules and no stale scope-era leftovers.
-- Any stale planning/history material moved out of live context is archived under `docs/archive/`.
-- All archive links and references resolve correctly.
-- No product behavior, scope, or runtime code was changed.
-- Control Tower can plan from a smaller, cleaner active context set after this sprint.
+- A client can register one artifact under an existing visible task workspace.
+- Every artifact record stores a workspace-relative path and remains rooted under the persisted workspace local path.
+- Duplicate registration behavior for the same workspace-relative path is deterministic and documented.
+- Artifact list and detail reads are deterministic and user-scoped.
+- `./.venv/bin/python -m pytest tests/unit` passes.
+- `./.venv/bin/python -m pytest tests/integration` passes.
+- No document ingestion, connector, runner, handler-expansion, or broader side-effect scope enters the sprint.
 
-## Required Tests
+## Implementation Constraints
 
-- manual review of canonical files for duplication, staleness, and truth alignment
-- link/path sanity check for moved archive files
-- confirm no runtime or schema behavior changed
-- run docs/path validation only if any existing tooling references moved files
+- Keep the artifact seam narrow and boring.
+- Reuse the existing `task_workspaces` boundary; do not invent a parallel storage contract.
+- Prefer explicit artifact registration over implicit directory scanning in this sprint.
+- Keep rooted-path validation deterministic and local-filesystem-only.
+- Do not parse, chunk, embed, or retrieve artifact contents in the same sprint.
 
-## Docs To Update
+## Suggested Work Breakdown
 
-- `.ai/handoff/CURRENT_STATE.md`
-- `ROADMAP.md`
-- `RULES.md` if needed
-- `README.md` if needed
-- `ARCHITECTURE.md` only if stale duplication remains
+1. Add `task_artifacts` schema and migration.
+2. Define artifact register/list/detail contracts.
+3. Implement deterministic rooted artifact-path validation against the persisted workspace path.
+4. Implement artifact registration, list, and detail behavior.
+5. Add unit and integration tests.
+6. Update `BUILD_REPORT.md` with executed verification.
 
-## Definition of Done
+## Build Report Requirements
 
-The live project-truth files are smaller, cleaner, and aligned to the accepted repo state through Sprint 5A; stale planning/history material is preserved in archive; and the next sprint can be planned from a trustworthy active context set.
+`BUILD_REPORT.md` must include:
+- the exact artifact schema and contract changes introduced
+- the artifact-path rooting and duplicate-handling rule used
+- exact commands run
+- unit and integration test results
+- one example artifact registration response
+- one example artifact detail response
+- what remains intentionally deferred to later milestones
+
+## Review Focus
+
+`REVIEW_REPORT.md` should verify:
+- the sprint stayed limited to task artifact records and registration
+- artifact paths are deterministic, rooted safely under existing workspaces, and user-scoped
+- duplicate handling, ordering, and isolation are test-backed
+- no hidden document ingestion, connector, runner, UI, handler-expansion, or broader side-effect scope entered the sprint
+
+## Exit Condition
+
+This sprint is complete when the repo can persist deterministic user-scoped task-artifact records rooted under existing task workspaces, expose stable artifact reads, and verify the full path with Postgres-backed tests, while still deferring document ingestion, retrieval, and connector work.
