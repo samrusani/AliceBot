@@ -1529,6 +1529,23 @@ LIST_TASK_ARTIFACTS_SQL = """
                 ORDER BY created_at ASC, id ASC
                 """
 
+LIST_TASK_ARTIFACTS_FOR_TASK_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  task_id,
+                  task_workspace_id,
+                  status,
+                  ingestion_status,
+                  relative_path,
+                  media_type_hint,
+                  created_at,
+                  updated_at
+                FROM task_artifacts
+                WHERE task_id = %s
+                ORDER BY created_at ASC, id ASC
+                """
+
 LOCK_TASK_ARTIFACT_INGESTION_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 5))"
 
 INSERT_TASK_ARTIFACT_CHUNK_SQL = """
@@ -2730,6 +2747,9 @@ class ContinuityStore:
 
     def list_task_artifacts(self) -> list[TaskArtifactRow]:
         return self._fetch_all(LIST_TASK_ARTIFACTS_SQL)
+
+    def list_task_artifacts_for_task(self, task_id: UUID) -> list[TaskArtifactRow]:
+        return self._fetch_all(LIST_TASK_ARTIFACTS_FOR_TASK_SQL, (task_id,))
 
     def lock_task_artifact_ingestion(self, task_artifact_id: UUID) -> None:
         with self.conn.cursor() as cur:

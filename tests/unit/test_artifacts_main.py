@@ -8,9 +8,11 @@ import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.artifacts import (
     TaskArtifactAlreadyExistsError,
+    TaskArtifactChunkRetrievalValidationError,
     TaskArtifactNotFoundError,
     TaskArtifactValidationError,
 )
+from alicebot_api.tasks import TaskNotFoundError
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
 
@@ -102,6 +104,159 @@ def test_list_task_artifact_chunks_endpoint_returns_payload(monkeypatch) -> None
             "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
             "order": ["sequence_no_asc", "id_asc"],
         },
+    }
+
+
+def test_retrieve_task_artifact_chunks_endpoint_returns_payload(monkeypatch) -> None:
+    user_id = uuid4()
+    task_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "retrieve_task_scoped_artifact_chunk_records",
+        lambda *_args, **_kwargs: {
+            "items": [],
+            "summary": {
+                "total_count": 0,
+                "searched_artifact_count": 1,
+                "query": "alpha",
+                "query_terms": ["alpha"],
+                "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+                "order": [
+                    "matched_query_term_count_desc",
+                    "first_match_char_start_asc",
+                    "relative_path_asc",
+                    "sequence_no_asc",
+                    "id_asc",
+                ],
+                "scope": {"kind": "task", "task_id": str(task_id)},
+            },
+        },
+    )
+
+    response = main_module.retrieve_task_artifact_chunks(
+        task_id,
+        main_module.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {
+        "items": [],
+        "summary": {
+            "total_count": 0,
+            "searched_artifact_count": 1,
+            "query": "alpha",
+            "query_terms": ["alpha"],
+            "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+            "order": [
+                "matched_query_term_count_desc",
+                "first_match_char_start_asc",
+                "relative_path_asc",
+                "sequence_no_asc",
+                "id_asc",
+            ],
+            "scope": {"kind": "task", "task_id": str(task_id)},
+        },
+    }
+
+
+def test_retrieve_task_artifact_chunks_endpoint_maps_task_not_found_to_404(monkeypatch) -> None:
+    user_id = uuid4()
+    task_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    def fake_retrieve_task_scoped_artifact_chunk_records(*_args, **_kwargs):
+        raise TaskNotFoundError(f"task {task_id} was not found")
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "retrieve_task_scoped_artifact_chunk_records",
+        fake_retrieve_task_scoped_artifact_chunk_records,
+    )
+
+    response = main_module.retrieve_task_artifact_chunks(
+        task_id,
+        main_module.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
+    )
+
+    assert response.status_code == 404
+    assert json.loads(response.body) == {"detail": f"task {task_id} was not found"}
+
+
+def test_retrieve_task_artifact_chunks_endpoint_maps_validation_to_400(monkeypatch) -> None:
+    user_id = uuid4()
+    task_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    def fake_retrieve_task_scoped_artifact_chunk_records(*_args, **_kwargs):
+        raise TaskArtifactChunkRetrievalValidationError(
+            "artifact chunk retrieval query must include at least one word"
+        )
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "retrieve_task_scoped_artifact_chunk_records",
+        fake_retrieve_task_scoped_artifact_chunk_records,
+    )
+
+    response = main_module.retrieve_task_artifact_chunks(
+        task_id,
+        main_module.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
+    )
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {
+        "detail": "artifact chunk retrieval query must include at least one word"
+    }
+
+
+def test_retrieve_artifact_chunk_endpoint_maps_not_found_to_404(monkeypatch) -> None:
+    user_id = uuid4()
+    task_artifact_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    def fake_retrieve_artifact_scoped_artifact_chunk_records(*_args, **_kwargs):
+        raise TaskArtifactNotFoundError(f"task artifact {task_artifact_id} was not found")
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "retrieve_artifact_scoped_artifact_chunk_records",
+        fake_retrieve_artifact_scoped_artifact_chunk_records,
+    )
+
+    response = main_module.retrieve_task_artifact_chunks_for_artifact(
+        task_artifact_id,
+        main_module.RetrieveArtifactChunksRequest(user_id=user_id, query="alpha"),
+    )
+
+    assert response.status_code == 404
+    assert json.loads(response.body) == {
+        "detail": f"task artifact {task_artifact_id} was not found"
     }
 
 

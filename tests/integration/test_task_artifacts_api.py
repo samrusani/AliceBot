@@ -11,6 +11,7 @@ import psycopg
 
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
+from alicebot_api.artifacts import TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
 
@@ -662,4 +663,311 @@ def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
     assert ingest_status == 400
     assert ingest_payload == {
         "detail": f"artifact path {outside_file.resolve()} escapes workspace root {workspace_path.resolve()}"
+    }
+
+
+def test_task_artifact_chunk_retrieval_endpoints_are_scoped_deterministic_and_isolated(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    intruder = seed_task(migrated_database_urls["app"], email="intruder@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    owner_workspace_status, owner_workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert owner_workspace_status == 201
+    owner_workspace_path = Path(owner_workspace_payload["workspace"]["local_path"])
+
+    docs_file = owner_workspace_path / "docs" / "a.txt"
+    docs_file.parent.mkdir(parents=True)
+    docs_file.write_text("beta alpha doc")
+    notes_file = owner_workspace_path / "notes" / "b.md"
+    notes_file.parent.mkdir(parents=True)
+    notes_file.write_text("alpha beta note")
+    weak_file = owner_workspace_path / "notes" / "c.txt"
+    weak_file.write_text("beta only")
+    pending_file = owner_workspace_path / "notes" / "hidden.txt"
+    pending_file.write_text("alpha beta hidden")
+
+    docs_register_status, docs_register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{owner_workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(docs_file),
+            "media_type_hint": "text/plain",
+        },
+    )
+    notes_register_status, notes_register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{owner_workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(notes_file),
+            "media_type_hint": "text/markdown",
+        },
+    )
+    weak_register_status, weak_register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{owner_workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(weak_file),
+            "media_type_hint": "text/plain",
+        },
+    )
+    pending_register_status, pending_register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{owner_workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(pending_file),
+            "media_type_hint": "text/plain",
+        },
+    )
+    assert docs_register_status == 201
+    assert notes_register_status == 201
+    assert weak_register_status == 201
+    assert pending_register_status == 201
+
+    docs_ingest_status, _ = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{docs_register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    notes_ingest_status, _ = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{notes_register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    weak_ingest_status, _ = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{weak_register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert docs_ingest_status == 200
+    assert notes_ingest_status == 200
+    assert weak_ingest_status == 200
+
+    with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        store.create_task_artifact_chunk(
+            task_artifact_id=UUID(pending_register_payload["artifact"]["id"]),
+            sequence_no=1,
+            char_start=0,
+            char_end_exclusive=17,
+            text="alpha beta hidden",
+        )
+
+    intruder_workspace_status, intruder_workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{intruder['task_id']}/workspace",
+        payload={"user_id": str(intruder["user_id"])},
+    )
+    assert intruder_workspace_status == 201
+    intruder_workspace_path = Path(intruder_workspace_payload["workspace"]["local_path"])
+    intruder_file = intruder_workspace_path / "docs" / "secret.txt"
+    intruder_file.parent.mkdir(parents=True)
+    intruder_file.write_text("alpha beta intruder")
+
+    intruder_register_status, intruder_register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{intruder_workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(intruder["user_id"]),
+            "local_path": str(intruder_file),
+            "media_type_hint": "text/plain",
+        },
+    )
+    assert intruder_register_status == 201
+    intruder_ingest_status, _ = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{intruder_register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(intruder["user_id"])},
+    )
+    assert intruder_ingest_status == 200
+
+    task_retrieve_status, task_retrieve_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/artifact-chunks/retrieve",
+        payload={"user_id": str(owner["user_id"]), "query": "Alpha beta"},
+    )
+    artifact_retrieve_status, artifact_retrieve_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{notes_register_payload['artifact']['id']}/chunks/retrieve",
+        payload={"user_id": str(owner["user_id"]), "query": "Alpha beta"},
+    )
+    empty_retrieve_status, empty_retrieve_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/artifact-chunks/retrieve",
+        payload={"user_id": str(owner["user_id"]), "query": "missing"},
+    )
+    isolated_task_retrieve_status, isolated_task_retrieve_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/artifact-chunks/retrieve",
+        payload={"user_id": str(intruder["user_id"]), "query": "Alpha beta"},
+    )
+    isolated_artifact_retrieve_status, isolated_artifact_retrieve_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{notes_register_payload['artifact']['id']}/chunks/retrieve",
+        payload={"user_id": str(intruder["user_id"]), "query": "Alpha beta"},
+    )
+
+    assert task_retrieve_status == 200
+    assert task_retrieve_payload == {
+        "items": [
+            {
+                "id": task_retrieve_payload["items"][0]["id"],
+                "task_id": str(owner["task_id"]),
+                "task_artifact_id": docs_register_payload["artifact"]["id"],
+                "relative_path": "docs/a.txt",
+                "media_type": "text/plain",
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 14,
+                "text": "beta alpha doc",
+                "match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+            },
+            {
+                "id": task_retrieve_payload["items"][1]["id"],
+                "task_id": str(owner["task_id"]),
+                "task_artifact_id": notes_register_payload["artifact"]["id"],
+                "relative_path": "notes/b.md",
+                "media_type": "text/markdown",
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 15,
+                "text": "alpha beta note",
+                "match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+            },
+            {
+                "id": task_retrieve_payload["items"][2]["id"],
+                "task_id": str(owner["task_id"]),
+                "task_artifact_id": weak_register_payload["artifact"]["id"],
+                "relative_path": "notes/c.txt",
+                "media_type": "text/plain",
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 9,
+                "text": "beta only",
+                "match": {
+                    "matched_query_terms": ["beta"],
+                    "matched_query_term_count": 1,
+                    "first_match_char_start": 0,
+                },
+            },
+        ],
+        "summary": {
+            "total_count": 3,
+            "searched_artifact_count": 3,
+            "query": "Alpha beta",
+            "query_terms": ["alpha", "beta"],
+            "matching_rule": TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
+            "order": [
+                "matched_query_term_count_desc",
+                "first_match_char_start_asc",
+                "relative_path_asc",
+                "sequence_no_asc",
+                "id_asc",
+            ],
+            "scope": {
+                "kind": "task",
+                "task_id": str(owner["task_id"]),
+            },
+        },
+    }
+
+    assert artifact_retrieve_status == 200
+    assert artifact_retrieve_payload == {
+        "items": [
+            {
+                "id": artifact_retrieve_payload["items"][0]["id"],
+                "task_id": str(owner["task_id"]),
+                "task_artifact_id": notes_register_payload["artifact"]["id"],
+                "relative_path": "notes/b.md",
+                "media_type": "text/markdown",
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 15,
+                "text": "alpha beta note",
+                "match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+            }
+        ],
+        "summary": {
+            "total_count": 1,
+            "searched_artifact_count": 1,
+            "query": "Alpha beta",
+            "query_terms": ["alpha", "beta"],
+            "matching_rule": TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
+            "order": [
+                "matched_query_term_count_desc",
+                "first_match_char_start_asc",
+                "relative_path_asc",
+                "sequence_no_asc",
+                "id_asc",
+            ],
+            "scope": {
+                "kind": "artifact",
+                "task_id": str(owner["task_id"]),
+                "task_artifact_id": notes_register_payload["artifact"]["id"],
+            },
+        },
+    }
+
+    assert empty_retrieve_status == 200
+    assert empty_retrieve_payload == {
+        "items": [],
+        "summary": {
+            "total_count": 0,
+            "searched_artifact_count": 3,
+            "query": "missing",
+            "query_terms": ["missing"],
+            "matching_rule": TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
+            "order": [
+                "matched_query_term_count_desc",
+                "first_match_char_start_asc",
+                "relative_path_asc",
+                "sequence_no_asc",
+                "id_asc",
+            ],
+            "scope": {
+                "kind": "task",
+                "task_id": str(owner["task_id"]),
+            },
+        },
+    }
+
+    assert isolated_task_retrieve_status == 404
+    assert isolated_task_retrieve_payload == {
+        "detail": f"task {owner['task_id']} was not found"
+    }
+
+    assert isolated_artifact_retrieve_status == 404
+    assert isolated_artifact_retrieve_payload == {
+        "detail": f"task artifact {notes_register_payload['artifact']['id']} was not found"
     }
