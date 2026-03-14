@@ -49,6 +49,7 @@ from alicebot_api.contracts import (
     PolicyEffect,
     PolicyEvaluationRequestInput,
     SemanticMemoryRetrievalRequestInput,
+    TaskArtifactChunkEmbeddingUpsertInput,
     TOOL_METADATA_VERSION_V0,
     ApprovalStatus,
     ArtifactScopedArtifactChunkRetrievalInput,
@@ -133,10 +134,16 @@ from alicebot_api.embedding import (
     EmbeddingConfigValidationError,
     MemoryEmbeddingNotFoundError,
     MemoryEmbeddingValidationError,
+    TaskArtifactChunkEmbeddingNotFoundError,
+    TaskArtifactChunkEmbeddingValidationError,
     create_embedding_config_record,
     get_memory_embedding_record,
+    get_task_artifact_chunk_embedding_record,
     list_embedding_config_records,
     list_memory_embedding_records,
+    list_task_artifact_chunk_embedding_records_for_artifact,
+    list_task_artifact_chunk_embedding_records_for_chunk,
+    upsert_task_artifact_chunk_embedding_record,
     upsert_memory_embedding_record,
 )
 from alicebot_api.entity import (
@@ -351,6 +358,13 @@ class CreateEmbeddingConfigRequest(BaseModel):
 class UpsertMemoryEmbeddingRequest(BaseModel):
     user_id: UUID
     memory_id: UUID
+    embedding_config_id: UUID
+    vector: list[float] = Field(min_length=1, max_length=20000)
+
+
+class UpsertTaskArtifactChunkEmbeddingRequest(BaseModel):
+    user_id: UUID
+    task_artifact_chunk_id: UUID
     embedding_config_id: UUID
     vector: list[float] = Field(min_length=1, max_length=20000)
 
@@ -1951,6 +1965,32 @@ def upsert_memory_embedding(request: UpsertMemoryEmbeddingRequest) -> JSONRespon
     )
 
 
+@app.post("/v0/task-artifact-chunk-embeddings")
+def upsert_task_artifact_chunk_embedding(
+    request: UpsertTaskArtifactChunkEmbeddingRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = upsert_task_artifact_chunk_embedding_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=TaskArtifactChunkEmbeddingUpsertInput(
+                    task_artifact_chunk_id=request.task_artifact_chunk_id,
+                    embedding_config_id=request.embedding_config_id,
+                    vector=tuple(request.vector),
+                ),
+            )
+    except TaskArtifactChunkEmbeddingValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
 @app.get("/v0/memories/{memory_id}/embeddings")
 def list_memory_embeddings(memory_id: UUID, user_id: UUID) -> JSONResponse:
     settings = get_settings()
@@ -1971,6 +2011,52 @@ def list_memory_embeddings(memory_id: UUID, user_id: UUID) -> JSONResponse:
     )
 
 
+@app.get("/v0/task-artifacts/{task_artifact_id}/chunk-embeddings")
+def list_task_artifact_chunk_embeddings_for_artifact(
+    task_artifact_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_task_artifact_chunk_embedding_records_for_artifact(
+                ContinuityStore(conn),
+                user_id=user_id,
+                task_artifact_id=task_artifact_id,
+            )
+    except TaskArtifactNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/task-artifact-chunks/{task_artifact_chunk_id}/embeddings")
+def list_task_artifact_chunk_embeddings(
+    task_artifact_chunk_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_task_artifact_chunk_embedding_records_for_chunk(
+                ContinuityStore(conn),
+                user_id=user_id,
+                task_artifact_chunk_id=task_artifact_chunk_id,
+            )
+    except TaskArtifactChunkEmbeddingNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
 @app.get("/v0/memory-embeddings/{memory_embedding_id}")
 def get_memory_embedding(memory_embedding_id: UUID, user_id: UUID) -> JSONResponse:
     settings = get_settings()
@@ -1983,6 +2069,29 @@ def get_memory_embedding(memory_embedding_id: UUID, user_id: UUID) -> JSONRespon
                 memory_embedding_id=memory_embedding_id,
             )
     except MemoryEmbeddingNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/task-artifact-chunk-embeddings/{task_artifact_chunk_embedding_id}")
+def get_task_artifact_chunk_embedding(
+    task_artifact_chunk_embedding_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_task_artifact_chunk_embedding_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                task_artifact_chunk_embedding_id=task_artifact_chunk_embedding_id,
+            )
+    except TaskArtifactChunkEmbeddingNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     return JSONResponse(
