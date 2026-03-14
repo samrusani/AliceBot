@@ -6,53 +6,44 @@ PASS
 
 ## criteria met
 
-- Added the required `task_artifacts` migration and kept the schema narrow: user-scoped rows linked to both `tasks` and `task_workspaces`, explicit status fields, a unique `(user_id, task_workspace_id, relative_path)` constraint, and RLS-enabled runtime access limited to `SELECT, INSERT`.
-- Added stable typed contracts for artifact registration, create, list, and detail responses in `apps/api/src/alicebot_api/contracts.py`.
-- Implemented the required narrow API seam:
-  - `POST /v0/task-workspaces/{task_workspace_id}/artifacts`
-  - `GET /v0/task-artifacts`
-  - `GET /v0/task-artifacts/{task_artifact_id}`
-- Registration is rooted safely under the persisted workspace path: the local file path is resolved, required to exist as a regular file, checked against the resolved workspace root, and persisted only as a workspace-relative POSIX path.
-- Duplicate registration behavior is deterministic and documented in code/tests: the same workspace-relative path returns HTTP `409`.
-- Artifact reads are deterministic and user-scoped: list order is `created_at ASC, id ASC`, detail/list reads run inside the current user DB scope, and isolation is covered by integration tests.
-- The sprint stayed within scope. No ingestion, chunking, retrieval, connector, runner, UI, or broader side-effect work entered the diff.
-- `BUILD_REPORT.md` includes the schema summary, contract changes, duplicate/rooting rules, exact commands, example responses, test results, and deferred scope.
-- Verification passed:
-  - `./.venv/bin/python -m pytest tests/unit` -> `332 passed`
-  - `./.venv/bin/python -m pytest tests/integration` -> `100 passed in 27.20s`
+- The sprint stayed within the intended slice: local artifact ingestion and chunk persistence only. I did not find retrieval, embeddings, connector, runner, or UI overreach in the changed code.
+- The implementation reuses existing `task_workspaces` and `task_artifacts` records instead of scanning the filesystem.
+- Ingestion resolves the artifact path from the persisted workspace root plus stored `relative_path`, and rejects rooted-path escapes deterministically.
+- Supported text ingestion works for registered local artifacts and persists durable ordered `task_artifact_chunks` rows.
+- Chunking is deterministic and documented in code and `BUILD_REPORT.md`: normalized line endings plus fixed 1000-character windows.
+- Unsupported media types are rejected deterministically.
+- Chunk reads are deterministic and user-scoped.
+- The follow-up fixes added direct test coverage for `text/markdown` ingestion, invalid UTF-8 rejection, and idempotent re-ingestion.
+- The stale architecture and handoff docs were updated to reflect Sprint 5D behavior and boundaries.
+- Verification rerun during review:
+  - `./.venv/bin/python -m pytest tests/unit` -> `347 passed`
+  - `./.venv/bin/python -m pytest tests/integration` -> `104 passed` after rerunning with local access to Postgres and a local test socket
   - `git diff --check` -> passed
 
 ## criteria missed
 
-- None on the sprint packet’s functional acceptance criteria.
+- No acceptance criteria from `SPRINT_PACKET.md` were missed.
 
 ## quality issues
 
-- None blocking in the implementation reviewed.
+- None found in the reviewed sprint scope.
 
 ## regression risks
 
-- Low. The change is narrowly scoped to artifact registration/read behavior on top of the existing workspace seam.
-- The follow-up change is documentation-only and aligns `ARCHITECTURE.md` with the already reviewed implementation.
+- No material regression risk beyond the normal risk profile for this slice.
 
 ## docs issues
 
-- None blocking. The previous architecture drift is now fixed.
-- `RULES.md` does not appear to need changes for this sprint.
+- None. `ARCHITECTURE.md`, `.ai/handoff/CURRENT_STATE.md`, and `BUILD_REPORT.md` now match the landed implementation and verification state.
 
 ## should anything be added to RULES.md?
 
-- No. The existing rules already cover the durable guidance this sprint exercised: narrow scope, typed contracts, migration-backed schemas, RLS on user-owned tables, and test-backed delivery.
+- No.
 
 ## should anything update ARCHITECTURE.md?
 
-- No additional update is required for this sprint. The follow-up doc change now reflects the shipped Sprint 5C boundary:
-  - `task_artifacts` is listed in the implemented data model
-  - the artifact register/list/detail endpoints are listed in the live API surface
-  - the rooted registration and duplicate-rejection rules are documented
-  - deferred scope is narrowed to indexing/content processing/ingestion beyond the current registration seam
+- No further update required from this review pass.
 
 ## recommended next action
 
-- Accept Sprint 5C.
-- Keep later milestone work focused on artifact indexing and ingestion as a separate seam on top of these explicit artifact records.
+- Accept the sprint and proceed with the normal merge path once Control Tower approves.
