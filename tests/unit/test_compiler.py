@@ -5,10 +5,15 @@ from uuid import uuid4
 
 from alicebot_api.compiler import (
     SUMMARY_TRACE_EVENT_KIND,
+    _compile_artifact_chunk_section,
     _compile_memory_section,
     compile_continuity_context,
 )
-from alicebot_api.contracts import CompileContextSemanticRetrievalInput, ContextCompilerLimits
+from alicebot_api.contracts import (
+    CompileContextSemanticRetrievalInput,
+    CompileContextTaskScopedArtifactRetrievalInput,
+    ContextCompilerLimits,
+)
 
 
 def test_compile_continuity_context_is_deterministic_and_stably_ordered() -> None:
@@ -286,6 +291,27 @@ def test_compile_continuity_context_is_deterministic_and_stably_ordered() -> Non
             "symbolic_order": ["updated_at_asc", "created_at_asc", "id_asc"],
             "semantic_order": ["score_desc", "created_at_asc", "id_asc"],
         },
+    }
+    assert first_run.context_pack["artifact_chunks"] == []
+    assert first_run.context_pack["artifact_chunk_summary"] == {
+        "requested": False,
+        "scope": None,
+        "query": None,
+        "query_terms": [],
+        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "limit": 0,
+        "searched_artifact_count": 0,
+        "candidate_count": 0,
+        "included_count": 0,
+        "excluded_uningested_artifact_count": 0,
+        "excluded_limit_count": 0,
+        "order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
     }
     assert first_run.context_pack["entity_summary"] == {
         "candidate_count": 3,
@@ -596,6 +622,27 @@ def test_compile_continuity_context_records_included_and_excluded_reasons() -> N
             "semantic_order": ["score_desc", "created_at_asc", "id_asc"],
         },
     }
+    assert compiler_run.context_pack["artifact_chunks"] == []
+    assert compiler_run.context_pack["artifact_chunk_summary"] == {
+        "requested": False,
+        "scope": None,
+        "query": None,
+        "query_terms": [],
+        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "limit": 0,
+        "searched_artifact_count": 0,
+        "candidate_count": 0,
+        "included_count": 0,
+        "excluded_uningested_artifact_count": 0,
+        "excluded_limit_count": 0,
+        "order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+    }
     assert compiler_run.context_pack["entities"] == [
         {
             "id": str(kept_entity_id),
@@ -629,6 +676,11 @@ def test_compile_continuity_context_records_included_and_excluded_reasons() -> N
     assert compiler_run.trace_events[-1].payload["hybrid_memory_candidate_count"] == 2
     assert compiler_run.trace_events[-1].payload["hybrid_memory_merged_candidate_count"] == 1
     assert compiler_run.trace_events[-1].payload["hybrid_memory_deduplicated_count"] == 0
+    assert compiler_run.trace_events[-1].payload["artifact_retrieval_requested"] is False
+    assert compiler_run.trace_events[-1].payload["artifact_chunk_candidate_count"] == 0
+    assert compiler_run.trace_events[-1].payload["included_artifact_chunk_count"] == 0
+    assert compiler_run.trace_events[-1].payload["excluded_artifact_chunk_limit_count"] == 0
+    assert compiler_run.trace_events[-1].payload["excluded_uningested_artifact_count"] == 0
 
 
 class SemanticCompileStoreStub:
@@ -688,6 +740,186 @@ class SemanticCompileStoreStub:
                 "updated_at": self.base_time + timedelta(minutes=2),
             }
         ]
+
+
+class ArtifactCompileStoreStub:
+    def __init__(self) -> None:
+        self.base_time = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
+        self.task_id = uuid4()
+        self.artifact_ids = [uuid4(), uuid4(), uuid4(), uuid4()]
+        self.chunk_ids = [uuid4(), uuid4(), uuid4()]
+
+    def get_task_optional(self, task_id):
+        if task_id != self.task_id:
+            return None
+        return {"id": self.task_id}
+
+    def list_task_artifacts_for_task(self, task_id):
+        assert task_id == self.task_id
+        return [
+            {
+                "id": self.artifact_ids[0],
+                "task_id": self.task_id,
+                "task_workspace_id": uuid4(),
+                "status": "registered",
+                "ingestion_status": "ingested",
+                "relative_path": "docs/a.txt",
+                "media_type_hint": "text/plain",
+                "created_at": self.base_time,
+                "updated_at": self.base_time,
+            },
+            {
+                "id": self.artifact_ids[1],
+                "task_id": self.task_id,
+                "task_workspace_id": uuid4(),
+                "status": "registered",
+                "ingestion_status": "ingested",
+                "relative_path": "notes/b.md",
+                "media_type_hint": "text/markdown",
+                "created_at": self.base_time + timedelta(minutes=1),
+                "updated_at": self.base_time + timedelta(minutes=1),
+            },
+            {
+                "id": self.artifact_ids[2],
+                "task_id": self.task_id,
+                "task_workspace_id": uuid4(),
+                "status": "registered",
+                "ingestion_status": "pending",
+                "relative_path": "notes/hidden.txt",
+                "media_type_hint": "text/plain",
+                "created_at": self.base_time + timedelta(minutes=2),
+                "updated_at": self.base_time + timedelta(minutes=2),
+            },
+            {
+                "id": self.artifact_ids[3],
+                "task_id": self.task_id,
+                "task_workspace_id": uuid4(),
+                "status": "registered",
+                "ingestion_status": "ingested",
+                "relative_path": "notes/c.txt",
+                "media_type_hint": "text/plain",
+                "created_at": self.base_time + timedelta(minutes=3),
+                "updated_at": self.base_time + timedelta(minutes=3),
+            },
+        ]
+
+    def list_task_artifact_chunks(self, task_artifact_id):
+        if task_artifact_id == self.artifact_ids[0]:
+            return [
+                {
+                    "id": self.chunk_ids[0],
+                    "task_artifact_id": task_artifact_id,
+                    "sequence_no": 1,
+                    "char_start": 0,
+                    "char_end_exclusive": 14,
+                    "text": "beta alpha doc",
+                    "created_at": self.base_time,
+                    "updated_at": self.base_time,
+                }
+            ]
+        if task_artifact_id == self.artifact_ids[1]:
+            return [
+                {
+                    "id": self.chunk_ids[1],
+                    "task_artifact_id": task_artifact_id,
+                    "sequence_no": 1,
+                    "char_start": 0,
+                    "char_end_exclusive": 15,
+                    "text": "alpha beta note",
+                    "created_at": self.base_time,
+                    "updated_at": self.base_time,
+                }
+            ]
+        if task_artifact_id == self.artifact_ids[3]:
+            return [
+                {
+                    "id": self.chunk_ids[2],
+                    "task_artifact_id": task_artifact_id,
+                    "sequence_no": 1,
+                    "char_start": 0,
+                    "char_end_exclusive": 9,
+                    "text": "beta only",
+                    "created_at": self.base_time,
+                    "updated_at": self.base_time,
+                }
+            ]
+        return []
+
+
+def test_compile_artifact_chunk_section_orders_limits_and_excludes_non_ingested() -> None:
+    store = ArtifactCompileStoreStub()
+
+    artifact_section = _compile_artifact_chunk_section(
+        store,  # type: ignore[arg-type]
+        artifact_retrieval=CompileContextTaskScopedArtifactRetrievalInput(
+            task_id=store.task_id,
+            query="Alpha beta",
+            limit=2,
+        ),
+    )
+
+    assert artifact_section.items == [
+        {
+            "id": str(store.chunk_ids[0]),
+            "task_id": str(store.task_id),
+            "task_artifact_id": str(store.artifact_ids[0]),
+            "relative_path": "docs/a.txt",
+            "media_type": "text/plain",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 14,
+            "text": "beta alpha doc",
+            "match": {
+                "matched_query_terms": ["alpha", "beta"],
+                "matched_query_term_count": 2,
+                "first_match_char_start": 0,
+            },
+        },
+        {
+            "id": str(store.chunk_ids[1]),
+            "task_id": str(store.task_id),
+            "task_artifact_id": str(store.artifact_ids[1]),
+            "relative_path": "notes/b.md",
+            "media_type": "text/markdown",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 15,
+            "text": "alpha beta note",
+            "match": {
+                "matched_query_terms": ["alpha", "beta"],
+                "matched_query_term_count": 2,
+                "first_match_char_start": 0,
+            },
+        },
+    ]
+    assert artifact_section.summary == {
+        "requested": True,
+        "scope": {"kind": "task", "task_id": str(store.task_id)},
+        "query": "Alpha beta",
+        "query_terms": ["alpha", "beta"],
+        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "limit": 2,
+        "searched_artifact_count": 3,
+        "candidate_count": 3,
+        "included_count": 2,
+        "excluded_uningested_artifact_count": 1,
+        "excluded_limit_count": 1,
+        "order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+    }
+    assert [decision.reason for decision in artifact_section.decisions] == [
+        "artifact_not_ingested",
+        "within_artifact_chunk_limit",
+        "within_artifact_chunk_limit",
+        "artifact_chunk_limit_exceeded",
+    ]
+    assert artifact_section.decisions[0].metadata["relative_path"] == "notes/hidden.txt"
+    assert artifact_section.decisions[-1].metadata["relative_path"] == "notes/c.txt"
 
 
 def test_compile_memory_section_orders_limits_and_excludes_deleted() -> None:
