@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, TypedDict
+from typing import Annotated, Literal, TypedDict
 from uuid import UUID
 from fastapi import FastAPI, Query
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from fastapi.responses import JSONResponse
 from urllib.parse import urlsplit, urlunsplit
 
@@ -15,9 +15,12 @@ from alicebot_api.contracts import (
     ApprovalApproveInput,
     ApprovalRejectInput,
     ApprovalRequestCreateInput,
+    CompileContextArtifactScopedArtifactRetrievalInput,
+    CompileContextTaskScopedArtifactRetrievalInput,
     ConsentStatus,
     ConsentUpsertInput,
     CompileContextSemanticRetrievalInput,
+    DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
     DEFAULT_MAX_EVENTS,
     DEFAULT_MAX_ENTITY_EDGES,
     DEFAULT_MAX_ENTITIES,
@@ -26,6 +29,7 @@ from alicebot_api.contracts import (
     DEFAULT_MAX_SESSIONS,
     DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     MAX_MEMORY_REVIEW_LIMIT,
+    MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
     EmbeddingConfigStatus,
@@ -242,6 +246,39 @@ class CompileContextSemanticRequest(BaseModel):
     )
 
 
+class CompileContextTaskScopedArtifactRetrievalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["task"]
+    task_id: UUID
+    query: str = Field(min_length=1, max_length=4000)
+    limit: int = Field(
+        default=DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+        ge=1,
+        le=MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+    )
+
+
+class CompileContextArtifactScopedArtifactRetrievalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["artifact"]
+    task_artifact_id: UUID
+    query: str = Field(min_length=1, max_length=4000)
+    limit: int = Field(
+        default=DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+        ge=1,
+        le=MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+    )
+
+
+CompileContextArtifactRetrievalRequest = Annotated[
+    CompileContextTaskScopedArtifactRetrievalRequest
+    | CompileContextArtifactScopedArtifactRetrievalRequest,
+    Field(discriminator="kind"),
+]
+
+
 class CompileContextRequest(BaseModel):
     user_id: UUID
     thread_id: UUID
@@ -251,6 +288,7 @@ class CompileContextRequest(BaseModel):
     max_entities: int = Field(default=DEFAULT_MAX_ENTITIES, ge=0, le=50)
     max_entity_edges: int = Field(default=DEFAULT_MAX_ENTITY_EDGES, ge=0, le=100)
     semantic: CompileContextSemanticRequest | None = None
+    artifact_retrieval: CompileContextArtifactRetrievalRequest | None = None
 
 
 class GenerateResponseRequest(BaseModel):
@@ -547,6 +585,22 @@ def healthcheck() -> JSONResponse:
 @app.post("/v0/context/compile")
 def compile_context(request: CompileContextRequest) -> JSONResponse:
     settings = get_settings()
+    artifact_retrieval = None
+    if isinstance(request.artifact_retrieval, CompileContextTaskScopedArtifactRetrievalRequest):
+        artifact_retrieval = CompileContextTaskScopedArtifactRetrievalInput(
+            task_id=request.artifact_retrieval.task_id,
+            query=request.artifact_retrieval.query,
+            limit=request.artifact_retrieval.limit,
+        )
+    elif isinstance(
+        request.artifact_retrieval,
+        CompileContextArtifactScopedArtifactRetrievalRequest,
+    ):
+        artifact_retrieval = CompileContextArtifactScopedArtifactRetrievalInput(
+            task_artifact_id=request.artifact_retrieval.task_artifact_id,
+            query=request.artifact_retrieval.query,
+            limit=request.artifact_retrieval.limit,
+        )
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
@@ -570,9 +624,14 @@ def compile_context(request: CompileContextRequest) -> JSONResponse:
                         limit=request.semantic.limit,
                     )
                 ),
+                artifact_retrieval=artifact_retrieval,
             )
+    except TaskArtifactChunkRetrievalValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except SemanticMemoryRetrievalValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except (TaskNotFoundError, TaskArtifactNotFoundError) as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ContinuityStoreInvariantError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 

@@ -5,10 +5,16 @@ from uuid import UUID
 
 from alicebot_api.contracts import (
     COMPILER_VERSION_V0,
+    ArtifactRetrievalDecisionTracePayload,
     CompilerDecision,
+    CompileContextArtifactRetrievalInput,
+    CompileContextArtifactScopedArtifactRetrievalInput,
     CompileContextSemanticRetrievalInput,
+    CompileContextTaskScopedArtifactRetrievalInput,
     CompilerRunResult,
     CompiledContextPack,
+    ContextPackArtifactChunk,
+    ContextPackArtifactChunkSummary,
     ContextCompilerLimits,
     ContextPackHybridMemorySummary,
     ContextPackMemory,
@@ -16,10 +22,19 @@ from alicebot_api.contracts import (
     HybridMemoryDecisionTracePayload,
     MemorySelectionSource,
     SEMANTIC_MEMORY_RETRIEVAL_ORDER,
+    TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER,
     SemanticMemoryRetrievalRequestInput,
     TRACE_KIND_CONTEXT_COMPILE,
     TraceEventRecord,
     isoformat_or_none,
+)
+from alicebot_api.artifacts import (
+    TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
+    TaskArtifactNotFoundError,
+    build_task_artifact_chunk_retrieval_scope,
+    infer_task_artifact_media_type,
+    resolve_artifact_chunk_retrieval_query_terms,
+    retrieve_matching_task_artifact_chunks,
 )
 from alicebot_api.semantic_retrieval import validate_semantic_memory_retrieval_request
 from alicebot_api.store import (
@@ -33,6 +48,7 @@ from alicebot_api.store import (
     ThreadRow,
     UserRow,
 )
+from alicebot_api.tasks import TaskNotFoundError
 
 SUMMARY_TRACE_EVENT_KIND = "context.summary"
 _UNBOUNDED_SEMANTIC_RETRIEVAL_LIMIT = 2_147_483_647
@@ -51,6 +67,13 @@ class CompiledTraceRun:
 class CompiledMemorySection:
     items: list[ContextPackMemory]
     summary: ContextPackMemorySummary
+    decisions: list[CompilerDecision]
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledArtifactChunkSection:
+    items: list[ContextPackArtifactChunk]
+    summary: ContextPackArtifactChunkSummary
     decisions: list[CompilerDecision]
 
 
@@ -195,6 +218,59 @@ def _empty_hybrid_memory_summary() -> ContextPackHybridMemorySummary:
         "symbolic_order": list(HYBRID_SYMBOLIC_ORDER),
         "semantic_order": list(SEMANTIC_MEMORY_RETRIEVAL_ORDER),
     }
+
+
+def _empty_artifact_chunk_summary() -> ContextPackArtifactChunkSummary:
+    return {
+        "requested": False,
+        "scope": None,
+        "query": None,
+        "query_terms": [],
+        "matching_rule": TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
+        "limit": 0,
+        "searched_artifact_count": 0,
+        "candidate_count": 0,
+        "included_count": 0,
+        "excluded_uningested_artifact_count": 0,
+        "excluded_limit_count": 0,
+        "order": list(TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER),
+    }
+
+
+def _artifact_retrieval_decision_metadata(
+    *,
+    scope_kind: str,
+    task_id: UUID,
+    task_artifact_id: UUID,
+    relative_path: str,
+    media_type: str | None,
+    ingestion_status: str,
+    limit: int,
+    match: dict[str, object] | None = None,
+    sequence_no: int | None = None,
+    char_start: int | None = None,
+    char_end_exclusive: int | None = None,
+) -> ArtifactRetrievalDecisionTracePayload:
+    payload: ArtifactRetrievalDecisionTracePayload = {
+        "scope_kind": scope_kind,  # type: ignore[typeddict-item]
+        "task_id": str(task_id),
+        "task_artifact_id": str(task_artifact_id),
+        "relative_path": relative_path,
+        "media_type": media_type,
+        "ingestion_status": ingestion_status,  # type: ignore[typeddict-item]
+        "limit": limit,
+    }
+    if match is not None:
+        payload["matched_query_terms"] = list(match["matched_query_terms"])  # type: ignore[index]
+        payload["matched_query_term_count"] = int(match["matched_query_term_count"])  # type: ignore[index]
+        payload["first_match_char_start"] = int(match["first_match_char_start"])  # type: ignore[index]
+    if sequence_no is not None:
+        payload["sequence_no"] = sequence_no
+    if char_start is not None:
+        payload["char_start"] = char_start
+    if char_end_exclusive is not None:
+        payload["char_end_exclusive"] = char_end_exclusive
+    return payload
 
 
 def _hybrid_memory_decision_metadata(
@@ -492,6 +568,125 @@ def _compile_memory_section(
     )
 
 
+def _compile_artifact_chunk_section(
+    store: ContinuityStore,
+    *,
+    artifact_retrieval: CompileContextArtifactRetrievalInput | None,
+) -> CompiledArtifactChunkSection:
+    if artifact_retrieval is None:
+        return CompiledArtifactChunkSection(
+            items=[],
+            summary=_empty_artifact_chunk_summary(),
+            decisions=[],
+        )
+
+    if isinstance(artifact_retrieval, CompileContextTaskScopedArtifactRetrievalInput):
+        task = store.get_task_optional(artifact_retrieval.task_id)
+        if task is None:
+            raise TaskNotFoundError(f"task {artifact_retrieval.task_id} was not found")
+        artifact_rows = store.list_task_artifacts_for_task(artifact_retrieval.task_id)
+        scope = build_task_artifact_chunk_retrieval_scope(
+            kind="task",
+            task_id=artifact_retrieval.task_id,
+        )
+        scope_kind = "task"
+    else:
+        artifact_row = store.get_task_artifact_optional(artifact_retrieval.task_artifact_id)
+        if artifact_row is None:
+            raise TaskArtifactNotFoundError(
+                f"task artifact {artifact_retrieval.task_artifact_id} was not found"
+            )
+        artifact_rows = [artifact_row]
+        scope = build_task_artifact_chunk_retrieval_scope(
+            kind="artifact",
+            task_id=artifact_row["task_id"],
+            task_artifact_id=artifact_row["id"],
+        )
+        scope_kind = "artifact"
+
+    query_terms = resolve_artifact_chunk_retrieval_query_terms(artifact_retrieval.query)
+    matched_items, searched_artifact_count = retrieve_matching_task_artifact_chunks(
+        store,
+        artifact_rows=artifact_rows,
+        query_terms=query_terms,
+    )
+    included_items = matched_items[: artifact_retrieval.limit]
+    excluded_uningested_artifact_count = 0
+    decisions: list[CompilerDecision] = []
+
+    for position, artifact_row in enumerate(artifact_rows, start=1):
+        if artifact_row["ingestion_status"] == "ingested":
+            continue
+        excluded_uningested_artifact_count += 1
+        decisions.append(
+            CompilerDecision(
+                "excluded",
+                "task_artifact",
+                artifact_row["id"],
+                "artifact_not_ingested",
+                position,
+                metadata=_artifact_retrieval_decision_metadata(
+                    scope_kind=scope_kind,
+                    task_id=artifact_row["task_id"],
+                    task_artifact_id=artifact_row["id"],
+                    relative_path=artifact_row["relative_path"],
+                    media_type=infer_task_artifact_media_type(artifact_row),
+                    ingestion_status=artifact_row["ingestion_status"],
+                    limit=artifact_retrieval.limit,
+                ),
+            )
+        )
+
+    for position, item in enumerate(matched_items, start=1):
+        decision_kind = "included" if position <= artifact_retrieval.limit else "excluded"
+        decision_reason = (
+            "within_artifact_chunk_limit"
+            if position <= artifact_retrieval.limit
+            else "artifact_chunk_limit_exceeded"
+        )
+        decisions.append(
+            CompilerDecision(
+                decision_kind,
+                "artifact_chunk",
+                UUID(item["id"]),
+                decision_reason,
+                position,
+                metadata=_artifact_retrieval_decision_metadata(
+                    scope_kind=scope_kind,
+                    task_id=UUID(item["task_id"]),
+                    task_artifact_id=UUID(item["task_artifact_id"]),
+                    relative_path=item["relative_path"],
+                    media_type=item["media_type"],
+                    ingestion_status="ingested",
+                    limit=artifact_retrieval.limit,
+                    match=item["match"],
+                    sequence_no=item["sequence_no"],
+                    char_start=item["char_start"],
+                    char_end_exclusive=item["char_end_exclusive"],
+                ),
+            )
+        )
+
+    return CompiledArtifactChunkSection(
+        items=list(included_items),
+        summary={
+            "requested": True,
+            "scope": scope,
+            "query": artifact_retrieval.query,
+            "query_terms": list(query_terms),
+            "matching_rule": TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
+            "limit": artifact_retrieval.limit,
+            "searched_artifact_count": searched_artifact_count,
+            "candidate_count": len(matched_items),
+            "included_count": len(included_items),
+            "excluded_uningested_artifact_count": excluded_uningested_artifact_count,
+            "excluded_limit_count": max(len(matched_items) - len(included_items), 0),
+            "order": list(TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER),
+        },
+        decisions=decisions,
+    )
+
+
 def compile_continuity_context(
     *,
     user: UserRow,
@@ -503,6 +698,7 @@ def compile_continuity_context(
     entity_edges: list[EntityEdgeRow],
     limits: ContextCompilerLimits,
     memory_section: CompiledMemorySection | None = None,
+    artifact_chunk_section: CompiledArtifactChunkSection | None = None,
 ) -> CompilerRunResult:
     latest_session_sequence: dict[UUID, int] = {}
     for event in events:
@@ -595,6 +791,12 @@ def compile_continuity_context(
         limits=limits,
     )
     decisions.extend(resolved_memory_section.decisions)
+    resolved_artifact_chunk_section = artifact_chunk_section or CompiledArtifactChunkSection(
+        items=[],
+        summary=_empty_artifact_chunk_summary(),
+        decisions=[],
+    )
+    decisions.extend(resolved_artifact_chunk_section.decisions)
     ordered_entities = sorted(entities, key=_entity_sort_key)
     included_entities = ordered_entities[-limits.max_entities :] if limits.max_entities > 0 else []
     included_entity_ids = {entity["id"] for entity in included_entities}
@@ -725,6 +927,24 @@ def compile_continuity_context(
                 "included_dual_source_memory_count": resolved_memory_section.summary[
                     "hybrid_retrieval"
                 ]["included_dual_source_count"],
+                "artifact_retrieval_requested": resolved_artifact_chunk_section.summary["requested"],
+                "artifact_retrieval_scope_kind": (
+                    None
+                    if resolved_artifact_chunk_section.summary["scope"] is None
+                    else resolved_artifact_chunk_section.summary["scope"]["kind"]
+                ),
+                "artifact_chunk_candidate_count": resolved_artifact_chunk_section.summary[
+                    "candidate_count"
+                ],
+                "included_artifact_chunk_count": resolved_artifact_chunk_section.summary[
+                    "included_count"
+                ],
+                "excluded_artifact_chunk_limit_count": resolved_artifact_chunk_section.summary[
+                    "excluded_limit_count"
+                ],
+                "excluded_uningested_artifact_count": resolved_artifact_chunk_section.summary[
+                    "excluded_uningested_artifact_count"
+                ],
                 "included_entity_count": len(included_entities),
                 "excluded_entity_count": excluded_entity_limit_count,
                 "excluded_entity_limit_count": excluded_entity_limit_count,
@@ -756,6 +976,8 @@ def compile_continuity_context(
             "events": [_serialize_event(event) for event in included_events],
             "memories": list(resolved_memory_section.items),
             "memory_summary": resolved_memory_section.summary,
+            "artifact_chunks": list(resolved_artifact_chunk_section.items),
+            "artifact_chunk_summary": resolved_artifact_chunk_section.summary,
             "entities": [_serialize_entity(entity) for entity in included_entities],
             "entity_summary": {
                 "candidate_count": len(ordered_entities),
@@ -781,6 +1003,7 @@ def compile_and_persist_trace(
     thread_id: UUID,
     limits: ContextCompilerLimits,
     semantic_retrieval: CompileContextSemanticRetrievalInput | None = None,
+    artifact_retrieval: CompileContextArtifactRetrievalInput | None = None,
 ) -> CompiledTraceRun:
     user = store.get_user(user_id)
     thread = store.get_thread(thread_id)
@@ -792,6 +1015,10 @@ def compile_and_persist_trace(
         memories=memories,
         limits=limits,
         semantic_retrieval=semantic_retrieval,
+    )
+    artifact_chunk_section = _compile_artifact_chunk_section(
+        store,
+        artifact_retrieval=artifact_retrieval,
     )
     entities = store.list_entities()
     ordered_entities = sorted(entities, key=_entity_sort_key)
@@ -807,6 +1034,7 @@ def compile_and_persist_trace(
         entity_edges=entity_edges,
         limits=limits,
         memory_section=memory_section,
+        artifact_chunk_section=artifact_chunk_section,
     )
     trace = store.create_trace(
         user_id=user_id,
