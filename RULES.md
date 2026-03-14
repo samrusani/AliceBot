@@ -3,6 +3,7 @@
 ## Truth And Scope
 
 - The active sprint packet is the top scope boundary for implementation work.
+- Treat `.ai/active/SPRINT_PACKET.md` as an input/control artifact: do not edit it during implementation unless Control Tower explicitly changes the sprint.
 - Never describe planned behavior as already implemented.
 - Keep canonical truth files concise, current, and durable.
 - Archive stale planning or history material instead of deleting it when traceability still matters.
