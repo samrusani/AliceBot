@@ -278,6 +278,120 @@ def seed_memory_embedding_for_user(
         )
 
 
+def seed_compile_artifact_scope(
+    database_url: str,
+    *,
+    user_id: UUID,
+    thread_id: UUID,
+) -> dict[str, object]:
+    with user_connection(database_url, user_id) as conn:
+        store = ContinuityStore(conn)
+        tool = store.create_tool(
+            tool_key="artifact.search",
+            name="Artifact Search",
+            description="Compile artifact retrieval fixture",
+            version="2026-03-14",
+            metadata_version="tool_metadata_v0",
+            active=True,
+            tags=[],
+            action_hints=["retrieve"],
+            scope_hints=["task"],
+            domain_hints=[],
+            risk_hints=[],
+            metadata={},
+        )
+        task = store.create_task(
+            thread_id=thread_id,
+            tool_id=tool["id"],
+            status="approved",
+            request={"action": "retrieve"},
+            tool={"tool_key": "artifact.search"},
+            latest_approval_id=None,
+            latest_execution_id=None,
+        )
+        workspace = store.create_task_workspace(
+            task_id=task["id"],
+            status="active",
+            local_path=f"/tmp/alicebot/{task['id']}",
+        )
+        docs_artifact = store.create_task_artifact(
+            task_id=task["id"],
+            task_workspace_id=workspace["id"],
+            status="registered",
+            ingestion_status="ingested",
+            relative_path="docs/a.txt",
+            media_type_hint="text/plain",
+        )
+        notes_artifact = store.create_task_artifact(
+            task_id=task["id"],
+            task_workspace_id=workspace["id"],
+            status="registered",
+            ingestion_status="ingested",
+            relative_path="notes/b.md",
+            media_type_hint="text/markdown",
+        )
+        pending_artifact = store.create_task_artifact(
+            task_id=task["id"],
+            task_workspace_id=workspace["id"],
+            status="registered",
+            ingestion_status="pending",
+            relative_path="notes/hidden.txt",
+            media_type_hint="text/plain",
+        )
+        weak_artifact = store.create_task_artifact(
+            task_id=task["id"],
+            task_workspace_id=workspace["id"],
+            status="registered",
+            ingestion_status="ingested",
+            relative_path="notes/c.txt",
+            media_type_hint="text/plain",
+        )
+        docs_chunk = store.create_task_artifact_chunk(
+            task_artifact_id=docs_artifact["id"],
+            sequence_no=1,
+            char_start=0,
+            char_end_exclusive=14,
+            text="beta alpha doc",
+        )
+        notes_chunk = store.create_task_artifact_chunk(
+            task_artifact_id=notes_artifact["id"],
+            sequence_no=1,
+            char_start=0,
+            char_end_exclusive=15,
+            text="alpha beta note",
+        )
+        pending_chunk = store.create_task_artifact_chunk(
+            task_artifact_id=pending_artifact["id"],
+            sequence_no=1,
+            char_start=0,
+            char_end_exclusive=17,
+            text="alpha beta hidden",
+        )
+        weak_chunk = store.create_task_artifact_chunk(
+            task_artifact_id=weak_artifact["id"],
+            sequence_no=1,
+            char_start=0,
+            char_end_exclusive=9,
+            text="beta only",
+        )
+
+    return {
+        "task_id": task["id"],
+        "artifact_ids": {
+            "docs": docs_artifact["id"],
+            "notes": notes_artifact["id"],
+            "pending": pending_artifact["id"],
+            "weak": weak_artifact["id"],
+        },
+        "chunk_ids": {
+            "docs": docs_chunk["id"],
+            "notes": notes_chunk["id"],
+            "pending": pending_chunk["id"],
+            "weak": weak_chunk["id"],
+        },
+    }
+
+
 def test_compile_context_endpoint_persists_trace_and_trace_events(migrated_database_urls, monkeypatch) -> None:
     seeded = seed_traceable_thread(migrated_database_urls["app"])
     user_id = seeded["user_id"]
@@ -796,6 +910,316 @@ def test_compile_context_semantic_validation_rejects_missing_config_dimension_mi
         "embedding_config_id must reference an existing embedding config owned by the user: "
         f"{owner_config_id}"
     )
+
+
+def test_compile_context_artifact_retrieval_integrates_chunks_traces_and_exclusion_rules(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = seed_traceable_thread(migrated_database_urls["app"])
+    artifact_scope = seed_compile_artifact_scope(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        thread_id=seeded["thread_id"],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status_code, payload = invoke_compile_context(
+        {
+            "user_id": str(seeded["user_id"]),
+            "thread_id": str(seeded["thread_id"]),
+            "artifact_retrieval": {
+                "kind": "task",
+                "task_id": str(artifact_scope["task_id"]),
+                "query": "Alpha beta",
+                "limit": 2,
+            },
+        }
+    )
+
+    assert status_code == 200
+    assert payload["context_pack"]["artifact_chunks"] == [
+        {
+            "id": str(artifact_scope["chunk_ids"]["docs"]),
+            "task_id": str(artifact_scope["task_id"]),
+            "task_artifact_id": str(artifact_scope["artifact_ids"]["docs"]),
+            "relative_path": "docs/a.txt",
+            "media_type": "text/plain",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 14,
+            "text": "beta alpha doc",
+            "match": {
+                "matched_query_terms": ["alpha", "beta"],
+                "matched_query_term_count": 2,
+                "first_match_char_start": 0,
+            },
+        },
+        {
+            "id": str(artifact_scope["chunk_ids"]["notes"]),
+            "task_id": str(artifact_scope["task_id"]),
+            "task_artifact_id": str(artifact_scope["artifact_ids"]["notes"]),
+            "relative_path": "notes/b.md",
+            "media_type": "text/markdown",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 15,
+            "text": "alpha beta note",
+            "match": {
+                "matched_query_terms": ["alpha", "beta"],
+                "matched_query_term_count": 2,
+                "first_match_char_start": 0,
+            },
+        },
+    ]
+    assert payload["context_pack"]["artifact_chunk_summary"] == {
+        "requested": True,
+        "scope": {"kind": "task", "task_id": str(artifact_scope["task_id"])},
+        "query": "Alpha beta",
+        "query_terms": ["alpha", "beta"],
+        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "limit": 2,
+        "searched_artifact_count": 3,
+        "candidate_count": 3,
+        "included_count": 2,
+        "excluded_uningested_artifact_count": 1,
+        "excluded_limit_count": 1,
+        "order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+    }
+    assert payload["context_pack"]["memories"]
+    assert payload["context_pack"]["entities"]
+
+    trace_id = UUID(payload["trace_id"])
+    with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
+        trace_events = ContinuityStore(conn).list_trace_events(trace_id)
+
+    assert any(
+        event["payload"]["reason"] == "within_artifact_chunk_limit"
+        and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["docs"])
+        and event["payload"]["relative_path"] == "docs/a.txt"
+        and event["payload"]["matched_query_terms"] == ["alpha", "beta"]
+        for event in trace_events
+        if event["kind"] == "context.included"
+    )
+    assert any(
+        event["payload"]["reason"] == "within_artifact_chunk_limit"
+        and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["notes"])
+        and event["payload"]["relative_path"] == "notes/b.md"
+        for event in trace_events
+        if event["kind"] == "context.included"
+    )
+    assert any(
+        event["payload"]["reason"] == "artifact_chunk_limit_exceeded"
+        and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["weak"])
+        and event["payload"]["relative_path"] == "notes/c.txt"
+        for event in trace_events
+        if event["kind"] == "context.excluded"
+    )
+    assert any(
+        event["payload"]["reason"] == "artifact_not_ingested"
+        and event["payload"]["entity_id"] == str(artifact_scope["artifact_ids"]["pending"])
+        and event["payload"]["relative_path"] == "notes/hidden.txt"
+        and event["payload"]["ingestion_status"] == "pending"
+        for event in trace_events
+        if event["kind"] == "context.excluded"
+    )
+    assert trace_events[-1]["payload"]["artifact_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["artifact_retrieval_scope_kind"] == "task"
+    assert trace_events[-1]["payload"]["artifact_chunk_candidate_count"] == 3
+    assert trace_events[-1]["payload"]["included_artifact_chunk_count"] == 2
+    assert trace_events[-1]["payload"]["excluded_artifact_chunk_limit_count"] == 1
+    assert trace_events[-1]["payload"]["excluded_uningested_artifact_count"] == 1
+
+
+def test_compile_context_artifact_scoped_retrieval_returns_only_visible_artifact_chunks(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = seed_traceable_thread(migrated_database_urls["app"])
+    artifact_scope = seed_compile_artifact_scope(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        thread_id=seeded["thread_id"],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status_code, payload = invoke_compile_context(
+        {
+            "user_id": str(seeded["user_id"]),
+            "thread_id": str(seeded["thread_id"]),
+            "artifact_retrieval": {
+                "kind": "artifact",
+                "task_artifact_id": str(artifact_scope["artifact_ids"]["notes"]),
+                "query": "Alpha beta",
+                "limit": 2,
+            },
+        }
+    )
+
+    assert status_code == 200
+    assert payload["context_pack"]["artifact_chunks"] == [
+        {
+            "id": str(artifact_scope["chunk_ids"]["notes"]),
+            "task_id": str(artifact_scope["task_id"]),
+            "task_artifact_id": str(artifact_scope["artifact_ids"]["notes"]),
+            "relative_path": "notes/b.md",
+            "media_type": "text/markdown",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 15,
+            "text": "alpha beta note",
+            "match": {
+                "matched_query_terms": ["alpha", "beta"],
+                "matched_query_term_count": 2,
+                "first_match_char_start": 0,
+            },
+        }
+    ]
+    assert payload["context_pack"]["artifact_chunk_summary"] == {
+        "requested": True,
+        "scope": {
+            "kind": "artifact",
+            "task_id": str(artifact_scope["task_id"]),
+            "task_artifact_id": str(artifact_scope["artifact_ids"]["notes"]),
+        },
+        "query": "Alpha beta",
+        "query_terms": ["alpha", "beta"],
+        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "limit": 2,
+        "searched_artifact_count": 1,
+        "candidate_count": 1,
+        "included_count": 1,
+        "excluded_uningested_artifact_count": 0,
+        "excluded_limit_count": 0,
+        "order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+    }
+
+    trace_id = UUID(payload["trace_id"])
+    with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
+        trace_events = ContinuityStore(conn).list_trace_events(trace_id)
+
+    assert any(
+        event["payload"]["reason"] == "within_artifact_chunk_limit"
+        and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["notes"])
+        and event["payload"]["scope_kind"] == "artifact"
+        and event["payload"]["task_artifact_id"] == str(artifact_scope["artifact_ids"]["notes"])
+        for event in trace_events
+        if event["kind"] == "context.included"
+    )
+    assert trace_events[-1]["payload"]["artifact_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["artifact_retrieval_scope_kind"] == "artifact"
+    assert trace_events[-1]["payload"]["artifact_chunk_candidate_count"] == 1
+    assert trace_events[-1]["payload"]["included_artifact_chunk_count"] == 1
+    assert trace_events[-1]["payload"]["excluded_artifact_chunk_limit_count"] == 0
+    assert trace_events[-1]["payload"]["excluded_uningested_artifact_count"] == 0
+
+
+def test_compile_context_artifact_retrieval_validation_and_isolation(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    owner = seed_traceable_thread(migrated_database_urls["app"])
+    intruder = seed_traceable_thread(
+        migrated_database_urls["app"],
+        email="intruder@example.com",
+        display_name="Intruder",
+    )
+    owner_artifact_scope = seed_compile_artifact_scope(
+        migrated_database_urls["app"],
+        user_id=owner["user_id"],
+        thread_id=owner["thread_id"],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    blank_query_status, blank_query_payload = invoke_compile_context(
+        {
+            "user_id": str(owner["user_id"]),
+            "thread_id": str(owner["thread_id"]),
+            "artifact_retrieval": {
+                "kind": "task",
+                "task_id": str(owner_artifact_scope["task_id"]),
+                "query": "   ",
+                "limit": 2,
+            },
+        }
+    )
+    invalid_shape_status, invalid_shape_payload = invoke_compile_context(
+        {
+            "user_id": str(owner["user_id"]),
+            "thread_id": str(owner["thread_id"]),
+            "artifact_retrieval": {
+                "kind": "task",
+                "task_artifact_id": str(owner_artifact_scope["artifact_ids"]["docs"]),
+                "query": "alpha beta",
+            },
+        }
+    )
+    isolated_task_status, isolated_task_payload = invoke_compile_context(
+        {
+            "user_id": str(intruder["user_id"]),
+            "thread_id": str(intruder["thread_id"]),
+            "artifact_retrieval": {
+                "kind": "task",
+                "task_id": str(owner_artifact_scope["task_id"]),
+                "query": "alpha beta",
+                "limit": 2,
+            },
+        }
+    )
+    isolated_artifact_status, isolated_artifact_payload = invoke_compile_context(
+        {
+            "user_id": str(intruder["user_id"]),
+            "thread_id": str(intruder["thread_id"]),
+            "artifact_retrieval": {
+                "kind": "artifact",
+                "task_artifact_id": str(owner_artifact_scope["artifact_ids"]["docs"]),
+                "query": "alpha beta",
+                "limit": 2,
+            },
+        }
+    )
+
+    assert blank_query_status == 400
+    assert blank_query_payload == {
+        "detail": "artifact chunk retrieval query must include at least one word"
+    }
+    assert invalid_shape_status == 422
+    assert "task_id" in json.dumps(invalid_shape_payload)
+    assert isolated_task_status == 404
+    assert isolated_task_payload == {
+        "detail": f"task {owner_artifact_scope['task_id']} was not found"
+    }
+    assert isolated_artifact_status == 404
+    assert isolated_artifact_payload == {
+        "detail": (
+            "task artifact "
+            f"{owner_artifact_scope['artifact_ids']['docs']} was not found"
+        )
+    }
 
 
 def test_traces_and_trace_events_respect_per_user_isolation(migrated_database_urls, monkeypatch) -> None:

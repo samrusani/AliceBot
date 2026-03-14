@@ -4,6 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
+import pytest
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.compiler import CompiledTraceRun
@@ -180,12 +181,21 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
         captured["current_user_id"] = current_user_id
         yield object()
 
-    def fake_compile_and_persist_trace(store, *, user_id, thread_id, limits, semantic_retrieval):
+    def fake_compile_and_persist_trace(
+        store,
+        *,
+        user_id,
+        thread_id,
+        limits,
+        semantic_retrieval,
+        artifact_retrieval,
+    ):
         captured["store_type"] = type(store).__name__
         captured["user_id"] = user_id
         captured["thread_id"] = thread_id
         captured["limits"] = limits
         captured["semantic_retrieval"] = semantic_retrieval
+        captured["artifact_retrieval"] = artifact_retrieval
         return CompiledTraceRun(
             trace_id="trace-123",
             trace_event_count=5,
@@ -247,6 +257,27 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
                         "symbolic_order": ["updated_at_asc", "created_at_asc", "id_asc"],
                         "semantic_order": ["score_desc", "created_at_asc", "id_asc"],
                     },
+                },
+                "artifact_chunks": [],
+                "artifact_chunk_summary": {
+                    "requested": False,
+                    "scope": None,
+                    "query": None,
+                    "query_terms": [],
+                    "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+                    "limit": 0,
+                    "searched_artifact_count": 0,
+                    "candidate_count": 0,
+                    "included_count": 0,
+                    "excluded_uningested_artifact_count": 0,
+                    "excluded_limit_count": 0,
+                    "order": [
+                        "matched_query_term_count_desc",
+                        "first_match_char_start_asc",
+                        "relative_path_asc",
+                        "sequence_no_asc",
+                        "id_asc",
+                    ],
                 },
                 "entities": [
                     {
@@ -362,6 +393,27 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
                     "semantic_order": ["score_desc", "created_at_asc", "id_asc"],
                 },
             },
+            "artifact_chunks": [],
+            "artifact_chunk_summary": {
+                "requested": False,
+                "scope": None,
+                "query": None,
+                "query_terms": [],
+                "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+                "limit": 0,
+                "searched_artifact_count": 0,
+                "candidate_count": 0,
+                "included_count": 0,
+                "excluded_uningested_artifact_count": 0,
+                "excluded_limit_count": 0,
+                "order": [
+                    "matched_query_term_count_desc",
+                    "first_match_char_start_asc",
+                    "relative_path_asc",
+                    "sequence_no_asc",
+                    "id_asc",
+                ],
+            },
             "entities": [
                 {
                     "id": "entity-123",
@@ -406,6 +458,7 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
     assert captured["limits"].max_entities == 2
     assert captured["limits"].max_entity_edges == 6
     assert captured["semantic_retrieval"] is None
+    assert captured["artifact_retrieval"] is None
 
 
 def test_compile_context_returns_not_found_when_scope_row_is_missing(monkeypatch) -> None:
@@ -433,7 +486,9 @@ def test_compile_context_returns_not_found_when_scope_row_is_missing(monkeypatch
     }
 
 
-def test_compile_context_routes_semantic_inputs_and_validation_errors(monkeypatch) -> None:
+def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_errors(
+    monkeypatch,
+) -> None:
     user_id = uuid4()
     thread_id = uuid4()
     config_id = uuid4()
@@ -446,12 +501,21 @@ def test_compile_context_routes_semantic_inputs_and_validation_errors(monkeypatc
         captured["current_user_id"] = current_user_id
         yield object()
 
-    def fake_compile_and_persist_trace(store, *, user_id, thread_id, limits, semantic_retrieval):
+    def fake_compile_and_persist_trace(
+        store,
+        *,
+        user_id,
+        thread_id,
+        limits,
+        semantic_retrieval,
+        artifact_retrieval,
+    ):
         captured["store_type"] = type(store).__name__
         captured["user_id"] = user_id
         captured["thread_id"] = thread_id
         captured["limits"] = limits
         captured["semantic_retrieval"] = semantic_retrieval
+        captured["artifact_retrieval"] = artifact_retrieval
         return CompiledTraceRun(
             trace_id="trace-semantic",
             trace_event_count=7,
@@ -517,6 +581,44 @@ def test_compile_context_routes_semantic_inputs_and_validation_errors(monkeypatc
                         "semantic_order": ["score_desc", "created_at_asc", "id_asc"],
                     },
                 },
+                "artifact_chunks": [
+                    {
+                        "id": "chunk-123",
+                        "task_id": "task-123",
+                        "task_artifact_id": "artifact-123",
+                        "relative_path": "docs/spec.txt",
+                        "media_type": "text/plain",
+                        "sequence_no": 1,
+                        "char_start": 0,
+                        "char_end_exclusive": 16,
+                        "text": "alpha beta spec",
+                        "match": {
+                            "matched_query_terms": ["alpha", "beta"],
+                            "matched_query_term_count": 2,
+                            "first_match_char_start": 0,
+                        },
+                    }
+                ],
+                "artifact_chunk_summary": {
+                    "requested": True,
+                    "scope": {"kind": "task", "task_id": "task-123"},
+                    "query": "alpha beta",
+                    "query_terms": ["alpha", "beta"],
+                    "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+                    "limit": 2,
+                    "searched_artifact_count": 1,
+                    "candidate_count": 1,
+                    "included_count": 1,
+                    "excluded_uningested_artifact_count": 0,
+                    "excluded_limit_count": 0,
+                    "order": [
+                        "matched_query_term_count_desc",
+                        "first_match_char_start_asc",
+                        "relative_path_asc",
+                        "sequence_no_asc",
+                        "id_asc",
+                    ],
+                },
                 "entities": [],
                 "entity_summary": {
                     "candidate_count": 0,
@@ -546,6 +648,12 @@ def test_compile_context_routes_semantic_inputs_and_validation_errors(monkeypatc
                 query_vector=[0.1, 0.2, 0.3],
                 limit=2,
             ),
+            artifact_retrieval=main_module.CompileContextTaskScopedArtifactRetrievalRequest(
+                kind="task",
+                task_id=uuid4(),
+                query="alpha beta",
+                limit=2,
+            ),
         )
     )
 
@@ -572,6 +680,9 @@ def test_compile_context_routes_semantic_inputs_and_validation_errors(monkeypatc
     assert captured["semantic_retrieval"].embedding_config_id == config_id
     assert captured["semantic_retrieval"].query_vector == (0.1, 0.2, 0.3)
     assert captured["semantic_retrieval"].limit == 2
+    assert captured["artifact_retrieval"].task_id is not None
+    assert captured["artifact_retrieval"].query == "alpha beta"
+    assert captured["artifact_retrieval"].limit == 2
 
     monkeypatch.setattr(
         main_module,
@@ -599,6 +710,21 @@ def test_compile_context_routes_semantic_inputs_and_validation_errors(monkeypatc
     assert json.loads(error_response.body) == {
         "detail": "embedding_config_id must reference an existing embedding config owned by the user"
     }
+
+
+def test_compile_context_request_rejects_invalid_artifact_scope_shape() -> None:
+    with pytest.raises(Exception) as exc_info:
+        main_module.CompileContextRequest(
+            user_id=uuid4(),
+            thread_id=uuid4(),
+            artifact_retrieval={
+                "kind": "task",
+                "task_artifact_id": str(uuid4()),
+                "query": "alpha beta",
+            },
+        )
+
+    assert "task_id" in str(exc_info.value)
 
 
 def test_generate_assistant_response_returns_assistant_and_trace_payload(monkeypatch) -> None:
