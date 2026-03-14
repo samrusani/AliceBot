@@ -21,7 +21,7 @@ ApprovalResolutionOutcome = Literal["resolved", "duplicate_rejected", "conflict_
 TaskStatus = Literal["pending_approval", "approved", "executed", "denied", "blocked"]
 TaskWorkspaceStatus = Literal["active"]
 TaskArtifactStatus = Literal["registered"]
-TaskArtifactIngestionStatus = Literal["pending"]
+TaskArtifactIngestionStatus = Literal["pending", "ingested"]
 TaskLifecycleSource = Literal[
     "approval_request",
     "approval_resolution",
@@ -132,6 +132,7 @@ APPROVAL_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_WORKSPACE_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_LIST_ORDER = ["created_at_asc", "id_asc"]
+TASK_ARTIFACT_CHUNK_LIST_ORDER = ["sequence_no_asc", "id_asc"]
 TASK_STEP_LIST_ORDER = ["sequence_no_asc", "created_at_asc", "id_asc"]
 TOOL_EXECUTION_LIST_ORDER = ["executed_at_asc", "id_asc"]
 EXECUTION_BUDGET_LIST_ORDER = ["created_at_asc", "id_asc"]
@@ -140,7 +141,7 @@ EXECUTION_BUDGET_STATUSES = ["active", "inactive", "superseded"]
 TASK_STATUSES = ["pending_approval", "approved", "executed", "denied", "blocked"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
-TASK_ARTIFACT_INGESTION_STATUSES = ["pending"]
+TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
 TASK_STEP_KINDS = ["governed_request"]
 TASK_STEP_STATUSES = ["created", "approved", "executed", "blocked", "denied"]
 APPROVAL_REQUEST_VERSION_V0 = "approval_request_v0"
@@ -1606,6 +1607,11 @@ class TaskArtifactRegisterInput:
     media_type_hint: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class TaskArtifactIngestInput:
+    task_artifact_id: UUID
+
+
 class TaskArtifactRecord(TypedDict):
     id: str
     task_id: str
@@ -1634,6 +1640,35 @@ class TaskArtifactListResponse(TypedDict):
 
 class TaskArtifactDetailResponse(TypedDict):
     artifact: TaskArtifactRecord
+
+
+class TaskArtifactChunkRecord(TypedDict):
+    id: str
+    task_artifact_id: str
+    sequence_no: int
+    char_start: int
+    char_end_exclusive: int
+    text: str
+    created_at: str
+    updated_at: str
+
+
+class TaskArtifactChunkListSummary(TypedDict):
+    total_count: int
+    total_characters: int
+    media_type: str
+    chunking_rule: str
+    order: list[str]
+
+
+class TaskArtifactChunkListResponse(TypedDict):
+    items: list[TaskArtifactChunkRecord]
+    summary: TaskArtifactChunkListSummary
+
+
+class TaskArtifactIngestionResponse(TypedDict):
+    artifact: TaskArtifactRecord
+    summary: TaskArtifactChunkListSummary
 
 
 class TaskStepTraceLink(TypedDict):
