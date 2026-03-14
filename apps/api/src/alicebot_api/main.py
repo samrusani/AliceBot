@@ -47,11 +47,13 @@ from alicebot_api.contracts import (
     SemanticMemoryRetrievalRequestInput,
     TOOL_METADATA_VERSION_V0,
     ApprovalStatus,
+    ArtifactScopedArtifactChunkRetrievalInput,
     ProxyExecutionStatus,
     ToolAllowlistEvaluationRequestInput,
     ProxyExecutionRequestInput,
     TaskArtifactIngestInput,
     TaskArtifactRegisterInput,
+    TaskScopedArtifactChunkRetrievalInput,
     TaskStepKind,
     TaskStepLineageInput,
     TaskStepNextCreateInput,
@@ -64,6 +66,7 @@ from alicebot_api.contracts import (
 )
 from alicebot_api.artifacts import (
     TaskArtifactAlreadyExistsError,
+    TaskArtifactChunkRetrievalValidationError,
     TaskArtifactNotFoundError,
     TaskArtifactValidationError,
     get_task_artifact_record,
@@ -71,6 +74,8 @@ from alicebot_api.artifacts import (
     list_task_artifact_chunk_records,
     list_task_artifact_records,
     register_task_artifact_record,
+    retrieve_artifact_scoped_artifact_chunk_records,
+    retrieve_task_scoped_artifact_chunk_records,
 )
 from alicebot_api.approvals import (
     ApprovalNotFoundError,
@@ -418,6 +423,11 @@ class RegisterTaskArtifactRequest(BaseModel):
 
 class IngestTaskArtifactRequest(BaseModel):
     user_id: UUID
+
+
+class RetrieveArtifactChunksRequest(BaseModel):
+    user_id: UUID
+    query: str = Field(min_length=1, max_length=1000)
 
 
 class TaskStepRequestSnapshot(BaseModel):
@@ -1301,6 +1311,62 @@ def list_task_artifact_chunks(task_artifact_id: UUID, user_id: UUID) -> JSONResp
             )
     except TaskArtifactNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/tasks/{task_id}/artifact-chunks/retrieve")
+def retrieve_task_artifact_chunks(
+    task_id: UUID,
+    request: RetrieveArtifactChunksRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = retrieve_task_scoped_artifact_chunk_records(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=TaskScopedArtifactChunkRetrievalInput(
+                    task_id=task_id,
+                    query=request.query,
+                ),
+            )
+    except TaskNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskArtifactChunkRetrievalValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/task-artifacts/{task_artifact_id}/chunks/retrieve")
+def retrieve_task_artifact_chunks_for_artifact(
+    task_artifact_id: UUID,
+    request: RetrieveArtifactChunksRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = retrieve_artifact_scoped_artifact_chunk_records(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ArtifactScopedArtifactChunkRetrievalInput(
+                    task_artifact_id=task_artifact_id,
+                    query=request.query,
+                ),
+            )
+    except TaskArtifactNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskArtifactChunkRetrievalValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,
