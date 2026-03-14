@@ -20,6 +20,8 @@ ApprovalResolutionAction = Literal["approve", "reject"]
 ApprovalResolutionOutcome = Literal["resolved", "duplicate_rejected", "conflict_rejected"]
 TaskStatus = Literal["pending_approval", "approved", "executed", "denied", "blocked"]
 TaskWorkspaceStatus = Literal["active"]
+TaskArtifactStatus = Literal["registered"]
+TaskArtifactIngestionStatus = Literal["pending"]
 TaskLifecycleSource = Literal[
     "approval_request",
     "approval_resolution",
@@ -129,6 +131,7 @@ TRACE_KIND_TOOL_ROUTE = "tool.route"
 APPROVAL_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_WORKSPACE_LIST_ORDER = ["created_at_asc", "id_asc"]
+TASK_ARTIFACT_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_STEP_LIST_ORDER = ["sequence_no_asc", "created_at_asc", "id_asc"]
 TOOL_EXECUTION_LIST_ORDER = ["executed_at_asc", "id_asc"]
 EXECUTION_BUDGET_LIST_ORDER = ["created_at_asc", "id_asc"]
@@ -136,6 +139,8 @@ EXECUTION_BUDGET_MATCH_ORDER = ["specificity_desc", "created_at_asc", "id_asc"]
 EXECUTION_BUDGET_STATUSES = ["active", "inactive", "superseded"]
 TASK_STATUSES = ["pending_approval", "approved", "executed", "denied", "blocked"]
 TASK_WORKSPACE_STATUSES = ["active"]
+TASK_ARTIFACT_STATUSES = ["registered"]
+TASK_ARTIFACT_INGESTION_STATUSES = ["pending"]
 TASK_STEP_KINDS = ["governed_request"]
 TASK_STEP_STATUSES = ["created", "approved", "executed", "blocked", "denied"]
 APPROVAL_REQUEST_VERSION_V0 = "approval_request_v0"
@@ -1592,6 +1597,43 @@ class TaskWorkspaceListResponse(TypedDict):
 
 class TaskWorkspaceDetailResponse(TypedDict):
     workspace: TaskWorkspaceRecord
+
+
+@dataclass(frozen=True, slots=True)
+class TaskArtifactRegisterInput:
+    task_workspace_id: UUID
+    local_path: str
+    media_type_hint: str | None = None
+
+
+class TaskArtifactRecord(TypedDict):
+    id: str
+    task_id: str
+    task_workspace_id: str
+    status: TaskArtifactStatus
+    ingestion_status: TaskArtifactIngestionStatus
+    relative_path: str
+    media_type_hint: str | None
+    created_at: str
+    updated_at: str
+
+
+class TaskArtifactCreateResponse(TypedDict):
+    artifact: TaskArtifactRecord
+
+
+class TaskArtifactListSummary(TypedDict):
+    total_count: int
+    order: list[str]
+
+
+class TaskArtifactListResponse(TypedDict):
+    items: list[TaskArtifactRecord]
+    summary: TaskArtifactListSummary
+
+
+class TaskArtifactDetailResponse(TypedDict):
+    artifact: TaskArtifactRecord
 
 
 class TaskStepTraceLink(TypedDict):
