@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NotRequired, TypeAlias, TypedDict
 from uuid import UUID
 
 from alicebot_api.store import JsonObject, JsonValue
@@ -89,6 +89,8 @@ DEFAULT_MEMORY_REVIEW_LIMIT = 20
 MAX_MEMORY_REVIEW_LIMIT = 100
 DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 5
 MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 50
+DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 5
+MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 50
 COMPILER_VERSION_V0 = "continuity_v0"
 PROMPT_ASSEMBLY_VERSION_V0 = "prompt_assembly_v0"
 RESPONSE_GENERATION_VERSION_V0 = "response_generation_v0"
@@ -199,6 +201,42 @@ class CompileContextSemanticRetrievalInput:
             "query_vector": [float(value) for value in self.query_vector],
             "limit": self.limit,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class CompileContextTaskScopedArtifactRetrievalInput:
+    task_id: UUID
+    query: str
+    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "kind": "task",
+            "task_id": str(self.task_id),
+            "query": self.query,
+            "limit": self.limit,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CompileContextArtifactScopedArtifactRetrievalInput:
+    task_artifact_id: UUID
+    query: str
+    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "kind": "artifact",
+            "task_artifact_id": str(self.task_artifact_id),
+            "query": self.query,
+            "limit": self.limit,
+        }
+
+
+CompileContextArtifactRetrievalInput: TypeAlias = (
+    CompileContextTaskScopedArtifactRetrievalInput
+    | CompileContextArtifactScopedArtifactRetrievalInput
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +354,50 @@ class ContextPackHybridMemorySummary(TypedDict):
     semantic_order: list[str]
 
 
+class ContextPackArtifactChunk(TypedDict):
+    id: str
+    task_id: str
+    task_artifact_id: str
+    relative_path: str
+    media_type: str
+    sequence_no: int
+    char_start: int
+    char_end_exclusive: int
+    text: str
+    match: "TaskArtifactChunkRetrievalMatch"
+
+
+class ContextPackArtifactChunkSummary(TypedDict):
+    requested: bool
+    scope: TaskArtifactChunkRetrievalScope | None
+    query: str | None
+    query_terms: list[str]
+    matching_rule: str
+    limit: int
+    searched_artifact_count: int
+    candidate_count: int
+    included_count: int
+    excluded_uningested_artifact_count: int
+    excluded_limit_count: int
+    order: list[str]
+
+
+class ArtifactRetrievalDecisionTracePayload(TypedDict):
+    scope_kind: TaskArtifactChunkRetrievalScopeKind
+    task_id: str
+    task_artifact_id: str
+    relative_path: str
+    media_type: str | None
+    ingestion_status: TaskArtifactIngestionStatus
+    limit: int
+    matched_query_terms: NotRequired[list[str]]
+    matched_query_term_count: NotRequired[int]
+    first_match_char_start: NotRequired[int]
+    sequence_no: NotRequired[int]
+    char_start: NotRequired[int]
+    char_end_exclusive: NotRequired[int]
+
+
 class ContextPackMemorySummary(TypedDict):
     candidate_count: int
     included_count: int
@@ -399,6 +481,8 @@ class CompiledContextPack(TypedDict):
     events: list[ContextPackEvent]
     memories: list[ContextPackMemory]
     memory_summary: ContextPackMemorySummary
+    artifact_chunks: list[ContextPackArtifactChunk]
+    artifact_chunk_summary: ContextPackArtifactChunkSummary
     entities: list[ContextPackEntity]
     entity_summary: ContextPackEntitySummary
     entity_edges: list[ContextPackEntityEdge]
