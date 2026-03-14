@@ -7,12 +7,15 @@ from uuid import uuid4
 import pytest
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
+from alicebot_api.artifacts import TaskArtifactNotFoundError
 from alicebot_api.compiler import CompiledTraceRun
 from alicebot_api.contracts import AdmissionDecisionOutput
 from alicebot_api.embedding import (
     EmbeddingConfigValidationError,
     MemoryEmbeddingNotFoundError,
     MemoryEmbeddingValidationError,
+    TaskArtifactChunkEmbeddingNotFoundError,
+    TaskArtifactChunkEmbeddingValidationError,
 )
 from alicebot_api.entity import EntityNotFoundError, EntityValidationError
 from alicebot_api.entity_edge import EntityEdgeValidationError
@@ -112,6 +115,10 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v0/memory-embeddings" in route_paths
     assert "/v0/memories/{memory_id}/embeddings" in route_paths
     assert "/v0/memory-embeddings/{memory_embedding_id}" in route_paths
+    assert "/v0/task-artifact-chunk-embeddings" in route_paths
+    assert "/v0/task-artifacts/{task_artifact_id}/chunk-embeddings" in route_paths
+    assert "/v0/task-artifact-chunks/{task_artifact_chunk_id}/embeddings" in route_paths
+    assert "/v0/task-artifact-chunk-embeddings/{task_artifact_chunk_embedding_id}" in route_paths
     assert "/v0/entities" in route_paths
     assert "/v0/entity-edges" in route_paths
     assert "/v0/tools/route" in route_paths
@@ -2097,6 +2104,226 @@ def test_memory_embedding_read_routes_return_payload_and_not_found(monkeypatch) 
     assert not_found_response.status_code == 404
     assert json.loads(not_found_response.body) == {
         "detail": f"memory embedding {embedding_id} was not found"
+    }
+
+
+def test_task_artifact_chunk_embedding_routes_success_and_validation_errors(monkeypatch) -> None:
+    user_id = uuid4()
+    chunk_id = uuid4()
+    config_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_user_connection(database_url: str, current_user_id):
+        captured["database_url"] = database_url
+        captured["current_user_id"] = current_user_id
+        yield object()
+
+    def fake_upsert_task_artifact_chunk_embedding_record(store, *, user_id, request):
+        captured["store_type"] = type(store).__name__
+        captured["user_id"] = user_id
+        captured["request"] = request
+        return {
+            "embedding": {
+                "id": "artifact-embedding-123",
+                "task_artifact_id": "artifact-123",
+                "task_artifact_chunk_id": str(chunk_id),
+                "task_artifact_chunk_sequence_no": 2,
+                "embedding_config_id": str(config_id),
+                "dimensions": 3,
+                "vector": [0.1, 0.2, 0.3],
+                "created_at": "2026-03-14T12:00:00+00:00",
+                "updated_at": "2026-03-14T12:00:00+00:00",
+            },
+            "write_mode": "created",
+        }
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "upsert_task_artifact_chunk_embedding_record",
+        fake_upsert_task_artifact_chunk_embedding_record,
+    )
+
+    response = main_module.upsert_task_artifact_chunk_embedding(
+        main_module.UpsertTaskArtifactChunkEmbeddingRequest(
+            user_id=user_id,
+            task_artifact_chunk_id=chunk_id,
+            embedding_config_id=config_id,
+            vector=[0.1, 0.2, 0.3],
+        )
+    )
+
+    assert response.status_code == 201
+    assert json.loads(response.body)["write_mode"] == "created"
+    assert captured["database_url"] == "postgresql://app"
+    assert captured["current_user_id"] == user_id
+    assert captured["user_id"] == user_id
+    assert captured["request"].task_artifact_chunk_id == chunk_id
+
+    monkeypatch.setattr(
+        main_module,
+        "upsert_task_artifact_chunk_embedding_record",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TaskArtifactChunkEmbeddingValidationError(
+                "task_artifact_chunk_id must reference an existing task artifact chunk owned by the user"
+            )
+        ),
+    )
+
+    error_response = main_module.upsert_task_artifact_chunk_embedding(
+        main_module.UpsertTaskArtifactChunkEmbeddingRequest(
+            user_id=user_id,
+            task_artifact_chunk_id=chunk_id,
+            embedding_config_id=config_id,
+            vector=[0.1, 0.2, 0.3],
+        )
+    )
+
+    assert error_response.status_code == 400
+    assert json.loads(error_response.body) == {
+        "detail": "task_artifact_chunk_id must reference an existing task artifact chunk owned by the user"
+    }
+
+
+def test_task_artifact_chunk_embedding_read_routes_return_payload_and_not_found(monkeypatch) -> None:
+    user_id = uuid4()
+    artifact_id = uuid4()
+    chunk_id = uuid4()
+    embedding_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(_database_url: str, _current_user_id):
+        yield object()
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "list_task_artifact_chunk_embedding_records_for_artifact",
+        lambda *_args, **_kwargs: {
+            "items": [],
+            "summary": {
+                "total_count": 0,
+                "order": ["task_artifact_chunk_sequence_no_asc", "created_at_asc", "id_asc"],
+                "scope": {
+                    "kind": "artifact",
+                    "task_artifact_id": str(artifact_id),
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        main_module,
+        "list_task_artifact_chunk_embedding_records_for_chunk",
+        lambda *_args, **_kwargs: {
+            "items": [],
+            "summary": {
+                "total_count": 0,
+                "order": ["task_artifact_chunk_sequence_no_asc", "created_at_asc", "id_asc"],
+                "scope": {
+                    "kind": "chunk",
+                    "task_artifact_id": str(artifact_id),
+                    "task_artifact_chunk_id": str(chunk_id),
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_task_artifact_chunk_embedding_record",
+        lambda *_args, **_kwargs: {
+            "embedding": {
+                "id": str(embedding_id),
+                "task_artifact_id": str(artifact_id),
+                "task_artifact_chunk_id": str(chunk_id),
+                "task_artifact_chunk_sequence_no": 2,
+                "embedding_config_id": "config-123",
+                "dimensions": 3,
+                "vector": [0.1, 0.2, 0.3],
+                "created_at": "2026-03-14T12:00:00+00:00",
+                "updated_at": "2026-03-14T12:00:00+00:00",
+            }
+        },
+    )
+
+    artifact_response = main_module.list_task_artifact_chunk_embeddings_for_artifact(
+        task_artifact_id=artifact_id,
+        user_id=user_id,
+    )
+    chunk_response = main_module.list_task_artifact_chunk_embeddings(
+        task_artifact_chunk_id=chunk_id,
+        user_id=user_id,
+    )
+    detail_response = main_module.get_task_artifact_chunk_embedding(
+        task_artifact_chunk_embedding_id=embedding_id,
+        user_id=user_id,
+    )
+
+    assert artifact_response.status_code == 200
+    assert json.loads(artifact_response.body)["summary"]["scope"]["task_artifact_id"] == str(
+        artifact_id
+    )
+    assert chunk_response.status_code == 200
+    assert json.loads(chunk_response.body)["summary"]["scope"]["task_artifact_chunk_id"] == str(
+        chunk_id
+    )
+    assert detail_response.status_code == 200
+    assert json.loads(detail_response.body)["embedding"]["id"] == str(embedding_id)
+
+    monkeypatch.setattr(
+        main_module,
+        "list_task_artifact_chunk_embedding_records_for_artifact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TaskArtifactNotFoundError(f"task artifact {artifact_id} was not found")
+        ),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "list_task_artifact_chunk_embedding_records_for_chunk",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TaskArtifactChunkEmbeddingNotFoundError(
+                f"task artifact chunk {chunk_id} was not found"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_task_artifact_chunk_embedding_record",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TaskArtifactChunkEmbeddingNotFoundError(
+                f"task artifact chunk embedding {embedding_id} was not found"
+            )
+        ),
+    )
+
+    missing_artifact_response = main_module.list_task_artifact_chunk_embeddings_for_artifact(
+        task_artifact_id=artifact_id,
+        user_id=user_id,
+    )
+    missing_chunk_response = main_module.list_task_artifact_chunk_embeddings(
+        task_artifact_chunk_id=chunk_id,
+        user_id=user_id,
+    )
+    missing_detail_response = main_module.get_task_artifact_chunk_embedding(
+        task_artifact_chunk_embedding_id=embedding_id,
+        user_id=user_id,
+    )
+
+    assert missing_artifact_response.status_code == 404
+    assert json.loads(missing_artifact_response.body) == {
+        "detail": f"task artifact {artifact_id} was not found"
+    }
+    assert missing_chunk_response.status_code == 404
+    assert json.loads(missing_chunk_response.body) == {
+        "detail": f"task artifact chunk {chunk_id} was not found"
+    }
+    assert missing_detail_response.status_code == 404
+    assert json.loads(missing_detail_response.body) == {
+        "detail": f"task artifact chunk embedding {embedding_id} was not found"
     }
 
 

@@ -270,6 +270,19 @@ class TaskArtifactChunkRow(TypedDict):
     updated_at: datetime
 
 
+class TaskArtifactChunkEmbeddingRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    task_artifact_id: UUID
+    task_artifact_chunk_id: UUID
+    task_artifact_chunk_sequence_no: int
+    embedding_config_id: UUID
+    dimensions: int
+    vector: list[float]
+    created_at: datetime
+    updated_at: datetime
+
+
 class TaskStepRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -1597,6 +1610,181 @@ LIST_TASK_ARTIFACT_CHUNKS_SQL = """
                 ORDER BY sequence_no ASC, id ASC
                 """
 
+GET_TASK_ARTIFACT_CHUNK_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  task_artifact_id,
+                  sequence_no,
+                  char_start,
+                  char_end_exclusive,
+                  text,
+                  created_at,
+                  updated_at
+                FROM task_artifact_chunks
+                WHERE id = %s
+                """
+
+INSERT_TASK_ARTIFACT_CHUNK_EMBEDDING_SQL = """
+                WITH inserted AS (
+                  INSERT INTO task_artifact_chunk_embeddings (
+                    user_id,
+                    task_artifact_chunk_id,
+                    embedding_config_id,
+                    dimensions,
+                    vector,
+                    created_at,
+                    updated_at
+                  )
+                  VALUES (
+                    app.current_user_id(),
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    clock_timestamp(),
+                    clock_timestamp()
+                  )
+                  RETURNING
+                    id,
+                    user_id,
+                    task_artifact_chunk_id,
+                    embedding_config_id,
+                    dimensions,
+                    vector,
+                    created_at,
+                    updated_at
+                )
+                SELECT
+                  inserted.id,
+                  inserted.user_id,
+                  chunks.task_artifact_id,
+                  inserted.task_artifact_chunk_id,
+                  chunks.sequence_no AS task_artifact_chunk_sequence_no,
+                  inserted.embedding_config_id,
+                  inserted.dimensions,
+                  inserted.vector,
+                  inserted.created_at,
+                  inserted.updated_at
+                FROM inserted
+                JOIN task_artifact_chunks AS chunks
+                  ON chunks.id = inserted.task_artifact_chunk_id
+                 AND chunks.user_id = inserted.user_id
+                """
+
+GET_TASK_ARTIFACT_CHUNK_EMBEDDING_SQL = """
+                SELECT
+                  embeddings.id,
+                  embeddings.user_id,
+                  chunks.task_artifact_id,
+                  embeddings.task_artifact_chunk_id,
+                  chunks.sequence_no AS task_artifact_chunk_sequence_no,
+                  embeddings.embedding_config_id,
+                  embeddings.dimensions,
+                  embeddings.vector,
+                  embeddings.created_at,
+                  embeddings.updated_at
+                FROM task_artifact_chunk_embeddings AS embeddings
+                JOIN task_artifact_chunks AS chunks
+                  ON chunks.id = embeddings.task_artifact_chunk_id
+                 AND chunks.user_id = embeddings.user_id
+                WHERE embeddings.id = %s
+                """
+
+GET_TASK_ARTIFACT_CHUNK_EMBEDDING_BY_CHUNK_AND_CONFIG_SQL = """
+                SELECT
+                  embeddings.id,
+                  embeddings.user_id,
+                  chunks.task_artifact_id,
+                  embeddings.task_artifact_chunk_id,
+                  chunks.sequence_no AS task_artifact_chunk_sequence_no,
+                  embeddings.embedding_config_id,
+                  embeddings.dimensions,
+                  embeddings.vector,
+                  embeddings.created_at,
+                  embeddings.updated_at
+                FROM task_artifact_chunk_embeddings AS embeddings
+                JOIN task_artifact_chunks AS chunks
+                  ON chunks.id = embeddings.task_artifact_chunk_id
+                 AND chunks.user_id = embeddings.user_id
+                WHERE embeddings.task_artifact_chunk_id = %s
+                  AND embeddings.embedding_config_id = %s
+                """
+
+LIST_TASK_ARTIFACT_CHUNK_EMBEDDINGS_FOR_CHUNK_SQL = """
+                SELECT
+                  embeddings.id,
+                  embeddings.user_id,
+                  chunks.task_artifact_id,
+                  embeddings.task_artifact_chunk_id,
+                  chunks.sequence_no AS task_artifact_chunk_sequence_no,
+                  embeddings.embedding_config_id,
+                  embeddings.dimensions,
+                  embeddings.vector,
+                  embeddings.created_at,
+                  embeddings.updated_at
+                FROM task_artifact_chunk_embeddings AS embeddings
+                JOIN task_artifact_chunks AS chunks
+                  ON chunks.id = embeddings.task_artifact_chunk_id
+                 AND chunks.user_id = embeddings.user_id
+                WHERE embeddings.task_artifact_chunk_id = %s
+                ORDER BY chunks.sequence_no ASC, embeddings.created_at ASC, embeddings.id ASC
+                """
+
+LIST_TASK_ARTIFACT_CHUNK_EMBEDDINGS_FOR_ARTIFACT_SQL = """
+                SELECT
+                  embeddings.id,
+                  embeddings.user_id,
+                  chunks.task_artifact_id,
+                  embeddings.task_artifact_chunk_id,
+                  chunks.sequence_no AS task_artifact_chunk_sequence_no,
+                  embeddings.embedding_config_id,
+                  embeddings.dimensions,
+                  embeddings.vector,
+                  embeddings.created_at,
+                  embeddings.updated_at
+                FROM task_artifact_chunk_embeddings AS embeddings
+                JOIN task_artifact_chunks AS chunks
+                  ON chunks.id = embeddings.task_artifact_chunk_id
+                 AND chunks.user_id = embeddings.user_id
+                WHERE chunks.task_artifact_id = %s
+                ORDER BY chunks.sequence_no ASC, embeddings.created_at ASC, embeddings.id ASC
+                """
+
+UPDATE_TASK_ARTIFACT_CHUNK_EMBEDDING_SQL = """
+                WITH updated AS (
+                  UPDATE task_artifact_chunk_embeddings
+                  SET dimensions = %s,
+                      vector = %s,
+                      updated_at = clock_timestamp()
+                  WHERE id = %s
+                  RETURNING
+                    id,
+                    user_id,
+                    task_artifact_chunk_id,
+                    embedding_config_id,
+                    dimensions,
+                    vector,
+                    created_at,
+                    updated_at
+                )
+                SELECT
+                  updated.id,
+                  updated.user_id,
+                  chunks.task_artifact_id,
+                  updated.task_artifact_chunk_id,
+                  chunks.sequence_no AS task_artifact_chunk_sequence_no,
+                  updated.embedding_config_id,
+                  updated.dimensions,
+                  updated.vector,
+                  updated.created_at,
+                  updated.updated_at
+                FROM updated
+                JOIN task_artifact_chunks AS chunks
+                  ON chunks.id = updated.task_artifact_chunk_id
+                 AND chunks.user_id = updated.user_id
+                """
+
 UPDATE_TASK_ARTIFACT_INGESTION_STATUS_SQL = """
                 UPDATE task_artifacts
                 SET ingestion_status = %s,
@@ -2770,8 +2958,76 @@ class ContinuityStore:
             (task_artifact_id, sequence_no, char_start, char_end_exclusive, text),
         )
 
+    def get_task_artifact_chunk_optional(self, task_artifact_chunk_id: UUID) -> TaskArtifactChunkRow | None:
+        return self._fetch_optional_one(GET_TASK_ARTIFACT_CHUNK_SQL, (task_artifact_chunk_id,))
+
     def list_task_artifact_chunks(self, task_artifact_id: UUID) -> list[TaskArtifactChunkRow]:
         return self._fetch_all(LIST_TASK_ARTIFACT_CHUNKS_SQL, (task_artifact_id,))
+
+    def create_task_artifact_chunk_embedding(
+        self,
+        *,
+        task_artifact_chunk_id: UUID,
+        embedding_config_id: UUID,
+        dimensions: int,
+        vector: list[float],
+    ) -> TaskArtifactChunkEmbeddingRow:
+        return self._fetch_one(
+            "create_task_artifact_chunk_embedding",
+            INSERT_TASK_ARTIFACT_CHUNK_EMBEDDING_SQL,
+            (task_artifact_chunk_id, embedding_config_id, dimensions, Jsonb(vector)),
+        )
+
+    def get_task_artifact_chunk_embedding_optional(
+        self,
+        task_artifact_chunk_embedding_id: UUID,
+    ) -> TaskArtifactChunkEmbeddingRow | None:
+        return self._fetch_optional_one(
+            GET_TASK_ARTIFACT_CHUNK_EMBEDDING_SQL,
+            (task_artifact_chunk_embedding_id,),
+        )
+
+    def get_task_artifact_chunk_embedding_by_chunk_and_config_optional(
+        self,
+        *,
+        task_artifact_chunk_id: UUID,
+        embedding_config_id: UUID,
+    ) -> TaskArtifactChunkEmbeddingRow | None:
+        return self._fetch_optional_one(
+            GET_TASK_ARTIFACT_CHUNK_EMBEDDING_BY_CHUNK_AND_CONFIG_SQL,
+            (task_artifact_chunk_id, embedding_config_id),
+        )
+
+    def list_task_artifact_chunk_embeddings_for_chunk(
+        self,
+        task_artifact_chunk_id: UUID,
+    ) -> list[TaskArtifactChunkEmbeddingRow]:
+        return self._fetch_all(
+            LIST_TASK_ARTIFACT_CHUNK_EMBEDDINGS_FOR_CHUNK_SQL,
+            (task_artifact_chunk_id,),
+        )
+
+    def list_task_artifact_chunk_embeddings_for_artifact(
+        self,
+        task_artifact_id: UUID,
+    ) -> list[TaskArtifactChunkEmbeddingRow]:
+        return self._fetch_all(
+            LIST_TASK_ARTIFACT_CHUNK_EMBEDDINGS_FOR_ARTIFACT_SQL,
+            (task_artifact_id,),
+        )
+
+    def update_task_artifact_chunk_embedding(
+        self,
+        *,
+        task_artifact_chunk_embedding_id: UUID,
+        dimensions: int,
+        vector: list[float],
+    ) -> TaskArtifactChunkEmbeddingRow:
+        return self._fetch_one(
+            "update_task_artifact_chunk_embedding",
+            UPDATE_TASK_ARTIFACT_CHUNK_EMBEDDING_SQL,
+            (dimensions, Jsonb(vector), task_artifact_chunk_embedding_id),
+        )
 
     def update_task_artifact_ingestion_status(
         self,
