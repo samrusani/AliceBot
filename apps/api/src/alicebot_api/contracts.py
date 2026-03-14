@@ -23,6 +23,7 @@ TaskWorkspaceStatus = Literal["active"]
 TaskArtifactStatus = Literal["registered"]
 TaskArtifactIngestionStatus = Literal["pending", "ingested"]
 TaskArtifactChunkRetrievalScopeKind = Literal["task", "artifact"]
+TaskArtifactChunkEmbeddingListScopeKind = Literal["artifact", "chunk"]
 TaskLifecycleSource = Literal[
     "approval_request",
     "approval_resolution",
@@ -136,6 +137,11 @@ TASK_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_WORKSPACE_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_LIST_ORDER = ["sequence_no_asc", "id_asc"]
+TASK_ARTIFACT_CHUNK_EMBEDDING_LIST_ORDER = [
+    "task_artifact_chunk_sequence_no_asc",
+    "created_at_asc",
+    "id_asc",
+]
 TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER = [
     "matched_query_term_count_desc",
     "first_match_char_start_asc",
@@ -742,6 +748,20 @@ class MemoryEmbeddingUpsertInput:
     def as_payload(self) -> JsonObject:
         return {
             "memory_id": str(self.memory_id),
+            "embedding_config_id": str(self.embedding_config_id),
+            "vector": [float(value) for value in self.vector],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TaskArtifactChunkEmbeddingUpsertInput:
+    task_artifact_chunk_id: UUID
+    embedding_config_id: UUID
+    vector: tuple[float, ...]
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "task_artifact_chunk_id": str(self.task_artifact_chunk_id),
             "embedding_config_id": str(self.embedding_config_id),
             "vector": [float(value) for value in self.vector],
         }
@@ -1768,6 +1788,44 @@ class TaskArtifactChunkListSummary(TypedDict):
 class TaskArtifactChunkListResponse(TypedDict):
     items: list[TaskArtifactChunkRecord]
     summary: TaskArtifactChunkListSummary
+
+
+class TaskArtifactChunkEmbeddingRecord(TypedDict):
+    id: str
+    task_artifact_id: str
+    task_artifact_chunk_id: str
+    task_artifact_chunk_sequence_no: int
+    embedding_config_id: str
+    dimensions: int
+    vector: list[float]
+    created_at: str
+    updated_at: str
+
+
+class TaskArtifactChunkEmbeddingWriteResponse(TypedDict):
+    embedding: TaskArtifactChunkEmbeddingRecord
+    write_mode: Literal["created", "updated"]
+
+
+class TaskArtifactChunkEmbeddingDetailResponse(TypedDict):
+    embedding: TaskArtifactChunkEmbeddingRecord
+
+
+class TaskArtifactChunkEmbeddingListScope(TypedDict):
+    kind: TaskArtifactChunkEmbeddingListScopeKind
+    task_artifact_id: str
+    task_artifact_chunk_id: NotRequired[str]
+
+
+class TaskArtifactChunkEmbeddingListSummary(TypedDict):
+    total_count: int
+    order: list[str]
+    scope: TaskArtifactChunkEmbeddingListScope
+
+
+class TaskArtifactChunkEmbeddingListResponse(TypedDict):
+    items: list[TaskArtifactChunkEmbeddingRecord]
+    summary: TaskArtifactChunkEmbeddingListSummary
 
 
 class TaskArtifactIngestionResponse(TypedDict):

@@ -6,24 +6,16 @@ PASS
 
 ## criteria met
 
-- `POST /v0/context/compile` optionally accepts `artifact_retrieval` input and returns a separate `context_pack.artifact_chunks` section plus `artifact_chunk_summary`.
-- Compile-path artifact retrieval uses only durable `task_artifact_chunks` rows through the existing lexical retrieval seam in `apps/api/src/alicebot_api/artifacts.py`.
-- Non-ingested artifacts are excluded from compile-path artifact results and produce explicit exclusion trace events.
-- Artifact include/exclude decisions are persisted in `trace_events`, and compile summary events expose artifact retrieval counters and scope kind.
-- Artifact chunk ordering is deterministic and matches the documented order:
-  - matched query term count desc
-  - first match start asc
-  - relative path asc
-  - sequence no asc
-  - id asc
-- Current continuity, memory, entity, and entity-edge sections remain intact and separate from artifact chunks.
-- Task-scoped and artifact-scoped compile retrieval paths are both covered, including artifact-scoped happy-path coverage in `tests/integration/test_context_compile.py`.
-- The sprint stayed within scope: no embeddings, semantic retrieval for artifact chunks, connectors, runner work, UI work, or raw-file reads in compile.
-- Verification in this review:
-  - `./.venv/bin/python -m pytest tests/unit` -> `360 passed in 0.59s`
-  - `./.venv/bin/python -m pytest tests/integration` -> `107 passed in 29.88s`
-  - `./.venv/bin/python -m pytest tests/integration/test_context_compile.py` -> `8 passed in 2.42s`
-  - `git diff --check` -> passed
+- The sprint remains technically narrow and limited to the artifact-chunk embedding substrate: migration, contracts, store/service logic, and minimal embedding read/write routes are present in [20260314_0025_task_artifact_chunk_embeddings.py](apps/api/alembic/versions/20260314_0025_task_artifact_chunk_embeddings.py), [embedding.py](apps/api/src/alicebot_api/embedding.py#L315), [main.py](apps/api/src/alicebot_api/main.py#L1968), and [store.py](apps/api/src/alicebot_api/store.py).
+- Writes attach one validated vector to one visible `task_artifact_chunk` under one visible `embedding_config`, reject missing refs and dimension mismatches, and preserve user isolation through existing ownership seams. See [embedding.py](apps/api/src/alicebot_api/embedding.py#L323).
+- Reads are deterministic and user-scoped. The migration enforces composite ownership-linked foreign keys and RLS, and list ordering is explicit in both contracts and queries. See [contracts.py](apps/api/src/alicebot_api/contracts.py), [store.py](apps/api/src/alicebot_api/store.py), and [20260314_0025_task_artifact_chunk_embeddings.py](apps/api/alembic/versions/20260314_0025_task_artifact_chunk_embeddings.py#L15).
+- Coverage remains adequate for the sprint packet: persistence, ordering, invalid refs, dimension validation, isolation, route shape, and migration upgrade/downgrade are test-backed.
+- Prior runtime verification for this review cycle remains valid:
+  - `./.venv/bin/python -m pytest tests/unit` -> `370 passed`
+  - `./.venv/bin/python -m pytest tests/integration` -> `111 passed`
+- The follow-up addressed the remaining review findings:
+  - [ARCHITECTURE.md](ARCHITECTURE.md) now reflects Sprint 5G as implemented, includes the new embedding routes and table, and no longer describes artifact-chunk embeddings as deferred.
+  - [RULES.md](RULES.md#L6) now makes [.ai/active/SPRINT_PACKET.md](.ai/active/SPRINT_PACKET.md) an immutable control/input artifact during implementation unless Control Tower changes the sprint.
 
 ## criteria missed
 
@@ -31,25 +23,26 @@ PASS
 
 ## quality issues
 
-- No blocking implementation or coverage issues found after the follow-up fixes.
+- No blocking implementation or documentation quality issues remain.
 
 ## regression risks
 
-- Low. The change remains additive, narrowly scoped to compile-path artifact chunk inclusion, and is covered by unit plus Postgres-backed integration tests for ordering, exclusion, tracing, validation, and isolation.
+- Low. The only follow-up changes in this pass were documentation and rules updates, and they do not affect runtime behavior.
 
 ## docs issues
 
-- `BUILD_REPORT.md` is aligned with the implementation and verification.
-- `ARCHITECTURE.md` now reflects the shipped boundary through Sprint 5F and no longer misstates artifact retrieval as unimplemented.
+- None blocking.
+- Provenance note: [.ai/active/SPRINT_PACKET.md](.ai/active/SPRINT_PACKET.md) is still modified in the worktree relative to the repo base, but the current contents match the Sprint 5G assignment being reviewed, and [RULES.md](RULES.md#L6) now codifies immutability for future implementation turns.
 
 ## should anything be added to RULES.md?
 
-- No.
+- No. The needed control-artifact rule has been added.
 
 ## should anything update ARCHITECTURE.md?
 
-- No further update is required for sprint acceptance.
+- No. The needed Sprint 5G updates are present.
 
 ## recommended next action
 
-- Mark Sprint 5F accepted and proceed to the next milestone in a separate sprint.
+1. Treat the sprint as review-passed.
+2. If desired, keep the new `SPRINT_PACKET.md` immutability rule as the standing process guard for future sprints.
