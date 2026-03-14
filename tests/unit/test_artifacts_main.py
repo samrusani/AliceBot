@@ -64,6 +64,47 @@ def test_get_task_artifact_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     assert json.loads(response.body) == {"detail": f"task artifact {task_artifact_id} was not found"}
 
 
+def test_list_task_artifact_chunks_endpoint_returns_payload(monkeypatch) -> None:
+    user_id = uuid4()
+    task_artifact_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "list_task_artifact_chunk_records",
+        lambda *_args, **_kwargs: {
+            "items": [],
+            "summary": {
+                "total_count": 0,
+                "total_characters": 0,
+                "media_type": "text/plain",
+                "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+                "order": ["sequence_no_asc", "id_asc"],
+            },
+        },
+    )
+
+    response = main_module.list_task_artifact_chunks(task_artifact_id, user_id)
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {
+        "items": [],
+        "summary": {
+            "total_count": 0,
+            "total_characters": 0,
+            "media_type": "text/plain",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+
+
 def test_register_task_artifact_endpoint_maps_workspace_not_found_to_404(monkeypatch) -> None:
     user_id = uuid4()
     task_workspace_id = uuid4()
@@ -152,3 +193,61 @@ def test_register_task_artifact_endpoint_maps_duplicate_to_409(monkeypatch) -> N
     assert json.loads(response.body) == {
         "detail": f"artifact docs/spec.txt is already registered for task workspace {task_workspace_id}"
     }
+
+
+def test_ingest_task_artifact_endpoint_maps_validation_to_400(monkeypatch) -> None:
+    user_id = uuid4()
+    task_artifact_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    def fake_ingest_task_artifact_record(*_args, **_kwargs):
+        raise TaskArtifactValidationError(
+            "artifact docs/spec.txt has unsupported media type application/pdf; "
+            "supported types: text/plain, text/markdown"
+        )
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(main_module, "ingest_task_artifact_record", fake_ingest_task_artifact_record)
+
+    response = main_module.ingest_task_artifact(
+        task_artifact_id,
+        main_module.IngestTaskArtifactRequest(user_id=user_id),
+    )
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {
+        "detail": (
+            "artifact docs/spec.txt has unsupported media type application/pdf; "
+            "supported types: text/plain, text/markdown"
+        )
+    }
+
+
+def test_ingest_task_artifact_endpoint_maps_not_found_to_404(monkeypatch) -> None:
+    user_id = uuid4()
+    task_artifact_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    def fake_ingest_task_artifact_record(*_args, **_kwargs):
+        raise TaskArtifactNotFoundError(f"task artifact {task_artifact_id} was not found")
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(main_module, "ingest_task_artifact_record", fake_ingest_task_artifact_record)
+
+    response = main_module.ingest_task_artifact(
+        task_artifact_id,
+        main_module.IngestTaskArtifactRequest(user_id=user_id),
+    )
+
+    assert response.status_code == 404
+    assert json.loads(response.body) == {"detail": f"task artifact {task_artifact_id} was not found"}

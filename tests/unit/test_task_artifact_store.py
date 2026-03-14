@@ -226,3 +226,145 @@ def test_task_artifact_store_methods_use_expected_queries() -> None:
             (str(task_workspace_id),),
         ),
     ]
+
+
+def test_task_artifact_chunk_store_methods_use_expected_queries() -> None:
+    task_artifact_id = uuid4()
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "task_artifact_id": task_artifact_id,
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 4,
+                "text": "spec",
+                "created_at": "2026-03-14T10:00:00+00:00",
+                "updated_at": "2026-03-14T10:00:00+00:00",
+            },
+            {
+                "id": task_artifact_id,
+                "user_id": uuid4(),
+                "task_id": uuid4(),
+                "task_workspace_id": uuid4(),
+                "status": "registered",
+                "ingestion_status": "ingested",
+                "relative_path": "docs/spec.txt",
+                "media_type_hint": "text/plain",
+                "created_at": "2026-03-14T10:00:00+00:00",
+                "updated_at": "2026-03-14T10:01:00+00:00",
+            },
+        ],
+        fetchall_result=[
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "task_artifact_id": task_artifact_id,
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 4,
+                "text": "spec",
+                "created_at": "2026-03-14T10:00:00+00:00",
+                "updated_at": "2026-03-14T10:00:00+00:00",
+            }
+        ],
+    )
+    store = ContinuityStore(RecordingConnection(cursor))
+
+    created = store.create_task_artifact_chunk(
+        task_artifact_id=task_artifact_id,
+        sequence_no=1,
+        char_start=0,
+        char_end_exclusive=4,
+        text="spec",
+    )
+    updated = store.update_task_artifact_ingestion_status(
+        task_artifact_id=task_artifact_id,
+        ingestion_status="ingested",
+    )
+    listed = store.list_task_artifact_chunks(task_artifact_id)
+    store.lock_task_artifact_ingestion(task_artifact_id)
+
+    assert created["task_artifact_id"] == task_artifact_id
+    assert updated["ingestion_status"] == "ingested"
+    assert listed[0]["task_artifact_id"] == task_artifact_id
+    assert cursor.executed == [
+        (
+            """
+                INSERT INTO task_artifact_chunks (
+                  user_id,
+                  task_artifact_id,
+                  sequence_no,
+                  char_start,
+                  char_end_exclusive,
+                  text,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  task_artifact_id,
+                  sequence_no,
+                  char_start,
+                  char_end_exclusive,
+                  text,
+                  created_at,
+                  updated_at
+                """,
+            (task_artifact_id, 1, 0, 4, "spec"),
+        ),
+        (
+            """
+                UPDATE task_artifacts
+                SET ingestion_status = %s,
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                RETURNING
+                  id,
+                  user_id,
+                  task_id,
+                  task_workspace_id,
+                  status,
+                  ingestion_status,
+                  relative_path,
+                  media_type_hint,
+                  created_at,
+                  updated_at
+                """,
+            ("ingested", task_artifact_id),
+        ),
+        (
+            """
+                SELECT
+                  id,
+                  user_id,
+                  task_artifact_id,
+                  sequence_no,
+                  char_start,
+                  char_end_exclusive,
+                  text,
+                  created_at,
+                  updated_at
+                FROM task_artifact_chunks
+                WHERE task_artifact_id = %s
+                ORDER BY sequence_no ASC, id ASC
+                """,
+            (task_artifact_id,),
+        ),
+        (
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 5))",
+            (str(task_artifact_id),),
+        ),
+    ]

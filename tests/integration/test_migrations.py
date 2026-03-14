@@ -301,6 +301,8 @@ def test_migrations_upgrade_and_downgrade(database_urls):
             assert cur.fetchone()[0] == "task_workspaces"
             cur.execute("SELECT to_regclass('public.task_artifacts')")
             assert cur.fetchone()[0] == "task_artifacts"
+            cur.execute("SELECT to_regclass('public.task_artifact_chunks')")
+            assert cur.fetchone()[0] == "task_artifact_chunks"
             cur.execute("SELECT to_regclass('public.task_steps')")
             assert cur.fetchone()[0] == "task_steps"
             cur.execute(
@@ -383,6 +385,7 @@ def test_migrations_upgrade_and_downgrade(database_urls):
                     'tasks',
                     'task_workspaces',
                     'task_artifacts',
+                    'task_artifact_chunks',
                     'task_steps',
                     'execution_budgets',
                     'tool_executions'
@@ -404,6 +407,7 @@ def test_migrations_upgrade_and_downgrade(database_urls):
                 ("memory_revisions", True, True),
                 ("policies", True, True),
                 ("sessions", True, True),
+                ("task_artifact_chunks", True, True),
                 ("task_artifacts", True, True),
                 ("task_steps", True, True),
                 ("task_workspaces", True, True),
@@ -473,6 +477,8 @@ def test_migrations_upgrade_and_downgrade(database_urls):
                   has_table_privilege('alicebot_app', 'task_workspaces', 'DELETE'),
                   has_table_privilege('alicebot_app', 'task_artifacts', 'UPDATE'),
                   has_table_privilege('alicebot_app', 'task_artifacts', 'DELETE'),
+                  has_table_privilege('alicebot_app', 'task_artifact_chunks', 'UPDATE'),
+                  has_table_privilege('alicebot_app', 'task_artifact_chunks', 'DELETE'),
                   has_table_privilege('alicebot_app', 'task_steps', 'UPDATE'),
                   has_table_privilege('alicebot_app', 'task_steps', 'DELETE'),
                   has_table_privilege('alicebot_app', 'execution_budgets', 'UPDATE'),
@@ -510,6 +516,8 @@ def test_migrations_upgrade_and_downgrade(database_urls):
                 False,
                 False,
                 False,
+                True,
+                False,
                 False,
                 False,
                 True,
@@ -524,6 +532,8 @@ def test_migrations_upgrade_and_downgrade(database_urls):
 
     with psycopg.connect(database_urls["admin"]) as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.task_artifact_chunks')")
+            assert cur.fetchone()[0] is None
             cur.execute("SELECT to_regclass('public.task_artifacts')")
             assert cur.fetchone()[0] is None
             cur.execute("SELECT to_regclass('public.task_workspaces')")
