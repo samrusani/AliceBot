@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -9,6 +10,14 @@ import psycopg
 from alicebot_api.contracts import (
     TASK_ARTIFACT_LIST_ORDER,
     TASK_ARTIFACT_CHUNK_LIST_ORDER,
+    TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER,
+    ArtifactScopedArtifactChunkRetrievalInput,
+    TaskArtifactChunkRetrievalItem,
+    TaskArtifactChunkRetrievalMatch,
+    TaskArtifactChunkRetrievalResponse,
+    TaskArtifactChunkRetrievalScope,
+    TaskArtifactChunkRetrievalScopeKind,
+    TaskArtifactChunkRetrievalSummary,
     TaskArtifactCreateResponse,
     TaskArtifactDetailResponse,
     TaskArtifactChunkListResponse,
@@ -21,8 +30,10 @@ from alicebot_api.contracts import (
     TaskArtifactRegisterInput,
     TaskArtifactStatus,
     TaskArtifactIngestionStatus,
+    TaskScopedArtifactChunkRetrievalInput,
 )
 from alicebot_api.store import ContinuityStore, TaskArtifactChunkRow, TaskArtifactRow
+from alicebot_api.tasks import TaskNotFoundError
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
 SUPPORTED_TEXT_ARTIFACT_MEDIA_TYPES = ("text/plain", "text/markdown")
@@ -34,6 +45,10 @@ SUPPORTED_TEXT_ARTIFACT_EXTENSIONS = {
 }
 TASK_ARTIFACT_CHUNK_MAX_CHARS = 1000
 TASK_ARTIFACT_CHUNKING_RULE = "normalized_utf8_text_fixed_window_1000_chars_v1"
+TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE = (
+    "casefolded_unicode_word_overlap_unique_query_terms_v1"
+)
+_LEXICAL_TERM_PATTERN = re.compile(r"\w+")
 
 
 class TaskArtifactNotFoundError(LookupError):
@@ -46,6 +61,10 @@ class TaskArtifactAlreadyExistsError(RuntimeError):
 
 class TaskArtifactValidationError(ValueError):
     """Raised when a local artifact path cannot satisfy registration constraints."""
+
+
+class TaskArtifactChunkRetrievalValidationError(ValueError):
+    """Raised when an artifact chunk retrieval request cannot be evaluated safely."""
 
 
 def resolve_artifact_path(local_path: str) -> Path:
@@ -170,6 +189,150 @@ def build_task_artifact_chunk_list_summary(
         "chunking_rule": TASK_ARTIFACT_CHUNKING_RULE,
         "order": list(TASK_ARTIFACT_CHUNK_LIST_ORDER),
     }
+
+
+def extract_unique_lexical_terms(text: str) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for match in _LEXICAL_TERM_PATTERN.finditer(text.casefold()):
+        term = match.group(0)
+        if term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms
+
+
+def resolve_artifact_chunk_retrieval_query_terms(query: str) -> list[str]:
+    terms = extract_unique_lexical_terms(query)
+    if not terms:
+        raise TaskArtifactChunkRetrievalValidationError(
+            "artifact chunk retrieval query must include at least one word"
+        )
+    return terms
+
+
+def build_task_artifact_chunk_retrieval_scope(
+    *,
+    kind: str,
+    task_id: UUID,
+    task_artifact_id: UUID | None = None,
+) -> TaskArtifactChunkRetrievalScope:
+    scope: TaskArtifactChunkRetrievalScope = {
+        "kind": cast(TaskArtifactChunkRetrievalScopeKind, kind),
+        "task_id": str(task_id),
+    }
+    if task_artifact_id is not None:
+        scope["task_artifact_id"] = str(task_artifact_id)
+    return scope
+
+
+def build_task_artifact_chunk_retrieval_summary(
+    *,
+    total_count: int,
+    searched_artifact_count: int,
+    query: str,
+    query_terms: list[str],
+    scope: TaskArtifactChunkRetrievalScope,
+) -> TaskArtifactChunkRetrievalSummary:
+    return {
+        "total_count": total_count,
+        "searched_artifact_count": searched_artifact_count,
+        "query": query,
+        "query_terms": list(query_terms),
+        "matching_rule": TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
+        "order": list(TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER),
+        "scope": scope,
+    }
+
+
+def match_artifact_chunk_text(
+    *,
+    query_terms: list[str],
+    chunk_text: str,
+) -> TaskArtifactChunkRetrievalMatch | None:
+    first_positions: dict[str, int] = {}
+    for match in _LEXICAL_TERM_PATTERN.finditer(chunk_text.casefold()):
+        term = match.group(0)
+        if term not in first_positions:
+            first_positions[term] = match.start()
+
+    matched_terms = [term for term in query_terms if term in first_positions]
+    if not matched_terms:
+        return None
+
+    return {
+        "matched_query_terms": matched_terms,
+        "matched_query_term_count": len(matched_terms),
+        "first_match_char_start": min(first_positions[term] for term in matched_terms),
+    }
+
+
+def serialize_task_artifact_chunk_retrieval_item(
+    *,
+    artifact_row: TaskArtifactRow,
+    chunk_row: TaskArtifactChunkRow,
+    match: TaskArtifactChunkRetrievalMatch,
+) -> TaskArtifactChunkRetrievalItem:
+    return {
+        "id": str(chunk_row["id"]),
+        "task_id": str(artifact_row["task_id"]),
+        "task_artifact_id": str(chunk_row["task_artifact_id"]),
+        "relative_path": artifact_row["relative_path"],
+        "media_type": infer_task_artifact_media_type(artifact_row) or "unknown",
+        "sequence_no": chunk_row["sequence_no"],
+        "char_start": chunk_row["char_start"],
+        "char_end_exclusive": chunk_row["char_end_exclusive"],
+        "text": chunk_row["text"],
+        "match": match,
+    }
+
+
+def retrieve_matching_task_artifact_chunks(
+    store: ContinuityStore,
+    *,
+    artifact_rows: list[TaskArtifactRow],
+    query_terms: list[str],
+) -> tuple[list[TaskArtifactChunkRetrievalItem], int]:
+    matched_items_with_keys: list[
+        tuple[tuple[int, int, str, int, str], TaskArtifactChunkRetrievalItem]
+    ] = []
+    searched_artifact_count = 0
+
+    for artifact_row in artifact_rows:
+        if artifact_row["ingestion_status"] != "ingested":
+            continue
+
+        searched_artifact_count += 1
+        chunk_rows = store.list_task_artifact_chunks(artifact_row["id"])
+        for chunk_row in chunk_rows:
+            match = match_artifact_chunk_text(
+                query_terms=query_terms,
+                chunk_text=chunk_row["text"],
+            )
+            if match is None:
+                continue
+
+            item = serialize_task_artifact_chunk_retrieval_item(
+                artifact_row=artifact_row,
+                chunk_row=chunk_row,
+                match=match,
+            )
+            matched_items_with_keys.append(
+                (
+                    (
+                        -match["matched_query_term_count"],
+                        match["first_match_char_start"],
+                        artifact_row["relative_path"],
+                        chunk_row["sequence_no"],
+                        str(chunk_row["id"]),
+                    ),
+                    item,
+                )
+            )
+
+    matched_items_with_keys.sort(key=lambda entry: entry[0])
+    return [item for _, item in matched_items_with_keys], searched_artifact_count
 
 
 def register_task_artifact_record(
@@ -348,4 +511,74 @@ def list_task_artifact_chunk_records(
     return {
         "items": [serialize_task_artifact_chunk_row(chunk_row) for chunk_row in chunk_rows],
         "summary": build_task_artifact_chunk_list_summary(chunk_rows, media_type=media_type),
+    }
+
+
+def retrieve_task_scoped_artifact_chunk_records(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    request: TaskScopedArtifactChunkRetrievalInput,
+) -> TaskArtifactChunkRetrievalResponse:
+    del user_id
+
+    task = store.get_task_optional(request.task_id)
+    if task is None:
+        raise TaskNotFoundError(f"task {request.task_id} was not found")
+
+    query_terms = resolve_artifact_chunk_retrieval_query_terms(request.query)
+    artifact_rows = store.list_task_artifacts_for_task(request.task_id)
+    items, searched_artifact_count = retrieve_matching_task_artifact_chunks(
+        store,
+        artifact_rows=artifact_rows,
+        query_terms=query_terms,
+    )
+    scope = build_task_artifact_chunk_retrieval_scope(
+        kind="task",
+        task_id=request.task_id,
+    )
+    return {
+        "items": items,
+        "summary": build_task_artifact_chunk_retrieval_summary(
+            total_count=len(items),
+            searched_artifact_count=searched_artifact_count,
+            query=request.query,
+            query_terms=query_terms,
+            scope=scope,
+        ),
+    }
+
+
+def retrieve_artifact_scoped_artifact_chunk_records(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    request: ArtifactScopedArtifactChunkRetrievalInput,
+) -> TaskArtifactChunkRetrievalResponse:
+    del user_id
+
+    artifact_row = store.get_task_artifact_optional(request.task_artifact_id)
+    if artifact_row is None:
+        raise TaskArtifactNotFoundError(f"task artifact {request.task_artifact_id} was not found")
+
+    query_terms = resolve_artifact_chunk_retrieval_query_terms(request.query)
+    items, searched_artifact_count = retrieve_matching_task_artifact_chunks(
+        store,
+        artifact_rows=[artifact_row],
+        query_terms=query_terms,
+    )
+    scope = build_task_artifact_chunk_retrieval_scope(
+        kind="artifact",
+        task_id=artifact_row["task_id"],
+        task_artifact_id=artifact_row["id"],
+    )
+    return {
+        "items": items,
+        "summary": build_task_artifact_chunk_retrieval_summary(
+            total_count=len(items),
+            searched_artifact_count=searched_artifact_count,
+            query=request.query,
+            query_terms=query_terms,
+            scope=scope,
+        ),
     }

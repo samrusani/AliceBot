@@ -22,6 +22,7 @@ TaskStatus = Literal["pending_approval", "approved", "executed", "denied", "bloc
 TaskWorkspaceStatus = Literal["active"]
 TaskArtifactStatus = Literal["registered"]
 TaskArtifactIngestionStatus = Literal["pending", "ingested"]
+TaskArtifactChunkRetrievalScopeKind = Literal["task", "artifact"]
 TaskLifecycleSource = Literal[
     "approval_request",
     "approval_resolution",
@@ -133,6 +134,13 @@ TASK_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_WORKSPACE_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_LIST_ORDER = ["sequence_no_asc", "id_asc"]
+TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER = [
+    "matched_query_term_count_desc",
+    "first_match_char_start_asc",
+    "relative_path_asc",
+    "sequence_no_asc",
+    "id_asc",
+]
 TASK_STEP_LIST_ORDER = ["sequence_no_asc", "created_at_asc", "id_asc"]
 TOOL_EXECUTION_LIST_ORDER = ["executed_at_asc", "id_asc"]
 EXECUTION_BUDGET_LIST_ORDER = ["created_at_asc", "id_asc"]
@@ -1612,6 +1620,18 @@ class TaskArtifactIngestInput:
     task_artifact_id: UUID
 
 
+@dataclass(frozen=True, slots=True)
+class TaskScopedArtifactChunkRetrievalInput:
+    task_id: UUID
+    query: str
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactScopedArtifactChunkRetrievalInput:
+    task_artifact_id: UUID
+    query: str
+
+
 class TaskArtifactRecord(TypedDict):
     id: str
     task_id: str
@@ -1669,6 +1689,46 @@ class TaskArtifactChunkListResponse(TypedDict):
 class TaskArtifactIngestionResponse(TypedDict):
     artifact: TaskArtifactRecord
     summary: TaskArtifactChunkListSummary
+
+
+class TaskArtifactChunkRetrievalMatch(TypedDict):
+    matched_query_terms: list[str]
+    matched_query_term_count: int
+    first_match_char_start: int
+
+
+class TaskArtifactChunkRetrievalItem(TypedDict):
+    id: str
+    task_id: str
+    task_artifact_id: str
+    relative_path: str
+    media_type: str
+    sequence_no: int
+    char_start: int
+    char_end_exclusive: int
+    text: str
+    match: TaskArtifactChunkRetrievalMatch
+
+
+class TaskArtifactChunkRetrievalScope(TypedDict):
+    kind: TaskArtifactChunkRetrievalScopeKind
+    task_id: str
+    task_artifact_id: NotRequired[str]
+
+
+class TaskArtifactChunkRetrievalSummary(TypedDict):
+    total_count: int
+    searched_artifact_count: int
+    query: str
+    query_terms: list[str]
+    matching_rule: str
+    order: list[str]
+    scope: TaskArtifactChunkRetrievalScope
+
+
+class TaskArtifactChunkRetrievalResponse(TypedDict):
+    items: list[TaskArtifactChunkRetrievalItem]
+    summary: TaskArtifactChunkRetrievalSummary
 
 
 class TaskStepTraceLink(TypedDict):

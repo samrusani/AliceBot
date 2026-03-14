@@ -112,12 +112,14 @@ def test_task_artifact_store_methods_use_expected_queries() -> None:
         relative_path="docs/spec.txt",
     )
     listed = store.list_task_artifacts()
+    listed_for_task = store.list_task_artifacts_for_task(task_id)
     store.lock_task_artifacts(task_workspace_id)
 
     assert created["id"] == task_artifact_id
     assert fetched is not None
     assert duplicate is not None
     assert listed[0]["id"] == task_artifact_id
+    assert listed_for_task[0]["id"] == task_artifact_id
     assert cursor.executed == [
         (
             """
@@ -220,6 +222,25 @@ def test_task_artifact_store_methods_use_expected_queries() -> None:
                 ORDER BY created_at ASC, id ASC
                 """,
             None,
+        ),
+        (
+            """
+                SELECT
+                  id,
+                  user_id,
+                  task_id,
+                  task_workspace_id,
+                  status,
+                  ingestion_status,
+                  relative_path,
+                  media_type_hint,
+                  created_at,
+                  updated_at
+                FROM task_artifacts
+                WHERE task_id = %s
+                ORDER BY created_at ASC, id ASC
+                """,
+            (task_id,),
         ),
         (
             "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 4))",
