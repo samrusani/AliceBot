@@ -245,6 +245,19 @@ class TaskWorkspaceRow(TypedDict):
     updated_at: datetime
 
 
+class TaskArtifactRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    task_id: UUID
+    task_workspace_id: UUID
+    status: str
+    ingestion_status: str
+    relative_path: str
+    media_type_hint: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class TaskStepRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -344,6 +357,7 @@ LIST_THREAD_SESSIONS_SQL = """
 LOCK_THREAD_EVENTS_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))"
 LOCK_TASK_STEPS_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 2))"
 LOCK_TASK_WORKSPACES_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 3))"
+LOCK_TASK_ARTIFACTS_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 4))"
 
 INSERT_EVENT_SQL = """
                 WITH next_sequence AS (
@@ -1413,6 +1427,93 @@ LIST_TASK_WORKSPACES_SQL = """
                   created_at,
                   updated_at
                 FROM task_workspaces
+                ORDER BY created_at ASC, id ASC
+                """
+
+INSERT_TASK_ARTIFACT_SQL = """
+                INSERT INTO task_artifacts (
+                  user_id,
+                  task_id,
+                  task_workspace_id,
+                  status,
+                  ingestion_status,
+                  relative_path,
+                  media_type_hint,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  task_id,
+                  task_workspace_id,
+                  status,
+                  ingestion_status,
+                  relative_path,
+                  media_type_hint,
+                  created_at,
+                  updated_at
+                """
+
+GET_TASK_ARTIFACT_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  task_id,
+                  task_workspace_id,
+                  status,
+                  ingestion_status,
+                  relative_path,
+                  media_type_hint,
+                  created_at,
+                  updated_at
+                FROM task_artifacts
+                WHERE id = %s
+                """
+
+GET_TASK_ARTIFACT_BY_WORKSPACE_RELATIVE_PATH_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  task_id,
+                  task_workspace_id,
+                  status,
+                  ingestion_status,
+                  relative_path,
+                  media_type_hint,
+                  created_at,
+                  updated_at
+                FROM task_artifacts
+                WHERE task_workspace_id = %s
+                  AND relative_path = %s
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                """
+
+LIST_TASK_ARTIFACTS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  task_id,
+                  task_workspace_id,
+                  status,
+                  ingestion_status,
+                  relative_path,
+                  media_type_hint,
+                  created_at,
+                  updated_at
+                FROM task_artifacts
                 ORDER BY created_at ASC, id ASC
                 """
 
@@ -2504,6 +2605,50 @@ class ContinuityStore:
 
     def list_task_workspaces(self) -> list[TaskWorkspaceRow]:
         return self._fetch_all(LIST_TASK_WORKSPACES_SQL)
+
+    def lock_task_artifacts(self, task_workspace_id: UUID) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(LOCK_TASK_ARTIFACTS_SQL, (str(task_workspace_id),))
+
+    def create_task_artifact(
+        self,
+        *,
+        task_id: UUID,
+        task_workspace_id: UUID,
+        status: str,
+        ingestion_status: str,
+        relative_path: str,
+        media_type_hint: str | None,
+    ) -> TaskArtifactRow:
+        return self._fetch_one(
+            "create_task_artifact",
+            INSERT_TASK_ARTIFACT_SQL,
+            (
+                task_id,
+                task_workspace_id,
+                status,
+                ingestion_status,
+                relative_path,
+                media_type_hint,
+            ),
+        )
+
+    def get_task_artifact_optional(self, task_artifact_id: UUID) -> TaskArtifactRow | None:
+        return self._fetch_optional_one(GET_TASK_ARTIFACT_SQL, (task_artifact_id,))
+
+    def get_task_artifact_by_workspace_relative_path_optional(
+        self,
+        *,
+        task_workspace_id: UUID,
+        relative_path: str,
+    ) -> TaskArtifactRow | None:
+        return self._fetch_optional_one(
+            GET_TASK_ARTIFACT_BY_WORKSPACE_RELATIVE_PATH_SQL,
+            (task_workspace_id, relative_path),
+        )
+
+    def list_task_artifacts(self) -> list[TaskArtifactRow]:
+        return self._fetch_all(LIST_TASK_ARTIFACTS_SQL)
 
     def lock_task_steps(self, task_id: UUID) -> None:
         with self.conn.cursor() as cur:

@@ -50,6 +50,7 @@ from alicebot_api.contracts import (
     ProxyExecutionStatus,
     ToolAllowlistEvaluationRequestInput,
     ProxyExecutionRequestInput,
+    TaskArtifactRegisterInput,
     TaskStepKind,
     TaskStepLineageInput,
     TaskStepNextCreateInput,
@@ -59,6 +60,14 @@ from alicebot_api.contracts import (
     ToolRoutingDecision,
     ToolRoutingRequestInput,
     ToolCreateInput,
+)
+from alicebot_api.artifacts import (
+    TaskArtifactAlreadyExistsError,
+    TaskArtifactNotFoundError,
+    TaskArtifactValidationError,
+    get_task_artifact_record,
+    list_task_artifact_records,
+    register_task_artifact_record,
 )
 from alicebot_api.approvals import (
     ApprovalNotFoundError,
@@ -396,6 +405,12 @@ class ExecuteApprovedProxyRequest(BaseModel):
 
 class CreateTaskWorkspaceRequest(BaseModel):
     user_id: UUID
+
+
+class RegisterTaskArtifactRequest(BaseModel):
+    user_id: UUID
+    local_path: str = Field(min_length=1, max_length=4000)
+    media_type_hint: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class TaskStepRequestSnapshot(BaseModel):
@@ -1164,6 +1179,73 @@ def get_task_step(task_step_id: UUID, user_id: UUID) -> JSONResponse:
                 task_step_id=task_step_id,
             )
     except TaskStepNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/task-workspaces/{task_workspace_id}/artifacts")
+def register_task_artifact(
+    task_workspace_id: UUID,
+    request: RegisterTaskArtifactRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = register_task_artifact_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=TaskArtifactRegisterInput(
+                    task_workspace_id=task_workspace_id,
+                    local_path=request.local_path,
+                    media_type_hint=request.media_type_hint,
+                ),
+            )
+    except TaskWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskArtifactValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except TaskArtifactAlreadyExistsError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/task-artifacts")
+def list_task_artifacts(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_task_artifact_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/task-artifacts/{task_artifact_id}")
+def get_task_artifact(task_artifact_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_task_artifact_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                task_artifact_id=task_artifact_id,
+            )
+    except TaskArtifactNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     return JSONResponse(
