@@ -143,7 +143,7 @@ def _build_task_artifact_chunk_retrieval_scope(
     return scope
 
 
-def _serialize_semantic_artifact_chunk_result_item(
+def serialize_semantic_artifact_chunk_result_item(
     row: TaskArtifactChunkSemanticRetrievalRow,
 ) -> TaskArtifactChunkSemanticRetrievalItem:
     return {
@@ -220,7 +220,7 @@ def retrieve_task_scoped_semantic_artifact_chunk_records(
         query_vector=request.query_vector,
     )
     items = [
-        _serialize_semantic_artifact_chunk_result_item(row)
+        serialize_semantic_artifact_chunk_result_item(row)
         for row in store.retrieve_task_scoped_semantic_artifact_chunk_matches(
             task_id=request.task_id,
             embedding_config_id=request.embedding_config_id,
@@ -264,7 +264,7 @@ def retrieve_artifact_scoped_semantic_artifact_chunk_records(
         query_vector=request.query_vector,
     )
     items = [
-        _serialize_semantic_artifact_chunk_result_item(row)
+        serialize_semantic_artifact_chunk_result_item(row)
         for row in store.retrieve_artifact_scoped_semantic_artifact_chunk_matches(
             task_artifact_id=request.task_artifact_id,
             embedding_config_id=request.embedding_config_id,
