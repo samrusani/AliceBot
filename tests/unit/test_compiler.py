@@ -7,10 +7,13 @@ from alicebot_api.compiler import (
     SUMMARY_TRACE_EVENT_KIND,
     _compile_artifact_chunk_section,
     _compile_memory_section,
+    _compile_semantic_artifact_chunk_section,
     compile_continuity_context,
 )
 from alicebot_api.contracts import (
+    CompileContextArtifactScopedSemanticArtifactRetrievalInput,
     CompileContextSemanticRetrievalInput,
+    CompileContextTaskScopedSemanticArtifactRetrievalInput,
     CompileContextTaskScopedArtifactRetrievalInput,
     ContextCompilerLimits,
 )
@@ -312,6 +315,21 @@ def test_compile_continuity_context_is_deterministic_and_stably_ordered() -> Non
             "sequence_no_asc",
             "id_asc",
         ],
+    }
+    assert first_run.context_pack["semantic_artifact_chunks"] == []
+    assert first_run.context_pack["semantic_artifact_chunk_summary"] == {
+        "requested": False,
+        "scope": None,
+        "embedding_config_id": None,
+        "query_vector_dimensions": 0,
+        "limit": 0,
+        "searched_artifact_count": 0,
+        "candidate_count": 0,
+        "included_count": 0,
+        "excluded_uningested_artifact_count": 0,
+        "excluded_limit_count": 0,
+        "similarity_metric": None,
+        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
     }
     assert first_run.context_pack["entity_summary"] == {
         "candidate_count": 3,
@@ -643,6 +661,21 @@ def test_compile_continuity_context_records_included_and_excluded_reasons() -> N
             "id_asc",
         ],
     }
+    assert compiler_run.context_pack["semantic_artifact_chunks"] == []
+    assert compiler_run.context_pack["semantic_artifact_chunk_summary"] == {
+        "requested": False,
+        "scope": None,
+        "embedding_config_id": None,
+        "query_vector_dimensions": 0,
+        "limit": 0,
+        "searched_artifact_count": 0,
+        "candidate_count": 0,
+        "included_count": 0,
+        "excluded_uningested_artifact_count": 0,
+        "excluded_limit_count": 0,
+        "similarity_metric": None,
+        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+    }
     assert compiler_run.context_pack["entities"] == [
         {
             "id": str(kept_entity_id),
@@ -681,6 +714,14 @@ def test_compile_continuity_context_records_included_and_excluded_reasons() -> N
     assert compiler_run.trace_events[-1].payload["included_artifact_chunk_count"] == 0
     assert compiler_run.trace_events[-1].payload["excluded_artifact_chunk_limit_count"] == 0
     assert compiler_run.trace_events[-1].payload["excluded_uningested_artifact_count"] == 0
+    assert compiler_run.trace_events[-1].payload["semantic_artifact_retrieval_requested"] is False
+    assert compiler_run.trace_events[-1].payload["semantic_artifact_chunk_candidate_count"] == 0
+    assert compiler_run.trace_events[-1].payload["included_semantic_artifact_chunk_count"] == 0
+    assert (
+        compiler_run.trace_events[-1].payload["excluded_semantic_artifact_chunk_limit_count"]
+        == 0
+    )
+    assert compiler_run.trace_events[-1].payload["excluded_semantic_uningested_artifact_count"] == 0
 
 
 class SemanticCompileStoreStub:
@@ -745,9 +786,15 @@ class SemanticCompileStoreStub:
 class ArtifactCompileStoreStub:
     def __init__(self) -> None:
         self.base_time = datetime(2026, 3, 14, 12, 0, tzinfo=UTC)
+        self.config_id = uuid4()
         self.task_id = uuid4()
         self.artifact_ids = [uuid4(), uuid4(), uuid4(), uuid4()]
-        self.chunk_ids = [uuid4(), uuid4(), uuid4()]
+        self.chunk_ids = [uuid4(), uuid4(), uuid4(), uuid4()]
+
+    def get_embedding_config_optional(self, embedding_config_id):
+        if embedding_config_id != self.config_id:
+            return None
+        return {"id": self.config_id, "dimensions": 3}
 
     def get_task_optional(self, task_id):
         if task_id != self.task_id:
@@ -845,6 +892,97 @@ class ArtifactCompileStoreStub:
             ]
         return []
 
+    def get_task_artifact_optional(self, task_artifact_id):
+        for artifact_row in self.list_task_artifacts_for_task(self.task_id):
+            if artifact_row["id"] == task_artifact_id:
+                return artifact_row
+        return None
+
+    def retrieve_task_scoped_semantic_artifact_chunk_matches(
+        self,
+        *,
+        task_id,
+        embedding_config_id,
+        query_vector,
+        limit,
+    ):
+        assert task_id == self.task_id
+        assert embedding_config_id == self.config_id
+        assert query_vector == [1.0, 0.0, 0.0]
+        rows = [
+            {
+                "id": self.chunk_ids[0],
+                "user_id": uuid4(),
+                "task_id": self.task_id,
+                "task_artifact_id": self.artifact_ids[0],
+                "relative_path": "docs/a.txt",
+                "media_type_hint": "text/plain",
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 14,
+                "text": "beta alpha doc",
+                "created_at": self.base_time,
+                "updated_at": self.base_time,
+                "embedding_config_id": self.config_id,
+                "score": 1.0,
+            },
+            {
+                "id": self.chunk_ids[1],
+                "user_id": uuid4(),
+                "task_id": self.task_id,
+                "task_artifact_id": self.artifact_ids[1],
+                "relative_path": "notes/b.md",
+                "media_type_hint": "text/markdown",
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 15,
+                "text": "alpha beta note",
+                "created_at": self.base_time + timedelta(minutes=1),
+                "updated_at": self.base_time + timedelta(minutes=1),
+                "embedding_config_id": self.config_id,
+                "score": 1.0,
+            },
+            {
+                "id": self.chunk_ids[3],
+                "user_id": uuid4(),
+                "task_id": self.task_id,
+                "task_artifact_id": self.artifact_ids[3],
+                "relative_path": "notes/c.txt",
+                "media_type_hint": "text/plain",
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 9,
+                "text": "beta only",
+                "created_at": self.base_time + timedelta(minutes=3),
+                "updated_at": self.base_time + timedelta(minutes=3),
+                "embedding_config_id": self.config_id,
+                "score": 0.25,
+            },
+        ]
+        return list(rows[:limit])
+
+    def retrieve_artifact_scoped_semantic_artifact_chunk_matches(
+        self,
+        *,
+        task_artifact_id,
+        embedding_config_id,
+        query_vector,
+        limit,
+    ):
+        assert embedding_config_id == self.config_id
+        assert query_vector == [1.0, 0.0, 0.0]
+        rows = [
+            row
+            for row in self.retrieve_task_scoped_semantic_artifact_chunk_matches(
+                task_id=self.task_id,
+                embedding_config_id=embedding_config_id,
+                query_vector=query_vector,
+                limit=10,
+            )
+            if row["task_artifact_id"] == task_artifact_id
+        ]
+        return list(rows[:limit])
+
 
 def test_compile_artifact_chunk_section_orders_limits_and_excludes_non_ingested() -> None:
     store = ArtifactCompileStoreStub()
@@ -920,6 +1058,117 @@ def test_compile_artifact_chunk_section_orders_limits_and_excludes_non_ingested(
     ]
     assert artifact_section.decisions[0].metadata["relative_path"] == "notes/hidden.txt"
     assert artifact_section.decisions[-1].metadata["relative_path"] == "notes/c.txt"
+
+
+def test_compile_semantic_artifact_chunk_section_orders_limits_and_excludes_non_ingested() -> None:
+    store = ArtifactCompileStoreStub()
+
+    semantic_artifact_section = _compile_semantic_artifact_chunk_section(
+        store,  # type: ignore[arg-type]
+        semantic_artifact_retrieval=CompileContextTaskScopedSemanticArtifactRetrievalInput(
+            task_id=store.task_id,
+            embedding_config_id=store.config_id,
+            query_vector=(1.0, 0.0, 0.0),
+            limit=2,
+        ),
+    )
+
+    assert semantic_artifact_section.items == [
+        {
+            "id": str(store.chunk_ids[0]),
+            "task_id": str(store.task_id),
+            "task_artifact_id": str(store.artifact_ids[0]),
+            "relative_path": "docs/a.txt",
+            "media_type": "text/plain",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 14,
+            "text": "beta alpha doc",
+            "score": 1.0,
+        },
+        {
+            "id": str(store.chunk_ids[1]),
+            "task_id": str(store.task_id),
+            "task_artifact_id": str(store.artifact_ids[1]),
+            "relative_path": "notes/b.md",
+            "media_type": "text/markdown",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 15,
+            "text": "alpha beta note",
+            "score": 1.0,
+        },
+    ]
+    assert semantic_artifact_section.summary == {
+        "requested": True,
+        "scope": {"kind": "task", "task_id": str(store.task_id)},
+        "embedding_config_id": str(store.config_id),
+        "query_vector_dimensions": 3,
+        "limit": 2,
+        "searched_artifact_count": 3,
+        "candidate_count": 3,
+        "included_count": 2,
+        "excluded_uningested_artifact_count": 1,
+        "excluded_limit_count": 1,
+        "similarity_metric": "cosine_similarity",
+        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+    }
+    assert [decision.reason for decision in semantic_artifact_section.decisions] == [
+        "semantic_artifact_not_ingested",
+        "within_semantic_artifact_chunk_limit",
+        "within_semantic_artifact_chunk_limit",
+        "semantic_artifact_chunk_limit_exceeded",
+    ]
+    assert semantic_artifact_section.decisions[0].metadata["relative_path"] == "notes/hidden.txt"
+    assert semantic_artifact_section.decisions[-1].metadata["relative_path"] == "notes/c.txt"
+
+
+def test_compile_semantic_artifact_chunk_section_supports_artifact_scope() -> None:
+    store = ArtifactCompileStoreStub()
+
+    semantic_artifact_section = _compile_semantic_artifact_chunk_section(
+        store,  # type: ignore[arg-type]
+        semantic_artifact_retrieval=CompileContextArtifactScopedSemanticArtifactRetrievalInput(
+            task_artifact_id=store.artifact_ids[1],
+            embedding_config_id=store.config_id,
+            query_vector=(1.0, 0.0, 0.0),
+            limit=2,
+        ),
+    )
+
+    assert semantic_artifact_section.items == [
+        {
+            "id": str(store.chunk_ids[1]),
+            "task_id": str(store.task_id),
+            "task_artifact_id": str(store.artifact_ids[1]),
+            "relative_path": "notes/b.md",
+            "media_type": "text/markdown",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 15,
+            "text": "alpha beta note",
+            "score": 1.0,
+        }
+    ]
+    assert semantic_artifact_section.summary == {
+        "requested": True,
+        "scope": {
+            "kind": "artifact",
+            "task_id": str(store.task_id),
+            "task_artifact_id": str(store.artifact_ids[1]),
+        },
+        "embedding_config_id": str(store.config_id),
+        "query_vector_dimensions": 3,
+        "limit": 2,
+        "searched_artifact_count": 1,
+        "candidate_count": 1,
+        "included_count": 1,
+        "excluded_uningested_artifact_count": 0,
+        "excluded_limit_count": 0,
+        "similarity_metric": "cosine_similarity",
+        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+    }
+    assert semantic_artifact_section.decisions[0].metadata["scope_kind"] == "artifact"
 
 
 def test_compile_memory_section_orders_limits_and_excludes_deleted() -> None:

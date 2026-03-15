@@ -278,6 +278,23 @@ def seed_memory_embedding_for_user(
         )
 
 
+def seed_task_artifact_chunk_embedding_for_user(
+    database_url: str,
+    *,
+    user_id: UUID,
+    task_artifact_chunk_id: UUID,
+    embedding_config_id: UUID,
+    vector: list[float],
+) -> None:
+    with user_connection(database_url, user_id) as conn:
+        ContinuityStore(conn).create_task_artifact_chunk_embedding(
+            task_artifact_chunk_id=task_artifact_chunk_id,
+            embedding_config_id=embedding_config_id,
+            dimensions=len(vector),
+            vector=vector,
+        )
+
+
 def seed_compile_artifact_scope(
     database_url: str,
     *,
@@ -468,6 +485,21 @@ def test_compile_context_endpoint_persists_trace_and_trace_events(migrated_datab
             "semantic_order": ["score_desc", "created_at_asc", "id_asc"],
         },
     }
+    assert payload["context_pack"]["semantic_artifact_chunks"] == []
+    assert payload["context_pack"]["semantic_artifact_chunk_summary"] == {
+        "requested": False,
+        "scope": None,
+        "embedding_config_id": None,
+        "query_vector_dimensions": 0,
+        "limit": 0,
+        "searched_artifact_count": 0,
+        "candidate_count": 0,
+        "included_count": 0,
+        "excluded_uningested_artifact_count": 0,
+        "excluded_limit_count": 0,
+        "similarity_metric": None,
+        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+    }
     assert payload["context_pack"]["entities"] == [
         {
             "id": str(included_entity["id"]),
@@ -576,6 +608,11 @@ def test_compile_context_endpoint_persists_trace_and_trace_events(migrated_datab
     assert trace_events[-1]["payload"]["hybrid_memory_candidate_count"] == 2
     assert trace_events[-1]["payload"]["hybrid_memory_merged_candidate_count"] == 1
     assert trace_events[-1]["payload"]["hybrid_memory_deduplicated_count"] == 0
+    assert trace_events[-1]["payload"]["semantic_artifact_retrieval_requested"] is False
+    assert trace_events[-1]["payload"]["semantic_artifact_chunk_candidate_count"] == 0
+    assert trace_events[-1]["payload"]["included_semantic_artifact_chunk_count"] == 0
+    assert trace_events[-1]["payload"]["excluded_semantic_artifact_chunk_limit_count"] == 0
+    assert trace_events[-1]["payload"]["excluded_semantic_uningested_artifact_count"] == 0
     assert trace_events[-1]["payload"]["included_entity_count"] == 1
     assert trace_events[-1]["payload"]["excluded_entity_limit_count"] == 2
     assert trace_events[-1]["payload"]["included_entity_edge_count"] == 1
@@ -653,6 +690,21 @@ def test_compile_context_prefers_updated_active_memory_within_same_transaction(
             "symbolic_order": ["updated_at_asc", "created_at_asc", "id_asc"],
             "semantic_order": ["score_desc", "created_at_asc", "id_asc"],
         },
+    }
+    assert payload["context_pack"]["semantic_artifact_chunks"] == []
+    assert payload["context_pack"]["semantic_artifact_chunk_summary"] == {
+        "requested": False,
+        "scope": None,
+        "embedding_config_id": None,
+        "query_vector_dimensions": 0,
+        "limit": 0,
+        "searched_artifact_count": 0,
+        "candidate_count": 0,
+        "included_count": 0,
+        "excluded_uningested_artifact_count": 0,
+        "excluded_limit_count": 0,
+        "similarity_metric": None,
+        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
     }
     assert payload["context_pack"]["entity_summary"] == {
         "candidate_count": 2,
@@ -1132,6 +1184,353 @@ def test_compile_context_artifact_scoped_retrieval_returns_only_visible_artifact
     assert trace_events[-1]["payload"]["included_artifact_chunk_count"] == 1
     assert trace_events[-1]["payload"]["excluded_artifact_chunk_limit_count"] == 0
     assert trace_events[-1]["payload"]["excluded_uningested_artifact_count"] == 0
+
+
+def test_compile_context_semantic_artifact_retrieval_integrates_chunks_traces_and_exclusion_rules(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = seed_traceable_thread(migrated_database_urls["app"])
+    artifact_scope = seed_compile_artifact_scope(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        thread_id=seeded["thread_id"],
+    )
+    config_id = seed_embedding_config_for_user(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+    )
+    seed_task_artifact_chunk_embedding_for_user(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        task_artifact_chunk_id=artifact_scope["chunk_ids"]["docs"],
+        embedding_config_id=config_id,
+        vector=[1.0, 0.0, 0.0],
+    )
+    seed_task_artifact_chunk_embedding_for_user(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        task_artifact_chunk_id=artifact_scope["chunk_ids"]["notes"],
+        embedding_config_id=config_id,
+        vector=[1.0, 0.0, 0.0],
+    )
+    seed_task_artifact_chunk_embedding_for_user(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        task_artifact_chunk_id=artifact_scope["chunk_ids"]["weak"],
+        embedding_config_id=config_id,
+        vector=[0.0, 1.0, 0.0],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status_code, payload = invoke_compile_context(
+        {
+            "user_id": str(seeded["user_id"]),
+            "thread_id": str(seeded["thread_id"]),
+            "semantic_artifact_retrieval": {
+                "kind": "task",
+                "task_id": str(artifact_scope["task_id"]),
+                "embedding_config_id": str(config_id),
+                "query_vector": [1.0, 0.0, 0.0],
+                "limit": 2,
+            },
+        }
+    )
+
+    assert status_code == 200
+    assert payload["context_pack"]["semantic_artifact_chunks"] == [
+        {
+            "id": str(artifact_scope["chunk_ids"]["docs"]),
+            "task_id": str(artifact_scope["task_id"]),
+            "task_artifact_id": str(artifact_scope["artifact_ids"]["docs"]),
+            "relative_path": "docs/a.txt",
+            "media_type": "text/plain",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 14,
+            "text": "beta alpha doc",
+            "score": 1.0,
+        },
+        {
+            "id": str(artifact_scope["chunk_ids"]["notes"]),
+            "task_id": str(artifact_scope["task_id"]),
+            "task_artifact_id": str(artifact_scope["artifact_ids"]["notes"]),
+            "relative_path": "notes/b.md",
+            "media_type": "text/markdown",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 15,
+            "text": "alpha beta note",
+            "score": 1.0,
+        },
+    ]
+    assert payload["context_pack"]["semantic_artifact_chunk_summary"] == {
+        "requested": True,
+        "scope": {"kind": "task", "task_id": str(artifact_scope["task_id"])},
+        "embedding_config_id": str(config_id),
+        "query_vector_dimensions": 3,
+        "limit": 2,
+        "searched_artifact_count": 3,
+        "candidate_count": 3,
+        "included_count": 2,
+        "excluded_uningested_artifact_count": 1,
+        "excluded_limit_count": 1,
+        "similarity_metric": "cosine_similarity",
+        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+    }
+    assert payload["context_pack"]["artifact_chunks"] == []
+
+    trace_id = UUID(payload["trace_id"])
+    with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
+        trace_events = ContinuityStore(conn).list_trace_events(trace_id)
+
+    assert any(
+        event["payload"]["reason"] == "within_semantic_artifact_chunk_limit"
+        and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["docs"])
+        and event["payload"]["relative_path"] == "docs/a.txt"
+        and event["payload"]["score"] == 1.0
+        for event in trace_events
+        if event["kind"] == "context.included"
+    )
+    assert any(
+        event["payload"]["reason"] == "within_semantic_artifact_chunk_limit"
+        and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["notes"])
+        and event["payload"]["relative_path"] == "notes/b.md"
+        for event in trace_events
+        if event["kind"] == "context.included"
+    )
+    assert any(
+        event["payload"]["reason"] == "semantic_artifact_chunk_limit_exceeded"
+        and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["weak"])
+        and event["payload"]["relative_path"] == "notes/c.txt"
+        and event["payload"]["score"] == 0.0
+        for event in trace_events
+        if event["kind"] == "context.excluded"
+    )
+    assert any(
+        event["payload"]["reason"] == "semantic_artifact_not_ingested"
+        and event["payload"]["entity_id"] == str(artifact_scope["artifact_ids"]["pending"])
+        and event["payload"]["relative_path"] == "notes/hidden.txt"
+        and event["payload"]["ingestion_status"] == "pending"
+        for event in trace_events
+        if event["kind"] == "context.excluded"
+    )
+    assert trace_events[-1]["payload"]["semantic_artifact_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["semantic_artifact_retrieval_scope_kind"] == "task"
+    assert trace_events[-1]["payload"]["semantic_artifact_chunk_candidate_count"] == 3
+    assert trace_events[-1]["payload"]["included_semantic_artifact_chunk_count"] == 2
+    assert trace_events[-1]["payload"]["excluded_semantic_artifact_chunk_limit_count"] == 1
+    assert trace_events[-1]["payload"]["excluded_semantic_uningested_artifact_count"] == 1
+
+
+def test_compile_context_semantic_artifact_scoped_retrieval_returns_only_visible_artifact_chunks(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = seed_traceable_thread(migrated_database_urls["app"])
+    artifact_scope = seed_compile_artifact_scope(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        thread_id=seeded["thread_id"],
+    )
+    config_id = seed_embedding_config_for_user(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+    )
+    seed_task_artifact_chunk_embedding_for_user(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        task_artifact_chunk_id=artifact_scope["chunk_ids"]["notes"],
+        embedding_config_id=config_id,
+        vector=[1.0, 0.0, 0.0],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status_code, payload = invoke_compile_context(
+        {
+            "user_id": str(seeded["user_id"]),
+            "thread_id": str(seeded["thread_id"]),
+            "semantic_artifact_retrieval": {
+                "kind": "artifact",
+                "task_artifact_id": str(artifact_scope["artifact_ids"]["notes"]),
+                "embedding_config_id": str(config_id),
+                "query_vector": [1.0, 0.0, 0.0],
+                "limit": 2,
+            },
+        }
+    )
+
+    assert status_code == 200
+    assert payload["context_pack"]["semantic_artifact_chunks"] == [
+        {
+            "id": str(artifact_scope["chunk_ids"]["notes"]),
+            "task_id": str(artifact_scope["task_id"]),
+            "task_artifact_id": str(artifact_scope["artifact_ids"]["notes"]),
+            "relative_path": "notes/b.md",
+            "media_type": "text/markdown",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 15,
+            "text": "alpha beta note",
+            "score": 1.0,
+        }
+    ]
+    assert payload["context_pack"]["semantic_artifact_chunk_summary"] == {
+        "requested": True,
+        "scope": {
+            "kind": "artifact",
+            "task_id": str(artifact_scope["task_id"]),
+            "task_artifact_id": str(artifact_scope["artifact_ids"]["notes"]),
+        },
+        "embedding_config_id": str(config_id),
+        "query_vector_dimensions": 3,
+        "limit": 2,
+        "searched_artifact_count": 1,
+        "candidate_count": 1,
+        "included_count": 1,
+        "excluded_uningested_artifact_count": 0,
+        "excluded_limit_count": 0,
+        "similarity_metric": "cosine_similarity",
+        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+    }
+
+    trace_id = UUID(payload["trace_id"])
+    with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
+        trace_events = ContinuityStore(conn).list_trace_events(trace_id)
+
+    assert any(
+        event["payload"]["reason"] == "within_semantic_artifact_chunk_limit"
+        and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["notes"])
+        and event["payload"]["scope_kind"] == "artifact"
+        and event["payload"]["task_artifact_id"] == str(artifact_scope["artifact_ids"]["notes"])
+        for event in trace_events
+        if event["kind"] == "context.included"
+    )
+    assert trace_events[-1]["payload"]["semantic_artifact_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["semantic_artifact_retrieval_scope_kind"] == "artifact"
+    assert trace_events[-1]["payload"]["semantic_artifact_chunk_candidate_count"] == 1
+    assert trace_events[-1]["payload"]["included_semantic_artifact_chunk_count"] == 1
+    assert trace_events[-1]["payload"]["excluded_semantic_artifact_chunk_limit_count"] == 0
+    assert trace_events[-1]["payload"]["excluded_semantic_uningested_artifact_count"] == 0
+
+
+def test_compile_context_semantic_artifact_retrieval_validation_and_isolation(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    owner = seed_traceable_thread(migrated_database_urls["app"])
+    intruder = seed_traceable_thread(
+        migrated_database_urls["app"],
+        email="intruder@example.com",
+        display_name="Intruder",
+    )
+    owner_artifact_scope = seed_compile_artifact_scope(
+        migrated_database_urls["app"],
+        user_id=owner["user_id"],
+        thread_id=owner["thread_id"],
+    )
+    owner_config_id = seed_embedding_config_for_user(
+        migrated_database_urls["app"],
+        user_id=owner["user_id"],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    invalid_shape_status, invalid_shape_payload = invoke_compile_context(
+        {
+            "user_id": str(owner["user_id"]),
+            "thread_id": str(owner["thread_id"]),
+            "semantic_artifact_retrieval": {
+                "kind": "task",
+                "task_artifact_id": str(owner_artifact_scope["artifact_ids"]["docs"]),
+                "embedding_config_id": str(owner_config_id),
+                "query_vector": [1.0, 0.0, 0.0],
+            },
+        }
+    )
+    missing_status, missing_payload = invoke_compile_context(
+        {
+            "user_id": str(owner["user_id"]),
+            "thread_id": str(owner["thread_id"]),
+            "semantic_artifact_retrieval": {
+                "kind": "task",
+                "task_id": str(owner_artifact_scope["task_id"]),
+                "embedding_config_id": str(uuid4()),
+                "query_vector": [1.0, 0.0, 0.0],
+                "limit": 2,
+            },
+        }
+    )
+    mismatch_status, mismatch_payload = invoke_compile_context(
+        {
+            "user_id": str(owner["user_id"]),
+            "thread_id": str(owner["thread_id"]),
+            "semantic_artifact_retrieval": {
+                "kind": "task",
+                "task_id": str(owner_artifact_scope["task_id"]),
+                "embedding_config_id": str(owner_config_id),
+                "query_vector": [1.0, 0.0],
+                "limit": 2,
+            },
+        }
+    )
+    isolated_task_status, isolated_task_payload = invoke_compile_context(
+        {
+            "user_id": str(intruder["user_id"]),
+            "thread_id": str(intruder["thread_id"]),
+            "semantic_artifact_retrieval": {
+                "kind": "task",
+                "task_id": str(owner_artifact_scope["task_id"]),
+                "embedding_config_id": str(owner_config_id),
+                "query_vector": [1.0, 0.0, 0.0],
+                "limit": 2,
+            },
+        }
+    )
+    isolated_artifact_status, isolated_artifact_payload = invoke_compile_context(
+        {
+            "user_id": str(intruder["user_id"]),
+            "thread_id": str(intruder["thread_id"]),
+            "semantic_artifact_retrieval": {
+                "kind": "artifact",
+                "task_artifact_id": str(owner_artifact_scope["artifact_ids"]["docs"]),
+                "embedding_config_id": str(owner_config_id),
+                "query_vector": [1.0, 0.0, 0.0],
+                "limit": 2,
+            },
+        }
+    )
+
+    assert invalid_shape_status == 422
+    assert "task_id" in json.dumps(invalid_shape_payload)
+    assert missing_status == 400
+    assert missing_payload["detail"].startswith(
+        "embedding_config_id must reference an existing embedding config owned by the user"
+    )
+    assert mismatch_status == 400
+    assert mismatch_payload["detail"] == "query_vector length must match embedding config dimensions (3): 2"
+    assert isolated_task_status == 404
+    assert isolated_task_payload == {
+        "detail": f"task {owner_artifact_scope['task_id']} was not found"
+    }
+    assert isolated_artifact_status == 404
+    assert isolated_artifact_payload == {
+        "detail": (
+            "task artifact "
+            f"{owner_artifact_scope['artifact_ids']['docs']} was not found"
+        )
+    }
 
 
 def test_compile_context_artifact_retrieval_validation_and_isolation(
