@@ -149,6 +149,12 @@ TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER = [
     "sequence_no_asc",
     "id_asc",
 ]
+TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER = [
+    "score_desc",
+    "relative_path_asc",
+    "sequence_no_asc",
+    "id_asc",
+]
 TASK_STEP_LIST_ORDER = ["sequence_no_asc", "created_at_asc", "id_asc"]
 TOOL_EXECUTION_LIST_ORDER = ["executed_at_asc", "id_asc"]
 EXECUTION_BUDGET_LIST_ORDER = ["created_at_asc", "id_asc"]
@@ -1736,6 +1742,38 @@ class ArtifactScopedArtifactChunkRetrievalInput:
     query: str
 
 
+@dataclass(frozen=True, slots=True)
+class TaskScopedSemanticArtifactChunkRetrievalInput:
+    task_id: UUID
+    embedding_config_id: UUID
+    query_vector: tuple[float, ...]
+    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "task_id": str(self.task_id),
+            "embedding_config_id": str(self.embedding_config_id),
+            "query_vector": [float(value) for value in self.query_vector],
+            "limit": self.limit,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactScopedSemanticArtifactChunkRetrievalInput:
+    task_artifact_id: UUID
+    embedding_config_id: UUID
+    query_vector: tuple[float, ...]
+    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "task_artifact_id": str(self.task_artifact_id),
+            "embedding_config_id": str(self.embedding_config_id),
+            "query_vector": [float(value) for value in self.query_vector],
+            "limit": self.limit,
+        }
+
+
 class TaskArtifactRecord(TypedDict):
     id: str
     task_id: str
@@ -1871,6 +1909,35 @@ class TaskArtifactChunkRetrievalSummary(TypedDict):
 class TaskArtifactChunkRetrievalResponse(TypedDict):
     items: list[TaskArtifactChunkRetrievalItem]
     summary: TaskArtifactChunkRetrievalSummary
+
+
+class TaskArtifactChunkSemanticRetrievalItem(TypedDict):
+    id: str
+    task_id: str
+    task_artifact_id: str
+    relative_path: str
+    media_type: str
+    sequence_no: int
+    char_start: int
+    char_end_exclusive: int
+    text: str
+    score: float
+
+
+class TaskArtifactChunkSemanticRetrievalSummary(TypedDict):
+    embedding_config_id: str
+    query_vector_dimensions: int
+    limit: int
+    returned_count: int
+    searched_artifact_count: int
+    similarity_metric: Literal["cosine_similarity"]
+    order: list[str]
+    scope: TaskArtifactChunkRetrievalScope
+
+
+class TaskArtifactChunkSemanticRetrievalResponse(TypedDict):
+    items: list[TaskArtifactChunkSemanticRetrievalItem]
+    summary: TaskArtifactChunkSemanticRetrievalSummary
 
 
 class TaskStepTraceLink(TypedDict):

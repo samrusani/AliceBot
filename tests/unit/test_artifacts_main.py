@@ -12,6 +12,7 @@ from alicebot_api.artifacts import (
     TaskArtifactNotFoundError,
     TaskArtifactValidationError,
 )
+from alicebot_api.semantic_retrieval import SemanticArtifactChunkRetrievalValidationError
 from alicebot_api.tasks import TaskNotFoundError
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
@@ -226,6 +227,141 @@ def test_retrieve_task_artifact_chunks_endpoint_maps_validation_to_400(monkeypat
     assert response.status_code == 400
     assert json.loads(response.body) == {
         "detail": "artifact chunk retrieval query must include at least one word"
+    }
+
+
+def test_retrieve_semantic_task_artifact_chunks_endpoint_returns_payload(monkeypatch) -> None:
+    user_id = uuid4()
+    task_id = uuid4()
+    config_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "retrieve_task_scoped_semantic_artifact_chunk_records",
+        lambda *_args, **_kwargs: {
+            "items": [],
+            "summary": {
+                "embedding_config_id": str(config_id),
+                "query_vector_dimensions": 3,
+                "limit": 5,
+                "returned_count": 0,
+                "searched_artifact_count": 1,
+                "similarity_metric": "cosine_similarity",
+                "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+                "scope": {"kind": "task", "task_id": str(task_id)},
+            },
+        },
+    )
+
+    response = main_module.retrieve_semantic_task_artifact_chunks(
+        task_id,
+        main_module.RetrieveSemanticArtifactChunksRequest(
+            user_id=user_id,
+            embedding_config_id=config_id,
+            query_vector=[1.0, 0.0, 0.0],
+            limit=5,
+        ),
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {
+        "items": [],
+        "summary": {
+            "embedding_config_id": str(config_id),
+            "query_vector_dimensions": 3,
+            "limit": 5,
+            "returned_count": 0,
+            "searched_artifact_count": 1,
+            "similarity_metric": "cosine_similarity",
+            "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+            "scope": {"kind": "task", "task_id": str(task_id)},
+        },
+    }
+
+
+def test_retrieve_semantic_task_artifact_chunks_endpoint_maps_validation_to_400(monkeypatch) -> None:
+    user_id = uuid4()
+    task_id = uuid4()
+    config_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    def fake_retrieve_task_scoped_semantic_artifact_chunk_records(*_args, **_kwargs):
+        raise SemanticArtifactChunkRetrievalValidationError(
+            f"embedding_config_id must reference an existing embedding config owned by the user: {config_id}"
+        )
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "retrieve_task_scoped_semantic_artifact_chunk_records",
+        fake_retrieve_task_scoped_semantic_artifact_chunk_records,
+    )
+
+    response = main_module.retrieve_semantic_task_artifact_chunks(
+        task_id,
+        main_module.RetrieveSemanticArtifactChunksRequest(
+            user_id=user_id,
+            embedding_config_id=config_id,
+            query_vector=[1.0, 0.0, 0.0],
+            limit=5,
+        ),
+    )
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {
+        "detail": (
+            "embedding_config_id must reference an existing embedding config owned by the user: "
+            f"{config_id}"
+        )
+    }
+
+
+def test_retrieve_semantic_artifact_chunk_endpoint_maps_not_found_to_404(monkeypatch) -> None:
+    user_id = uuid4()
+    task_artifact_id = uuid4()
+    config_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    def fake_retrieve_artifact_scoped_semantic_artifact_chunk_records(*_args, **_kwargs):
+        raise TaskArtifactNotFoundError(f"task artifact {task_artifact_id} was not found")
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "retrieve_artifact_scoped_semantic_artifact_chunk_records",
+        fake_retrieve_artifact_scoped_semantic_artifact_chunk_records,
+    )
+
+    response = main_module.retrieve_semantic_artifact_chunks_for_artifact(
+        task_artifact_id,
+        main_module.RetrieveSemanticArtifactChunksRequest(
+            user_id=user_id,
+            embedding_config_id=config_id,
+            query_vector=[1.0, 0.0, 0.0],
+            limit=5,
+        ),
+    )
+
+    assert response.status_code == 404
+    assert json.loads(response.body) == {
+        "detail": f"task artifact {task_artifact_id} was not found"
     }
 
 
