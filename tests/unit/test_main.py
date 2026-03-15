@@ -21,7 +21,10 @@ from alicebot_api.entity import EntityNotFoundError, EntityValidationError
 from alicebot_api.entity_edge import EntityEdgeValidationError
 from alicebot_api.memory import MemoryAdmissionValidationError, MemoryReviewNotFoundError
 from alicebot_api.response_generation import ResponseFailure
-from alicebot_api.semantic_retrieval import SemanticMemoryRetrievalValidationError
+from alicebot_api.semantic_retrieval import (
+    SemanticArtifactChunkRetrievalValidationError,
+    SemanticMemoryRetrievalValidationError,
+)
 from alicebot_api.store import ContinuityStoreInvariantError
 
 
@@ -198,6 +201,7 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
         limits,
         semantic_retrieval,
         artifact_retrieval,
+        semantic_artifact_retrieval,
     ):
         captured["store_type"] = type(store).__name__
         captured["user_id"] = user_id
@@ -205,6 +209,7 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
         captured["limits"] = limits
         captured["semantic_retrieval"] = semantic_retrieval
         captured["artifact_retrieval"] = artifact_retrieval
+        captured["semantic_artifact_retrieval"] = semantic_artifact_retrieval
         return CompiledTraceRun(
             trace_id="trace-123",
             trace_event_count=5,
@@ -287,6 +292,21 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
                         "sequence_no_asc",
                         "id_asc",
                     ],
+                },
+                "semantic_artifact_chunks": [],
+                "semantic_artifact_chunk_summary": {
+                    "requested": False,
+                    "scope": None,
+                    "embedding_config_id": None,
+                    "query_vector_dimensions": 0,
+                    "limit": 0,
+                    "searched_artifact_count": 0,
+                    "candidate_count": 0,
+                    "included_count": 0,
+                    "excluded_uningested_artifact_count": 0,
+                    "excluded_limit_count": 0,
+                    "similarity_metric": None,
+                    "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
                 },
                 "entities": [
                     {
@@ -423,6 +443,21 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
                     "id_asc",
                 ],
             },
+            "semantic_artifact_chunks": [],
+            "semantic_artifact_chunk_summary": {
+                "requested": False,
+                "scope": None,
+                "embedding_config_id": None,
+                "query_vector_dimensions": 0,
+                "limit": 0,
+                "searched_artifact_count": 0,
+                "candidate_count": 0,
+                "included_count": 0,
+                "excluded_uningested_artifact_count": 0,
+                "excluded_limit_count": 0,
+                "similarity_metric": None,
+                "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+            },
             "entities": [
                 {
                     "id": "entity-123",
@@ -468,6 +503,7 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
     assert captured["limits"].max_entity_edges == 6
     assert captured["semantic_retrieval"] is None
     assert captured["artifact_retrieval"] is None
+    assert captured["semantic_artifact_retrieval"] is None
 
 
 def test_compile_context_returns_not_found_when_scope_row_is_missing(monkeypatch) -> None:
@@ -518,6 +554,7 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
         limits,
         semantic_retrieval,
         artifact_retrieval,
+        semantic_artifact_retrieval,
     ):
         captured["store_type"] = type(store).__name__
         captured["user_id"] = user_id
@@ -525,6 +562,7 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
         captured["limits"] = limits
         captured["semantic_retrieval"] = semantic_retrieval
         captured["artifact_retrieval"] = artifact_retrieval
+        captured["semantic_artifact_retrieval"] = semantic_artifact_retrieval
         return CompiledTraceRun(
             trace_id="trace-semantic",
             trace_event_count=7,
@@ -628,6 +666,34 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
                         "id_asc",
                     ],
                 },
+                "semantic_artifact_chunks": [
+                    {
+                        "id": "semantic-chunk-123",
+                        "task_id": "task-123",
+                        "task_artifact_id": "artifact-123",
+                        "relative_path": "docs/spec.txt",
+                        "media_type": "text/plain",
+                        "sequence_no": 1,
+                        "char_start": 0,
+                        "char_end_exclusive": 16,
+                        "text": "alpha beta spec",
+                        "score": 0.99,
+                    }
+                ],
+                "semantic_artifact_chunk_summary": {
+                    "requested": True,
+                    "scope": {"kind": "task", "task_id": "task-123"},
+                    "embedding_config_id": str(config_id),
+                    "query_vector_dimensions": 3,
+                    "limit": 2,
+                    "searched_artifact_count": 1,
+                    "candidate_count": 1,
+                    "included_count": 1,
+                    "excluded_uningested_artifact_count": 0,
+                    "excluded_limit_count": 0,
+                    "similarity_metric": "cosine_similarity",
+                    "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+                },
                 "entities": [],
                 "entity_summary": {
                     "candidate_count": 0,
@@ -663,6 +729,15 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
                 query="alpha beta",
                 limit=2,
             ),
+            semantic_artifact_retrieval=(
+                main_module.CompileContextTaskScopedSemanticArtifactRetrievalRequest(
+                    kind="task",
+                    task_id=uuid4(),
+                    embedding_config_id=config_id,
+                    query_vector=[0.1, 0.2, 0.3],
+                    limit=2,
+                )
+            ),
         )
     )
 
@@ -692,6 +767,10 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
     assert captured["artifact_retrieval"].task_id is not None
     assert captured["artifact_retrieval"].query == "alpha beta"
     assert captured["artifact_retrieval"].limit == 2
+    assert captured["semantic_artifact_retrieval"].task_id is not None
+    assert captured["semantic_artifact_retrieval"].embedding_config_id == config_id
+    assert captured["semantic_artifact_retrieval"].query_vector == (0.1, 0.2, 0.3)
+    assert captured["semantic_artifact_retrieval"].limit == 2
 
     monkeypatch.setattr(
         main_module,
@@ -720,6 +799,37 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
         "detail": "embedding_config_id must reference an existing embedding config owned by the user"
     }
 
+    monkeypatch.setattr(
+        main_module,
+        "compile_and_persist_trace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            SemanticArtifactChunkRetrievalValidationError(
+                "query_vector length must match embedding config dimensions (3): 2"
+            )
+        ),
+    )
+
+    semantic_artifact_error_response = main_module.compile_context(
+        main_module.CompileContextRequest(
+            user_id=user_id,
+            thread_id=thread_id,
+            semantic_artifact_retrieval=(
+                main_module.CompileContextTaskScopedSemanticArtifactRetrievalRequest(
+                    kind="task",
+                    task_id=uuid4(),
+                    embedding_config_id=config_id,
+                    query_vector=[0.1, 0.2],
+                    limit=2,
+                )
+            ),
+        )
+    )
+
+    assert semantic_artifact_error_response.status_code == 400
+    assert json.loads(semantic_artifact_error_response.body) == {
+        "detail": "query_vector length must match embedding config dimensions (3): 2"
+    }
+
 
 def test_compile_context_request_rejects_invalid_artifact_scope_shape() -> None:
     with pytest.raises(Exception) as exc_info:
@@ -730,6 +840,22 @@ def test_compile_context_request_rejects_invalid_artifact_scope_shape() -> None:
                 "kind": "task",
                 "task_artifact_id": str(uuid4()),
                 "query": "alpha beta",
+            },
+        )
+
+    assert "task_id" in str(exc_info.value)
+
+
+def test_compile_context_request_rejects_invalid_semantic_artifact_scope_shape() -> None:
+    with pytest.raises(Exception) as exc_info:
+        main_module.CompileContextRequest(
+            user_id=uuid4(),
+            thread_id=uuid4(),
+            semantic_artifact_retrieval={
+                "kind": "task",
+                "task_artifact_id": str(uuid4()),
+                "embedding_config_id": str(uuid4()),
+                "query_vector": [0.1, 0.2, 0.3],
             },
         )
 
