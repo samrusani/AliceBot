@@ -283,6 +283,23 @@ class TaskArtifactChunkEmbeddingRow(TypedDict):
     updated_at: datetime
 
 
+class TaskArtifactChunkSemanticRetrievalRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    task_id: UUID
+    task_artifact_id: UUID
+    relative_path: str
+    media_type_hint: str | None
+    sequence_no: int
+    char_start: int
+    char_end_exclusive: int
+    text: str
+    created_at: datetime
+    updated_at: datetime
+    embedding_config_id: UUID
+    score: float
+
+
 class TaskStepRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -803,6 +820,72 @@ RETRIEVE_SEMANTIC_MEMORY_MATCHES_SQL = """
                   AND memory_embeddings.dimensions = %s
                   AND memories.status = 'active'
                 ORDER BY score DESC, memories.created_at ASC, memories.id ASC
+                LIMIT %s
+                """
+
+RETRIEVE_TASK_SCOPED_SEMANTIC_ARTIFACT_CHUNK_MATCHES_SQL = """
+                SELECT
+                  chunks.id,
+                  chunks.user_id,
+                  artifacts.task_id,
+                  artifacts.id AS task_artifact_id,
+                  artifacts.relative_path,
+                  artifacts.media_type_hint,
+                  chunks.sequence_no,
+                  chunks.char_start,
+                  chunks.char_end_exclusive,
+                  chunks.text,
+                  chunks.created_at,
+                  chunks.updated_at,
+                  embeddings.embedding_config_id,
+                  1 - (
+                    replace(embeddings.vector::text, ' ', '')::vector <=> %s::vector
+                  ) AS score
+                FROM task_artifact_chunk_embeddings AS embeddings
+                JOIN task_artifact_chunks AS chunks
+                  ON chunks.id = embeddings.task_artifact_chunk_id
+                 AND chunks.user_id = embeddings.user_id
+                JOIN task_artifacts AS artifacts
+                  ON artifacts.id = chunks.task_artifact_id
+                 AND artifacts.user_id = chunks.user_id
+                WHERE embeddings.embedding_config_id = %s
+                  AND embeddings.dimensions = %s
+                  AND artifacts.task_id = %s
+                  AND artifacts.ingestion_status = 'ingested'
+                ORDER BY score DESC, artifacts.relative_path ASC, chunks.sequence_no ASC, chunks.id ASC
+                LIMIT %s
+                """
+
+RETRIEVE_ARTIFACT_SCOPED_SEMANTIC_ARTIFACT_CHUNK_MATCHES_SQL = """
+                SELECT
+                  chunks.id,
+                  chunks.user_id,
+                  artifacts.task_id,
+                  artifacts.id AS task_artifact_id,
+                  artifacts.relative_path,
+                  artifacts.media_type_hint,
+                  chunks.sequence_no,
+                  chunks.char_start,
+                  chunks.char_end_exclusive,
+                  chunks.text,
+                  chunks.created_at,
+                  chunks.updated_at,
+                  embeddings.embedding_config_id,
+                  1 - (
+                    replace(embeddings.vector::text, ' ', '')::vector <=> %s::vector
+                  ) AS score
+                FROM task_artifact_chunk_embeddings AS embeddings
+                JOIN task_artifact_chunks AS chunks
+                  ON chunks.id = embeddings.task_artifact_chunk_id
+                 AND chunks.user_id = embeddings.user_id
+                JOIN task_artifacts AS artifacts
+                  ON artifacts.id = chunks.task_artifact_id
+                 AND artifacts.user_id = chunks.user_id
+                WHERE embeddings.embedding_config_id = %s
+                  AND embeddings.dimensions = %s
+                  AND artifacts.id = %s
+                  AND artifacts.ingestion_status = 'ingested'
+                ORDER BY score DESC, artifacts.relative_path ASC, chunks.sequence_no ASC, chunks.id ASC
                 LIMIT %s
                 """
 
@@ -2575,6 +2658,44 @@ class ContinuityStore:
                 self._vector_literal(query_vector),
                 embedding_config_id,
                 len(query_vector),
+                limit,
+            ),
+        )
+
+    def retrieve_task_scoped_semantic_artifact_chunk_matches(
+        self,
+        *,
+        task_id: UUID,
+        embedding_config_id: UUID,
+        query_vector: list[float],
+        limit: int,
+    ) -> list[TaskArtifactChunkSemanticRetrievalRow]:
+        return self._fetch_all(
+            RETRIEVE_TASK_SCOPED_SEMANTIC_ARTIFACT_CHUNK_MATCHES_SQL,
+            (
+                self._vector_literal(query_vector),
+                embedding_config_id,
+                len(query_vector),
+                task_id,
+                limit,
+            ),
+        )
+
+    def retrieve_artifact_scoped_semantic_artifact_chunk_matches(
+        self,
+        *,
+        task_artifact_id: UUID,
+        embedding_config_id: UUID,
+        query_vector: list[float],
+        limit: int,
+    ) -> list[TaskArtifactChunkSemanticRetrievalRow]:
+        return self._fetch_all(
+            RETRIEVE_ARTIFACT_SCOPED_SEMANTIC_ARTIFACT_CHUNK_MATCHES_SQL,
+            (
+                self._vector_literal(query_vector),
+                embedding_config_id,
+                len(query_vector),
+                task_artifact_id,
                 limit,
             ),
         )
