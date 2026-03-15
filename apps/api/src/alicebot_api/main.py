@@ -16,8 +16,11 @@ from alicebot_api.contracts import (
     ApprovalRejectInput,
     ApprovalRequestCreateInput,
     ArtifactScopedSemanticArtifactChunkRetrievalInput,
+    CompileContextArtifactScopedSemanticArtifactRetrievalInput,
     CompileContextArtifactScopedArtifactRetrievalInput,
+    CompileContextSemanticArtifactRetrievalInput,
     CompileContextTaskScopedArtifactRetrievalInput,
+    CompileContextTaskScopedSemanticArtifactRetrievalInput,
     ConsentStatus,
     ConsentUpsertInput,
     CompileContextSemanticRetrievalInput,
@@ -291,6 +294,41 @@ CompileContextArtifactRetrievalRequest = Annotated[
 ]
 
 
+class CompileContextTaskScopedSemanticArtifactRetrievalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["task"]
+    task_id: UUID
+    embedding_config_id: UUID
+    query_vector: list[float] = Field(min_length=1, max_length=20000)
+    limit: int = Field(
+        default=DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+        ge=1,
+        le=MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+    )
+
+
+class CompileContextArtifactScopedSemanticArtifactRetrievalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["artifact"]
+    task_artifact_id: UUID
+    embedding_config_id: UUID
+    query_vector: list[float] = Field(min_length=1, max_length=20000)
+    limit: int = Field(
+        default=DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+        ge=1,
+        le=MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+    )
+
+
+CompileContextSemanticArtifactRetrievalRequest = Annotated[
+    CompileContextTaskScopedSemanticArtifactRetrievalRequest
+    | CompileContextArtifactScopedSemanticArtifactRetrievalRequest,
+    Field(discriminator="kind"),
+]
+
+
 class CompileContextRequest(BaseModel):
     user_id: UUID
     thread_id: UUID
@@ -301,6 +339,7 @@ class CompileContextRequest(BaseModel):
     max_entity_edges: int = Field(default=DEFAULT_MAX_ENTITY_EDGES, ge=0, le=100)
     semantic: CompileContextSemanticRequest | None = None
     artifact_retrieval: CompileContextArtifactRetrievalRequest | None = None
+    semantic_artifact_retrieval: CompileContextSemanticArtifactRetrievalRequest | None = None
 
 
 class GenerateResponseRequest(BaseModel):
@@ -616,6 +655,7 @@ def healthcheck() -> JSONResponse:
 def compile_context(request: CompileContextRequest) -> JSONResponse:
     settings = get_settings()
     artifact_retrieval = None
+    semantic_artifact_retrieval = None
     if isinstance(request.artifact_retrieval, CompileContextTaskScopedArtifactRetrievalRequest):
         artifact_retrieval = CompileContextTaskScopedArtifactRetrievalInput(
             task_id=request.artifact_retrieval.task_id,
@@ -630,6 +670,28 @@ def compile_context(request: CompileContextRequest) -> JSONResponse:
             task_artifact_id=request.artifact_retrieval.task_artifact_id,
             query=request.artifact_retrieval.query,
             limit=request.artifact_retrieval.limit,
+        )
+    if isinstance(
+        request.semantic_artifact_retrieval,
+        CompileContextTaskScopedSemanticArtifactRetrievalRequest,
+    ):
+        semantic_artifact_retrieval = CompileContextTaskScopedSemanticArtifactRetrievalInput(
+            task_id=request.semantic_artifact_retrieval.task_id,
+            embedding_config_id=request.semantic_artifact_retrieval.embedding_config_id,
+            query_vector=tuple(request.semantic_artifact_retrieval.query_vector),
+            limit=request.semantic_artifact_retrieval.limit,
+        )
+    elif isinstance(
+        request.semantic_artifact_retrieval,
+        CompileContextArtifactScopedSemanticArtifactRetrievalRequest,
+    ):
+        semantic_artifact_retrieval = (
+            CompileContextArtifactScopedSemanticArtifactRetrievalInput(
+                task_artifact_id=request.semantic_artifact_retrieval.task_artifact_id,
+                embedding_config_id=request.semantic_artifact_retrieval.embedding_config_id,
+                query_vector=tuple(request.semantic_artifact_retrieval.query_vector),
+                limit=request.semantic_artifact_retrieval.limit,
+            )
         )
 
     try:
@@ -655,8 +717,11 @@ def compile_context(request: CompileContextRequest) -> JSONResponse:
                     )
                 ),
                 artifact_retrieval=artifact_retrieval,
+                semantic_artifact_retrieval=semantic_artifact_retrieval,
             )
     except TaskArtifactChunkRetrievalValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except SemanticArtifactChunkRetrievalValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except SemanticMemoryRetrievalValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})

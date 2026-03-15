@@ -2,212 +2,255 @@
 
 ## sprint objective
 
-Implement Sprint 5H: Semantic Artifact Chunk Retrieval Primitive by adding a deterministic, explicit-config semantic retrieval path over durable `task_artifact_chunk_embeddings`, scoped to one task or one artifact, without changing compile behavior or introducing hybrid retrieval, connectors, runners, or UI work.
+Implement Sprint 5I: adopt semantic artifact retrieval into `POST /v0/context/compile` as an explicit, separate compile-time section backed only by durable `task_artifact_chunk_embeddings`, `task_artifact_chunks`, and `task_artifacts`, while keeping lexical and semantic artifact retrieval separate.
 
 ## completed work
 
-- Added semantic artifact retrieval contracts:
-  - `TaskScopedSemanticArtifactChunkRetrievalInput`
-    - `task_id`
-    - `embedding_config_id`
-    - `query_vector`
-    - `limit`
-  - `ArtifactScopedSemanticArtifactChunkRetrievalInput`
-    - `task_artifact_id`
-    - `embedding_config_id`
-    - `query_vector`
-    - `limit`
-  - `TaskArtifactChunkSemanticRetrievalItem`
-    - `id`
-    - `task_id`
-    - `task_artifact_id`
-    - `relative_path`
-    - `media_type`
-    - `sequence_no`
-    - `char_start`
-    - `char_end_exclusive`
-    - `text`
-    - `score`
-  - `TaskArtifactChunkSemanticRetrievalSummary`
-    - `embedding_config_id`
-    - `query_vector_dimensions`
-    - `limit`
-    - `returned_count`
-    - `searched_artifact_count`
-    - `similarity_metric`
-    - `order`
-    - `scope`
-  - `TaskArtifactChunkSemanticRetrievalResponse`
-  - `TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER = ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"]`
-- Implemented semantic artifact retrieval validation and service logic:
-  - validates that `embedding_config_id` resolves to a visible embedding config
-  - validates that every query-vector element is finite numeric input
-  - validates `len(query_vector) == embedding_config.dimensions`
-  - requires one explicit scope:
-    - task-scoped retrieval via visible `task_id`
-    - artifact-scoped retrieval via visible `task_artifact_id`
-  - excludes artifacts whose `ingestion_status` is not `ingested`
-  - preserves user isolation through the existing visible-row store lookups
-- Added deterministic store queries over durable artifact embedding rows only:
-  - task scope joins:
-    - `task_artifact_chunk_embeddings`
-    - `task_artifact_chunks`
-    - `task_artifacts`
-  - artifact scope joins the same durable tables with a narrower artifact filter
-  - no compile-path semantic use was added
-  - no second embedding store was introduced
-- Added minimal API surface:
-  - `POST /v0/tasks/{task_id}/artifact-chunks/semantic-retrieval`
-  - `POST /v0/task-artifacts/{task_artifact_id}/chunks/semantic-retrieval`
-- Added tests for:
-  - dimension validation
-  - deterministic ordering and tie-breaking
-  - task-scoped retrieval
-  - artifact-scoped retrieval
-  - empty-result behavior
+- Added compile-request contracts for `semantic_artifact_retrieval` with explicit task-scoped and artifact-scoped variants:
+  - `kind`
+  - `task_id` or `task_artifact_id`
+  - `embedding_config_id`
+  - `query_vector`
+  - `limit`
+- Added compile-response contracts for:
+  - `context_pack.semantic_artifact_chunks`
+  - `context_pack.semantic_artifact_chunk_summary`
+- Added semantic artifact trace contracts for per-item include/exclude decisions with:
+  - scope
+  - artifact identity
+  - ingestion status
+  - embedding config id
+  - query vector dimensions
+  - limit
+  - similarity metric
+  - score and chunk coordinates when applicable
+- Integrated semantic artifact retrieval into the compiler as an explicit optional path.
+- Reused the shipped semantic artifact retrieval primitive for compile-path section assembly, then evaluated the full deterministic candidate set for compile-only include/exclude tracing and counts.
+- Preserved existing compile sections and behavior for:
+  - continuity scope
+  - hybrid memory
+  - lexical artifact retrieval
+  - entities
+  - entity edges
+- Kept lexical artifact chunks and semantic artifact chunks in separate response sections.
+- Added trace coverage for:
+  - `within_semantic_artifact_chunk_limit`
+  - `semantic_artifact_chunk_limit_exceeded`
+  - `semantic_artifact_not_ingested`
+- Added summary trace fields for semantic artifact retrieval request state, scope, candidate count, included count, limit exclusions, and non-ingested exclusions.
+- Updated prompt-assembly context serialization so compiled context packs include the new semantic artifact section shape.
+- Added unit and integration coverage for:
+  - request-shape validation
+  - config existence validation
+  - query-vector dimension validation
+  - deterministic ordering
   - exclusion of non-ingested artifacts
+  - trace logging for included and excluded semantic artifact results
   - per-user isolation
-  - stable response shape
+  - response-shape stability
+
+## exact compile contract changes introduced
+
+- Request:
+  - `CompileContextRequest.semantic_artifact_retrieval`
+  - `CompileContextTaskScopedSemanticArtifactRetrievalRequest`
+  - `CompileContextArtifactScopedSemanticArtifactRetrievalRequest`
+  - `CompileContextTaskScopedSemanticArtifactRetrievalInput`
+  - `CompileContextArtifactScopedSemanticArtifactRetrievalInput`
+- Response:
+  - `CompiledContextPack.semantic_artifact_chunks`
+  - `CompiledContextPack.semantic_artifact_chunk_summary`
+  - `ContextPackSemanticArtifactChunk`
+  - `ContextPackSemanticArtifactChunkSummary`
+- Trace payloads:
+  - `SemanticArtifactRetrievalDecisionTracePayload`
+- Summary event additions:
+  - `semantic_artifact_retrieval_requested`
+  - `semantic_artifact_retrieval_scope_kind`
+  - `semantic_artifact_chunk_candidate_count`
+  - `included_semantic_artifact_chunk_count`
+  - `excluded_semantic_artifact_chunk_limit_count`
+  - `excluded_semantic_uningested_artifact_count`
 
 ## similarity metric and ordering rule used
 
-- Similarity metric:
-  - `cosine_similarity`
-  - computed in SQL as `1 - (embeddings.vector <=> query_vector)` via pgvector cosine distance
-- Ordering rule:
-  - `score DESC`
-  - `relative_path ASC`
-  - `sequence_no ASC`
-  - `id ASC`
-- Durable source restriction:
-  - retrieval reads only from persisted `task_artifact_chunk_embeddings`, `task_artifact_chunks`, and `task_artifacts`
+- Similarity metric: `cosine_similarity`
+- Ordering rule: `score_desc`, `relative_path_asc`, `sequence_no_asc`, `id_asc`
+- Compile candidate evaluation stays deterministic by using the durable semantic retrieval ordering and then applying explicit compile-time slicing by `limit`.
 
 ## incomplete work
 
-- None within Sprint 5H scope.
+- None within Sprint 5I scope.
 
 ## files changed
 
+- `apps/api/src/alicebot_api/compiler.py`
 - `apps/api/src/alicebot_api/contracts.py`
 - `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/response_generation.py`
 - `apps/api/src/alicebot_api/semantic_retrieval.py`
-- `apps/api/src/alicebot_api/store.py`
-- `tests/integration/test_semantic_artifact_chunk_retrieval_api.py`
-- `tests/unit/test_artifacts_main.py`
+- `tests/integration/test_context_compile.py`
+- `tests/unit/test_compiler.py`
 - `tests/unit/test_main.py`
-- `tests/unit/test_semantic_retrieval.py`
-- `tests/unit/test_task_artifact_chunk_embedding_store.py`
+- `tests/unit/test_response_generation.py`
 - `BUILD_REPORT.md`
 
 ## tests run
 
-- `./.venv/bin/python -m pytest tests/unit/test_semantic_retrieval.py tests/unit/test_task_artifact_chunk_embedding_store.py tests/unit/test_artifacts_main.py tests/unit/test_main.py`
-  - result: `65 passed in 0.55s`
-- `./.venv/bin/python -m pytest tests/integration/test_semantic_artifact_chunk_retrieval_api.py`
-  - first sandboxed attempt failed because local Postgres access to `localhost:5432` was blocked by the sandbox
-- `./.venv/bin/python -m pytest tests/integration/test_semantic_artifact_chunk_retrieval_api.py`
-  - result after allowing local Postgres access: `3 passed in 1.23s`
+- `./.venv/bin/python -m pytest tests/unit/test_compiler.py tests/unit/test_main.py tests/unit/test_response_generation.py`
+  - result: `50 passed in 0.48s`
+- `./.venv/bin/python -m pytest tests/integration/test_context_compile.py`
+  - sandboxed attempt failed because localhost Postgres access was blocked
+  - rerun with local DB access allowed: `11 passed in 3.85s`
 - `./.venv/bin/python -m pytest tests/unit`
-  - result: `377 passed in 0.59s`
+  - result: `380 passed in 0.61s`
 - `./.venv/bin/python -m pytest tests/integration`
-  - result: `114 passed in 34.94s`
+  - result: `117 passed in 36.46s`
 
-## example task-scoped semantic retrieval response
+## unit and integration test results
+
+- Unit suite status: pass
+- Integration suite status: pass
+- Acceptance-criteria verification:
+  - compile request validation: covered and passing
+  - deterministic semantic artifact ordering: covered and passing
+  - exclusion of non-ingested artifacts: covered and passing
+  - include/exclude trace logging: covered and passing
+  - per-user isolation: covered and passing
+  - response-shape stability: covered and passing
+
+## example compile request
 
 ```json
 {
-  "items": [
-    {
-      "id": "11111111-1111-1111-1111-111111111111",
-      "task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-      "task_artifact_id": "22222222-2222-2222-2222-222222222222",
-      "relative_path": "docs/a.txt",
-      "media_type": "text/plain",
-      "sequence_no": 1,
-      "char_start": 0,
-      "char_end_exclusive": 9,
-      "text": "alpha doc",
-      "score": 1.0
-    },
-    {
-      "id": "33333333-3333-3333-3333-333333333333",
-      "task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-      "task_artifact_id": "44444444-4444-4444-4444-444444444444",
-      "relative_path": "notes/b.md",
-      "media_type": "text/markdown",
-      "sequence_no": 1,
-      "char_start": 0,
-      "char_end_exclusive": 10,
-      "text": "alpha note",
-      "score": 1.0
-    }
-  ],
-  "summary": {
-    "embedding_config_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-    "query_vector_dimensions": 3,
-    "limit": 10,
-    "returned_count": 2,
-    "searched_artifact_count": 3,
-    "similarity_metric": "cosine_similarity",
-    "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
-    "scope": {
-      "kind": "task",
-      "task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+  "user_id": "11111111-1111-1111-8111-111111111111",
+  "thread_id": "22222222-2222-2222-8222-222222222222",
+  "semantic_artifact_retrieval": {
+    "kind": "task",
+    "task_id": "33333333-3333-3333-8333-333333333333",
+    "embedding_config_id": "44444444-4444-4444-8444-444444444444",
+    "query_vector": [1.0, 0.0, 0.0],
+    "limit": 2
+  }
+}
+```
+
+## example compile response showing semantic artifact section
+
+```json
+{
+  "context_pack": {
+    "semantic_artifact_chunks": [
+      {
+        "id": "55555555-5555-5555-8555-555555555555",
+        "task_id": "33333333-3333-3333-8333-333333333333",
+        "task_artifact_id": "66666666-6666-6666-8666-666666666666",
+        "relative_path": "docs/a.txt",
+        "media_type": "text/plain",
+        "sequence_no": 1,
+        "char_start": 0,
+        "char_end_exclusive": 14,
+        "text": "beta alpha doc",
+        "score": 1.0
+      },
+      {
+        "id": "77777777-7777-7777-8777-777777777777",
+        "task_id": "33333333-3333-3333-8333-333333333333",
+        "task_artifact_id": "88888888-8888-8888-8888-888888888888",
+        "relative_path": "notes/b.md",
+        "media_type": "text/markdown",
+        "sequence_no": 1,
+        "char_start": 0,
+        "char_end_exclusive": 15,
+        "text": "alpha beta note",
+        "score": 1.0
+      }
+    ],
+    "semantic_artifact_chunk_summary": {
+      "requested": true,
+      "scope": {
+        "kind": "task",
+        "task_id": "33333333-3333-3333-8333-333333333333"
+      },
+      "embedding_config_id": "44444444-4444-4444-8444-444444444444",
+      "query_vector_dimensions": 3,
+      "limit": 2,
+      "searched_artifact_count": 3,
+      "candidate_count": 3,
+      "included_count": 2,
+      "excluded_uningested_artifact_count": 1,
+      "excluded_limit_count": 1,
+      "similarity_metric": "cosine_similarity",
+      "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"]
     }
   }
 }
 ```
 
-## example artifact-scoped semantic retrieval response
+## example semantic artifact retrieval trace events inside one compile run
 
 ```json
-{
-  "items": [
-    {
-      "id": "33333333-3333-3333-3333-333333333333",
-      "task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-      "task_artifact_id": "44444444-4444-4444-4444-444444444444",
-      "relative_path": "notes/b.md",
-      "media_type": "text/markdown",
+[
+  {
+    "kind": "context.included",
+    "payload": {
+      "entity_type": "semantic_artifact_chunk",
+      "entity_id": "55555555-5555-5555-8555-555555555555",
+      "reason": "within_semantic_artifact_chunk_limit",
+      "position": 1,
+      "scope_kind": "task",
+      "task_id": "33333333-3333-3333-8333-333333333333",
+      "task_artifact_id": "66666666-6666-6666-8666-666666666666",
+      "relative_path": "docs/a.txt",
+      "media_type": "text/plain",
+      "ingestion_status": "ingested",
+      "embedding_config_id": "44444444-4444-4444-8444-444444444444",
+      "query_vector_dimensions": 3,
+      "limit": 2,
+      "similarity_metric": "cosine_similarity",
+      "score": 1.0,
       "sequence_no": 1,
       "char_start": 0,
-      "char_end_exclusive": 10,
-      "text": "alpha note",
-      "score": 1.0
+      "char_end_exclusive": 14
     }
-  ],
-  "summary": {
-    "embedding_config_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-    "query_vector_dimensions": 3,
-    "limit": 10,
-    "returned_count": 1,
-    "searched_artifact_count": 1,
-    "similarity_metric": "cosine_similarity",
-    "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
-    "scope": {
-      "kind": "artifact",
-      "task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-      "task_artifact_id": "44444444-4444-4444-4444-444444444444"
+  },
+  {
+    "kind": "context.excluded",
+    "payload": {
+      "entity_type": "task_artifact",
+      "entity_id": "99999999-9999-9999-8999-999999999999",
+      "reason": "semantic_artifact_not_ingested",
+      "position": 3,
+      "scope_kind": "task",
+      "task_id": "33333333-3333-3333-8333-333333333333",
+      "task_artifact_id": "99999999-9999-9999-8999-999999999999",
+      "relative_path": "notes/hidden.txt",
+      "media_type": "text/plain",
+      "ingestion_status": "pending",
+      "embedding_config_id": "44444444-4444-4444-8444-444444444444",
+      "query_vector_dimensions": 3,
+      "limit": 2,
+      "similarity_metric": "cosine_similarity"
     }
   }
-}
+]
 ```
 
 ## blockers/issues
 
-- No code blocker remained after implementation.
-- Integration verification required access to the local Postgres instance because sandboxed localhost TCP connections were blocked.
+- No implementation blockers remained.
+- Integration verification required local Postgres access outside the default sandbox because sandboxed TCP access to `localhost:5432` is not permitted.
 
 ## what remains intentionally deferred to later milestones
 
-- compile-path semantic artifact retrieval
-- lexical plus semantic hybrid artifact retrieval
-- reranking beyond direct similarity ordering
-- query embedding generation through a model or external API
+- hybrid lexical-plus-semantic artifact retrieval
+- lexical/semantic deduplication or fusion
+- reranking across semantic artifact chunks
+- model-generated query embeddings
 - connectors
 - runner orchestration
 - UI work
 
 ## recommended next step
 
-Adopt this new semantic artifact retrieval primitive in a follow-up sprint that explicitly decides how compile should consume semantic artifact chunks, without combining that change with hybrid retrieval or reranking in the same step.
+Implement the follow-up sprint for hybrid compile-path artifact fusion only after agreeing on explicit merge, deduplication, and reranking rules between lexical and semantic artifact sections.
