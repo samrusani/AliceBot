@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Sprint 5F: Artifact Chunk Compile Integration V0
+Sprint 5H: Semantic Artifact Chunk Retrieval Primitive
 
 ## Sprint Type
 
@@ -10,15 +10,15 @@ feature
 
 ## Sprint Reason
 
-Milestone 5 now has deterministic workspace boundaries, explicit artifact records, local text-artifact ingestion, and lexical chunk retrieval. The next safe step is to make those retrieved chunks available to the existing context compiler so document-aware responses can build on durable artifact data instead of isolated read APIs.
+Milestone 5 now has deterministic artifact chunk ingestion, lexical retrieval, compile-path lexical artifact inclusion, and durable artifact-chunk embedding storage. The next safe step is a direct semantic retrieval primitive over those stored chunk embeddings, while still deferring compile-path semantic use, hybrid artifact retrieval, connectors, and UI.
 
 ## Sprint Intent
 
-Extend the existing context-compile path so it can optionally retrieve and include relevant artifact chunks using the shipped lexical artifact-chunk retrieval seam, without yet adding embeddings, semantic retrieval, Gmail/Calendar connectors, or UI.
+Add the first read-side semantic retrieval primitive over stored `task_artifact_chunk_embeddings`, with explicit embedding-config selection and deterministic result ordering, without yet wiring semantic artifact retrieval into the compile path or combining it with lexical artifact retrieval.
 
 ## Git Instructions
 
-- Branch Name: `codex/sprint-5f-artifact-chunk-compile-integration-v0`
+- Branch Name: `codex/sprint-5h-semantic-artifact-chunk-retrieval`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR, no stacked PRs unless Control Tower explicitly opens a follow-up sprint
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
@@ -29,100 +29,104 @@ Extend the existing context-compile path so it can optionally retrieve and inclu
 - Sprint 5C shipped explicit task-artifact registration.
 - Sprint 5D shipped deterministic local artifact ingestion into durable chunk rows.
 - Sprint 5E shipped deterministic lexical retrieval over those chunk rows.
-- The next narrow Milestone 5 seam is compile-path integration of those persisted chunk results only, so document-aware context can land without jumping into semantic retrieval, connector work, or richer parsing.
+- Sprint 5F shipped compile-path lexical artifact chunk inclusion.
+- Sprint 5G shipped durable artifact-chunk embedding persistence tied to existing embedding configs.
+- The next narrow Milestone 5 seam is semantic artifact retrieval over those stored vectors only, so later compile adoption and hybrid artifact retrieval can build on an explicit retrieval primitive instead of hidden assumptions.
 
 ## In Scope
 
 - Define typed contracts for:
-  - optional artifact-retrieval input on compile requests
-  - artifact-chunk result items inside the compiled context pack
-  - artifact-retrieval summary metadata inside compile responses
-  - artifact-retrieval trace payloads
-- Extend the compile path so it can:
-  - accept an explicit artifact retrieval request scoped to one visible task or one visible artifact
-  - reuse the existing lexical artifact-chunk retrieval seam
-  - include retrieved artifact chunks in a separate context-pack section
-  - record artifact chunk include/exclude decisions in `trace_events`
-  - preserve deterministic output for the same stored data and inputs
-- Ensure compile behavior:
-  - leaves current continuity, memory, entity, and other context sections intact
-  - does not merge artifact chunks with memory/entity sections
-  - excludes non-ingested artifacts
-  - scopes strictly by user ownership
-  - uses deterministic ordering and explicit per-section limits
+  - semantic artifact retrieval requests
+  - semantic artifact retrieval result items
+  - retrieval summary metadata
+- Implement a narrow semantic retrieval seam that:
+  - accepts an explicit `embedding_config_id`
+  - accepts a caller-supplied query vector
+  - searches only durable `task_artifact_chunk_embeddings`
+  - joins to visible `task_artifact_chunks` and visible `task_artifacts`
+  - scopes retrieval by the current user plus one explicit task or one explicit artifact
+  - validates query-vector dimension against the chosen embedding config
+  - computes similarity using the stored vectors already persisted in the repo
+  - returns deterministic ordered chunk results with explicit score metadata
+  - excludes artifacts that are not yet ingested
+- Implement the minimal API or service paths needed for:
+  - semantic retrieval for one task
+  - semantic retrieval for one artifact when the caller wants a narrower scope
 - Add unit and integration tests for:
-  - compile request validation for artifact retrieval input
-  - deterministic artifact-chunk section ordering
+  - dimension validation
+  - deterministic retrieval ordering and tie-breaking
+  - scoped retrieval by task and by artifact
+  - empty-result behavior
   - exclusion of non-ingested artifacts
-  - trace logging for included and excluded artifact chunks
-  - per-user isolation through the compile path
-  - response-shape stability for the new artifact-chunk section
+  - per-user isolation
+  - stable response shape
 
 ## Out of Scope
 
-- No embeddings for artifact chunks.
-- No semantic retrieval or reranking for artifact chunks.
-- No compile-path merge between artifact chunks and memory/entity sections.
-- No PDF, DOCX, OCR, or rich document parsing beyond the already-shipped text ingestion seam.
+- No compile-path semantic artifact retrieval yet.
+- No hybrid lexical plus semantic artifact retrieval.
+- No reranking layer beyond direct similarity ordering.
+- No model or external API calls to generate query embeddings.
+- No richer document parsing beyond the already-shipped local text ingestion seam.
 - No Gmail or Calendar connector scope.
 - No runner-style orchestration.
 - No UI work.
 
 ## Required Deliverables
 
-- Stable compile-request and compile-response contract updates for artifact chunk retrieval input and output.
-- Compile-path integration with the existing lexical artifact-chunk retrieval seam.
-- Trace coverage for artifact retrieval decisions inside compile runs.
-- Unit and integration coverage for compile-path artifact behavior, ordering, exclusion rules, and isolation.
+- Stable semantic artifact retrieval request and response contracts.
+- Minimal deterministic semantic retrieval path over existing `task_artifact_chunk_embeddings`.
+- Unit and integration coverage for ordering, validation, scoping, exclusion rules, and isolation.
 - Updated `BUILD_REPORT.md` with exact verification results and explicit deferred scope.
 
 ## Acceptance Criteria
 
-- `POST /v0/context/compile` can optionally accept artifact retrieval input and return a separate artifact-chunk section in the context pack.
-- Compile-path artifact retrieval uses only durable `task_artifact_chunks` rows already persisted in the repo.
-- Non-ingested artifacts are excluded from compile-path artifact results.
-- Artifact include/exclude decisions are persisted in `trace_events`.
-- Result ordering is deterministic within the artifact-chunk section.
+- A client can submit a query vector plus `embedding_config_id` and retrieve relevant visible artifact chunks for one task.
+- A client can submit a query vector plus `embedding_config_id` and retrieve relevant visible artifact chunks for one artifact.
+- Retrieval uses only durable `task_artifact_chunk_embeddings`, `task_artifact_chunks`, and artifact records already persisted in the repo.
+- Retrieval rejects missing configs, dimension mismatches, and cross-user access deterministically.
+- Non-ingested artifacts are excluded from semantic retrieval results.
+- Result ordering is deterministic and documented.
 - `./.venv/bin/python -m pytest tests/unit` passes.
 - `./.venv/bin/python -m pytest tests/integration` passes.
-- No embeddings, semantic retrieval, connector, runner, UI, or broader side-effect scope enters the sprint.
+- No compile integration changes, hybrid retrieval, connector, runner, UI, or broader side-effect scope enters the sprint.
 
 ## Implementation Constraints
 
-- Keep compile integration narrow and boring.
-- Reuse the existing artifact retrieval seam; do not read raw files during compile.
-- Keep artifact chunks in a separate response section from memory/entity context.
-- Do not introduce semantic retrieval, embeddings, or ranking in this sprint.
-- Keep scope explicit: one task or one artifact retrieval scope per compile request.
+- Keep semantic retrieval narrow and boring.
+- Reuse existing embedding configs and durable artifact chunk embeddings; do not introduce a second embedding store.
+- Use explicit caller-selected config and query vector input; do not auto-pick configs.
+- Keep scope explicit: one task or one artifact per request.
+- Do not merge semantic artifact retrieval into the main compiler in the same sprint.
 
 ## Suggested Work Breakdown
 
-1. Define compile contract updates for optional artifact retrieval input and output.
-2. Integrate the existing lexical artifact-chunk retrieval seam into the compile path.
-3. Add artifact result summaries and trace-event payloads.
-4. Preserve current context sections while adding a separate artifact-chunk section.
+1. Define semantic artifact retrieval request and response contracts.
+2. Implement deterministic similarity search over existing artifact chunk embeddings.
+3. Add explicit task-scoped and artifact-scoped semantic retrieval paths.
+4. Enforce config validation, non-ingested exclusion, and current-user isolation.
 5. Add unit and integration tests.
 6. Update `BUILD_REPORT.md` with executed verification.
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- the exact compile contract changes introduced
-- the artifact retrieval matching and ordering rule used
+- the exact semantic artifact retrieval contracts introduced
+- the similarity metric and ordering rule used
 - exact commands run
 - unit and integration test results
-- one example compile request and response showing the artifact-chunk section
-- one example of artifact-retrieval trace events inside one compile run
+- one example task-scoped semantic retrieval response
+- one example artifact-scoped semantic retrieval response
 - what remains intentionally deferred to later milestones
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- the sprint stayed limited to compile-path artifact chunk integration
-- artifact retrieval reuses durable chunk rows and the existing lexical retrieval seam
-- ordering, exclusion rules, trace visibility, and isolation are test-backed
-- no hidden embeddings, semantic retrieval, connector, runner, UI, or broader side-effect scope entered the sprint
+- the sprint stayed limited to the semantic artifact chunk retrieval primitive
+- retrieval is explicit-config, durable-source-only, and validation-backed
+- ordering, exclusion rules, and isolation are test-backed
+- no hidden compile integration changes, hybrid retrieval, connector, runner, UI, or broader side-effect scope entered the sprint
 
 ## Exit Condition
 
-This sprint is complete when the repo can optionally include retrieved artifact chunks inside `POST /v0/context/compile`, trace those inclusion decisions, and verify the full path with Postgres-backed tests, while still deferring semantic retrieval, embeddings, connector work, and UI.
+This sprint is complete when the repo can retrieve relevant ingested artifact chunks through a deterministic semantic read path scoped to one task or one artifact, verify the full path with Postgres-backed tests, and still defer compile-path semantic use, hybrid artifact retrieval, connectors, and UI.

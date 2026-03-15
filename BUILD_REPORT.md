@@ -2,166 +2,212 @@
 
 ## sprint objective
 
-Implement Sprint 5G: Artifact Chunk Embedding Substrate by adding durable, user-scoped `task_artifact_chunk_embeddings` records tied to existing `embedding_configs`, with strict vector validation, deterministic reads, and no semantic retrieval, compile-path semantic use, connector, runner, or UI changes.
+Implement Sprint 5H: Semantic Artifact Chunk Retrieval Primitive by adding a deterministic, explicit-config semantic retrieval path over durable `task_artifact_chunk_embeddings`, scoped to one task or one artifact, without changing compile behavior or introducing hybrid retrieval, connectors, runners, or UI work.
 
 ## completed work
 
-- Added Alembic revision `20260314_0025_task_artifact_chunk_embeddings` for a new `task_artifact_chunk_embeddings` table.
-- Added schema for `task_artifact_chunk_embeddings`:
-  - columns: `id`, `user_id`, `task_artifact_chunk_id`, `embedding_config_id`, `dimensions`, `vector`, `created_at`, `updated_at`
-  - uniqueness:
-    - `UNIQUE (id, user_id)`
-    - `UNIQUE (user_id, task_artifact_chunk_id, embedding_config_id)`
-  - foreign keys:
-    - `(task_artifact_chunk_id, user_id) -> task_artifact_chunks(id, user_id)`
-    - `(embedding_config_id, user_id) -> embedding_configs(id, user_id)`
-  - checks:
-    - `dimensions > 0`
-    - `vector` is a JSON array
-    - `vector` is non-empty
-    - `jsonb_array_length(vector) = dimensions`
-  - index:
-    - `task_artifact_chunk_embeddings_user_chunk_created_idx (user_id, task_artifact_chunk_id, created_at, id)`
-  - security/runtime:
-    - owner-only RLS
-    - `GRANT SELECT, INSERT, UPDATE ON task_artifact_chunk_embeddings TO alicebot_app`
-- Added stable contracts:
-  - `TaskArtifactChunkEmbeddingUpsertInput`
-  - `TaskArtifactChunkEmbeddingRecord`
-  - `TaskArtifactChunkEmbeddingWriteResponse`
-  - `TaskArtifactChunkEmbeddingDetailResponse`
-  - `TaskArtifactChunkEmbeddingListScope`
-  - `TaskArtifactChunkEmbeddingListSummary`
-  - `TaskArtifactChunkEmbeddingListResponse`
-  - `TASK_ARTIFACT_CHUNK_EMBEDDING_LIST_ORDER = ["task_artifact_chunk_sequence_no_asc", "created_at_asc", "id_asc"]`
-- Implemented artifact-chunk embedding service behavior:
-  - validates `task_artifact_chunk_id` against visible `task_artifact_chunks`
-  - validates `embedding_config_id` against visible `embedding_configs`
-  - reuses the existing versioned `embedding_configs` seam without a second config/version model
-  - validates every vector element as finite numeric input
-  - enforces `len(vector) == embedding_config.dimensions`
-  - upserts one embedding per `(task_artifact_chunk_id, embedding_config_id)` pair
-  - exposes deterministic reads by:
-    - artifact scope
-    - chunk scope
-    - embedding id
+- Added semantic artifact retrieval contracts:
+  - `TaskScopedSemanticArtifactChunkRetrievalInput`
+    - `task_id`
+    - `embedding_config_id`
+    - `query_vector`
+    - `limit`
+  - `ArtifactScopedSemanticArtifactChunkRetrievalInput`
+    - `task_artifact_id`
+    - `embedding_config_id`
+    - `query_vector`
+    - `limit`
+  - `TaskArtifactChunkSemanticRetrievalItem`
+    - `id`
+    - `task_id`
+    - `task_artifact_id`
+    - `relative_path`
+    - `media_type`
+    - `sequence_no`
+    - `char_start`
+    - `char_end_exclusive`
+    - `text`
+    - `score`
+  - `TaskArtifactChunkSemanticRetrievalSummary`
+    - `embedding_config_id`
+    - `query_vector_dimensions`
+    - `limit`
+    - `returned_count`
+    - `searched_artifact_count`
+    - `similarity_metric`
+    - `order`
+    - `scope`
+  - `TaskArtifactChunkSemanticRetrievalResponse`
+  - `TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER = ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"]`
+- Implemented semantic artifact retrieval validation and service logic:
+  - validates that `embedding_config_id` resolves to a visible embedding config
+  - validates that every query-vector element is finite numeric input
+  - validates `len(query_vector) == embedding_config.dimensions`
+  - requires one explicit scope:
+    - task-scoped retrieval via visible `task_id`
+    - artifact-scoped retrieval via visible `task_artifact_id`
+  - excludes artifacts whose `ingestion_status` is not `ingested`
+  - preserves user isolation through the existing visible-row store lookups
+- Added deterministic store queries over durable artifact embedding rows only:
+  - task scope joins:
+    - `task_artifact_chunk_embeddings`
+    - `task_artifact_chunks`
+    - `task_artifacts`
+  - artifact scope joins the same durable tables with a narrower artifact filter
+  - no compile-path semantic use was added
+  - no second embedding store was introduced
 - Added minimal API surface:
-  - `POST /v0/task-artifact-chunk-embeddings`
-  - `GET /v0/task-artifacts/{task_artifact_id}/chunk-embeddings`
-  - `GET /v0/task-artifact-chunks/{task_artifact_chunk_id}/embeddings`
-  - `GET /v0/task-artifact-chunk-embeddings/{task_artifact_chunk_embedding_id}`
-- Added unit and integration coverage for:
-  - persistence
-  - deterministic ordering
+  - `POST /v0/tasks/{task_id}/artifact-chunks/semantic-retrieval`
+  - `POST /v0/task-artifacts/{task_artifact_id}/chunks/semantic-retrieval`
+- Added tests for:
   - dimension validation
-  - invalid config and invalid chunk references
-  - cross-user isolation
+  - deterministic ordering and tie-breaking
+  - task-scoped retrieval
+  - artifact-scoped retrieval
+  - empty-result behavior
+  - exclusion of non-ingested artifacts
+  - per-user isolation
   - stable response shape
-  - migration presence, RLS, grants, and downgrade behavior
 
-## embedding-config reuse rule and dimension-validation rule used
+## similarity metric and ordering rule used
 
-- Reuse rule:
-  - every artifact-chunk embedding must reference an existing visible `embedding_config`
-  - no new embedding versioning model was introduced
-- Dimension-validation rule:
-  - vector normalization accepts only finite numeric values
-  - write requests fail unless `len(vector) == embedding_config.dimensions`
-  - database and service validation both enforce the dimensions rule
+- Similarity metric:
+  - `cosine_similarity`
+  - computed in SQL as `1 - (embeddings.vector <=> query_vector)` via pgvector cosine distance
+- Ordering rule:
+  - `score DESC`
+  - `relative_path ASC`
+  - `sequence_no ASC`
+  - `id ASC`
+- Durable source restriction:
+  - retrieval reads only from persisted `task_artifact_chunk_embeddings`, `task_artifact_chunks`, and `task_artifacts`
 
 ## incomplete work
 
-- None within Sprint 5G scope.
+- None within Sprint 5H scope.
 
 ## files changed
 
-- `apps/api/alembic/versions/20260314_0025_task_artifact_chunk_embeddings.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/embedding.py`
 - `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/semantic_retrieval.py`
 - `apps/api/src/alicebot_api/store.py`
-- `tests/integration/test_migrations.py`
-- `tests/integration/test_task_artifact_chunk_embeddings_api.py`
-- `tests/unit/test_20260314_0025_task_artifact_chunk_embeddings.py`
-- `tests/unit/test_task_artifact_chunk_embedding.py`
-- `tests/unit/test_task_artifact_chunk_embedding_store.py`
+- `tests/integration/test_semantic_artifact_chunk_retrieval_api.py`
+- `tests/unit/test_artifacts_main.py`
 - `tests/unit/test_main.py`
+- `tests/unit/test_semantic_retrieval.py`
+- `tests/unit/test_task_artifact_chunk_embedding_store.py`
 - `BUILD_REPORT.md`
 
-## example artifact-chunk embedding write response
+## tests run
 
-```json
-{
-  "embedding": {
-    "id": "4d5d0a3b-6a8a-4bf4-bb7c-d1df3d6d84c8",
-    "task_artifact_id": "6dc8f07d-19f6-4667-b9f3-4573b9cf2b66",
-    "task_artifact_chunk_id": "fd3dc999-a4d3-4bb0-a287-4f4950dfd7e0",
-    "task_artifact_chunk_sequence_no": 2,
-    "embedding_config_id": "42dbab76-1e02-4b5f-a18b-f59c1b19d1d4",
-    "dimensions": 3,
-    "vector": [0.9, 0.8, 0.7],
-    "created_at": "2026-03-14T12:00:00+00:00",
-    "updated_at": "2026-03-14T12:10:00+00:00"
-  },
-  "write_mode": "updated"
-}
-```
+- `./.venv/bin/python -m pytest tests/unit/test_semantic_retrieval.py tests/unit/test_task_artifact_chunk_embedding_store.py tests/unit/test_artifacts_main.py tests/unit/test_main.py`
+  - result: `65 passed in 0.55s`
+- `./.venv/bin/python -m pytest tests/integration/test_semantic_artifact_chunk_retrieval_api.py`
+  - first sandboxed attempt failed because local Postgres access to `localhost:5432` was blocked by the sandbox
+- `./.venv/bin/python -m pytest tests/integration/test_semantic_artifact_chunk_retrieval_api.py`
+  - result after allowing local Postgres access: `3 passed in 1.23s`
+- `./.venv/bin/python -m pytest tests/unit`
+  - result: `377 passed in 0.59s`
+- `./.venv/bin/python -m pytest tests/integration`
+  - result: `114 passed in 34.94s`
 
-## example artifact-chunk embedding list response
+## example task-scoped semantic retrieval response
 
 ```json
 {
   "items": [
     {
-      "id": "4d5d0a3b-6a8a-4bf4-bb7c-d1df3d6d84c8",
-      "task_artifact_id": "6dc8f07d-19f6-4667-b9f3-4573b9cf2b66",
-      "task_artifact_chunk_id": "fd3dc999-a4d3-4bb0-a287-4f4950dfd7e0",
-      "task_artifact_chunk_sequence_no": 2,
-      "embedding_config_id": "42dbab76-1e02-4b5f-a18b-f59c1b19d1d4",
-      "dimensions": 3,
-      "vector": [0.9, 0.8, 0.7],
-      "created_at": "2026-03-14T12:00:00+00:00",
-      "updated_at": "2026-03-14T12:10:00+00:00"
+      "id": "11111111-1111-1111-1111-111111111111",
+      "task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "task_artifact_id": "22222222-2222-2222-2222-222222222222",
+      "relative_path": "docs/a.txt",
+      "media_type": "text/plain",
+      "sequence_no": 1,
+      "char_start": 0,
+      "char_end_exclusive": 9,
+      "text": "alpha doc",
+      "score": 1.0
+    },
+    {
+      "id": "33333333-3333-3333-3333-333333333333",
+      "task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "task_artifact_id": "44444444-4444-4444-4444-444444444444",
+      "relative_path": "notes/b.md",
+      "media_type": "text/markdown",
+      "sequence_no": 1,
+      "char_start": 0,
+      "char_end_exclusive": 10,
+      "text": "alpha note",
+      "score": 1.0
     }
   ],
   "summary": {
-    "total_count": 1,
-    "order": ["task_artifact_chunk_sequence_no_asc", "created_at_asc", "id_asc"],
+    "embedding_config_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    "query_vector_dimensions": 3,
+    "limit": 10,
+    "returned_count": 2,
+    "searched_artifact_count": 3,
+    "similarity_metric": "cosine_similarity",
+    "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
     "scope": {
-      "kind": "chunk",
-      "task_artifact_id": "6dc8f07d-19f6-4667-b9f3-4573b9cf2b66",
-      "task_artifact_chunk_id": "fd3dc999-a4d3-4bb0-a287-4f4950dfd7e0"
+      "kind": "task",
+      "task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     }
   }
 }
 ```
 
-## tests run
+## example artifact-scoped semantic retrieval response
 
-- `./.venv/bin/python -m pytest tests/unit/test_20260314_0025_task_artifact_chunk_embeddings.py tests/unit/test_task_artifact_chunk_embedding.py tests/unit/test_task_artifact_chunk_embedding_store.py tests/unit/test_main.py`
-  - result: `48 passed in 0.41s`
-- `./.venv/bin/python -m pytest tests/integration/test_task_artifact_chunk_embeddings_api.py tests/integration/test_migrations.py`
-  - first sandboxed attempt failed to reach local Postgres on `localhost:5432` due sandbox restrictions
-- `./.venv/bin/python -m pytest tests/integration/test_migrations.py::test_migrations_upgrade_and_downgrade tests/integration/test_task_artifact_chunk_embeddings_api.py`
-  - result: `4 passed in 1.99s`
-- `./.venv/bin/python -m pytest tests/unit`
-  - result: `370 passed in 0.59s`
-- `./.venv/bin/python -m pytest tests/integration`
-  - result: `111 passed in 34.92s`
+```json
+{
+  "items": [
+    {
+      "id": "33333333-3333-3333-3333-333333333333",
+      "task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "task_artifact_id": "44444444-4444-4444-4444-444444444444",
+      "relative_path": "notes/b.md",
+      "media_type": "text/markdown",
+      "sequence_no": 1,
+      "char_start": 0,
+      "char_end_exclusive": 10,
+      "text": "alpha note",
+      "score": 1.0
+    }
+  ],
+  "summary": {
+    "embedding_config_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    "query_vector_dimensions": 3,
+    "limit": 10,
+    "returned_count": 1,
+    "searched_artifact_count": 1,
+    "similarity_metric": "cosine_similarity",
+    "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+    "scope": {
+      "kind": "artifact",
+      "task_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "task_artifact_id": "44444444-4444-4444-4444-444444444444"
+    }
+  }
+}
+```
 
 ## blockers/issues
 
-- No code blockers remained.
-- Integration verification required elevated access to the local Postgres instance because sandboxed localhost connections were blocked.
+- No code blocker remained after implementation.
+- Integration verification required access to the local Postgres instance because sandboxed localhost TCP connections were blocked.
 
 ## what remains intentionally deferred to later milestones
 
-- semantic retrieval over artifact chunks
+- compile-path semantic artifact retrieval
 - lexical plus semantic hybrid artifact retrieval
-- compile-path semantic use of artifact embeddings
-- embedding generation via model or external API calls
-- connectors, runners, orchestration, and UI work
+- reranking beyond direct similarity ordering
+- query embedding generation through a model or external API
+- connectors
+- runner orchestration
+- UI work
 
 ## recommended next step
 
-Use the new durable `task_artifact_chunk_embeddings` substrate to add a separate, narrowly scoped semantic artifact retrieval sprint that reads these stored vectors without changing compile-path behavior in the same step.
+Adopt this new semantic artifact retrieval primitive in a follow-up sprint that explicitly decides how compile should consume semantic artifact chunks, without combining that change with hybrid retrieval or reranking in the same step.

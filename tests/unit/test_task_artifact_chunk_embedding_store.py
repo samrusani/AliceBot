@@ -234,3 +234,85 @@ def test_task_artifact_chunk_embedding_store_optional_reads_return_none_when_row
         task_artifact_chunk_id=uuid4(),
         embedding_config_id=uuid4(),
     ) is None
+
+
+def test_semantic_artifact_chunk_retrieval_store_methods_use_expected_queries() -> None:
+    task_id = uuid4()
+    task_artifact_id = uuid4()
+    task_artifact_chunk_id = uuid4()
+    embedding_config_id = uuid4()
+    created_at = datetime(2026, 3, 15, 9, 0, tzinfo=UTC)
+    cursor = RecordingCursor(
+        fetchone_results=[],
+        fetchall_results=[
+            [
+                {
+                    "id": task_artifact_chunk_id,
+                    "user_id": uuid4(),
+                    "task_id": task_id,
+                    "task_artifact_id": task_artifact_id,
+                    "relative_path": "docs/spec.txt",
+                    "media_type_hint": "text/plain",
+                    "sequence_no": 1,
+                    "char_start": 0,
+                    "char_end_exclusive": 11,
+                    "text": "alpha chunk",
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                    "embedding_config_id": embedding_config_id,
+                    "score": 1.0,
+                }
+            ],
+            [
+                {
+                    "id": task_artifact_chunk_id,
+                    "user_id": uuid4(),
+                    "task_id": task_id,
+                    "task_artifact_id": task_artifact_id,
+                    "relative_path": "docs/spec.txt",
+                    "media_type_hint": "text/plain",
+                    "sequence_no": 1,
+                    "char_start": 0,
+                    "char_end_exclusive": 11,
+                    "text": "alpha chunk",
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                    "embedding_config_id": embedding_config_id,
+                    "score": 1.0,
+                }
+            ],
+        ],
+    )
+    store = ContinuityStore(RecordingConnection(cursor))
+
+    task_rows = store.retrieve_task_scoped_semantic_artifact_chunk_matches(
+        task_id=task_id,
+        embedding_config_id=embedding_config_id,
+        query_vector=[1.0, 0.0, 0.0],
+        limit=5,
+    )
+    artifact_rows = store.retrieve_artifact_scoped_semantic_artifact_chunk_matches(
+        task_artifact_id=task_artifact_id,
+        embedding_config_id=embedding_config_id,
+        query_vector=[1.0, 0.0, 0.0],
+        limit=3,
+    )
+
+    assert task_rows[0]["task_id"] == task_id
+    assert artifact_rows[0]["task_artifact_id"] == task_artifact_id
+
+    task_query, task_params = cursor.executed[0]
+    assert "FROM task_artifact_chunk_embeddings AS embeddings" in task_query
+    assert "JOIN task_artifacts AS artifacts" in task_query
+    assert "artifacts.task_id = %s" in task_query
+    assert "artifacts.ingestion_status = 'ingested'" in task_query
+    assert "ORDER BY score DESC, artifacts.relative_path ASC, chunks.sequence_no ASC, chunks.id ASC" in task_query
+    assert task_params == ("[1.0,0.0,0.0]", embedding_config_id, 3, task_id, 5)
+
+    artifact_query, artifact_params = cursor.executed[1]
+    assert "FROM task_artifact_chunk_embeddings AS embeddings" in artifact_query
+    assert "JOIN task_artifacts AS artifacts" in artifact_query
+    assert "artifacts.id = %s" in artifact_query
+    assert "artifacts.ingestion_status = 'ingested'" in artifact_query
+    assert "ORDER BY score DESC, artifacts.relative_path ASC, chunks.sequence_no ASC, chunks.id ASC" in artifact_query
+    assert artifact_params == ("[1.0,0.0,0.0]", embedding_config_id, 3, task_artifact_id, 3)
