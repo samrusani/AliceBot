@@ -6,10 +6,13 @@ from uuid import UUID
 from alicebot_api.contracts import (
     COMPILER_VERSION_V0,
     ArtifactRetrievalDecisionTracePayload,
+    CompileContextArtifactScopedSemanticArtifactRetrievalInput,
     CompilerDecision,
     CompileContextArtifactRetrievalInput,
     CompileContextArtifactScopedArtifactRetrievalInput,
     CompileContextSemanticRetrievalInput,
+    CompileContextSemanticArtifactRetrievalInput,
+    CompileContextTaskScopedSemanticArtifactRetrievalInput,
     CompileContextTaskScopedArtifactRetrievalInput,
     CompilerRunResult,
     CompiledContextPack,
@@ -19,10 +22,14 @@ from alicebot_api.contracts import (
     ContextPackHybridMemorySummary,
     ContextPackMemory,
     ContextPackMemorySummary,
+    ContextPackSemanticArtifactChunk,
+    ContextPackSemanticArtifactChunkSummary,
     HybridMemoryDecisionTracePayload,
     MemorySelectionSource,
     SEMANTIC_MEMORY_RETRIEVAL_ORDER,
     TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER,
+    TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER,
+    SemanticArtifactRetrievalDecisionTracePayload,
     SemanticMemoryRetrievalRequestInput,
     TRACE_KIND_CONTEXT_COMPILE,
     TraceEventRecord,
@@ -36,7 +43,13 @@ from alicebot_api.artifacts import (
     resolve_artifact_chunk_retrieval_query_terms,
     retrieve_matching_task_artifact_chunks,
 )
-from alicebot_api.semantic_retrieval import validate_semantic_memory_retrieval_request
+from alicebot_api.semantic_retrieval import (
+    retrieve_artifact_scoped_semantic_artifact_chunk_records,
+    retrieve_task_scoped_semantic_artifact_chunk_records,
+    serialize_semantic_artifact_chunk_result_item,
+    validate_semantic_artifact_chunk_retrieval_request,
+    validate_semantic_memory_retrieval_request,
+)
 from alicebot_api.store import (
     ContinuityStore,
     EntityEdgeRow,
@@ -52,6 +65,7 @@ from alicebot_api.tasks import TaskNotFoundError
 
 SUMMARY_TRACE_EVENT_KIND = "context.summary"
 _UNBOUNDED_SEMANTIC_RETRIEVAL_LIMIT = 2_147_483_647
+_UNBOUNDED_SEMANTIC_ARTIFACT_RETRIEVAL_LIMIT = 2_147_483_647
 HYBRID_MEMORY_SOURCE_PRECEDENCE: list[MemorySelectionSource] = ["symbolic", "semantic"]
 HYBRID_SYMBOLIC_ORDER = ["updated_at_asc", "created_at_asc", "id_asc"]
 
@@ -74,6 +88,13 @@ class CompiledMemorySection:
 class CompiledArtifactChunkSection:
     items: list[ContextPackArtifactChunk]
     summary: ContextPackArtifactChunkSummary
+    decisions: list[CompilerDecision]
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledSemanticArtifactChunkSection:
+    items: list[ContextPackSemanticArtifactChunk]
+    summary: ContextPackSemanticArtifactChunkSummary
     decisions: list[CompilerDecision]
 
 
@@ -237,6 +258,23 @@ def _empty_artifact_chunk_summary() -> ContextPackArtifactChunkSummary:
     }
 
 
+def _empty_semantic_artifact_chunk_summary() -> ContextPackSemanticArtifactChunkSummary:
+    return {
+        "requested": False,
+        "scope": None,
+        "embedding_config_id": None,
+        "query_vector_dimensions": 0,
+        "limit": 0,
+        "searched_artifact_count": 0,
+        "candidate_count": 0,
+        "included_count": 0,
+        "excluded_uningested_artifact_count": 0,
+        "excluded_limit_count": 0,
+        "similarity_metric": None,
+        "order": list(TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER),
+    }
+
+
 def _artifact_retrieval_decision_metadata(
     *,
     scope_kind: str,
@@ -264,6 +302,45 @@ def _artifact_retrieval_decision_metadata(
         payload["matched_query_terms"] = list(match["matched_query_terms"])  # type: ignore[index]
         payload["matched_query_term_count"] = int(match["matched_query_term_count"])  # type: ignore[index]
         payload["first_match_char_start"] = int(match["first_match_char_start"])  # type: ignore[index]
+    if sequence_no is not None:
+        payload["sequence_no"] = sequence_no
+    if char_start is not None:
+        payload["char_start"] = char_start
+    if char_end_exclusive is not None:
+        payload["char_end_exclusive"] = char_end_exclusive
+    return payload
+
+
+def _semantic_artifact_retrieval_decision_metadata(
+    *,
+    scope_kind: str,
+    task_id: UUID,
+    task_artifact_id: UUID,
+    relative_path: str,
+    media_type: str | None,
+    ingestion_status: str,
+    embedding_config_id: UUID,
+    query_vector_dimensions: int,
+    limit: int,
+    score: float | None = None,
+    sequence_no: int | None = None,
+    char_start: int | None = None,
+    char_end_exclusive: int | None = None,
+) -> SemanticArtifactRetrievalDecisionTracePayload:
+    payload: SemanticArtifactRetrievalDecisionTracePayload = {
+        "scope_kind": scope_kind,  # type: ignore[typeddict-item]
+        "task_id": str(task_id),
+        "task_artifact_id": str(task_artifact_id),
+        "relative_path": relative_path,
+        "media_type": media_type,
+        "ingestion_status": ingestion_status,  # type: ignore[typeddict-item]
+        "embedding_config_id": str(embedding_config_id),
+        "query_vector_dimensions": query_vector_dimensions,
+        "limit": limit,
+        "similarity_metric": "cosine_similarity",
+    }
+    if score is not None:
+        payload["score"] = score
     if sequence_no is not None:
         payload["sequence_no"] = sequence_no
     if char_start is not None:
@@ -687,6 +764,158 @@ def _compile_artifact_chunk_section(
     )
 
 
+def _compile_semantic_artifact_chunk_section(
+    store: ContinuityStore,
+    *,
+    semantic_artifact_retrieval: CompileContextSemanticArtifactRetrievalInput | None,
+) -> CompiledSemanticArtifactChunkSection:
+    if semantic_artifact_retrieval is None:
+        return CompiledSemanticArtifactChunkSection(
+            items=[],
+            summary=_empty_semantic_artifact_chunk_summary(),
+            decisions=[],
+        )
+
+    if isinstance(
+        semantic_artifact_retrieval,
+        CompileContextTaskScopedSemanticArtifactRetrievalInput,
+    ):
+        task = store.get_task_optional(semantic_artifact_retrieval.task_id)
+        if task is None:
+            raise TaskNotFoundError(f"task {semantic_artifact_retrieval.task_id} was not found")
+        artifact_rows = store.list_task_artifacts_for_task(semantic_artifact_retrieval.task_id)
+        scope_kind = "task"
+        section_payload = retrieve_task_scoped_semantic_artifact_chunk_records(
+            store,
+            user_id=task["id"],
+            request=semantic_artifact_retrieval,
+        )
+        _config, query_vector = validate_semantic_artifact_chunk_retrieval_request(
+            store,
+            embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+            query_vector=semantic_artifact_retrieval.query_vector,
+        )
+        matched_items = [
+            serialize_semantic_artifact_chunk_result_item(row)
+            for row in store.retrieve_task_scoped_semantic_artifact_chunk_matches(
+                task_id=semantic_artifact_retrieval.task_id,
+                embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+                query_vector=query_vector,
+                limit=_UNBOUNDED_SEMANTIC_ARTIFACT_RETRIEVAL_LIMIT,
+            )
+        ]
+    else:
+        artifact_row = store.get_task_artifact_optional(
+            semantic_artifact_retrieval.task_artifact_id
+        )
+        if artifact_row is None:
+            raise TaskArtifactNotFoundError(
+                f"task artifact {semantic_artifact_retrieval.task_artifact_id} was not found"
+            )
+        artifact_rows = [artifact_row]
+        scope_kind = "artifact"
+        section_payload = retrieve_artifact_scoped_semantic_artifact_chunk_records(
+            store,
+            user_id=artifact_row["task_id"],
+            request=semantic_artifact_retrieval,
+        )
+        _config, query_vector = validate_semantic_artifact_chunk_retrieval_request(
+            store,
+            embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+            query_vector=semantic_artifact_retrieval.query_vector,
+        )
+        matched_items = [
+            serialize_semantic_artifact_chunk_result_item(row)
+            for row in store.retrieve_artifact_scoped_semantic_artifact_chunk_matches(
+                task_artifact_id=semantic_artifact_retrieval.task_artifact_id,
+                embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+                query_vector=query_vector,
+                limit=_UNBOUNDED_SEMANTIC_ARTIFACT_RETRIEVAL_LIMIT,
+            )
+        ]
+
+    included_items = list(section_payload["items"])
+    excluded_uningested_artifact_count = 0
+    decisions: list[CompilerDecision] = []
+
+    for position, artifact_row in enumerate(artifact_rows, start=1):
+        if artifact_row["ingestion_status"] == "ingested":
+            continue
+        excluded_uningested_artifact_count += 1
+        decisions.append(
+            CompilerDecision(
+                "excluded",
+                "task_artifact",
+                artifact_row["id"],
+                "semantic_artifact_not_ingested",
+                position,
+                metadata=_semantic_artifact_retrieval_decision_metadata(
+                    scope_kind=scope_kind,
+                    task_id=artifact_row["task_id"],
+                    task_artifact_id=artifact_row["id"],
+                    relative_path=artifact_row["relative_path"],
+                    media_type=infer_task_artifact_media_type(artifact_row),
+                    ingestion_status=artifact_row["ingestion_status"],
+                    embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+                    query_vector_dimensions=len(query_vector),
+                    limit=semantic_artifact_retrieval.limit,
+                ),
+            )
+        )
+
+    for position, item in enumerate(matched_items, start=1):
+        decision_kind = "included" if position <= semantic_artifact_retrieval.limit else "excluded"
+        decision_reason = (
+            "within_semantic_artifact_chunk_limit"
+            if position <= semantic_artifact_retrieval.limit
+            else "semantic_artifact_chunk_limit_exceeded"
+        )
+        decisions.append(
+            CompilerDecision(
+                decision_kind,
+                "semantic_artifact_chunk",
+                UUID(item["id"]),
+                decision_reason,
+                position,
+                metadata=_semantic_artifact_retrieval_decision_metadata(
+                    scope_kind=scope_kind,
+                    task_id=UUID(item["task_id"]),
+                    task_artifact_id=UUID(item["task_artifact_id"]),
+                    relative_path=item["relative_path"],
+                    media_type=item["media_type"],
+                    ingestion_status="ingested",
+                    embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+                    query_vector_dimensions=len(query_vector),
+                    limit=semantic_artifact_retrieval.limit,
+                    score=item["score"],
+                    sequence_no=item["sequence_no"],
+                    char_start=item["char_start"],
+                    char_end_exclusive=item["char_end_exclusive"],
+                ),
+            )
+        )
+
+    section_summary = section_payload["summary"]
+    return CompiledSemanticArtifactChunkSection(
+        items=included_items,
+        summary={
+            "requested": True,
+            "scope": section_summary["scope"],
+            "embedding_config_id": section_summary["embedding_config_id"],
+            "query_vector_dimensions": section_summary["query_vector_dimensions"],
+            "limit": section_summary["limit"],
+            "searched_artifact_count": section_summary["searched_artifact_count"],
+            "candidate_count": len(matched_items),
+            "included_count": len(included_items),
+            "excluded_uningested_artifact_count": excluded_uningested_artifact_count,
+            "excluded_limit_count": max(len(matched_items) - len(included_items), 0),
+            "similarity_metric": section_summary["similarity_metric"],
+            "order": list(section_summary["order"]),
+        },
+        decisions=decisions,
+    )
+
+
 def compile_continuity_context(
     *,
     user: UserRow,
@@ -699,6 +928,7 @@ def compile_continuity_context(
     limits: ContextCompilerLimits,
     memory_section: CompiledMemorySection | None = None,
     artifact_chunk_section: CompiledArtifactChunkSection | None = None,
+    semantic_artifact_chunk_section: CompiledSemanticArtifactChunkSection | None = None,
 ) -> CompilerRunResult:
     latest_session_sequence: dict[UUID, int] = {}
     for event in events:
@@ -797,6 +1027,15 @@ def compile_continuity_context(
         decisions=[],
     )
     decisions.extend(resolved_artifact_chunk_section.decisions)
+    resolved_semantic_artifact_chunk_section = (
+        semantic_artifact_chunk_section
+        or CompiledSemanticArtifactChunkSection(
+            items=[],
+            summary=_empty_semantic_artifact_chunk_summary(),
+            decisions=[],
+        )
+    )
+    decisions.extend(resolved_semantic_artifact_chunk_section.decisions)
     ordered_entities = sorted(entities, key=_entity_sort_key)
     included_entities = ordered_entities[-limits.max_entities :] if limits.max_entities > 0 else []
     included_entity_ids = {entity["id"] for entity in included_entities}
@@ -945,6 +1184,26 @@ def compile_continuity_context(
                 "excluded_uningested_artifact_count": resolved_artifact_chunk_section.summary[
                     "excluded_uningested_artifact_count"
                 ],
+                "semantic_artifact_retrieval_requested": resolved_semantic_artifact_chunk_section.summary[
+                    "requested"
+                ],
+                "semantic_artifact_retrieval_scope_kind": (
+                    None
+                    if resolved_semantic_artifact_chunk_section.summary["scope"] is None
+                    else resolved_semantic_artifact_chunk_section.summary["scope"]["kind"]
+                ),
+                "semantic_artifact_chunk_candidate_count": resolved_semantic_artifact_chunk_section.summary[
+                    "candidate_count"
+                ],
+                "included_semantic_artifact_chunk_count": resolved_semantic_artifact_chunk_section.summary[
+                    "included_count"
+                ],
+                "excluded_semantic_artifact_chunk_limit_count": resolved_semantic_artifact_chunk_section.summary[
+                    "excluded_limit_count"
+                ],
+                "excluded_semantic_uningested_artifact_count": resolved_semantic_artifact_chunk_section.summary[
+                    "excluded_uningested_artifact_count"
+                ],
                 "included_entity_count": len(included_entities),
                 "excluded_entity_count": excluded_entity_limit_count,
                 "excluded_entity_limit_count": excluded_entity_limit_count,
@@ -978,6 +1237,8 @@ def compile_continuity_context(
             "memory_summary": resolved_memory_section.summary,
             "artifact_chunks": list(resolved_artifact_chunk_section.items),
             "artifact_chunk_summary": resolved_artifact_chunk_section.summary,
+            "semantic_artifact_chunks": list(resolved_semantic_artifact_chunk_section.items),
+            "semantic_artifact_chunk_summary": resolved_semantic_artifact_chunk_section.summary,
             "entities": [_serialize_entity(entity) for entity in included_entities],
             "entity_summary": {
                 "candidate_count": len(ordered_entities),
@@ -1004,6 +1265,7 @@ def compile_and_persist_trace(
     limits: ContextCompilerLimits,
     semantic_retrieval: CompileContextSemanticRetrievalInput | None = None,
     artifact_retrieval: CompileContextArtifactRetrievalInput | None = None,
+    semantic_artifact_retrieval: CompileContextSemanticArtifactRetrievalInput | None = None,
 ) -> CompiledTraceRun:
     user = store.get_user(user_id)
     thread = store.get_thread(thread_id)
@@ -1020,6 +1282,10 @@ def compile_and_persist_trace(
         store,
         artifact_retrieval=artifact_retrieval,
     )
+    semantic_artifact_chunk_section = _compile_semantic_artifact_chunk_section(
+        store,
+        semantic_artifact_retrieval=semantic_artifact_retrieval,
+    )
     entities = store.list_entities()
     ordered_entities = sorted(entities, key=_entity_sort_key)
     included_entities = ordered_entities[-limits.max_entities :] if limits.max_entities > 0 else []
@@ -1035,6 +1301,7 @@ def compile_and_persist_trace(
         limits=limits,
         memory_section=memory_section,
         artifact_chunk_section=artifact_chunk_section,
+        semantic_artifact_chunk_section=semantic_artifact_chunk_section,
     )
     trace = store.create_trace(
         user_id=user_id,

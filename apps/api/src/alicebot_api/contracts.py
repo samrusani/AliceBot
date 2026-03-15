@@ -252,6 +252,46 @@ CompileContextArtifactRetrievalInput: TypeAlias = (
 
 
 @dataclass(frozen=True, slots=True)
+class CompileContextTaskScopedSemanticArtifactRetrievalInput:
+    task_id: UUID
+    embedding_config_id: UUID
+    query_vector: tuple[float, ...]
+    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "kind": "task",
+            "task_id": str(self.task_id),
+            "embedding_config_id": str(self.embedding_config_id),
+            "query_vector": [float(value) for value in self.query_vector],
+            "limit": self.limit,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CompileContextArtifactScopedSemanticArtifactRetrievalInput:
+    task_artifact_id: UUID
+    embedding_config_id: UUID
+    query_vector: tuple[float, ...]
+    limit: int = DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "kind": "artifact",
+            "task_artifact_id": str(self.task_artifact_id),
+            "embedding_config_id": str(self.embedding_config_id),
+            "query_vector": [float(value) for value in self.query_vector],
+            "limit": self.limit,
+        }
+
+
+CompileContextSemanticArtifactRetrievalInput: TypeAlias = (
+    CompileContextTaskScopedSemanticArtifactRetrievalInput
+    | CompileContextArtifactScopedSemanticArtifactRetrievalInput
+)
+
+
+@dataclass(frozen=True, slots=True)
 class TraceCreate:
     user_id: UUID
     thread_id: UUID
@@ -394,6 +434,34 @@ class ContextPackArtifactChunkSummary(TypedDict):
     order: list[str]
 
 
+class ContextPackSemanticArtifactChunk(TypedDict):
+    id: str
+    task_id: str
+    task_artifact_id: str
+    relative_path: str
+    media_type: str
+    sequence_no: int
+    char_start: int
+    char_end_exclusive: int
+    text: str
+    score: float
+
+
+class ContextPackSemanticArtifactChunkSummary(TypedDict):
+    requested: bool
+    scope: TaskArtifactChunkRetrievalScope | None
+    embedding_config_id: str | None
+    query_vector_dimensions: int
+    limit: int
+    searched_artifact_count: int
+    candidate_count: int
+    included_count: int
+    excluded_uningested_artifact_count: int
+    excluded_limit_count: int
+    similarity_metric: Literal["cosine_similarity"] | None
+    order: list[str]
+
+
 class ArtifactRetrievalDecisionTracePayload(TypedDict):
     scope_kind: TaskArtifactChunkRetrievalScopeKind
     task_id: str
@@ -405,6 +473,23 @@ class ArtifactRetrievalDecisionTracePayload(TypedDict):
     matched_query_terms: NotRequired[list[str]]
     matched_query_term_count: NotRequired[int]
     first_match_char_start: NotRequired[int]
+    sequence_no: NotRequired[int]
+    char_start: NotRequired[int]
+    char_end_exclusive: NotRequired[int]
+
+
+class SemanticArtifactRetrievalDecisionTracePayload(TypedDict):
+    scope_kind: TaskArtifactChunkRetrievalScopeKind
+    task_id: str
+    task_artifact_id: str
+    relative_path: str
+    media_type: str | None
+    ingestion_status: TaskArtifactIngestionStatus
+    embedding_config_id: str
+    query_vector_dimensions: int
+    limit: int
+    similarity_metric: Literal["cosine_similarity"]
+    score: NotRequired[float]
     sequence_no: NotRequired[int]
     char_start: NotRequired[int]
     char_end_exclusive: NotRequired[int]
@@ -495,6 +580,8 @@ class CompiledContextPack(TypedDict):
     memory_summary: ContextPackMemorySummary
     artifact_chunks: list[ContextPackArtifactChunk]
     artifact_chunk_summary: ContextPackArtifactChunkSummary
+    semantic_artifact_chunks: list[ContextPackSemanticArtifactChunk]
+    semantic_artifact_chunk_summary: ContextPackSemanticArtifactChunkSummary
     entities: list[ContextPackEntity]
     entity_summary: ContextPackEntitySummary
     entity_edges: list[ContextPackEntityEdge]
