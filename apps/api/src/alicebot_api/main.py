@@ -15,6 +15,7 @@ from alicebot_api.contracts import (
     ApprovalApproveInput,
     ApprovalRejectInput,
     ApprovalRequestCreateInput,
+    ArtifactScopedSemanticArtifactChunkRetrievalInput,
     CompileContextArtifactScopedArtifactRetrievalInput,
     CompileContextTaskScopedArtifactRetrievalInput,
     ConsentStatus,
@@ -58,6 +59,7 @@ from alicebot_api.contracts import (
     ProxyExecutionRequestInput,
     TaskArtifactIngestInput,
     TaskArtifactRegisterInput,
+    TaskScopedSemanticArtifactChunkRetrievalInput,
     TaskScopedArtifactChunkRetrievalInput,
     TaskStepKind,
     TaskStepLineageInput,
@@ -197,8 +199,11 @@ from alicebot_api.tools import (
     route_tool_invocation,
 )
 from alicebot_api.semantic_retrieval import (
+    SemanticArtifactChunkRetrievalValidationError,
     SemanticMemoryRetrievalValidationError,
+    retrieve_artifact_scoped_semantic_artifact_chunk_records,
     retrieve_semantic_memory_records,
+    retrieve_task_scoped_semantic_artifact_chunk_records,
 )
 from alicebot_api.response_generation import (
     ResponseFailure,
@@ -377,6 +382,17 @@ class RetrieveSemanticMemoriesRequest(BaseModel):
         default=DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
         ge=1,
         le=MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
+    )
+
+
+class RetrieveSemanticArtifactChunksRequest(BaseModel):
+    user_id: UUID
+    embedding_config_id: UUID
+    query_vector: list[float] = Field(min_length=1, max_length=20000)
+    limit: int = Field(
+        default=DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+        ge=1,
+        le=MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
     )
 
 
@@ -1439,6 +1455,66 @@ def retrieve_task_artifact_chunks_for_artifact(
     except TaskArtifactNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except TaskArtifactChunkRetrievalValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/tasks/{task_id}/artifact-chunks/semantic-retrieval")
+def retrieve_semantic_task_artifact_chunks(
+    task_id: UUID,
+    request: RetrieveSemanticArtifactChunksRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = retrieve_task_scoped_semantic_artifact_chunk_records(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=TaskScopedSemanticArtifactChunkRetrievalInput(
+                    task_id=task_id,
+                    embedding_config_id=request.embedding_config_id,
+                    query_vector=tuple(request.query_vector),
+                    limit=request.limit,
+                ),
+            )
+    except TaskNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except SemanticArtifactChunkRetrievalValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/task-artifacts/{task_artifact_id}/chunks/semantic-retrieval")
+def retrieve_semantic_artifact_chunks_for_artifact(
+    task_artifact_id: UUID,
+    request: RetrieveSemanticArtifactChunksRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = retrieve_artifact_scoped_semantic_artifact_chunk_records(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ArtifactScopedSemanticArtifactChunkRetrievalInput(
+                    task_artifact_id=task_artifact_id,
+                    embedding_config_id=request.embedding_config_id,
+                    query_vector=tuple(request.query_vector),
+                    limit=request.limit,
+                ),
+            )
+    except TaskArtifactNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except SemanticArtifactChunkRetrievalValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(
