@@ -2,16 +2,16 @@
 
 ## Current Implemented Slice
 
-AliceBot now implements the accepted repo slice through Sprint 5G. The shipped backend includes:
+AliceBot now implements the accepted repo slice through Sprint 5H. The shipped backend includes:
 
 - foundation continuity storage over `users`, `threads`, `sessions`, and append-only `events`
 - deterministic tracing and context compilation over durable continuity, memory, entity, and entity-edge records
 - governed memory admission, explicit-preference extraction, memory review labels, review queue reads, evaluation summary reads, explicit embedding config and memory-embedding storage, direct semantic retrieval, and deterministic hybrid compile-path memory merge
 - deterministic prompt assembly and one no-tools response path that persists assistant replies as immutable continuity events
 - user-scoped consents, policies, policy evaluation, tool registry, allowlist evaluation, tool routing, approval request persistence, approval resolution, approved-only proxy execution through the in-process `proxy.echo` handler, durable execution review, and execution-budget lifecycle plus enforcement
-- durable `tasks`, `task_steps`, `task_workspaces`, `task_artifacts`, `task_artifact_chunks`, and `task_artifact_chunk_embeddings`, deterministic task-step sequencing, explicit task-step transitions, explicit manual continuation with lineage through `parent_step_id`, `source_approval_id`, and `source_execution_id`, explicit `tool_executions.task_step_id` linkage for execution synchronization, deterministic rooted local task-workspace provisioning, explicit rooted local artifact registration, deterministic local text-artifact ingestion into durable chunk rows, deterministic lexical artifact-chunk retrieval over durable chunk rows, optional compile-path artifact chunk inclusion as a separate context section, and explicit user-scoped artifact-chunk embedding persistence tied to existing embedding configs
+- durable `tasks`, `task_steps`, `task_workspaces`, `task_artifacts`, `task_artifact_chunks`, and `task_artifact_chunk_embeddings`, deterministic task-step sequencing, explicit task-step transitions, explicit manual continuation with lineage through `parent_step_id`, `source_approval_id`, and `source_execution_id`, explicit `tool_executions.task_step_id` linkage for execution synchronization, deterministic rooted local task-workspace provisioning, explicit rooted local artifact registration, deterministic local text-artifact ingestion into durable chunk rows, deterministic lexical artifact-chunk retrieval over durable chunk rows, optional compile-path artifact chunk inclusion as a separate context section, explicit user-scoped artifact-chunk embedding persistence tied to existing embedding configs, and explicit task-scoped or artifact-scoped semantic artifact-chunk retrieval over those durable embeddings
 
-The current multi-step boundary is narrow and explicit. Manual continuation is implemented and review-passed. Approval resolution and proxy execution now both use explicit task-step linkage rather than first-step inference. Task workspaces are now implemented only as deterministic rooted local boundaries, and task artifacts are now implemented only as explicit rooted local-file registrations, narrow deterministic text ingestion under those workspaces, lexical retrieval over persisted chunk rows, optional compile-path inclusion of retrieved artifact chunks in a separate response section, and explicit artifact-chunk embedding storage tied to existing embedding configs. Broader runner-style orchestration, automatic multi-step progression, artifact-chunk semantic retrieval, rich-document parsing, connectors, and new side-effect surfaces are still planned later and must not be described as live behavior.
+The current multi-step boundary is narrow and explicit. Manual continuation is implemented and review-passed. Approval resolution and proxy execution now both use explicit task-step linkage rather than first-step inference. Task workspaces are now implemented only as deterministic rooted local boundaries, and task artifacts are now implemented only as explicit rooted local-file registrations, narrow deterministic text ingestion under those workspaces, lexical retrieval over persisted chunk rows, optional compile-path inclusion of retrieved artifact chunks in a separate response section, explicit artifact-chunk embedding storage tied to existing embedding configs, and direct semantic retrieval over those durable artifact-chunk embeddings for one visible task or one visible artifact at a time. Broader runner-style orchestration, automatic multi-step progression, compile-path semantic artifact use, hybrid artifact retrieval, richer document parsing, connectors, and new side-effect surfaces are still planned later and must not be described as live behavior.
 
 ## Implemented Now
 
@@ -24,7 +24,7 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
   - memory and retrieval: `POST /v0/memories/admit`, `POST /v0/memories/extract-explicit-preferences`, `GET /v0/memories`, `GET /v0/memories/review-queue`, `GET /v0/memories/evaluation-summary`, `POST /v0/memories/semantic-retrieval`, `GET /v0/memories/{memory_id}`, `GET /v0/memories/{memory_id}/revisions`, `POST /v0/memories/{memory_id}/labels`, `GET /v0/memories/{memory_id}/labels`
   - embeddings and graph seams: `POST /v0/embedding-configs`, `GET /v0/embedding-configs`, `POST /v0/memory-embeddings`, `GET /v0/memories/{memory_id}/embeddings`, `GET /v0/memory-embeddings/{memory_embedding_id}`, `POST /v0/entities`, `GET /v0/entities`, `GET /v0/entities/{entity_id}`, `POST /v0/entity-edges`, `GET /v0/entities/{entity_id}/edges`
   - governance: `POST /v0/consents`, `GET /v0/consents`, `POST /v0/policies`, `GET /v0/policies`, `GET /v0/policies/{policy_id}`, `POST /v0/policies/evaluate`, `POST /v0/tools`, `GET /v0/tools`, `GET /v0/tools/{tool_id}`, `POST /v0/tools/allowlist/evaluate`, `POST /v0/tools/route`, `POST /v0/approvals/requests`, `GET /v0/approvals`, `GET /v0/approvals/{approval_id}`, `POST /v0/approvals/{approval_id}/approve`, `POST /v0/approvals/{approval_id}/reject`, `POST /v0/approvals/{approval_id}/execute`
-- task and execution review: `GET /v0/tasks`, `GET /v0/tasks/{task_id}`, `POST /v0/tasks/{task_id}/workspace`, `GET /v0/task-workspaces`, `GET /v0/task-workspaces/{task_workspace_id}`, `POST /v0/task-workspaces/{task_workspace_id}/artifacts`, `GET /v0/task-artifacts`, `GET /v0/task-artifacts/{task_artifact_id}`, `POST /v0/task-artifacts/{task_artifact_id}/ingest`, `GET /v0/task-artifacts/{task_artifact_id}/chunks`, `POST /v0/tasks/{task_id}/artifact-chunks/retrieve`, `POST /v0/task-artifacts/{task_artifact_id}/chunks/retrieve`, `POST /v0/task-artifact-chunk-embeddings`, `GET /v0/task-artifacts/{task_artifact_id}/chunk-embeddings`, `GET /v0/task-artifact-chunks/{task_artifact_chunk_id}/embeddings`, `GET /v0/task-artifact-chunk-embeddings/{task_artifact_chunk_embedding_id}`, `GET /v0/tasks/{task_id}/steps`, `GET /v0/task-steps/{task_step_id}`, `POST /v0/tasks/{task_id}/steps`, `POST /v0/task-steps/{task_step_id}/transition`, `POST /v0/execution-budgets`, `GET /v0/execution-budgets`, `GET /v0/execution-budgets/{execution_budget_id}`, `POST /v0/execution-budgets/{execution_budget_id}/deactivate`, `POST /v0/execution-budgets/{execution_budget_id}/supersede`, `GET /v0/tool-executions`, `GET /v0/tool-executions/{execution_id}`
+- task and execution review: `GET /v0/tasks`, `GET /v0/tasks/{task_id}`, `POST /v0/tasks/{task_id}/workspace`, `GET /v0/task-workspaces`, `GET /v0/task-workspaces/{task_workspace_id}`, `POST /v0/task-workspaces/{task_workspace_id}/artifacts`, `GET /v0/task-artifacts`, `GET /v0/task-artifacts/{task_artifact_id}`, `POST /v0/task-artifacts/{task_artifact_id}/ingest`, `GET /v0/task-artifacts/{task_artifact_id}/chunks`, `POST /v0/tasks/{task_id}/artifact-chunks/retrieve`, `POST /v0/task-artifacts/{task_artifact_id}/chunks/retrieve`, `POST /v0/tasks/{task_id}/artifact-chunks/semantic-retrieval`, `POST /v0/task-artifacts/{task_artifact_id}/chunks/semantic-retrieval`, `POST /v0/task-artifact-chunk-embeddings`, `GET /v0/task-artifacts/{task_artifact_id}/chunk-embeddings`, `GET /v0/task-artifact-chunks/{task_artifact_chunk_id}/embeddings`, `GET /v0/task-artifact-chunk-embeddings/{task_artifact_chunk_embedding_id}`, `GET /v0/tasks/{task_id}/steps`, `GET /v0/task-steps/{task_step_id}`, `POST /v0/tasks/{task_id}/steps`, `POST /v0/task-steps/{task_step_id}/transition`, `POST /v0/execution-budgets`, `GET /v0/execution-budgets`, `GET /v0/execution-budgets/{execution_budget_id}`, `POST /v0/execution-budgets/{execution_budget_id}/deactivate`, `POST /v0/execution-budgets/{execution_budget_id}/supersede`, `GET /v0/tool-executions`, `GET /v0/tool-executions/{execution_id}`
 - `apps/web` and `workers` remain starter shells only.
 
 ### Data Foundation
@@ -58,11 +58,11 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
 
 ### Repo Boundaries In This Slice
 
-- `apps/api`: implemented API, store, contracts, service logic, and migrations for continuity, tracing, memory, embeddings, entities, policies, tools, approvals, proxy execution, execution budgets, tasks, task steps, task workspaces, task artifacts, artifact-chunk embeddings, deterministic lexical artifact chunk retrieval, and narrow compile-path artifact chunk inclusion.
+- `apps/api`: implemented API, store, contracts, service logic, and migrations for continuity, tracing, memory, embeddings, entities, policies, tools, approvals, proxy execution, execution budgets, tasks, task steps, task workspaces, task artifacts, artifact-chunk embeddings, deterministic lexical artifact chunk retrieval, deterministic semantic artifact chunk retrieval over durable embeddings, and narrow compile-path artifact chunk inclusion.
 - `apps/web`: minimal shell only; no shipped workflow UI.
 - `workers`: scaffold only; no background jobs or runner logic are implemented.
 - `infra`: local development bootstrap assets only.
-- `tests`: unit and Postgres-backed integration coverage for the shipped seams above, including Sprint 4O task-step lineage/manual continuation, Sprint 4S step-linked execution synchronization, Sprint 5A task-workspace provisioning, Sprint 5C task-artifact registration, Sprint 5D local artifact ingestion plus chunk reads, Sprint 5E lexical artifact-chunk retrieval, Sprint 5F compile-path artifact chunk integration, and Sprint 5G artifact-chunk embedding persistence and reads.
+- `tests`: unit and Postgres-backed integration coverage for the shipped seams above, including Sprint 4O task-step lineage/manual continuation, Sprint 4S step-linked execution synchronization, Sprint 5A task-workspace provisioning, Sprint 5C task-artifact registration, Sprint 5D local artifact ingestion plus chunk reads, Sprint 5E lexical artifact-chunk retrieval, Sprint 5F compile-path artifact chunk integration, Sprint 5G artifact-chunk embedding persistence and reads, and Sprint 5H semantic artifact-chunk retrieval.
 
 ## Core Flows Implemented Now
 
@@ -75,6 +75,15 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
 5. Keep retrieved artifact chunks separate from memory and entity sections, with deterministic per-section limits and ordering.
 6. Persist a `context.compile` trace plus explicit inclusion and exclusion events, including artifact chunk include/exclude decisions.
 7. Return one deterministic `context_pack` describing scope, limits, selected context, artifact chunk results, and trace metadata.
+
+### Artifact Chunk Retrieval
+
+1. Register and ingest visible local artifacts into durable `task_artifacts` and `task_artifact_chunks`.
+2. Persist explicit artifact-chunk embeddings in `task_artifact_chunk_embeddings`, keyed to an existing visible embedding config.
+3. Support deterministic lexical artifact-chunk retrieval for one visible task or one visible artifact.
+4. Support deterministic semantic artifact-chunk retrieval for one visible task or one visible artifact, using a caller-supplied query vector plus explicit `embedding_config_id`.
+5. Exclude artifacts whose `ingestion_status` is not `ingested`.
+6. Keep compile-path artifact retrieval separate and lexical-only for now; semantic artifact retrieval remains a direct read seam outside compile.
 
 ### Governed Memory And Retrieval
 
@@ -227,7 +236,7 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
 
 ## Testing Coverage Implemented Now
 
-- Unit and integration tests cover continuity, compiler, response generation, memory admission, review labels, review queue, embeddings, semantic retrieval, entities, policies, tools, approvals, proxy execution, execution budgets, and execution review.
+- Unit and integration tests cover continuity, compiler, response generation, memory admission, review labels, review queue, embeddings, semantic retrieval, artifact semantic retrieval, entities, policies, tools, approvals, proxy execution, execution budgets, and execution review.
 - Sprint 4O, Sprint 4S, Sprint 5A, and Sprint 5C added explicit task lifecycle coverage:
   - migrations for `tasks`, `task_steps`, and task-step lineage
   - staged/backfilled migration coverage for `tool_executions.task_step_id`
@@ -260,7 +269,7 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
 The following areas remain planned later and must not be described as implemented:
 
 - runner-style orchestration and automatic multi-step progression beyond the current explicit manual continuation seam
-- artifact chunk ranking beyond the current lexical match ordering, plus embeddings and semantic retrieval for artifact chunks
+- hybrid lexical plus semantic artifact retrieval, compile-path semantic artifact use, and reranking beyond the current direct lexical and direct semantic ordering seams
 - rich document parsing beyond the current narrow UTF-8 text and markdown ingestion boundary
 - read-only Gmail and Calendar connectors
 - broader tool proxying and real-world side effects beyond the current no-I/O `proxy.echo` handler
