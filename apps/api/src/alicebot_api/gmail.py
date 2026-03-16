@@ -23,6 +23,7 @@ from alicebot_api.artifacts import (
 from alicebot_api.contracts import (
     GMAIL_ACCOUNT_LIST_ORDER,
     GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN,
+    GMAIL_PROTECTED_CREDENTIAL_KIND,
     GMAIL_PROVIDER,
     GMAIL_READONLY_SCOPE,
     GmailAccountConnectInput,
@@ -63,6 +64,14 @@ class GmailMessageFetchError(RuntimeError):
     """Raised when the Gmail API call fails for non-deterministic upstream reasons."""
 
 
+class GmailCredentialNotFoundError(RuntimeError):
+    """Raised when Gmail protected credentials are missing for a visible account."""
+
+
+class GmailCredentialInvalidError(RuntimeError):
+    """Raised when Gmail protected credentials are malformed for a visible account."""
+
+
 def serialize_gmail_account_row(row: GmailAccountRow) -> GmailAccountRecord:
     return {
         "id": str(row["id"]),
@@ -75,6 +84,49 @@ def serialize_gmail_account_row(row: GmailAccountRow) -> GmailAccountRecord:
         "created_at": row["created_at"].isoformat(),
         "updated_at": row["updated_at"].isoformat(),
     }
+
+
+def build_gmail_protected_credential_blob(*, access_token: str) -> dict[str, str]:
+    return {
+        "credential_kind": GMAIL_PROTECTED_CREDENTIAL_KIND,
+        "access_token": access_token,
+    }
+
+
+def resolve_gmail_access_token(
+    store: ContinuityStore,
+    *,
+    gmail_account_id: UUID,
+) -> str:
+    credential = store.get_gmail_account_credential_optional(gmail_account_id)
+    if credential is None:
+        raise GmailCredentialNotFoundError(
+            f"gmail account {gmail_account_id} is missing protected credentials"
+        )
+
+    if credential["auth_kind"] != GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN:
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        )
+
+    credential_blob = credential["credential_blob"]
+    if not isinstance(credential_blob, dict):
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        )
+
+    credential_kind = credential_blob.get("credential_kind")
+    access_token = credential_blob.get("access_token")
+    if (
+        credential_kind != GMAIL_PROTECTED_CREDENTIAL_KIND
+        or not isinstance(access_token, str)
+        or access_token == ""
+    ):
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        )
+
+    return access_token
 
 
 def create_gmail_account_record(
@@ -97,7 +149,13 @@ def create_gmail_account_record(
             email_address=request.email_address,
             display_name=request.display_name,
             scope=request.scope,
-            access_token=request.access_token,
+        )
+        store.create_gmail_account_credential(
+            gmail_account_id=row["id"],
+            auth_kind=GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN,
+            credential_blob=build_gmail_protected_credential_blob(
+                access_token=request.access_token,
+            ),
         )
     except psycopg.errors.UniqueViolation as exc:
         raise GmailAccountAlreadyExistsError(
@@ -215,6 +273,11 @@ def ingest_gmail_message_record(
             f"task workspace {request.task_workspace_id} was not found"
         )
 
+    access_token = resolve_gmail_access_token(
+        store,
+        gmail_account_id=request.gmail_account_id,
+    )
+
     store.lock_task_artifacts(workspace["id"])
     relative_path = build_gmail_message_artifact_relative_path(
         provider_account_id=account["provider_account_id"],
@@ -230,7 +293,7 @@ def ingest_gmail_message_record(
         )
 
     raw_bytes = fetch_gmail_message_raw_bytes(
-        access_token=account["access_token"],
+        access_token=access_token,
         provider_message_id=request.provider_message_id,
     )
 
