@@ -2,50 +2,60 @@
 
 ## sprint objective
 
-Implement narrow PDF artifact parsing on the existing artifact-ingestion seam so already-registered visible PDF artifacts can be ingested into durable `task_artifact_chunks` rows without changing retrieval contracts, compile contracts, connectors, or UI.
+Implement narrow DOCX artifact parsing on the existing artifact-ingestion seam so already-registered visible DOCX artifacts can be ingested into durable `task_artifact_chunks` rows without changing retrieval contracts, compile contracts, connectors, or UI.
 
 ## completed work
 
-- Extended artifact media-type inference and validation to accept `application/pdf` and `.pdf` artifacts on the existing ingestion path.
-- Implemented deterministic local PDF text extraction in `apps/api/src/alicebot_api/artifacts.py` by:
-  - parsing the PDF object graph from local bytes only
-  - walking the catalog/pages tree in page order
-  - reading `/Contents` streams only
-  - supporting unfiltered streams and `/FlateDecode` streams only
-  - extracting text from PDF text-show operators (`Tj`, `TJ`, `'`, `"`) only
-  - rejecting PDFs that are invalid, textless, or use unsupported stream filters/structures
-- Kept ingestion status behavior unchanged: successful PDF ingestion updates `task_artifacts.ingestion_status` to `ingested`; rejected PDFs remain on the existing pending path and do not introduce a new status.
-- Reused the existing normalization and chunking seam after extraction:
-  - line endings normalize through `normalize_artifact_text()`
-  - chunk persistence still uses `task_artifact_chunks`
-  - chunk rule remains `normalized_utf8_text_fixed_window_1000_chars_v1`
+- Extended the existing artifact media-type support to accept DOCX artifacts:
+  - media type: `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+  - extension inference: `.docx`
+- Implemented deterministic local DOCX text extraction in `apps/api/src/alicebot_api/artifacts.py` by:
+  - opening local DOCX bytes as a ZIP package
+  - reading `word/document.xml` only
+  - parsing WordprocessingML locally with `xml.etree.ElementTree`
+  - extracting paragraph text in document order from `w:t`
+  - preserving explicit DOCX tabs and line breaks via `w:tab`, `w:br`, and `w:cr`
+  - joining non-empty paragraphs with `\n`
+  - rejecting malformed packages/XML as invalid DOCX
+  - rejecting textless DOCX files when no extractable text is present
+- Reused the existing ingestion seam after extraction:
+  - rooted workspace path enforcement remains unchanged
+  - normalization still runs through `normalize_artifact_text()`
+  - chunk persistence still targets `task_artifact_chunks`
+  - ingestion status still transitions from `pending` to `ingested` on success
+- Kept retrieval/compile contracts unchanged while updating extension-based media-type inference for semantic artifact retrieval so `.docx` artifacts remain typed consistently when `media_type_hint` is absent.
 - Added unit coverage for:
-  - deterministic PDF chunk persistence
-  - textless PDF rejection
-  - PDF-rooted path enforcement
-  - updated unsupported-media validation
+  - deterministic DOCX chunk persistence
+  - stable unsupported-media validation text
+  - textless DOCX rejection
+  - malformed DOCX rejection
+  - rooted DOCX path enforcement
 - Added integration coverage for:
-  - supported PDF ingestion with stable response shape
-  - deterministic PDF chunk ordering and boundaries
-  - PDF per-user isolation
-  - textless PDF rejection
-  - rooted-path enforcement during PDF ingestion
+  - supported DOCX ingestion with stable response shape
+  - deterministic DOCX chunk ordering and boundaries
+  - per-user isolation for DOCX ingestion/chunk listing
+  - textless DOCX rejection
+  - malformed DOCX rejection
+  - rooted-path enforcement during DOCX ingestion
 
-## exact PDF-ingestion contract changes introduced
+## exact DOCX-ingestion contract changes introduced
 
 - No request contract changes.
-- No response contract shape changes.
+- No response shape changes.
 - No schema changes.
-- The only contract-level behavior change is that the existing artifact-ingestion seam now accepts `application/pdf` as a supported artifact media type and continues returning the existing `TaskArtifactIngestionResponse` and `TaskArtifactChunkListResponse` shapes.
+- Existing artifact-ingestion behavior now additionally accepts `application/vnd.openxmlformats-officedocument.wordprocessingml.document`.
+- Extension-based media-type inference now recognizes `.docx` for the existing artifact and semantic-retrieval response paths.
 
-## PDF extraction path and chunking rule used
+## DOCX extraction path and chunking rule used
 
 - Extraction path:
   - existing `POST /v0/task-artifacts/{task_artifact_id}/ingest`
   - resolve persisted workspace `local_path` plus persisted artifact `relative_path`
   - enforce rooted workspace boundary before any read
-  - for PDFs, parse local file bytes, walk the PDF page tree, decode supported content streams, and extract text-show operations in deterministic stream order
-  - reject if no extractable text is found
+  - read the local DOCX package from disk
+  - extract text from `word/document.xml` only
+  - emit paragraph-ordered text from `w:t`, `w:tab`, `w:br`, and `w:cr`
+  - reject invalid or textless DOCX artifacts deterministically
 - Chunking rule:
   - normalize extracted text with CRLF/CR to LF conversion
   - split into fixed windows of 1000 characters
@@ -54,11 +64,12 @@ Implement narrow PDF artifact parsing on the existing artifact-ingestion seam so
 
 ## incomplete work
 
-- None within Sprint 5L scope.
+- None within Sprint 5M scope.
 
 ## files changed
 
 - `apps/api/src/alicebot_api/artifacts.py`
+- `apps/api/src/alicebot_api/semantic_retrieval.py`
 - `tests/unit/test_artifacts.py`
 - `tests/unit/test_artifacts_main.py`
 - `tests/integration/test_task_artifacts_api.py`
@@ -67,23 +78,23 @@ Implement narrow PDF artifact parsing on the existing artifact-ingestion seam so
 ## tests run
 
 - `./.venv/bin/python -m pytest tests/unit/test_artifacts.py tests/unit/test_artifacts_main.py`
-  - Result: `40 passed in 0.45s`
+  - Result: `44 passed in 0.43s`
 - `./.venv/bin/python -m pytest tests/integration/test_task_artifacts_api.py`
-  - First sandboxed attempt failed because the suite could not reach the local Postgres instance (`psycopg.OperationalError: ... Operation not permitted`).
+  - Result: blocked in the sandbox because local Postgres access was denied (`psycopg.OperationalError: ... Operation not permitted`)
 - `./.venv/bin/python -m pytest tests/unit`
-  - Result: `382 passed in 0.73s`
+  - Result: `386 passed in 0.63s`
 - `./.venv/bin/python -m pytest tests/integration`
-  - Result: `120 passed in 34.65s`
+  - Result: `123 passed in 36.27s`
 
 ## unit and integration test results
 
 - Unit suite passed in full.
-- Integration suite passed in full against Postgres-backed tests.
-- The new PDF-specific integration coverage is included in the passing `tests/integration/test_task_artifacts_api.py` module.
+- Integration suite passed in full against the Postgres-backed test path.
+- The DOCX-specific API coverage is included in the passing `tests/integration/test_task_artifacts_api.py` module.
 
-## one example PDF artifact-ingestion response
+## one example DOCX artifact-ingestion response
 
-Example verified by the PDF integration assertion:
+Example verified by `test_task_artifact_docx_ingestion_and_chunk_endpoints_are_deterministic_and_isolated`:
 
 ```json
 {
@@ -93,24 +104,24 @@ Example verified by the PDF integration assertion:
     "task_workspace_id": "<task-workspace-id>",
     "status": "registered",
     "ingestion_status": "ingested",
-    "relative_path": "docs/spec.pdf",
-    "media_type_hint": "application/pdf",
+    "relative_path": "docs/spec.docx",
+    "media_type_hint": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "created_at": "<created-at>",
     "updated_at": "<updated-at>"
   },
   "summary": {
     "total_count": 2,
     "total_characters": 1006,
-    "media_type": "application/pdf",
+    "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
     "order": ["sequence_no_asc", "id_asc"]
   }
 }
 ```
 
-## one example chunk list response produced from a PDF artifact
+## one example chunk list response produced from a DOCX artifact
 
-Example verified by the PDF integration assertion:
+Example verified by `test_task_artifact_docx_ingestion_and_chunk_endpoints_are_deterministic_and_isolated`:
 
 ```json
 {
@@ -139,7 +150,7 @@ Example verified by the PDF integration assertion:
   "summary": {
     "total_count": 2,
     "total_characters": 1006,
-    "media_type": "application/pdf",
+    "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
     "order": ["sequence_no_asc", "id_asc"]
   }
@@ -148,22 +159,23 @@ Example verified by the PDF integration assertion:
 
 ## blockers/issues
 
-- No repo-level implementation blockers remained.
-- The integration suite required elevated access to reach the local Postgres test instance from this environment; after rerunning with that access, the full integration suite passed.
+- No implementation blockers remained.
+- The first direct integration-test attempt from the sandbox could not reach local Postgres; rerunning the required integration suite with elevated local access succeeded.
 
 ## what remains intentionally deferred to later milestones
 
-- DOCX ingestion
+- broader PDF compatibility work
 - OCR
-- image extraction from PDFs
+- image extraction from DOCX
+- document-layout reconstruction
+- headers/footers/comments/track-changes-specific DOCX extraction expansion
 - connector work
 - runner-style orchestration
 - retrieval-contract changes
 - semantic-contract changes
 - compile-contract changes
 - UI work
-- broader PDF compatibility beyond the current narrow text-only local content-stream extraction path
 
 ## recommended next step
 
-Open a follow-up sprint only if broader document coverage is needed, starting with an explicit decision on whether to extend PDF compatibility further or add a separate DOCX ingestion seam without changing the current retrieval and compile contracts.
+If richer document support is needed later, open a separate sprint for either broader DOCX coverage beyond `word/document.xml` or broader PDF compatibility, but keep both on the existing rooted artifact/chunk seam.
