@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import json
 import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from uuid import UUID
 
@@ -25,6 +27,7 @@ from alicebot_api.contracts import (
     GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN,
     GMAIL_PROTECTED_CREDENTIAL_KIND,
     GMAIL_PROVIDER,
+    GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND,
     GMAIL_READONLY_SCOPE,
     GmailAccountConnectInput,
     GmailAccountConnectResponse,
@@ -40,6 +43,8 @@ from alicebot_api.store import ContinuityStore, GmailAccountRow
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
 GMAIL_MESSAGE_FETCH_TIMEOUT_SECONDS = 30
+GMAIL_TOKEN_REFRESH_TIMEOUT_SECONDS = 30
+GMAIL_TOKEN_REFRESH_URL = "https://oauth2.googleapis.com/token"
 GMAIL_MESSAGE_ARTIFACT_ROOT = "gmail"
 _PATH_SEGMENT_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -72,6 +77,24 @@ class GmailCredentialInvalidError(RuntimeError):
     """Raised when Gmail protected credentials are malformed for a visible account."""
 
 
+class GmailCredentialRefreshError(RuntimeError):
+    """Raised when Gmail access-token renewal fails for non-deterministic reasons."""
+
+
+class GmailCredentialValidationError(ValueError):
+    """Raised when Gmail connect input contains an invalid credential combination."""
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedGmailCredential:
+    access_token: str
+    credential_kind: str
+    refresh_token: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    access_token_expires_at: datetime | None = None
+
+
 def serialize_gmail_account_row(row: GmailAccountRow) -> GmailAccountRecord:
     return {
         "id": str(row["id"]),
@@ -86,11 +109,182 @@ def serialize_gmail_account_row(row: GmailAccountRow) -> GmailAccountRecord:
     }
 
 
-def build_gmail_protected_credential_blob(*, access_token: str) -> dict[str, str]:
+def _coerce_nonempty_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if normalized == "":
+        return None
+    return normalized
+
+
+def _normalize_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def build_gmail_protected_credential_blob(
+    *,
+    access_token: str,
+    refresh_token: str | None = None,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    access_token_expires_at: datetime | None = None,
+) -> dict[str, str]:
+    normalized_access_token = _coerce_nonempty_string(access_token)
+    if normalized_access_token is None:
+        raise GmailCredentialValidationError("gmail access token must be non-empty")
+
+    refresh_bundle = (
+        refresh_token,
+        client_id,
+        client_secret,
+        access_token_expires_at,
+    )
+    if all(value is None for value in refresh_bundle):
+        return {
+            "credential_kind": GMAIL_PROTECTED_CREDENTIAL_KIND,
+            "access_token": normalized_access_token,
+        }
+
+    normalized_refresh_token = _coerce_nonempty_string(refresh_token)
+    normalized_client_id = _coerce_nonempty_string(client_id)
+    normalized_client_secret = _coerce_nonempty_string(client_secret)
+    if (
+        normalized_refresh_token is None
+        or normalized_client_id is None
+        or normalized_client_secret is None
+        or access_token_expires_at is None
+    ):
+        raise GmailCredentialValidationError(
+            "gmail refresh credentials must include refresh_token, client_id, client_secret, "
+            "and access_token_expires_at"
+        )
+
+    normalized_expires_at = _normalize_datetime(access_token_expires_at)
     return {
-        "credential_kind": GMAIL_PROTECTED_CREDENTIAL_KIND,
-        "access_token": access_token,
+        "credential_kind": GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND,
+        "access_token": normalized_access_token,
+        "refresh_token": normalized_refresh_token,
+        "client_id": normalized_client_id,
+        "client_secret": normalized_client_secret,
+        "access_token_expires_at": normalized_expires_at.isoformat(),
     }
+
+
+def _parse_gmail_credential(
+    *,
+    gmail_account_id: UUID,
+    credential_blob: object,
+) -> ParsedGmailCredential:
+    if not isinstance(credential_blob, dict):
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        )
+
+    credential_kind = credential_blob.get("credential_kind")
+    access_token = _coerce_nonempty_string(credential_blob.get("access_token"))
+    if access_token is None:
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        )
+
+    if credential_kind == GMAIL_PROTECTED_CREDENTIAL_KIND:
+        return ParsedGmailCredential(
+            access_token=access_token,
+            credential_kind=credential_kind,
+        )
+
+    if credential_kind != GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND:
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        )
+
+    refresh_token = _coerce_nonempty_string(credential_blob.get("refresh_token"))
+    client_id = _coerce_nonempty_string(credential_blob.get("client_id"))
+    client_secret = _coerce_nonempty_string(credential_blob.get("client_secret"))
+    access_token_expires_at_raw = _coerce_nonempty_string(
+        credential_blob.get("access_token_expires_at")
+    )
+    if (
+        refresh_token is None
+        or client_id is None
+        or client_secret is None
+        or access_token_expires_at_raw is None
+    ):
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        )
+
+    try:
+        access_token_expires_at = _normalize_datetime(
+            datetime.fromisoformat(access_token_expires_at_raw)
+        )
+    except ValueError as exc:
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        ) from exc
+
+    return ParsedGmailCredential(
+        access_token=access_token,
+        credential_kind=credential_kind,
+        refresh_token=refresh_token,
+        client_id=client_id,
+        client_secret=client_secret,
+        access_token_expires_at=access_token_expires_at,
+    )
+
+
+def refresh_gmail_access_token(
+    *,
+    gmail_account_id: UUID,
+    refresh_token: str,
+    client_id: str,
+    client_secret: str,
+) -> tuple[str, datetime]:
+    request = Request(
+        GMAIL_TOKEN_REFRESH_URL,
+        data=urlencode(
+            {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            }
+        ).encode("utf-8"),
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=GMAIL_TOKEN_REFRESH_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        if exc.code in {400, 401}:
+            raise GmailCredentialInvalidError(
+                f"gmail account {gmail_account_id} refresh credentials were rejected"
+            ) from exc
+        raise GmailCredentialRefreshError(
+            f"gmail account {gmail_account_id} access token could not be renewed"
+        ) from exc
+    except (OSError, URLError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise GmailCredentialRefreshError(
+            f"gmail account {gmail_account_id} access token could not be renewed"
+        ) from exc
+
+    refreshed_access_token = _coerce_nonempty_string(payload.get("access_token"))
+    expires_in = payload.get("expires_in")
+    if refreshed_access_token is None or not isinstance(expires_in, (int, float)) or expires_in <= 0:
+        raise GmailCredentialRefreshError(
+            f"gmail account {gmail_account_id} access token could not be renewed"
+        )
+
+    refreshed_expires_at = datetime.now(UTC) + timedelta(seconds=float(expires_in))
+    return refreshed_access_token, refreshed_expires_at
 
 
 def resolve_gmail_access_token(
@@ -109,24 +303,35 @@ def resolve_gmail_access_token(
             f"gmail account {gmail_account_id} has invalid protected credentials"
         )
 
-    credential_blob = credential["credential_blob"]
-    if not isinstance(credential_blob, dict):
-        raise GmailCredentialInvalidError(
-            f"gmail account {gmail_account_id} has invalid protected credentials"
-        )
-
-    credential_kind = credential_blob.get("credential_kind")
-    access_token = credential_blob.get("access_token")
+    parsed_credential = _parse_gmail_credential(
+        gmail_account_id=gmail_account_id,
+        credential_blob=credential["credential_blob"],
+    )
     if (
-        credential_kind != GMAIL_PROTECTED_CREDENTIAL_KIND
-        or not isinstance(access_token, str)
-        or access_token == ""
+        parsed_credential.credential_kind != GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND
+        or parsed_credential.access_token_expires_at is None
+        or parsed_credential.access_token_expires_at > datetime.now(UTC)
     ):
-        raise GmailCredentialInvalidError(
-            f"gmail account {gmail_account_id} has invalid protected credentials"
-        )
+        return parsed_credential.access_token
 
-    return access_token
+    refreshed_access_token, refreshed_expires_at = refresh_gmail_access_token(
+        gmail_account_id=gmail_account_id,
+        refresh_token=parsed_credential.refresh_token,
+        client_id=parsed_credential.client_id,
+        client_secret=parsed_credential.client_secret,
+    )
+    store.update_gmail_account_credential(
+        gmail_account_id=gmail_account_id,
+        auth_kind=credential["auth_kind"],
+        credential_blob=build_gmail_protected_credential_blob(
+            access_token=refreshed_access_token,
+            refresh_token=parsed_credential.refresh_token,
+            client_id=parsed_credential.client_id,
+            client_secret=parsed_credential.client_secret,
+            access_token_expires_at=refreshed_expires_at,
+        ),
+    )
+    return refreshed_access_token
 
 
 def create_gmail_account_record(
@@ -155,6 +360,10 @@ def create_gmail_account_record(
             auth_kind=GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN,
             credential_blob=build_gmail_protected_credential_blob(
                 access_token=request.access_token,
+                refresh_token=request.refresh_token,
+                client_id=request.client_id,
+                client_secret=request.client_secret,
+                access_token_expires_at=request.access_token_expires_at,
             ),
         )
     except psycopg.errors.UniqueViolation as exc:
