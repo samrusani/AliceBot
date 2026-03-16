@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import io
 import zlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
+from xml.sax.saxutils import escape
+import zipfile
 
 import pytest
 
@@ -119,6 +122,72 @@ def _build_pdf_bytes(
         ).encode("ascii")
     )
     return bytes(document)
+
+
+def _build_docx_bytes(
+    paragraphs: list[str],
+    *,
+    include_document_xml: bool = True,
+    malformed_document_xml: bool = False,
+) -> bytes:
+    document_xml = (
+        b"<w:document"
+        if malformed_document_xml
+        else (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body>"
+            + "".join(
+                (
+                    "<w:p><w:r><w:t xml:space=\"preserve\">"
+                    f"{escape(paragraph)}"
+                    "</w:t></w:r></w:p>"
+                )
+                for paragraph in paragraphs
+            )
+            + (
+                "<w:sectPr>"
+                "<w:pgSz w:w=\"12240\" w:h=\"15840\"/>"
+                "<w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\" "
+                "w:header=\"708\" w:footer=\"708\" w:gutter=\"0\"/>"
+                "</w:sectPr>"
+                "</w:body>"
+                "</w:document>"
+            )
+        )
+    )
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+        entries = {
+            "[Content_Types].xml": (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                '<Default Extension="xml" ContentType="application/xml"/>'
+                '<Override PartName="/word/document.xml" '
+                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                "</Types>"
+            ).encode("utf-8"),
+            "_rels/.rels": (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                'Target="word/document.xml"/>'
+                "</Relationships>"
+            ).encode("utf-8"),
+        }
+        if include_document_xml:
+            entries["word/document.xml"] = document_xml
+
+        for name, payload in entries.items():
+            info = zipfile.ZipInfo(filename=name)
+            info.date_time = (2026, 3, 13, 10, 0, 0)
+            info.compress_type = zipfile.ZIP_STORED
+            archive.writestr(info, payload)
+
+    return archive_buffer.getvalue()
 
 
 class ArtifactStoreStub:
@@ -638,6 +707,84 @@ def test_ingest_task_artifact_record_persists_deterministic_pdf_chunks(tmp_path)
     ]
 
 
+def test_ingest_task_artifact_record_persists_deterministic_docx_chunks(tmp_path) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    artifact_path = workspace_path / "docs" / "spec.docx"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(_build_docx_bytes(["A" * 998, "B" * 5, "C"]))
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="docs/spec.docx",
+        media_type_hint="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+    response = ingest_task_artifact_record(
+        store,
+        user_id=user_id,
+        request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+    )
+
+    assert response == {
+        "artifact": {
+            "id": str(artifact["id"]),
+            "task_id": str(task_id),
+            "task_workspace_id": str(task_workspace_id),
+            "status": "registered",
+            "ingestion_status": "ingested",
+            "relative_path": "docs/spec.docx",
+            "media_type_hint": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "created_at": "2026-03-13T10:00:00+00:00",
+            "updated_at": "2026-03-13T10:30:00+00:00",
+        },
+        "summary": {
+            "total_count": 2,
+            "total_characters": 1006,
+            "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "chunking_rule": TASK_ARTIFACT_CHUNKING_RULE,
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+    assert store.locked_artifact_ids == [artifact["id"]]
+    assert store.list_task_artifact_chunks(artifact["id"]) == [
+        {
+            "id": store.artifact_chunks[0]["id"],
+            "user_id": user_id,
+            "task_artifact_id": artifact["id"],
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 1000,
+            "text": ("A" * 998) + "\n" + "B",
+            "created_at": datetime(2026, 3, 13, 10, 0, tzinfo=UTC),
+            "updated_at": datetime(2026, 3, 13, 10, 0, tzinfo=UTC),
+        },
+        {
+            "id": store.artifact_chunks[1]["id"],
+            "user_id": user_id,
+            "task_artifact_id": artifact["id"],
+            "sequence_no": 2,
+            "char_start": 1000,
+            "char_end_exclusive": 1006,
+            "text": "BBBB\nC",
+            "created_at": datetime(2026, 3, 13, 10, 0, 1, tzinfo=UTC),
+            "updated_at": datetime(2026, 3, 13, 10, 0, 1, tzinfo=UTC),
+        },
+    ]
+
+
 def test_ingest_task_artifact_record_is_idempotent_for_already_ingested_artifact() -> None:
     store = ArtifactStoreStub()
     user_id = uuid4()
@@ -724,7 +871,8 @@ def test_ingest_task_artifact_record_rejects_unsupported_media_type(tmp_path) ->
         TaskArtifactValidationError,
         match=(
             "artifact docs/spec.bin has unsupported media type application/octet-stream; "
-            "supported types: text/plain, text/markdown, application/pdf"
+            "supported types: text/plain, text/markdown, application/pdf, "
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         ),
     ):
         ingest_task_artifact_record(
@@ -762,6 +910,78 @@ def test_ingest_task_artifact_record_rejects_textless_pdf(tmp_path) -> None:
     with pytest.raises(
         TaskArtifactValidationError,
         match="artifact docs/scanned.pdf does not contain extractable PDF text",
+    ):
+        ingest_task_artifact_record(
+            store,
+            user_id=user_id,
+            request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+        )
+
+
+def test_ingest_task_artifact_record_rejects_textless_docx(tmp_path) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    artifact_path = workspace_path / "docs" / "empty.docx"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(_build_docx_bytes(["", ""]))
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="docs/empty.docx",
+        media_type_hint="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+    with pytest.raises(
+        TaskArtifactValidationError,
+        match="artifact docs/empty.docx does not contain extractable DOCX text",
+    ):
+        ingest_task_artifact_record(
+            store,
+            user_id=user_id,
+            request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+        )
+
+
+def test_ingest_task_artifact_record_rejects_malformed_docx(tmp_path) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    artifact_path = workspace_path / "docs" / "broken.docx"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(_build_docx_bytes(["broken"], malformed_document_xml=True))
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="docs/broken.docx",
+        media_type_hint="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+    with pytest.raises(
+        TaskArtifactValidationError,
+        match="artifact docs/broken.docx is not a valid DOCX",
     ):
         ingest_task_artifact_record(
             store,
@@ -828,6 +1048,38 @@ def test_ingest_task_artifact_record_rejects_paths_outside_workspace(tmp_path) -
         ingestion_status="pending",
         relative_path="../escape.pdf",
         media_type_hint="application/pdf",
+    )
+
+    with pytest.raises(TaskArtifactValidationError, match="escapes workspace root"):
+        ingest_task_artifact_record(
+            store,
+            user_id=user_id,
+            request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+        )
+
+
+def test_ingest_task_artifact_record_rejects_docx_paths_outside_workspace(tmp_path) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    outside_path = tmp_path / "escape.docx"
+    outside_path.write_bytes(_build_docx_bytes(["escape"]))
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="../escape.docx",
+        media_type_hint="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
     with pytest.raises(TaskArtifactValidationError, match="escapes workspace root"):
