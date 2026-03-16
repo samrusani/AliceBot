@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import zlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -36,6 +37,88 @@ from alicebot_api.contracts import (
 )
 from alicebot_api.tasks import TaskNotFoundError
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
+
+
+def _escape_pdf_literal_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _build_pdf_bytes(
+    pages: list[list[str]],
+    *,
+    compress_streams: bool = True,
+    textless: bool = False,
+) -> bytes:
+    objects: dict[int, bytes] = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    }
+    page_refs: list[str] = []
+    next_object_id = 4
+    for page_lines in pages:
+        page_object_id = next_object_id
+        content_object_id = next_object_id + 1
+        next_object_id += 2
+        page_refs.append(f"{page_object_id} 0 R")
+
+        if textless:
+            content_stream = b"q 10 10 100 100 re S Q\n"
+        else:
+            commands = [b"BT", b"/F1 12 Tf", b"72 720 Td"]
+            for index, line in enumerate(page_lines):
+                if index > 0:
+                    commands.append(b"T*")
+                commands.append(f"({_escape_pdf_literal_string(line)}) Tj".encode("latin-1"))
+            commands.append(b"ET")
+            content_stream = b"\n".join(commands) + b"\n"
+
+        if compress_streams:
+            encoded_stream = zlib.compress(content_stream)
+            content_body = (
+                f"<< /Length {len(encoded_stream)} /Filter /FlateDecode >>\n".encode("ascii")
+                + b"stream\n"
+                + encoded_stream
+                + b"\nendstream"
+            )
+        else:
+            content_body = (
+                f"<< /Length {len(content_stream)} >>\n".encode("ascii")
+                + b"stream\n"
+                + content_stream
+                + b"endstream"
+            )
+
+        objects[page_object_id] = (
+            f"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 3 0 R >> >> "
+            f"/MediaBox [0 0 612 792] /Contents {content_object_id} 0 R >>"
+        ).encode("ascii")
+        objects[content_object_id] = content_body
+
+    objects[2] = (
+        f"<< /Type /Pages /Count {len(page_refs)} /Kids [{' '.join(page_refs)}] >>"
+    ).encode("ascii")
+
+    document = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    max_object_id = max(objects)
+    offsets = [0] * (max_object_id + 1)
+    for object_id in range(1, max_object_id + 1):
+        offsets[object_id] = len(document)
+        document.extend(f"{object_id} 0 obj\n".encode("ascii"))
+        document.extend(objects[object_id])
+        document.extend(b"\nendobj\n")
+
+    xref_offset = len(document)
+    document.extend(f"xref\n0 {max_object_id + 1}\n".encode("ascii"))
+    document.extend(b"0000000000 65535 f \n")
+    for object_id in range(1, max_object_id + 1):
+        document.extend(f"{offsets[object_id]:010d} 00000 n \n".encode("ascii"))
+    document.extend(
+        (
+            f"trailer\n<< /Size {max_object_id + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    return bytes(document)
 
 
 class ArtifactStoreStub:
@@ -477,6 +560,84 @@ def test_ingest_task_artifact_record_supports_markdown(tmp_path) -> None:
     ]
 
 
+def test_ingest_task_artifact_record_persists_deterministic_pdf_chunks(tmp_path) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    artifact_path = workspace_path / "docs" / "spec.pdf"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(_build_pdf_bytes([["A" * 998, "B" * 5, "C"]]))
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="docs/spec.pdf",
+        media_type_hint="application/pdf",
+    )
+
+    response = ingest_task_artifact_record(
+        store,
+        user_id=user_id,
+        request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+    )
+
+    assert response == {
+        "artifact": {
+            "id": str(artifact["id"]),
+            "task_id": str(task_id),
+            "task_workspace_id": str(task_workspace_id),
+            "status": "registered",
+            "ingestion_status": "ingested",
+            "relative_path": "docs/spec.pdf",
+            "media_type_hint": "application/pdf",
+            "created_at": "2026-03-13T10:00:00+00:00",
+            "updated_at": "2026-03-13T10:30:00+00:00",
+        },
+        "summary": {
+            "total_count": 2,
+            "total_characters": 1006,
+            "media_type": "application/pdf",
+            "chunking_rule": TASK_ARTIFACT_CHUNKING_RULE,
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+    assert store.locked_artifact_ids == [artifact["id"]]
+    assert store.list_task_artifact_chunks(artifact["id"]) == [
+        {
+            "id": store.artifact_chunks[0]["id"],
+            "user_id": user_id,
+            "task_artifact_id": artifact["id"],
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 1000,
+            "text": ("A" * 998) + "\n" + "B",
+            "created_at": datetime(2026, 3, 13, 10, 0, tzinfo=UTC),
+            "updated_at": datetime(2026, 3, 13, 10, 0, tzinfo=UTC),
+        },
+        {
+            "id": store.artifact_chunks[1]["id"],
+            "user_id": user_id,
+            "task_artifact_id": artifact["id"],
+            "sequence_no": 2,
+            "char_start": 1000,
+            "char_end_exclusive": 1006,
+            "text": "BBBB\nC",
+            "created_at": datetime(2026, 3, 13, 10, 0, 1, tzinfo=UTC),
+            "updated_at": datetime(2026, 3, 13, 10, 0, 1, tzinfo=UTC),
+        },
+    ]
+
+
 def test_ingest_task_artifact_record_is_idempotent_for_already_ingested_artifact() -> None:
     store = ArtifactStoreStub()
     user_id = uuid4()
@@ -541,9 +702,9 @@ def test_ingest_task_artifact_record_rejects_unsupported_media_type(tmp_path) ->
     task_workspace_id = uuid4()
     workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
     workspace_path.mkdir(parents=True)
-    artifact_path = workspace_path / "docs" / "spec.pdf"
+    artifact_path = workspace_path / "docs" / "spec.bin"
     artifact_path.parent.mkdir(parents=True)
-    artifact_path.write_text("not really a pdf")
+    artifact_path.write_bytes(b"\x00\x01\x02")
     store.create_task_workspace(
         task_workspace_id=task_workspace_id,
         task_id=task_id,
@@ -555,13 +716,52 @@ def test_ingest_task_artifact_record_rejects_unsupported_media_type(tmp_path) ->
         task_workspace_id=task_workspace_id,
         status="registered",
         ingestion_status="pending",
-        relative_path="docs/spec.pdf",
+        relative_path="docs/spec.bin",
+        media_type_hint="application/octet-stream",
+    )
+
+    with pytest.raises(
+        TaskArtifactValidationError,
+        match=(
+            "artifact docs/spec.bin has unsupported media type application/octet-stream; "
+            "supported types: text/plain, text/markdown, application/pdf"
+        ),
+    ):
+        ingest_task_artifact_record(
+            store,
+            user_id=user_id,
+            request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+        )
+
+
+def test_ingest_task_artifact_record_rejects_textless_pdf(tmp_path) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    artifact_path = workspace_path / "docs" / "scanned.pdf"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(_build_pdf_bytes([[]], textless=True))
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="docs/scanned.pdf",
         media_type_hint="application/pdf",
     )
 
     with pytest.raises(
         TaskArtifactValidationError,
-        match="artifact docs/spec.pdf has unsupported media type application/pdf",
+        match="artifact docs/scanned.pdf does not contain extractable PDF text",
     ):
         ingest_task_artifact_record(
             store,
@@ -613,8 +813,8 @@ def test_ingest_task_artifact_record_rejects_paths_outside_workspace(tmp_path) -
     task_workspace_id = uuid4()
     workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
     workspace_path.mkdir(parents=True)
-    outside_path = tmp_path / "escape.txt"
-    outside_path.write_text("escape")
+    outside_path = tmp_path / "escape.pdf"
+    outside_path.write_bytes(_build_pdf_bytes([["escape"]]))
     store.create_task_workspace(
         task_workspace_id=task_workspace_id,
         task_id=task_id,
@@ -626,8 +826,8 @@ def test_ingest_task_artifact_record_rejects_paths_outside_workspace(tmp_path) -
         task_workspace_id=task_workspace_id,
         status="registered",
         ingestion_status="pending",
-        relative_path="../escape.txt",
-        media_type_hint="text/plain",
+        relative_path="../escape.pdf",
+        media_type_hint="application/pdf",
     )
 
     with pytest.raises(TaskArtifactValidationError, match="escapes workspace root"):
