@@ -31,6 +31,7 @@ DEFAULT_MODEL_NAME = "gpt-5-mini"
 DEFAULT_MODEL_API_KEY = ""
 DEFAULT_MODEL_TIMEOUT_SECONDS = 30
 DEFAULT_TASK_WORKSPACE_ROOT = "/tmp/alicebot/task-workspaces"
+DEFAULT_GMAIL_SECRET_MANAGER_URL = ""
 
 Environment = Mapping[str, str]
 
@@ -69,6 +70,7 @@ class Settings:
     model_api_key: str = DEFAULT_MODEL_API_KEY
     model_timeout_seconds: int = DEFAULT_MODEL_TIMEOUT_SECONDS
     task_workspace_root: str = DEFAULT_TASK_WORKSPACE_ROOT
+    gmail_secret_manager_url: str = DEFAULT_GMAIL_SECRET_MANAGER_URL
 
     @classmethod
     def from_env(cls, env: Environment | None = None) -> "Settings":
@@ -110,6 +112,11 @@ class Settings:
                 current_env,
                 "TASK_WORKSPACE_ROOT",
                 cls.task_workspace_root,
+            ),
+            gmail_secret_manager_url=_get_env_value(
+                current_env,
+                "GMAIL_SECRET_MANAGER_URL",
+                cls.gmail_secret_manager_url,
             ),
         )
 

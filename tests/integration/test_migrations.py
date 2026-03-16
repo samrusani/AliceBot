@@ -467,6 +467,116 @@ def test_gmail_refresh_token_lifecycle_migration_round_trip_preserves_downgrade_
             )
 
 
+def test_gmail_external_secret_manager_migration_round_trip_preserves_legacy_transition_rows(
+    database_urls,
+):
+    config = make_alembic_config(database_urls["admin"])
+    user_id = "00000000-0000-0000-0000-000000000301"
+    gmail_account_id = "00000000-0000-0000-0000-000000000302"
+
+    command.upgrade(config, "20260316_0028")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (id, email, display_name)
+                VALUES (%s, 'gmail-secret-manager@example.com', 'Gmail Secret Manager User')
+                """,
+                (user_id,),
+            )
+            cur.execute(
+                """
+                INSERT INTO gmail_accounts (
+                  id,
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  'acct-secret-manager-001',
+                  'owner@gmail.example',
+                  'Owner',
+                  'https://www.googleapis.com/auth/gmail.readonly'
+                )
+                """,
+                (gmail_account_id, user_id),
+            )
+            cur.execute(
+                """
+                INSERT INTO gmail_account_credentials (
+                  gmail_account_id,
+                  user_id,
+                  auth_kind,
+                  credential_blob
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  'oauth_access_token',
+                  jsonb_build_object(
+                    'credential_kind', 'gmail_oauth_refresh_token_v2',
+                    'access_token', 'token-before-externalization',
+                    'refresh_token', 'refresh-001',
+                    'client_id', 'client-001',
+                    'client_secret', 'secret-001',
+                    'access_token_expires_at', '2030-01-01T00:05:00+00:00'
+                  )
+                )
+                """,
+                (gmail_account_id, user_id),
+            )
+        conn.commit()
+
+    command.upgrade(config, "20260316_0029")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
+                  credential_blob ->> 'access_token'
+                FROM gmail_account_credentials
+                WHERE gmail_account_id = %s
+                """,
+                (gmail_account_id,),
+            )
+            assert cur.fetchone() == (
+                "gmail_oauth_refresh_token_v2",
+                "legacy_db_v0",
+                None,
+                "token-before-externalization",
+            )
+
+    command.downgrade(config, "20260316_0028")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  credential_blob ->> 'credential_kind',
+                  credential_blob ->> 'access_token',
+                  credential_blob ->> 'refresh_token'
+                FROM gmail_account_credentials
+                WHERE gmail_account_id = %s
+                """,
+                (gmail_account_id,),
+            )
+            assert cur.fetchone() == (
+                "gmail_oauth_refresh_token_v2",
+                "token-before-externalization",
+                "refresh-001",
+            )
+
+
 def test_migrations_upgrade_and_downgrade(database_urls):
     config = make_alembic_config(database_urls["admin"])
 

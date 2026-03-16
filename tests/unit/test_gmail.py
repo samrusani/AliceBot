@@ -22,7 +22,10 @@ from alicebot_api.gmail import (
     GmailCredentialPersistenceError,
     GmailCredentialValidationError,
     GmailMessageUnsupportedError,
+    GMAIL_SECRET_MANAGER_KIND_FILE_V1,
+    GMAIL_SECRET_MANAGER_KIND_LEGACY_DB_V0,
     RefreshedGmailCredential,
+    build_gmail_secret_ref,
     build_gmail_message_artifact_relative_path,
     build_gmail_protected_credential_blob,
     create_gmail_account_record,
@@ -31,6 +34,7 @@ from alicebot_api.gmail import (
     list_gmail_account_records,
     resolve_gmail_access_token,
 )
+from alicebot_api.gmail_secret_manager import GmailSecretManagerError
 from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
@@ -86,7 +90,10 @@ class GmailStoreStub:
         *,
         gmail_account_id: UUID,
         auth_kind: str,
-        credential_blob: dict[str, object],
+        credential_kind: str,
+        secret_manager_kind: str,
+        secret_ref: str | None,
+        credential_blob: dict[str, object] | None,
     ) -> dict[str, object]:
         row = {
             "gmail_account_id": gmail_account_id,
@@ -96,6 +103,9 @@ class GmailStoreStub:
                 if account["id"] == gmail_account_id
             ),
             "auth_kind": auth_kind,
+            "credential_kind": credential_kind,
+            "secret_manager_kind": secret_manager_kind,
+            "secret_ref": secret_ref,
             "credential_blob": credential_blob,
             "created_at": self.base_time + timedelta(minutes=len(self.gmail_account_credentials)),
             "updated_at": self.base_time + timedelta(minutes=len(self.gmail_account_credentials)),
@@ -122,12 +132,18 @@ class GmailStoreStub:
         *,
         gmail_account_id: UUID,
         auth_kind: str,
-        credential_blob: dict[str, object],
+        credential_kind: str,
+        secret_manager_kind: str,
+        secret_ref: str | None,
+        credential_blob: dict[str, object] | None,
     ) -> dict[str, object]:
         existing = self.gmail_account_credentials[gmail_account_id]
         updated = {
             **existing,
             "auth_kind": auth_kind,
+            "credential_kind": credential_kind,
+            "secret_manager_kind": secret_manager_kind,
+            "secret_ref": secret_ref,
             "credential_blob": credential_blob,
             "updated_at": self.base_time + timedelta(hours=1),
         }
@@ -217,12 +233,39 @@ class GmailStoreStub:
         )
 
 
+class GmailSecretManagerStub:
+    def __init__(self) -> None:
+        self.secrets: dict[str, dict[str, object]] = {}
+        self.operations: list[tuple[str, str]] = []
+
+    @property
+    def kind(self) -> str:
+        return GMAIL_SECRET_MANAGER_KIND_FILE_V1
+
+    def load_secret(self, *, secret_ref: str) -> dict[str, object]:
+        self.operations.append(("load_secret", secret_ref))
+        try:
+            return dict(self.secrets[secret_ref])
+        except KeyError as exc:
+            raise GmailSecretManagerError(f"gmail secret {secret_ref} was not found") from exc
+
+    def write_secret(self, *, secret_ref: str, payload: dict[str, object]) -> None:
+        self.operations.append(("write_secret", secret_ref))
+        self.secrets[secret_ref] = dict(payload)
+
+    def delete_secret(self, *, secret_ref: str) -> None:
+        self.operations.append(("delete_secret", secret_ref))
+        self.secrets.pop(secret_ref, None)
+
+
 def test_create_list_and_get_gmail_account_records_are_deterministic() -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     user_id = uuid4()
 
     first = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -234,6 +277,7 @@ def test_create_list_and_get_gmail_account_records_are_deterministic() -> None:
     )
     second = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailAccountConnectInput(
             provider_account_id="acct-002",
@@ -259,10 +303,12 @@ def test_create_list_and_get_gmail_account_records_are_deterministic() -> None:
 
 def test_create_gmail_account_record_persists_protected_credential_and_hides_secret() -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     user_id = uuid4()
 
     response = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -287,20 +333,38 @@ def test_create_gmail_account_record_persists_protected_credential_and_hides_sec
             "updated_at": response["account"]["updated_at"],
         }
     }
-    assert store.gmail_account_credentials[account_id]["credential_blob"] == {
+    secret_ref = build_gmail_secret_ref(
+        user_id=store.gmail_account_credentials[account_id]["user_id"],
+        gmail_account_id=account_id,
+    )
+    assert store.gmail_account_credentials[account_id] == {
+        "gmail_account_id": account_id,
+        "user_id": store.gmail_account_credentials[account_id]["user_id"],
+        "auth_kind": "oauth_access_token",
+        "credential_kind": GMAIL_PROTECTED_CREDENTIAL_KIND,
+        "secret_manager_kind": GMAIL_SECRET_MANAGER_KIND_FILE_V1,
+        "secret_ref": secret_ref,
+        "credential_blob": None,
+        "created_at": store.gmail_account_credentials[account_id]["created_at"],
+        "updated_at": store.gmail_account_credentials[account_id]["updated_at"],
+    }
+    assert secret_manager.secrets[secret_ref] == {
         "credential_kind": GMAIL_PROTECTED_CREDENTIAL_KIND,
         "access_token": "token-1",
     }
     assert store.operations == [("create_gmail_account_credential", account_id)]
+    assert secret_manager.operations == [("write_secret", secret_ref)]
 
 
 def test_create_gmail_account_record_persists_refreshable_protected_credential_and_hides_secret() -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     user_id = uuid4()
     expires_at = datetime(2030, 1, 1, 0, 0, tzinfo=UTC)
 
     response = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailAccountConnectInput(
             provider_account_id="acct-refresh-001",
@@ -329,7 +393,19 @@ def test_create_gmail_account_record_persists_refreshable_protected_credential_a
             "updated_at": response["account"]["updated_at"],
         }
     }
-    assert store.gmail_account_credentials[account_id]["credential_blob"] == {
+    secret_ref = build_gmail_secret_ref(
+        user_id=store.gmail_account_credentials[account_id]["user_id"],
+        gmail_account_id=account_id,
+    )
+    assert store.gmail_account_credentials[account_id]["credential_blob"] is None
+    assert store.gmail_account_credentials[account_id]["credential_kind"] == (
+        GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND
+    )
+    assert store.gmail_account_credentials[account_id]["secret_manager_kind"] == (
+        GMAIL_SECRET_MANAGER_KIND_FILE_V1
+    )
+    assert store.gmail_account_credentials[account_id]["secret_ref"] == secret_ref
+    assert secret_manager.secrets[secret_ref] == {
         "credential_kind": GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND,
         "access_token": "token-1",
         "refresh_token": "refresh-1",
@@ -357,6 +433,7 @@ def test_build_gmail_protected_credential_blob_rejects_partial_refresh_bundle() 
 
 def test_create_gmail_account_record_rejects_duplicate_provider_account_id() -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     user_id = uuid4()
     request = GmailAccountConnectInput(
         provider_account_id="acct-001",
@@ -365,13 +442,13 @@ def test_create_gmail_account_record_rejects_duplicate_provider_account_id() -> 
         scope=GMAIL_READONLY_SCOPE,
         access_token="token-1",
     )
-    create_gmail_account_record(store, user_id=user_id, request=request)
+    create_gmail_account_record(store, secret_manager, user_id=user_id, request=request)
 
     with pytest.raises(
         GmailAccountAlreadyExistsError,
         match="gmail account acct-001 is already connected",
     ):
-        create_gmail_account_record(store, user_id=user_id, request=request)
+        create_gmail_account_record(store, secret_manager, user_id=user_id, request=request)
 
 
 def test_get_gmail_account_record_raises_when_account_is_missing() -> None:
@@ -385,8 +462,10 @@ def test_get_gmail_account_record_raises_when_account_is_missing() -> None:
 
 def test_resolve_gmail_access_token_reads_protected_credential() -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=uuid4(),
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -399,14 +478,17 @@ def test_resolve_gmail_access_token_reads_protected_credential() -> None:
 
     assert resolve_gmail_access_token(
         store,
+        secret_manager,
         gmail_account_id=UUID(account["id"]),
     ) == "token-1"
 
 
 def test_resolve_gmail_access_token_rejects_missing_and_invalid_protected_credentials() -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=uuid4(),
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -423,12 +505,15 @@ def test_resolve_gmail_access_token_rejects_missing_and_invalid_protected_creden
         GmailCredentialNotFoundError,
         match=f"gmail account {account_id} is missing protected credentials",
     ):
-        resolve_gmail_access_token(store, gmail_account_id=account_id)
+        resolve_gmail_access_token(store, secret_manager, gmail_account_id=account_id)
 
     store.gmail_account_credentials[account_id] = {
         "gmail_account_id": account_id,
         "user_id": uuid4(),
         "auth_kind": "oauth_access_token",
+        "credential_kind": GMAIL_PROTECTED_CREDENTIAL_KIND,
+        "secret_manager_kind": GMAIL_SECRET_MANAGER_KIND_LEGACY_DB_V0,
+        "secret_ref": None,
         "credential_blob": {"credential_kind": GMAIL_PROTECTED_CREDENTIAL_KIND},
         "created_at": store.base_time,
         "updated_at": store.base_time,
@@ -437,15 +522,56 @@ def test_resolve_gmail_access_token_rejects_missing_and_invalid_protected_creden
         GmailCredentialInvalidError,
         match=f"gmail account {account_id} has invalid protected credentials",
     ):
-        resolve_gmail_access_token(store, gmail_account_id=account_id)
+        resolve_gmail_access_token(store, secret_manager, gmail_account_id=account_id)
+
+
+def test_resolve_gmail_access_token_externalizes_legacy_db_credentials_on_first_read() -> None:
+    store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
+    account = create_gmail_account_record(
+        store,
+        secret_manager,
+        user_id=uuid4(),
+        request=GmailAccountConnectInput(
+            provider_account_id="acct-legacy-001",
+            email_address="owner@example.com",
+            display_name="Owner",
+            scope=GMAIL_READONLY_SCOPE,
+            access_token="token-1",
+        ),
+    )["account"]
+    account_id = UUID(account["id"])
+    credential_row = store.gmail_account_credentials[account_id]
+    legacy_blob = {
+        "credential_kind": GMAIL_PROTECTED_CREDENTIAL_KIND,
+        "access_token": "token-legacy-001",
+    }
+    secret_ref = credential_row["secret_ref"]
+    assert secret_ref is not None
+    credential_row["secret_manager_kind"] = GMAIL_SECRET_MANAGER_KIND_LEGACY_DB_V0
+    credential_row["secret_ref"] = None
+    credential_row["credential_blob"] = legacy_blob
+    secret_manager.secrets.pop(secret_ref)
+
+    assert resolve_gmail_access_token(store, secret_manager, gmail_account_id=account_id) == (
+        "token-legacy-001"
+    )
+    assert store.gmail_account_credentials[account_id]["secret_manager_kind"] == (
+        GMAIL_SECRET_MANAGER_KIND_FILE_V1
+    )
+    assert store.gmail_account_credentials[account_id]["secret_ref"] == secret_ref
+    assert store.gmail_account_credentials[account_id]["credential_blob"] is None
+    assert secret_manager.secrets[secret_ref] == legacy_blob
 
 
 def test_resolve_gmail_access_token_renews_expired_refreshable_credential(monkeypatch) -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     expired_at = datetime(2020, 1, 1, 0, 0, tzinfo=UTC)
     refreshed_at = datetime(2030, 1, 1, 0, 5, tzinfo=UTC)
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=uuid4(),
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -469,8 +595,10 @@ def test_resolve_gmail_access_token_renews_expired_refreshable_credential(monkey
         ),
     )
 
-    assert resolve_gmail_access_token(store, gmail_account_id=account_id) == "token-2"
-    assert store.gmail_account_credentials[account_id]["credential_blob"] == {
+    secret_ref = store.gmail_account_credentials[account_id]["secret_ref"]
+    assert resolve_gmail_access_token(store, secret_manager, gmail_account_id=account_id) == "token-2"
+    assert secret_ref is not None
+    assert secret_manager.secrets[secret_ref] == {
         "credential_kind": GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND,
         "access_token": "token-2",
         "refresh_token": "refresh-1",
@@ -486,10 +614,12 @@ def test_resolve_gmail_access_token_renews_expired_refreshable_credential(monkey
 
 def test_resolve_gmail_access_token_persists_rotated_refresh_token(monkeypatch) -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     expired_at = datetime(2020, 1, 1, 0, 0, tzinfo=UTC)
     refreshed_at = datetime(2030, 1, 1, 0, 5, tzinfo=UTC)
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=uuid4(),
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -514,8 +644,10 @@ def test_resolve_gmail_access_token_persists_rotated_refresh_token(monkeypatch) 
         ),
     )
 
-    assert resolve_gmail_access_token(store, gmail_account_id=account_id) == "token-2"
-    assert store.gmail_account_credentials[account_id]["credential_blob"] == {
+    secret_ref = store.gmail_account_credentials[account_id]["secret_ref"]
+    assert resolve_gmail_access_token(store, secret_manager, gmail_account_id=account_id) == "token-2"
+    assert secret_ref is not None
+    assert secret_manager.secrets[secret_ref] == {
         "credential_kind": GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND,
         "access_token": "token-2",
         "refresh_token": "refresh-2",
@@ -529,10 +661,12 @@ def test_resolve_gmail_access_token_fails_deterministically_when_persisting_refr
     monkeypatch,
 ) -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     expired_at = datetime(2020, 1, 1, 0, 0, tzinfo=UTC)
     refreshed_at = datetime(2030, 1, 1, 0, 5, tzinfo=UTC)
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=uuid4(),
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -547,7 +681,9 @@ def test_resolve_gmail_access_token_fails_deterministically_when_persisting_refr
         ),
     )["account"]
     account_id = UUID(account["id"])
-    original_blob = dict(store.gmail_account_credentials[account_id]["credential_blob"])
+    secret_ref = store.gmail_account_credentials[account_id]["secret_ref"]
+    assert secret_ref is not None
+    original_blob = dict(secret_manager.secrets[secret_ref])
 
     monkeypatch.setattr(
         "alicebot_api.gmail.refresh_gmail_access_token",
@@ -567,15 +703,17 @@ def test_resolve_gmail_access_token_fails_deterministically_when_persisting_refr
         GmailCredentialPersistenceError,
         match=f"gmail account {account_id} renewed protected credentials could not be persisted",
     ):
-        resolve_gmail_access_token(store, gmail_account_id=account_id)
+        resolve_gmail_access_token(store, secret_manager, gmail_account_id=account_id)
 
-    assert store.gmail_account_credentials[account_id]["credential_blob"] == original_blob
+    assert secret_manager.secrets[secret_ref] == original_blob
 
 
 def test_resolve_gmail_access_token_rejects_invalid_refreshable_protected_credentials() -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=uuid4(),
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -586,7 +724,9 @@ def test_resolve_gmail_access_token_rejects_invalid_refreshable_protected_creden
         ),
     )["account"]
     account_id = UUID(account["id"])
-    store.gmail_account_credentials[account_id]["credential_blob"] = {
+    secret_ref = store.gmail_account_credentials[account_id]["secret_ref"]
+    assert secret_ref is not None
+    secret_manager.secrets[secret_ref] = {
         "credential_kind": GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND,
         "access_token": "token-1",
         "client_id": "client-1",
@@ -598,7 +738,7 @@ def test_resolve_gmail_access_token_rejects_invalid_refreshable_protected_creden
         GmailCredentialInvalidError,
         match=f"gmail account {account_id} has invalid protected credentials",
     ):
-        resolve_gmail_access_token(store, gmail_account_id=account_id)
+        resolve_gmail_access_token(store, secret_manager, gmail_account_id=account_id)
 
 
 def test_ingest_gmail_message_record_writes_rfc822_artifact_and_reuses_artifact_seam(
@@ -606,6 +746,7 @@ def test_ingest_gmail_message_record_writes_rfc822_artifact_and_reuses_artifact_
     tmp_path,
 ) -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     user_id = uuid4()
     workspace_id = uuid4()
     workspace = store.create_task_workspace(
@@ -614,6 +755,7 @@ def test_ingest_gmail_message_record_writes_rfc822_artifact_and_reuses_artifact_
     )
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -683,6 +825,7 @@ def test_ingest_gmail_message_record_writes_rfc822_artifact_and_reuses_artifact_
 
     response = ingest_gmail_message_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailMessageIngestInput(
             gmail_account_id=UUID(account["id"]),
@@ -730,6 +873,7 @@ def test_ingest_gmail_message_record_renews_expired_access_token_before_fetch(
     tmp_path,
 ) -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     user_id = uuid4()
     workspace_id = uuid4()
     workspace = store.create_task_workspace(
@@ -738,6 +882,7 @@ def test_ingest_gmail_message_record_renews_expired_access_token_before_fetch(
     )
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -815,6 +960,7 @@ def test_ingest_gmail_message_record_renews_expired_access_token_before_fetch(
 
     response = ingest_gmail_message_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailMessageIngestInput(
             gmail_account_id=UUID(account["id"]),
@@ -834,6 +980,7 @@ def test_ingest_gmail_message_record_renews_expired_access_token_before_fetch(
 
 def test_ingest_gmail_message_record_rejects_unsupported_message(monkeypatch, tmp_path) -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     user_id = uuid4()
     workspace_id = uuid4()
     store.create_task_workspace(
@@ -842,6 +989,7 @@ def test_ingest_gmail_message_record_rejects_unsupported_message(monkeypatch, tm
     )
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -863,6 +1011,7 @@ def test_ingest_gmail_message_record_rejects_unsupported_message(monkeypatch, tm
     ):
         ingest_gmail_message_record(
             store,
+            secret_manager,
             user_id=user_id,
             request=GmailMessageIngestInput(
                 gmail_account_id=UUID(account["id"]),
@@ -877,6 +1026,7 @@ def test_ingest_gmail_message_record_rejects_duplicate_sanitized_path_before_fet
     tmp_path,
 ) -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     user_id = uuid4()
     workspace_id = uuid4()
     workspace_path = (tmp_path / "workspace").resolve()
@@ -886,6 +1036,7 @@ def test_ingest_gmail_message_record_rejects_duplicate_sanitized_path_before_fet
     )
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -918,6 +1069,7 @@ def test_ingest_gmail_message_record_rejects_duplicate_sanitized_path_before_fet
     ):
         ingest_gmail_message_record(
             store,
+            secret_manager,
             user_id=user_id,
             request=GmailMessageIngestInput(
                 gmail_account_id=UUID(account["id"]),
@@ -936,9 +1088,11 @@ def test_ingest_gmail_message_record_rejects_duplicate_sanitized_path_before_fet
 
 def test_ingest_gmail_message_record_requires_visible_workspace(monkeypatch) -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     user_id = uuid4()
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -957,6 +1111,7 @@ def test_ingest_gmail_message_record_requires_visible_workspace(monkeypatch) -> 
     with pytest.raises(TaskWorkspaceNotFoundError, match="task workspace .* was not found"):
         ingest_gmail_message_record(
             store,
+            secret_manager,
             user_id=user_id,
             request=GmailMessageIngestInput(
                 gmail_account_id=UUID(account["id"]),
@@ -971,6 +1126,7 @@ def test_ingest_gmail_message_record_rejects_missing_protected_credentials_befor
     tmp_path,
 ) -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     user_id = uuid4()
     workspace_id = uuid4()
     workspace_path = (tmp_path / "workspace").resolve()
@@ -980,6 +1136,7 @@ def test_ingest_gmail_message_record_rejects_missing_protected_credentials_befor
     )
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -1003,6 +1160,7 @@ def test_ingest_gmail_message_record_rejects_missing_protected_credentials_befor
     ):
         ingest_gmail_message_record(
             store,
+            secret_manager,
             user_id=user_id,
             request=GmailMessageIngestInput(
                 gmail_account_id=account_id,
@@ -1021,6 +1179,7 @@ def test_ingest_gmail_message_record_rejects_invalid_protected_credentials_befor
     tmp_path,
 ) -> None:
     store = GmailStoreStub()
+    secret_manager = GmailSecretManagerStub()
     user_id = uuid4()
     workspace_id = uuid4()
     workspace_path = (tmp_path / "workspace").resolve()
@@ -1030,6 +1189,7 @@ def test_ingest_gmail_message_record_rejects_invalid_protected_credentials_befor
     )
     account = create_gmail_account_record(
         store,
+        secret_manager,
         user_id=user_id,
         request=GmailAccountConnectInput(
             provider_account_id="acct-001",
@@ -1040,7 +1200,9 @@ def test_ingest_gmail_message_record_rejects_invalid_protected_credentials_befor
         ),
     )["account"]
     account_id = UUID(account["id"])
-    store.gmail_account_credentials[account_id]["credential_blob"] = {
+    secret_ref = store.gmail_account_credentials[account_id]["secret_ref"]
+    assert secret_ref is not None
+    secret_manager.secrets[secret_ref] = {
         "credential_kind": GMAIL_PROTECTED_CREDENTIAL_KIND,
         "access_token": "",
     }
@@ -1056,6 +1218,7 @@ def test_ingest_gmail_message_record_rejects_invalid_protected_credentials_befor
     ):
         ingest_gmail_message_record(
             store,
+            secret_manager,
             user_id=user_id,
             request=GmailMessageIngestInput(
                 gmail_account_id=account_id,
