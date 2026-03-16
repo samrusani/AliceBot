@@ -7,10 +7,10 @@ from alicebot_api.compiler import (
     SUMMARY_TRACE_EVENT_KIND,
     _compile_artifact_chunk_section,
     _compile_memory_section,
-    _compile_semantic_artifact_chunk_section,
     compile_continuity_context,
 )
 from alicebot_api.contracts import (
+    CompileContextArtifactScopedArtifactRetrievalInput,
     CompileContextArtifactScopedSemanticArtifactRetrievalInput,
     CompileContextSemanticRetrievalInput,
     CompileContextTaskScopedSemanticArtifactRetrievalInput,
@@ -298,38 +298,46 @@ def test_compile_continuity_context_is_deterministic_and_stably_ordered() -> Non
     assert first_run.context_pack["artifact_chunks"] == []
     assert first_run.context_pack["artifact_chunk_summary"] == {
         "requested": False,
+        "lexical_requested": False,
+        "semantic_requested": False,
         "scope": None,
         "query": None,
         "query_terms": [],
-        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "embedding_config_id": None,
+        "query_vector_dimensions": 0,
         "limit": 0,
+        "lexical_limit": 0,
+        "semantic_limit": 0,
         "searched_artifact_count": 0,
-        "candidate_count": 0,
+        "lexical_candidate_count": 0,
+        "semantic_candidate_count": 0,
+        "merged_candidate_count": 0,
+        "deduplicated_count": 0,
         "included_count": 0,
+        "included_lexical_only_count": 0,
+        "included_semantic_only_count": 0,
+        "included_dual_source_count": 0,
         "excluded_uningested_artifact_count": 0,
         "excluded_limit_count": 0,
-        "order": [
+        "matching_rule": None,
+        "similarity_metric": None,
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
             "matched_query_term_count_desc",
             "first_match_char_start_asc",
             "relative_path_asc",
             "sequence_no_asc",
             "id_asc",
         ],
-    }
-    assert first_run.context_pack["semantic_artifact_chunks"] == []
-    assert first_run.context_pack["semantic_artifact_chunk_summary"] == {
-        "requested": False,
-        "scope": None,
-        "embedding_config_id": None,
-        "query_vector_dimensions": 0,
-        "limit": 0,
-        "searched_artifact_count": 0,
-        "candidate_count": 0,
-        "included_count": 0,
-        "excluded_uningested_artifact_count": 0,
-        "excluded_limit_count": 0,
-        "similarity_metric": None,
-        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
     }
     assert first_run.context_pack["entity_summary"] == {
         "candidate_count": 3,
@@ -643,38 +651,46 @@ def test_compile_continuity_context_records_included_and_excluded_reasons() -> N
     assert compiler_run.context_pack["artifact_chunks"] == []
     assert compiler_run.context_pack["artifact_chunk_summary"] == {
         "requested": False,
+        "lexical_requested": False,
+        "semantic_requested": False,
         "scope": None,
         "query": None,
         "query_terms": [],
-        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "embedding_config_id": None,
+        "query_vector_dimensions": 0,
         "limit": 0,
+        "lexical_limit": 0,
+        "semantic_limit": 0,
         "searched_artifact_count": 0,
-        "candidate_count": 0,
+        "lexical_candidate_count": 0,
+        "semantic_candidate_count": 0,
+        "merged_candidate_count": 0,
+        "deduplicated_count": 0,
         "included_count": 0,
+        "included_lexical_only_count": 0,
+        "included_semantic_only_count": 0,
+        "included_dual_source_count": 0,
         "excluded_uningested_artifact_count": 0,
         "excluded_limit_count": 0,
-        "order": [
+        "matching_rule": None,
+        "similarity_metric": None,
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
             "matched_query_term_count_desc",
             "first_match_char_start_asc",
             "relative_path_asc",
             "sequence_no_asc",
             "id_asc",
         ],
-    }
-    assert compiler_run.context_pack["semantic_artifact_chunks"] == []
-    assert compiler_run.context_pack["semantic_artifact_chunk_summary"] == {
-        "requested": False,
-        "scope": None,
-        "embedding_config_id": None,
-        "query_vector_dimensions": 0,
-        "limit": 0,
-        "searched_artifact_count": 0,
-        "candidate_count": 0,
-        "included_count": 0,
-        "excluded_uningested_artifact_count": 0,
-        "excluded_limit_count": 0,
-        "similarity_metric": None,
-        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
     }
     assert compiler_run.context_pack["entities"] == [
         {
@@ -710,18 +726,16 @@ def test_compile_continuity_context_records_included_and_excluded_reasons() -> N
     assert compiler_run.trace_events[-1].payload["hybrid_memory_merged_candidate_count"] == 1
     assert compiler_run.trace_events[-1].payload["hybrid_memory_deduplicated_count"] == 0
     assert compiler_run.trace_events[-1].payload["artifact_retrieval_requested"] is False
-    assert compiler_run.trace_events[-1].payload["artifact_chunk_candidate_count"] == 0
+    assert compiler_run.trace_events[-1].payload["artifact_lexical_retrieval_requested"] is False
+    assert compiler_run.trace_events[-1].payload["artifact_semantic_retrieval_requested"] is False
+    assert compiler_run.trace_events[-1].payload["artifact_lexical_candidate_count"] == 0
+    assert compiler_run.trace_events[-1].payload["artifact_semantic_candidate_count"] == 0
+    assert compiler_run.trace_events[-1].payload["artifact_merged_candidate_count"] == 0
+    assert compiler_run.trace_events[-1].payload["artifact_deduplicated_count"] == 0
     assert compiler_run.trace_events[-1].payload["included_artifact_chunk_count"] == 0
+    assert compiler_run.trace_events[-1].payload["included_dual_source_artifact_chunk_count"] == 0
     assert compiler_run.trace_events[-1].payload["excluded_artifact_chunk_limit_count"] == 0
     assert compiler_run.trace_events[-1].payload["excluded_uningested_artifact_count"] == 0
-    assert compiler_run.trace_events[-1].payload["semantic_artifact_retrieval_requested"] is False
-    assert compiler_run.trace_events[-1].payload["semantic_artifact_chunk_candidate_count"] == 0
-    assert compiler_run.trace_events[-1].payload["included_semantic_artifact_chunk_count"] == 0
-    assert (
-        compiler_run.trace_events[-1].payload["excluded_semantic_artifact_chunk_limit_count"]
-        == 0
-    )
-    assert compiler_run.trace_events[-1].payload["excluded_semantic_uningested_artifact_count"] == 0
 
 
 class SemanticCompileStoreStub:
@@ -994,6 +1008,7 @@ def test_compile_artifact_chunk_section_orders_limits_and_excludes_non_ingested(
             query="Alpha beta",
             limit=2,
         ),
+        semantic_artifact_retrieval=None,
     )
 
     assert artifact_section.items == [
@@ -1007,10 +1022,14 @@ def test_compile_artifact_chunk_section_orders_limits_and_excludes_non_ingested(
             "char_start": 0,
             "char_end_exclusive": 14,
             "text": "beta alpha doc",
-            "match": {
-                "matched_query_terms": ["alpha", "beta"],
-                "matched_query_term_count": 2,
-                "first_match_char_start": 0,
+            "source_provenance": {
+                "sources": ["lexical"],
+                "lexical_match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+                "semantic_score": None,
             },
         },
         {
@@ -1023,48 +1042,76 @@ def test_compile_artifact_chunk_section_orders_limits_and_excludes_non_ingested(
             "char_start": 0,
             "char_end_exclusive": 15,
             "text": "alpha beta note",
-            "match": {
-                "matched_query_terms": ["alpha", "beta"],
-                "matched_query_term_count": 2,
-                "first_match_char_start": 0,
+            "source_provenance": {
+                "sources": ["lexical"],
+                "lexical_match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+                "semantic_score": None,
             },
         },
     ]
     assert artifact_section.summary == {
         "requested": True,
+        "lexical_requested": True,
+        "semantic_requested": False,
         "scope": {"kind": "task", "task_id": str(store.task_id)},
         "query": "Alpha beta",
         "query_terms": ["alpha", "beta"],
-        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "embedding_config_id": None,
+        "query_vector_dimensions": 0,
         "limit": 2,
+        "lexical_limit": 2,
+        "semantic_limit": 0,
         "searched_artifact_count": 3,
-        "candidate_count": 3,
+        "lexical_candidate_count": 3,
+        "semantic_candidate_count": 0,
+        "merged_candidate_count": 3,
+        "deduplicated_count": 0,
         "included_count": 2,
+        "included_lexical_only_count": 2,
+        "included_semantic_only_count": 0,
+        "included_dual_source_count": 0,
         "excluded_uningested_artifact_count": 1,
         "excluded_limit_count": 1,
-        "order": [
+        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "similarity_metric": None,
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
             "matched_query_term_count_desc",
             "first_match_char_start_asc",
             "relative_path_asc",
             "sequence_no_asc",
             "id_asc",
         ],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
     }
     assert [decision.reason for decision in artifact_section.decisions] == [
-        "artifact_not_ingested",
-        "within_artifact_chunk_limit",
-        "within_artifact_chunk_limit",
-        "artifact_chunk_limit_exceeded",
+        "hybrid_artifact_not_ingested",
+        "within_hybrid_artifact_chunk_limit",
+        "within_hybrid_artifact_chunk_limit",
+        "hybrid_artifact_chunk_limit_exceeded",
     ]
     assert artifact_section.decisions[0].metadata["relative_path"] == "notes/hidden.txt"
     assert artifact_section.decisions[-1].metadata["relative_path"] == "notes/c.txt"
 
 
-def test_compile_semantic_artifact_chunk_section_orders_limits_and_excludes_non_ingested() -> None:
+def test_compile_artifact_chunk_section_supports_semantic_only_scope() -> None:
     store = ArtifactCompileStoreStub()
 
-    semantic_artifact_section = _compile_semantic_artifact_chunk_section(
+    artifact_section = _compile_artifact_chunk_section(
         store,  # type: ignore[arg-type]
+        artifact_retrieval=None,
         semantic_artifact_retrieval=CompileContextTaskScopedSemanticArtifactRetrievalInput(
             task_id=store.task_id,
             embedding_config_id=store.config_id,
@@ -1073,7 +1120,7 @@ def test_compile_semantic_artifact_chunk_section_orders_limits_and_excludes_non_
         ),
     )
 
-    assert semantic_artifact_section.items == [
+    assert artifact_section.items == [
         {
             "id": str(store.chunk_ids[0]),
             "task_id": str(store.task_id),
@@ -1084,7 +1131,11 @@ def test_compile_semantic_artifact_chunk_section_orders_limits_and_excludes_non_
             "char_start": 0,
             "char_end_exclusive": 14,
             "text": "beta alpha doc",
-            "score": 1.0,
+            "source_provenance": {
+                "sources": ["semantic"],
+                "lexical_match": None,
+                "semantic_score": 1.0,
+            },
         },
         {
             "id": str(store.chunk_ids[1]),
@@ -1096,38 +1147,76 @@ def test_compile_semantic_artifact_chunk_section_orders_limits_and_excludes_non_
             "char_start": 0,
             "char_end_exclusive": 15,
             "text": "alpha beta note",
-            "score": 1.0,
+            "source_provenance": {
+                "sources": ["semantic"],
+                "lexical_match": None,
+                "semantic_score": 1.0,
+            },
         },
     ]
-    assert semantic_artifact_section.summary == {
+    assert artifact_section.summary == {
         "requested": True,
+        "lexical_requested": False,
+        "semantic_requested": True,
         "scope": {"kind": "task", "task_id": str(store.task_id)},
+        "query": None,
+        "query_terms": [],
         "embedding_config_id": str(store.config_id),
         "query_vector_dimensions": 3,
         "limit": 2,
+        "lexical_limit": 0,
+        "semantic_limit": 2,
         "searched_artifact_count": 3,
-        "candidate_count": 3,
+        "lexical_candidate_count": 0,
+        "semantic_candidate_count": 3,
+        "merged_candidate_count": 3,
+        "deduplicated_count": 0,
         "included_count": 2,
+        "included_lexical_only_count": 0,
+        "included_semantic_only_count": 2,
+        "included_dual_source_count": 0,
         "excluded_uningested_artifact_count": 1,
         "excluded_limit_count": 1,
+        "matching_rule": None,
         "similarity_metric": "cosine_similarity",
-        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
     }
-    assert [decision.reason for decision in semantic_artifact_section.decisions] == [
-        "semantic_artifact_not_ingested",
-        "within_semantic_artifact_chunk_limit",
-        "within_semantic_artifact_chunk_limit",
-        "semantic_artifact_chunk_limit_exceeded",
+    assert [decision.reason for decision in artifact_section.decisions] == [
+        "hybrid_artifact_not_ingested",
+        "within_hybrid_artifact_chunk_limit",
+        "within_hybrid_artifact_chunk_limit",
+        "hybrid_artifact_chunk_limit_exceeded",
     ]
-    assert semantic_artifact_section.decisions[0].metadata["relative_path"] == "notes/hidden.txt"
-    assert semantic_artifact_section.decisions[-1].metadata["relative_path"] == "notes/c.txt"
+    assert artifact_section.decisions[0].metadata["relative_path"] == "notes/hidden.txt"
+    assert artifact_section.decisions[-1].metadata["relative_path"] == "notes/c.txt"
 
 
-def test_compile_semantic_artifact_chunk_section_supports_artifact_scope() -> None:
+def test_compile_artifact_chunk_section_merges_dual_source_provenance_for_artifact_scope() -> None:
     store = ArtifactCompileStoreStub()
 
-    semantic_artifact_section = _compile_semantic_artifact_chunk_section(
+    artifact_section = _compile_artifact_chunk_section(
         store,  # type: ignore[arg-type]
+        artifact_retrieval=CompileContextArtifactScopedArtifactRetrievalInput(
+            task_artifact_id=store.artifact_ids[1],
+            query="Alpha beta",
+            limit=2,
+        ),
         semantic_artifact_retrieval=CompileContextArtifactScopedSemanticArtifactRetrievalInput(
             task_artifact_id=store.artifact_ids[1],
             embedding_config_id=store.config_id,
@@ -1136,7 +1225,7 @@ def test_compile_semantic_artifact_chunk_section_supports_artifact_scope() -> No
         ),
     )
 
-    assert semantic_artifact_section.items == [
+    assert artifact_section.items == [
         {
             "id": str(store.chunk_ids[1]),
             "task_id": str(store.task_id),
@@ -1147,28 +1236,69 @@ def test_compile_semantic_artifact_chunk_section_supports_artifact_scope() -> No
             "char_start": 0,
             "char_end_exclusive": 15,
             "text": "alpha beta note",
-            "score": 1.0,
+            "source_provenance": {
+                "sources": ["lexical", "semantic"],
+                "lexical_match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+                "semantic_score": 1.0,
+            },
         }
     ]
-    assert semantic_artifact_section.summary == {
+    assert artifact_section.summary == {
         "requested": True,
+        "lexical_requested": True,
+        "semantic_requested": True,
         "scope": {
             "kind": "artifact",
             "task_id": str(store.task_id),
             "task_artifact_id": str(store.artifact_ids[1]),
         },
+        "query": "Alpha beta",
+        "query_terms": ["alpha", "beta"],
         "embedding_config_id": str(store.config_id),
         "query_vector_dimensions": 3,
         "limit": 2,
+        "lexical_limit": 2,
+        "semantic_limit": 2,
         "searched_artifact_count": 1,
-        "candidate_count": 1,
+        "lexical_candidate_count": 1,
+        "semantic_candidate_count": 1,
+        "merged_candidate_count": 1,
+        "deduplicated_count": 1,
         "included_count": 1,
+        "included_lexical_only_count": 0,
+        "included_semantic_only_count": 0,
+        "included_dual_source_count": 1,
         "excluded_uningested_artifact_count": 0,
         "excluded_limit_count": 0,
+        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
         "similarity_metric": "cosine_similarity",
-        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
     }
-    assert semantic_artifact_section.decisions[0].metadata["scope_kind"] == "artifact"
+    assert [decision.reason for decision in artifact_section.decisions] == [
+        "hybrid_artifact_chunk_deduplicated",
+        "within_hybrid_artifact_chunk_limit",
+    ]
+    assert artifact_section.decisions[1].metadata["selected_sources"] == ["lexical", "semantic"]
 
 
 def test_compile_memory_section_orders_limits_and_excludes_deleted() -> None:
