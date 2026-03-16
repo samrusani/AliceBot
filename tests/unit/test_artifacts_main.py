@@ -497,8 +497,8 @@ def test_ingest_task_artifact_endpoint_maps_validation_to_400(monkeypatch) -> No
 
     def fake_ingest_task_artifact_record(*_args, **_kwargs):
         raise TaskArtifactValidationError(
-            "artifact docs/spec.txt has unsupported media type application/pdf; "
-            "supported types: text/plain, text/markdown"
+            "artifact docs/spec.bin has unsupported media type application/octet-stream; "
+            "supported types: text/plain, text/markdown, application/pdf"
         )
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
@@ -513,8 +513,8 @@ def test_ingest_task_artifact_endpoint_maps_validation_to_400(monkeypatch) -> No
     assert response.status_code == 400
     assert json.loads(response.body) == {
         "detail": (
-            "artifact docs/spec.txt has unsupported media type application/pdf; "
-            "supported types: text/plain, text/markdown"
+            "artifact docs/spec.bin has unsupported media type application/octet-stream; "
+            "supported types: text/plain, text/markdown, application/pdf"
         )
     }
 
