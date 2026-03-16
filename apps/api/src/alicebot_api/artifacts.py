@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import io
+from email import policy
+from email.errors import MessageDefect, MessageError
+from email.message import EmailMessage
+from email.parser import BytesParser
 import re
 import zlib
 from dataclasses import dataclass
@@ -46,10 +50,12 @@ SUPPORTED_PDF_ARTIFACT_MEDIA_TYPE = "application/pdf"
 SUPPORTED_DOCX_ARTIFACT_MEDIA_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 )
+SUPPORTED_RFC822_ARTIFACT_MEDIA_TYPE = "message/rfc822"
 SUPPORTED_ARTIFACT_MEDIA_TYPES = (
     *SUPPORTED_TEXT_ARTIFACT_MEDIA_TYPES,
     SUPPORTED_PDF_ARTIFACT_MEDIA_TYPE,
     SUPPORTED_DOCX_ARTIFACT_MEDIA_TYPE,
+    SUPPORTED_RFC822_ARTIFACT_MEDIA_TYPE,
 )
 SUPPORTED_ARTIFACT_EXTENSIONS = {
     ".txt": "text/plain",
@@ -58,6 +64,7 @@ SUPPORTED_ARTIFACT_EXTENSIONS = {
     ".markdown": "text/markdown",
     ".pdf": SUPPORTED_PDF_ARTIFACT_MEDIA_TYPE,
     ".docx": SUPPORTED_DOCX_ARTIFACT_MEDIA_TYPE,
+    ".eml": SUPPORTED_RFC822_ARTIFACT_MEDIA_TYPE,
 }
 TASK_ARTIFACT_CHUNK_MAX_CHARS = 1000
 TASK_ARTIFACT_CHUNKING_RULE = "normalized_utf8_text_fixed_window_1000_chars_v1"
@@ -148,6 +155,17 @@ _DOCX_TAB_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}tab"
 _DOCX_BREAK_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}br"
 _DOCX_CARRIAGE_RETURN_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}cr"
 _DOCX_BODY_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}body"
+_RFC822_EMAIL_PARSE_POLICY = policy.default.clone(raise_on_defect=True)
+_RFC822_EXTRACTED_HEADER_NAMES = (
+    "From",
+    "To",
+    "Cc",
+    "Bcc",
+    "Reply-To",
+    "Subject",
+    "Date",
+    "Message-ID",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,6 +343,90 @@ def _extract_text_from_docx_artifact_bytes(*, relative_path: str, payload: bytes
             f"artifact {relative_path} does not contain extractable DOCX text"
         )
     return extracted_text
+
+
+def _normalize_rfc822_header_value(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _parse_rfc822_email(*, relative_path: str, payload: bytes) -> EmailMessage:
+    try:
+        message = BytesParser(policy=_RFC822_EMAIL_PARSE_POLICY).parsebytes(payload)
+    except (MessageDefect, MessageError, ValueError, TypeError) as exc:
+        raise TaskArtifactValidationError(
+            f"artifact {relative_path} is not a valid RFC822 email"
+        ) from exc
+    return cast(EmailMessage, message)
+
+
+def _extract_rfc822_header_lines(message: EmailMessage) -> list[str]:
+    header_lines: list[str] = []
+    for header_name in _RFC822_EXTRACTED_HEADER_NAMES:
+        for header_value in message.get_all(header_name, failobj=[]):
+            normalized_value = _normalize_rfc822_header_value(str(header_value))
+            if normalized_value != "":
+                header_lines.append(f"{header_name}: {normalized_value}")
+    return header_lines
+
+
+def _is_extractable_rfc822_text_part(part: EmailMessage) -> bool:
+    if part.is_multipart():
+        return False
+    if part.get_content_type() != "text/plain":
+        return False
+    if part.get_content_disposition() == "attachment":
+        return False
+    return part.get_filename() is None
+
+
+def _extract_rfc822_part_text(*, relative_path: str, part: EmailMessage) -> str:
+    try:
+        payload = part.get_content()
+    except (MessageError, LookupError, UnicodeError, ValueError, TypeError) as exc:
+        raise TaskArtifactValidationError(
+            f"artifact {relative_path} is not a valid RFC822 email"
+        ) from exc
+    if not isinstance(payload, str):
+        raise TaskArtifactValidationError(
+            f"artifact {relative_path} is not a valid RFC822 email"
+        )
+    return payload.strip()
+
+
+def _iter_extractable_rfc822_text_parts(message: EmailMessage) -> list[EmailMessage]:
+    if _is_extractable_rfc822_text_part(message):
+        return [message]
+    if not message.is_multipart():
+        return []
+
+    extractable_parts: list[EmailMessage] = []
+    for child_part in message.iter_parts():
+        child_email_part = cast(EmailMessage, child_part)
+        if child_email_part.get_content_maintype() == "message":
+            continue
+        extractable_parts.extend(_iter_extractable_rfc822_text_parts(child_email_part))
+    return extractable_parts
+
+
+def _extract_text_from_rfc822_artifact_bytes(*, relative_path: str, payload: bytes) -> str:
+    message = _parse_rfc822_email(relative_path=relative_path, payload=payload)
+    header_lines = _extract_rfc822_header_lines(message)
+    body_parts = [
+        body_text
+        for part in _iter_extractable_rfc822_text_parts(message)
+        if (body_text := _extract_rfc822_part_text(relative_path=relative_path, part=part))
+        != ""
+    ]
+    if not body_parts:
+        raise TaskArtifactValidationError(
+            f"artifact {relative_path} does not contain extractable RFC822 email text"
+        )
+
+    sections: list[str] = []
+    if header_lines:
+        sections.append("\n".join(header_lines))
+    sections.append("\n\n".join(body_parts))
+    return "\n\n".join(sections)
 
 
 def _extract_pdf_name(dictionary: bytes, key: bytes) -> bytes | None:
@@ -803,6 +905,11 @@ def extract_artifact_text(*, row: TaskArtifactRow, artifact_path: Path, media_ty
         )
     if media_type == SUPPORTED_DOCX_ARTIFACT_MEDIA_TYPE:
         return _extract_text_from_docx_artifact_bytes(
+            relative_path=row["relative_path"],
+            payload=payload,
+        )
+    if media_type == SUPPORTED_RFC822_ARTIFACT_MEDIA_TYPE:
+        return _extract_text_from_rfc822_artifact_bytes(
             relative_path=row["relative_path"],
             payload=payload,
         )
