@@ -252,7 +252,15 @@ class GmailAccountRow(TypedDict):
     email_address: str
     display_name: str | None
     scope: str
-    access_token: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProtectedGmailCredentialRow(TypedDict):
+    gmail_account_id: UUID
+    user_id: UUID
+    auth_kind: str
+    credential_blob: JsonObject
     created_at: datetime
     updated_at: datetime
 
@@ -1488,13 +1496,11 @@ INSERT_GMAIL_ACCOUNT_SQL = """
                   email_address,
                   display_name,
                   scope,
-                  access_token,
                   created_at,
                   updated_at
                 )
                 VALUES (
                   app.current_user_id(),
-                  %s,
                   %s,
                   %s,
                   %s,
@@ -1509,7 +1515,32 @@ INSERT_GMAIL_ACCOUNT_SQL = """
                   email_address,
                   display_name,
                   scope,
-                  access_token,
+                  created_at,
+                  updated_at
+                """
+
+INSERT_GMAIL_ACCOUNT_CREDENTIAL_SQL = """
+                INSERT INTO gmail_account_credentials (
+                  gmail_account_id,
+                  user_id,
+                  auth_kind,
+                  credential_blob,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  %s,
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  gmail_account_id,
+                  user_id,
+                  auth_kind,
+                  credential_blob,
                   created_at,
                   updated_at
                 """
@@ -1522,7 +1553,6 @@ GET_GMAIL_ACCOUNT_SQL = """
                   email_address,
                   display_name,
                   scope,
-                  access_token,
                   created_at,
                   updated_at
                 FROM gmail_accounts
@@ -1537,13 +1567,24 @@ GET_GMAIL_ACCOUNT_BY_PROVIDER_ACCOUNT_ID_SQL = """
                   email_address,
                   display_name,
                   scope,
-                  access_token,
                   created_at,
                   updated_at
                 FROM gmail_accounts
                 WHERE provider_account_id = %s
                 ORDER BY created_at ASC, id ASC
                 LIMIT 1
+                """
+
+GET_GMAIL_ACCOUNT_CREDENTIAL_SQL = """
+                SELECT
+                  gmail_account_id,
+                  user_id,
+                  auth_kind,
+                  credential_blob,
+                  created_at,
+                  updated_at
+                FROM gmail_account_credentials
+                WHERE gmail_account_id = %s
                 """
 
 LIST_GMAIL_ACCOUNTS_SQL = """
@@ -1554,7 +1595,6 @@ LIST_GMAIL_ACCOUNTS_SQL = """
                   email_address,
                   display_name,
                   scope,
-                  access_token,
                   created_at,
                   updated_at
                 FROM gmail_accounts
@@ -3086,16 +3126,34 @@ class ContinuityStore:
         email_address: str,
         display_name: str | None,
         scope: str,
-        access_token: str,
     ) -> GmailAccountRow:
         return self._fetch_one(
             "create_gmail_account",
             INSERT_GMAIL_ACCOUNT_SQL,
-            (provider_account_id, email_address, display_name, scope, access_token),
+            (provider_account_id, email_address, display_name, scope),
+        )
+
+    def create_gmail_account_credential(
+        self,
+        *,
+        gmail_account_id: UUID,
+        auth_kind: str,
+        credential_blob: JsonObject,
+    ) -> ProtectedGmailCredentialRow:
+        return self._fetch_one(
+            "create_gmail_account_credential",
+            INSERT_GMAIL_ACCOUNT_CREDENTIAL_SQL,
+            (gmail_account_id, auth_kind, Jsonb(credential_blob)),
         )
 
     def get_gmail_account_optional(self, gmail_account_id: UUID) -> GmailAccountRow | None:
         return self._fetch_optional_one(GET_GMAIL_ACCOUNT_SQL, (gmail_account_id,))
+
+    def get_gmail_account_credential_optional(
+        self,
+        gmail_account_id: UUID,
+    ) -> ProtectedGmailCredentialRow | None:
+        return self._fetch_optional_one(GET_GMAIL_ACCOUNT_CREDENTIAL_SQL, (gmail_account_id,))
 
     def get_gmail_account_by_provider_account_id_optional(
         self,
