@@ -891,30 +891,37 @@ def _extract_text_from_pdf_artifact_bytes(*, relative_path: str, payload: bytes)
     return extracted_text
 
 
-def extract_artifact_text(*, row: TaskArtifactRow, artifact_path: Path, media_type: str) -> str:
-    payload = artifact_path.read_bytes()
+def extract_artifact_text_from_bytes(*, relative_path: str, payload: bytes, media_type: str) -> str:
     if media_type in SUPPORTED_TEXT_ARTIFACT_MEDIA_TYPES:
         return _extract_text_from_utf8_artifact_bytes(
-            relative_path=row["relative_path"],
+            relative_path=relative_path,
             payload=payload,
         )
     if media_type == SUPPORTED_PDF_ARTIFACT_MEDIA_TYPE:
         return _extract_text_from_pdf_artifact_bytes(
-            relative_path=row["relative_path"],
+            relative_path=relative_path,
             payload=payload,
         )
     if media_type == SUPPORTED_DOCX_ARTIFACT_MEDIA_TYPE:
         return _extract_text_from_docx_artifact_bytes(
-            relative_path=row["relative_path"],
+            relative_path=relative_path,
             payload=payload,
         )
     if media_type == SUPPORTED_RFC822_ARTIFACT_MEDIA_TYPE:
         return _extract_text_from_rfc822_artifact_bytes(
-            relative_path=row["relative_path"],
+            relative_path=relative_path,
             payload=payload,
         )
     raise TaskArtifactValidationError(
-        f"artifact {row['relative_path']} has unsupported media type {media_type}"
+        f"artifact {relative_path} has unsupported media type {media_type}"
+    )
+
+
+def extract_artifact_text(*, row: TaskArtifactRow, artifact_path: Path, media_type: str) -> str:
+    return extract_artifact_text_from_bytes(
+        relative_path=row["relative_path"],
+        payload=artifact_path.read_bytes(),
+        media_type=media_type,
     )
 
 

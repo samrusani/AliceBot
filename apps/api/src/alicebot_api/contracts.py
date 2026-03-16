@@ -136,6 +136,7 @@ TRACE_KIND_TOOL_ROUTE = "tool.route"
 APPROVAL_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_WORKSPACE_LIST_ORDER = ["created_at_asc", "id_asc"]
+GMAIL_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_LIST_ORDER = ["sequence_no_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_EMBEDDING_LIST_ORDER = [
@@ -174,6 +175,9 @@ TRACE_KIND_APPROVAL_RESOLUTION = "approval.resolve"
 TRACE_KIND_APPROVAL_RESOLVE = TRACE_KIND_APPROVAL_RESOLUTION
 PROXY_EXECUTION_VERSION_V0 = "proxy_execution_v0"
 TRACE_KIND_PROXY_EXECUTE = "tool.proxy.execute"
+GMAIL_PROVIDER = "gmail"
+GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN = "oauth_access_token"
+GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 TASK_STEP_SEQUENCE_VERSION_V0 = "task_step_sequence_v0"
 TRACE_KIND_TASK_STEP_SEQUENCE = "task.step.sequence"
 TASK_STEP_CONTINUATION_VERSION_V0 = "task_step_continuation_v0"
@@ -1767,6 +1771,65 @@ class TaskListResponse(TypedDict):
 
 class TaskDetailResponse(TypedDict):
     task: TaskRecord
+
+
+@dataclass(frozen=True, slots=True)
+class GmailAccountConnectInput:
+    provider_account_id: str
+    email_address: str
+    display_name: str | None
+    scope: str
+    access_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class GmailMessageIngestInput:
+    gmail_account_id: UUID
+    task_workspace_id: UUID
+    provider_message_id: str
+
+
+class GmailAccountRecord(TypedDict):
+    id: str
+    provider: str
+    auth_kind: str
+    provider_account_id: str
+    email_address: str
+    display_name: str | None
+    scope: str
+    created_at: str
+    updated_at: str
+
+
+class GmailAccountConnectResponse(TypedDict):
+    account: GmailAccountRecord
+
+
+class GmailAccountListSummary(TypedDict):
+    total_count: int
+    order: list[str]
+
+
+class GmailAccountListResponse(TypedDict):
+    items: list[GmailAccountRecord]
+    summary: GmailAccountListSummary
+
+
+class GmailAccountDetailResponse(TypedDict):
+    account: GmailAccountRecord
+
+
+class GmailMessageIngestionRecord(TypedDict):
+    provider_message_id: str
+    artifact_relative_path: str
+    media_type: str
+
+
+class GmailMessageIngestionResponse(TypedDict):
+    account: GmailAccountRecord
+    message: GmailMessageIngestionRecord
+    artifact: TaskArtifactRecord
+    summary: TaskArtifactChunkListSummary
 
 
 @dataclass(frozen=True, slots=True)
