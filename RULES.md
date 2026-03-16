@@ -24,6 +24,7 @@
 - Treat Postgres as the v1 system of record unless measured constraints justify a change.
 - Task-step lineage and execution linkage must stay explicit; do not reconstruct them heuristically from broader task history.
 - Enforce row-level security on every user-owned table.
+- Connector secrets must not be stored on normal metadata tables or exposed on read surfaces; they must use a dedicated protected storage seam.
 - Default memory admission to `NOOP`; promote only evidence-backed changes and preserve revision history for non-`NOOP` updates.
 - Apply domain and sensitivity filters before semantic retrieval.
 

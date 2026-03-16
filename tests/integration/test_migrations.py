@@ -248,6 +248,105 @@ def test_tool_execution_task_step_linkage_migration_backfills_existing_rows(data
             assert cur.fetchone() == ("NO",)
 
 
+def test_gmail_account_credentials_migration_round_trip_preserves_tokens(database_urls):
+    config = make_alembic_config(database_urls["admin"])
+    user_id = "00000000-0000-0000-0000-000000000101"
+    gmail_account_id = "00000000-0000-0000-0000-000000000102"
+
+    command.upgrade(config, "20260316_0026")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (id, email, display_name)
+                VALUES (%s, 'gmail-migration@example.com', 'Gmail Migration User')
+                """,
+                (user_id,),
+            )
+            cur.execute(
+                """
+                INSERT INTO gmail_accounts (
+                  id,
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope,
+                  access_token
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  'acct-migration-001',
+                  'owner@gmail.example',
+                  'Owner',
+                  'https://www.googleapis.com/auth/gmail.readonly',
+                  'token-before-hardening'
+                )
+                """,
+                (gmail_account_id, user_id),
+            )
+        conn.commit()
+
+    command.upgrade(config, "20260316_0027")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'gmail_accounts'
+                  AND column_name = 'access_token'
+                """
+            )
+            assert cur.fetchone() is None
+            cur.execute(
+                """
+                SELECT
+                  auth_kind,
+                  credential_blob ->> 'credential_kind',
+                  credential_blob ->> 'access_token'
+                FROM gmail_account_credentials
+                WHERE gmail_account_id = %s
+                """,
+                (gmail_account_id,),
+            )
+            assert cur.fetchone() == (
+                "oauth_access_token",
+                "gmail_oauth_access_token_v1",
+                "token-before-hardening",
+            )
+
+    command.downgrade(config, "20260316_0026")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'gmail_accounts'
+                  AND column_name = 'access_token'
+                """
+            )
+            assert cur.fetchone() == ("access_token",)
+            cur.execute(
+                """
+                SELECT access_token
+                FROM gmail_accounts
+                WHERE id = %s
+                """,
+                (gmail_account_id,),
+            )
+            assert cur.fetchone() == ("token-before-hardening",)
+            cur.execute("SELECT to_regclass('public.gmail_account_credentials')")
+            assert cur.fetchone() == (None,)
+
+
 def test_migrations_upgrade_and_downgrade(database_urls):
     config = make_alembic_config(database_urls["admin"])
 
