@@ -12,6 +12,7 @@ from alicebot_api.gmail import (
     GmailAccountNotFoundError,
     GmailCredentialInvalidError,
     GmailCredentialNotFoundError,
+    GmailCredentialPersistenceError,
     GmailCredentialRefreshError,
     GmailCredentialValidationError,
     GmailMessageFetchError,
@@ -264,6 +265,25 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     assert response.status_code == 409
     assert json.loads(response.body) == {
         "detail": f"gmail account {gmail_account_id} has invalid protected credentials"
+    }
+
+    def fake_persistence_error(*_args, **_kwargs):
+        raise GmailCredentialPersistenceError(
+            f"gmail account {gmail_account_id} renewed protected credentials could not be persisted"
+        )
+
+    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_persistence_error)
+    response = main_module.ingest_gmail_message(
+        gmail_account_id,
+        "msg-001",
+        main_module.IngestGmailMessageRequest(
+            user_id=user_id,
+            task_workspace_id=task_workspace_id,
+        ),
+    )
+    assert response.status_code == 409
+    assert json.loads(response.body) == {
+        "detail": f"gmail account {gmail_account_id} renewed protected credentials could not be persisted"
     }
 
     def fake_fetch_error(*_args, **_kwargs):

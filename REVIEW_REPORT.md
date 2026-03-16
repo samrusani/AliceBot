@@ -6,21 +6,20 @@ PASS
 
 ## criteria met
 
-- The sprint remains within the Sprint 5Q boundary. I found no Gmail search, sync, attachments, write actions, Calendar, compile-contract, runner, or UI scope in the implementation or follow-up changes.
-- The protected Gmail credential seam supports the narrow refresh-token-capable credential shape required by the packet, without reintroducing secrets to `gmail_accounts`.
-- Gmail account connect, list, and detail reads remain secret-free. Coverage asserts that `access_token`, `refresh_token`, and `client_secret` do not appear in account response payloads.
-- The existing single-message Gmail ingestion path renews an expired access token through one explicit refresh path and then continues through the existing RFC822 artifact ingestion seam.
-- Missing or invalid refresh credentials fail deterministically before fetch, artifact registration, chunk ingestion, or workspace writes.
-- Per-user isolation remains intact through the existing user-scoped store access, row-level security, and the `(gmail_account_id, user_id)` ownership binding on protected credentials.
-- Migration coverage includes the refresh-token lifecycle round trip and downgrade compatibility.
-- The prior review follow-ups are now addressed:
-  - `ARCHITECTURE.md` reflects Sprint 5Q and the renewal-before-ingestion Gmail seam.
-  - `tests/unit/test_gmail_refresh.py` adds direct coverage for the raw refresh helper success path, `400/401` rejection mapping, and malformed or transport failures.
-- `BUILD_REPORT.md` now matches the implemented Sprint 5Q behavior and includes the follow-up test coverage/doc updates.
-- Verified locally:
-  - `./.venv/bin/python -m pytest tests/unit/test_gmail_refresh.py tests/unit/test_gmail.py tests/unit/test_gmail_main.py` -> `31 passed in 0.28s`
-  - `./.venv/bin/python -m pytest tests/unit` -> `434 passed in 0.64s`
-  - `./.venv/bin/python -m pytest tests/integration` -> `137 passed in 40.83s` from the prior sprint review run, with no subsequent code-path changes beyond docs and unit-test additions
+- Sprint stayed narrow. The code changes are limited to the Gmail renewal seam, the ingest endpoint error mapping, Gmail-focused tests, and `BUILD_REPORT.md`.
+- Rotated refresh tokens are now handled in the protected credential seam. `apps/api/src/alicebot_api/gmail.py` captures an optional provider-returned `refresh_token` during renewal and persists it back through `gmail_account_credentials`.
+- The replacement rule matches the packet:
+  - if the provider returns a non-empty replacement `refresh_token`, persist it
+  - otherwise keep the existing stored `refresh_token`
+- Gmail account reads remain secret-free. No secret fields were added to list/detail/connect/ingest responses, and existing account list/detail isolation tests still pass.
+- Single-message Gmail ingestion still works for both cases:
+  - stable refresh-token renewal
+  - rotated refresh-token renewal
+- Rotated-credential persistence failures are deterministic and happen before Gmail fetch/artifact writes. The new error is mapped to the existing `409` envelope, and tests verify no artifact or credential corruption when persistence fails.
+- Required verification passed:
+  - `./.venv/bin/python -m pytest tests/unit` -> `437 passed in 0.63s`
+  - `./.venv/bin/python -m pytest tests/integration` -> `139 passed in 42.27s`
+- No out-of-scope Gmail search, sync, attachments, write actions, Calendar, external secret-manager, compile-contract, runner, or UI work entered the sprint.
 
 ## criteria missed
 
@@ -28,24 +27,24 @@ PASS
 
 ## quality issues
 
-- No blocking implementation, test, documentation, regression, or scope issues remain for Sprint 5Q.
+- None material for Sprint 5R.
 
 ## regression risks
 
-- Residual risk is limited to intentionally deferred scope already called out by the sprint packet: Gmail search, sync, attachments, write actions, Calendar, external secret-manager integration, compile-contract changes, runner orchestration, UI work, and refresh-token rotation beyond the single explicit renewal path.
+- Low. The change is localized to the existing Gmail renewal path and is covered by both unit and Postgres-backed integration tests for stable-token renewal, rotated-token renewal, failure handling, secret-free responses, and user isolation.
 
 ## docs issues
 
-- None.
+- None. `BUILD_REPORT.md` includes the rotation change summary, replacement rule, commands run, test results, secret-free account example, rotation-capable ingestion example, and deferred scope.
 
 ## should anything be added to RULES.md?
 
-- No.
+- No. This is a narrow connector implementation detail, not a new repository-wide rule.
 
 ## should anything update ARCHITECTURE.md?
 
-- No further architecture update is required for this sprint.
+- No. The sprint does not introduce a new architectural boundary or subsystem; it hardens the existing Gmail protected-credential seam.
 
 ## recommended next action
 
-- Accept Sprint 5Q as complete and proceed with the normal merge/approval flow. Keep the next Gmail milestone equally narrow and avoid combining secret-lifecycle work with search, sync, Calendar, or UI expansion.
+- Accept Sprint 5R and move to the next narrow auth-adjacent milestone without broadening scope.
