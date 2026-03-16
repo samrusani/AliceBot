@@ -2,191 +2,76 @@
 
 ## sprint objective
 
-Implement Sprint 5T: externalize the Gmail protected-credential seam behind one explicit secret-manager adapter so `gmail_account_credentials` stores only non-secret locator metadata on the primary path, while preserving secret-free Gmail account reads and the existing single-message ingestion plus refresh/rotation flow.
+Implement Sprint 5U: synchronize the live truth artifacts with the accepted repo state through Sprint 5T so planning and handoff docs accurately describe the shipped Gmail externalization seam and its remaining narrow transition boundary.
 
 ## completed work
 
-- Added `GMAIL_SECRET_MANAGER_URL` runtime config as the single explicit runtime selector for the Gmail secret-manager adapter. Runtime no longer falls back silently when it is unset.
-- Added a Gmail-only external secret-manager adapter in `apps/api/src/alicebot_api/gmail_secret_manager.py`.
-- Updated Gmail credential persistence so new connect writes store secrets in the configured file-backed secret manager and persist only:
-  - `auth_kind`
-  - `credential_kind`
-  - `secret_manager_kind`
-  - `secret_ref`
-  - `credential_blob = NULL`
-- Added migration `20260316_0029_gmail_external_secret_manager.py` to:
-  - add `credential_kind`, `secret_manager_kind`, and `secret_ref` to `gmail_account_credentials`
-  - make `credential_blob` nullable
-  - mark pre-existing rows as `secret_manager_kind = 'legacy_db_v0'`
-  - enforce that externalized rows are reference-only and legacy rows remain explicitly transitional
-- Updated the Gmail service path so:
-  - connect writes secrets through the adapter
-  - ingestion resolves secrets through the adapter
-  - expired-token refresh writes updated secrets through the adapter
-  - rotated refresh tokens persist through the adapter
-  - secret-resolution and secret-update failures return deterministic Gmail errors without corrupting task artifact state
-- Preserved Gmail account list/detail response shape and kept those responses secret-free.
-- Updated `ARCHITECTURE.md` so the implemented slice and Gmail credential description now reflect Sprint 5T.
-- Restored `.ai/active/SPRINT_PACKET.md` to the Control Tower-owned version after removing the unintended builder edit.
-- Added unit and integration coverage for:
-  - external secret reference persistence
-  - secret-free account responses and normal table reads
-  - ingestion through the externalized path
-  - refresh and rotation through the externalized path
-  - missing external secret failure handling
-  - legacy-row transition behavior
-
-## exact Gmail credential schema and contract changes introduced
-
-- Schema:
-  - `apps/api/alembic/versions/20260316_0029_gmail_external_secret_manager.py`
-  - `gmail_account_credentials` now includes:
-    - `credential_kind text not null`
-    - `secret_manager_kind text not null`
-    - `secret_ref text null`
-    - `credential_blob jsonb null`
-  - Storage rule:
-    - externalized rows: `secret_manager_kind = 'file_v1'`, non-empty `secret_ref`, `credential_blob IS NULL`
-    - transition rows: `secret_manager_kind = 'legacy_db_v0'`, `secret_ref IS NULL`, `credential_blob` still contains the old protected payload until first credential read externalizes it
-- Internal contract changes:
-  - `Settings` now includes `gmail_secret_manager_url`
-  - Gmail store rows and write/update methods now carry `credential_kind`, `secret_manager_kind`, and `secret_ref`
-- Public API contracts:
-  - no Gmail account read response fields changed
-  - no Gmail ingestion response fields changed
-  - no request payload shape changed
-
-## external secret-manager adapter rule used
-
-- Adapter selector: `GMAIL_SECRET_MANAGER_URL`
-- Supported rule in this sprint: `file://<absolute-root>`
-- Runtime requirement when unset: fail fast and require `GMAIL_SECRET_MANAGER_URL` to be configured explicitly
-- Deterministic local fallback remains a test-only implementation detail via explicit test configuration of `file://<absolute-root>`
-- Secret reference format persisted in `gmail_account_credentials.secret_ref`:
-  - `users/<user_id>/gmail-account-credentials/<gmail_account_id>.json`
-- Secret payload format stored outside the database:
-  - same Gmail credential object previously stored in `credential_blob`
-  - includes `credential_kind`, `access_token`, and refresh metadata when present
+- Audited the shipped Sprint 5T repo state against the current truth docs.
+- Confirmed `ARCHITECTURE.md` already matched the accepted Sprint 5T implementation, so no architecture correction was required.
+- Updated `ROADMAP.md` from a Sprint 5R baseline to a Sprint 5T baseline.
+- Updated `.ai/handoff/CURRENT_STATE.md` from a Sprint 5R baseline to a Sprint 5T baseline.
+- Replaced stale forward-looking language that still treated Gmail external secret-manager integration as future work.
+- Reframed the immediate next narrow Gmail seam as `legacy_db_v0` cleanup rather than external-secret-manager integration.
+- Preserved all out-of-scope boundaries: no runtime, schema, API, connector-breadth, runner, or UI changes.
 
 ## incomplete work
 
-- None inside Sprint 5T scope.
+- None inside Sprint 5U scope.
 
 ## files changed
 
-- `apps/api/src/alicebot_api/config.py`
-- `apps/api/src/alicebot_api/gmail.py`
-- `apps/api/src/alicebot_api/gmail_secret_manager.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/store.py`
-- `apps/api/alembic/versions/20260316_0029_gmail_external_secret_manager.py`
-- `tests/unit/test_config.py`
-- `tests/unit/test_gmail.py`
-- `tests/unit/test_gmail_main.py`
-- `tests/unit/test_gmail_secret_manager.py`
-- `tests/unit/test_20260316_0029_gmail_external_secret_manager.py`
-- `tests/integration/test_gmail_accounts_api.py`
-- `tests/integration/test_migrations.py`
-- `ARCHITECTURE.md`
+- `ROADMAP.md`
+- `.ai/handoff/CURRENT_STATE.md`
 - `BUILD_REPORT.md`
 
 ## tests run
 
-- `./.venv/bin/python -m pytest tests/unit/test_config.py tests/unit/test_gmail_secret_manager.py tests/unit/test_gmail.py tests/unit/test_gmail_main.py tests/unit/test_20260316_0029_gmail_external_secret_manager.py`
-  - Result: `38 passed`
-- `./.venv/bin/python -m pytest tests/unit`
-  - Result: `446 passed`
-- `./.venv/bin/python -m pytest tests/integration/test_migrations.py tests/integration/test_gmail_accounts_api.py`
-  - Result: `16 passed`
-- `./.venv/bin/python -m pytest tests/integration`
-  - Result: `141 passed`
-- `./.venv/bin/python -m pytest tests/unit`
-  - Result after review fixes: `446 passed`
-- `./.venv/bin/python -m pytest tests/integration`
-  - Result after review fixes: `141 passed`
-- `git diff --check -- apps/api/src/alicebot_api/config.py apps/api/src/alicebot_api/gmail.py apps/api/src/alicebot_api/main.py apps/api/src/alicebot_api/store.py apps/api/src/alicebot_api/gmail_secret_manager.py apps/api/alembic/versions/20260316_0029_gmail_external_secret_manager.py tests/unit/test_config.py tests/unit/test_gmail.py tests/unit/test_gmail_main.py tests/unit/test_gmail_secret_manager.py tests/unit/test_20260316_0029_gmail_external_secret_manager.py tests/integration/test_gmail_accounts_api.py tests/integration/test_migrations.py`
-  - Result: no diff formatting errors
-
-## one example Gmail account response proving secret-free reads remain intact
-
-```json
-{
-  "account": {
-    "id": "00000000-0000-0000-0000-000000000001",
-    "provider": "gmail",
-    "auth_kind": "oauth_access_token",
-    "provider_account_id": "acct-owner-001",
-    "email_address": "owner@gmail.example",
-    "display_name": "Owner",
-    "scope": "https://www.googleapis.com/auth/gmail.readonly",
-    "created_at": "2026-03-16T10:00:00+00:00",
-    "updated_at": "2026-03-16T10:00:00+00:00"
-  }
-}
-```
-
-- No `access_token`, `refresh_token`, `client_id`, or `client_secret` fields are present on the read surface.
-
-## one example Gmail ingestion response through the externalized credential path
-
-```json
-{
-  "account": {
-    "id": "00000000-0000-0000-0000-000000000001",
-    "provider": "gmail",
-    "auth_kind": "oauth_access_token",
-    "provider_account_id": "acct-owner-refresh-001",
-    "email_address": "owner@gmail.example",
-    "display_name": "Owner",
-    "scope": "https://www.googleapis.com/auth/gmail.readonly",
-    "created_at": "2026-03-16T10:00:00+00:00",
-    "updated_at": "2026-03-16T10:00:00+00:00"
-  },
-  "message": {
-    "provider_message_id": "msg-001",
-    "artifact_relative_path": "gmail/acct-owner-refresh-001/msg-001.eml",
-    "media_type": "message/rfc822"
-  },
-  "artifact": {
-    "id": "00000000-0000-0000-0000-000000000123",
-    "task_id": "00000000-0000-0000-0000-000000000010",
-    "task_workspace_id": "00000000-0000-0000-0000-000000000020",
-    "status": "registered",
-    "ingestion_status": "ingested",
-    "relative_path": "gmail/acct-owner-refresh-001/msg-001.eml",
-    "media_type_hint": "message/rfc822",
-    "created_at": "2026-03-16T10:00:00+00:00",
-    "updated_at": "2026-03-16T10:00:01+00:00"
-  },
-  "summary": {
-    "total_count": 1,
-    "total_characters": 16,
-    "media_type": "message/rfc822",
-    "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
-    "order": ["sequence_no_asc", "id_asc"]
-  }
-}
-```
+- `git diff --check -- ROADMAP.md .ai/handoff/CURRENT_STATE.md BUILD_REPORT.md`
 
 ## blockers/issues
 
-- No implementation blockers remained.
-- Full integration verification required local Postgres access outside the default sandbox; the escalated run completed successfully.
-- Transitional note: pre-Sprint-5T `gmail_account_credentials` rows are marked `legacy_db_v0` by migration and externalize on first credential read instead of through a bulk secret-export migration.
+- No implementation blockers occurred.
+- `ARCHITECTURE.md` was audited but not edited because it already reflected the accepted Sprint 5T state.
+- The worktree already contained unrelated changes outside sprint scope; they were left untouched.
 
-## what remains intentionally deferred to later milestones
+## accepted evidence used
 
-- Gmail search
-- mailbox sync or backfill jobs
-- attachment ingestion
-- write-capable Gmail actions
-- Calendar connector scope
-- OAuth UI or callback handling
-- broader cross-provider secret abstraction
-- compile-contract changes
-- runner-style orchestration
-- UI work
+- `ARCHITECTURE.md` current Sprint 5T implemented-slice and Gmail boundary text.
+- `BUILD_REPORT.md` from Sprint 5T, which records the accepted external secret-manager seam, locator-only primary credential storage, and the `legacy_db_v0` transition path.
+- `REVIEW_REPORT.md` with `PASS` for Sprint 5T and accepted verification totals:
+  - `./.venv/bin/python -m pytest tests/unit` -> `446 passed`
+  - `./.venv/bin/python -m pytest tests/integration` -> `141 passed`
+- Repo implementation and test evidence in:
+  - `apps/api/src/alicebot_api/gmail.py`
+  - `apps/api/src/alicebot_api/gmail_secret_manager.py`
+  - `tests/integration/test_gmail_accounts_api.py`
+  - `tests/integration/test_migrations.py`
+
+## specific stale statements corrected
+
+- `ROADMAP.md` no longer says the repo is current only through Sprint 5R.
+- `ROADMAP.md` no longer says external secret-manager integration is the next Gmail auth seam.
+- `.ai/handoff/CURRENT_STATE.md` no longer says the repo is current only through Sprint 5R.
+- `.ai/handoff/CURRENT_STATE.md` no longer lists external secret-manager integration as not implemented.
+- `.ai/handoff/CURRENT_STATE.md` no longer points planning at external secret-manager integration as the immediate next move.
+- `.ai/handoff/CURRENT_STATE.md` now carries the accepted Sprint 5T verification totals instead of the older Sprint 5R totals.
+
+## confirmation of non-runtime scope
+
+- No runtime code changed.
+- No schema or migration files changed.
+- No API contract changed.
+- No Gmail connector breadth changed.
+- No runner or UI scope entered the diff.
+
+## what remains intentionally deferred after truth synchronization
+
+- Removal of the remaining `legacy_db_v0` transition path for older Gmail credential rows.
+- Gmail search, mailbox sync, attachment ingestion, and write-capable Gmail actions.
+- Calendar connector scope.
+- Richer document parsing beyond the current narrow local ingestion seams.
+- Runner-style orchestration and UI work.
 
 ## recommended next step
 
-Keep the next sprint narrow around one follow-up seam only: either remove the remaining `legacy_db_v0` transition path with a deliberate migration/export plan, or move to the next Gmail behavior slice without widening into search, sync, Calendar, runner, or UI work.
+Open one narrow follow-up sprint to remove the remaining `legacy_db_v0` transition path deliberately, without widening into Gmail search, sync, attachments, Calendar, runner, or UI scope.
