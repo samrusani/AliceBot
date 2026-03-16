@@ -39,7 +39,7 @@ from alicebot_api.contracts import (
     TaskArtifactIngestInput,
     TaskArtifactRegisterInput,
 )
-from alicebot_api.store import ContinuityStore, GmailAccountRow
+from alicebot_api.store import ContinuityStore, ContinuityStoreInvariantError, GmailAccountRow
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
 GMAIL_MESSAGE_FETCH_TIMEOUT_SECONDS = 30
@@ -81,6 +81,10 @@ class GmailCredentialRefreshError(RuntimeError):
     """Raised when Gmail access-token renewal fails for non-deterministic reasons."""
 
 
+class GmailCredentialPersistenceError(RuntimeError):
+    """Raised when renewed Gmail protected credentials cannot be persisted."""
+
+
 class GmailCredentialValidationError(ValueError):
     """Raised when Gmail connect input contains an invalid credential combination."""
 
@@ -93,6 +97,13 @@ class ParsedGmailCredential:
     client_id: str | None = None
     client_secret: str | None = None
     access_token_expires_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshedGmailCredential:
+    access_token: str
+    access_token_expires_at: datetime
+    refresh_token: str | None = None
 
 
 def serialize_gmail_account_row(row: GmailAccountRow) -> GmailAccountRecord:
@@ -242,7 +253,7 @@ def refresh_gmail_access_token(
     refresh_token: str,
     client_id: str,
     client_secret: str,
-) -> tuple[str, datetime]:
+) -> RefreshedGmailCredential:
     request = Request(
         GMAIL_TOKEN_REFRESH_URL,
         data=urlencode(
@@ -277,6 +288,7 @@ def refresh_gmail_access_token(
         ) from exc
 
     refreshed_access_token = _coerce_nonempty_string(payload.get("access_token"))
+    replacement_refresh_token = _coerce_nonempty_string(payload.get("refresh_token"))
     expires_in = payload.get("expires_in")
     if refreshed_access_token is None or not isinstance(expires_in, (int, float)) or expires_in <= 0:
         raise GmailCredentialRefreshError(
@@ -284,7 +296,42 @@ def refresh_gmail_access_token(
         )
 
     refreshed_expires_at = datetime.now(UTC) + timedelta(seconds=float(expires_in))
-    return refreshed_access_token, refreshed_expires_at
+    return RefreshedGmailCredential(
+        access_token=refreshed_access_token,
+        access_token_expires_at=refreshed_expires_at,
+        refresh_token=replacement_refresh_token,
+    )
+
+
+def _persist_refreshed_gmail_credential(
+    store: ContinuityStore,
+    *,
+    gmail_account_id: UUID,
+    auth_kind: str,
+    existing_credential: ParsedGmailCredential,
+    refreshed_credential: RefreshedGmailCredential,
+) -> None:
+    replacement_refresh_token = (
+        refreshed_credential.refresh_token
+        if refreshed_credential.refresh_token is not None
+        else existing_credential.refresh_token
+    )
+    try:
+        store.update_gmail_account_credential(
+            gmail_account_id=gmail_account_id,
+            auth_kind=auth_kind,
+            credential_blob=build_gmail_protected_credential_blob(
+                access_token=refreshed_credential.access_token,
+                refresh_token=replacement_refresh_token,
+                client_id=existing_credential.client_id,
+                client_secret=existing_credential.client_secret,
+                access_token_expires_at=refreshed_credential.access_token_expires_at,
+            ),
+        )
+    except (ContinuityStoreInvariantError, psycopg.Error) as exc:
+        raise GmailCredentialPersistenceError(
+            f"gmail account {gmail_account_id} renewed protected credentials could not be persisted"
+        ) from exc
 
 
 def resolve_gmail_access_token(
@@ -314,24 +361,20 @@ def resolve_gmail_access_token(
     ):
         return parsed_credential.access_token
 
-    refreshed_access_token, refreshed_expires_at = refresh_gmail_access_token(
+    refreshed_credential = refresh_gmail_access_token(
         gmail_account_id=gmail_account_id,
         refresh_token=parsed_credential.refresh_token,
         client_id=parsed_credential.client_id,
         client_secret=parsed_credential.client_secret,
     )
-    store.update_gmail_account_credential(
+    _persist_refreshed_gmail_credential(
+        store,
         gmail_account_id=gmail_account_id,
         auth_kind=credential["auth_kind"],
-        credential_blob=build_gmail_protected_credential_blob(
-            access_token=refreshed_access_token,
-            refresh_token=parsed_credential.refresh_token,
-            client_id=parsed_credential.client_id,
-            client_secret=parsed_credential.client_secret,
-            access_token_expires_at=refreshed_expires_at,
-        ),
+        existing_credential=parsed_credential,
+        refreshed_credential=refreshed_credential,
     )
-    return refreshed_access_token
+    return refreshed_credential.access_token
 
 
 def create_gmail_account_record(

@@ -14,6 +14,7 @@ from alicebot_api.gmail import (
     GMAIL_TOKEN_REFRESH_URL,
     GmailCredentialInvalidError,
     GmailCredentialRefreshError,
+    RefreshedGmailCredential,
     refresh_gmail_access_token,
 )
 
@@ -59,7 +60,7 @@ def test_refresh_gmail_access_token_posts_expected_payload_and_returns_expiry(mo
     monkeypatch.setattr("alicebot_api.gmail.urlopen", fake_urlopen)
 
     started_at = datetime.now(UTC)
-    access_token, expires_at = refresh_gmail_access_token(
+    refreshed_credential = refresh_gmail_access_token(
         gmail_account_id=gmail_account_id,
         refresh_token="refresh-001",
         client_id="client-001",
@@ -67,8 +68,14 @@ def test_refresh_gmail_access_token_posts_expected_payload_and_returns_expiry(mo
     )
     finished_at = datetime.now(UTC)
 
-    assert access_token == "token-refreshed"
-    assert started_at + timedelta(seconds=3590) <= expires_at <= finished_at + timedelta(seconds=3610)
+    assert refreshed_credential == RefreshedGmailCredential(
+        access_token="token-refreshed",
+        access_token_expires_at=refreshed_credential.access_token_expires_at,
+        refresh_token=None,
+    )
+    assert started_at + timedelta(seconds=3590) <= refreshed_credential.access_token_expires_at <= (
+        finished_at + timedelta(seconds=3610)
+    )
     assert seen == {
         "url": GMAIL_TOKEN_REFRESH_URL,
         "timeout": GMAIL_TOKEN_REFRESH_TIMEOUT_SECONDS,
@@ -81,6 +88,35 @@ def test_refresh_gmail_access_token_posts_expected_payload_and_returns_expiry(mo
             "grant_type": ["refresh_token"],
         },
     }
+
+
+def test_refresh_gmail_access_token_returns_rotated_refresh_token_when_provider_supplies_one(
+    monkeypatch,
+) -> None:
+    gmail_account_id = uuid4()
+
+    def fake_urlopen(_request, timeout: int):
+        assert timeout == GMAIL_TOKEN_REFRESH_TIMEOUT_SECONDS
+        return _FakeHTTPResponse(
+            json.dumps(
+                {
+                    "access_token": "token-refreshed",
+                    "expires_in": 3600,
+                    "refresh_token": "refresh-rotated",
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr("alicebot_api.gmail.urlopen", fake_urlopen)
+
+    refreshed_credential = refresh_gmail_access_token(
+        gmail_account_id=gmail_account_id,
+        refresh_token="refresh-001",
+        client_id="client-001",
+        client_secret="secret-001",
+    )
+
+    assert refreshed_credential.refresh_token == "refresh-rotated"
 
 
 @pytest.mark.parametrize("status_code", [400, 401])
