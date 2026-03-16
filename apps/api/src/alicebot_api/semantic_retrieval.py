@@ -33,6 +33,7 @@ SUPPORTED_TEXT_ARTIFACT_EXTENSIONS = {
     ".text": "text/plain",
     ".md": "text/markdown",
     ".markdown": "text/markdown",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
 
 
