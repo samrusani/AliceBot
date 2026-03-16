@@ -2,180 +2,185 @@
 
 ## sprint objective
 
-Implement narrow RFC822 email artifact parsing on the existing artifact-ingestion seam so already-registered visible RFC822 email artifacts can be ingested into durable `task_artifact_chunks` rows without changing retrieval contracts, compile contracts, connectors, or UI.
+Implement Sprint 5O: a narrow read-only Gmail connector seam that can persist user-scoped Gmail account metadata and ingest one explicitly selected Gmail message into the existing task artifact and RFC822 chunk pipeline, without adding search, sync, attachments, write actions, Calendar, compile changes, runner work, or UI.
 
 ## completed work
 
-- Extended the existing artifact media-type support to accept RFC822 email artifacts:
-  - media type: `message/rfc822`
-  - extension inference: `.eml`
-- Implemented deterministic local RFC822 parsing in `apps/api/src/alicebot_api/artifacts.py` by:
-  - parsing email bytes locally with Python's standard-library email parser under `raise_on_defect=True`
-  - extracting a narrow header block from top-level headers only
-  - extracting plain-text body content from `text/plain` leaf parts only
-  - excluding nested `message/rfc822` payloads from body extraction
-  - rejecting malformed RFC822 payloads deterministically
-  - rejecting textless or unsupported-body emails when no extractable plain-text body exists
-- Reused the existing ingestion seam after extraction:
-  - rooted workspace path enforcement remains unchanged
-  - normalization still runs through `normalize_artifact_text()`
-  - chunk persistence still targets `task_artifact_chunks`
-  - ingestion status still transitions from `pending` to `ingested` on success
-- Kept request, response, schema, retrieval, and compile contracts unchanged while updating extension-based media-type inference for semantic artifact retrieval so `.eml` artifacts remain typed consistently when `media_type_hint` is absent.
-- Added unit coverage for:
-  - deterministic RFC822 chunk persistence
-  - multipart plain-text-part selection while ignoring HTML and attachments
-  - nested-email exclusion for encapsulated `message/rfc822` parts
-  - stable unsupported-media validation text
-  - textless RFC822 rejection
-  - malformed RFC822 rejection
-  - rooted RFC822 path enforcement
-- Added integration coverage for:
-  - supported RFC822 ingestion with stable response shape
-  - deterministic RFC822 chunk ordering and boundaries
-  - per-user isolation for RFC822 ingestion and chunk listing
-  - nested-email exclusion for encapsulated `message/rfc822` parts
-  - textless RFC822 rejection
-  - malformed RFC822 rejection
-  - rooted-path enforcement during RFC822 ingestion
+- Added a new `gmail_accounts` table and migration with user-scoped row-level security and deterministic listing order.
+- Added stable Gmail contracts for:
+  - account connect
+  - account list
+  - account detail
+  - single-message ingestion
+- Implemented `apps/api/src/alicebot_api/gmail.py` with:
+  - Gmail account persistence
+  - deterministic account serialization
+  - a single explicit Gmail read-only fetch path using `users/me/messages/{message_id}?format=raw`
+  - pre-ingestion RFC822 validation against the existing artifact rules
+  - deterministic Gmail-message-to-artifact path generation
+  - duplicate artifact-path rejection before any Gmail fetch or filesystem write
+  - workspace artifact locking aligned with the normal artifact registration seam so duplicate detection, file checks, and write attempts occur inside the same serialized critical section
+  - reuse of existing `register_task_artifact_record()` and `ingest_task_artifact_record()`
+- Added API endpoints for:
+  - `POST /v0/gmail-accounts`
+  - `GET /v0/gmail-accounts`
+  - `GET /v0/gmail-accounts/{gmail_account_id}`
+  - `POST /v0/gmail-accounts/{gmail_account_id}/messages/{provider_message_id}/ingest`
+- Added a reusable byte-level artifact extraction helper so Gmail ingestion can validate raw RFC822 content before persisting anything through the artifact seam.
+- Added unit and integration coverage for:
+  - Gmail account persistence
+  - deterministic listing
+  - stable response shapes
+  - single-message ingestion through the existing artifact and chunk seam
+  - sanitized path collision rejection without overwriting the existing `.eml`
+  - cross-user workspace rejection
+  - missing Gmail message rejection
+  - unsupported Gmail message rejection
 
-## exact RFC822-ingestion contract changes introduced
+## exact Gmail account and single-message ingestion contract changes introduced
 
-- No request contract changes.
-- No response shape changes.
-- No schema changes.
-- Existing artifact-ingestion behavior now additionally accepts `message/rfc822`.
-- Extension-based media-type inference now recognizes `.eml` for the existing artifact and semantic-retrieval response paths.
+- Gmail account connect request:
+  - `user_id: UUID`
+  - `provider_account_id: str`
+  - `email_address: str`
+  - `display_name: str | null`
+  - `scope: "https://www.googleapis.com/auth/gmail.readonly"`
+  - `access_token: str`
+- Gmail account record response:
+  - `id: str`
+  - `provider: "gmail"`
+  - `auth_kind: "oauth_access_token"`
+  - `provider_account_id: str`
+  - `email_address: str`
+  - `display_name: str | null`
+  - `scope: "https://www.googleapis.com/auth/gmail.readonly"`
+  - `created_at: str`
+  - `updated_at: str`
+- Gmail account list response:
+  - `items: GmailAccountRecord[]`
+  - `summary: { total_count, order }`
+- Gmail account detail response:
+  - `account: GmailAccountRecord`
+- Single-message ingestion request:
+  - path params: `gmail_account_id`, `provider_message_id`
+  - body: `user_id: UUID`, `task_workspace_id: UUID`
+- Single-message ingestion response:
+  - `account: GmailAccountRecord`
+  - `message: { provider_message_id, artifact_relative_path, media_type }`
+  - `artifact: TaskArtifactRecord`
+  - `summary: TaskArtifactChunkListSummary`
 
-## email extraction path and chunking rule used
+## Gmail message-to-artifact conversion rule used
 
-- Extraction path:
-  - existing `POST /v0/task-artifacts/{task_artifact_id}/ingest`
-  - resolve persisted workspace `local_path` plus persisted artifact `relative_path`
-  - enforce rooted workspace boundary before any read
-  - read the local RFC822 email from disk
-  - parse it locally with the standard-library email parser
-  - extract a deterministic header block plus plain-text body text while excluding nested encapsulated emails
-  - reject invalid or textless RFC822 artifacts deterministically
-- Chunking rule:
-  - normalize extracted text with CRLF/CR to LF conversion
-  - split into fixed windows of 1000 characters
-  - persist ordered rows with `sequence_no`, `char_start`, `char_end_exclusive`, and `text`
-  - reported chunking rule string: `normalized_utf8_text_fixed_window_1000_chars_v1`
-
-## header/body selection rule used
-
-- Header rule:
-  - include only these top-level headers, in this order, when present and non-empty:
-    - `From`
-    - `To`
-    - `Cc`
-    - `Bcc`
-    - `Reply-To`
-    - `Subject`
-    - `Date`
-    - `Message-ID`
-  - normalize header whitespace by collapsing internal whitespace runs to single spaces
-- Body rule:
-  - recurse through multipart body structure only
-  - include only leaf `text/plain` parts
-  - skip multipart containers as extracted content
-  - skip parts marked as attachments
-  - skip parts with filenames
-  - skip nested descendant `message/*` parts, including `message/rfc822`
-  - strip each selected part and join non-empty body parts with a blank line
-  - reject the artifact if no extractable plain-text body part remains
+- Fetch Gmail message raw bytes from the read-only Gmail API path using the stored access token.
+- Require Gmail to return RFC822 `raw` content.
+- Validate the raw bytes against the existing `message/rfc822` artifact extraction rules before registration.
+- Materialize the message inside the selected visible task workspace at:
+  - `gmail/<sanitized-provider-account-id>/<sanitized-provider-message-id>.eml`
+- Register that `.eml` file as a `message/rfc822` task artifact.
+- Ingest it through the existing artifact pipeline so chunks land in `task_artifact_chunks`.
 
 ## incomplete work
 
-- None within Sprint 5N scope.
+- None inside Sprint 5O scope.
 
 ## files changed
 
-- `apps/api/src/alicebot_api/artifacts.py`
-- `apps/api/src/alicebot_api/semantic_retrieval.py`
-- `tests/unit/test_artifacts.py`
-- `tests/unit/test_artifacts_main.py`
-- `tests/unit/test_semantic_retrieval.py`
-- `tests/integration/test_task_artifacts_api.py`
+- `apps/api/alembic/versions/20260316_0026_gmail_accounts.py`
 - `ARCHITECTURE.md`
+- `apps/api/src/alicebot_api/artifacts.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/gmail.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/store.py`
+- `tests/integration/test_gmail_accounts_api.py`
+- `tests/unit/test_20260316_0026_gmail_accounts.py`
+- `tests/unit/test_gmail.py`
+- `tests/unit/test_gmail_main.py`
 - `BUILD_REPORT.md`
+
+## exact commands run
+
+- `./.venv/bin/python -m pytest tests/unit/test_gmail.py tests/unit/test_gmail_main.py tests/unit/test_20260316_0026_gmail_accounts.py`
+- `./.venv/bin/python -m pytest tests/integration/test_gmail_accounts_api.py`
+- `./.venv/bin/python -m pytest tests/unit/test_gmail.py tests/unit/test_gmail_main.py`
+- `./.venv/bin/python -m pytest tests/integration/test_gmail_accounts_api.py`
+- `./.venv/bin/python -m pytest tests/unit`
+- `./.venv/bin/python -m pytest tests/integration`
 
 ## tests run
 
-- `./.venv/bin/python -m pytest tests/unit/test_artifacts.py tests/unit/test_semantic_retrieval.py tests/unit/test_artifacts_main.py`
-  - Result: `59 passed in 0.31s`
-- `./.venv/bin/python -m pytest tests/integration/test_task_artifacts_api.py`
-  - Result: `15 passed in 5.08s`
+- `./.venv/bin/python -m pytest tests/unit/test_gmail.py tests/unit/test_gmail_main.py tests/unit/test_20260316_0026_gmail_accounts.py`
+  - Result: `14 passed in 0.57s`
+- `./.venv/bin/python -m pytest tests/unit/test_gmail.py tests/unit/test_gmail_main.py`
+  - Result: `12 passed in 0.28s`
+- `./.venv/bin/python -m pytest tests/integration/test_gmail_accounts_api.py`
+  - Result: `4 passed in 1.47s`
+- `./.venv/bin/python -m pytest tests/integration/test_gmail_accounts_api.py`
+  - Result: `5 passed in 1.62s`
 - `./.venv/bin/python -m pytest tests/unit`
-  - Result: `394 passed in 0.61s`
+  - Result: `409 passed in 0.67s`
 - `./.venv/bin/python -m pytest tests/integration`
-  - Result: `127 passed in 37.01s`
+  - Result: `132 passed in 39.29s`
 
 ## unit and integration test results
 
-- Unit suite passed in full.
-- Integration suite passed in full against the Postgres-backed test path.
-- The RFC822-specific API coverage now includes nested-email exclusion and is included in the passing `tests/integration/test_task_artifacts_api.py` module.
+- Full unit suite passed.
+- Full integration suite passed.
+- Gmail-specific unit and integration coverage passed independently before the full-suite runs.
 
-## one example email artifact-ingestion response
-
-Example verified by `test_task_artifact_rfc822_ingestion_and_chunk_endpoints_are_deterministic_and_isolated`:
+## one example Gmail account response
 
 ```json
 {
+  "account": {
+    "id": "<gmail-account-id>",
+    "provider": "gmail",
+    "auth_kind": "oauth_access_token",
+    "provider_account_id": "acct-owner-001",
+    "email_address": "owner@gmail.example",
+    "display_name": "Owner",
+    "scope": "https://www.googleapis.com/auth/gmail.readonly",
+    "created_at": "<created-at>",
+    "updated_at": "<updated-at>"
+  }
+}
+```
+
+## one example single-message ingestion response
+
+```json
+{
+  "account": {
+    "id": "<gmail-account-id>",
+    "provider": "gmail",
+    "auth_kind": "oauth_access_token",
+    "provider_account_id": "acct-owner-001",
+    "email_address": "owner@gmail.example",
+    "display_name": "Owner",
+    "scope": "https://www.googleapis.com/auth/gmail.readonly",
+    "created_at": "<created-at>",
+    "updated_at": "<updated-at>"
+  },
+  "message": {
+    "provider_message_id": "msg-001",
+    "artifact_relative_path": "gmail/acct-owner-001/msg-001.eml",
+    "media_type": "message/rfc822"
+  },
   "artifact": {
-    "id": "<artifact-id>",
+    "id": "<task-artifact-id>",
     "task_id": "<task-id>",
     "task_workspace_id": "<task-workspace-id>",
     "status": "registered",
     "ingestion_status": "ingested",
-    "relative_path": "mail/update.eml",
+    "relative_path": "gmail/acct-owner-001/msg-001.eml",
     "media_type_hint": "message/rfc822",
     "created_at": "<created-at>",
     "updated_at": "<updated-at>"
   },
   "summary": {
-    "total_count": 2,
-    "total_characters": 1006,
-    "media_type": "message/rfc822",
-    "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
-    "order": ["sequence_no_asc", "id_asc"]
-  }
-}
-```
-
-## one example chunk list response produced from an email artifact
-
-Example verified by `test_task_artifact_rfc822_ingestion_and_chunk_endpoints_are_deterministic_and_isolated`:
-
-```json
-{
-  "items": [
-    {
-      "id": "<chunk-1-id>",
-      "task_artifact_id": "<artifact-id>",
-      "sequence_no": 1,
-      "char_start": 0,
-      "char_end_exclusive": 1000,
-      "text": "From: Alice <alice@example.com>\nTo: Bob <bob@example.com>\nSubject: Sprint Update\n\n<916 times 'A'>\nB",
-      "created_at": "<created-at>",
-      "updated_at": "<updated-at>"
-    },
-    {
-      "id": "<chunk-2-id>",
-      "task_artifact_id": "<artifact-id>",
-      "sequence_no": 2,
-      "char_start": 1000,
-      "char_end_exclusive": 1006,
-      "text": "BBBB\nC",
-      "created_at": "<created-at>",
-      "updated_at": "<updated-at>"
-    }
-  ],
-  "summary": {
-    "total_count": 2,
-    "total_characters": 1006,
+    "total_count": 1,
+    "total_characters": 90,
     "media_type": "message/rfc822",
     "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
     "order": ["sequence_no_asc", "id_asc"]
@@ -185,22 +190,21 @@ Example verified by `test_task_artifact_rfc822_ingestion_and_chunk_endpoints_are
 
 ## blockers/issues
 
-- No implementation blockers remained.
+- No code blockers remained.
+- Full integration verification required local Postgres access outside the default sandbox.
 
 ## what remains intentionally deferred to later milestones
 
-- live Gmail connector work
-- OAuth
-- Calendar connector work
-- HTML-to-text rendering beyond the current explicit plain-text-only rule
-- attachment extraction
-- OCR
-- retrieval-contract changes
-- semantic-retrieval-contract changes
+- Gmail search
+- mailbox sync or backfill jobs
+- attachment ingestion
+- write-capable Gmail actions
+- Calendar connector scope
+- OAuth UX or callback UI
 - compile-contract changes
 - runner-style orchestration
 - UI work
 
 ## recommended next step
 
-If the product needs to move from local RFC822 files to inbox access, open a separate sprint for read-only Gmail connector and auth work while keeping this extracted-text-to-chunk seam unchanged.
+Open a follow-up sprint for credential hardening and a fuller Gmail auth lifecycle if the product needs more than this narrow single-message read-only ingestion path.

@@ -45,6 +45,9 @@ from alicebot_api.contracts import (
     EntityCreateInput,
     EntityType,
     ExplicitPreferenceExtractionRequestInput,
+    GMAIL_READONLY_SCOPE,
+    GmailAccountConnectInput,
+    GmailMessageIngestInput,
     MemoryCandidateInput,
     MemoryEmbeddingUpsertInput,
     MemoryReviewLabelValue,
@@ -134,6 +137,17 @@ from alicebot_api.execution_budgets import (
     get_execution_budget_record,
     list_execution_budget_records,
     supersede_execution_budget_record,
+)
+from alicebot_api.gmail import (
+    GmailAccountAlreadyExistsError,
+    GmailAccountNotFoundError,
+    GmailMessageFetchError,
+    GmailMessageNotFoundError,
+    GmailMessageUnsupportedError,
+    create_gmail_account_record,
+    get_gmail_account_record,
+    ingest_gmail_message_record,
+    list_gmail_account_records,
 )
 from alicebot_api.embedding import (
     EmbeddingConfigValidationError,
@@ -516,6 +530,20 @@ class ResolveApprovalRequest(BaseModel):
 
 class ExecuteApprovedProxyRequest(BaseModel):
     user_id: UUID
+
+
+class ConnectGmailAccountRequest(BaseModel):
+    user_id: UUID
+    provider_account_id: str = Field(min_length=1, max_length=320)
+    email_address: str = Field(min_length=1, max_length=320)
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    scope: Literal["https://www.googleapis.com/auth/gmail.readonly"] = GMAIL_READONLY_SCOPE
+    access_token: str = Field(min_length=1, max_length=8000)
+
+
+class IngestGmailMessageRequest(BaseModel):
+    user_id: UUID
+    task_workspace_id: UUID
 
 
 class CreateTaskWorkspaceRequest(BaseModel):
@@ -1249,6 +1277,108 @@ def get_task(task_id: UUID, user_id: UUID) -> JSONResponse:
             )
     except TaskNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/gmail-accounts")
+def connect_gmail_account(request: ConnectGmailAccountRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_gmail_account_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=GmailAccountConnectInput(
+                    provider_account_id=request.provider_account_id,
+                    email_address=request.email_address,
+                    display_name=request.display_name,
+                    scope=request.scope,
+                    access_token=request.access_token,
+                ),
+            )
+    except GmailAccountAlreadyExistsError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/gmail-accounts")
+def list_gmail_accounts(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_gmail_account_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/gmail-accounts/{gmail_account_id}")
+def get_gmail_account(gmail_account_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_gmail_account_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                gmail_account_id=gmail_account_id,
+            )
+    except GmailAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/gmail-accounts/{gmail_account_id}/messages/{provider_message_id}/ingest")
+def ingest_gmail_message(
+    gmail_account_id: UUID,
+    provider_message_id: str,
+    request: IngestGmailMessageRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = ingest_gmail_message_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=GmailMessageIngestInput(
+                    gmail_account_id=gmail_account_id,
+                    task_workspace_id=request.task_workspace_id,
+                    provider_message_id=provider_message_id,
+                ),
+            )
+    except GmailAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except GmailMessageNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except GmailMessageUnsupportedError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except TaskArtifactValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except GmailMessageFetchError as exc:
+        return JSONResponse(status_code=502, content={"detail": str(exc)})
+    except TaskArtifactAlreadyExistsError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,
