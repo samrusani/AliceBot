@@ -1587,6 +1587,22 @@ GET_GMAIL_ACCOUNT_CREDENTIAL_SQL = """
                 WHERE gmail_account_id = %s
                 """
 
+UPDATE_GMAIL_ACCOUNT_CREDENTIAL_SQL = """
+                UPDATE gmail_account_credentials
+                SET
+                  auth_kind = %s,
+                  credential_blob = %s,
+                  updated_at = clock_timestamp()
+                WHERE gmail_account_id = %s
+                RETURNING
+                  gmail_account_id,
+                  user_id,
+                  auth_kind,
+                  credential_blob,
+                  created_at,
+                  updated_at
+                """
+
 LIST_GMAIL_ACCOUNTS_SQL = """
                 SELECT
                   id,
@@ -3154,6 +3170,19 @@ class ContinuityStore:
         gmail_account_id: UUID,
     ) -> ProtectedGmailCredentialRow | None:
         return self._fetch_optional_one(GET_GMAIL_ACCOUNT_CREDENTIAL_SQL, (gmail_account_id,))
+
+    def update_gmail_account_credential(
+        self,
+        *,
+        gmail_account_id: UUID,
+        auth_kind: str,
+        credential_blob: JsonObject,
+    ) -> ProtectedGmailCredentialRow:
+        return self._fetch_one(
+            "update_gmail_account_credential",
+            UPDATE_GMAIL_ACCOUNT_CREDENTIAL_SQL,
+            (auth_kind, Jsonb(credential_blob), gmail_account_id),
+        )
 
     def get_gmail_account_by_provider_account_id_optional(
         self,

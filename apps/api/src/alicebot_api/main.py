@@ -5,7 +5,7 @@ from typing import Annotated, Literal, TypedDict
 from uuid import UUID
 from fastapi import FastAPI, Query
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fastapi.responses import JSONResponse
 from urllib.parse import urlsplit, urlunsplit
 
@@ -142,6 +142,8 @@ from alicebot_api.gmail import (
     GmailAccountAlreadyExistsError,
     GmailCredentialInvalidError,
     GmailCredentialNotFoundError,
+    GmailCredentialRefreshError,
+    GmailCredentialValidationError,
     GmailAccountNotFoundError,
     GmailMessageFetchError,
     GmailMessageNotFoundError,
@@ -541,6 +543,27 @@ class ConnectGmailAccountRequest(BaseModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=200)
     scope: Literal["https://www.googleapis.com/auth/gmail.readonly"] = GMAIL_READONLY_SCOPE
     access_token: str = Field(min_length=1, max_length=8000)
+    refresh_token: str | None = Field(default=None, min_length=1, max_length=8000)
+    client_id: str | None = Field(default=None, min_length=1, max_length=2000)
+    client_secret: str | None = Field(default=None, min_length=1, max_length=8000)
+    access_token_expires_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_refresh_bundle(self) -> ConnectGmailAccountRequest:
+        refresh_bundle = (
+            self.refresh_token,
+            self.client_id,
+            self.client_secret,
+            self.access_token_expires_at,
+        )
+        if all(value is None for value in refresh_bundle):
+            return self
+        if any(value is None for value in refresh_bundle):
+            raise ValueError(
+                "gmail refresh credentials must include refresh_token, client_id, "
+                "client_secret, and access_token_expires_at"
+            )
+        return self
 
 
 class IngestGmailMessageRequest(BaseModel):
@@ -1301,8 +1324,14 @@ def connect_gmail_account(request: ConnectGmailAccountRequest) -> JSONResponse:
                     display_name=request.display_name,
                     scope=request.scope,
                     access_token=request.access_token,
+                    refresh_token=request.refresh_token,
+                    client_id=request.client_id,
+                    client_secret=request.client_secret,
+                    access_token_expires_at=request.access_token_expires_at,
                 ),
             )
+    except GmailCredentialValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except GmailAccountAlreadyExistsError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
@@ -1379,7 +1408,7 @@ def ingest_gmail_message(
         return JSONResponse(status_code=409, content={"detail": str(exc)})
     except TaskArtifactValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
-    except GmailMessageFetchError as exc:
+    except (GmailMessageFetchError, GmailCredentialRefreshError) as exc:
         return JSONResponse(status_code=502, content={"detail": str(exc)})
     except TaskArtifactAlreadyExistsError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
