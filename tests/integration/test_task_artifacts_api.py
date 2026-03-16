@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
 import json
 import zlib
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
+from xml.sax.saxutils import escape
+import zipfile
 
 import anyio
 import psycopg
@@ -97,6 +100,72 @@ def _build_pdf_bytes(
         ).encode("ascii")
     )
     return bytes(document)
+
+
+def _build_docx_bytes(
+    paragraphs: list[str],
+    *,
+    include_document_xml: bool = True,
+    malformed_document_xml: bool = False,
+) -> bytes:
+    document_xml = (
+        b"<w:document"
+        if malformed_document_xml
+        else (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            "<w:body>"
+            + "".join(
+                (
+                    "<w:p><w:r><w:t xml:space=\"preserve\">"
+                    f"{escape(paragraph)}"
+                    "</w:t></w:r></w:p>"
+                )
+                for paragraph in paragraphs
+            )
+            + (
+                "<w:sectPr>"
+                "<w:pgSz w:w=\"12240\" w:h=\"15840\"/>"
+                "<w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\" "
+                "w:header=\"708\" w:footer=\"708\" w:gutter=\"0\"/>"
+                "</w:sectPr>"
+                "</w:body>"
+                "</w:document>"
+            )
+        )
+    )
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+        entries = {
+            "[Content_Types].xml": (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+                '<Default Extension="xml" ContentType="application/xml"/>'
+                '<Override PartName="/word/document.xml" '
+                'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                "</Types>"
+            ).encode("utf-8"),
+            "_rels/.rels": (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                'Target="word/document.xml"/>'
+                "</Relationships>"
+            ).encode("utf-8"),
+        }
+        if include_document_xml:
+            entries["word/document.xml"] = document_xml
+
+        for name, payload in entries.items():
+            info = zipfile.ZipInfo(filename=name)
+            info.date_time = (2026, 3, 13, 10, 0, 0)
+            info.compress_type = zipfile.ZIP_STORED
+            archive.writestr(info, payload)
+
+    return archive_buffer.getvalue()
 
 
 def invoke_request(
@@ -526,7 +595,8 @@ def test_task_artifact_ingestion_and_chunk_endpoints_are_deterministic_and_isola
     assert unsupported_ingest_payload == {
         "detail": (
             "artifact docs/manual.bin has unsupported media type application/octet-stream; "
-            "supported types: text/plain, text/markdown, application/pdf"
+            "supported types: text/plain, text/markdown, application/pdf, "
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
     }
 
@@ -642,6 +712,133 @@ def test_task_artifact_pdf_ingestion_and_chunk_endpoints_are_deterministic_and_i
             "total_count": 2,
             "total_characters": 1006,
             "media_type": "application/pdf",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+
+    assert isolated_chunk_list_status == 404
+    assert isolated_chunk_list_payload == {
+        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+    }
+
+    assert isolated_ingest_status == 404
+    assert isolated_ingest_payload == {
+        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+    }
+
+
+def test_task_artifact_docx_ingestion_and_chunk_endpoints_are_deterministic_and_isolated(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    intruder = seed_task(migrated_database_urls["app"], email="intruder@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    docx_file = workspace_path / "docs" / "spec.docx"
+    docx_file.parent.mkdir(parents=True)
+    docx_file.write_bytes(_build_docx_bytes(["A" * 998, "B" * 5, "C"]))
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(docx_file),
+            "media_type_hint": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        },
+    )
+    assert register_status == 201
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    chunk_list_status, chunk_list_payload = invoke_request(
+        "GET",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/chunks",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+    isolated_chunk_list_status, isolated_chunk_list_payload = invoke_request(
+        "GET",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/chunks",
+        query_params={"user_id": str(intruder["user_id"])},
+    )
+    isolated_ingest_status, isolated_ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(intruder["user_id"])},
+    )
+
+    assert ingest_status == 200
+    assert ingest_payload == {
+        "artifact": {
+            "id": register_payload["artifact"]["id"],
+            "task_id": str(owner["task_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+            "status": "registered",
+            "ingestion_status": "ingested",
+            "relative_path": "docs/spec.docx",
+            "media_type_hint": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "created_at": register_payload["artifact"]["created_at"],
+            "updated_at": ingest_payload["artifact"]["updated_at"],
+        },
+        "summary": {
+            "total_count": 2,
+            "total_characters": 1006,
+            "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+
+    assert chunk_list_status == 200
+    assert chunk_list_payload == {
+        "items": [
+            {
+                "id": chunk_list_payload["items"][0]["id"],
+                "task_artifact_id": register_payload["artifact"]["id"],
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 1000,
+                "text": ("A" * 998) + "\n" + "B",
+                "created_at": chunk_list_payload["items"][0]["created_at"],
+                "updated_at": chunk_list_payload["items"][0]["updated_at"],
+            },
+            {
+                "id": chunk_list_payload["items"][1]["id"],
+                "task_artifact_id": register_payload["artifact"]["id"],
+                "sequence_no": 2,
+                "char_start": 1000,
+                "char_end_exclusive": 1006,
+                "text": "BBBB\nC",
+                "created_at": chunk_list_payload["items"][1]["created_at"],
+                "updated_at": chunk_list_payload["items"][1]["updated_at"],
+            },
+        ],
+        "summary": {
+            "total_count": 2,
+            "total_characters": 1006,
+            "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
             "order": ["sequence_no_asc", "id_asc"],
         },
@@ -862,6 +1059,78 @@ def test_task_artifact_ingestion_rejects_textless_pdf_content(
     }
 
 
+def test_task_artifact_ingestion_rejects_textless_or_malformed_docx(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    textless_docx = workspace_path / "docs" / "empty.docx"
+    textless_docx.parent.mkdir(parents=True)
+    textless_docx.write_bytes(_build_docx_bytes(["", ""]))
+    malformed_docx = workspace_path / "docs" / "broken.docx"
+    malformed_docx.write_bytes(_build_docx_bytes(["broken"], malformed_document_xml=True))
+
+    textless_register_status, textless_register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(textless_docx),
+            "media_type_hint": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        },
+    )
+    malformed_register_status, malformed_register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(malformed_docx),
+            "media_type_hint": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        },
+    )
+    assert textless_register_status == 201
+    assert malformed_register_status == 201
+
+    textless_ingest_status, textless_ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{textless_register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    malformed_ingest_status, malformed_ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{malformed_register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    assert textless_ingest_status == 400
+    assert textless_ingest_payload == {
+        "detail": "artifact docs/empty.docx does not contain extractable DOCX text"
+    }
+    assert malformed_ingest_status == 400
+    assert malformed_ingest_payload == {
+        "detail": "artifact docs/broken.docx is not a valid DOCX"
+    }
+
+
 def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
     migrated_database_urls,
     monkeypatch,
@@ -909,6 +1178,71 @@ def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
                 """
                 UPDATE task_artifacts
                 SET relative_path = '../../../escape.pdf'
+                WHERE id = %s
+                """,
+                (register_payload["artifact"]["id"],),
+            )
+            conn.commit()
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    assert ingest_status == 400
+    assert ingest_payload == {
+        "detail": f"artifact path {outside_file.resolve()} escapes workspace root {workspace_path.resolve()}"
+    }
+
+
+def test_task_artifact_docx_ingestion_enforces_rooted_workspace_paths(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    safe_file = workspace_path / "docs" / "spec.docx"
+    safe_file.parent.mkdir(parents=True)
+    safe_file.write_bytes(_build_docx_bytes(["spec"]))
+    outside_file = tmp_path / "escape.docx"
+    outside_file.write_bytes(_build_docx_bytes(["escape"]))
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(safe_file),
+            "media_type_hint": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        },
+    )
+    assert register_status == 201
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE task_artifacts
+                SET relative_path = '../../../escape.docx'
                 WHERE id = %s
                 """,
                 (register_payload["artifact"]["id"],),
