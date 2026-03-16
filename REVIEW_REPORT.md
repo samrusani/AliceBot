@@ -6,20 +6,13 @@ PASS
 
 ## criteria met
 
-- The active control artifact now matches the implemented sprint:
-  - `.ai/active/SPRINT_PACKET.md` is Sprint 5T
-  - branch name matches `codex/sprint-5t-gmail-external-secret-manager`
-- The primary Gmail protected credential path no longer depends on application-table-stored secret material for new writes.
-- `gmail_account_credentials` persists only non-secret locator/reference metadata for the externalized primary path, while secret payloads are stored through one explicit Gmail secret-manager adapter boundary.
-- Gmail account list and detail responses remain secret-free.
-- The existing single-message Gmail ingestion path still works through the external secret-manager seam.
-- Refresh-token renewal and rotated refresh-token persistence still work through the externalized seam.
-- Secret-resolution and secret-update failures are deterministic and test-backed.
-- Per-user isolation and stable response shape are test-backed.
-- No hidden Gmail search, sync, attachments, write actions, Calendar, compile-contract, runner, or UI scope entered the sprint.
-- Verification confirmed in review:
-  - `./.venv/bin/python -m pytest tests/unit` -> `446 passed`
-  - `./.venv/bin/python -m pytest tests/integration` -> `141 passed`
+- The sprint stayed documentation-only. The diff changes only `.ai/active/SPRINT_PACKET.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`, and `BUILD_REPORT.md`; no runtime, schema, API, connector-breadth, runner, or UI files changed.
+- `ROADMAP.md` now reflects the accepted repo state through Sprint 5T instead of Sprint 5R.
+- `ROADMAP.md` no longer describes external secret-manager integration as future work and now correctly frames the next narrow seam as `legacy_db_v0` cleanup.
+- `.ai/handoff/CURRENT_STATE.md` now reflects the implemented Sprint 5T Gmail seam: external-secret-backed primary credential storage, secret-free reads, renewal through the externalized seam, rotated refresh-token persistence, and the narrow `legacy_db_v0` transition path.
+- The updated truth artifacts distinguish implemented Gmail externalization behavior from deferred Gmail breadth and from the still-deferred `legacy_db_v0` cleanup sprint.
+- `BUILD_REPORT.md` identifies the synchronized truth artifacts, cites accepted Sprint 5T evidence, names the stale statements corrected, confirms the non-runtime scope, and states what remains deferred.
+- `ARCHITECTURE.md` already matched the accepted Sprint 5T implementation and did not require edits; the unchanged text remains consistent with the updated roadmap and handoff documents.
 
 ## criteria missed
 
@@ -27,30 +20,31 @@ PASS
 
 ## quality issues
 
-- No blocking implementation-quality issues remain for Sprint 5T.
-- The prior control-artifact mismatch was resolved before this review pass; packet, branch, implementation, and build report are now aligned.
+- No blocking quality issues found in the Sprint 5U diff.
+- The builder kept the sprint narrow and did not overreach beyond the truth-sync scope.
 
 ## regression risks
 
 - Low.
-- The only notable operational caution is the intentional `legacy_db_v0` transition path, which is narrow, explicit, and covered by tests, but should still be removed deliberately in a later sprint rather than allowed to linger indefinitely.
+- The only meaningful residual risk is planning drift if future truth-sync sprints again update `ROADMAP.md` and `.ai/handoff/CURRENT_STATE.md` without checking them against the accepted implementation and accepted reports.
+- Runtime risk from this sprint is effectively nil because no runtime files changed.
 
 ## docs issues
 
-- None blocking.
-- `ARCHITECTURE.md` now reflects Sprint 5T and the externalized Gmail credential seam.
-- `BUILD_REPORT.md` now matches the Sprint 5T packet and the corrected runtime contract.
+- No blocking docs issues.
+- Minor note only: the evidence cited in `BUILD_REPORT.md` depends partly on accepted Sprint 5T artifacts now visible through git history rather than through separate preserved files in the working tree. That is still adequate for this sprint and does not block acceptance.
 
 ## should anything be added to RULES.md?
 
 - No.
-- The existing rules were sufficient; the earlier issue was drift in the active control artifact, not a missing repo rule.
+- The repo already had sufficient scope-control rules. The problem addressed here was stale truth artifacts, not a missing durable rule.
 
 ## should anything update ARCHITECTURE.md?
 
-- No further update is required for this sprint beyond the changes already made.
+- No.
+- The current `ARCHITECTURE.md` already describes the accepted Sprint 5T Gmail seam accurately, including the external secret-manager boundary and the narrow `legacy_db_v0` transition path.
 
 ## recommended next action
 
-- Accept Sprint 5T.
-- Keep the next sprint narrow, most likely around removing the `legacy_db_v0` transition path with an explicit migration/export plan or moving to the next Gmail behavior slice without widening into search, sync, Calendar, runner, or UI scope.
+- Accept Sprint 5U.
+- Open one narrow follow-up sprint to remove the remaining `legacy_db_v0` transition path without widening into Gmail search, sync, attachments, Calendar, runner, or UI scope.
