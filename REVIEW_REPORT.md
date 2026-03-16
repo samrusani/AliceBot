@@ -1,32 +1,39 @@
 verdict: PASS
 
 criteria met
-- The sprint stayed documentation-only. `git diff --name-only` shows changes only to `.ai/handoff/CURRENT_STATE.md`, `ARCHITECTURE.md`, `BUILD_REPORT.md`, `ROADMAP.md`, and this review report.
-- `ARCHITECTURE.md` describes compile-path semantic artifact retrieval and deterministic hybrid lexical-plus-semantic artifact merge as implemented behavior, not deferred work, and that matches the shipped compile contract and tests.
-- `ROADMAP.md` no longer claims the repo is current only through Sprint 5A and now frames the next delivery focus from the actual shipped Sprint 5J artifact-retrieval baseline.
-- `.ai/handoff/CURRENT_STATE.md` no longer claims the repo is current only through Sprint 5D and now reflects the shipped Sprint 5J seams accurately.
-- The truth artifacts distinguish implemented behavior from deferred work. Rich document parsing, connectors, runner orchestration, UI work, and artifact reranking beyond the shipped lexical-first merge remain clearly deferred.
-- No runtime, schema, API, connector, runner, or UI changes appear in the sprint diff.
-- `BUILD_REPORT.md` now uses durable in-repo evidence correctly and no longer relies on the overwritten active Sprint 5J build report as a cited source.
+- The sprint stayed within the existing artifact-ingestion seam. The runtime diff is limited to [artifacts.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/artifacts.py), the artifact-focused tests, and report files; no connector, runner, compile-contract, or UI code entered scope.
+- PDF ingestion reuses the rooted `task_workspaces`, `task_artifacts`, and `task_artifact_chunks` seams without schema or response-shape changes. `application/pdf` is accepted on the existing ingest path and the existing `TaskArtifactIngestionResponse` / chunk-list shapes are preserved.
+- Rooted-path safety is enforced during PDF ingestion. Both unit and Postgres-backed integration coverage verify that a persisted relative-path escape is rejected deterministically.
+- Extracted PDF text is normalized and chunked deterministically into ordered `task_artifact_chunks` rows. The new tests verify stable 1000-character boundaries, `sequence_no` ordering, and stable chunk-list summary metadata.
+- Textless PDFs are rejected deterministically instead of producing misleading chunks. Unit and integration tests both assert the explicit `does not contain extractable PDF text` failure.
+- Per-user isolation remains intact for PDF artifacts. The integration suite verifies that another user cannot ingest or list chunks for the owner’s registered PDF artifact.
+- Acceptance-suite verification was rerun during review:
+- `./.venv/bin/python -m pytest tests/unit/test_artifacts.py tests/unit/test_artifacts_main.py` -> `40 passed`
+- `./.venv/bin/python -m pytest tests/integration/test_task_artifacts_api.py` -> `8 passed`
+- `./.venv/bin/python -m pytest tests/unit` -> `382 passed`
+- `./.venv/bin/python -m pytest tests/integration` -> `120 passed`
 
 criteria missed
 - None.
 
 quality issues
-- No blocking quality issues found in the final documentation set.
+- No blocking implementation defects were found in the Sprint 5L scope.
+- The PDF parser is intentionally narrow. It only covers direct local content-stream text extraction with unfiltered and `/FlateDecode` streams, and broader compatibility remains outside this sprint. That matches the packet’s narrow-slice intent and is documented as deferred, so it is not a blocker.
 
 regression risks
-- No runtime or schema regression risk identified because the sprint remains documentation-only.
-- Residual process risk remains that future truth-sync sprints could repeat the same provenance mistake if active artifacts cite other active files that are being replaced in the same sprint.
+- Retrieval, semantic retrieval, and hybrid compile behavior remain on the unchanged chunk substrate and the full integration suite still passes, but there is no new PDF-specific end-to-end retrieval or compile assertion. That is a residual regression risk, not a current failure.
+- Future widening of PDF support should treat parser compatibility as explicit scope. The implementation is deliberately not a general-purpose PDF engine.
 
 docs issues
-- None blocking.
+- `BUILD_REPORT.md` is complete enough for the sprint packet and matches the shipped diff.
+- Optional follow-up only: if the team wants archival clarity, spell out in future milestone docs that “supported PDF” currently means the narrow text-only extraction path implemented in [artifacts.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/artifacts.py), not general PDF compatibility.
 
 should anything be added to RULES.md?
-- Yes. Add a short rule that active truth artifacts should cite durable in-repo evidence only, not active files being overwritten in the same sprint.
-
-should anything update ARCHITECTURE.md?
 - No.
 
+should anything update ARCHITECTURE.md?
+- No. The sprint does not change the core architecture boundaries; it extends the existing artifact-ingestion seam without altering the workspace, artifact, chunk, retrieval, or compile contracts.
+
 recommended next action
-- Accept Sprint 5K as complete and merge after normal approval flow.
+- Accept Sprint 5L as complete and merge after normal approval flow.
+- If the next milestone stays on richer document parsing, add one PDF-backed retrieval or compile regression test before widening into broader PDF compatibility, DOCX, or OCR.

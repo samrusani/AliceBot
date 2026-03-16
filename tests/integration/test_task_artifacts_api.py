@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import zlib
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -14,6 +15,88 @@ from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.artifacts import TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
+
+
+def _escape_pdf_literal_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+
+
+def _build_pdf_bytes(
+    pages: list[list[str]],
+    *,
+    compress_streams: bool = True,
+    textless: bool = False,
+) -> bytes:
+    objects: dict[int, bytes] = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        3: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    }
+    page_refs: list[str] = []
+    next_object_id = 4
+    for page_lines in pages:
+        page_object_id = next_object_id
+        content_object_id = next_object_id + 1
+        next_object_id += 2
+        page_refs.append(f"{page_object_id} 0 R")
+
+        if textless:
+            content_stream = b"q 10 10 100 100 re S Q\n"
+        else:
+            commands = [b"BT", b"/F1 12 Tf", b"72 720 Td"]
+            for index, line in enumerate(page_lines):
+                if index > 0:
+                    commands.append(b"T*")
+                commands.append(f"({_escape_pdf_literal_string(line)}) Tj".encode("latin-1"))
+            commands.append(b"ET")
+            content_stream = b"\n".join(commands) + b"\n"
+
+        if compress_streams:
+            encoded_stream = zlib.compress(content_stream)
+            content_body = (
+                f"<< /Length {len(encoded_stream)} /Filter /FlateDecode >>\n".encode("ascii")
+                + b"stream\n"
+                + encoded_stream
+                + b"\nendstream"
+            )
+        else:
+            content_body = (
+                f"<< /Length {len(content_stream)} >>\n".encode("ascii")
+                + b"stream\n"
+                + content_stream
+                + b"endstream"
+            )
+
+        objects[page_object_id] = (
+            f"<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 3 0 R >> >> "
+            f"/MediaBox [0 0 612 792] /Contents {content_object_id} 0 R >>"
+        ).encode("ascii")
+        objects[content_object_id] = content_body
+
+    objects[2] = (
+        f"<< /Type /Pages /Count {len(page_refs)} /Kids [{' '.join(page_refs)}] >>"
+    ).encode("ascii")
+
+    document = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    max_object_id = max(objects)
+    offsets = [0] * (max_object_id + 1)
+    for object_id in range(1, max_object_id + 1):
+        offsets[object_id] = len(document)
+        document.extend(f"{object_id} 0 obj\n".encode("ascii"))
+        document.extend(objects[object_id])
+        document.extend(b"\nendobj\n")
+
+    xref_offset = len(document)
+    document.extend(f"xref\n0 {max_object_id + 1}\n".encode("ascii"))
+    document.extend(b"0000000000 65535 f \n")
+    for object_id in range(1, max_object_id + 1):
+        document.extend(f"{offsets[object_id]:010d} 00000 n \n".encode("ascii"))
+    document.extend(
+        (
+            f"trailer\n<< /Size {max_object_id + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    return bytes(document)
 
 
 def invoke_request(
@@ -323,8 +406,8 @@ def test_task_artifact_ingestion_and_chunk_endpoints_are_deterministic_and_isola
     supported_file = workspace_path / "docs" / "spec.txt"
     supported_file.parent.mkdir(parents=True)
     supported_file.write_text(("A" * 998) + "\r\n" + ("B" * 5) + "\rC")
-    unsupported_file = workspace_path / "docs" / "manual.pdf"
-    unsupported_file.write_text("not really a pdf")
+    unsupported_file = workspace_path / "docs" / "manual.bin"
+    unsupported_file.write_bytes(b"\x00\x01\x02")
 
     register_status, register_payload = invoke_request(
         "POST",
@@ -364,7 +447,7 @@ def test_task_artifact_ingestion_and_chunk_endpoints_are_deterministic_and_isola
         payload={
             "user_id": str(owner["user_id"]),
             "local_path": str(unsupported_file),
-            "media_type_hint": "application/pdf",
+            "media_type_hint": "application/octet-stream",
         },
     )
     assert unsupported_register_status == 201
@@ -442,9 +525,136 @@ def test_task_artifact_ingestion_and_chunk_endpoints_are_deterministic_and_isola
     assert unsupported_ingest_status == 400
     assert unsupported_ingest_payload == {
         "detail": (
-            "artifact docs/manual.pdf has unsupported media type application/pdf; "
-            "supported types: text/plain, text/markdown"
+            "artifact docs/manual.bin has unsupported media type application/octet-stream; "
+            "supported types: text/plain, text/markdown, application/pdf"
         )
+    }
+
+
+def test_task_artifact_pdf_ingestion_and_chunk_endpoints_are_deterministic_and_isolated(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    intruder = seed_task(migrated_database_urls["app"], email="intruder@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    pdf_file = workspace_path / "docs" / "spec.pdf"
+    pdf_file.parent.mkdir(parents=True)
+    pdf_file.write_bytes(_build_pdf_bytes([["A" * 998, "B" * 5, "C"]]))
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(pdf_file),
+            "media_type_hint": "application/pdf",
+        },
+    )
+    assert register_status == 201
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    chunk_list_status, chunk_list_payload = invoke_request(
+        "GET",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/chunks",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+    isolated_chunk_list_status, isolated_chunk_list_payload = invoke_request(
+        "GET",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/chunks",
+        query_params={"user_id": str(intruder["user_id"])},
+    )
+    isolated_ingest_status, isolated_ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(intruder["user_id"])},
+    )
+
+    assert ingest_status == 200
+    assert ingest_payload == {
+        "artifact": {
+            "id": register_payload["artifact"]["id"],
+            "task_id": str(owner["task_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+            "status": "registered",
+            "ingestion_status": "ingested",
+            "relative_path": "docs/spec.pdf",
+            "media_type_hint": "application/pdf",
+            "created_at": register_payload["artifact"]["created_at"],
+            "updated_at": ingest_payload["artifact"]["updated_at"],
+        },
+        "summary": {
+            "total_count": 2,
+            "total_characters": 1006,
+            "media_type": "application/pdf",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+
+    assert chunk_list_status == 200
+    assert chunk_list_payload == {
+        "items": [
+            {
+                "id": chunk_list_payload["items"][0]["id"],
+                "task_artifact_id": register_payload["artifact"]["id"],
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 1000,
+                "text": ("A" * 998) + "\n" + "B",
+                "created_at": chunk_list_payload["items"][0]["created_at"],
+                "updated_at": chunk_list_payload["items"][0]["updated_at"],
+            },
+            {
+                "id": chunk_list_payload["items"][1]["id"],
+                "task_artifact_id": register_payload["artifact"]["id"],
+                "sequence_no": 2,
+                "char_start": 1000,
+                "char_end_exclusive": 1006,
+                "text": "BBBB\nC",
+                "created_at": chunk_list_payload["items"][1]["created_at"],
+                "updated_at": chunk_list_payload["items"][1]["updated_at"],
+            },
+        ],
+        "summary": {
+            "total_count": 2,
+            "total_characters": 1006,
+            "media_type": "application/pdf",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+
+    assert isolated_chunk_list_status == 404
+    assert isolated_chunk_list_payload == {
+        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+    }
+
+    assert isolated_ingest_status == 404
+    assert isolated_ingest_payload == {
+        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
     }
 
 
@@ -601,6 +811,57 @@ def test_task_artifact_ingestion_rejects_invalid_utf8_content(
     }
 
 
+def test_task_artifact_ingestion_rejects_textless_pdf_content(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    textless_pdf = workspace_path / "docs" / "scanned.pdf"
+    textless_pdf.parent.mkdir(parents=True)
+    textless_pdf.write_bytes(_build_pdf_bytes([[]], textless=True))
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(textless_pdf),
+            "media_type_hint": "application/pdf",
+        },
+    )
+    assert register_status == 201
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    assert ingest_status == 400
+    assert ingest_payload == {
+        "detail": "artifact docs/scanned.pdf does not contain extractable PDF text"
+    }
+
+
 def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
     migrated_database_urls,
     monkeypatch,
@@ -625,11 +886,11 @@ def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
     assert workspace_status == 201
 
     workspace_path = Path(workspace_payload["workspace"]["local_path"])
-    safe_file = workspace_path / "docs" / "spec.txt"
+    safe_file = workspace_path / "docs" / "spec.pdf"
     safe_file.parent.mkdir(parents=True)
-    safe_file.write_text("spec")
-    outside_file = tmp_path / "escape.txt"
-    outside_file.write_text("escape")
+    safe_file.write_bytes(_build_pdf_bytes([["spec"]]))
+    outside_file = tmp_path / "escape.pdf"
+    outside_file.write_bytes(_build_pdf_bytes([["escape"]]))
 
     register_status, register_payload = invoke_request(
         "POST",
@@ -637,7 +898,7 @@ def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
         payload={
             "user_id": str(owner["user_id"]),
             "local_path": str(safe_file),
-            "media_type_hint": "text/plain",
+            "media_type_hint": "application/pdf",
         },
     )
     assert register_status == 201
@@ -647,7 +908,7 @@ def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
             cur.execute(
                 """
                 UPDATE task_artifacts
-                SET relative_path = '../../../escape.txt'
+                SET relative_path = '../../../escape.pdf'
                 WHERE id = %s
                 """,
                 (register_payload["artifact"]["id"],),
