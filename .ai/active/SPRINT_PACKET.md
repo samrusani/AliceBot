@@ -2,139 +2,111 @@
 
 ## Sprint Title
 
-Sprint 5J: Deterministic Hybrid Artifact Merge in Context Compilation
+Sprint 5K: Project Truth Synchronization After Hybrid Artifact Compile
 
 ## Sprint Type
 
-feature
+refactor
 
 ## Sprint Reason
 
-Milestone 5 now has compile-path lexical artifact retrieval and compile-path semantic artifact retrieval as separate sections. The next safe step is to merge those two existing artifact candidate paths into one governed compile-time artifact section with explicit deterministic deduplication and provenance rules, while still deferring reranking, connectors, and UI.
+Sprint 5J is implemented and the feature path is still correct, but the live truth artifacts are materially stale. `ARCHITECTURE.md` still describes the repo as current through Sprint 5H, and `ROADMAP.md` still says current through Sprint 5A. Before opening richer document parsing, read-only connectors, or any UI work, Control Tower needs the architecture and roadmap truth reset to the accepted repo state.
 
 ## Sprint Intent
 
-Complete the first hybrid artifact retrieval slice by merging the already-implemented lexical and semantic artifact chunk candidate sets inside `POST /v0/context/compile`, using explicit deterministic deduplication and selection rules without adding reranking or model-driven embedding generation.
+Synchronize the live truth artifacts with the implemented and review-passed repo state through Sprint 5J, so future planning, handoff, and review work all start from accurate architecture, roadmap, and current-state documents.
 
 ## Git Instructions
 
-- Branch Name: `codex/sprint-5j-hybrid-artifact-merge`
+- Branch Name: `codex/sprint-5k-project-truth-sync`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR, no stacked PRs unless Control Tower explicitly opens a follow-up sprint
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- Sprint 5A shipped deterministic rooted task-workspace provisioning.
-- Sprint 5C shipped explicit task-artifact registration.
-- Sprint 5D shipped deterministic local artifact ingestion into durable chunk rows.
-- Sprint 5E shipped lexical artifact-chunk retrieval.
-- Sprint 5F shipped compile-path lexical artifact chunk inclusion.
-- Sprint 5G shipped durable artifact-chunk embedding persistence.
-- Sprint 5H shipped direct semantic artifact retrieval.
-- Sprint 5I shipped compile-path semantic artifact retrieval as a separate context section.
-- The next narrow Milestone 5 seam is deterministic hybrid artifact merge, so compile can return one governed artifact section before any reranking or richer document behavior is introduced.
+- Sprint 5I shipped compile-path semantic artifact retrieval.
+- Sprint 5J shipped deterministic hybrid lexical-plus-semantic artifact merge in compile.
+- `ARCHITECTURE.md` is still describing the accepted repo slice through Sprint 5H and still treats compile-path semantic artifact use and hybrid artifact retrieval as deferred.
+- `ROADMAP.md` still says the accepted repo state is current through Sprint 5A.
+- Planning from stale truth at this point would increase scope drift risk just before richer document parsing and connector work.
 
 ## In Scope
 
-- Define typed contracts for:
-  - hybrid artifact chunk items in the compiled context pack
-  - source provenance metadata for each included artifact chunk
-  - hybrid artifact retrieval summary metadata
-  - hybrid artifact retrieval trace payloads
-- Extend the compile path so it can:
-  - gather the existing lexical artifact chunk candidates
-  - optionally gather the existing semantic artifact chunk candidates
-  - merge both candidate sets into one artifact section
-  - deduplicate by durable artifact chunk identity
-  - preserve source provenance when a chunk is selected by both paths
-  - apply explicit deterministic selection rules and limits
-  - record hybrid include/exclude and deduplication decisions in `trace_events`
-- Define explicit merge behavior, for example:
-  - lexical-first precedence when both sources compete for the same limit budget
-  - stable tie-breaking after source precedence
-  - predictable handling when a chunk appears in both candidate sets
-- Ensure compile behavior:
-  - excludes non-ingested artifacts
-  - scopes strictly by user ownership
-  - remains deterministic for the same stored data and inputs
-  - leaves memory, entity, and non-artifact sections unchanged
-- Add unit and integration tests for:
-  - deterministic merge ordering
-  - deduplication behavior
-  - dual-source provenance behavior
-  - limit enforcement across merged artifact candidates
-  - exclusion of non-ingested artifacts
-  - per-user isolation through the compile path
-  - response-shape stability for the merged artifact section
+- Audit the accepted implemented slice from the repo and passed sprint reports through Sprint 5J.
+- Update `ARCHITECTURE.md` so it accurately describes the implemented seams through:
+  - compile-path semantic artifact retrieval
+  - deterministic hybrid lexical-plus-semantic artifact merge in compile
+  - current artifact chunk contracts and retrieval boundaries
+- Update `ROADMAP.md` so:
+  - completed/current milestone state reflects the accepted repo state through Sprint 5J
+  - the next delivery focus is framed from the actual shipped artifact retrieval baseline
+  - stale “current position” language is corrected
+- Update `.ai/handoff/CURRENT_STATE.md` so:
+  - implemented areas and risks reflect the repo through Sprint 5J
+  - the current milestone position is correct
+  - the immediate next move matches the next narrow sprint boundary after truth sync
+- Update `BUILD_REPORT.md` with the truth-sync evidence and exact files corrected.
 
 ## Out of Scope
 
-- No reranking across merged artifact candidates.
-- No weighted or learned fusion logic.
-- No model or external API calls to generate query embeddings.
-- No richer document parsing beyond the already-shipped local text ingestion seam.
+- No schema changes.
+- No API changes.
+- No runtime code changes.
+- No richer document parsing.
 - No Gmail or Calendar connector scope.
 - No runner-style orchestration.
 - No UI work.
 
 ## Required Deliverables
 
-- Stable compile-response contract updates for merged hybrid artifact output.
-- Deterministic hybrid merge logic over the existing lexical and semantic artifact retrieval paths.
-- Trace coverage for merge, deduplication, and exclusion decisions.
-- Unit and integration coverage for hybrid artifact behavior, ordering, validation, and isolation.
-- Updated `BUILD_REPORT.md` with exact verification results and explicit deferred scope.
+- Updated `ARCHITECTURE.md` aligned to the implemented repo state through Sprint 5J.
+- Updated `ROADMAP.md` with correct completed/current/next milestone sequencing.
+- Updated `.ai/handoff/CURRENT_STATE.md` reflecting the actual shipped state and immediate next move.
+- Updated `BUILD_REPORT.md` describing exactly which truth artifacts were synchronized and what evidence was used.
 
 ## Acceptance Criteria
 
-- `POST /v0/context/compile` can return one merged artifact section derived from the existing lexical and semantic artifact retrieval paths.
-- The merged section deduplicates artifact chunks by durable identity and preserves source provenance.
-- Merge behavior uses explicit deterministic rules and limits.
-- Non-ingested artifacts are excluded from the merged section.
-- Hybrid artifact merge decisions are persisted in `trace_events`.
-- Result ordering is deterministic for the same stored data and inputs.
-- `./.venv/bin/python -m pytest tests/unit` passes.
-- `./.venv/bin/python -m pytest tests/integration` passes.
-- No reranking, connector, runner, UI, or broader side-effect scope enters the sprint.
+- `ARCHITECTURE.md` describes compile-path semantic artifact retrieval and hybrid artifact compile merge as implemented behavior, not deferred work.
+- `ROADMAP.md` no longer claims the repo is current only through Sprint 5A.
+- `.ai/handoff/CURRENT_STATE.md` no longer describes the repo as current only through Sprint 5D.
+- Truth artifacts clearly distinguish between implemented behavior and later planned work.
+- No runtime, schema, API, connector, runner, or UI changes appear in the sprint diff.
 
 ## Implementation Constraints
 
-- Keep hybrid artifact behavior narrow and boring.
-- Reuse the existing lexical and semantic artifact retrieval seams rather than introducing a third retrieval stack.
-- Make source precedence explicit in contracts, code, and tests.
-- Do not introduce weighted scoring, reranking, or learned fusion in this sprint.
-- Keep memory, entity, and non-artifact sections unchanged.
+- Keep this sprint documentation-only and boring.
+- Use accepted repo state and passed sprint reports as evidence, not aspiration.
+- Prefer explicit “implemented now” versus “planned later” boundaries.
+- If a truth artifact cannot be updated confidently from accepted evidence, narrow the statement rather than guessing.
+- Do not widen into product changes just because the architecture text is stale.
 
 ## Suggested Work Breakdown
 
-1. Define hybrid artifact output and trace contracts.
-2. Implement deterministic merge and deduplication over existing lexical and semantic artifact candidates.
-3. Add source provenance and hybrid summary metadata.
-4. Record hybrid merge decisions in `trace_events`.
-5. Preserve existing retrieval seams while returning one merged artifact section.
-6. Add unit and integration tests.
-7. Update `BUILD_REPORT.md` with executed verification.
+1. Audit the implemented repo state and accepted sprint reports through Sprint 5J.
+2. Update `ARCHITECTURE.md` to reflect the current shipped seams and boundaries.
+3. Update `ROADMAP.md` to reflect actual completed and current milestone state.
+4. Update `.ai/handoff/CURRENT_STATE.md` to reflect actual current state and the immediate next move.
+5. Update `BUILD_REPORT.md` with exact truth-sync evidence and scope confirmation.
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- the exact hybrid artifact merge contract changes introduced
-- the merge precedence and deduplication rule used
-- exact commands run
-- unit and integration test results
-- one example compile request and response showing merged artifact output
-- one example of hybrid artifact retrieval trace events inside one compile run
-- what remains intentionally deferred to later milestones
+- exactly which truth artifacts were updated
+- which accepted reports or repo evidence were used
+- the specific stale statements that were corrected
+- confirmation that no runtime or schema changes were made
+- what remains intentionally deferred after truth synchronization
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- the sprint stayed limited to deterministic hybrid artifact merge in the compile path
-- hybrid artifact behavior reuses the existing lexical and semantic retrieval seams
-- merge ordering, deduplication, provenance, exclusion rules, trace visibility, and isolation are deterministic and test-backed
-- no hidden reranking, connector, runner, UI, or broader side-effect scope entered the sprint
+- the sprint stayed documentation-only
+- `ARCHITECTURE.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` now match the implemented repo state through Sprint 5J
+- compile-path semantic artifact retrieval and hybrid artifact merge are documented accurately
+- milestone sequencing is truthful and current
+- no hidden runtime, schema, API, connector, runner, or UI scope entered the sprint
 
 ## Exit Condition
 
-This sprint is complete when the repo can return one deterministic merged artifact section in `POST /v0/context/compile`, derived from the existing lexical and semantic artifact retrieval paths with trace-visible merge decisions and passing Postgres-backed tests, while still deferring reranking, connectors, and UI.
+This sprint is complete when the project truth artifacts accurately describe the implemented repo state through Sprint 5J and future planning can proceed from synchronized architecture, roadmap, and current-state documents.
