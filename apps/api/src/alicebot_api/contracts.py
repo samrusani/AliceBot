@@ -80,6 +80,7 @@ ExplicitPreferencePattern = Literal[
     "remember_that_i_prefer",
 ]
 MemorySelectionSource = Literal["symbolic", "semantic"]
+ArtifactSelectionSource = Literal["lexical", "semantic"]
 
 DEFAULT_MAX_SESSIONS = 3
 DEFAULT_MAX_EVENTS = 8
@@ -416,50 +417,44 @@ class ContextPackArtifactChunk(TypedDict):
     char_start: int
     char_end_exclusive: int
     text: str
-    match: "TaskArtifactChunkRetrievalMatch"
+    source_provenance: "ContextPackArtifactChunkSourceProvenance"
+
+
+class ContextPackArtifactChunkSourceProvenance(TypedDict):
+    sources: list[ArtifactSelectionSource]
+    lexical_match: "TaskArtifactChunkRetrievalMatch | None"
+    semantic_score: float | None
 
 
 class ContextPackArtifactChunkSummary(TypedDict):
     requested: bool
+    lexical_requested: bool
+    semantic_requested: bool
     scope: TaskArtifactChunkRetrievalScope | None
     query: str | None
     query_terms: list[str]
-    matching_rule: str
-    limit: int
-    searched_artifact_count: int
-    candidate_count: int
-    included_count: int
-    excluded_uningested_artifact_count: int
-    excluded_limit_count: int
-    order: list[str]
-
-
-class ContextPackSemanticArtifactChunk(TypedDict):
-    id: str
-    task_id: str
-    task_artifact_id: str
-    relative_path: str
-    media_type: str
-    sequence_no: int
-    char_start: int
-    char_end_exclusive: int
-    text: str
-    score: float
-
-
-class ContextPackSemanticArtifactChunkSummary(TypedDict):
-    requested: bool
-    scope: TaskArtifactChunkRetrievalScope | None
     embedding_config_id: str | None
     query_vector_dimensions: int
     limit: int
+    lexical_limit: int
+    semantic_limit: int
     searched_artifact_count: int
-    candidate_count: int
+    lexical_candidate_count: int
+    semantic_candidate_count: int
+    merged_candidate_count: int
+    deduplicated_count: int
     included_count: int
+    included_lexical_only_count: int
+    included_semantic_only_count: int
+    included_dual_source_count: int
     excluded_uningested_artifact_count: int
     excluded_limit_count: int
+    matching_rule: str | None
     similarity_metric: Literal["cosine_similarity"] | None
-    order: list[str]
+    source_precedence: list[ArtifactSelectionSource]
+    lexical_order: list[str]
+    semantic_order: list[str]
+    merged_order: list[str]
 
 
 class ArtifactRetrievalDecisionTracePayload(TypedDict):
@@ -478,18 +473,22 @@ class ArtifactRetrievalDecisionTracePayload(TypedDict):
     char_end_exclusive: NotRequired[int]
 
 
-class SemanticArtifactRetrievalDecisionTracePayload(TypedDict):
+class HybridArtifactRetrievalDecisionTracePayload(TypedDict):
     scope_kind: TaskArtifactChunkRetrievalScopeKind
     task_id: str
     task_artifact_id: str
     relative_path: str
     media_type: str | None
     ingestion_status: TaskArtifactIngestionStatus
-    embedding_config_id: str
-    query_vector_dimensions: int
     limit: int
-    similarity_metric: Literal["cosine_similarity"]
+    selected_sources: list[ArtifactSelectionSource]
+    embedding_config_id: str | None
+    query_vector_dimensions: int
+    matched_query_terms: NotRequired[list[str]]
+    matched_query_term_count: NotRequired[int]
+    first_match_char_start: NotRequired[int]
     score: NotRequired[float]
+    similarity_metric: NotRequired[Literal["cosine_similarity"]]
     sequence_no: NotRequired[int]
     char_start: NotRequired[int]
     char_end_exclusive: NotRequired[int]
@@ -580,8 +579,6 @@ class CompiledContextPack(TypedDict):
     memory_summary: ContextPackMemorySummary
     artifact_chunks: list[ContextPackArtifactChunk]
     artifact_chunk_summary: ContextPackArtifactChunkSummary
-    semantic_artifact_chunks: list[ContextPackSemanticArtifactChunk]
-    semantic_artifact_chunk_summary: ContextPackSemanticArtifactChunkSummary
     entities: list[ContextPackEntity]
     entity_summary: ContextPackEntitySummary
     entity_edges: list[ContextPackEntityEdge]
