@@ -6,20 +6,15 @@ PASS
 
 ## criteria met
 
-- Sprint stayed narrow. The code changes are limited to the Gmail renewal seam, the ingest endpoint error mapping, Gmail-focused tests, and `BUILD_REPORT.md`.
-- Rotated refresh tokens are now handled in the protected credential seam. `apps/api/src/alicebot_api/gmail.py` captures an optional provider-returned `refresh_token` during renewal and persists it back through `gmail_account_credentials`.
-- The replacement rule matches the packet:
-  - if the provider returns a non-empty replacement `refresh_token`, persist it
-  - otherwise keep the existing stored `refresh_token`
-- Gmail account reads remain secret-free. No secret fields were added to list/detail/connect/ingest responses, and existing account list/detail isolation tests still pass.
-- Single-message Gmail ingestion still works for both cases:
-  - stable refresh-token renewal
-  - rotated refresh-token renewal
-- Rotated-credential persistence failures are deterministic and happen before Gmail fetch/artifact writes. The new error is mapped to the existing `409` envelope, and tests verify no artifact or credential corruption when persistence fails.
-- Required verification passed:
-  - `./.venv/bin/python -m pytest tests/unit` -> `437 passed in 0.63s`
-  - `./.venv/bin/python -m pytest tests/integration` -> `139 passed in 42.27s`
-- No out-of-scope Gmail search, sync, attachments, write actions, Calendar, external secret-manager, compile-contract, runner, or UI work entered the sprint.
+- Sprint stayed documentation-only. The review diff contains updates to `ARCHITECTURE.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`, and `BUILD_REPORT.md`; no runtime, schema, API, connector-breadth, runner, or UI code changes were introduced.
+- `ARCHITECTURE.md` now matches the shipped Gmail seam through Sprint 5R: read-only account persistence, secret-free reads, protected credentials in `gmail_account_credentials`, refresh-token renewal, rotated refresh-token persistence, and one explicit selected-message ingestion path into the RFC822 artifact pipeline.
+- `ROADMAP.md` no longer describes the repo as current only through Sprint 5J and no longer treats richer document parsing as the next pending shipped baseline. It now reflects the accepted Milestone 5 state through Sprint 5R and frames the next sprint from that actual baseline.
+- `.ai/handoff/CURRENT_STATE.md` no longer stops at Sprint 5J. It now reflects the shipped narrow PDF, DOCX, RFC822, and Gmail auth seams, current verification totals, and the immediate next narrow boundary.
+- The updated truth artifacts clearly separate implemented seams from deferred work such as richer parsing, Gmail search/sync/attachments, Calendar, external secret-manager integration, runner work, and UI work.
+- `BUILD_REPORT.md` includes the required truth-sync contents: exact truth artifacts updated, evidence used, stale statements corrected, confirmation that no runtime or schema changes were made, and intentionally deferred follow-up scope.
+- Verification succeeded:
+  - `./.venv/bin/python -m pytest tests/unit` -> `437 passed in 0.96s`
+  - `./.venv/bin/python -m pytest tests/integration` -> `139 passed in 40.02s`
 
 ## criteria missed
 
@@ -27,24 +22,26 @@ PASS
 
 ## quality issues
 
-- None material for Sprint 5R.
+- No material implementation-quality issues for Sprint 5S.
+- Minor rigor note: the `BUILD_REPORT.md` diff check command is scoped to the named truth files, so that command alone does not prove the whole worktree is documentation-only. The actual repo diff does satisfy the sprint boundary, so this does not block approval.
 
 ## regression risks
 
-- Low. The change is localized to the existing Gmail renewal path and is covered by both unit and Postgres-backed integration tests for stable-token renewal, rotated-token renewal, failure handling, secret-free responses, and user isolation.
+- Low. This sprint is documentation-only, and the live codebase and tests support the updated statements about narrow document ingestion and the Gmail credential/rotation seam.
+- Integration verification depends on local Postgres access on `localhost:5432`; inside the default sandbox it fails with an environment permission error, but it passes when run with the required local access.
 
 ## docs issues
 
-- None. `BUILD_REPORT.md` includes the rotation change summary, replacement rule, commands run, test results, secret-free account example, rotation-capable ingestion example, and deferred scope.
+- None blocking. The updated docs are materially aligned with the implemented repo state through Sprint 5R.
 
 ## should anything be added to RULES.md?
 
-- No. This is a narrow connector implementation detail, not a new repository-wide rule.
+- No. This sprint does not establish a new repo-wide operating rule.
 
 ## should anything update ARCHITECTURE.md?
 
-- No. The sprint does not introduce a new architectural boundary or subsystem; it hardens the existing Gmail protected-credential seam.
+- No further update is needed beyond the changes already made in this sprint.
 
 ## recommended next action
 
-- Accept Sprint 5R and move to the next narrow auth-adjacent milestone without broadening scope.
+- Accept Sprint 5S and open the next narrow Gmail auth-adjacent sprint from this synchronized baseline, with external secret-manager integration as the strongest next candidate if Control Tower still wants that seam next.
