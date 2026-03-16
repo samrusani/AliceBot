@@ -245,6 +245,18 @@ class TaskWorkspaceRow(TypedDict):
     updated_at: datetime
 
 
+class GmailAccountRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    provider_account_id: str
+    email_address: str
+    display_name: str | None
+    scope: str
+    access_token: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class TaskArtifactRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -1467,6 +1479,86 @@ UPDATE_TASK_STATUS_SQL = """
                   latest_execution_id,
                   created_at,
                   updated_at
+                """
+
+INSERT_GMAIL_ACCOUNT_SQL = """
+                INSERT INTO gmail_accounts (
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope,
+                  access_token,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope,
+                  access_token,
+                  created_at,
+                  updated_at
+                """
+
+GET_GMAIL_ACCOUNT_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope,
+                  access_token,
+                  created_at,
+                  updated_at
+                FROM gmail_accounts
+                WHERE id = %s
+                """
+
+GET_GMAIL_ACCOUNT_BY_PROVIDER_ACCOUNT_ID_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope,
+                  access_token,
+                  created_at,
+                  updated_at
+                FROM gmail_accounts
+                WHERE provider_account_id = %s
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                """
+
+LIST_GMAIL_ACCOUNTS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope,
+                  access_token,
+                  created_at,
+                  updated_at
+                FROM gmail_accounts
+                ORDER BY created_at ASC, id ASC
                 """
 
 INSERT_TASK_WORKSPACE_SQL = """
@@ -2986,6 +3078,36 @@ class ContinuityStore:
             UPDATE_TASK_STATUS_SQL,
             (status, latest_approval_id, latest_execution_id, task_id),
         )
+
+    def create_gmail_account(
+        self,
+        *,
+        provider_account_id: str,
+        email_address: str,
+        display_name: str | None,
+        scope: str,
+        access_token: str,
+    ) -> GmailAccountRow:
+        return self._fetch_one(
+            "create_gmail_account",
+            INSERT_GMAIL_ACCOUNT_SQL,
+            (provider_account_id, email_address, display_name, scope, access_token),
+        )
+
+    def get_gmail_account_optional(self, gmail_account_id: UUID) -> GmailAccountRow | None:
+        return self._fetch_optional_one(GET_GMAIL_ACCOUNT_SQL, (gmail_account_id,))
+
+    def get_gmail_account_by_provider_account_id_optional(
+        self,
+        provider_account_id: str,
+    ) -> GmailAccountRow | None:
+        return self._fetch_optional_one(
+            GET_GMAIL_ACCOUNT_BY_PROVIDER_ACCOUNT_ID_SQL,
+            (provider_account_id,),
+        )
+
+    def list_gmail_accounts(self) -> list[GmailAccountRow]:
+        return self._fetch_all(LIST_GMAIL_ACCOUNTS_SQL)
 
     def lock_task_workspaces(self, task_id: UUID) -> None:
         with self.conn.cursor() as cur:
