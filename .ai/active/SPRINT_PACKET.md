@@ -2,111 +2,127 @@
 
 ## Sprint Title
 
-Sprint 5K: Project Truth Synchronization After Hybrid Artifact Compile
+Sprint 5L: PDF Artifact Parsing V0
 
 ## Sprint Type
 
-refactor
+feature
 
 ## Sprint Reason
 
-Sprint 5J is implemented and the feature path is still correct, but the live truth artifacts are materially stale. `ARCHITECTURE.md` still describes the repo as current through Sprint 5H, and `ROADMAP.md` still says current through Sprint 5A. Before opening richer document parsing, read-only connectors, or any UI work, Control Tower needs the architecture and roadmap truth reset to the accepted repo state.
+Sprint 5K re-synchronized project truth through Sprint 5J, and the agreed next delivery focus is richer document parsing on top of the shipped rooted workspace, durable chunk, and hybrid artifact compile baseline. The narrowest safe next slice is PDF ingestion only, not a broad “rich documents” sprint that mixes PDF, DOCX, OCR, connectors, or UI.
 
 ## Sprint Intent
 
-Synchronize the live truth artifacts with the implemented and review-passed repo state through Sprint 5J, so future planning, handoff, and review work all start from accurate architecture, roadmap, and current-state documents.
+Extend the existing artifact-ingestion seam so registered PDF artifacts can be ingested into the existing durable `task_artifact_chunks` substrate through deterministic text extraction, without changing retrieval contracts, compile contracts, connectors, or UI.
 
 ## Git Instructions
 
-- Branch Name: `codex/sprint-5k-project-truth-sync`
+- Branch Name: `codex/sprint-5l-pdf-artifact-parsing-v0`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR, no stacked PRs unless Control Tower explicitly opens a follow-up sprint
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- Sprint 5I shipped compile-path semantic artifact retrieval.
-- Sprint 5J shipped deterministic hybrid lexical-plus-semantic artifact merge in compile.
-- `ARCHITECTURE.md` is still describing the accepted repo slice through Sprint 5H and still treats compile-path semantic artifact use and hybrid artifact retrieval as deferred.
-- `ROADMAP.md` still says the accepted repo state is current through Sprint 5A.
-- Planning from stale truth at this point would increase scope drift risk just before richer document parsing and connector work.
+- Sprint 5A shipped deterministic rooted task-workspace provisioning.
+- Sprint 5C shipped explicit task-artifact registration.
+- Sprint 5D shipped deterministic local text-artifact ingestion into durable chunk rows.
+- Sprint 5E through 5J shipped lexical retrieval, semantic retrieval, and hybrid compile-path artifact retrieval on top of those persisted chunk rows.
+- Sprint 5K re-synchronized the truth artifacts and explicitly set richer document parsing as the next narrow move.
+- The safest next step is PDF extraction only, feeding the already-shipped chunk and retrieval seams without expanding into OCR, DOCX, connectors, or UI.
 
 ## In Scope
 
-- Audit the accepted implemented slice from the repo and passed sprint reports through Sprint 5J.
-- Update `ARCHITECTURE.md` so it accurately describes the implemented seams through:
-  - compile-path semantic artifact retrieval
-  - deterministic hybrid lexical-plus-semantic artifact merge in compile
-  - current artifact chunk contracts and retrieval boundaries
-- Update `ROADMAP.md` so:
-  - completed/current milestone state reflects the accepted repo state through Sprint 5J
-  - the next delivery focus is framed from the actual shipped artifact retrieval baseline
-  - stale “current position” language is corrected
-- Update `.ai/handoff/CURRENT_STATE.md` so:
-  - implemented areas and risks reflect the repo through Sprint 5J
-  - the current milestone position is correct
-  - the immediate next move matches the next narrow sprint boundary after truth sync
-- Update `BUILD_REPORT.md` with the truth-sync evidence and exact files corrected.
+- Extend schema and contracts only as narrowly needed to support PDF ingestion metadata, for example:
+  - `task_artifacts.ingestion_status` reuse if no new status is required
+  - optional deterministic extraction metadata on artifact detail or ingestion responses if needed
+- Define typed contracts for:
+  - PDF artifact-ingestion requests if they differ from the current generic artifact-ingestion path
+  - artifact-ingestion responses updated for PDF extraction metadata if needed
+  - artifact detail or chunk summary metadata updated for PDF ingestion if needed
+- Extend the existing ingestion seam so it:
+  - accepts already-registered visible PDF artifacts
+  - resolves rooted local file paths from persisted workspace plus artifact relative path
+  - supports one explicit PDF extraction path only
+  - extracts deterministic text from PDFs without OCR
+  - normalizes extracted text before chunking
+  - persists ordered chunk rows into the existing `task_artifact_chunks` table
+  - updates artifact ingestion status deterministically
+- Add unit and integration tests for:
+  - supported PDF ingestion
+  - deterministic chunk ordering and chunk boundaries from extracted PDF text
+  - rooted path enforcement during PDF ingestion
+  - rejection of scanned-image or textless PDFs when no extractable text is present
+  - per-user isolation
+  - stable response shape
 
 ## Out of Scope
 
-- No schema changes.
-- No API changes.
-- No runtime code changes.
-- No richer document parsing.
+- No DOCX ingestion.
+- No OCR.
+- No image extraction.
+- No changes to lexical retrieval contracts.
+- No changes to semantic retrieval contracts.
+- No compile contract changes.
 - No Gmail or Calendar connector scope.
 - No runner-style orchestration.
 - No UI work.
 
 ## Required Deliverables
 
-- Updated `ARCHITECTURE.md` aligned to the implemented repo state through Sprint 5J.
-- Updated `ROADMAP.md` with correct completed/current/next milestone sequencing.
-- Updated `.ai/handoff/CURRENT_STATE.md` reflecting the actual shipped state and immediate next move.
-- Updated `BUILD_REPORT.md` describing exactly which truth artifacts were synchronized and what evidence was used.
+- Narrow ingestion support for visible PDF artifacts using the existing artifact and chunk seams.
+- Stable contract updates only where PDF extraction metadata is necessary.
+- Unit and integration coverage for PDF extraction, rooted-path safety, deterministic chunk persistence, and isolation.
+- Updated `BUILD_REPORT.md` with exact verification results and explicit deferred scope.
 
 ## Acceptance Criteria
 
-- `ARCHITECTURE.md` describes compile-path semantic artifact retrieval and hybrid artifact compile merge as implemented behavior, not deferred work.
-- `ROADMAP.md` no longer claims the repo is current only through Sprint 5A.
-- `.ai/handoff/CURRENT_STATE.md` no longer describes the repo as current only through Sprint 5D.
-- Truth artifacts clearly distinguish between implemented behavior and later planned work.
-- No runtime, schema, API, connector, runner, or UI changes appear in the sprint diff.
+- A client can ingest one supported visible PDF artifact into durable ordered chunk rows using the existing artifact-ingestion seam.
+- PDF ingestion reads only files rooted under the persisted task workspace boundary.
+- Extracted text is normalized and chunked deterministically into the existing `task_artifact_chunks` contract.
+- Textless or unsupported PDFs are rejected deterministically rather than silently producing misleading chunks.
+- Existing lexical, semantic, and hybrid artifact retrieval contracts continue to operate over the persisted chunk rows without contract changes.
+- `./.venv/bin/python -m pytest tests/unit` passes.
+- `./.venv/bin/python -m pytest tests/integration` passes.
+- No DOCX, OCR, connector, runner, compile-contract, or UI scope enters the sprint.
 
 ## Implementation Constraints
 
-- Keep this sprint documentation-only and boring.
-- Use accepted repo state and passed sprint reports as evidence, not aspiration.
-- Prefer explicit “implemented now” versus “planned later” boundaries.
-- If a truth artifact cannot be updated confidently from accepted evidence, narrow the statement rather than guessing.
-- Do not widen into product changes just because the architecture text is stale.
+- Keep richer parsing narrow and boring.
+- Reuse the existing rooted `task_workspaces`, `task_artifacts`, and `task_artifact_chunks` seams rather than creating a parallel document store.
+- Support PDF text extraction only; do not introduce OCR fallback in the same sprint.
+- Preserve existing retrieval and compile contracts by feeding the already-shipped chunk substrate.
+- Keep extraction and chunking deterministic and testable from local files alone.
 
 ## Suggested Work Breakdown
 
-1. Audit the implemented repo state and accepted sprint reports through Sprint 5J.
-2. Update `ARCHITECTURE.md` to reflect the current shipped seams and boundaries.
-3. Update `ROADMAP.md` to reflect actual completed and current milestone state.
-4. Update `.ai/handoff/CURRENT_STATE.md` to reflect actual current state and the immediate next move.
-5. Update `BUILD_REPORT.md` with exact truth-sync evidence and scope confirmation.
+1. Define any minimal PDF-ingestion contract updates needed.
+2. Implement deterministic rooted PDF text extraction in the existing artifact-ingestion seam.
+3. Normalize extracted text and persist ordered chunk rows into the existing chunk store.
+4. Add deterministic failure behavior for textless PDFs.
+5. Add unit and integration tests.
+6. Update `BUILD_REPORT.md` with executed verification.
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exactly which truth artifacts were updated
-- which accepted reports or repo evidence were used
-- the specific stale statements that were corrected
-- confirmation that no runtime or schema changes were made
-- what remains intentionally deferred after truth synchronization
+- the exact PDF-ingestion contract changes introduced, if any
+- the PDF extraction path and chunking rule used
+- exact commands run
+- unit and integration test results
+- one example PDF artifact-ingestion response
+- one example chunk list response produced from a PDF artifact
+- what remains intentionally deferred to later milestones
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- the sprint stayed documentation-only
-- `ARCHITECTURE.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` now match the implemented repo state through Sprint 5J
-- compile-path semantic artifact retrieval and hybrid artifact merge are documented accurately
-- milestone sequencing is truthful and current
-- no hidden runtime, schema, API, connector, runner, or UI scope entered the sprint
+- the sprint stayed limited to PDF artifact parsing through the existing ingestion seam
+- PDF ingestion reuses the existing rooted workspace, artifact, and chunk contracts
+- extraction determinism, chunk ordering, rooted-path safety, and isolation are test-backed
+- no hidden DOCX, OCR, connector, runner, compile-contract, or UI scope entered the sprint
 
 ## Exit Condition
 
-This sprint is complete when the project truth artifacts accurately describe the implemented repo state through Sprint 5J and future planning can proceed from synchronized architecture, roadmap, and current-state documents.
+This sprint is complete when the repo can ingest supported visible PDF artifacts into deterministic durable chunk rows through the existing artifact-ingestion seam, verify the full path with Postgres-backed tests, and still defer broader document parsing, connectors, and UI.
