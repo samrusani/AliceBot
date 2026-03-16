@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -151,18 +152,28 @@ def seed_task(database_url: str, *, email: str) -> dict[str, UUID]:
     }
 
 
-def _connect_gmail_account(*, user_id: UUID, provider_account_id: str, email_address: str) -> tuple[int, dict[str, Any]]:
+def _connect_gmail_account(
+    *,
+    user_id: UUID,
+    provider_account_id: str,
+    email_address: str,
+    credential_overrides: dict[str, Any] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    payload = {
+        "user_id": str(user_id),
+        "provider_account_id": provider_account_id,
+        "email_address": email_address,
+        "display_name": email_address.split("@", 1)[0].title(),
+        "scope": "https://www.googleapis.com/auth/gmail.readonly",
+        "access_token": f"token-for-{provider_account_id}",
+    }
+    if credential_overrides is not None:
+        payload.update(credential_overrides)
+
     return invoke_request(
         "POST",
         "/v0/gmail-accounts",
-        payload={
-            "user_id": str(user_id),
-            "provider_account_id": provider_account_id,
-            "email_address": email_address,
-            "display_name": email_address.split("@", 1)[0].title(),
-            "scope": "https://www.googleapis.com/auth/gmail.readonly",
-            "access_token": f"token-for-{provider_account_id}",
-        },
+        payload=payload,
     )
 
 
@@ -244,6 +255,8 @@ def test_gmail_account_endpoints_connect_list_detail_and_isolate(
     assert '"access_token":' not in json.dumps(create_payload)
     assert '"access_token":' not in json.dumps(list_payload)
     assert '"access_token":' not in json.dumps(detail_payload)
+    assert '"refresh_token":' not in json.dumps(create_payload)
+    assert '"client_secret":' not in json.dumps(create_payload)
 
     with psycopg.connect(migrated_database_urls["admin"]) as conn:
         with conn.cursor() as cur:
@@ -363,6 +376,104 @@ def test_gmail_message_ingestion_endpoint_persists_artifact_and_chunks(
         assert chunk_rows[0]["text"].startswith("From: Alice <alice@example.com>")
 
 
+def test_gmail_message_ingestion_endpoint_renews_expired_access_token(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    raw_bytes = _build_rfc822_email_bytes(subject="Inbox Update", plain_body="renewed token path")
+    fetch_tokens: list[str] = []
+
+    monkeypatch.setattr(
+        gmail_module,
+        "refresh_gmail_access_token",
+        lambda **_kwargs: ("token-refreshed", datetime.fromisoformat("2030-01-01T00:05:00+00:00")),
+    )
+
+    def fake_fetch_gmail_message_raw_bytes(*, access_token: str, **_kwargs) -> bytes:
+        fetch_tokens.append(access_token)
+        return raw_bytes
+
+    monkeypatch.setattr(
+        gmail_module,
+        "fetch_gmail_message_raw_bytes",
+        fake_fetch_gmail_message_raw_bytes,
+    )
+
+    account_status, account_payload = _connect_gmail_account(
+        user_id=owner["user_id"],
+        provider_account_id="acct-owner-refresh-001",
+        email_address="owner@gmail.example",
+        credential_overrides={
+            "refresh_token": "refresh-owner-001",
+            "client_id": "client-owner-001",
+            "client_secret": "secret-owner-001",
+            "access_token_expires_at": "2020-01-01T00:00:00+00:00",
+        },
+    )
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/gmail-accounts/{account_payload['account']['id']}/messages/msg-001/ingest",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+        },
+    )
+
+    assert account_status == 201
+    assert workspace_status == 201
+    assert ingest_status == 200
+    assert fetch_tokens == ["token-refreshed"]
+    assert ingest_payload["message"] == {
+        "provider_message_id": "msg-001",
+        "artifact_relative_path": "gmail/acct-owner-refresh-001/msg-001.eml",
+        "media_type": "message/rfc822",
+    }
+    assert '"refresh_token":' not in json.dumps(ingest_payload)
+    assert '"client_secret":' not in json.dumps(ingest_payload)
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  credential_blob ->> 'credential_kind',
+                  credential_blob ->> 'access_token',
+                  credential_blob ->> 'refresh_token',
+                  credential_blob ->> 'client_id',
+                  credential_blob ->> 'client_secret',
+                  credential_blob ->> 'access_token_expires_at'
+                FROM gmail_account_credentials
+                WHERE gmail_account_id = %s
+                """,
+                (UUID(account_payload["account"]["id"]),),
+            )
+            credential_row = cur.fetchone()
+
+    assert credential_row is not None
+    assert credential_row[0] == "gmail_oauth_refresh_token_v2"
+    assert credential_row[1] == "token-refreshed"
+    assert credential_row[2] == "refresh-owner-001"
+    assert credential_row[3] == "client-owner-001"
+    assert credential_row[4] == "secret-owner-001"
+    assert credential_row[5] == "2030-01-01T00:05:00+00:00"
+
+
 def test_gmail_message_ingestion_endpoint_rejects_cross_user_workspace_access(
     migrated_database_urls,
     monkeypatch,
@@ -470,6 +581,78 @@ def test_gmail_message_ingestion_endpoint_rejects_missing_protected_credentials_
     }
     artifact_file = (
         Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-001" / "msg-001.eml"
+    )
+    assert not artifact_file.exists()
+
+    with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        assert store.list_task_artifacts_for_task(owner["task_id"]) == []
+
+
+def test_gmail_message_ingestion_endpoint_rejects_invalid_refresh_credentials_without_side_effects(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    _, account_payload = _connect_gmail_account(
+        user_id=owner["user_id"],
+        provider_account_id="acct-owner-refresh-001",
+        email_address="owner@gmail.example",
+        credential_overrides={
+            "refresh_token": "refresh-owner-001",
+            "client_id": "client-owner-001",
+            "client_secret": "secret-owner-001",
+            "access_token_expires_at": "2020-01-01T00:00:00+00:00",
+        },
+    )
+    _, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    def fail_refresh(**_kwargs):
+        raise gmail_module.GmailCredentialInvalidError(
+            f"gmail account {account_payload['account']['id']} refresh credentials were rejected"
+        )
+
+    monkeypatch.setattr(gmail_module, "refresh_gmail_access_token", fail_refresh)
+    monkeypatch.setattr(
+        gmail_module,
+        "fetch_gmail_message_raw_bytes",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fetch_gmail_message_raw_bytes should not be called")
+        ),
+    )
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/gmail-accounts/{account_payload['account']['id']}/messages/msg-001/ingest",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+        },
+    )
+
+    assert ingest_status == 409
+    assert ingest_payload == {
+        "detail": (
+            f"gmail account {account_payload['account']['id']} refresh credentials were rejected"
+        )
+    }
+    artifact_file = (
+        Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-refresh-001" / "msg-001.eml"
     )
     assert not artifact_file.exists()
 
