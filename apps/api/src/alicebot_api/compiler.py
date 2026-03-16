@@ -5,7 +5,7 @@ from uuid import UUID
 
 from alicebot_api.contracts import (
     COMPILER_VERSION_V0,
-    ArtifactRetrievalDecisionTracePayload,
+    ArtifactSelectionSource,
     CompileContextArtifactScopedSemanticArtifactRetrievalInput,
     CompilerDecision,
     CompileContextArtifactRetrievalInput,
@@ -22,14 +22,12 @@ from alicebot_api.contracts import (
     ContextPackHybridMemorySummary,
     ContextPackMemory,
     ContextPackMemorySummary,
-    ContextPackSemanticArtifactChunk,
-    ContextPackSemanticArtifactChunkSummary,
     HybridMemoryDecisionTracePayload,
+    HybridArtifactRetrievalDecisionTracePayload,
     MemorySelectionSource,
     SEMANTIC_MEMORY_RETRIEVAL_ORDER,
     TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER,
     TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER,
-    SemanticArtifactRetrievalDecisionTracePayload,
     SemanticMemoryRetrievalRequestInput,
     TRACE_KIND_CONTEXT_COMPILE,
     TraceEventRecord,
@@ -44,8 +42,6 @@ from alicebot_api.artifacts import (
     retrieve_matching_task_artifact_chunks,
 )
 from alicebot_api.semantic_retrieval import (
-    retrieve_artifact_scoped_semantic_artifact_chunk_records,
-    retrieve_task_scoped_semantic_artifact_chunk_records,
     serialize_semantic_artifact_chunk_result_item,
     validate_semantic_artifact_chunk_retrieval_request,
     validate_semantic_memory_retrieval_request,
@@ -68,6 +64,15 @@ _UNBOUNDED_SEMANTIC_RETRIEVAL_LIMIT = 2_147_483_647
 _UNBOUNDED_SEMANTIC_ARTIFACT_RETRIEVAL_LIMIT = 2_147_483_647
 HYBRID_MEMORY_SOURCE_PRECEDENCE: list[MemorySelectionSource] = ["symbolic", "semantic"]
 HYBRID_SYMBOLIC_ORDER = ["updated_at_asc", "created_at_asc", "id_asc"]
+HYBRID_ARTIFACT_SOURCE_PRECEDENCE: list[ArtifactSelectionSource] = ["lexical", "semantic"]
+HYBRID_ARTIFACT_MERGED_ORDER = [
+    "source_precedence_asc",
+    "lexical_rank_asc",
+    "semantic_rank_asc",
+    "relative_path_asc",
+    "sequence_no_asc",
+    "id_asc",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,18 +96,19 @@ class CompiledArtifactChunkSection:
     decisions: list[CompilerDecision]
 
 
-@dataclass(frozen=True, slots=True)
-class CompiledSemanticArtifactChunkSection:
-    items: list[ContextPackSemanticArtifactChunk]
-    summary: ContextPackSemanticArtifactChunkSummary
-    decisions: list[CompilerDecision]
-
-
 @dataclass(slots=True)
 class HybridMemoryCandidate:
     memory: MemoryRow
     sources: list[MemorySelectionSource]
     semantic_score: float | None = None
+
+
+@dataclass(slots=True)
+class HybridArtifactChunkCandidate:
+    item: ContextPackArtifactChunk
+    sources: list[ArtifactSelectionSource]
+    lexical_rank: int | None = None
+    semantic_rank: int | None = None
 
 
 def _session_sort_key(
@@ -244,38 +250,37 @@ def _empty_hybrid_memory_summary() -> ContextPackHybridMemorySummary:
 def _empty_artifact_chunk_summary() -> ContextPackArtifactChunkSummary:
     return {
         "requested": False,
+        "lexical_requested": False,
+        "semantic_requested": False,
         "scope": None,
         "query": None,
         "query_terms": [],
-        "matching_rule": TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
-        "limit": 0,
-        "searched_artifact_count": 0,
-        "candidate_count": 0,
-        "included_count": 0,
-        "excluded_uningested_artifact_count": 0,
-        "excluded_limit_count": 0,
-        "order": list(TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER),
-    }
-
-
-def _empty_semantic_artifact_chunk_summary() -> ContextPackSemanticArtifactChunkSummary:
-    return {
-        "requested": False,
-        "scope": None,
         "embedding_config_id": None,
         "query_vector_dimensions": 0,
         "limit": 0,
+        "lexical_limit": 0,
+        "semantic_limit": 0,
         "searched_artifact_count": 0,
-        "candidate_count": 0,
+        "lexical_candidate_count": 0,
+        "semantic_candidate_count": 0,
+        "merged_candidate_count": 0,
+        "deduplicated_count": 0,
         "included_count": 0,
+        "included_lexical_only_count": 0,
+        "included_semantic_only_count": 0,
+        "included_dual_source_count": 0,
         "excluded_uningested_artifact_count": 0,
         "excluded_limit_count": 0,
+        "matching_rule": None,
         "similarity_metric": None,
-        "order": list(TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER),
+        "source_precedence": list(HYBRID_ARTIFACT_SOURCE_PRECEDENCE),
+        "lexical_order": list(TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER),
+        "semantic_order": list(TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER),
+        "merged_order": list(HYBRID_ARTIFACT_MERGED_ORDER),
     }
 
 
-def _artifact_retrieval_decision_metadata(
+def _hybrid_artifact_retrieval_decision_metadata(
     *,
     scope_kind: str,
     task_id: UUID,
@@ -284,63 +289,34 @@ def _artifact_retrieval_decision_metadata(
     media_type: str | None,
     ingestion_status: str,
     limit: int,
+    selected_sources: list[ArtifactSelectionSource],
+    embedding_config_id: UUID | None = None,
+    query_vector_dimensions: int = 0,
     match: dict[str, object] | None = None,
+    score: float | None = None,
     sequence_no: int | None = None,
     char_start: int | None = None,
     char_end_exclusive: int | None = None,
-) -> ArtifactRetrievalDecisionTracePayload:
-    payload: ArtifactRetrievalDecisionTracePayload = {
+) -> HybridArtifactRetrievalDecisionTracePayload:
+    payload: HybridArtifactRetrievalDecisionTracePayload = {
         "scope_kind": scope_kind,  # type: ignore[typeddict-item]
         "task_id": str(task_id),
         "task_artifact_id": str(task_artifact_id),
         "relative_path": relative_path,
         "media_type": media_type,
         "ingestion_status": ingestion_status,  # type: ignore[typeddict-item]
+        "selected_sources": list(selected_sources),
+        "embedding_config_id": None if embedding_config_id is None else str(embedding_config_id),
+        "query_vector_dimensions": query_vector_dimensions,
         "limit": limit,
     }
     if match is not None:
         payload["matched_query_terms"] = list(match["matched_query_terms"])  # type: ignore[index]
         payload["matched_query_term_count"] = int(match["matched_query_term_count"])  # type: ignore[index]
         payload["first_match_char_start"] = int(match["first_match_char_start"])  # type: ignore[index]
-    if sequence_no is not None:
-        payload["sequence_no"] = sequence_no
-    if char_start is not None:
-        payload["char_start"] = char_start
-    if char_end_exclusive is not None:
-        payload["char_end_exclusive"] = char_end_exclusive
-    return payload
-
-
-def _semantic_artifact_retrieval_decision_metadata(
-    *,
-    scope_kind: str,
-    task_id: UUID,
-    task_artifact_id: UUID,
-    relative_path: str,
-    media_type: str | None,
-    ingestion_status: str,
-    embedding_config_id: UUID,
-    query_vector_dimensions: int,
-    limit: int,
-    score: float | None = None,
-    sequence_no: int | None = None,
-    char_start: int | None = None,
-    char_end_exclusive: int | None = None,
-) -> SemanticArtifactRetrievalDecisionTracePayload:
-    payload: SemanticArtifactRetrievalDecisionTracePayload = {
-        "scope_kind": scope_kind,  # type: ignore[typeddict-item]
-        "task_id": str(task_id),
-        "task_artifact_id": str(task_artifact_id),
-        "relative_path": relative_path,
-        "media_type": media_type,
-        "ingestion_status": ingestion_status,  # type: ignore[typeddict-item]
-        "embedding_config_id": str(embedding_config_id),
-        "query_vector_dimensions": query_vector_dimensions,
-        "limit": limit,
-        "similarity_metric": "cosine_similarity",
-    }
     if score is not None:
         payload["score"] = score
+        payload["similarity_metric"] = "cosine_similarity"
     if sequence_no is not None:
         payload["sequence_no"] = sequence_no
     if char_start is not None:
@@ -384,6 +360,110 @@ def _serialize_hybrid_memory(candidate: HybridMemoryCandidate) -> ContextPackMem
             "semantic_score": candidate.semantic_score,
         },
     }
+
+
+def _serialize_hybrid_artifact_chunk(candidate: HybridArtifactChunkCandidate) -> ContextPackArtifactChunk:
+    item = candidate.item
+    return {
+        "id": item["id"],
+        "task_id": item["task_id"],
+        "task_artifact_id": item["task_artifact_id"],
+        "relative_path": item["relative_path"],
+        "media_type": item["media_type"],
+        "sequence_no": item["sequence_no"],
+        "char_start": item["char_start"],
+        "char_end_exclusive": item["char_end_exclusive"],
+        "text": item["text"],
+        "source_provenance": {
+            "sources": list(candidate.sources),
+            "lexical_match": item["source_provenance"]["lexical_match"],
+            "semantic_score": item["source_provenance"]["semantic_score"],
+        },
+    }
+
+
+def _resolve_artifact_scope(
+    store: ContinuityStore,
+    *,
+    artifact_retrieval: CompileContextArtifactRetrievalInput | None,
+    semantic_artifact_retrieval: CompileContextSemanticArtifactRetrievalInput | None,
+) -> tuple[list[dict[str, object]], dict[str, str] | None, str | None]:
+    lexical_scope: tuple[list[dict[str, object]], dict[str, str], str] | None = None
+    semantic_scope: tuple[list[dict[str, object]], dict[str, str], str] | None = None
+
+    if isinstance(artifact_retrieval, CompileContextTaskScopedArtifactRetrievalInput):
+        task = store.get_task_optional(artifact_retrieval.task_id)
+        if task is None:
+            raise TaskNotFoundError(f"task {artifact_retrieval.task_id} was not found")
+        lexical_scope = (
+            store.list_task_artifacts_for_task(artifact_retrieval.task_id),
+            build_task_artifact_chunk_retrieval_scope(
+                kind="task",
+                task_id=artifact_retrieval.task_id,
+            ),
+            "task",
+        )
+    elif isinstance(artifact_retrieval, CompileContextArtifactScopedArtifactRetrievalInput):
+        artifact_row = store.get_task_artifact_optional(artifact_retrieval.task_artifact_id)
+        if artifact_row is None:
+            raise TaskArtifactNotFoundError(
+                f"task artifact {artifact_retrieval.task_artifact_id} was not found"
+            )
+        lexical_scope = (
+            [artifact_row],
+            build_task_artifact_chunk_retrieval_scope(
+                kind="artifact",
+                task_id=artifact_row["task_id"],
+                task_artifact_id=artifact_row["id"],
+            ),
+            "artifact",
+        )
+
+    if isinstance(
+        semantic_artifact_retrieval,
+        CompileContextTaskScopedSemanticArtifactRetrievalInput,
+    ):
+        task = store.get_task_optional(semantic_artifact_retrieval.task_id)
+        if task is None:
+            raise TaskNotFoundError(f"task {semantic_artifact_retrieval.task_id} was not found")
+        semantic_scope = (
+            store.list_task_artifacts_for_task(semantic_artifact_retrieval.task_id),
+            build_task_artifact_chunk_retrieval_scope(
+                kind="task",
+                task_id=semantic_artifact_retrieval.task_id,
+            ),
+            "task",
+        )
+    elif isinstance(
+        semantic_artifact_retrieval,
+        CompileContextArtifactScopedSemanticArtifactRetrievalInput,
+    ):
+        artifact_row = store.get_task_artifact_optional(
+            semantic_artifact_retrieval.task_artifact_id
+        )
+        if artifact_row is None:
+            raise TaskArtifactNotFoundError(
+                f"task artifact {semantic_artifact_retrieval.task_artifact_id} was not found"
+            )
+        semantic_scope = (
+            [artifact_row],
+            build_task_artifact_chunk_retrieval_scope(
+                kind="artifact",
+                task_id=artifact_row["task_id"],
+                task_artifact_id=artifact_row["id"],
+            ),
+            "artifact",
+        )
+
+    if lexical_scope is not None and semantic_scope is not None and lexical_scope[1] != semantic_scope[1]:
+        raise TaskArtifactChunkRetrievalValidationError(
+            "artifact_retrieval and semantic_artifact_retrieval must target the same scope"
+        )
+
+    resolved_scope = lexical_scope or semantic_scope
+    if resolved_scope is None:
+        return [], None, None
+    return resolved_scope
 
 
 def _build_symbolic_memory_section(
@@ -649,47 +729,145 @@ def _compile_artifact_chunk_section(
     store: ContinuityStore,
     *,
     artifact_retrieval: CompileContextArtifactRetrievalInput | None,
+    semantic_artifact_retrieval: CompileContextSemanticArtifactRetrievalInput | None,
 ) -> CompiledArtifactChunkSection:
-    if artifact_retrieval is None:
+    if artifact_retrieval is None and semantic_artifact_retrieval is None:
         return CompiledArtifactChunkSection(
             items=[],
             summary=_empty_artifact_chunk_summary(),
             decisions=[],
         )
 
-    if isinstance(artifact_retrieval, CompileContextTaskScopedArtifactRetrievalInput):
-        task = store.get_task_optional(artifact_retrieval.task_id)
-        if task is None:
-            raise TaskNotFoundError(f"task {artifact_retrieval.task_id} was not found")
-        artifact_rows = store.list_task_artifacts_for_task(artifact_retrieval.task_id)
-        scope = build_task_artifact_chunk_retrieval_scope(
-            kind="task",
-            task_id=artifact_retrieval.task_id,
-        )
-        scope_kind = "task"
-    else:
-        artifact_row = store.get_task_artifact_optional(artifact_retrieval.task_artifact_id)
-        if artifact_row is None:
-            raise TaskArtifactNotFoundError(
-                f"task artifact {artifact_retrieval.task_artifact_id} was not found"
-            )
-        artifact_rows = [artifact_row]
-        scope = build_task_artifact_chunk_retrieval_scope(
-            kind="artifact",
-            task_id=artifact_row["task_id"],
-            task_artifact_id=artifact_row["id"],
-        )
-        scope_kind = "artifact"
-
-    query_terms = resolve_artifact_chunk_retrieval_query_terms(artifact_retrieval.query)
-    matched_items, searched_artifact_count = retrieve_matching_task_artifact_chunks(
+    artifact_rows, scope, scope_kind = _resolve_artifact_scope(
         store,
-        artifact_rows=artifact_rows,
-        query_terms=query_terms,
+        artifact_retrieval=artifact_retrieval,
+        semantic_artifact_retrieval=semantic_artifact_retrieval,
     )
-    included_items = matched_items[: artifact_retrieval.limit]
+    assert scope is not None
+    assert scope_kind is not None
+
+    query = None if artifact_retrieval is None else artifact_retrieval.query
+    query_terms: list[str] = []
+    lexical_items: list[ContextPackArtifactChunk] = []
+    searched_artifact_count = sum(
+        1 for artifact_row in artifact_rows if artifact_row["ingestion_status"] == "ingested"
+    )
+    if artifact_retrieval is not None:
+        query_terms = resolve_artifact_chunk_retrieval_query_terms(artifact_retrieval.query)
+        lexical_matches, searched_artifact_count = retrieve_matching_task_artifact_chunks(
+            store,
+            artifact_rows=artifact_rows,
+            query_terms=query_terms,
+        )
+        lexical_items = [
+            {
+                "id": item["id"],
+                "task_id": item["task_id"],
+                "task_artifact_id": item["task_artifact_id"],
+                "relative_path": item["relative_path"],
+                "media_type": item["media_type"],
+                "sequence_no": item["sequence_no"],
+                "char_start": item["char_start"],
+                "char_end_exclusive": item["char_end_exclusive"],
+                "text": item["text"],
+                "source_provenance": {
+                    "sources": ["lexical"],
+                    "lexical_match": item["match"],
+                    "semantic_score": None,
+                },
+            }
+            for item in lexical_matches
+        ]
+
+    semantic_items: list[ContextPackArtifactChunk] = []
+    query_vector_dimensions = 0
+    if isinstance(
+        semantic_artifact_retrieval,
+        CompileContextTaskScopedSemanticArtifactRetrievalInput,
+    ):
+        _config, query_vector = validate_semantic_artifact_chunk_retrieval_request(
+            store,
+            embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+            query_vector=semantic_artifact_retrieval.query_vector,
+        )
+        query_vector_dimensions = len(query_vector)
+        semantic_items = [
+            {
+                "id": item["id"],
+                "task_id": item["task_id"],
+                "task_artifact_id": item["task_artifact_id"],
+                "relative_path": item["relative_path"],
+                "media_type": item["media_type"],
+                "sequence_no": item["sequence_no"],
+                "char_start": item["char_start"],
+                "char_end_exclusive": item["char_end_exclusive"],
+                "text": item["text"],
+                "source_provenance": {
+                    "sources": ["semantic"],
+                    "lexical_match": None,
+                    "semantic_score": item["score"],
+                },
+            }
+            for item in [
+                serialize_semantic_artifact_chunk_result_item(row)
+                for row in store.retrieve_task_scoped_semantic_artifact_chunk_matches(
+                    task_id=semantic_artifact_retrieval.task_id,
+                    embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+                    query_vector=query_vector,
+                    limit=_UNBOUNDED_SEMANTIC_ARTIFACT_RETRIEVAL_LIMIT,
+                )
+            ]
+        ]
+    elif isinstance(
+        semantic_artifact_retrieval,
+        CompileContextArtifactScopedSemanticArtifactRetrievalInput,
+    ):
+        _config, query_vector = validate_semantic_artifact_chunk_retrieval_request(
+            store,
+            embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+            query_vector=semantic_artifact_retrieval.query_vector,
+        )
+        query_vector_dimensions = len(query_vector)
+        semantic_items = [
+            {
+                "id": item["id"],
+                "task_id": item["task_id"],
+                "task_artifact_id": item["task_artifact_id"],
+                "relative_path": item["relative_path"],
+                "media_type": item["media_type"],
+                "sequence_no": item["sequence_no"],
+                "char_start": item["char_start"],
+                "char_end_exclusive": item["char_end_exclusive"],
+                "text": item["text"],
+                "source_provenance": {
+                    "sources": ["semantic"],
+                    "lexical_match": None,
+                    "semantic_score": item["score"],
+                },
+            }
+            for item in [
+                serialize_semantic_artifact_chunk_result_item(row)
+                for row in store.retrieve_artifact_scoped_semantic_artifact_chunk_matches(
+                    task_artifact_id=semantic_artifact_retrieval.task_artifact_id,
+                    embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+                    query_vector=query_vector,
+                    limit=_UNBOUNDED_SEMANTIC_ARTIFACT_RETRIEVAL_LIMIT,
+                )
+            ]
+        ]
+
+    merged_candidates: list[HybridArtifactChunkCandidate] = []
+    merged_candidates_by_id: dict[str, HybridArtifactChunkCandidate] = {}
+    deduplicated_count = 0
     excluded_uningested_artifact_count = 0
     decisions: list[CompilerDecision] = []
+    final_limit = (
+        artifact_retrieval.limit
+        if artifact_retrieval is not None
+        else semantic_artifact_retrieval.limit
+        if semantic_artifact_retrieval is not None
+        else 0
+    )
 
     for position, artifact_row in enumerate(artifact_rows, start=1):
         if artifact_row["ingestion_status"] == "ingested":
@@ -700,217 +878,216 @@ def _compile_artifact_chunk_section(
                 "excluded",
                 "task_artifact",
                 artifact_row["id"],
-                "artifact_not_ingested",
+                "hybrid_artifact_not_ingested",
                 position,
-                metadata=_artifact_retrieval_decision_metadata(
+                metadata=_hybrid_artifact_retrieval_decision_metadata(
                     scope_kind=scope_kind,
                     task_id=artifact_row["task_id"],
                     task_artifact_id=artifact_row["id"],
                     relative_path=artifact_row["relative_path"],
                     media_type=infer_task_artifact_media_type(artifact_row),
                     ingestion_status=artifact_row["ingestion_status"],
-                    limit=artifact_retrieval.limit,
+                    limit=final_limit,
+                    selected_sources=[],
+                    embedding_config_id=(
+                        None
+                        if semantic_artifact_retrieval is None
+                        else semantic_artifact_retrieval.embedding_config_id
+                    ),
+                    query_vector_dimensions=query_vector_dimensions,
                 ),
             )
         )
 
-    for position, item in enumerate(matched_items, start=1):
-        decision_kind = "included" if position <= artifact_retrieval.limit else "excluded"
-        decision_reason = (
-            "within_artifact_chunk_limit"
-            if position <= artifact_retrieval.limit
-            else "artifact_chunk_limit_exceeded"
+    for lexical_rank, item in enumerate(lexical_items, start=1):
+        candidate = HybridArtifactChunkCandidate(
+            item=item,
+            sources=["lexical"],
+            lexical_rank=lexical_rank,
         )
+        merged_candidates.append(candidate)
+        merged_candidates_by_id[item["id"]] = candidate
+
+    for semantic_rank, item in enumerate(semantic_items, start=1):
+        existing_candidate = merged_candidates_by_id.get(item["id"])
+        if existing_candidate is None:
+            candidate = HybridArtifactChunkCandidate(
+                item=item,
+                sources=["semantic"],
+                semantic_rank=semantic_rank,
+            )
+            merged_candidates.append(candidate)
+            merged_candidates_by_id[item["id"]] = candidate
+            continue
+
+        deduplicated_count += 1
+        if "semantic" not in existing_candidate.sources:
+            existing_candidate.sources.append("semantic")
+        existing_candidate.semantic_rank = semantic_rank
+        existing_candidate.item["source_provenance"]["semantic_score"] = item["source_provenance"][
+            "semantic_score"
+        ]
         decisions.append(
             CompilerDecision(
-                decision_kind,
+                "included",
                 "artifact_chunk",
-                UUID(item["id"]),
-                decision_reason,
-                position,
-                metadata=_artifact_retrieval_decision_metadata(
+                UUID(existing_candidate.item["id"]),
+                "hybrid_artifact_chunk_deduplicated",
+                semantic_rank,
+                metadata=_hybrid_artifact_retrieval_decision_metadata(
                     scope_kind=scope_kind,
-                    task_id=UUID(item["task_id"]),
-                    task_artifact_id=UUID(item["task_artifact_id"]),
-                    relative_path=item["relative_path"],
-                    media_type=item["media_type"],
+                    task_id=UUID(existing_candidate.item["task_id"]),
+                    task_artifact_id=UUID(existing_candidate.item["task_artifact_id"]),
+                    relative_path=existing_candidate.item["relative_path"],
+                    media_type=existing_candidate.item["media_type"],
                     ingestion_status="ingested",
-                    limit=artifact_retrieval.limit,
-                    match=item["match"],
-                    sequence_no=item["sequence_no"],
-                    char_start=item["char_start"],
-                    char_end_exclusive=item["char_end_exclusive"],
+                    limit=final_limit,
+                    selected_sources=existing_candidate.sources,
+                    embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
+                    query_vector_dimensions=query_vector_dimensions,
+                    match=existing_candidate.item["source_provenance"]["lexical_match"],
+                    score=existing_candidate.item["source_provenance"]["semantic_score"],
+                    sequence_no=existing_candidate.item["sequence_no"],
+                    char_start=existing_candidate.item["char_start"],
+                    char_end_exclusive=existing_candidate.item["char_end_exclusive"],
+                ),
+            )
+        )
+
+    merged_candidates.sort(
+        key=lambda candidate: (
+            min(
+                HYBRID_ARTIFACT_SOURCE_PRECEDENCE.index(source)
+                for source in candidate.sources
+            ),
+            candidate.lexical_rank if candidate.lexical_rank is not None else 2_147_483_647,
+            candidate.semantic_rank if candidate.semantic_rank is not None else 2_147_483_647,
+            candidate.item["relative_path"],
+            candidate.item["sequence_no"],
+            candidate.item["id"],
+        )
+    )
+
+    included_candidates = merged_candidates[:final_limit] if final_limit > 0 else []
+    excluded_candidates = merged_candidates[final_limit:] if final_limit > 0 else merged_candidates
+    included_lexical_only_count = 0
+    included_semantic_only_count = 0
+    included_dual_source_count = 0
+
+    for position, candidate in enumerate(merged_candidates, start=1):
+        if position <= final_limit and final_limit > 0:
+            if candidate.sources == ["lexical"]:
+                included_lexical_only_count += 1
+            elif candidate.sources == ["semantic"]:
+                included_semantic_only_count += 1
+            else:
+                included_dual_source_count += 1
+            decisions.append(
+                CompilerDecision(
+                    "included",
+                    "artifact_chunk",
+                    UUID(candidate.item["id"]),
+                    "within_hybrid_artifact_chunk_limit",
+                    position,
+                    metadata=_hybrid_artifact_retrieval_decision_metadata(
+                        scope_kind=scope_kind,
+                        task_id=UUID(candidate.item["task_id"]),
+                        task_artifact_id=UUID(candidate.item["task_artifact_id"]),
+                        relative_path=candidate.item["relative_path"],
+                        media_type=candidate.item["media_type"],
+                        ingestion_status="ingested",
+                        limit=final_limit,
+                        selected_sources=candidate.sources,
+                        embedding_config_id=(
+                            None
+                            if semantic_artifact_retrieval is None
+                            else semantic_artifact_retrieval.embedding_config_id
+                        ),
+                        query_vector_dimensions=query_vector_dimensions,
+                        match=candidate.item["source_provenance"]["lexical_match"],
+                        score=candidate.item["source_provenance"]["semantic_score"],
+                        sequence_no=candidate.item["sequence_no"],
+                        char_start=candidate.item["char_start"],
+                        char_end_exclusive=candidate.item["char_end_exclusive"],
+                    ),
+                )
+            )
+            continue
+
+        decisions.append(
+            CompilerDecision(
+                "excluded",
+                "artifact_chunk",
+                UUID(candidate.item["id"]),
+                "hybrid_artifact_chunk_limit_exceeded",
+                position,
+                metadata=_hybrid_artifact_retrieval_decision_metadata(
+                    scope_kind=scope_kind,
+                    task_id=UUID(candidate.item["task_id"]),
+                    task_artifact_id=UUID(candidate.item["task_artifact_id"]),
+                    relative_path=candidate.item["relative_path"],
+                    media_type=candidate.item["media_type"],
+                    ingestion_status="ingested",
+                    limit=final_limit,
+                    selected_sources=candidate.sources,
+                    embedding_config_id=(
+                        None
+                        if semantic_artifact_retrieval is None
+                        else semantic_artifact_retrieval.embedding_config_id
+                    ),
+                    query_vector_dimensions=query_vector_dimensions,
+                    match=candidate.item["source_provenance"]["lexical_match"],
+                    score=candidate.item["source_provenance"]["semantic_score"],
+                    sequence_no=candidate.item["sequence_no"],
+                    char_start=candidate.item["char_start"],
+                    char_end_exclusive=candidate.item["char_end_exclusive"],
                 ),
             )
         )
 
     return CompiledArtifactChunkSection(
-        items=list(included_items),
+        items=[_serialize_hybrid_artifact_chunk(candidate) for candidate in included_candidates],
         summary={
             "requested": True,
+            "lexical_requested": artifact_retrieval is not None,
+            "semantic_requested": semantic_artifact_retrieval is not None,
             "scope": scope,
-            "query": artifact_retrieval.query,
+            "query": query,
             "query_terms": list(query_terms),
-            "matching_rule": TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
-            "limit": artifact_retrieval.limit,
+            "embedding_config_id": (
+                None
+                if semantic_artifact_retrieval is None
+                else str(semantic_artifact_retrieval.embedding_config_id)
+            ),
+            "query_vector_dimensions": query_vector_dimensions,
+            "limit": final_limit,
+            "lexical_limit": 0 if artifact_retrieval is None else artifact_retrieval.limit,
+            "semantic_limit": (
+                0 if semantic_artifact_retrieval is None else semantic_artifact_retrieval.limit
+            ),
             "searched_artifact_count": searched_artifact_count,
-            "candidate_count": len(matched_items),
-            "included_count": len(included_items),
+            "lexical_candidate_count": len(lexical_items),
+            "semantic_candidate_count": len(semantic_items),
+            "merged_candidate_count": len(merged_candidates),
+            "deduplicated_count": deduplicated_count,
+            "included_count": len(included_candidates),
+            "included_lexical_only_count": included_lexical_only_count,
+            "included_semantic_only_count": included_semantic_only_count,
+            "included_dual_source_count": included_dual_source_count,
             "excluded_uningested_artifact_count": excluded_uningested_artifact_count,
-            "excluded_limit_count": max(len(matched_items) - len(included_items), 0),
-            "order": list(TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER),
-        },
-        decisions=decisions,
-    )
-
-
-def _compile_semantic_artifact_chunk_section(
-    store: ContinuityStore,
-    *,
-    semantic_artifact_retrieval: CompileContextSemanticArtifactRetrievalInput | None,
-) -> CompiledSemanticArtifactChunkSection:
-    if semantic_artifact_retrieval is None:
-        return CompiledSemanticArtifactChunkSection(
-            items=[],
-            summary=_empty_semantic_artifact_chunk_summary(),
-            decisions=[],
-        )
-
-    if isinstance(
-        semantic_artifact_retrieval,
-        CompileContextTaskScopedSemanticArtifactRetrievalInput,
-    ):
-        task = store.get_task_optional(semantic_artifact_retrieval.task_id)
-        if task is None:
-            raise TaskNotFoundError(f"task {semantic_artifact_retrieval.task_id} was not found")
-        artifact_rows = store.list_task_artifacts_for_task(semantic_artifact_retrieval.task_id)
-        scope_kind = "task"
-        section_payload = retrieve_task_scoped_semantic_artifact_chunk_records(
-            store,
-            user_id=task["id"],
-            request=semantic_artifact_retrieval,
-        )
-        _config, query_vector = validate_semantic_artifact_chunk_retrieval_request(
-            store,
-            embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
-            query_vector=semantic_artifact_retrieval.query_vector,
-        )
-        matched_items = [
-            serialize_semantic_artifact_chunk_result_item(row)
-            for row in store.retrieve_task_scoped_semantic_artifact_chunk_matches(
-                task_id=semantic_artifact_retrieval.task_id,
-                embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
-                query_vector=query_vector,
-                limit=_UNBOUNDED_SEMANTIC_ARTIFACT_RETRIEVAL_LIMIT,
-            )
-        ]
-    else:
-        artifact_row = store.get_task_artifact_optional(
-            semantic_artifact_retrieval.task_artifact_id
-        )
-        if artifact_row is None:
-            raise TaskArtifactNotFoundError(
-                f"task artifact {semantic_artifact_retrieval.task_artifact_id} was not found"
-            )
-        artifact_rows = [artifact_row]
-        scope_kind = "artifact"
-        section_payload = retrieve_artifact_scoped_semantic_artifact_chunk_records(
-            store,
-            user_id=artifact_row["task_id"],
-            request=semantic_artifact_retrieval,
-        )
-        _config, query_vector = validate_semantic_artifact_chunk_retrieval_request(
-            store,
-            embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
-            query_vector=semantic_artifact_retrieval.query_vector,
-        )
-        matched_items = [
-            serialize_semantic_artifact_chunk_result_item(row)
-            for row in store.retrieve_artifact_scoped_semantic_artifact_chunk_matches(
-                task_artifact_id=semantic_artifact_retrieval.task_artifact_id,
-                embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
-                query_vector=query_vector,
-                limit=_UNBOUNDED_SEMANTIC_ARTIFACT_RETRIEVAL_LIMIT,
-            )
-        ]
-
-    included_items = list(section_payload["items"])
-    excluded_uningested_artifact_count = 0
-    decisions: list[CompilerDecision] = []
-
-    for position, artifact_row in enumerate(artifact_rows, start=1):
-        if artifact_row["ingestion_status"] == "ingested":
-            continue
-        excluded_uningested_artifact_count += 1
-        decisions.append(
-            CompilerDecision(
-                "excluded",
-                "task_artifact",
-                artifact_row["id"],
-                "semantic_artifact_not_ingested",
-                position,
-                metadata=_semantic_artifact_retrieval_decision_metadata(
-                    scope_kind=scope_kind,
-                    task_id=artifact_row["task_id"],
-                    task_artifact_id=artifact_row["id"],
-                    relative_path=artifact_row["relative_path"],
-                    media_type=infer_task_artifact_media_type(artifact_row),
-                    ingestion_status=artifact_row["ingestion_status"],
-                    embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
-                    query_vector_dimensions=len(query_vector),
-                    limit=semantic_artifact_retrieval.limit,
-                ),
-            )
-        )
-
-    for position, item in enumerate(matched_items, start=1):
-        decision_kind = "included" if position <= semantic_artifact_retrieval.limit else "excluded"
-        decision_reason = (
-            "within_semantic_artifact_chunk_limit"
-            if position <= semantic_artifact_retrieval.limit
-            else "semantic_artifact_chunk_limit_exceeded"
-        )
-        decisions.append(
-            CompilerDecision(
-                decision_kind,
-                "semantic_artifact_chunk",
-                UUID(item["id"]),
-                decision_reason,
-                position,
-                metadata=_semantic_artifact_retrieval_decision_metadata(
-                    scope_kind=scope_kind,
-                    task_id=UUID(item["task_id"]),
-                    task_artifact_id=UUID(item["task_artifact_id"]),
-                    relative_path=item["relative_path"],
-                    media_type=item["media_type"],
-                    ingestion_status="ingested",
-                    embedding_config_id=semantic_artifact_retrieval.embedding_config_id,
-                    query_vector_dimensions=len(query_vector),
-                    limit=semantic_artifact_retrieval.limit,
-                    score=item["score"],
-                    sequence_no=item["sequence_no"],
-                    char_start=item["char_start"],
-                    char_end_exclusive=item["char_end_exclusive"],
-                ),
-            )
-        )
-
-    section_summary = section_payload["summary"]
-    return CompiledSemanticArtifactChunkSection(
-        items=included_items,
-        summary={
-            "requested": True,
-            "scope": section_summary["scope"],
-            "embedding_config_id": section_summary["embedding_config_id"],
-            "query_vector_dimensions": section_summary["query_vector_dimensions"],
-            "limit": section_summary["limit"],
-            "searched_artifact_count": section_summary["searched_artifact_count"],
-            "candidate_count": len(matched_items),
-            "included_count": len(included_items),
-            "excluded_uningested_artifact_count": excluded_uningested_artifact_count,
-            "excluded_limit_count": max(len(matched_items) - len(included_items), 0),
-            "similarity_metric": section_summary["similarity_metric"],
-            "order": list(section_summary["order"]),
+            "excluded_limit_count": len(excluded_candidates),
+            "matching_rule": (
+                None
+                if artifact_retrieval is None
+                else TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE
+            ),
+            "similarity_metric": (
+                None if semantic_artifact_retrieval is None else "cosine_similarity"
+            ),
+            "source_precedence": list(HYBRID_ARTIFACT_SOURCE_PRECEDENCE),
+            "lexical_order": list(TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER),
+            "semantic_order": list(TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER),
+            "merged_order": list(HYBRID_ARTIFACT_MERGED_ORDER),
         },
         decisions=decisions,
     )
@@ -928,7 +1105,6 @@ def compile_continuity_context(
     limits: ContextCompilerLimits,
     memory_section: CompiledMemorySection | None = None,
     artifact_chunk_section: CompiledArtifactChunkSection | None = None,
-    semantic_artifact_chunk_section: CompiledSemanticArtifactChunkSection | None = None,
 ) -> CompilerRunResult:
     latest_session_sequence: dict[UUID, int] = {}
     for event in events:
@@ -1027,15 +1203,6 @@ def compile_continuity_context(
         decisions=[],
     )
     decisions.extend(resolved_artifact_chunk_section.decisions)
-    resolved_semantic_artifact_chunk_section = (
-        semantic_artifact_chunk_section
-        or CompiledSemanticArtifactChunkSection(
-            items=[],
-            summary=_empty_semantic_artifact_chunk_summary(),
-            decisions=[],
-        )
-    )
-    decisions.extend(resolved_semantic_artifact_chunk_section.decisions)
     ordered_entities = sorted(entities, key=_entity_sort_key)
     included_entities = ordered_entities[-limits.max_entities :] if limits.max_entities > 0 else []
     included_entity_ids = {entity["id"] for entity in included_entities}
@@ -1172,36 +1339,34 @@ def compile_continuity_context(
                     if resolved_artifact_chunk_section.summary["scope"] is None
                     else resolved_artifact_chunk_section.summary["scope"]["kind"]
                 ),
-                "artifact_chunk_candidate_count": resolved_artifact_chunk_section.summary[
-                    "candidate_count"
+                "artifact_lexical_retrieval_requested": resolved_artifact_chunk_section.summary[
+                    "lexical_requested"
+                ],
+                "artifact_semantic_retrieval_requested": resolved_artifact_chunk_section.summary[
+                    "semantic_requested"
+                ],
+                "artifact_lexical_candidate_count": resolved_artifact_chunk_section.summary[
+                    "lexical_candidate_count"
+                ],
+                "artifact_semantic_candidate_count": resolved_artifact_chunk_section.summary[
+                    "semantic_candidate_count"
+                ],
+                "artifact_merged_candidate_count": resolved_artifact_chunk_section.summary[
+                    "merged_candidate_count"
+                ],
+                "artifact_deduplicated_count": resolved_artifact_chunk_section.summary[
+                    "deduplicated_count"
                 ],
                 "included_artifact_chunk_count": resolved_artifact_chunk_section.summary[
                     "included_count"
+                ],
+                "included_dual_source_artifact_chunk_count": resolved_artifact_chunk_section.summary[
+                    "included_dual_source_count"
                 ],
                 "excluded_artifact_chunk_limit_count": resolved_artifact_chunk_section.summary[
                     "excluded_limit_count"
                 ],
                 "excluded_uningested_artifact_count": resolved_artifact_chunk_section.summary[
-                    "excluded_uningested_artifact_count"
-                ],
-                "semantic_artifact_retrieval_requested": resolved_semantic_artifact_chunk_section.summary[
-                    "requested"
-                ],
-                "semantic_artifact_retrieval_scope_kind": (
-                    None
-                    if resolved_semantic_artifact_chunk_section.summary["scope"] is None
-                    else resolved_semantic_artifact_chunk_section.summary["scope"]["kind"]
-                ),
-                "semantic_artifact_chunk_candidate_count": resolved_semantic_artifact_chunk_section.summary[
-                    "candidate_count"
-                ],
-                "included_semantic_artifact_chunk_count": resolved_semantic_artifact_chunk_section.summary[
-                    "included_count"
-                ],
-                "excluded_semantic_artifact_chunk_limit_count": resolved_semantic_artifact_chunk_section.summary[
-                    "excluded_limit_count"
-                ],
-                "excluded_semantic_uningested_artifact_count": resolved_semantic_artifact_chunk_section.summary[
                     "excluded_uningested_artifact_count"
                 ],
                 "included_entity_count": len(included_entities),
@@ -1237,8 +1402,6 @@ def compile_continuity_context(
             "memory_summary": resolved_memory_section.summary,
             "artifact_chunks": list(resolved_artifact_chunk_section.items),
             "artifact_chunk_summary": resolved_artifact_chunk_section.summary,
-            "semantic_artifact_chunks": list(resolved_semantic_artifact_chunk_section.items),
-            "semantic_artifact_chunk_summary": resolved_semantic_artifact_chunk_section.summary,
             "entities": [_serialize_entity(entity) for entity in included_entities],
             "entity_summary": {
                 "candidate_count": len(ordered_entities),
@@ -1281,9 +1444,6 @@ def compile_and_persist_trace(
     artifact_chunk_section = _compile_artifact_chunk_section(
         store,
         artifact_retrieval=artifact_retrieval,
-    )
-    semantic_artifact_chunk_section = _compile_semantic_artifact_chunk_section(
-        store,
         semantic_artifact_retrieval=semantic_artifact_retrieval,
     )
     entities = store.list_entities()
@@ -1301,7 +1461,6 @@ def compile_and_persist_trace(
         limits=limits,
         memory_section=memory_section,
         artifact_chunk_section=artifact_chunk_section,
-        semantic_artifact_chunk_section=semantic_artifact_chunk_section,
     )
     trace = store.create_trace(
         user_id=user_id,

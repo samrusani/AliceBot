@@ -485,20 +485,49 @@ def test_compile_context_endpoint_persists_trace_and_trace_events(migrated_datab
             "semantic_order": ["score_desc", "created_at_asc", "id_asc"],
         },
     }
-    assert payload["context_pack"]["semantic_artifact_chunks"] == []
-    assert payload["context_pack"]["semantic_artifact_chunk_summary"] == {
+    assert payload["context_pack"]["artifact_chunks"] == []
+    assert payload["context_pack"]["artifact_chunk_summary"] == {
         "requested": False,
+        "lexical_requested": False,
+        "semantic_requested": False,
         "scope": None,
+        "query": None,
+        "query_terms": [],
         "embedding_config_id": None,
         "query_vector_dimensions": 0,
         "limit": 0,
+        "lexical_limit": 0,
+        "semantic_limit": 0,
         "searched_artifact_count": 0,
-        "candidate_count": 0,
+        "lexical_candidate_count": 0,
+        "semantic_candidate_count": 0,
+        "merged_candidate_count": 0,
+        "deduplicated_count": 0,
         "included_count": 0,
+        "included_lexical_only_count": 0,
+        "included_semantic_only_count": 0,
+        "included_dual_source_count": 0,
         "excluded_uningested_artifact_count": 0,
         "excluded_limit_count": 0,
+        "matching_rule": None,
         "similarity_metric": None,
-        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
     }
     assert payload["context_pack"]["entities"] == [
         {
@@ -608,11 +637,13 @@ def test_compile_context_endpoint_persists_trace_and_trace_events(migrated_datab
     assert trace_events[-1]["payload"]["hybrid_memory_candidate_count"] == 2
     assert trace_events[-1]["payload"]["hybrid_memory_merged_candidate_count"] == 1
     assert trace_events[-1]["payload"]["hybrid_memory_deduplicated_count"] == 0
-    assert trace_events[-1]["payload"]["semantic_artifact_retrieval_requested"] is False
-    assert trace_events[-1]["payload"]["semantic_artifact_chunk_candidate_count"] == 0
-    assert trace_events[-1]["payload"]["included_semantic_artifact_chunk_count"] == 0
-    assert trace_events[-1]["payload"]["excluded_semantic_artifact_chunk_limit_count"] == 0
-    assert trace_events[-1]["payload"]["excluded_semantic_uningested_artifact_count"] == 0
+    assert trace_events[-1]["payload"]["artifact_lexical_retrieval_requested"] is False
+    assert trace_events[-1]["payload"]["artifact_semantic_retrieval_requested"] is False
+    assert trace_events[-1]["payload"]["artifact_lexical_candidate_count"] == 0
+    assert trace_events[-1]["payload"]["artifact_semantic_candidate_count"] == 0
+    assert trace_events[-1]["payload"]["artifact_merged_candidate_count"] == 0
+    assert trace_events[-1]["payload"]["artifact_deduplicated_count"] == 0
+    assert trace_events[-1]["payload"]["included_dual_source_artifact_chunk_count"] == 0
     assert trace_events[-1]["payload"]["included_entity_count"] == 1
     assert trace_events[-1]["payload"]["excluded_entity_limit_count"] == 2
     assert trace_events[-1]["payload"]["included_entity_edge_count"] == 1
@@ -691,20 +722,49 @@ def test_compile_context_prefers_updated_active_memory_within_same_transaction(
             "semantic_order": ["score_desc", "created_at_asc", "id_asc"],
         },
     }
-    assert payload["context_pack"]["semantic_artifact_chunks"] == []
-    assert payload["context_pack"]["semantic_artifact_chunk_summary"] == {
+    assert payload["context_pack"]["artifact_chunks"] == []
+    assert payload["context_pack"]["artifact_chunk_summary"] == {
         "requested": False,
+        "lexical_requested": False,
+        "semantic_requested": False,
         "scope": None,
+        "query": None,
+        "query_terms": [],
         "embedding_config_id": None,
         "query_vector_dimensions": 0,
         "limit": 0,
+        "lexical_limit": 0,
+        "semantic_limit": 0,
         "searched_artifact_count": 0,
-        "candidate_count": 0,
+        "lexical_candidate_count": 0,
+        "semantic_candidate_count": 0,
+        "merged_candidate_count": 0,
+        "deduplicated_count": 0,
         "included_count": 0,
+        "included_lexical_only_count": 0,
+        "included_semantic_only_count": 0,
+        "included_dual_source_count": 0,
         "excluded_uningested_artifact_count": 0,
         "excluded_limit_count": 0,
+        "matching_rule": None,
         "similarity_metric": None,
-        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
     }
     assert payload["context_pack"]["entity_summary"] == {
         "candidate_count": 2,
@@ -1005,10 +1065,14 @@ def test_compile_context_artifact_retrieval_integrates_chunks_traces_and_exclusi
             "char_start": 0,
             "char_end_exclusive": 14,
             "text": "beta alpha doc",
-            "match": {
-                "matched_query_terms": ["alpha", "beta"],
-                "matched_query_term_count": 2,
-                "first_match_char_start": 0,
+            "source_provenance": {
+                "sources": ["lexical"],
+                "lexical_match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+                "semantic_score": None,
             },
         },
         {
@@ -1021,28 +1085,55 @@ def test_compile_context_artifact_retrieval_integrates_chunks_traces_and_exclusi
             "char_start": 0,
             "char_end_exclusive": 15,
             "text": "alpha beta note",
-            "match": {
-                "matched_query_terms": ["alpha", "beta"],
-                "matched_query_term_count": 2,
-                "first_match_char_start": 0,
+            "source_provenance": {
+                "sources": ["lexical"],
+                "lexical_match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+                "semantic_score": None,
             },
         },
     ]
     assert payload["context_pack"]["artifact_chunk_summary"] == {
         "requested": True,
+        "lexical_requested": True,
+        "semantic_requested": False,
         "scope": {"kind": "task", "task_id": str(artifact_scope["task_id"])},
         "query": "Alpha beta",
         "query_terms": ["alpha", "beta"],
-        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "embedding_config_id": None,
+        "query_vector_dimensions": 0,
         "limit": 2,
+        "lexical_limit": 2,
+        "semantic_limit": 0,
         "searched_artifact_count": 3,
-        "candidate_count": 3,
+        "lexical_candidate_count": 3,
+        "semantic_candidate_count": 0,
+        "merged_candidate_count": 3,
+        "deduplicated_count": 0,
         "included_count": 2,
+        "included_lexical_only_count": 2,
+        "included_semantic_only_count": 0,
+        "included_dual_source_count": 0,
         "excluded_uningested_artifact_count": 1,
         "excluded_limit_count": 1,
-        "order": [
+        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "similarity_metric": None,
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
             "matched_query_term_count_desc",
             "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
             "relative_path_asc",
             "sequence_no_asc",
             "id_asc",
@@ -1056,7 +1147,7 @@ def test_compile_context_artifact_retrieval_integrates_chunks_traces_and_exclusi
         trace_events = ContinuityStore(conn).list_trace_events(trace_id)
 
     assert any(
-        event["payload"]["reason"] == "within_artifact_chunk_limit"
+        event["payload"]["reason"] == "within_hybrid_artifact_chunk_limit"
         and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["docs"])
         and event["payload"]["relative_path"] == "docs/a.txt"
         and event["payload"]["matched_query_terms"] == ["alpha", "beta"]
@@ -1064,21 +1155,21 @@ def test_compile_context_artifact_retrieval_integrates_chunks_traces_and_exclusi
         if event["kind"] == "context.included"
     )
     assert any(
-        event["payload"]["reason"] == "within_artifact_chunk_limit"
+        event["payload"]["reason"] == "within_hybrid_artifact_chunk_limit"
         and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["notes"])
         and event["payload"]["relative_path"] == "notes/b.md"
         for event in trace_events
         if event["kind"] == "context.included"
     )
     assert any(
-        event["payload"]["reason"] == "artifact_chunk_limit_exceeded"
+        event["payload"]["reason"] == "hybrid_artifact_chunk_limit_exceeded"
         and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["weak"])
         and event["payload"]["relative_path"] == "notes/c.txt"
         for event in trace_events
         if event["kind"] == "context.excluded"
     )
     assert any(
-        event["payload"]["reason"] == "artifact_not_ingested"
+        event["payload"]["reason"] == "hybrid_artifact_not_ingested"
         and event["payload"]["entity_id"] == str(artifact_scope["artifact_ids"]["pending"])
         and event["payload"]["relative_path"] == "notes/hidden.txt"
         and event["payload"]["ingestion_status"] == "pending"
@@ -1087,8 +1178,14 @@ def test_compile_context_artifact_retrieval_integrates_chunks_traces_and_exclusi
     )
     assert trace_events[-1]["payload"]["artifact_retrieval_requested"] is True
     assert trace_events[-1]["payload"]["artifact_retrieval_scope_kind"] == "task"
-    assert trace_events[-1]["payload"]["artifact_chunk_candidate_count"] == 3
+    assert trace_events[-1]["payload"]["artifact_lexical_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["artifact_semantic_retrieval_requested"] is False
+    assert trace_events[-1]["payload"]["artifact_lexical_candidate_count"] == 3
+    assert trace_events[-1]["payload"]["artifact_semantic_candidate_count"] == 0
+    assert trace_events[-1]["payload"]["artifact_merged_candidate_count"] == 3
+    assert trace_events[-1]["payload"]["artifact_deduplicated_count"] == 0
     assert trace_events[-1]["payload"]["included_artifact_chunk_count"] == 2
+    assert trace_events[-1]["payload"]["included_dual_source_artifact_chunk_count"] == 0
     assert trace_events[-1]["payload"]["excluded_artifact_chunk_limit_count"] == 1
     assert trace_events[-1]["payload"]["excluded_uningested_artifact_count"] == 1
 
@@ -1134,15 +1231,21 @@ def test_compile_context_artifact_scoped_retrieval_returns_only_visible_artifact
             "char_start": 0,
             "char_end_exclusive": 15,
             "text": "alpha beta note",
-            "match": {
-                "matched_query_terms": ["alpha", "beta"],
-                "matched_query_term_count": 2,
-                "first_match_char_start": 0,
+            "source_provenance": {
+                "sources": ["lexical"],
+                "lexical_match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+                "semantic_score": None,
             },
         }
     ]
     assert payload["context_pack"]["artifact_chunk_summary"] == {
         "requested": True,
+        "lexical_requested": True,
+        "semantic_requested": False,
         "scope": {
             "kind": "artifact",
             "task_id": str(artifact_scope["task_id"]),
@@ -1150,16 +1253,37 @@ def test_compile_context_artifact_scoped_retrieval_returns_only_visible_artifact
         },
         "query": "Alpha beta",
         "query_terms": ["alpha", "beta"],
-        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "embedding_config_id": None,
+        "query_vector_dimensions": 0,
         "limit": 2,
+        "lexical_limit": 2,
+        "semantic_limit": 0,
         "searched_artifact_count": 1,
-        "candidate_count": 1,
+        "lexical_candidate_count": 1,
+        "semantic_candidate_count": 0,
+        "merged_candidate_count": 1,
+        "deduplicated_count": 0,
         "included_count": 1,
+        "included_lexical_only_count": 1,
+        "included_semantic_only_count": 0,
+        "included_dual_source_count": 0,
         "excluded_uningested_artifact_count": 0,
         "excluded_limit_count": 0,
-        "order": [
+        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "similarity_metric": None,
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
             "matched_query_term_count_desc",
             "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
             "relative_path_asc",
             "sequence_no_asc",
             "id_asc",
@@ -1171,7 +1295,7 @@ def test_compile_context_artifact_scoped_retrieval_returns_only_visible_artifact
         trace_events = ContinuityStore(conn).list_trace_events(trace_id)
 
     assert any(
-        event["payload"]["reason"] == "within_artifact_chunk_limit"
+        event["payload"]["reason"] == "within_hybrid_artifact_chunk_limit"
         and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["notes"])
         and event["payload"]["scope_kind"] == "artifact"
         and event["payload"]["task_artifact_id"] == str(artifact_scope["artifact_ids"]["notes"])
@@ -1180,10 +1304,205 @@ def test_compile_context_artifact_scoped_retrieval_returns_only_visible_artifact
     )
     assert trace_events[-1]["payload"]["artifact_retrieval_requested"] is True
     assert trace_events[-1]["payload"]["artifact_retrieval_scope_kind"] == "artifact"
-    assert trace_events[-1]["payload"]["artifact_chunk_candidate_count"] == 1
+    assert trace_events[-1]["payload"]["artifact_lexical_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["artifact_semantic_retrieval_requested"] is False
+    assert trace_events[-1]["payload"]["artifact_lexical_candidate_count"] == 1
+    assert trace_events[-1]["payload"]["artifact_semantic_candidate_count"] == 0
+    assert trace_events[-1]["payload"]["artifact_merged_candidate_count"] == 1
+    assert trace_events[-1]["payload"]["artifact_deduplicated_count"] == 0
     assert trace_events[-1]["payload"]["included_artifact_chunk_count"] == 1
+    assert trace_events[-1]["payload"]["included_dual_source_artifact_chunk_count"] == 0
     assert trace_events[-1]["payload"]["excluded_artifact_chunk_limit_count"] == 0
     assert trace_events[-1]["payload"]["excluded_uningested_artifact_count"] == 0
+
+
+def test_compile_context_hybrid_artifact_merge_preserves_dual_source_provenance_and_limits(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = seed_traceable_thread(migrated_database_urls["app"])
+    artifact_scope = seed_compile_artifact_scope(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        thread_id=seeded["thread_id"],
+    )
+    config_id = seed_embedding_config_for_user(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+    )
+    seed_task_artifact_chunk_embedding_for_user(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        task_artifact_chunk_id=artifact_scope["chunk_ids"]["docs"],
+        embedding_config_id=config_id,
+        vector=[1.0, 0.0, 0.0],
+    )
+    seed_task_artifact_chunk_embedding_for_user(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        task_artifact_chunk_id=artifact_scope["chunk_ids"]["notes"],
+        embedding_config_id=config_id,
+        vector=[1.0, 0.0, 0.0],
+    )
+    seed_task_artifact_chunk_embedding_for_user(
+        migrated_database_urls["app"],
+        user_id=seeded["user_id"],
+        task_artifact_chunk_id=artifact_scope["chunk_ids"]["weak"],
+        embedding_config_id=config_id,
+        vector=[0.0, 1.0, 0.0],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status_code, payload = invoke_compile_context(
+        {
+            "user_id": str(seeded["user_id"]),
+            "thread_id": str(seeded["thread_id"]),
+            "artifact_retrieval": {
+                "kind": "task",
+                "task_id": str(artifact_scope["task_id"]),
+                "query": "Alpha beta",
+                "limit": 2,
+            },
+            "semantic_artifact_retrieval": {
+                "kind": "task",
+                "task_id": str(artifact_scope["task_id"]),
+                "embedding_config_id": str(config_id),
+                "query_vector": [1.0, 0.0, 0.0],
+                "limit": 2,
+            },
+        }
+    )
+
+    assert status_code == 200
+    assert payload["context_pack"]["artifact_chunks"] == [
+        {
+            "id": str(artifact_scope["chunk_ids"]["docs"]),
+            "task_id": str(artifact_scope["task_id"]),
+            "task_artifact_id": str(artifact_scope["artifact_ids"]["docs"]),
+            "relative_path": "docs/a.txt",
+            "media_type": "text/plain",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 14,
+            "text": "beta alpha doc",
+            "source_provenance": {
+                "sources": ["lexical", "semantic"],
+                "lexical_match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+                "semantic_score": 1.0,
+            },
+        },
+        {
+            "id": str(artifact_scope["chunk_ids"]["notes"]),
+            "task_id": str(artifact_scope["task_id"]),
+            "task_artifact_id": str(artifact_scope["artifact_ids"]["notes"]),
+            "relative_path": "notes/b.md",
+            "media_type": "text/markdown",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 15,
+            "text": "alpha beta note",
+            "source_provenance": {
+                "sources": ["lexical", "semantic"],
+                "lexical_match": {
+                    "matched_query_terms": ["alpha", "beta"],
+                    "matched_query_term_count": 2,
+                    "first_match_char_start": 0,
+                },
+                "semantic_score": 1.0,
+            },
+        },
+    ]
+    assert payload["context_pack"]["artifact_chunk_summary"] == {
+        "requested": True,
+        "lexical_requested": True,
+        "semantic_requested": True,
+        "scope": {"kind": "task", "task_id": str(artifact_scope["task_id"])},
+        "query": "Alpha beta",
+        "query_terms": ["alpha", "beta"],
+        "embedding_config_id": str(config_id),
+        "query_vector_dimensions": 3,
+        "limit": 2,
+        "lexical_limit": 2,
+        "semantic_limit": 2,
+        "searched_artifact_count": 3,
+        "lexical_candidate_count": 3,
+        "semantic_candidate_count": 3,
+        "merged_candidate_count": 3,
+        "deduplicated_count": 3,
+        "included_count": 2,
+        "included_lexical_only_count": 0,
+        "included_semantic_only_count": 0,
+        "included_dual_source_count": 2,
+        "excluded_uningested_artifact_count": 1,
+        "excluded_limit_count": 1,
+        "matching_rule": "casefolded_unicode_word_overlap_unique_query_terms_v1",
+        "similarity_metric": "cosine_similarity",
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+    }
+
+    trace_id = UUID(payload["trace_id"])
+    with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
+        trace_events = ContinuityStore(conn).list_trace_events(trace_id)
+
+    assert any(
+        event["payload"]["reason"] == "hybrid_artifact_chunk_deduplicated"
+        and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["docs"])
+        and event["payload"]["selected_sources"] == ["lexical", "semantic"]
+        and event["payload"]["score"] == 1.0
+        for event in trace_events
+        if event["kind"] == "context.included"
+    )
+    assert any(
+        event["payload"]["reason"] == "within_hybrid_artifact_chunk_limit"
+        and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["notes"])
+        and event["payload"]["selected_sources"] == ["lexical", "semantic"]
+        for event in trace_events
+        if event["kind"] == "context.included"
+    )
+    assert any(
+        event["payload"]["reason"] == "hybrid_artifact_chunk_limit_exceeded"
+        and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["weak"])
+        and event["payload"]["selected_sources"] == ["lexical", "semantic"]
+        and event["payload"]["score"] == 0.0
+        for event in trace_events
+        if event["kind"] == "context.excluded"
+    )
+    assert trace_events[-1]["payload"]["artifact_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["artifact_retrieval_scope_kind"] == "task"
+    assert trace_events[-1]["payload"]["artifact_lexical_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["artifact_semantic_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["artifact_lexical_candidate_count"] == 3
+    assert trace_events[-1]["payload"]["artifact_semantic_candidate_count"] == 3
+    assert trace_events[-1]["payload"]["artifact_merged_candidate_count"] == 3
+    assert trace_events[-1]["payload"]["artifact_deduplicated_count"] == 3
+    assert trace_events[-1]["payload"]["included_artifact_chunk_count"] == 2
+    assert trace_events[-1]["payload"]["included_dual_source_artifact_chunk_count"] == 2
+    assert trace_events[-1]["payload"]["excluded_artifact_chunk_limit_count"] == 1
+    assert trace_events[-1]["payload"]["excluded_uningested_artifact_count"] == 1
 
 
 def test_compile_context_semantic_artifact_retrieval_integrates_chunks_traces_and_exclusion_rules(
@@ -1242,7 +1561,7 @@ def test_compile_context_semantic_artifact_retrieval_integrates_chunks_traces_an
     )
 
     assert status_code == 200
-    assert payload["context_pack"]["semantic_artifact_chunks"] == [
+    assert payload["context_pack"]["artifact_chunks"] == [
         {
             "id": str(artifact_scope["chunk_ids"]["docs"]),
             "task_id": str(artifact_scope["task_id"]),
@@ -1253,7 +1572,11 @@ def test_compile_context_semantic_artifact_retrieval_integrates_chunks_traces_an
             "char_start": 0,
             "char_end_exclusive": 14,
             "text": "beta alpha doc",
-            "score": 1.0,
+            "source_provenance": {
+                "sources": ["semantic"],
+                "lexical_match": None,
+                "semantic_score": 1.0,
+            },
         },
         {
             "id": str(artifact_scope["chunk_ids"]["notes"]),
@@ -1265,31 +1588,63 @@ def test_compile_context_semantic_artifact_retrieval_integrates_chunks_traces_an
             "char_start": 0,
             "char_end_exclusive": 15,
             "text": "alpha beta note",
-            "score": 1.0,
+            "source_provenance": {
+                "sources": ["semantic"],
+                "lexical_match": None,
+                "semantic_score": 1.0,
+            },
         },
     ]
-    assert payload["context_pack"]["semantic_artifact_chunk_summary"] == {
+    assert payload["context_pack"]["artifact_chunk_summary"] == {
         "requested": True,
+        "lexical_requested": False,
+        "semantic_requested": True,
         "scope": {"kind": "task", "task_id": str(artifact_scope["task_id"])},
+        "query": None,
+        "query_terms": [],
         "embedding_config_id": str(config_id),
         "query_vector_dimensions": 3,
         "limit": 2,
+        "lexical_limit": 0,
+        "semantic_limit": 2,
         "searched_artifact_count": 3,
-        "candidate_count": 3,
+        "lexical_candidate_count": 0,
+        "semantic_candidate_count": 3,
+        "merged_candidate_count": 3,
+        "deduplicated_count": 0,
         "included_count": 2,
+        "included_lexical_only_count": 0,
+        "included_semantic_only_count": 2,
+        "included_dual_source_count": 0,
         "excluded_uningested_artifact_count": 1,
         "excluded_limit_count": 1,
+        "matching_rule": None,
         "similarity_metric": "cosine_similarity",
-        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
     }
-    assert payload["context_pack"]["artifact_chunks"] == []
 
     trace_id = UUID(payload["trace_id"])
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         trace_events = ContinuityStore(conn).list_trace_events(trace_id)
 
     assert any(
-        event["payload"]["reason"] == "within_semantic_artifact_chunk_limit"
+        event["payload"]["reason"] == "within_hybrid_artifact_chunk_limit"
         and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["docs"])
         and event["payload"]["relative_path"] == "docs/a.txt"
         and event["payload"]["score"] == 1.0
@@ -1297,14 +1652,14 @@ def test_compile_context_semantic_artifact_retrieval_integrates_chunks_traces_an
         if event["kind"] == "context.included"
     )
     assert any(
-        event["payload"]["reason"] == "within_semantic_artifact_chunk_limit"
+        event["payload"]["reason"] == "within_hybrid_artifact_chunk_limit"
         and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["notes"])
         and event["payload"]["relative_path"] == "notes/b.md"
         for event in trace_events
         if event["kind"] == "context.included"
     )
     assert any(
-        event["payload"]["reason"] == "semantic_artifact_chunk_limit_exceeded"
+        event["payload"]["reason"] == "hybrid_artifact_chunk_limit_exceeded"
         and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["weak"])
         and event["payload"]["relative_path"] == "notes/c.txt"
         and event["payload"]["score"] == 0.0
@@ -1312,19 +1667,25 @@ def test_compile_context_semantic_artifact_retrieval_integrates_chunks_traces_an
         if event["kind"] == "context.excluded"
     )
     assert any(
-        event["payload"]["reason"] == "semantic_artifact_not_ingested"
+        event["payload"]["reason"] == "hybrid_artifact_not_ingested"
         and event["payload"]["entity_id"] == str(artifact_scope["artifact_ids"]["pending"])
         and event["payload"]["relative_path"] == "notes/hidden.txt"
         and event["payload"]["ingestion_status"] == "pending"
         for event in trace_events
         if event["kind"] == "context.excluded"
     )
-    assert trace_events[-1]["payload"]["semantic_artifact_retrieval_requested"] is True
-    assert trace_events[-1]["payload"]["semantic_artifact_retrieval_scope_kind"] == "task"
-    assert trace_events[-1]["payload"]["semantic_artifact_chunk_candidate_count"] == 3
-    assert trace_events[-1]["payload"]["included_semantic_artifact_chunk_count"] == 2
-    assert trace_events[-1]["payload"]["excluded_semantic_artifact_chunk_limit_count"] == 1
-    assert trace_events[-1]["payload"]["excluded_semantic_uningested_artifact_count"] == 1
+    assert trace_events[-1]["payload"]["artifact_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["artifact_retrieval_scope_kind"] == "task"
+    assert trace_events[-1]["payload"]["artifact_lexical_retrieval_requested"] is False
+    assert trace_events[-1]["payload"]["artifact_semantic_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["artifact_lexical_candidate_count"] == 0
+    assert trace_events[-1]["payload"]["artifact_semantic_candidate_count"] == 3
+    assert trace_events[-1]["payload"]["artifact_merged_candidate_count"] == 3
+    assert trace_events[-1]["payload"]["artifact_deduplicated_count"] == 0
+    assert trace_events[-1]["payload"]["included_artifact_chunk_count"] == 2
+    assert trace_events[-1]["payload"]["included_dual_source_artifact_chunk_count"] == 0
+    assert trace_events[-1]["payload"]["excluded_artifact_chunk_limit_count"] == 1
+    assert trace_events[-1]["payload"]["excluded_uningested_artifact_count"] == 1
 
 
 def test_compile_context_semantic_artifact_scoped_retrieval_returns_only_visible_artifact_chunks(
@@ -1369,7 +1730,7 @@ def test_compile_context_semantic_artifact_scoped_retrieval_returns_only_visible
     )
 
     assert status_code == 200
-    assert payload["context_pack"]["semantic_artifact_chunks"] == [
+    assert payload["context_pack"]["artifact_chunks"] == [
         {
             "id": str(artifact_scope["chunk_ids"]["notes"]),
             "task_id": str(artifact_scope["task_id"]),
@@ -1380,26 +1741,59 @@ def test_compile_context_semantic_artifact_scoped_retrieval_returns_only_visible
             "char_start": 0,
             "char_end_exclusive": 15,
             "text": "alpha beta note",
-            "score": 1.0,
+            "source_provenance": {
+                "sources": ["semantic"],
+                "lexical_match": None,
+                "semantic_score": 1.0,
+            },
         }
     ]
-    assert payload["context_pack"]["semantic_artifact_chunk_summary"] == {
+    assert payload["context_pack"]["artifact_chunk_summary"] == {
         "requested": True,
+        "lexical_requested": False,
+        "semantic_requested": True,
         "scope": {
             "kind": "artifact",
             "task_id": str(artifact_scope["task_id"]),
             "task_artifact_id": str(artifact_scope["artifact_ids"]["notes"]),
         },
+        "query": None,
+        "query_terms": [],
         "embedding_config_id": str(config_id),
         "query_vector_dimensions": 3,
         "limit": 2,
+        "lexical_limit": 0,
+        "semantic_limit": 2,
         "searched_artifact_count": 1,
-        "candidate_count": 1,
+        "lexical_candidate_count": 0,
+        "semantic_candidate_count": 1,
+        "merged_candidate_count": 1,
+        "deduplicated_count": 0,
         "included_count": 1,
+        "included_lexical_only_count": 0,
+        "included_semantic_only_count": 1,
+        "included_dual_source_count": 0,
         "excluded_uningested_artifact_count": 0,
         "excluded_limit_count": 0,
+        "matching_rule": None,
         "similarity_metric": "cosine_similarity",
-        "order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "source_precedence": ["lexical", "semantic"],
+        "lexical_order": [
+            "matched_query_term_count_desc",
+            "first_match_char_start_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
+        "semantic_order": ["score_desc", "relative_path_asc", "sequence_no_asc", "id_asc"],
+        "merged_order": [
+            "source_precedence_asc",
+            "lexical_rank_asc",
+            "semantic_rank_asc",
+            "relative_path_asc",
+            "sequence_no_asc",
+            "id_asc",
+        ],
     }
 
     trace_id = UUID(payload["trace_id"])
@@ -1407,19 +1801,25 @@ def test_compile_context_semantic_artifact_scoped_retrieval_returns_only_visible
         trace_events = ContinuityStore(conn).list_trace_events(trace_id)
 
     assert any(
-        event["payload"]["reason"] == "within_semantic_artifact_chunk_limit"
+        event["payload"]["reason"] == "within_hybrid_artifact_chunk_limit"
         and event["payload"]["entity_id"] == str(artifact_scope["chunk_ids"]["notes"])
         and event["payload"]["scope_kind"] == "artifact"
         and event["payload"]["task_artifact_id"] == str(artifact_scope["artifact_ids"]["notes"])
         for event in trace_events
         if event["kind"] == "context.included"
     )
-    assert trace_events[-1]["payload"]["semantic_artifact_retrieval_requested"] is True
-    assert trace_events[-1]["payload"]["semantic_artifact_retrieval_scope_kind"] == "artifact"
-    assert trace_events[-1]["payload"]["semantic_artifact_chunk_candidate_count"] == 1
-    assert trace_events[-1]["payload"]["included_semantic_artifact_chunk_count"] == 1
-    assert trace_events[-1]["payload"]["excluded_semantic_artifact_chunk_limit_count"] == 0
-    assert trace_events[-1]["payload"]["excluded_semantic_uningested_artifact_count"] == 0
+    assert trace_events[-1]["payload"]["artifact_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["artifact_retrieval_scope_kind"] == "artifact"
+    assert trace_events[-1]["payload"]["artifact_lexical_retrieval_requested"] is False
+    assert trace_events[-1]["payload"]["artifact_semantic_retrieval_requested"] is True
+    assert trace_events[-1]["payload"]["artifact_lexical_candidate_count"] == 0
+    assert trace_events[-1]["payload"]["artifact_semantic_candidate_count"] == 1
+    assert trace_events[-1]["payload"]["artifact_merged_candidate_count"] == 1
+    assert trace_events[-1]["payload"]["artifact_deduplicated_count"] == 0
+    assert trace_events[-1]["payload"]["included_artifact_chunk_count"] == 1
+    assert trace_events[-1]["payload"]["included_dual_source_artifact_chunk_count"] == 0
+    assert trace_events[-1]["payload"]["excluded_artifact_chunk_limit_count"] == 0
+    assert trace_events[-1]["payload"]["excluded_uningested_artifact_count"] == 0
 
 
 def test_compile_context_semantic_artifact_retrieval_validation_and_isolation(
