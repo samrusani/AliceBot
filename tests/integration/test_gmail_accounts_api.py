@@ -397,7 +397,10 @@ def test_gmail_message_ingestion_endpoint_renews_expired_access_token(
     monkeypatch.setattr(
         gmail_module,
         "refresh_gmail_access_token",
-        lambda **_kwargs: ("token-refreshed", datetime.fromisoformat("2030-01-01T00:05:00+00:00")),
+        lambda **_kwargs: gmail_module.RefreshedGmailCredential(
+            access_token="token-refreshed",
+            access_token_expires_at=datetime.fromisoformat("2030-01-01T00:05:00+00:00"),
+        ),
     )
 
     def fake_fetch_gmail_message_raw_bytes(*, access_token: str, **_kwargs) -> bytes:
@@ -472,6 +475,234 @@ def test_gmail_message_ingestion_endpoint_renews_expired_access_token(
     assert credential_row[3] == "client-owner-001"
     assert credential_row[4] == "secret-owner-001"
     assert credential_row[5] == "2030-01-01T00:05:00+00:00"
+
+
+def test_gmail_message_ingestion_endpoint_persists_rotated_refresh_token(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+    raw_bytes = _build_rfc822_email_bytes(subject="Inbox Update", plain_body="rotated token path")
+    fetch_tokens: list[str] = []
+
+    monkeypatch.setattr(
+        gmail_module,
+        "refresh_gmail_access_token",
+        lambda **_kwargs: gmail_module.RefreshedGmailCredential(
+            access_token="token-refreshed-rotated",
+            access_token_expires_at=datetime.fromisoformat("2030-01-01T00:05:00+00:00"),
+            refresh_token="refresh-owner-rotated-002",
+        ),
+    )
+
+    def fake_fetch_gmail_message_raw_bytes(*, access_token: str, **_kwargs) -> bytes:
+        fetch_tokens.append(access_token)
+        return raw_bytes
+
+    monkeypatch.setattr(
+        gmail_module,
+        "fetch_gmail_message_raw_bytes",
+        fake_fetch_gmail_message_raw_bytes,
+    )
+
+    account_status, account_payload = _connect_gmail_account(
+        user_id=owner["user_id"],
+        provider_account_id="acct-owner-rotated-001",
+        email_address="owner@gmail.example",
+        credential_overrides={
+            "refresh_token": "refresh-owner-001",
+            "client_id": "client-owner-001",
+            "client_secret": "secret-owner-001",
+            "access_token_expires_at": "2020-01-01T00:00:00+00:00",
+        },
+    )
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/gmail-accounts/{account_payload['account']['id']}/messages/msg-001/ingest",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+        },
+    )
+
+    assert account_status == 201
+    assert workspace_status == 201
+    assert ingest_status == 200
+    assert fetch_tokens == ["token-refreshed-rotated"]
+    assert ingest_payload == {
+        "account": {
+            **account_payload["account"],
+        },
+        "message": {
+            "provider_message_id": "msg-001",
+            "artifact_relative_path": "gmail/acct-owner-rotated-001/msg-001.eml",
+            "media_type": "message/rfc822",
+        },
+        "artifact": {
+            "id": ingest_payload["artifact"]["id"],
+            "task_id": str(owner["task_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+            "status": "registered",
+            "ingestion_status": "ingested",
+            "relative_path": "gmail/acct-owner-rotated-001/msg-001.eml",
+            "media_type_hint": "message/rfc822",
+            "created_at": ingest_payload["artifact"]["created_at"],
+            "updated_at": ingest_payload["artifact"]["updated_at"],
+        },
+        "summary": {
+            "total_count": ingest_payload["summary"]["total_count"],
+            "total_characters": ingest_payload["summary"]["total_characters"],
+            "media_type": "message/rfc822",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+    assert '"refresh_token":' not in json.dumps(ingest_payload)
+    assert '"client_secret":' not in json.dumps(ingest_payload)
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  credential_blob ->> 'credential_kind',
+                  credential_blob ->> 'access_token',
+                  credential_blob ->> 'refresh_token',
+                  credential_blob ->> 'client_id',
+                  credential_blob ->> 'client_secret',
+                  credential_blob ->> 'access_token_expires_at'
+                FROM gmail_account_credentials
+                WHERE gmail_account_id = %s
+                """,
+                (UUID(account_payload["account"]["id"]),),
+            )
+            credential_row = cur.fetchone()
+
+    assert credential_row is not None
+    assert credential_row[0] == "gmail_oauth_refresh_token_v2"
+    assert credential_row[1] == "token-refreshed-rotated"
+    assert credential_row[2] == "refresh-owner-rotated-002"
+    assert credential_row[3] == "client-owner-001"
+    assert credential_row[4] == "secret-owner-001"
+    assert credential_row[5] == "2030-01-01T00:05:00+00:00"
+
+
+def test_gmail_message_ingestion_endpoint_fails_deterministically_when_rotated_credentials_cannot_be_persisted(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    monkeypatch.setattr(
+        gmail_module,
+        "refresh_gmail_access_token",
+        lambda **_kwargs: gmail_module.RefreshedGmailCredential(
+            access_token="token-refreshed-rotated",
+            access_token_expires_at=datetime.fromisoformat("2030-01-01T00:05:00+00:00"),
+            refresh_token="refresh-owner-rotated-002",
+        ),
+    )
+
+    def fail_update_gmail_account_credential(self, **_kwargs):
+        raise psycopg.Error("simulated credential persistence failure")
+
+    def fail_fetch(**_kwargs):
+        raise AssertionError("fetch_gmail_message_raw_bytes should not be called")
+
+    monkeypatch.setattr(
+        ContinuityStore,
+        "update_gmail_account_credential",
+        fail_update_gmail_account_credential,
+    )
+    monkeypatch.setattr(gmail_module, "fetch_gmail_message_raw_bytes", fail_fetch)
+
+    _, account_payload = _connect_gmail_account(
+        user_id=owner["user_id"],
+        provider_account_id="acct-owner-rotated-001",
+        email_address="owner@gmail.example",
+        credential_overrides={
+            "refresh_token": "refresh-owner-001",
+            "client_id": "client-owner-001",
+            "client_secret": "secret-owner-001",
+            "access_token_expires_at": "2020-01-01T00:00:00+00:00",
+        },
+    )
+    _, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/gmail-accounts/{account_payload['account']['id']}/messages/msg-001/ingest",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+        },
+    )
+
+    assert ingest_status == 409
+    assert ingest_payload == {
+        "detail": (
+            f"gmail account {account_payload['account']['id']} renewed protected credentials "
+            "could not be persisted"
+        )
+    }
+    artifact_file = (
+        Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-rotated-001" / "msg-001.eml"
+    )
+    assert not artifact_file.exists()
+
+    with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        assert store.list_task_artifacts_for_task(owner["task_id"]) == []
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  credential_blob ->> 'access_token',
+                  credential_blob ->> 'refresh_token',
+                  credential_blob ->> 'access_token_expires_at'
+                FROM gmail_account_credentials
+                WHERE gmail_account_id = %s
+                """,
+                (UUID(account_payload["account"]["id"]),),
+            )
+            credential_row = cur.fetchone()
+
+    assert credential_row == (
+        f"token-for-{account_payload['account']['provider_account_id']}",
+        "refresh-owner-001",
+        "2020-01-01T00:00:00+00:00",
+    )
 
 
 def test_gmail_message_ingestion_endpoint_rejects_cross_user_workspace_access(

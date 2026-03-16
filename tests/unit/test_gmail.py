@@ -19,8 +19,10 @@ from alicebot_api.gmail import (
     GmailAccountNotFoundError,
     GmailCredentialInvalidError,
     GmailCredentialNotFoundError,
+    GmailCredentialPersistenceError,
     GmailCredentialValidationError,
     GmailMessageUnsupportedError,
+    RefreshedGmailCredential,
     build_gmail_message_artifact_relative_path,
     build_gmail_protected_credential_blob,
     create_gmail_account_record,
@@ -29,6 +31,7 @@ from alicebot_api.gmail import (
     list_gmail_account_records,
     resolve_gmail_access_token,
 )
+from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
 
@@ -460,7 +463,10 @@ def test_resolve_gmail_access_token_renews_expired_refreshable_credential(monkey
 
     monkeypatch.setattr(
         "alicebot_api.gmail.refresh_gmail_access_token",
-        lambda **_kwargs: ("token-2", refreshed_at),
+        lambda **_kwargs: RefreshedGmailCredential(
+            access_token="token-2",
+            access_token_expires_at=refreshed_at,
+        ),
     )
 
     assert resolve_gmail_access_token(store, gmail_account_id=account_id) == "token-2"
@@ -476,6 +482,94 @@ def test_resolve_gmail_access_token_renews_expired_refreshable_credential(monkey
         ("get_gmail_account_credential_optional", account_id),
         ("update_gmail_account_credential", account_id),
     ]
+
+
+def test_resolve_gmail_access_token_persists_rotated_refresh_token(monkeypatch) -> None:
+    store = GmailStoreStub()
+    expired_at = datetime(2020, 1, 1, 0, 0, tzinfo=UTC)
+    refreshed_at = datetime(2030, 1, 1, 0, 5, tzinfo=UTC)
+    account = create_gmail_account_record(
+        store,
+        user_id=uuid4(),
+        request=GmailAccountConnectInput(
+            provider_account_id="acct-001",
+            email_address="owner@example.com",
+            display_name="Owner",
+            scope=GMAIL_READONLY_SCOPE,
+            access_token="token-1",
+            refresh_token="refresh-1",
+            client_id="client-1",
+            client_secret="secret-1",
+            access_token_expires_at=expired_at,
+        ),
+    )["account"]
+    account_id = UUID(account["id"])
+
+    monkeypatch.setattr(
+        "alicebot_api.gmail.refresh_gmail_access_token",
+        lambda **_kwargs: RefreshedGmailCredential(
+            access_token="token-2",
+            access_token_expires_at=refreshed_at,
+            refresh_token="refresh-2",
+        ),
+    )
+
+    assert resolve_gmail_access_token(store, gmail_account_id=account_id) == "token-2"
+    assert store.gmail_account_credentials[account_id]["credential_blob"] == {
+        "credential_kind": GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND,
+        "access_token": "token-2",
+        "refresh_token": "refresh-2",
+        "client_id": "client-1",
+        "client_secret": "secret-1",
+        "access_token_expires_at": refreshed_at.isoformat(),
+    }
+
+
+def test_resolve_gmail_access_token_fails_deterministically_when_persisting_refresh_update_fails(
+    monkeypatch,
+) -> None:
+    store = GmailStoreStub()
+    expired_at = datetime(2020, 1, 1, 0, 0, tzinfo=UTC)
+    refreshed_at = datetime(2030, 1, 1, 0, 5, tzinfo=UTC)
+    account = create_gmail_account_record(
+        store,
+        user_id=uuid4(),
+        request=GmailAccountConnectInput(
+            provider_account_id="acct-001",
+            email_address="owner@example.com",
+            display_name="Owner",
+            scope=GMAIL_READONLY_SCOPE,
+            access_token="token-1",
+            refresh_token="refresh-1",
+            client_id="client-1",
+            client_secret="secret-1",
+            access_token_expires_at=expired_at,
+        ),
+    )["account"]
+    account_id = UUID(account["id"])
+    original_blob = dict(store.gmail_account_credentials[account_id]["credential_blob"])
+
+    monkeypatch.setattr(
+        "alicebot_api.gmail.refresh_gmail_access_token",
+        lambda **_kwargs: RefreshedGmailCredential(
+            access_token="token-2",
+            access_token_expires_at=refreshed_at,
+            refresh_token="refresh-2",
+        ),
+    )
+
+    def fail_update(**_kwargs):
+        raise ContinuityStoreInvariantError("update_gmail_account_credential did not return a row")
+
+    monkeypatch.setattr(store, "update_gmail_account_credential", fail_update)
+
+    with pytest.raises(
+        GmailCredentialPersistenceError,
+        match=f"gmail account {account_id} renewed protected credentials could not be persisted",
+    ):
+        resolve_gmail_access_token(store, gmail_account_id=account_id)
+
+    assert store.gmail_account_credentials[account_id]["credential_blob"] == original_blob
 
 
 def test_resolve_gmail_access_token_rejects_invalid_refreshable_protected_credentials() -> None:
@@ -662,7 +756,10 @@ def test_ingest_gmail_message_record_renews_expired_access_token_before_fetch(
 
     monkeypatch.setattr(
         "alicebot_api.gmail.refresh_gmail_access_token",
-        lambda **_kwargs: ("token-refreshed", datetime(2030, 1, 1, 0, 5, tzinfo=UTC)),
+        lambda **_kwargs: RefreshedGmailCredential(
+            access_token="token-refreshed",
+            access_token_expires_at=datetime(2030, 1, 1, 0, 5, tzinfo=UTC),
+        ),
     )
 
     def fake_fetch(**kwargs):
