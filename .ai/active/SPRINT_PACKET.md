@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Sprint 5N: RFC822 Email Artifact Parsing V0
+Sprint 5O: Read-Only Gmail Connection and Single-Message Ingestion V0
 
 ## Sprint Type
 
@@ -10,15 +10,15 @@ feature
 
 ## Sprint Reason
 
-Sprint 5L and Sprint 5M proved the richer-document-parsing seam can widen safely without changing the rooted workspace, durable chunk, retrieval, or compile contracts. The next safe slice is RFC822 email ingestion only, which prepares the path for later read-only Gmail work without opening live connector, auth, or UI scope yet.
+Sprint 5N proved the Gmail-adjacent document seam locally by ingesting RFC822 email artifacts into the existing chunk substrate. The next safe step is the first live read-only Gmail slice, but only enough to connect one account and ingest one visible Gmail message through that same RFC822-to-chunk seam. This opens connector work without collapsing into search, sync, Calendar, UI, or write-capable behavior.
 
 ## Sprint Intent
 
-Extend the existing artifact-ingestion seam so registered RFC822 email artifacts can be ingested into the existing durable `task_artifact_chunks` substrate through deterministic local parsing of message headers and text bodies, without changing retrieval contracts, compile contracts, live connector scope, or UI.
+Add the first live read-only Gmail connector seam by supporting user-scoped Gmail connection metadata plus ingestion of one selected Gmail message into the existing artifact-ingestion pipeline as an RFC822-style artifact, without adding write actions, background sync, Calendar, or UI.
 
 ## Git Instructions
 
-- Branch Name: `codex/sprint-5n-rfc822-email-artifact-parsing-v0`
+- Branch Name: `codex/sprint-5o-gmail-connection-single-message-ingestion`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR, no stacked PRs unless Control Tower explicitly opens a follow-up sprint
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
@@ -26,108 +26,109 @@ Extend the existing artifact-ingestion seam so registered RFC822 email artifacts
 ## Why This Sprint
 
 - Sprint 5A shipped deterministic rooted task-workspace provisioning.
-- Sprint 5C shipped explicit task-artifact registration.
-- Sprint 5D shipped deterministic local text-artifact ingestion into durable chunk rows.
-- Sprint 5E through 5J shipped lexical retrieval, semantic retrieval, and hybrid compile-path artifact retrieval on top of those persisted chunk rows.
-- Sprint 5L extended the same ingestion seam to narrow PDF text extraction.
-- Sprint 5M extended the same ingestion seam to narrow DOCX text extraction.
-- The next narrow richer-document move is RFC822 email parsing, which advances the Gmail-adjacent path while still staying on the existing rooted artifact and chunk substrate instead of opening a live connector.
+- Sprint 5C through 5J shipped the durable artifact, chunk, lexical, semantic, and hybrid compile substrate.
+- Sprint 5N shipped narrow local RFC822 parsing on that same artifact-ingestion seam.
+- The product brief requires read-only Gmail connectors in v1.
+- The narrowest safe connector step is not mailbox sync or UI; it is a user-scoped read-only Gmail connection plus one explicit message ingestion path that reuses the already-accepted RFC822 extraction seam.
 
 ## In Scope
 
-- Extend schema and contracts only as narrowly needed to support RFC822 ingestion metadata, for example:
-  - `task_artifacts.ingestion_status` reuse if no new status is required
-  - optional deterministic extraction metadata on artifact detail or ingestion responses if needed
+- Add schema and migration support for:
+  - `gmail_accounts`
 - Define typed contracts for:
-  - email artifact-ingestion requests if they differ from the current generic artifact-ingestion path
-  - artifact-ingestion responses updated for email extraction metadata if needed
-  - artifact detail or chunk summary metadata updated for email ingestion if needed
-- Extend the existing ingestion seam so it:
-  - accepts already-registered visible RFC822 email artifacts
-  - resolves rooted local file paths from persisted workspace plus artifact relative path
-  - supports one explicit local email parsing path only
-  - parses deterministic text from message headers plus plain-text body parts
-  - handles multipart messages narrowly and predictably
-  - rejects unsupported body forms when no extractable text body is present
-  - normalizes extracted text before chunking
-  - persists ordered chunk rows into the existing `task_artifact_chunks` table
-  - updates artifact ingestion status deterministically
+  - Gmail account create or connect requests
+  - Gmail account list and detail responses
+  - single-message Gmail ingestion requests
+  - single-message Gmail ingestion responses
+- Implement a narrow Gmail connector seam that:
+  - stores one user-scoped read-only Gmail account connection record with only the metadata needed for later reads
+  - uses one explicit Gmail read-only auth/config path only
+  - fetches one selected Gmail message by explicit provider message id
+  - converts that message into the existing artifact registration plus RFC822-style ingestion pipeline
+  - persists the resulting artifact under one visible task workspace
+  - reuses the existing `task_artifacts` and `task_artifact_chunks` contracts
+  - preserves per-user isolation throughout account read and message ingestion flows
+- Implement the minimal API or service paths needed for:
+  - connecting one Gmail account
+  - listing Gmail accounts
+  - reading one Gmail account
+  - ingesting one Gmail message into one visible task workspace
 - Add unit and integration tests for:
-  - supported RFC822 ingestion
-  - deterministic chunk ordering and chunk boundaries from extracted email text
-  - rooted path enforcement during email ingestion
-  - rejection of malformed or textless email artifacts when no extractable text is present
-  - per-user isolation
+  - Gmail account persistence
+  - deterministic account listing
+  - single-message Gmail ingestion through the existing artifact seam
+  - rejection of cross-user workspace access
+  - rejection of unsupported or missing Gmail messages
   - stable response shape
 
 ## Out of Scope
 
-- No live Gmail API or OAuth work.
+- No Gmail message search.
+- No mailbox sync or backfill jobs.
+- No attachment ingestion.
+- No write-capable Gmail actions.
 - No Calendar connector scope.
-- No HTML-to-text rendering beyond a narrow explicit rule if strictly needed.
-- No attachment extraction.
-- No OCR.
-- No changes to lexical retrieval contracts.
-- No changes to semantic retrieval contracts.
+- No OAuth UX or web callback UI beyond the minimal backend contract needed to represent a connected account.
 - No compile contract changes.
 - No runner-style orchestration.
 - No UI work.
 
 ## Required Deliverables
 
-- Narrow ingestion support for visible RFC822 email artifacts using the existing artifact and chunk seams.
-- Stable contract updates only where email extraction metadata is necessary.
-- Unit and integration coverage for email extraction, rooted-path safety, deterministic chunk persistence, and isolation.
+- Migration for `gmail_accounts`.
+- Stable contracts for Gmail account connect/list/detail and single-message ingestion.
+- Minimal read-only Gmail account persistence seam.
+- Minimal explicit single-message Gmail ingestion path that feeds the existing artifact and RFC822 chunk seams.
+- Unit and integration coverage for persistence, isolation, ingestion routing, and response stability.
 - Updated `BUILD_REPORT.md` with exact verification results and explicit deferred scope.
 
 ## Acceptance Criteria
 
-- A client can ingest one supported visible RFC822 email artifact into durable ordered chunk rows using the existing artifact-ingestion seam.
-- Email ingestion reads only files rooted under the persisted task workspace boundary.
-- Extracted email text is normalized and chunked deterministically into the existing `task_artifact_chunks` contract.
-- Malformed or textless email artifacts are rejected deterministically rather than silently producing misleading chunks.
-- Existing lexical, semantic, and hybrid artifact retrieval contracts continue to operate over the persisted chunk rows without contract changes.
+- A client can persist one user-scoped read-only Gmail account connection record.
+- A client can list and read Gmail account records deterministically.
+- A client can ingest one selected Gmail message into one visible task workspace through the existing artifact-ingestion seam.
+- Gmail message ingestion results in durable `task_artifacts` and `task_artifact_chunks` rows compatible with existing retrieval and compile behavior.
+- Cross-user account and workspace access is rejected deterministically.
 - `./.venv/bin/python -m pytest tests/unit` passes.
 - `./.venv/bin/python -m pytest tests/integration` passes.
-- No live Gmail connector, Calendar connector, OAuth, attachment extraction, compile-contract, runner, or UI scope enters the sprint.
+- No Gmail search, mailbox sync, attachments, write actions, Calendar, compile-contract, runner, or UI scope enters the sprint.
 
 ## Implementation Constraints
 
-- Keep richer parsing narrow and boring.
-- Reuse the existing rooted `task_workspaces`, `task_artifacts`, and `task_artifact_chunks` seams rather than creating a parallel email store.
-- Support deterministic local RFC822 parsing only; do not introduce live connector behavior in the same sprint.
-- Prefer plain-text body extraction; if multipart handling is needed, keep the accepted body selection rule explicit and deterministic.
+- Keep connector work narrow and boring.
+- Reuse the existing rooted workspace, artifact, and RFC822 chunk seams rather than creating a parallel email-content store.
+- Keep Gmail handling explicitly read-only.
+- Support one explicit selected-message ingestion path only; do not introduce account-wide sync or search in the same sprint.
 - Preserve existing retrieval and compile contracts by feeding the already-shipped chunk substrate.
 
 ## Suggested Work Breakdown
 
-1. Define any minimal RFC822-ingestion contract updates needed.
-2. Implement deterministic rooted email parsing in the existing artifact-ingestion seam.
-3. Normalize extracted email text and persist ordered chunk rows into the existing chunk store.
-4. Add deterministic failure behavior for malformed or textless email artifacts.
+1. Add `gmail_accounts` schema and migration.
+2. Define Gmail account and single-message ingestion contracts.
+3. Implement deterministic Gmail account create, list, and detail behavior.
+4. Implement explicit selected-message Gmail ingestion into the existing artifact and RFC822 ingestion seam.
 5. Add unit and integration tests.
 6. Update `BUILD_REPORT.md` with executed verification.
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- the exact RFC822-ingestion contract changes introduced, if any
-- the email extraction path and chunking rule used
-- the header/body selection rule used
+- the exact Gmail account and single-message ingestion contract changes introduced
+- the Gmail message-to-artifact conversion rule used
 - exact commands run
 - unit and integration test results
-- one example email artifact-ingestion response
-- one example chunk list response produced from an email artifact
+- one example Gmail account response
+- one example single-message ingestion response
 - what remains intentionally deferred to later milestones
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- the sprint stayed limited to RFC822 email artifact parsing through the existing ingestion seam
-- email ingestion reuses the existing rooted workspace, artifact, and chunk contracts
-- extraction determinism, chunk ordering, rooted-path safety, and isolation are test-backed
-- no hidden live Gmail connector, Calendar connector, OAuth, attachment extraction, compile-contract, runner, or UI scope entered the sprint
+- the sprint stayed limited to read-only Gmail connection metadata and single-message ingestion
+- Gmail message ingestion reuses the existing rooted workspace, artifact, and RFC822 chunk seams
+- persistence, isolation, and ingestion determinism are test-backed
+- no hidden Gmail search, mailbox sync, attachments, write actions, Calendar, compile-contract, runner, or UI scope entered the sprint
 
 ## Exit Condition
 
-This sprint is complete when the repo can ingest supported visible RFC822 email artifacts into deterministic durable chunk rows through the existing artifact-ingestion seam, verify the full path with Postgres-backed tests, and still defer live connector work, broader email handling, and UI.
+This sprint is complete when the repo can persist deterministic user-scoped read-only Gmail account records and ingest one selected Gmail message into the existing artifact/chunk seam with passing Postgres-backed tests, while still deferring broader Gmail connector behavior, Calendar, and UI.
