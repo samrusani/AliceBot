@@ -39,13 +39,19 @@ from alicebot_api.contracts import (
     TaskArtifactIngestInput,
     TaskArtifactRegisterInput,
 )
-from alicebot_api.store import ContinuityStore, ContinuityStoreInvariantError, GmailAccountRow
+from alicebot_api.gmail_secret_manager import (
+    GMAIL_SECRET_MANAGER_KIND_FILE_V1,
+    GmailSecretManager,
+    GmailSecretManagerError,
+)
+from alicebot_api.store import ContinuityStore, ContinuityStoreInvariantError, GmailAccountRow, JsonObject
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
 GMAIL_MESSAGE_FETCH_TIMEOUT_SECONDS = 30
 GMAIL_TOKEN_REFRESH_TIMEOUT_SECONDS = 30
 GMAIL_TOKEN_REFRESH_URL = "https://oauth2.googleapis.com/token"
 GMAIL_MESSAGE_ARTIFACT_ROOT = "gmail"
+GMAIL_SECRET_MANAGER_KIND_LEGACY_DB_V0 = "legacy_db_v0"
 _PATH_SEGMENT_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -104,6 +110,15 @@ class RefreshedGmailCredential:
     access_token: str
     access_token_expires_at: datetime
     refresh_token: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedGmailCredential:
+    parsed_credential: ParsedGmailCredential
+    credential_kind: str
+    secret_manager_kind: str
+    secret_ref: str | None
+    credential_blob: JsonObject | None
 
 
 def serialize_gmail_account_row(row: GmailAccountRow) -> GmailAccountRecord:
@@ -182,6 +197,152 @@ def build_gmail_protected_credential_blob(
         "client_secret": normalized_client_secret,
         "access_token_expires_at": normalized_expires_at.isoformat(),
     }
+
+
+def build_gmail_secret_ref(*, user_id: UUID, gmail_account_id: UUID) -> str:
+    return f"users/{user_id}/gmail-account-credentials/{gmail_account_id}.json"
+
+
+def _write_external_gmail_secret(
+    secret_manager: GmailSecretManager,
+    *,
+    gmail_account_id: UUID,
+    secret_ref: str,
+    credential_blob: JsonObject,
+) -> None:
+    try:
+        secret_manager.write_secret(secret_ref=secret_ref, payload=credential_blob)
+    except GmailSecretManagerError as exc:
+        raise GmailCredentialPersistenceError(
+            f"gmail account {gmail_account_id} protected credentials could not be persisted"
+        ) from exc
+
+
+def _load_external_gmail_secret(
+    secret_manager: GmailSecretManager,
+    *,
+    gmail_account_id: UUID,
+    secret_ref: str,
+) -> JsonObject:
+    try:
+        return secret_manager.load_secret(secret_ref=secret_ref)
+    except GmailSecretManagerError as exc:
+        message = str(exc)
+        if message.endswith("was not found"):
+            raise GmailCredentialNotFoundError(
+                f"gmail account {gmail_account_id} is missing protected credentials"
+            ) from exc
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        ) from exc
+
+
+def _persist_external_gmail_credential_metadata(
+    store: ContinuityStore,
+    *,
+    gmail_account_id: UUID,
+    auth_kind: str,
+    credential_kind: str,
+    secret_manager_kind: str,
+    secret_ref: str,
+) -> None:
+    store.update_gmail_account_credential(
+        gmail_account_id=gmail_account_id,
+        auth_kind=auth_kind,
+        credential_kind=credential_kind,
+        secret_manager_kind=secret_manager_kind,
+        secret_ref=secret_ref,
+        credential_blob=None,
+    )
+
+
+def _resolve_gmail_credential(
+    store: ContinuityStore,
+    secret_manager: GmailSecretManager,
+    *,
+    gmail_account_id: UUID,
+) -> ResolvedGmailCredential:
+    credential = store.get_gmail_account_credential_optional(gmail_account_id)
+    if credential is None:
+        raise GmailCredentialNotFoundError(
+            f"gmail account {gmail_account_id} is missing protected credentials"
+        )
+
+    if credential["auth_kind"] != GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN:
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        )
+
+    if credential["secret_manager_kind"] == GMAIL_SECRET_MANAGER_KIND_FILE_V1:
+        secret_ref = _coerce_nonempty_string(credential["secret_ref"])
+        if secret_ref is None:
+            raise GmailCredentialInvalidError(
+                f"gmail account {gmail_account_id} has invalid protected credentials"
+            )
+        return ResolvedGmailCredential(
+            parsed_credential=_parse_gmail_credential(
+                gmail_account_id=gmail_account_id,
+                credential_blob=_load_external_gmail_secret(
+                    secret_manager,
+                    gmail_account_id=gmail_account_id,
+                    secret_ref=secret_ref,
+                ),
+            ),
+            credential_kind=credential["credential_kind"],
+            secret_manager_kind=credential["secret_manager_kind"],
+            secret_ref=secret_ref,
+            credential_blob=None,
+        )
+
+    if credential["secret_manager_kind"] != GMAIL_SECRET_MANAGER_KIND_LEGACY_DB_V0:
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        )
+
+    if credential["credential_blob"] is None:
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        )
+
+    parsed_credential = _parse_gmail_credential(
+        gmail_account_id=gmail_account_id,
+        credential_blob=credential["credential_blob"],
+    )
+    secret_ref = build_gmail_secret_ref(
+        user_id=credential["user_id"],
+        gmail_account_id=gmail_account_id,
+    )
+    _write_external_gmail_secret(
+        secret_manager,
+        gmail_account_id=gmail_account_id,
+        secret_ref=secret_ref,
+        credential_blob=credential["credential_blob"],
+    )
+    try:
+        _persist_external_gmail_credential_metadata(
+            store,
+            gmail_account_id=gmail_account_id,
+            auth_kind=credential["auth_kind"],
+            credential_kind=parsed_credential.credential_kind,
+            secret_manager_kind=secret_manager.kind,
+            secret_ref=secret_ref,
+        )
+    except (ContinuityStoreInvariantError, psycopg.Error) as exc:
+        try:
+            secret_manager.delete_secret(secret_ref=secret_ref)
+        except GmailSecretManagerError:
+            pass
+        raise GmailCredentialPersistenceError(
+            f"gmail account {gmail_account_id} protected credentials could not be persisted"
+        ) from exc
+
+    return ResolvedGmailCredential(
+        parsed_credential=parsed_credential,
+        credential_kind=parsed_credential.credential_kind,
+        secret_manager_kind=secret_manager.kind,
+        secret_ref=secret_ref,
+        credential_blob=None,
+    )
 
 
 def _parse_gmail_credential(
@@ -305,30 +466,48 @@ def refresh_gmail_access_token(
 
 def _persist_refreshed_gmail_credential(
     store: ContinuityStore,
+    secret_manager: GmailSecretManager,
     *,
     gmail_account_id: UUID,
     auth_kind: str,
+    secret_ref: str,
     existing_credential: ParsedGmailCredential,
     refreshed_credential: RefreshedGmailCredential,
 ) -> None:
+    original_credential_blob = build_gmail_protected_credential_blob(
+        access_token=existing_credential.access_token,
+        refresh_token=existing_credential.refresh_token,
+        client_id=existing_credential.client_id,
+        client_secret=existing_credential.client_secret,
+        access_token_expires_at=existing_credential.access_token_expires_at,
+    )
     replacement_refresh_token = (
         refreshed_credential.refresh_token
         if refreshed_credential.refresh_token is not None
         else existing_credential.refresh_token
     )
+    replacement_credential_blob = build_gmail_protected_credential_blob(
+        access_token=refreshed_credential.access_token,
+        refresh_token=replacement_refresh_token,
+        client_id=existing_credential.client_id,
+        client_secret=existing_credential.client_secret,
+        access_token_expires_at=refreshed_credential.access_token_expires_at,
+    )
     try:
+        secret_manager.write_secret(secret_ref=secret_ref, payload=replacement_credential_blob)
         store.update_gmail_account_credential(
             gmail_account_id=gmail_account_id,
             auth_kind=auth_kind,
-            credential_blob=build_gmail_protected_credential_blob(
-                access_token=refreshed_credential.access_token,
-                refresh_token=replacement_refresh_token,
-                client_id=existing_credential.client_id,
-                client_secret=existing_credential.client_secret,
-                access_token_expires_at=refreshed_credential.access_token_expires_at,
-            ),
+            credential_kind=replacement_credential_blob["credential_kind"],
+            secret_manager_kind=secret_manager.kind,
+            secret_ref=secret_ref,
+            credential_blob=None,
         )
-    except (ContinuityStoreInvariantError, psycopg.Error) as exc:
+    except (GmailSecretManagerError, ContinuityStoreInvariantError, psycopg.Error) as exc:
+        try:
+            secret_manager.write_secret(secret_ref=secret_ref, payload=original_credential_blob)
+        except GmailSecretManagerError:
+            pass
         raise GmailCredentialPersistenceError(
             f"gmail account {gmail_account_id} renewed protected credentials could not be persisted"
         ) from exc
@@ -336,24 +515,16 @@ def _persist_refreshed_gmail_credential(
 
 def resolve_gmail_access_token(
     store: ContinuityStore,
+    secret_manager: GmailSecretManager,
     *,
     gmail_account_id: UUID,
 ) -> str:
-    credential = store.get_gmail_account_credential_optional(gmail_account_id)
-    if credential is None:
-        raise GmailCredentialNotFoundError(
-            f"gmail account {gmail_account_id} is missing protected credentials"
-        )
-
-    if credential["auth_kind"] != GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN:
-        raise GmailCredentialInvalidError(
-            f"gmail account {gmail_account_id} has invalid protected credentials"
-        )
-
-    parsed_credential = _parse_gmail_credential(
+    credential = _resolve_gmail_credential(
+        store,
+        secret_manager,
         gmail_account_id=gmail_account_id,
-        credential_blob=credential["credential_blob"],
     )
+    parsed_credential = credential.parsed_credential
     if (
         parsed_credential.credential_kind != GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND
         or parsed_credential.access_token_expires_at is None
@@ -369,8 +540,10 @@ def resolve_gmail_access_token(
     )
     _persist_refreshed_gmail_credential(
         store,
+        secret_manager,
         gmail_account_id=gmail_account_id,
-        auth_kind=credential["auth_kind"],
+        auth_kind=GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN,
+        secret_ref=credential.secret_ref,
         existing_credential=parsed_credential,
         refreshed_credential=refreshed_credential,
     )
@@ -379,6 +552,7 @@ def resolve_gmail_access_token(
 
 def create_gmail_account_record(
     store: ContinuityStore,
+    secret_manager: GmailSecretManager,
     *,
     user_id: UUID,
     request: GmailAccountConnectInput,
@@ -391,6 +565,8 @@ def create_gmail_account_record(
             f"gmail account {request.provider_account_id} is already connected"
         )
 
+    row: GmailAccountRow | None = None
+    secret_ref: str | None = None
     try:
         row = store.create_gmail_account(
             provider_account_id=request.provider_account_id,
@@ -398,20 +574,45 @@ def create_gmail_account_record(
             display_name=request.display_name,
             scope=request.scope,
         )
+        credential_blob = build_gmail_protected_credential_blob(
+            access_token=request.access_token,
+            refresh_token=request.refresh_token,
+            client_id=request.client_id,
+            client_secret=request.client_secret,
+            access_token_expires_at=request.access_token_expires_at,
+        )
+        secret_ref = build_gmail_secret_ref(
+            user_id=row["user_id"],
+            gmail_account_id=row["id"],
+        )
+        _write_external_gmail_secret(
+            secret_manager,
+            gmail_account_id=row["id"],
+            secret_ref=secret_ref,
+            credential_blob=credential_blob,
+        )
         store.create_gmail_account_credential(
             gmail_account_id=row["id"],
             auth_kind=GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN,
-            credential_blob=build_gmail_protected_credential_blob(
-                access_token=request.access_token,
-                refresh_token=request.refresh_token,
-                client_id=request.client_id,
-                client_secret=request.client_secret,
-                access_token_expires_at=request.access_token_expires_at,
-            ),
+            credential_kind=credential_blob["credential_kind"],
+            secret_manager_kind=secret_manager.kind,
+            secret_ref=secret_ref,
+            credential_blob=None,
         )
     except psycopg.errors.UniqueViolation as exc:
         raise GmailAccountAlreadyExistsError(
             f"gmail account {request.provider_account_id} is already connected"
+        ) from exc
+    except GmailCredentialPersistenceError:
+        raise
+    except (ContinuityStoreInvariantError, psycopg.Error) as exc:
+        if secret_ref is not None:
+            try:
+                secret_manager.delete_secret(secret_ref=secret_ref)
+            except GmailSecretManagerError:
+                pass
+        raise GmailCredentialPersistenceError(
+            "gmail protected credentials could not be persisted"
         ) from exc
 
     return {"account": serialize_gmail_account_row(row)}
@@ -511,6 +712,7 @@ def fetch_gmail_message_raw_bytes(*, access_token: str, provider_message_id: str
 
 def ingest_gmail_message_record(
     store: ContinuityStore,
+    secret_manager: GmailSecretManager,
     *,
     user_id: UUID,
     request: GmailMessageIngestInput,
@@ -527,6 +729,7 @@ def ingest_gmail_message_record(
 
     access_token = resolve_gmail_access_token(
         store,
+        secret_manager,
         gmail_account_id=request.gmail_account_id,
     )
 

@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Sprint 5Q: Gmail Refresh Token Lifecycle V0
+Sprint 5T: External Secret-Manager Integration For Gmail Credentials
 
 ## Sprint Type
 
@@ -10,46 +10,49 @@ feature
 
 ## Sprint Reason
 
-Sprint 5P fixed the immediate plaintext-token risk, but the Gmail seam still depends on a single stored access token with no refresh lifecycle. Before broader Gmail auth, search, sync, Calendar, or UI work, the next safe step is to support refresh-token-backed credential renewal on the existing protected credential seam.
+Sprint 5S confirmed the repo is on track and synchronized the truth artifacts through Sprint 5R. The next narrow risk is no longer Gmail auth correctness inside the app database; it is secret-storage boundary quality. The roadmap and current-state docs both identify external secret-manager integration as the strongest next Gmail auth-adjacent seam before broader Gmail scope, Calendar, or UI work.
 
 ## Sprint Intent
 
-Extend the hardened Gmail connector seam so it can persist and use a narrow refresh-token credential shape to renew Gmail access tokens on demand for the existing single-message ingestion path, without opening search, sync, write actions, Calendar, or UI scope.
+Extend the existing protected Gmail credential seam so `gmail_account_credentials` can resolve secrets through one explicit external secret-manager boundary, while keeping Gmail account reads secret-free and preserving the existing single-message ingestion contract.
 
 ## Git Instructions
 
-- Branch Name: `codex/sprint-5q-gmail-refresh-token-lifecycle`
+- Branch Name: `codex/sprint-5t-gmail-external-secret-manager`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR, no stacked PRs unless Control Tower explicitly opens a follow-up sprint
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- Sprint 5O shipped the first narrow read-only Gmail account and single-message ingestion seam.
-- Sprint 5P hardened credential storage by removing plaintext tokens from the normal `gmail_accounts` table surface.
-- The accepted review for Sprint 5P explicitly called out refresh-token lifecycle as the next narrow Gmail auth milestone if broader connector use is needed.
-- The next safe step is not Gmail search or sync; it is reliable credential renewal on the already-shipped single-message seam.
+- Sprint 5O opened the first narrow read-only Gmail account and single-message ingestion seam.
+- Sprint 5P removed plaintext credential storage from the normal `gmail_accounts` surface.
+- Sprint 5Q added refresh-token-backed renewal.
+- Sprint 5R added rotated refresh-token persistence.
+- Sprint 5S synchronized project truth and explicitly identified external secret-manager integration as the next narrow Gmail auth-adjacent seam.
+- The next safe step is to externalize the protected credential storage boundary itself without widening into Gmail search, sync, attachments, Calendar, or UI.
 
 ## In Scope
 
-- Extend schema and migration support only as needed to support a narrow Gmail refresh-token credential shape inside the protected credential seam, for example:
-  - refresh-token fields inside the protected credential blob
-  - optional token-expiry metadata if needed for deterministic renewal decisions
-- Define typed contract changes for:
-  - Gmail account connect requests if a refresh-token-capable credential payload is required
-  - Gmail account responses if narrow non-secret token metadata must be surfaced
-  - Gmail ingestion error shapes if renewal failures need explicit typed responses
-- Implement a narrow Gmail credential-renewal seam that:
-  - persists refresh-token-capable Gmail credentials through the existing protected credential mechanism
-  - renews access tokens through one explicit Gmail token-refresh path only
-  - updates the protected credential record deterministically after successful renewal
-  - lets the existing single-message Gmail ingestion path obtain a usable access token through the renewal path when required
-  - preserves secret-free account reads and per-user isolation
+- Add schema and migration support only as needed to support an external-secret-backed credential locator, for example:
+  - secret reference fields on `gmail_account_credentials`
+  - narrow metadata needed to distinguish local protected credentials from externally stored credentials during the transition
+- Define typed contract changes only where needed for:
+  - Gmail account connect writes if secret-manager-backed credential writes require a narrow new write shape
+  - deterministic Gmail ingestion failure responses when external secret resolution fails
+- Implement a narrow external secret-manager seam that:
+  - writes Gmail credential material through one explicit secret-manager adapter boundary
+  - persists only the non-secret locator or reference metadata in the application database
+  - resolves credentials through that adapter for the existing single-message ingestion and token-renewal path
+  - supports deterministic rotation-capable credential updates through the same externalized path
+  - preserves secret-free Gmail account reads and per-user isolation
+- Support one explicit runtime configuration path for the secret-manager adapter, with one deterministic local fallback only if needed for tests
 - Add unit and integration tests for:
-  - refresh-token credential persistence
-  - successful access-token renewal before single-message ingestion
-  - deterministic failure when refresh credentials are missing or invalid
-  - absence of secret material in Gmail account responses
+  - external secret reference persistence
+  - absence of secret material in Gmail account responses and normal table reads
+  - successful single-message Gmail ingestion through the externalized credential path
+  - successful refresh-token renewal and rotated refresh-token persistence through the externalized path
+  - deterministic failure when secret resolution or secret update fails
   - per-user isolation
   - stable response shape
 
@@ -61,66 +64,72 @@ Extend the hardened Gmail connector seam so it can persist and use a narrow refr
 - No write-capable Gmail actions.
 - No Calendar connector scope.
 - No OAuth UI or callback handling.
-- No external secret-manager integration yet.
+- No broader connector-secret abstraction for other providers yet.
 - No compile contract changes.
 - No runner-style orchestration.
 - No UI work.
 
 ## Required Deliverables
 
-- Narrow protected-credential support for Gmail refresh-token lifecycle.
+- Migration updating the Gmail protected-credential seam to support external secret-manager references.
 - Stable Gmail account contracts that remain secret-free on reads.
-- Updated single-message Gmail ingestion path that can renew access tokens through the protected credential seam when needed.
-- Unit and integration coverage for renewal success, renewal failure, response stability, and isolation.
+- One explicit external secret-manager adapter path used by Gmail credential reads and writes.
+- Updated single-message Gmail ingestion plus refresh/rotation path running through the externalized credential seam.
+- Unit and integration coverage for reference persistence, secret resolution, renewal/rotation continuity, failure handling, and isolation.
 - Updated `BUILD_REPORT.md` with exact verification results and explicit deferred scope.
 
 ## Acceptance Criteria
 
-- The protected Gmail credential seam can persist a refresh-token-capable credential shape without reintroducing plaintext secrets to the normal `gmail_accounts` table surface.
+- The repo no longer depends on application-table-stored Gmail secret material for the primary protected credential path.
+- `gmail_account_credentials` persists only non-secret reference or locator data for the externalized path.
 - Gmail account list and detail responses remain secret-free.
-- The existing single-message Gmail ingestion path can renew and use a fresh access token through the protected credential seam when needed.
-- Missing or invalid refresh credentials fail deterministically and do not corrupt Gmail account, task workspace, or artifact state.
+- The existing single-message Gmail ingestion path still works through the external secret-manager seam.
+- Refresh-token renewal and rotated refresh-token persistence still work through the externalized credential seam.
+- Secret-resolution or secret-update failures fail deterministically and do not corrupt Gmail account, task workspace, or artifact state.
 - `./.venv/bin/python -m pytest tests/unit` passes.
 - `./.venv/bin/python -m pytest tests/integration` passes.
-- No Gmail search, sync, attachments, write actions, Calendar, external secret-manager, compile-contract, runner, or UI scope enters the sprint.
+- No Gmail search, sync, attachments, write actions, Calendar, compile-contract, runner, or UI scope enters the sprint.
 
 ## Implementation Constraints
 
-- Keep the auth-lifecycle extension narrow and boring.
-- Reuse the existing `gmail_accounts` plus `gmail_account_credentials` seam rather than creating a second connector store.
+- Keep the auth-storage change narrow and boring.
+- Reuse the existing `gmail_accounts` and `gmail_account_credentials` seam rather than introducing a second connector-account model.
 - Preserve secret-free Gmail account reads.
-- Support one explicit renewal path only; do not introduce account-wide sync, search, or OAuth UI in the same sprint.
-- Preserve the existing single-message Gmail ingestion seam outside the credential-renewal addition.
+- Keep the existing selected-message Gmail ingestion contract stable.
+- Use one explicit secret-manager adapter boundary only; do not generalize it to every future provider in this sprint.
+- If tests need a local adapter, keep it as a narrow testable implementation detail rather than a second product seam.
 
 ## Suggested Work Breakdown
 
-1. Extend the protected Gmail credential shape and any required migration metadata.
-2. Update Gmail connect contracts for refresh-token-capable writes while keeping reads secret-free.
-3. Implement deterministic token-renewal logic in the Gmail service seam.
-4. Route single-message Gmail ingestion through the renewal-capable credential lookup path.
-5. Add unit and integration tests.
-6. Update `BUILD_REPORT.md` with executed verification.
+1. Add the schema or migration changes required for external secret references.
+2. Define any minimal Gmail write-contract updates needed for secret-manager-backed credential writes.
+3. Implement one explicit secret-manager adapter for Gmail credential create, read, refresh, and rotation update paths.
+4. Keep Gmail account reads secret-free and stable.
+5. Add deterministic failure handling for secret resolution and secret update failures.
+6. Add unit and integration tests.
+7. Update `BUILD_REPORT.md` with executed verification.
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- the exact Gmail refresh-token credential changes introduced
-- the token-renewal rule and renewal trigger used
+- the exact Gmail credential schema and contract changes introduced
+- the external secret-manager adapter rule used
 - exact commands run
 - unit and integration test results
 - one example Gmail account response proving secret-free reads remain intact
-- one example Gmail ingestion response through the renewal-capable path
+- one example Gmail ingestion response through the externalized credential path
 - what remains intentionally deferred to later milestones
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- the sprint stayed limited to Gmail refresh-token lifecycle support
-- secret-free account reads remain intact
-- single-message Gmail ingestion still works through the protected credential seam
-- renewal success and failure behavior are deterministic and test-backed
-- no hidden Gmail search, sync, attachments, write actions, Calendar, external secret-manager, compile-contract, runner, or UI scope entered the sprint
+- the sprint stayed limited to external secret-manager integration for the Gmail credential seam
+- the primary Gmail protected credential path no longer depends on application-table-stored secret material
+- Gmail account reads remain secret-free
+- single-message Gmail ingestion plus refresh/rotation still work through the externalized seam
+- failure handling, isolation, and response stability are test-backed
+- no hidden Gmail search, sync, attachments, write actions, Calendar, compile-contract, runner, or UI scope entered the sprint
 
 ## Exit Condition
 
-This sprint is complete when the repo can renew Gmail access tokens through the protected credential seam for the existing single-message ingestion path, keep Gmail account reads secret-free, and verify the full path with Postgres-backed tests while broader Gmail and Calendar behavior remains deferred.
+This sprint is complete when the repo resolves Gmail secrets through one explicit external secret-manager boundary for the existing read-only single-message ingestion seam, preserves renewal and rotation behavior through that boundary, and verifies the full path with Postgres-backed tests while broader connector behavior remains deferred.
