@@ -4,6 +4,7 @@ import json
 from contextlib import contextmanager
 from uuid import uuid4
 
+import pytest
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.gmail import (
@@ -11,6 +12,8 @@ from alicebot_api.gmail import (
     GmailAccountNotFoundError,
     GmailCredentialInvalidError,
     GmailCredentialNotFoundError,
+    GmailCredentialRefreshError,
+    GmailCredentialValidationError,
     GmailMessageFetchError,
     GmailMessageNotFoundError,
     GmailMessageUnsupportedError,
@@ -74,6 +77,55 @@ def test_connect_gmail_account_endpoint_maps_duplicate_to_409(monkeypatch) -> No
     assert response.status_code == 409
     assert json.loads(response.body) == {
         "detail": "gmail account acct-001 is already connected"
+    }
+
+
+def test_connect_gmail_account_request_requires_complete_refresh_bundle() -> None:
+    with pytest.raises(ValueError, match="gmail refresh credentials must include refresh_token"):
+        main_module.ConnectGmailAccountRequest(
+            user_id=uuid4(),
+            provider_account_id="acct-001",
+            email_address="owner@example.com",
+            display_name="Owner",
+            access_token="token-1",
+            refresh_token="refresh-1",
+        )
+
+
+def test_connect_gmail_account_endpoint_maps_invalid_refresh_bundle_to_400(monkeypatch) -> None:
+    user_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    def fake_create_gmail_account_record(*_args, **_kwargs):
+        raise GmailCredentialValidationError(
+            "gmail refresh credentials must include refresh_token, client_id, client_secret, "
+            "and access_token_expires_at"
+        )
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(main_module, "create_gmail_account_record", fake_create_gmail_account_record)
+
+    response = main_module.connect_gmail_account(
+        main_module.ConnectGmailAccountRequest(
+            user_id=user_id,
+            provider_account_id="acct-001",
+            email_address="owner@example.com",
+            display_name="Owner",
+            access_token="token-1",
+        )
+    )
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {
+        "detail": (
+            "gmail refresh credentials must include refresh_token, client_id, client_secret, "
+            "and access_token_expires_at"
+        )
     }
 
 
@@ -229,4 +281,23 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     assert response.status_code == 502
     assert json.loads(response.body) == {
         "detail": "gmail message msg-001 could not be fetched"
+    }
+
+    def fake_refresh_error(*_args, **_kwargs):
+        raise GmailCredentialRefreshError(
+            f"gmail account {gmail_account_id} access token could not be renewed"
+        )
+
+    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_refresh_error)
+    response = main_module.ingest_gmail_message(
+        gmail_account_id,
+        "msg-001",
+        main_module.IngestGmailMessageRequest(
+            user_id=user_id,
+            task_workspace_id=task_workspace_id,
+        ),
+    )
+    assert response.status_code == 502
+    assert json.loads(response.body) == {
+        "detail": f"gmail account {gmail_account_id} access token could not be renewed"
     }

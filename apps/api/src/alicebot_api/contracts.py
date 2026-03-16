@@ -179,6 +179,7 @@ GMAIL_PROVIDER = "gmail"
 GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN = "oauth_access_token"
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 GMAIL_PROTECTED_CREDENTIAL_KIND = "gmail_oauth_access_token_v1"
+GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND = "gmail_oauth_refresh_token_v2"
 TASK_STEP_SEQUENCE_VERSION_V0 = "task_step_sequence_v0"
 TRACE_KIND_TASK_STEP_SEQUENCE = "task.step.sequence"
 TASK_STEP_CONTINUATION_VERSION_V0 = "task_step_continuation_v0"
@@ -1781,6 +1782,10 @@ class GmailAccountConnectInput:
     display_name: str | None
     scope: str
     access_token: str
+    refresh_token: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    access_token_expires_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
