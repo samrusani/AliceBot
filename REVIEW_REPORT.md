@@ -1,27 +1,27 @@
 verdict: PASS
 
 criteria met
-- Sprint 5M remains within the existing artifact-ingestion seam. The runtime changes are still limited to DOCX ingestion in `apps/api/src/alicebot_api/artifacts.py` plus the narrow `.docx` media-type fallback in `apps/api/src/alicebot_api/semantic_retrieval.py`; no connector, runner, compile-contract, or UI scope entered the sprint.
-- DOCX ingestion still reuses the rooted `task_workspaces`, `task_artifacts`, and `task_artifact_chunks` seams without schema or response-shape changes.
-- Rooted-path safety, deterministic chunk persistence, malformed/textless DOCX rejection, and per-user isolation remain covered by the unit and Postgres-backed integration tests already reviewed.
-- The previously missing regression coverage is now present in `tests/unit/test_semantic_retrieval.py`: a `.docx` artifact with `media_type_hint=None` is exercised directly, and the semantic retrieval response is asserted to infer `application/vnd.openxmlformats-officedocument.wordprocessingml.document`.
-- `ARCHITECTURE.md` now matches the shipped slice: it reports scope through Sprint 5M, describes the narrow PDF and DOCX ingestion boundary accurately, and keeps OCR/image/layout work explicitly deferred.
+- Sprint 5N stays within the existing artifact-ingestion seam. The runtime changes remain limited to RFC822 ingestion in `apps/api/src/alicebot_api/artifacts.py` plus `.eml` media-type inference in `apps/api/src/alicebot_api/semantic_retrieval.py`; no live Gmail, Calendar, OAuth, runner, compile-contract, or UI scope entered the sprint.
+- RFC822 ingestion reuses the existing rooted `task_workspaces`, `task_artifacts`, and `task_artifact_chunks` seams without schema or response-shape changes.
+- Rooted-path safety, deterministic chunk persistence, malformed/textless RFC822 rejection, per-user isolation, and stable response shapes are covered by unit and Postgres-backed integration tests.
+- The prior scope bug is fixed. The RFC822 extractor no longer descends into nested `message/*` parts when selecting body text, so encapsulated `message/rfc822` payloads do not contribute persisted chunk text.
+- Regression coverage for nested-email exclusion is now present in `tests/unit/test_artifacts.py` and `tests/integration/test_task_artifacts_api.py`.
+- `BUILD_REPORT.md` and `ARCHITECTURE.md` now reflect Sprint 5N and describe the RFC822 boundary accurately, including exclusion of nested `message/rfc822` content.
 - Review verification:
-- prior review verification still stands: `./.venv/bin/python -m pytest tests/unit` -> `386 passed in 0.56s`
-- prior review verification still stands: `./.venv/bin/python -m pytest tests/integration` -> `123 passed in 38.04s`
-- follow-up verification rerun in this review: `./.venv/bin/python -m pytest tests/unit/test_semantic_retrieval.py` -> `8 passed in 0.08s`
+  - `./.venv/bin/python -m pytest tests/unit` -> `394 passed in 0.64s`
+  - `./.venv/bin/python -m pytest tests/integration` -> `127 passed in 38.15s`
 
 criteria missed
 - None.
 
 quality issues
-- No blocking implementation or coverage issues remain for Sprint 5M scope.
+- No blocking implementation or test issues remain for Sprint 5N scope.
 
 regression risks
-- No new regression risks beyond the intentionally narrow richer-document boundaries already documented in the sprint packet and architecture notes.
+- Residual risk remains limited to the intentionally narrow richer-document boundary already documented in the sprint packet and architecture notes: HTML rendering, attachment extraction, and live connector behavior are still deferred.
 
 docs issues
-- None. `BUILD_REPORT.md` and `ARCHITECTURE.md` are consistent with the implemented slice and the review expectations.
+- None. `BUILD_REPORT.md` and `ARCHITECTURE.md` are consistent with the implemented slice and the corrected RFC822 extraction rule.
 
 should anything be added to RULES.md?
 - No.
@@ -30,4 +30,4 @@ should anything update ARCHITECTURE.md?
 - No further update is required for this sprint.
 
 recommended next action
-- Accept Sprint 5M as complete and merge after normal approval flow.
+- Accept Sprint 5N as complete and merge after normal approval flow.

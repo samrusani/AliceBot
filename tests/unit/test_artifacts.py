@@ -190,6 +190,116 @@ def _build_docx_bytes(
     return archive_buffer.getvalue()
 
 
+def _build_rfc822_email_bytes(
+    *,
+    headers: list[tuple[str, str]] | None = None,
+    plain_body: str | None = None,
+    plain_parts: list[str] | None = None,
+    html_body: str | None = None,
+    attachment_text: str | None = None,
+    nested_message_bytes: bytes | None = None,
+    malformed_multipart: bool = False,
+) -> bytes:
+    header_lines = [
+        f"{name}: {value}"
+        for name, value in (
+            headers
+            if headers is not None
+            else [
+                ("From", "Alice <alice@example.com>"),
+                ("To", "Bob <bob@example.com>"),
+                ("Subject", "Sprint Update"),
+            ]
+        )
+    ]
+    if malformed_multipart:
+        return (
+            "\r\n".join(
+                [
+                    *header_lines,
+                    "MIME-Version: 1.0",
+                    "Content-Type: multipart/mixed",
+                    "",
+                    "--broken-boundary",
+                    'Content-Type: text/plain; charset="utf-8"',
+                    "",
+                    "broken",
+                    "--broken-boundary--",
+                    "",
+                ]
+            ).encode("utf-8")
+        )
+
+    if (
+        plain_parts is None
+        and html_body is None
+        and attachment_text is None
+        and nested_message_bytes is None
+    ):
+        return (
+            "\r\n".join(
+                [
+                    *header_lines,
+                    'Content-Type: text/plain; charset="utf-8"',
+                    "Content-Transfer-Encoding: 8bit",
+                    "",
+                    plain_body or "",
+                ]
+            ).encode("utf-8")
+        )
+
+    boundary = "alicebot-boundary-001"
+    lines = [
+        *header_lines,
+        "MIME-Version: 1.0",
+        f'Content-Type: multipart/mixed; boundary="{boundary}"',
+        "",
+    ]
+    for part_text in plain_parts or []:
+        lines.extend(
+            [
+                f"--{boundary}",
+                'Content-Type: text/plain; charset="utf-8"',
+                "Content-Transfer-Encoding: 8bit",
+                "",
+                part_text,
+            ]
+        )
+    if html_body is not None:
+        lines.extend(
+            [
+                f"--{boundary}",
+                'Content-Type: text/html; charset="utf-8"',
+                "Content-Transfer-Encoding: 8bit",
+                "",
+                html_body,
+            ]
+        )
+    if attachment_text is not None:
+        lines.extend(
+            [
+                f"--{boundary}",
+                'Content-Type: text/plain; charset="utf-8"',
+                'Content-Disposition: attachment; filename="note.txt"',
+                "Content-Transfer-Encoding: 8bit",
+                "",
+                attachment_text,
+            ]
+        )
+    if nested_message_bytes is not None:
+        lines.extend(
+            [
+                f"--{boundary}",
+                "Content-Type: message/rfc822",
+                "Content-Transfer-Encoding: 8bit",
+                "",
+                nested_message_bytes.decode("utf-8"),
+            ]
+        )
+    lines.extend([f"--{boundary}--", ""])
+    return "\r\n".join(lines).encode("utf-8")
+
+
 class ArtifactStoreStub:
     def __init__(self) -> None:
         self.base_time = datetime(2026, 3, 13, 10, 0, tzinfo=UTC)
@@ -785,6 +895,230 @@ def test_ingest_task_artifact_record_persists_deterministic_docx_chunks(tmp_path
     ]
 
 
+def test_ingest_task_artifact_record_persists_deterministic_rfc822_chunks(tmp_path) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    artifact_path = workspace_path / "mail" / "update.eml"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(
+        _build_rfc822_email_bytes(
+            plain_body=("A" * 916) + "\r\n" + ("B" * 5) + "\rC",
+        )
+    )
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="mail/update.eml",
+        media_type_hint="message/rfc822",
+    )
+
+    response = ingest_task_artifact_record(
+        store,
+        user_id=user_id,
+        request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+    )
+
+    header_block = (
+        "From: Alice <alice@example.com>\n"
+        "To: Bob <bob@example.com>\n"
+        "Subject: Sprint Update\n\n"
+    )
+    assert response == {
+        "artifact": {
+            "id": str(artifact["id"]),
+            "task_id": str(task_id),
+            "task_workspace_id": str(task_workspace_id),
+            "status": "registered",
+            "ingestion_status": "ingested",
+            "relative_path": "mail/update.eml",
+            "media_type_hint": "message/rfc822",
+            "created_at": "2026-03-13T10:00:00+00:00",
+            "updated_at": "2026-03-13T10:30:00+00:00",
+        },
+        "summary": {
+            "total_count": 2,
+            "total_characters": 1006,
+            "media_type": "message/rfc822",
+            "chunking_rule": TASK_ARTIFACT_CHUNKING_RULE,
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+    assert store.locked_artifact_ids == [artifact["id"]]
+    assert store.list_task_artifact_chunks(artifact["id"]) == [
+        {
+            "id": store.artifact_chunks[0]["id"],
+            "user_id": user_id,
+            "task_artifact_id": artifact["id"],
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 1000,
+            "text": header_block + ("A" * 916) + "\n" + "B",
+            "created_at": datetime(2026, 3, 13, 10, 0, tzinfo=UTC),
+            "updated_at": datetime(2026, 3, 13, 10, 0, tzinfo=UTC),
+        },
+        {
+            "id": store.artifact_chunks[1]["id"],
+            "user_id": user_id,
+            "task_artifact_id": artifact["id"],
+            "sequence_no": 2,
+            "char_start": 1000,
+            "char_end_exclusive": 1006,
+            "text": "BBBB\nC",
+            "created_at": datetime(2026, 3, 13, 10, 0, 1, tzinfo=UTC),
+            "updated_at": datetime(2026, 3, 13, 10, 0, 1, tzinfo=UTC),
+        },
+    ]
+
+
+def test_ingest_task_artifact_record_extracts_plain_text_parts_from_multipart_rfc822_email(
+    tmp_path,
+) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    artifact_path = workspace_path / "mail" / "multipart.eml"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(
+        _build_rfc822_email_bytes(
+            plain_parts=["Alpha\r\nBeta", "Gamma"],
+            html_body="<p>ignored</p>",
+            attachment_text="ignored attachment",
+        )
+    )
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="mail/multipart.eml",
+        media_type_hint="message/rfc822",
+    )
+
+    response = ingest_task_artifact_record(
+        store,
+        user_id=user_id,
+        request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+    )
+
+    assert response["summary"] == {
+        "total_count": 1,
+        "total_characters": 99,
+        "media_type": "message/rfc822",
+        "chunking_rule": TASK_ARTIFACT_CHUNKING_RULE,
+        "order": ["sequence_no_asc", "id_asc"],
+    }
+    assert store.list_task_artifact_chunks(artifact["id"]) == [
+        {
+            "id": store.artifact_chunks[0]["id"],
+            "user_id": user_id,
+            "task_artifact_id": artifact["id"],
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 99,
+            "text": (
+                "From: Alice <alice@example.com>\n"
+                "To: Bob <bob@example.com>\n"
+                "Subject: Sprint Update\n\n"
+                "Alpha\nBeta\n\nGamma"
+            ),
+            "created_at": datetime(2026, 3, 13, 10, 0, tzinfo=UTC),
+            "updated_at": datetime(2026, 3, 13, 10, 0, tzinfo=UTC),
+        }
+    ]
+
+
+def test_ingest_task_artifact_record_excludes_nested_rfc822_message_bodies(tmp_path) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    artifact_path = workspace_path / "mail" / "forwarded.eml"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(
+        _build_rfc822_email_bytes(
+            plain_parts=["Outer body"],
+            nested_message_bytes=_build_rfc822_email_bytes(
+                headers=[
+                    ("From", "Nested <nested@example.com>"),
+                    ("To", "Team <team@example.com>"),
+                    ("Subject", "Nested"),
+                ],
+                plain_body="Inner body",
+            ),
+        )
+    )
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="mail/forwarded.eml",
+        media_type_hint="message/rfc822",
+    )
+
+    response = ingest_task_artifact_record(
+        store,
+        user_id=user_id,
+        request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+    )
+
+    expected_text = (
+        "From: Alice <alice@example.com>\n"
+        "To: Bob <bob@example.com>\n"
+        "Subject: Sprint Update\n\n"
+        "Outer body"
+    )
+    assert response["summary"] == {
+        "total_count": 1,
+        "total_characters": len(expected_text),
+        "media_type": "message/rfc822",
+        "chunking_rule": TASK_ARTIFACT_CHUNKING_RULE,
+        "order": ["sequence_no_asc", "id_asc"],
+    }
+    assert store.list_task_artifact_chunks(artifact["id"]) == [
+        {
+            "id": store.artifact_chunks[0]["id"],
+            "user_id": user_id,
+            "task_artifact_id": artifact["id"],
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": len(expected_text),
+            "text": expected_text,
+            "created_at": datetime(2026, 3, 13, 10, 0, tzinfo=UTC),
+            "updated_at": datetime(2026, 3, 13, 10, 0, tzinfo=UTC),
+        }
+    ]
+
+
 def test_ingest_task_artifact_record_is_idempotent_for_already_ingested_artifact() -> None:
     store = ArtifactStoreStub()
     user_id = uuid4()
@@ -872,7 +1206,8 @@ def test_ingest_task_artifact_record_rejects_unsupported_media_type(tmp_path) ->
         match=(
             "artifact docs/spec.bin has unsupported media type application/octet-stream; "
             "supported types: text/plain, text/markdown, application/pdf, "
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
+            "message/rfc822"
         ),
     ):
         ingest_task_artifact_record(
@@ -990,6 +1325,78 @@ def test_ingest_task_artifact_record_rejects_malformed_docx(tmp_path) -> None:
         )
 
 
+def test_ingest_task_artifact_record_rejects_textless_rfc822_email(tmp_path) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    artifact_path = workspace_path / "mail" / "empty.eml"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(_build_rfc822_email_bytes(html_body="<p>html only</p>"))
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="mail/empty.eml",
+        media_type_hint="message/rfc822",
+    )
+
+    with pytest.raises(
+        TaskArtifactValidationError,
+        match="artifact mail/empty.eml does not contain extractable RFC822 email text",
+    ):
+        ingest_task_artifact_record(
+            store,
+            user_id=user_id,
+            request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+        )
+
+
+def test_ingest_task_artifact_record_rejects_malformed_rfc822_email(tmp_path) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    artifact_path = workspace_path / "mail" / "broken.eml"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(_build_rfc822_email_bytes(malformed_multipart=True))
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="mail/broken.eml",
+        media_type_hint="message/rfc822",
+    )
+
+    with pytest.raises(
+        TaskArtifactValidationError,
+        match="artifact mail/broken.eml is not a valid RFC822 email",
+    ):
+        ingest_task_artifact_record(
+            store,
+            user_id=user_id,
+            request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+        )
+
+
 def test_ingest_task_artifact_record_rejects_invalid_utf8_content(tmp_path) -> None:
     store = ArtifactStoreStub()
     user_id = uuid4()
@@ -1080,6 +1487,38 @@ def test_ingest_task_artifact_record_rejects_docx_paths_outside_workspace(tmp_pa
         ingestion_status="pending",
         relative_path="../escape.docx",
         media_type_hint="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    )
+
+    with pytest.raises(TaskArtifactValidationError, match="escapes workspace root"):
+        ingest_task_artifact_record(
+            store,
+            user_id=user_id,
+            request=TaskArtifactIngestInput(task_artifact_id=artifact["id"]),
+        )
+
+
+def test_ingest_task_artifact_record_rejects_rfc822_paths_outside_workspace(tmp_path) -> None:
+    store = ArtifactStoreStub()
+    user_id = uuid4()
+    task_id = uuid4()
+    task_workspace_id = uuid4()
+    workspace_path = tmp_path / "workspaces" / str(user_id) / str(task_id)
+    workspace_path.mkdir(parents=True)
+    outside_path = tmp_path / "escape.eml"
+    outside_path.write_bytes(_build_rfc822_email_bytes(plain_body="escape"))
+    store.create_task_workspace(
+        task_workspace_id=task_workspace_id,
+        task_id=task_id,
+        user_id=user_id,
+        local_path=str(workspace_path),
+    )
+    artifact = store.create_task_artifact(
+        task_id=task_id,
+        task_workspace_id=task_workspace_id,
+        status="registered",
+        ingestion_status="pending",
+        relative_path="../escape.eml",
+        media_type_hint="message/rfc822",
     )
 
     with pytest.raises(TaskArtifactValidationError, match="escapes workspace root"):

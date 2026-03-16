@@ -499,7 +499,8 @@ def test_ingest_task_artifact_endpoint_maps_validation_to_400(monkeypatch) -> No
         raise TaskArtifactValidationError(
             "artifact docs/spec.bin has unsupported media type application/octet-stream; "
             "supported types: text/plain, text/markdown, application/pdf, "
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
+            "message/rfc822"
         )
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
@@ -516,7 +517,8 @@ def test_ingest_task_artifact_endpoint_maps_validation_to_400(monkeypatch) -> No
         "detail": (
             "artifact docs/spec.bin has unsupported media type application/octet-stream; "
             "supported types: text/plain, text/markdown, application/pdf, "
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
+            "message/rfc822"
         )
     }
 

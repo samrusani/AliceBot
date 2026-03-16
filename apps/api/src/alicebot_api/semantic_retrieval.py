@@ -34,6 +34,7 @@ SUPPORTED_TEXT_ARTIFACT_EXTENSIONS = {
     ".md": "text/markdown",
     ".markdown": "text/markdown",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".eml": "message/rfc822",
 }
 
 
