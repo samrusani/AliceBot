@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import io
 import re
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 from uuid import UUID
+import xml.etree.ElementTree as ET
+import zipfile
 
 import psycopg
 
@@ -40,9 +43,13 @@ from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
 SUPPORTED_TEXT_ARTIFACT_MEDIA_TYPES = ("text/plain", "text/markdown")
 SUPPORTED_PDF_ARTIFACT_MEDIA_TYPE = "application/pdf"
+SUPPORTED_DOCX_ARTIFACT_MEDIA_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
 SUPPORTED_ARTIFACT_MEDIA_TYPES = (
     *SUPPORTED_TEXT_ARTIFACT_MEDIA_TYPES,
     SUPPORTED_PDF_ARTIFACT_MEDIA_TYPE,
+    SUPPORTED_DOCX_ARTIFACT_MEDIA_TYPE,
 )
 SUPPORTED_ARTIFACT_EXTENSIONS = {
     ".txt": "text/plain",
@@ -50,6 +57,7 @@ SUPPORTED_ARTIFACT_EXTENSIONS = {
     ".md": "text/markdown",
     ".markdown": "text/markdown",
     ".pdf": SUPPORTED_PDF_ARTIFACT_MEDIA_TYPE,
+    ".docx": SUPPORTED_DOCX_ARTIFACT_MEDIA_TYPE,
 }
 TASK_ARTIFACT_CHUNK_MAX_CHARS = 1000
 TASK_ARTIFACT_CHUNKING_RULE = "normalized_utf8_text_fixed_window_1000_chars_v1"
@@ -132,6 +140,14 @@ _PDF_CONTENT_OPERATORS = {
     b"W*",
     b"y",
 }
+_DOCX_DOCUMENT_XML_PATH = "word/document.xml"
+_DOCX_WORDPROCESSING_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_DOCX_PARAGRAPH_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}p"
+_DOCX_TEXT_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}t"
+_DOCX_TAB_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}tab"
+_DOCX_BREAK_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}br"
+_DOCX_CARRIAGE_RETURN_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}cr"
+_DOCX_BODY_TAG = f"{{{_DOCX_WORDPROCESSING_NAMESPACE}}}body"
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,6 +282,49 @@ def _extract_text_from_utf8_artifact_bytes(*, relative_path: str, payload: bytes
         raise TaskArtifactValidationError(
             f"artifact {relative_path} is not valid UTF-8 text"
         ) from exc
+
+
+def _extract_text_from_docx_paragraph(paragraph: ET.Element) -> str:
+    fragments: list[str] = []
+    for element in paragraph.iter():
+        if element.tag == _DOCX_TEXT_TAG:
+            fragments.append(element.text or "")
+            continue
+        if element.tag == _DOCX_TAB_TAG:
+            fragments.append("\t")
+            continue
+        if element.tag in {_DOCX_BREAK_TAG, _DOCX_CARRIAGE_RETURN_TAG}:
+            fragments.append("\n")
+    return "".join(fragments)
+
+
+def _extract_text_from_docx_artifact_bytes(*, relative_path: str, payload: bytes) -> str:
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            document_xml = archive.read(_DOCX_DOCUMENT_XML_PATH)
+    except (KeyError, zipfile.BadZipFile) as exc:
+        raise TaskArtifactValidationError(f"artifact {relative_path} is not a valid DOCX") from exc
+
+    try:
+        document_root = ET.fromstring(document_xml)
+    except ET.ParseError as exc:
+        raise TaskArtifactValidationError(f"artifact {relative_path} is not a valid DOCX") from exc
+
+    document_body = document_root.find(_DOCX_BODY_TAG)
+    if document_body is None:
+        raise TaskArtifactValidationError(f"artifact {relative_path} is not a valid DOCX")
+
+    paragraphs = [
+        paragraph_text
+        for paragraph in document_body.iter(_DOCX_PARAGRAPH_TAG)
+        if (paragraph_text := _extract_text_from_docx_paragraph(paragraph)) != ""
+    ]
+    extracted_text = "\n".join(paragraphs).strip()
+    if extracted_text == "":
+        raise TaskArtifactValidationError(
+            f"artifact {relative_path} does not contain extractable DOCX text"
+        )
+    return extracted_text
 
 
 def _extract_pdf_name(dictionary: bytes, key: bytes) -> bytes | None:
@@ -739,6 +798,11 @@ def extract_artifact_text(*, row: TaskArtifactRow, artifact_path: Path, media_ty
         )
     if media_type == SUPPORTED_PDF_ARTIFACT_MEDIA_TYPE:
         return _extract_text_from_pdf_artifact_bytes(
+            relative_path=row["relative_path"],
+            payload=payload,
+        )
+    if media_type == SUPPORTED_DOCX_ARTIFACT_MEDIA_TYPE:
+        return _extract_text_from_docx_artifact_bytes(
             relative_path=row["relative_path"],
             payload=payload,
         )
