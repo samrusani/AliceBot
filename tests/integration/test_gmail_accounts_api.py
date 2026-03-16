@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import anyio
+import psycopg
 
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
@@ -240,6 +241,39 @@ def test_gmail_account_endpoints_connect_list_detail_and_isolate(
     assert isolated_detail_payload == {
         "detail": f"gmail account {create_payload['account']['id']} was not found"
     }
+    assert '"access_token":' not in json.dumps(create_payload)
+    assert '"access_token":' not in json.dumps(list_payload)
+    assert '"access_token":' not in json.dumps(detail_payload)
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'gmail_accounts'
+                ORDER BY ordinal_position
+                """
+            )
+            gmail_account_columns = {row[0] for row in cur.fetchall()}
+            assert "access_token" not in gmail_account_columns
+            cur.execute(
+                """
+                SELECT
+                  auth_kind,
+                  credential_blob ->> 'credential_kind',
+                  credential_blob ->> 'access_token'
+                FROM gmail_account_credentials
+                WHERE gmail_account_id = %s
+                """,
+                (UUID(create_payload["account"]["id"]),),
+            )
+            assert cur.fetchone() == (
+                "oauth_access_token",
+                "gmail_oauth_access_token_v1",
+                "token-for-acct-owner-001",
+            )
 
 
 def test_gmail_message_ingestion_endpoint_persists_artifact_and_chunks(
@@ -377,6 +411,71 @@ def test_gmail_message_ingestion_endpoint_rejects_cross_user_workspace_access(
     assert ingest_payload == {
         "detail": f"task workspace {owner_workspace_payload['workspace']['id']} was not found"
     }
+
+
+def test_gmail_message_ingestion_endpoint_rejects_missing_protected_credentials_without_side_effects(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    def fail_fetch(**_kwargs):
+        raise AssertionError("fetch_gmail_message_raw_bytes should not be called")
+
+    monkeypatch.setattr(gmail_module, "fetch_gmail_message_raw_bytes", fail_fetch)
+
+    _, account_payload = _connect_gmail_account(
+        user_id=owner["user_id"],
+        provider_account_id="acct-owner-001",
+        email_address="owner@gmail.example",
+    )
+    _, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM gmail_account_credentials WHERE gmail_account_id = %s",
+                (UUID(account_payload["account"]["id"]),),
+            )
+        conn.commit()
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/gmail-accounts/{account_payload['account']['id']}/messages/msg-001/ingest",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+        },
+    )
+
+    assert ingest_status == 409
+    assert ingest_payload == {
+        "detail": (
+            f"gmail account {account_payload['account']['id']} is missing protected credentials"
+        )
+    }
+    artifact_file = (
+        Path(workspace_payload["workspace"]["local_path"]) / "gmail" / "acct-owner-001" / "msg-001.eml"
+    )
+    assert not artifact_file.exists()
+
+    with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        assert store.list_task_artifacts_for_task(owner["task_id"]) == []
 
 
 def test_gmail_message_ingestion_endpoint_rejects_sanitized_path_collisions_without_overwrite(

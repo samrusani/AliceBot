@@ -140,6 +140,8 @@ from alicebot_api.execution_budgets import (
 )
 from alicebot_api.gmail import (
     GmailAccountAlreadyExistsError,
+    GmailCredentialInvalidError,
+    GmailCredentialNotFoundError,
     GmailAccountNotFoundError,
     GmailMessageFetchError,
     GmailMessageNotFoundError,
@@ -1373,6 +1375,8 @@ def ingest_gmail_message(
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except GmailMessageUnsupportedError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except (GmailCredentialNotFoundError, GmailCredentialInvalidError) as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except TaskArtifactValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except GmailMessageFetchError as exc:

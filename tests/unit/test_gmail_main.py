@@ -9,6 +9,8 @@ from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.gmail import (
     GmailAccountAlreadyExistsError,
     GmailAccountNotFoundError,
+    GmailCredentialInvalidError,
+    GmailCredentialNotFoundError,
     GmailMessageFetchError,
     GmailMessageNotFoundError,
     GmailMessageUnsupportedError,
@@ -172,6 +174,44 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     assert response.status_code == 400
     assert json.loads(response.body) == {
         "detail": "gmail message msg-001 is not a supported RFC822 email"
+    }
+
+    def fake_missing_credentials(*_args, **_kwargs):
+        raise GmailCredentialNotFoundError(
+            f"gmail account {gmail_account_id} is missing protected credentials"
+        )
+
+    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_missing_credentials)
+    response = main_module.ingest_gmail_message(
+        gmail_account_id,
+        "msg-001",
+        main_module.IngestGmailMessageRequest(
+            user_id=user_id,
+            task_workspace_id=task_workspace_id,
+        ),
+    )
+    assert response.status_code == 409
+    assert json.loads(response.body) == {
+        "detail": f"gmail account {gmail_account_id} is missing protected credentials"
+    }
+
+    def fake_invalid_credentials(*_args, **_kwargs):
+        raise GmailCredentialInvalidError(
+            f"gmail account {gmail_account_id} has invalid protected credentials"
+        )
+
+    monkeypatch.setattr(main_module, "ingest_gmail_message_record", fake_invalid_credentials)
+    response = main_module.ingest_gmail_message(
+        gmail_account_id,
+        "msg-001",
+        main_module.IngestGmailMessageRequest(
+            user_id=user_id,
+            task_workspace_id=task_workspace_id,
+        ),
+    )
+    assert response.status_code == 409
+    assert json.loads(response.body) == {
+        "detail": f"gmail account {gmail_account_id} has invalid protected credentials"
     }
 
     def fake_fetch_error(*_args, **_kwargs):
