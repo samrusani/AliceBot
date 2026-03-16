@@ -82,6 +82,10 @@ def _build_rfc822_email_bytes(*, subject: str, plain_body: str) -> bytes:
     )
 
 
+def _build_gmail_secret_manager_url(root: Path) -> str:
+    return root.resolve().as_uri()
+
+
 def seed_user(database_url: str, *, email: str) -> dict[str, UUID]:
     user_id = uuid4()
 
@@ -180,13 +184,18 @@ def _connect_gmail_account(
 def test_gmail_account_endpoints_connect_list_detail_and_isolate(
     migrated_database_urls,
     monkeypatch,
+    tmp_path,
 ) -> None:
     owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
+    gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
         "get_settings",
-        lambda: Settings(database_url=migrated_database_urls["app"]),
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
     )
 
     create_status, create_payload = _connect_gmail_account(
@@ -275,18 +284,28 @@ def test_gmail_account_endpoints_connect_list_detail_and_isolate(
                 """
                 SELECT
                   auth_kind,
-                  credential_blob ->> 'credential_kind',
-                  credential_blob ->> 'access_token'
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
+                  credential_blob IS NULL
                 FROM gmail_account_credentials
                 WHERE gmail_account_id = %s
                 """,
                 (UUID(create_payload["account"]["id"]),),
             )
-            assert cur.fetchone() == (
-                "oauth_access_token",
-                "gmail_oauth_access_token_v1",
-                "token-for-acct-owner-001",
-            )
+            credential_row = cur.fetchone()
+
+    assert credential_row is not None
+    assert credential_row[0] == "oauth_access_token"
+    assert credential_row[1] == "gmail_oauth_access_token_v1"
+    assert credential_row[2] == "file_v1"
+    assert credential_row[4] is True
+    assert credential_row[3] is not None
+    secret_payload = json.loads((gmail_secret_root / credential_row[3]).read_text(encoding="utf-8"))
+    assert secret_payload == {
+        "credential_kind": "gmail_oauth_access_token_v1",
+        "access_token": "token-for-acct-owner-001",
+    }
 
 
 def test_gmail_message_ingestion_endpoint_persists_artifact_and_chunks(
@@ -296,12 +315,14 @@ def test_gmail_message_ingestion_endpoint_persists_artifact_and_chunks(
 ) -> None:
     owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
     workspace_root = tmp_path / "task-workspaces"
+    gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
             task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
     raw_bytes = _build_rfc822_email_bytes(subject="Inbox Update", plain_body="ingest this message")
@@ -383,12 +404,14 @@ def test_gmail_message_ingestion_endpoint_renews_expired_access_token(
 ) -> None:
     owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
     workspace_root = tmp_path / "task-workspaces"
+    gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
             task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
     raw_bytes = _build_rfc822_email_bytes(subject="Inbox Update", plain_body="renewed token path")
@@ -455,12 +478,10 @@ def test_gmail_message_ingestion_endpoint_renews_expired_access_token(
             cur.execute(
                 """
                 SELECT
-                  credential_blob ->> 'credential_kind',
-                  credential_blob ->> 'access_token',
-                  credential_blob ->> 'refresh_token',
-                  credential_blob ->> 'client_id',
-                  credential_blob ->> 'client_secret',
-                  credential_blob ->> 'access_token_expires_at'
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
+                  credential_blob IS NULL
                 FROM gmail_account_credentials
                 WHERE gmail_account_id = %s
                 """,
@@ -470,11 +491,18 @@ def test_gmail_message_ingestion_endpoint_renews_expired_access_token(
 
     assert credential_row is not None
     assert credential_row[0] == "gmail_oauth_refresh_token_v2"
-    assert credential_row[1] == "token-refreshed"
-    assert credential_row[2] == "refresh-owner-001"
-    assert credential_row[3] == "client-owner-001"
-    assert credential_row[4] == "secret-owner-001"
-    assert credential_row[5] == "2030-01-01T00:05:00+00:00"
+    assert credential_row[1] == "file_v1"
+    assert credential_row[3] is True
+    assert credential_row[2] is not None
+    secret_payload = json.loads((gmail_secret_root / credential_row[2]).read_text(encoding="utf-8"))
+    assert secret_payload == {
+        "credential_kind": "gmail_oauth_refresh_token_v2",
+        "access_token": "token-refreshed",
+        "refresh_token": "refresh-owner-001",
+        "client_id": "client-owner-001",
+        "client_secret": "secret-owner-001",
+        "access_token_expires_at": "2030-01-01T00:05:00+00:00",
+    }
 
 
 def test_gmail_message_ingestion_endpoint_persists_rotated_refresh_token(
@@ -484,12 +512,14 @@ def test_gmail_message_ingestion_endpoint_persists_rotated_refresh_token(
 ) -> None:
     owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
     workspace_root = tmp_path / "task-workspaces"
+    gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
             task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
     raw_bytes = _build_rfc822_email_bytes(subject="Inbox Update", plain_body="rotated token path")
@@ -580,12 +610,10 @@ def test_gmail_message_ingestion_endpoint_persists_rotated_refresh_token(
             cur.execute(
                 """
                 SELECT
-                  credential_blob ->> 'credential_kind',
-                  credential_blob ->> 'access_token',
-                  credential_blob ->> 'refresh_token',
-                  credential_blob ->> 'client_id',
-                  credential_blob ->> 'client_secret',
-                  credential_blob ->> 'access_token_expires_at'
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
+                  credential_blob IS NULL
                 FROM gmail_account_credentials
                 WHERE gmail_account_id = %s
                 """,
@@ -595,11 +623,18 @@ def test_gmail_message_ingestion_endpoint_persists_rotated_refresh_token(
 
     assert credential_row is not None
     assert credential_row[0] == "gmail_oauth_refresh_token_v2"
-    assert credential_row[1] == "token-refreshed-rotated"
-    assert credential_row[2] == "refresh-owner-rotated-002"
-    assert credential_row[3] == "client-owner-001"
-    assert credential_row[4] == "secret-owner-001"
-    assert credential_row[5] == "2030-01-01T00:05:00+00:00"
+    assert credential_row[1] == "file_v1"
+    assert credential_row[3] is True
+    assert credential_row[2] is not None
+    secret_payload = json.loads((gmail_secret_root / credential_row[2]).read_text(encoding="utf-8"))
+    assert secret_payload == {
+        "credential_kind": "gmail_oauth_refresh_token_v2",
+        "access_token": "token-refreshed-rotated",
+        "refresh_token": "refresh-owner-rotated-002",
+        "client_id": "client-owner-001",
+        "client_secret": "secret-owner-001",
+        "access_token_expires_at": "2030-01-01T00:05:00+00:00",
+    }
 
 
 def test_gmail_message_ingestion_endpoint_fails_deterministically_when_rotated_credentials_cannot_be_persisted(
@@ -609,12 +644,14 @@ def test_gmail_message_ingestion_endpoint_fails_deterministically_when_rotated_c
 ) -> None:
     owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
     workspace_root = tmp_path / "task-workspaces"
+    gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
             task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
 
@@ -688,9 +725,10 @@ def test_gmail_message_ingestion_endpoint_fails_deterministically_when_rotated_c
             cur.execute(
                 """
                 SELECT
-                  credential_blob ->> 'access_token',
-                  credential_blob ->> 'refresh_token',
-                  credential_blob ->> 'access_token_expires_at'
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
+                  credential_blob IS NULL
                 FROM gmail_account_credentials
                 WHERE gmail_account_id = %s
                 """,
@@ -698,11 +736,20 @@ def test_gmail_message_ingestion_endpoint_fails_deterministically_when_rotated_c
             )
             credential_row = cur.fetchone()
 
-    assert credential_row == (
-        f"token-for-{account_payload['account']['provider_account_id']}",
-        "refresh-owner-001",
-        "2020-01-01T00:00:00+00:00",
-    )
+    assert credential_row is not None
+    assert credential_row[0] == "gmail_oauth_refresh_token_v2"
+    assert credential_row[1] == "file_v1"
+    assert credential_row[3] is True
+    assert credential_row[2] is not None
+    secret_payload = json.loads((gmail_secret_root / credential_row[2]).read_text(encoding="utf-8"))
+    assert secret_payload == {
+        "credential_kind": "gmail_oauth_refresh_token_v2",
+        "access_token": f"token-for-{account_payload['account']['provider_account_id']}",
+        "refresh_token": "refresh-owner-001",
+        "client_id": "client-owner-001",
+        "client_secret": "secret-owner-001",
+        "access_token_expires_at": "2020-01-01T00:00:00+00:00",
+    }
 
 
 def test_gmail_message_ingestion_endpoint_rejects_cross_user_workspace_access(
@@ -713,12 +760,14 @@ def test_gmail_message_ingestion_endpoint_rejects_cross_user_workspace_access(
     owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
     intruder = seed_task(migrated_database_urls["app"], email="intruder@example.com")
     workspace_root = tmp_path / "task-workspaces"
+    gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
             task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
     monkeypatch.setattr(
@@ -762,12 +811,14 @@ def test_gmail_message_ingestion_endpoint_rejects_missing_protected_credentials_
 ) -> None:
     owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
     workspace_root = tmp_path / "task-workspaces"
+    gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
             task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
 
@@ -820,6 +871,87 @@ def test_gmail_message_ingestion_endpoint_rejects_missing_protected_credentials_
         assert store.list_task_artifacts_for_task(owner["task_id"]) == []
 
 
+def test_gmail_message_ingestion_endpoint_rejects_missing_external_secret_without_side_effects(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    gmail_secret_root = tmp_path / "gmail-secrets"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
+        ),
+    )
+
+    monkeypatch.setattr(
+        gmail_module,
+        "fetch_gmail_message_raw_bytes",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("fetch_gmail_message_raw_bytes should not be called")
+        ),
+    )
+
+    _, account_payload = _connect_gmail_account(
+        user_id=owner["user_id"],
+        provider_account_id="acct-owner-secret-missing-001",
+        email_address="owner@gmail.example",
+    )
+    _, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT secret_ref
+                FROM gmail_account_credentials
+                WHERE gmail_account_id = %s
+                """,
+                (UUID(account_payload["account"]["id"]),),
+            )
+            secret_ref_row = cur.fetchone()
+
+    assert secret_ref_row is not None
+    secret_path = gmail_secret_root / secret_ref_row[0]
+    secret_path.unlink()
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/gmail-accounts/{account_payload['account']['id']}/messages/msg-001/ingest",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+        },
+    )
+
+    assert ingest_status == 409
+    assert ingest_payload == {
+        "detail": (
+            f"gmail account {account_payload['account']['id']} is missing protected credentials"
+        )
+    }
+    artifact_file = (
+        Path(workspace_payload["workspace"]["local_path"])
+        / "gmail"
+        / "acct-owner-secret-missing-001"
+        / "msg-001.eml"
+    )
+    assert not artifact_file.exists()
+
+    with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        assert store.list_task_artifacts_for_task(owner["task_id"]) == []
+
+
 def test_gmail_message_ingestion_endpoint_rejects_invalid_refresh_credentials_without_side_effects(
     migrated_database_urls,
     monkeypatch,
@@ -827,12 +959,14 @@ def test_gmail_message_ingestion_endpoint_rejects_invalid_refresh_credentials_wi
 ) -> None:
     owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
     workspace_root = tmp_path / "task-workspaces"
+    gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
             task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
 
@@ -899,12 +1033,14 @@ def test_gmail_message_ingestion_endpoint_rejects_sanitized_path_collisions_with
 ) -> None:
     owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
     workspace_root = tmp_path / "task-workspaces"
+    gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
             task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
     first_bytes = _build_rfc822_email_bytes(subject="First", plain_body="first message body")
@@ -979,12 +1115,14 @@ def test_gmail_message_ingestion_endpoint_rejects_missing_and_unsupported_messag
 ) -> None:
     owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
     workspace_root = tmp_path / "task-workspaces"
+    gmail_secret_root = tmp_path / "gmail-secrets"
     monkeypatch.setattr(
         main_module,
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
             task_workspace_root=str(workspace_root),
+            gmail_secret_manager_url=_build_gmail_secret_manager_url(gmail_secret_root),
         ),
     )
 
