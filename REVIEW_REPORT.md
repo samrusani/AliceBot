@@ -6,17 +6,20 @@ PASS
 
 ## criteria met
 
-- Sprint 5O stays within scope. I found no Gmail search, mailbox sync, attachment ingestion, write-capable Gmail actions, Calendar scope, compile-contract changes, runner work, or UI work.
-- The Gmail connector seam remains narrow and reuses the existing rooted workspace, artifact registration, and RFC822 chunk-ingestion pipeline.
-- The earlier sanitized-path collision issue is now fixed for both sequential and concurrent access paths. Gmail ingestion takes `lock_task_artifacts()` before duplicate detection, file existence checks, and writes, matching the normal artifact registration critical section.
-- Regression coverage was tightened so the duplicate-path unit test now proves lock acquisition happens before duplicate lookup, and the integration coverage still proves the second colliding request returns `409` without overwriting the first `.eml`.
-- `ARCHITECTURE.md` now reflects Sprint 5O, the live `gmail_accounts` schema, the Gmail endpoints, and the narrow read-only Gmail connector flow.
-- `BUILD_REPORT.md` matches the current implementation and verification state.
+- Sprint 5P remains limited to Gmail credential hardening. I found no Gmail search, sync, attachments, write actions, Calendar, compile-contract, runner, or UI scope.
+- Plaintext Gmail access tokens are removed from the normal `gmail_accounts` table surface. Revision `20260316_0027` backfills tokens into `gmail_account_credentials` and drops `gmail_accounts.access_token`.
+- Gmail account list and detail reads remain secret-free. The Gmail account response shape is stable and the integration suite asserts `access_token` is absent from connect, list, and detail payloads.
+- The existing single-message Gmail ingestion seam still works through the hardened path. Ingestion now resolves the token through the protected credential seam before Gmail fetches and then reuses the existing RFC822 artifact pipeline.
+- Missing or invalid protected credentials fail deterministically before Gmail fetches, workspace writes, or artifact registration, with unit and integration coverage for the no-side-effects path.
+- Per-user isolation remains intact through user-scoped connections, RLS on `gmail_account_credentials`, and the ownership FK binding credentials to the visible Gmail account row.
+- `BUILD_REPORT.md` now matches the implemented files and current verification state.
+- `ARCHITECTURE.md` now reflects Sprint 5P, the `gmail_account_credentials` table, and the protected credential lookup in the narrow Gmail flow.
+- `RULES.md` now includes the narrow connector-secret handling rule.
+- Migration coverage now includes a Gmail-specific round-trip test proving `20260316_0027` backfills tokens on upgrade and restores `gmail_accounts.access_token` on downgrade.
 - Verified locally:
-  - `./.venv/bin/python -m pytest tests/unit/test_gmail.py tests/unit/test_gmail_main.py` -> `12 passed in 0.27s`
-  - `./.venv/bin/python -m pytest tests/integration/test_gmail_accounts_api.py` -> `5 passed in 1.89s`
-  - `./.venv/bin/python -m pytest tests/unit` -> `409 passed in 0.63s`
-  - `./.venv/bin/python -m pytest tests/integration` -> `132 passed in 39.72s`
+  - `./.venv/bin/python -m pytest tests/unit` -> `417 passed in 0.55s`
+  - `./.venv/bin/python -m pytest tests/integration/test_migrations.py` -> `3 passed in 1.46s`
+  - `./.venv/bin/python -m pytest tests/integration` -> `134 passed in 39.86s`
 
 ## criteria missed
 
@@ -24,12 +27,12 @@ PASS
 
 ## quality issues
 
-- No blocking implementation, regression, or scope issues remain for Sprint 5O.
+- No blocking implementation, regression, or scope issues remain for Sprint 5P.
 
 ## regression risks
 
-- Residual risk is limited to intentionally deferred areas already called out by the sprint packet: Gmail search, sync, attachments, write actions, broader auth lifecycle hardening, Calendar, and UI.
-- Gmail access tokens are still persisted in plaintext on `gmail_accounts`. That is acceptable for this narrow sprint slice but should be hardened before broader connector rollout.
+- Residual risk is limited to intentionally deferred work already called out by the sprint packet: refresh-token lifecycle, external secret-manager support, Gmail search, sync, attachments, write actions, Calendar, compile-contract changes, runner orchestration, and UI.
+- The protected credential mechanism is still database-local storage rather than encryption or an external secret manager. That matches Sprint 5P and should not be described more broadly than that.
 
 ## docs issues
 
@@ -37,7 +40,7 @@ PASS
 
 ## should anything be added to RULES.md?
 
-- Yes. Add a durable connector-security rule stating that connector credentials should not remain in plaintext application tables beyond explicitly temporary prototype scope.
+- No further rule change is required for this sprint.
 
 ## should anything update ARCHITECTURE.md?
 
@@ -45,4 +48,4 @@ PASS
 
 ## recommended next action
 
-- Accept Sprint 5O as complete and merge after the normal approval flow. Open a follow-up sprint for credential hardening and a fuller Gmail auth lifecycle when the product needs to move beyond this narrow read-only ingestion seam.
+- Accept Sprint 5P as complete and merge after the normal approval flow. Any next Gmail work should stay narrow and focus on refresh-token or secret-manager evolution without broadening into search, sync, Calendar, or UI in the same change.

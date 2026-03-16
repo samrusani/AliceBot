@@ -2,17 +2,17 @@
 
 ## Current Implemented Slice
 
-AliceBot now implements the accepted repo slice through Sprint 5O. The shipped backend includes:
+AliceBot now implements the accepted repo slice through Sprint 5P. The shipped backend includes:
 
 - foundation continuity storage over `users`, `threads`, `sessions`, and append-only `events`
 - deterministic tracing and context compilation over durable continuity, memory, entity, and entity-edge records
 - governed memory admission, explicit-preference extraction, memory review labels, review queue reads, evaluation summary reads, explicit embedding config and memory-embedding storage, direct semantic retrieval, and deterministic hybrid compile-path memory merge
 - deterministic prompt assembly and one no-tools response path that persists assistant replies as immutable continuity events
 - user-scoped consents, policies, policy evaluation, tool registry, allowlist evaluation, tool routing, approval request persistence, approval resolution, approved-only proxy execution through the in-process `proxy.echo` handler, durable execution review, and execution-budget lifecycle plus enforcement
-- a narrow read-only Gmail connector seam with user-scoped `gmail_accounts` persistence, deterministic account reads, and one explicit selected-message ingestion path that materializes one Gmail message as a rooted `.eml` task artifact and then reuses the existing RFC822 artifact ingestion pipeline
+- a narrow read-only Gmail connector seam with user-scoped `gmail_accounts` metadata persistence, separate user-scoped `gmail_account_credentials` protected credential storage, deterministic account reads without secret exposure, and one explicit selected-message ingestion path that materializes one Gmail message as a rooted `.eml` task artifact and then reuses the existing RFC822 artifact ingestion pipeline
 - durable `tasks`, `task_steps`, `task_workspaces`, `task_artifacts`, `task_artifact_chunks`, and `task_artifact_chunk_embeddings`, deterministic task-step sequencing, explicit task-step transitions, explicit manual continuation with lineage through `parent_step_id`, `source_approval_id`, and `source_execution_id`, explicit `tool_executions.task_step_id` linkage for execution synchronization, deterministic rooted local task-workspace provisioning, explicit rooted local artifact registration, deterministic local plain-text, markdown, narrow PDF text, narrow DOCX text, and narrow RFC822 email text ingestion into durable chunk rows, deterministic lexical artifact-chunk retrieval over durable chunk rows, explicit user-scoped artifact-chunk embedding persistence tied to existing embedding configs, explicit task-scoped or artifact-scoped semantic artifact-chunk retrieval over those durable embeddings, and compile-path artifact retrieval that can include lexical results, semantic results, or one deterministic hybrid lexical-plus-semantic merged artifact section with per-chunk source provenance
 
-The current multi-step boundary is narrow and explicit. Manual continuation is implemented and review-passed. Approval resolution and proxy execution now both use explicit task-step linkage rather than first-step inference. Task workspaces are now implemented only as deterministic rooted local boundaries, and task artifacts are now implemented only as explicit rooted local-file registrations, narrow deterministic artifact ingestion under those workspaces, lexical retrieval over persisted chunk rows, explicit artifact-chunk embedding storage tied to existing embedding configs, direct semantic retrieval over those durable artifact-chunk embeddings for one visible task or one visible artifact at a time, and compile-path artifact retrieval that deterministically merges lexical and semantic candidates into one artifact section when both are requested for the same scope. The live richer-document boundary is still intentionally narrow: plain text and markdown ingest directly, PDF support is limited to narrow local text extraction, DOCX support is limited to narrow local text extraction from `word/document.xml`, RFC822 email support is limited to top-level selected headers plus extractable plain-text body content while excluding nested `message/rfc822` content, and the live connector boundary is limited to one read-only Gmail account seam plus one explicit selected-message ingestion path into the rooted RFC822 artifact pipeline. OCR, image extraction, layout reconstruction, Gmail search, mailbox sync, attachments, Calendar connectors, reranking beyond the current lexical-first hybrid merge, and new side-effect surfaces are still planned later and must not be described as live behavior.
+The current multi-step boundary is narrow and explicit. Manual continuation is implemented and review-passed. Approval resolution and proxy execution now both use explicit task-step linkage rather than first-step inference. Task workspaces are now implemented only as deterministic rooted local boundaries, and task artifacts are now implemented only as explicit rooted local-file registrations, narrow deterministic artifact ingestion under those workspaces, lexical retrieval over persisted chunk rows, explicit artifact-chunk embedding storage tied to existing embedding configs, direct semantic retrieval over those durable artifact-chunk embeddings for one visible task or one visible artifact at a time, and compile-path artifact retrieval that deterministically merges lexical and semantic candidates into one artifact section when both are requested for the same scope. The live richer-document boundary is still intentionally narrow: plain text and markdown ingest directly, PDF support is limited to narrow local text extraction, DOCX support is limited to narrow local text extraction from `word/document.xml`, RFC822 email support is limited to top-level selected headers plus extractable plain-text body content while excluding nested `message/rfc822` content, and the live connector boundary is limited to one read-only Gmail account seam plus one explicit selected-message ingestion path into the rooted RFC822 artifact pipeline, with credentials resolved through a dedicated protected credential seam instead of the normal account metadata table surface. OCR, image extraction, layout reconstruction, Gmail search, mailbox sync, attachments, Calendar connectors, reranking beyond the current lexical-first hybrid merge, and new side-effect surfaces are still planned later and must not be described as live behavior.
 
 ## Implemented Now
 
@@ -38,7 +38,7 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
   - memory and retrieval tables: `memories`, `memory_revisions`, `memory_review_labels`, `embedding_configs`, `memory_embeddings`
   - graph tables: `entities`, `entity_edges`
   - governance tables: `consents`, `policies`, `tools`, `approvals`, `tool_executions`, `execution_budgets`
-  - connector tables: `gmail_accounts`
+  - connector tables: `gmail_accounts`, `gmail_account_credentials`
   - task lifecycle tables: `tasks`, `task_steps`, `task_workspaces`, `task_artifacts`, `task_artifact_chunks`, `task_artifact_chunk_embeddings`
 - `events`, `trace_events`, and `memory_revisions` are append-only by application contract and database enforcement.
 - `memory_review_labels` are append-only by database enforcement.
@@ -64,7 +64,7 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
 - `apps/web`: minimal shell only; no shipped workflow UI.
 - `workers`: scaffold only; no background jobs or runner logic are implemented.
 - `infra`: local development bootstrap assets only.
-- `tests`: unit and Postgres-backed integration coverage for the shipped seams above, including Sprint 4O task-step lineage/manual continuation, Sprint 4S step-linked execution synchronization, Sprint 5A task-workspace provisioning, Sprint 5C task-artifact registration, Sprint 5D local artifact ingestion plus chunk reads, Sprint 5E lexical artifact-chunk retrieval, Sprint 5F compile-path artifact chunk integration, Sprint 5G artifact-chunk embedding persistence and reads, Sprint 5H direct semantic artifact-chunk retrieval, Sprint 5I compile-path semantic artifact retrieval, Sprint 5J deterministic hybrid lexical-plus-semantic artifact merge in compile, Sprint 5L narrow PDF artifact ingestion, Sprint 5M narrow DOCX artifact ingestion, Sprint 5N narrow RFC822 email artifact ingestion, and Sprint 5O read-only Gmail account plus single-message ingestion coverage.
+- `tests`: unit and Postgres-backed integration coverage for the shipped seams above, including Sprint 4O task-step lineage/manual continuation, Sprint 4S step-linked execution synchronization, Sprint 5A task-workspace provisioning, Sprint 5C task-artifact registration, Sprint 5D local artifact ingestion plus chunk reads, Sprint 5E lexical artifact-chunk retrieval, Sprint 5F compile-path artifact chunk integration, Sprint 5G artifact-chunk embedding persistence and reads, Sprint 5H direct semantic artifact-chunk retrieval, Sprint 5I compile-path semantic artifact retrieval, Sprint 5J deterministic hybrid lexical-plus-semantic artifact merge in compile, Sprint 5L narrow PDF artifact ingestion, Sprint 5M narrow DOCX artifact ingestion, Sprint 5N narrow RFC822 email artifact ingestion, Sprint 5O read-only Gmail account plus single-message ingestion coverage, and Sprint 5P Gmail credential hardening coverage.
 
 ## Core Flows Implemented Now
 
@@ -95,15 +95,17 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
 ### Narrow Gmail Connector
 
 1. Accept a user-scoped `POST /v0/gmail-accounts` request for one read-only Gmail account metadata record.
-2. Persist exactly the narrow connector metadata currently required for reads later: `provider_account_id`, `email_address`, optional `display_name`, the fixed Gmail read-only scope, and one access token.
-3. Expose deterministic user-scoped Gmail account list and detail reads.
-4. Accept a user-scoped `POST /v0/gmail-accounts/{gmail_account_id}/messages/{provider_message_id}/ingest` request for one visible Gmail account and one visible task workspace.
-5. Derive one deterministic workspace-relative artifact path as `gmail/<sanitized-provider-account-id>/<sanitized-provider-message-id>.eml`.
-6. Reject duplicate `(task_workspace_id, relative_path)` collisions before any Gmail fetch or file write.
-7. Fetch exactly one selected Gmail message through the read-only Gmail API path `users/me/messages/{provider_message_id}?format=raw`.
-8. Require Gmail to return RFC822 `raw` content, validate it against the existing narrow `message/rfc822` extraction rules, and reject unsupported content deterministically.
-9. Materialize the message as one rooted `.eml` file inside the selected task workspace and then reuse the existing task-artifact registration plus artifact-ingestion seam.
-10. Persist only the resulting `task_artifacts` and `task_artifact_chunks` rows; account-wide sync, search, attachments, Calendar, and write-capable actions remain out of scope.
+2. Persist exactly the narrow connector metadata required for later reads on `gmail_accounts`: `provider_account_id`, `email_address`, optional `display_name`, and the fixed Gmail read-only scope.
+3. Persist the Gmail access token only in the dedicated `gmail_account_credentials` protected credential seam bound to the same visible user/account ownership scope.
+4. Expose deterministic user-scoped Gmail account list and detail reads without secret material.
+5. Accept a user-scoped `POST /v0/gmail-accounts/{gmail_account_id}/messages/{provider_message_id}/ingest` request for one visible Gmail account and one visible task workspace.
+6. Resolve the Gmail access token through the protected credential seam before any Gmail fetch, file write, or artifact registration.
+7. Derive one deterministic workspace-relative artifact path as `gmail/<sanitized-provider-account-id>/<sanitized-provider-message-id>.eml`.
+8. Reject duplicate `(task_workspace_id, relative_path)` collisions before any Gmail fetch or file write.
+9. Fetch exactly one selected Gmail message through the read-only Gmail API path `users/me/messages/{provider_message_id}?format=raw`.
+10. Require Gmail to return RFC822 `raw` content, validate it against the existing narrow `message/rfc822` extraction rules, and reject unsupported content deterministically.
+11. Materialize the message as one rooted `.eml` file inside the selected task workspace and then reuse the existing task-artifact registration plus artifact-ingestion seam.
+12. Persist only the resulting `task_artifacts` and `task_artifact_chunks` rows; account-wide sync, search, attachments, Calendar, and write-capable actions remain out of scope.
 
 ### Governed Memory And Retrieval
 

@@ -2,134 +2,122 @@
 
 ## sprint objective
 
-Implement Sprint 5O: a narrow read-only Gmail connector seam that can persist user-scoped Gmail account metadata and ingest one explicitly selected Gmail message into the existing task artifact and RFC822 chunk pipeline, without adding search, sync, attachments, write actions, Calendar, compile changes, runner work, or UI.
+Implement Sprint 5P: harden the existing narrow Gmail connector seam so Gmail access tokens are no longer stored on the normal `gmail_accounts` table surface, Gmail account reads never expose secrets, and the existing single-message Gmail ingestion path continues to work through an explicit protected credential lookup.
 
 ## completed work
 
-- Added a new `gmail_accounts` table and migration with user-scoped row-level security and deterministic listing order.
-- Added stable Gmail contracts for:
-  - account connect
-  - account list
-  - account detail
-  - single-message ingestion
-- Implemented `apps/api/src/alicebot_api/gmail.py` with:
-  - Gmail account persistence
-  - deterministic account serialization
-  - a single explicit Gmail read-only fetch path using `users/me/messages/{message_id}?format=raw`
-  - pre-ingestion RFC822 validation against the existing artifact rules
-  - deterministic Gmail-message-to-artifact path generation
-  - duplicate artifact-path rejection before any Gmail fetch or filesystem write
-  - workspace artifact locking aligned with the normal artifact registration seam so duplicate detection, file checks, and write attempts occur inside the same serialized critical section
-  - reuse of existing `register_task_artifact_record()` and `ingest_task_artifact_record()`
-- Added API endpoints for:
-  - `POST /v0/gmail-accounts`
-  - `GET /v0/gmail-accounts`
-  - `GET /v0/gmail-accounts/{gmail_account_id}`
-  - `POST /v0/gmail-accounts/{gmail_account_id}/messages/{provider_message_id}/ingest`
-- Added a reusable byte-level artifact extraction helper so Gmail ingestion can validate raw RFC822 content before persisting anything through the artifact seam.
+- Added migration `20260316_0027_gmail_account_credentials.py` to move Gmail tokens out of `gmail_accounts`.
+- Introduced a protected Gmail credential table with:
+  - row-level security
+  - `gmail_account_id` ownership binding
+  - a checked credential blob shape
+  - backfill from existing `gmail_accounts.access_token`
+- Removed plaintext `access_token` storage from the normal `gmail_accounts` table surface by dropping the column in the new migration.
+- Kept the Gmail connect write contract narrow:
+  - connect still accepts `access_token` on write
+  - account list/detail responses still return the same stable metadata shape without secret material
+- Updated the Gmail service seam to:
+  - persist account metadata and protected credentials separately
+  - resolve the access token through the protected credential lookup during ingestion
+  - fail deterministically when protected credentials are missing or malformed
+  - fail before Gmail fetches, artifact registration, or filesystem writes when credentials are unusable
 - Added unit and integration coverage for:
-  - Gmail account persistence
-  - deterministic listing
-  - stable response shapes
-  - single-message ingestion through the existing artifact and chunk seam
-  - sanitized path collision rejection without overwriting the existing `.eml`
-  - cross-user workspace rejection
-  - missing Gmail message rejection
-  - unsupported Gmail message rejection
+  - protected credential persistence
+  - secret removal from Gmail account responses
+  - hardened single-message ingestion success
+  - deterministic missing/invalid credential failures
+  - per-user isolation
+  - stable response shape
 
-## exact Gmail account and single-message ingestion contract changes introduced
+## exact Gmail credential contract and schema changes introduced
 
-- Gmail account connect request:
+- Gmail account connect request remains:
   - `user_id: UUID`
   - `provider_account_id: str`
   - `email_address: str`
   - `display_name: str | null`
   - `scope: "https://www.googleapis.com/auth/gmail.readonly"`
   - `access_token: str`
-- Gmail account record response:
-  - `id: str`
-  - `provider: "gmail"`
-  - `auth_kind: "oauth_access_token"`
-  - `provider_account_id: str`
-  - `email_address: str`
-  - `display_name: str | null`
-  - `scope: "https://www.googleapis.com/auth/gmail.readonly"`
-  - `created_at: str`
-  - `updated_at: str`
-- Gmail account list response:
-  - `items: GmailAccountRecord[]`
-  - `summary: { total_count, order }`
-- Gmail account detail response:
-  - `account: GmailAccountRecord`
-- Single-message ingestion request:
-  - path params: `gmail_account_id`, `provider_message_id`
-  - body: `user_id: UUID`, `task_workspace_id: UUID`
-- Single-message ingestion response:
-  - `account: GmailAccountRecord`
-  - `message: { provider_message_id, artifact_relative_path, media_type }`
-  - `artifact: TaskArtifactRecord`
-  - `summary: TaskArtifactChunkListSummary`
+- Gmail account read responses remain secret-free:
+  - `id`
+  - `provider`
+  - `auth_kind`
+  - `provider_account_id`
+  - `email_address`
+  - `display_name`
+  - `scope`
+  - `created_at`
+  - `updated_at`
+- `gmail_accounts` schema change:
+  - dropped plaintext column `access_token`
+- New `gmail_account_credentials` schema:
+  - `gmail_account_id uuid primary key references gmail_accounts(id) on delete cascade`
+  - `user_id uuid not null`
+  - `auth_kind text not null check = 'oauth_access_token'`
+  - `credential_blob jsonb not null`
+  - `created_at timestamptz not null`
+  - `updated_at timestamptz not null`
+  - composite ownership FK to `gmail_accounts (id, user_id)`
+  - RLS owner policy
+- Protected credential blob shape:
+  - `{"credential_kind": "gmail_oauth_access_token_v1", "access_token": "<token>"}` 
 
-## Gmail message-to-artifact conversion rule used
+## protected credential storage mechanism used
 
-- Fetch Gmail message raw bytes from the read-only Gmail API path using the stored access token.
-- Require Gmail to return RFC822 `raw` content.
-- Validate the raw bytes against the existing `message/rfc822` artifact extraction rules before registration.
-- Materialize the message inside the selected visible task workspace at:
-  - `gmail/<sanitized-provider-account-id>/<sanitized-provider-message-id>.eml`
-- Register that `.eml` file as a `message/rfc822` task artifact.
-- Ingest it through the existing artifact pipeline so chunks land in `task_artifact_chunks`.
+Gmail credentials are now stored in a dedicated `gmail_account_credentials` table guarded by row-level security and ownership checks, with the Gmail account record carrying only non-secret metadata. The ingestion path resolves the token through that separate protected table instead of reading it from `gmail_accounts`.
 
 ## incomplete work
 
-- None inside Sprint 5O scope.
+- None inside Sprint 5P scope.
 
 ## files changed
 
-- `apps/api/alembic/versions/20260316_0026_gmail_accounts.py`
+- `apps/api/alembic/versions/20260316_0027_gmail_account_credentials.py`
 - `ARCHITECTURE.md`
-- `apps/api/src/alicebot_api/artifacts.py`
+- `RULES.md`
 - `apps/api/src/alicebot_api/contracts.py`
 - `apps/api/src/alicebot_api/gmail.py`
 - `apps/api/src/alicebot_api/main.py`
 - `apps/api/src/alicebot_api/store.py`
 - `tests/integration/test_gmail_accounts_api.py`
-- `tests/unit/test_20260316_0026_gmail_accounts.py`
+- `tests/integration/test_migrations.py`
+- `tests/unit/test_20260316_0027_gmail_account_credentials.py`
 - `tests/unit/test_gmail.py`
 - `tests/unit/test_gmail_main.py`
 - `BUILD_REPORT.md`
 
 ## exact commands run
 
-- `./.venv/bin/python -m pytest tests/unit/test_gmail.py tests/unit/test_gmail_main.py tests/unit/test_20260316_0026_gmail_accounts.py`
+- `./.venv/bin/python -m pytest tests/unit/test_gmail.py`
+- `./.venv/bin/python -m pytest tests/unit/test_gmail_main.py tests/unit/test_20260316_0026_gmail_accounts.py tests/unit/test_20260316_0027_gmail_account_credentials.py`
 - `./.venv/bin/python -m pytest tests/integration/test_gmail_accounts_api.py`
-- `./.venv/bin/python -m pytest tests/unit/test_gmail.py tests/unit/test_gmail_main.py`
-- `./.venv/bin/python -m pytest tests/integration/test_gmail_accounts_api.py`
+- `./.venv/bin/python -m pytest tests/integration/test_migrations.py`
 - `./.venv/bin/python -m pytest tests/unit`
 - `./.venv/bin/python -m pytest tests/integration`
 
 ## tests run
 
-- `./.venv/bin/python -m pytest tests/unit/test_gmail.py tests/unit/test_gmail_main.py tests/unit/test_20260316_0026_gmail_accounts.py`
-  - Result: `14 passed in 0.57s`
-- `./.venv/bin/python -m pytest tests/unit/test_gmail.py tests/unit/test_gmail_main.py`
-  - Result: `12 passed in 0.28s`
+- `./.venv/bin/python -m pytest tests/unit/test_gmail.py`
+  - Result: `12 passed in 0.11s`
+- `./.venv/bin/python -m pytest tests/unit/test_gmail_main.py tests/unit/test_20260316_0026_gmail_accounts.py tests/unit/test_20260316_0027_gmail_account_credentials.py`
+  - Result: `11 passed in 0.55s`
 - `./.venv/bin/python -m pytest tests/integration/test_gmail_accounts_api.py`
-  - Result: `4 passed in 1.47s`
-- `./.venv/bin/python -m pytest tests/integration/test_gmail_accounts_api.py`
-  - Result: `5 passed in 1.62s`
+  - Result: `6 passed in 2.10s`
+- `./.venv/bin/python -m pytest tests/integration/test_migrations.py`
+  - Result: `3 passed in 1.35s`
 - `./.venv/bin/python -m pytest tests/unit`
-  - Result: `409 passed in 0.67s`
+  - Result: `417 passed in 0.67s`
 - `./.venv/bin/python -m pytest tests/integration`
-  - Result: `132 passed in 39.29s`
+  - Result: `134 passed in 41.74s`
 
 ## unit and integration test results
 
-- Full unit suite passed.
-- Full integration suite passed.
-- Gmail-specific unit and integration coverage passed independently before the full-suite runs.
+- Required unit suite passed.
+- Required integration suite passed.
+- Gmail-focused unit and integration coverage passed independently before the full-suite runs.
+- Migration round-trip coverage now explicitly verifies Gmail credential backfill on upgrade and token restoration on downgrade for revision `20260316_0027`.
 
-## one example Gmail account response
+## one example Gmail account response proving secret removal
 
 ```json
 {
@@ -147,7 +135,7 @@ Implement Sprint 5O: a narrow read-only Gmail connector seam that can persist us
 }
 ```
 
-## one example single-message ingestion response
+## one example Gmail ingestion response through the hardened path
 
 ```json
 {
@@ -180,7 +168,7 @@ Implement Sprint 5O: a narrow read-only Gmail connector seam that can persist us
   },
   "summary": {
     "total_count": 1,
-    "total_characters": 90,
+    "total_characters": 19,
     "media_type": "message/rfc822",
     "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
     "order": ["sequence_no_asc", "id_asc"]
@@ -190,8 +178,8 @@ Implement Sprint 5O: a narrow read-only Gmail connector seam that can persist us
 
 ## blockers/issues
 
-- No code blockers remained.
-- Full integration verification required local Postgres access outside the default sandbox.
+- No remaining code blockers.
+- Integration verification required local Postgres access outside the default sandbox.
 
 ## what remains intentionally deferred to later milestones
 
@@ -200,11 +188,12 @@ Implement Sprint 5O: a narrow read-only Gmail connector seam that can persist us
 - attachment ingestion
 - write-capable Gmail actions
 - Calendar connector scope
-- OAuth UX or callback UI
+- OAuth UI or callback handling
+- refresh-token lifecycle work
 - compile-contract changes
-- runner-style orchestration
+- runner orchestration
 - UI work
 
 ## recommended next step
 
-Open a follow-up sprint for credential hardening and a fuller Gmail auth lifecycle if the product needs more than this narrow single-message read-only ingestion path.
+Add the next narrow Gmail auth milestone only if needed: refresh-token or external secret-manager support, without broadening into search, sync, Calendar, or UI in the same change.
