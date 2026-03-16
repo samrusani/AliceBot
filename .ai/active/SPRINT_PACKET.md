@@ -2,134 +2,115 @@
 
 ## Sprint Title
 
-Sprint 5T: External Secret-Manager Integration For Gmail Credentials
+Sprint 5U: Project Truth Synchronization After Gmail Secret Externalization
 
 ## Sprint Type
 
-feature
+refactor
 
 ## Sprint Reason
 
-Sprint 5S confirmed the repo is on track and synchronized the truth artifacts through Sprint 5R. The next narrow risk is no longer Gmail auth correctness inside the app database; it is secret-storage boundary quality. The roadmap and current-state docs both identify external secret-manager integration as the strongest next Gmail auth-adjacent seam before broader Gmail scope, Calendar, or UI work.
+Sprint 5T is implemented and the repo remains on track, but the live truth artifacts have drifted again. `ARCHITECTURE.md` now reflects Sprint 5T, while `ROADMAP.md` and `.ai/handoff/CURRENT_STATE.md` are still anchored around Sprint 5R. Before opening the next Gmail follow-up seam such as `legacy_db_v0` removal, Control Tower needs the planning and handoff artifacts reset to the accepted repo state.
 
 ## Sprint Intent
 
-Extend the existing protected Gmail credential seam so `gmail_account_credentials` can resolve secrets through one explicit external secret-manager boundary, while keeping Gmail account reads secret-free and preserving the existing single-message ingestion contract.
+Synchronize the live truth artifacts with the implemented and review-passed repo state through Sprint 5T, so future planning, handoff, and review work all start from accurate architecture, roadmap, and current-state documents.
 
 ## Git Instructions
 
-- Branch Name: `codex/sprint-5t-gmail-external-secret-manager`
+- Branch Name: `codex/sprint-5u-project-truth-sync-after-gmail-secret-externalization`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR, no stacked PRs unless Control Tower explicitly opens a follow-up sprint
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- Sprint 5O opened the first narrow read-only Gmail account and single-message ingestion seam.
-- Sprint 5P removed plaintext credential storage from the normal `gmail_accounts` surface.
-- Sprint 5Q added refresh-token-backed renewal.
-- Sprint 5R added rotated refresh-token persistence.
-- Sprint 5S synchronized project truth and explicitly identified external secret-manager integration as the next narrow Gmail auth-adjacent seam.
-- The next safe step is to externalize the protected credential storage boundary itself without widening into Gmail search, sync, attachments, Calendar, or UI.
+- Sprint 5S last synchronized truth through Sprint 5R.
+- Sprint 5T changed the accepted connector boundary materially:
+  - the primary Gmail credential path is now external-secret-backed
+  - `gmail_account_credentials` now persists locator metadata on the primary path
+  - a narrow `legacy_db_v0` transition path now exists for older rows
+- `ARCHITECTURE.md` already reflects that accepted state, but `ROADMAP.md` and `.ai/handoff/CURRENT_STATE.md` still describe the repo through Sprint 5R and still describe external secret-manager integration as future work.
+- Planning from that stale truth would create avoidable scope and review drift for the next Gmail sprint.
 
 ## In Scope
 
-- Add schema and migration support only as needed to support an external-secret-backed credential locator, for example:
-  - secret reference fields on `gmail_account_credentials`
-  - narrow metadata needed to distinguish local protected credentials from externally stored credentials during the transition
-- Define typed contract changes only where needed for:
-  - Gmail account connect writes if secret-manager-backed credential writes require a narrow new write shape
-  - deterministic Gmail ingestion failure responses when external secret resolution fails
-- Implement a narrow external secret-manager seam that:
-  - writes Gmail credential material through one explicit secret-manager adapter boundary
-  - persists only the non-secret locator or reference metadata in the application database
-  - resolves credentials through that adapter for the existing single-message ingestion and token-renewal path
-  - supports deterministic rotation-capable credential updates through the same externalized path
-  - preserves secret-free Gmail account reads and per-user isolation
-- Support one explicit runtime configuration path for the secret-manager adapter, with one deterministic local fallback only if needed for tests
-- Add unit and integration tests for:
-  - external secret reference persistence
-  - absence of secret material in Gmail account responses and normal table reads
-  - successful single-message Gmail ingestion through the externalized credential path
-  - successful refresh-token renewal and rotated refresh-token persistence through the externalized path
-  - deterministic failure when secret resolution or secret update fails
-  - per-user isolation
-  - stable response shape
+- Audit the accepted implemented slice from the repo and passed sprint reports through Sprint 5T.
+- Update `ARCHITECTURE.md` only if needed so it accurately describes the implemented seams through:
+  - externalized Gmail secret-manager-backed credential storage
+  - secret-free Gmail account reads
+  - refresh-token renewal and rotated refresh-token persistence through the externalized seam
+  - the narrow `legacy_db_v0` transition boundary
+- Update `ROADMAP.md` so:
+  - completed and current milestone state reflects the accepted repo state through Sprint 5T
+  - the next delivery focus is framed from the actual shipped Gmail externalized-secret baseline
+  - stale “next delivery focus” language that still treats external secret-manager integration as future work is corrected
+- Update `.ai/handoff/CURRENT_STATE.md` so:
+  - implemented areas and current boundaries reflect the repo through Sprint 5T
+  - the current milestone position is correct
+  - the immediate next move matches the next narrow sprint boundary after truth sync
+- Update `BUILD_REPORT.md` with the truth-sync evidence and exact files corrected.
 
 ## Out of Scope
 
-- No Gmail search.
-- No mailbox sync or backfill jobs.
-- No attachment ingestion.
-- No write-capable Gmail actions.
+- No schema changes.
+- No API changes.
+- No runtime code changes.
+- No Gmail search, mailbox sync, attachments, or write actions.
 - No Calendar connector scope.
-- No OAuth UI or callback handling.
-- No broader connector-secret abstraction for other providers yet.
-- No compile contract changes.
+- No `legacy_db_v0` removal yet.
 - No runner-style orchestration.
 - No UI work.
 
 ## Required Deliverables
 
-- Migration updating the Gmail protected-credential seam to support external secret-manager references.
-- Stable Gmail account contracts that remain secret-free on reads.
-- One explicit external secret-manager adapter path used by Gmail credential reads and writes.
-- Updated single-message Gmail ingestion plus refresh/rotation path running through the externalized credential seam.
-- Unit and integration coverage for reference persistence, secret resolution, renewal/rotation continuity, failure handling, and isolation.
-- Updated `BUILD_REPORT.md` with exact verification results and explicit deferred scope.
+- Updated `ARCHITECTURE.md` aligned to the implemented repo state through Sprint 5T.
+- Updated `ROADMAP.md` with correct completed/current/next milestone sequencing.
+- Updated `.ai/handoff/CURRENT_STATE.md` reflecting the actual shipped state and immediate next move.
+- Updated `BUILD_REPORT.md` describing exactly which truth artifacts were synchronized and what evidence was used.
 
 ## Acceptance Criteria
 
-- The repo no longer depends on application-table-stored Gmail secret material for the primary protected credential path.
-- `gmail_account_credentials` persists only non-secret reference or locator data for the externalized path.
-- Gmail account list and detail responses remain secret-free.
-- The existing single-message Gmail ingestion path still works through the external secret-manager seam.
-- Refresh-token renewal and rotated refresh-token persistence still work through the externalized credential seam.
-- Secret-resolution or secret-update failures fail deterministically and do not corrupt Gmail account, task workspace, or artifact state.
-- `./.venv/bin/python -m pytest tests/unit` passes.
-- `./.venv/bin/python -m pytest tests/integration` passes.
-- No Gmail search, sync, attachments, write actions, Calendar, compile-contract, runner, or UI scope enters the sprint.
+- `ARCHITECTURE.md` accurately describes the shipped Gmail seam as external-secret-backed on the primary path, secret-free on reads, renewal-capable, rotation-capable, and still narrow/read-only.
+- `ROADMAP.md` no longer claims the next Gmail auth-adjacent seam is external secret-manager integration.
+- `.ai/handoff/CURRENT_STATE.md` no longer describes external secret-manager integration as unimplemented.
+- Truth artifacts clearly distinguish implemented Gmail externalization behavior from later planned Gmail breadth and from the still-deferred `legacy_db_v0` cleanup sprint.
+- No runtime, schema, API, connector-breadth, runner, or UI changes appear in the sprint diff.
 
 ## Implementation Constraints
 
-- Keep the auth-storage change narrow and boring.
-- Reuse the existing `gmail_accounts` and `gmail_account_credentials` seam rather than introducing a second connector-account model.
-- Preserve secret-free Gmail account reads.
-- Keep the existing selected-message Gmail ingestion contract stable.
-- Use one explicit secret-manager adapter boundary only; do not generalize it to every future provider in this sprint.
-- If tests need a local adapter, keep it as a narrow testable implementation detail rather than a second product seam.
+- Keep this sprint documentation-only and boring.
+- Use accepted repo state and passed sprint reports as evidence, not aspiration.
+- Prefer explicit “implemented now” versus “planned later” boundaries.
+- If a truth artifact cannot be updated confidently from accepted evidence, narrow the statement rather than guessing.
+- Do not widen into product changes just because the roadmap or handoff text is stale.
 
 ## Suggested Work Breakdown
 
-1. Add the schema or migration changes required for external secret references.
-2. Define any minimal Gmail write-contract updates needed for secret-manager-backed credential writes.
-3. Implement one explicit secret-manager adapter for Gmail credential create, read, refresh, and rotation update paths.
-4. Keep Gmail account reads secret-free and stable.
-5. Add deterministic failure handling for secret resolution and secret update failures.
-6. Add unit and integration tests.
-7. Update `BUILD_REPORT.md` with executed verification.
+1. Audit the implemented repo state and accepted sprint reports through Sprint 5T.
+2. Update `ARCHITECTURE.md` only where it still lags the accepted Gmail externalization seam.
+3. Update `ROADMAP.md` to reflect actual completed and current milestone state.
+4. Update `.ai/handoff/CURRENT_STATE.md` to reflect actual current state and the immediate next move.
+5. Update `BUILD_REPORT.md` with exact truth-sync evidence and scope confirmation.
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- the exact Gmail credential schema and contract changes introduced
-- the external secret-manager adapter rule used
-- exact commands run
-- unit and integration test results
-- one example Gmail account response proving secret-free reads remain intact
-- one example Gmail ingestion response through the externalized credential path
-- what remains intentionally deferred to later milestones
+- exactly which truth artifacts were updated
+- which accepted reports or repo evidence were used
+- the specific stale statements that were corrected
+- confirmation that no runtime or schema changes were made
+- what remains intentionally deferred after truth synchronization
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- the sprint stayed limited to external secret-manager integration for the Gmail credential seam
-- the primary Gmail protected credential path no longer depends on application-table-stored secret material
-- Gmail account reads remain secret-free
-- single-message Gmail ingestion plus refresh/rotation still work through the externalized seam
-- failure handling, isolation, and response stability are test-backed
-- no hidden Gmail search, sync, attachments, write actions, Calendar, compile-contract, runner, or UI scope entered the sprint
+- the sprint stayed documentation-only
+- `ARCHITECTURE.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` now match the implemented repo state through Sprint 5T
+- the shipped Gmail external secret-manager seam and its current narrow boundary are documented accurately
+- milestone sequencing is truthful and current
+- no hidden runtime, schema, API, connector-breadth, runner, or UI scope entered the sprint
 
 ## Exit Condition
 
-This sprint is complete when the repo resolves Gmail secrets through one explicit external secret-manager boundary for the existing read-only single-message ingestion seam, preserves renewal and rotation behavior through that boundary, and verifies the full path with Postgres-backed tests while broader connector behavior remains deferred.
+This sprint is complete when the project truth artifacts accurately describe the implemented repo state through Sprint 5T and future planning can proceed from synchronized architecture, roadmap, and current-state documents.
