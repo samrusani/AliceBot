@@ -461,3 +461,51 @@ def test_retrieve_artifact_scoped_semantic_artifact_chunk_records_returns_empty_
         "query_vector": [0.0, 1.0, 0.0],
         "limit": 5,
     }
+
+
+def test_retrieve_task_scoped_semantic_artifact_chunk_records_infers_docx_media_type_without_hint() -> None:
+    store = SemanticRetrievalStoreStub()
+    config_id = seed_config(store, dimensions=3)
+    task_id = seed_task(store)
+    artifact_id = seed_artifact(
+        store,
+        task_id=task_id,
+        relative_path="docs/spec.docx",
+        media_type_hint=None,
+    )
+    docx_row = semantic_artifact_row(
+        store,
+        task_id=task_id,
+        task_artifact_id=artifact_id,
+        relative_path="docs/spec.docx",
+        score=0.9,
+        sequence_no=1,
+    )
+    docx_row["media_type_hint"] = None
+    store.task_artifact_retrieval_rows = [docx_row]
+
+    payload = retrieve_task_scoped_semantic_artifact_chunk_records(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        request=TaskScopedSemanticArtifactChunkRetrievalInput(
+            task_id=task_id,
+            embedding_config_id=config_id,
+            query_vector=(1.0, 0.0, 0.0),
+            limit=1,
+        ),
+    )
+
+    assert payload["items"] == [
+        {
+            "id": str(docx_row["id"]),
+            "task_id": str(task_id),
+            "task_artifact_id": str(artifact_id),
+            "relative_path": "docs/spec.docx",
+            "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 11,
+            "text": "docs/spec.docx-chunk",
+            "score": 0.9,
+        }
+    ]

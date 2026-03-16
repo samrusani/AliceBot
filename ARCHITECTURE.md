@@ -2,16 +2,16 @@
 
 ## Current Implemented Slice
 
-AliceBot now implements the accepted repo slice through Sprint 5J. The shipped backend includes:
+AliceBot now implements the accepted repo slice through Sprint 5M. The shipped backend includes:
 
 - foundation continuity storage over `users`, `threads`, `sessions`, and append-only `events`
 - deterministic tracing and context compilation over durable continuity, memory, entity, and entity-edge records
 - governed memory admission, explicit-preference extraction, memory review labels, review queue reads, evaluation summary reads, explicit embedding config and memory-embedding storage, direct semantic retrieval, and deterministic hybrid compile-path memory merge
 - deterministic prompt assembly and one no-tools response path that persists assistant replies as immutable continuity events
 - user-scoped consents, policies, policy evaluation, tool registry, allowlist evaluation, tool routing, approval request persistence, approval resolution, approved-only proxy execution through the in-process `proxy.echo` handler, durable execution review, and execution-budget lifecycle plus enforcement
-- durable `tasks`, `task_steps`, `task_workspaces`, `task_artifacts`, `task_artifact_chunks`, and `task_artifact_chunk_embeddings`, deterministic task-step sequencing, explicit task-step transitions, explicit manual continuation with lineage through `parent_step_id`, `source_approval_id`, and `source_execution_id`, explicit `tool_executions.task_step_id` linkage for execution synchronization, deterministic rooted local task-workspace provisioning, explicit rooted local artifact registration, deterministic local text-artifact ingestion into durable chunk rows, deterministic lexical artifact-chunk retrieval over durable chunk rows, explicit user-scoped artifact-chunk embedding persistence tied to existing embedding configs, explicit task-scoped or artifact-scoped semantic artifact-chunk retrieval over those durable embeddings, and compile-path artifact retrieval that can include lexical results, semantic results, or one deterministic hybrid lexical-plus-semantic merged artifact section with per-chunk source provenance
+- durable `tasks`, `task_steps`, `task_workspaces`, `task_artifacts`, `task_artifact_chunks`, and `task_artifact_chunk_embeddings`, deterministic task-step sequencing, explicit task-step transitions, explicit manual continuation with lineage through `parent_step_id`, `source_approval_id`, and `source_execution_id`, explicit `tool_executions.task_step_id` linkage for execution synchronization, deterministic rooted local task-workspace provisioning, explicit rooted local artifact registration, deterministic local plain-text, markdown, narrow PDF text, and narrow DOCX text ingestion into durable chunk rows, deterministic lexical artifact-chunk retrieval over durable chunk rows, explicit user-scoped artifact-chunk embedding persistence tied to existing embedding configs, explicit task-scoped or artifact-scoped semantic artifact-chunk retrieval over those durable embeddings, and compile-path artifact retrieval that can include lexical results, semantic results, or one deterministic hybrid lexical-plus-semantic merged artifact section with per-chunk source provenance
 
-The current multi-step boundary is narrow and explicit. Manual continuation is implemented and review-passed. Approval resolution and proxy execution now both use explicit task-step linkage rather than first-step inference. Task workspaces are now implemented only as deterministic rooted local boundaries, and task artifacts are now implemented only as explicit rooted local-file registrations, narrow deterministic text ingestion under those workspaces, lexical retrieval over persisted chunk rows, explicit artifact-chunk embedding storage tied to existing embedding configs, direct semantic retrieval over those durable artifact-chunk embeddings for one visible task or one visible artifact at a time, and compile-path artifact retrieval that deterministically merges lexical and semantic candidates into one artifact section when both are requested for the same scope. Broader runner-style orchestration, automatic multi-step progression, richer document parsing, connectors, reranking beyond the current lexical-first hybrid merge, and new side-effect surfaces are still planned later and must not be described as live behavior.
+The current multi-step boundary is narrow and explicit. Manual continuation is implemented and review-passed. Approval resolution and proxy execution now both use explicit task-step linkage rather than first-step inference. Task workspaces are now implemented only as deterministic rooted local boundaries, and task artifacts are now implemented only as explicit rooted local-file registrations, narrow deterministic artifact ingestion under those workspaces, lexical retrieval over persisted chunk rows, explicit artifact-chunk embedding storage tied to existing embedding configs, direct semantic retrieval over those durable artifact-chunk embeddings for one visible task or one visible artifact at a time, and compile-path artifact retrieval that deterministically merges lexical and semantic candidates into one artifact section when both are requested for the same scope. The live richer-document boundary is still intentionally narrow: plain text and markdown ingest directly, PDF support is limited to narrow local text extraction, and DOCX support is limited to narrow local text extraction from `word/document.xml`; OCR, image extraction, layout reconstruction, connectors, reranking beyond the current lexical-first hybrid merge, and new side-effect surfaces are still planned later and must not be described as live behavior.
 
 ## Implemented Now
 
@@ -62,7 +62,7 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
 - `apps/web`: minimal shell only; no shipped workflow UI.
 - `workers`: scaffold only; no background jobs or runner logic are implemented.
 - `infra`: local development bootstrap assets only.
-- `tests`: unit and Postgres-backed integration coverage for the shipped seams above, including Sprint 4O task-step lineage/manual continuation, Sprint 4S step-linked execution synchronization, Sprint 5A task-workspace provisioning, Sprint 5C task-artifact registration, Sprint 5D local artifact ingestion plus chunk reads, Sprint 5E lexical artifact-chunk retrieval, Sprint 5F compile-path artifact chunk integration, Sprint 5G artifact-chunk embedding persistence and reads, Sprint 5H direct semantic artifact-chunk retrieval, Sprint 5I compile-path semantic artifact retrieval, and Sprint 5J deterministic hybrid lexical-plus-semantic artifact merge in compile.
+- `tests`: unit and Postgres-backed integration coverage for the shipped seams above, including Sprint 4O task-step lineage/manual continuation, Sprint 4S step-linked execution synchronization, Sprint 5A task-workspace provisioning, Sprint 5C task-artifact registration, Sprint 5D local artifact ingestion plus chunk reads, Sprint 5E lexical artifact-chunk retrieval, Sprint 5F compile-path artifact chunk integration, Sprint 5G artifact-chunk embedding persistence and reads, Sprint 5H direct semantic artifact-chunk retrieval, Sprint 5I compile-path semantic artifact retrieval, Sprint 5J deterministic hybrid lexical-plus-semantic artifact merge in compile, Sprint 5L narrow PDF artifact ingestion, and Sprint 5M narrow DOCX artifact ingestion.
 
 ## Core Flows Implemented Now
 
@@ -198,14 +198,17 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
 1. Accept a user-scoped `POST /v0/task-artifacts/{task_artifact_id}/ingest` request for one visible registered artifact.
 2. Lock ingestion for that artifact before deciding whether work is needed.
 3. Resolve the persisted workspace `local_path` plus persisted artifact `relative_path`, and reject any rooted-path escape deterministically.
-4. Support only the narrow explicit text set: `text/plain` and `text/markdown`.
-5. Read file bytes deterministically and require valid UTF-8 text.
-6. Normalize line endings by rewriting `\r\n` and `\r` to `\n`.
-7. Chunk normalized text deterministically with rule `normalized_utf8_text_fixed_window_1000_chars_v1`.
-8. Persist ordered `task_artifact_chunks` rows with `sequence_no`, `char_start`, `char_end_exclusive`, and `text`.
-9. Update the parent artifact to `ingestion_status = ingested`.
-10. If the artifact is already ingested, return the existing artifact and chunk summary without reinserting chunks.
-11. `GET /v0/task-artifacts/{task_artifact_id}/chunks` returns visible chunk rows in deterministic `sequence_no ASC, id ASC` order plus stable summary metadata.
+4. Support only the current narrow explicit set: `text/plain`, `text/markdown`, narrow local `application/pdf` text extraction, and narrow local `application/vnd.openxmlformats-officedocument.wordprocessingml.document` text extraction from `word/document.xml`.
+5. For plain text and markdown, read file bytes deterministically and require valid UTF-8 text.
+6. For PDFs, extract only narrow local text content; OCR, image extraction, and broader PDF compatibility remain out of scope.
+7. For DOCX, extract only narrow local text from `word/document.xml`; OCR, image extraction, headers/footers/comments expansion, and layout reconstruction remain out of scope.
+8. Reject malformed or textless richer-document inputs deterministically instead of producing misleading chunks.
+9. Normalize line endings by rewriting `\r\n` and `\r` to `\n`.
+10. Chunk normalized text deterministically with rule `normalized_utf8_text_fixed_window_1000_chars_v1`.
+11. Persist ordered `task_artifact_chunks` rows with `sequence_no`, `char_start`, `char_end_exclusive`, and `text`.
+12. Update the parent artifact to `ingestion_status = ingested`.
+13. If the artifact is already ingested, return the existing artifact and chunk summary without reinserting chunks.
+14. `GET /v0/task-artifacts/{task_artifact_id}/chunks` returns visible chunk rows in deterministic `sequence_no ASC, id ASC` order plus stable summary metadata.
 
 ### Artifact Chunk Retrieval
 
