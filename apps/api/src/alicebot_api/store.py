@@ -260,7 +260,10 @@ class ProtectedGmailCredentialRow(TypedDict):
     gmail_account_id: UUID
     user_id: UUID
     auth_kind: str
-    credential_blob: JsonObject
+    credential_kind: str
+    secret_manager_kind: str
+    secret_ref: str | None
+    credential_blob: JsonObject | None
     created_at: datetime
     updated_at: datetime
 
@@ -1524,6 +1527,9 @@ INSERT_GMAIL_ACCOUNT_CREDENTIAL_SQL = """
                   gmail_account_id,
                   user_id,
                   auth_kind,
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
                   credential_blob,
                   created_at,
                   updated_at
@@ -1533,6 +1539,9 @@ INSERT_GMAIL_ACCOUNT_CREDENTIAL_SQL = """
                   app.current_user_id(),
                   %s,
                   %s,
+                  %s,
+                  %s,
+                  %s,
                   clock_timestamp(),
                   clock_timestamp()
                 )
@@ -1540,6 +1549,9 @@ INSERT_GMAIL_ACCOUNT_CREDENTIAL_SQL = """
                   gmail_account_id,
                   user_id,
                   auth_kind,
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
                   credential_blob,
                   created_at,
                   updated_at
@@ -1580,6 +1592,9 @@ GET_GMAIL_ACCOUNT_CREDENTIAL_SQL = """
                   gmail_account_id,
                   user_id,
                   auth_kind,
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
                   credential_blob,
                   created_at,
                   updated_at
@@ -1591,6 +1606,9 @@ UPDATE_GMAIL_ACCOUNT_CREDENTIAL_SQL = """
                 UPDATE gmail_account_credentials
                 SET
                   auth_kind = %s,
+                  credential_kind = %s,
+                  secret_manager_kind = %s,
+                  secret_ref = %s,
                   credential_blob = %s,
                   updated_at = clock_timestamp()
                 WHERE gmail_account_id = %s
@@ -1598,6 +1616,9 @@ UPDATE_GMAIL_ACCOUNT_CREDENTIAL_SQL = """
                   gmail_account_id,
                   user_id,
                   auth_kind,
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
                   credential_blob,
                   created_at,
                   updated_at
@@ -3154,12 +3175,22 @@ class ContinuityStore:
         *,
         gmail_account_id: UUID,
         auth_kind: str,
-        credential_blob: JsonObject,
+        credential_kind: str,
+        secret_manager_kind: str,
+        secret_ref: str | None,
+        credential_blob: JsonObject | None,
     ) -> ProtectedGmailCredentialRow:
         return self._fetch_one(
             "create_gmail_account_credential",
             INSERT_GMAIL_ACCOUNT_CREDENTIAL_SQL,
-            (gmail_account_id, auth_kind, Jsonb(credential_blob)),
+            (
+                gmail_account_id,
+                auth_kind,
+                credential_kind,
+                secret_manager_kind,
+                secret_ref,
+                None if credential_blob is None else Jsonb(credential_blob),
+            ),
         )
 
     def get_gmail_account_optional(self, gmail_account_id: UUID) -> GmailAccountRow | None:
@@ -3176,12 +3207,22 @@ class ContinuityStore:
         *,
         gmail_account_id: UUID,
         auth_kind: str,
-        credential_blob: JsonObject,
+        credential_kind: str,
+        secret_manager_kind: str,
+        secret_ref: str | None,
+        credential_blob: JsonObject | None,
     ) -> ProtectedGmailCredentialRow:
         return self._fetch_one(
             "update_gmail_account_credential",
             UPDATE_GMAIL_ACCOUNT_CREDENTIAL_SQL,
-            (auth_kind, Jsonb(credential_blob), gmail_account_id),
+            (
+                auth_kind,
+                credential_kind,
+                secret_manager_kind,
+                secret_ref,
+                None if credential_blob is None else Jsonb(credential_blob),
+                gmail_account_id,
+            ),
         )
 
     def get_gmail_account_by_provider_account_id_optional(

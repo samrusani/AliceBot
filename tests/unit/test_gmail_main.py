@@ -22,9 +22,16 @@ from alicebot_api.gmail import (
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
 
+def _settings() -> Settings:
+    return Settings(
+        database_url="postgresql://app",
+        gmail_secret_manager_url="file:///tmp/test-gmail-secrets",
+    )
+
+
 def test_list_gmail_accounts_endpoint_returns_payload(monkeypatch) -> None:
     user_id = uuid4()
-    settings = Settings(database_url="postgresql://app")
+    settings = _settings()
 
     @contextmanager
     def fake_user_connection(*_args, **_kwargs):
@@ -52,7 +59,7 @@ def test_list_gmail_accounts_endpoint_returns_payload(monkeypatch) -> None:
 
 def test_connect_gmail_account_endpoint_maps_duplicate_to_409(monkeypatch) -> None:
     user_id = uuid4()
-    settings = Settings(database_url="postgresql://app")
+    settings = _settings()
 
     @contextmanager
     def fake_user_connection(*_args, **_kwargs):
@@ -95,7 +102,7 @@ def test_connect_gmail_account_request_requires_complete_refresh_bundle() -> Non
 
 def test_connect_gmail_account_endpoint_maps_invalid_refresh_bundle_to_400(monkeypatch) -> None:
     user_id = uuid4()
-    settings = Settings(database_url="postgresql://app")
+    settings = _settings()
 
     @contextmanager
     def fake_user_connection(*_args, **_kwargs):
@@ -130,10 +137,41 @@ def test_connect_gmail_account_endpoint_maps_invalid_refresh_bundle_to_400(monke
     }
 
 
+def test_connect_gmail_account_endpoint_maps_secret_persistence_failure_to_409(monkeypatch) -> None:
+    user_id = uuid4()
+    settings = _settings()
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    def fake_create_gmail_account_record(*_args, **_kwargs):
+        raise GmailCredentialPersistenceError("gmail protected credentials could not be persisted")
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(main_module, "create_gmail_account_record", fake_create_gmail_account_record)
+
+    response = main_module.connect_gmail_account(
+        main_module.ConnectGmailAccountRequest(
+            user_id=user_id,
+            provider_account_id="acct-001",
+            email_address="owner@example.com",
+            display_name="Owner",
+            access_token="token-1",
+        )
+    )
+
+    assert response.status_code == 409
+    assert json.loads(response.body) == {
+        "detail": "gmail protected credentials could not be persisted"
+    }
+
+
 def test_get_gmail_account_endpoint_maps_not_found_to_404(monkeypatch) -> None:
     user_id = uuid4()
     gmail_account_id = uuid4()
-    settings = Settings(database_url="postgresql://app")
+    settings = _settings()
 
     @contextmanager
     def fake_user_connection(*_args, **_kwargs):
@@ -156,7 +194,7 @@ def test_ingest_gmail_message_endpoint_maps_workspace_not_found_to_404(monkeypat
     user_id = uuid4()
     gmail_account_id = uuid4()
     task_workspace_id = uuid4()
-    settings = Settings(database_url="postgresql://app")
+    settings = _settings()
 
     @contextmanager
     def fake_user_connection(*_args, **_kwargs):
@@ -188,7 +226,7 @@ def test_ingest_gmail_message_endpoint_maps_upstream_errors(monkeypatch) -> None
     user_id = uuid4()
     gmail_account_id = uuid4()
     task_workspace_id = uuid4()
-    settings = Settings(database_url="postgresql://app")
+    settings = _settings()
 
     @contextmanager
     def fake_user_connection(*_args, **_kwargs):

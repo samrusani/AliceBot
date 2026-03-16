@@ -154,6 +154,7 @@ from alicebot_api.gmail import (
     ingest_gmail_message_record,
     list_gmail_account_records,
 )
+from alicebot_api.gmail_secret_manager import build_gmail_secret_manager
 from alicebot_api.embedding import (
     EmbeddingConfigValidationError,
     MemoryEmbeddingNotFoundError,
@@ -1313,11 +1314,13 @@ def get_task(task_id: UUID, user_id: UUID) -> JSONResponse:
 @app.post("/v0/gmail-accounts")
 def connect_gmail_account(request: ConnectGmailAccountRequest) -> JSONResponse:
     settings = get_settings()
+    secret_manager = build_gmail_secret_manager(settings.gmail_secret_manager_url)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             payload = create_gmail_account_record(
                 ContinuityStore(conn),
+                secret_manager,
                 user_id=request.user_id,
                 request=GmailAccountConnectInput(
                     provider_account_id=request.provider_account_id,
@@ -1333,6 +1336,8 @@ def connect_gmail_account(request: ConnectGmailAccountRequest) -> JSONResponse:
             )
     except GmailCredentialValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except GmailCredentialPersistenceError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except GmailAccountAlreadyExistsError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
@@ -1385,11 +1390,13 @@ def ingest_gmail_message(
     request: IngestGmailMessageRequest,
 ) -> JSONResponse:
     settings = get_settings()
+    secret_manager = build_gmail_secret_manager(settings.gmail_secret_manager_url)
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             payload = ingest_gmail_message_record(
                 ContinuityStore(conn),
+                secret_manager,
                 user_id=request.user_id,
                 request=GmailMessageIngestInput(
                     gmail_account_id=gmail_account_id,
