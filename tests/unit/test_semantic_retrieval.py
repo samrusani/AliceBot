@@ -509,3 +509,51 @@ def test_retrieve_task_scoped_semantic_artifact_chunk_records_infers_docx_media_
             "score": 0.9,
         }
     ]
+
+
+def test_retrieve_task_scoped_semantic_artifact_chunk_records_infers_rfc822_media_type_without_hint() -> None:
+    store = SemanticRetrievalStoreStub()
+    config_id = seed_config(store, dimensions=3)
+    task_id = seed_task(store)
+    artifact_id = seed_artifact(
+        store,
+        task_id=task_id,
+        relative_path="mail/update.eml",
+        media_type_hint=None,
+    )
+    email_row = semantic_artifact_row(
+        store,
+        task_id=task_id,
+        task_artifact_id=artifact_id,
+        relative_path="mail/update.eml",
+        score=0.85,
+        sequence_no=1,
+    )
+    email_row["media_type_hint"] = None
+    store.task_artifact_retrieval_rows = [email_row]
+
+    payload = retrieve_task_scoped_semantic_artifact_chunk_records(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        request=TaskScopedSemanticArtifactChunkRetrievalInput(
+            task_id=task_id,
+            embedding_config_id=config_id,
+            query_vector=(1.0, 0.0, 0.0),
+            limit=1,
+        ),
+    )
+
+    assert payload["items"] == [
+        {
+            "id": str(email_row["id"]),
+            "task_id": str(task_id),
+            "task_artifact_id": str(artifact_id),
+            "relative_path": "mail/update.eml",
+            "media_type": "message/rfc822",
+            "sequence_no": 1,
+            "char_start": 0,
+            "char_end_exclusive": 11,
+            "text": "mail/update.eml-chunk",
+            "score": 0.85,
+        }
+    ]

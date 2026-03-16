@@ -168,6 +168,116 @@ def _build_docx_bytes(
     return archive_buffer.getvalue()
 
 
+def _build_rfc822_email_bytes(
+    *,
+    headers: list[tuple[str, str]] | None = None,
+    plain_body: str | None = None,
+    plain_parts: list[str] | None = None,
+    html_body: str | None = None,
+    attachment_text: str | None = None,
+    nested_message_bytes: bytes | None = None,
+    malformed_multipart: bool = False,
+) -> bytes:
+    header_lines = [
+        f"{name}: {value}"
+        for name, value in (
+            headers
+            if headers is not None
+            else [
+                ("From", "Alice <alice@example.com>"),
+                ("To", "Bob <bob@example.com>"),
+                ("Subject", "Sprint Update"),
+            ]
+        )
+    ]
+    if malformed_multipart:
+        return (
+            "\r\n".join(
+                [
+                    *header_lines,
+                    "MIME-Version: 1.0",
+                    "Content-Type: multipart/mixed",
+                    "",
+                    "--broken-boundary",
+                    'Content-Type: text/plain; charset="utf-8"',
+                    "",
+                    "broken",
+                    "--broken-boundary--",
+                    "",
+                ]
+            ).encode("utf-8")
+        )
+
+    if (
+        plain_parts is None
+        and html_body is None
+        and attachment_text is None
+        and nested_message_bytes is None
+    ):
+        return (
+            "\r\n".join(
+                [
+                    *header_lines,
+                    'Content-Type: text/plain; charset="utf-8"',
+                    "Content-Transfer-Encoding: 8bit",
+                    "",
+                    plain_body or "",
+                ]
+            ).encode("utf-8")
+        )
+
+    boundary = "alicebot-boundary-001"
+    lines = [
+        *header_lines,
+        "MIME-Version: 1.0",
+        f'Content-Type: multipart/mixed; boundary="{boundary}"',
+        "",
+    ]
+    for part_text in plain_parts or []:
+        lines.extend(
+            [
+                f"--{boundary}",
+                'Content-Type: text/plain; charset="utf-8"',
+                "Content-Transfer-Encoding: 8bit",
+                "",
+                part_text,
+            ]
+        )
+    if html_body is not None:
+        lines.extend(
+            [
+                f"--{boundary}",
+                'Content-Type: text/html; charset="utf-8"',
+                "Content-Transfer-Encoding: 8bit",
+                "",
+                html_body,
+            ]
+        )
+    if attachment_text is not None:
+        lines.extend(
+            [
+                f"--{boundary}",
+                'Content-Type: text/plain; charset="utf-8"',
+                'Content-Disposition: attachment; filename="note.txt"',
+                "Content-Transfer-Encoding: 8bit",
+                "",
+                attachment_text,
+            ]
+        )
+    if nested_message_bytes is not None:
+        lines.extend(
+            [
+                f"--{boundary}",
+                "Content-Type: message/rfc822",
+                "Content-Transfer-Encoding: 8bit",
+                "",
+                nested_message_bytes.decode("utf-8"),
+            ]
+        )
+    lines.extend([f"--{boundary}--", ""])
+    return "\r\n".join(lines).encode("utf-8")
+
+
 def invoke_request(
     method: str,
     path: str,
@@ -596,7 +706,8 @@ def test_task_artifact_ingestion_and_chunk_endpoints_are_deterministic_and_isola
         "detail": (
             "artifact docs/manual.bin has unsupported media type application/octet-stream; "
             "supported types: text/plain, text/markdown, application/pdf, "
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document, "
+            "message/rfc822"
         )
     }
 
@@ -852,6 +963,256 @@ def test_task_artifact_docx_ingestion_and_chunk_endpoints_are_deterministic_and_
     assert isolated_ingest_status == 404
     assert isolated_ingest_payload == {
         "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+    }
+
+
+def test_task_artifact_rfc822_ingestion_and_chunk_endpoints_are_deterministic_and_isolated(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    intruder = seed_task(migrated_database_urls["app"], email="intruder@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    email_file = workspace_path / "mail" / "update.eml"
+    email_file.parent.mkdir(parents=True)
+    email_file.write_bytes(
+        _build_rfc822_email_bytes(
+            plain_body=("A" * 916) + "\r\n" + ("B" * 5) + "\rC",
+        )
+    )
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(email_file),
+            "media_type_hint": "message/rfc822",
+        },
+    )
+    assert register_status == 201
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    chunk_list_status, chunk_list_payload = invoke_request(
+        "GET",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/chunks",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+    isolated_chunk_list_status, isolated_chunk_list_payload = invoke_request(
+        "GET",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/chunks",
+        query_params={"user_id": str(intruder["user_id"])},
+    )
+    isolated_ingest_status, isolated_ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(intruder["user_id"])},
+    )
+
+    header_block = (
+        "From: Alice <alice@example.com>\n"
+        "To: Bob <bob@example.com>\n"
+        "Subject: Sprint Update\n\n"
+    )
+    assert ingest_status == 200
+    assert ingest_payload == {
+        "artifact": {
+            "id": register_payload["artifact"]["id"],
+            "task_id": str(owner["task_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+            "status": "registered",
+            "ingestion_status": "ingested",
+            "relative_path": "mail/update.eml",
+            "media_type_hint": "message/rfc822",
+            "created_at": register_payload["artifact"]["created_at"],
+            "updated_at": ingest_payload["artifact"]["updated_at"],
+        },
+        "summary": {
+            "total_count": 2,
+            "total_characters": 1006,
+            "media_type": "message/rfc822",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+
+    assert chunk_list_status == 200
+    assert chunk_list_payload == {
+        "items": [
+            {
+                "id": chunk_list_payload["items"][0]["id"],
+                "task_artifact_id": register_payload["artifact"]["id"],
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": 1000,
+                "text": header_block + ("A" * 916) + "\n" + "B",
+                "created_at": chunk_list_payload["items"][0]["created_at"],
+                "updated_at": chunk_list_payload["items"][0]["updated_at"],
+            },
+            {
+                "id": chunk_list_payload["items"][1]["id"],
+                "task_artifact_id": register_payload["artifact"]["id"],
+                "sequence_no": 2,
+                "char_start": 1000,
+                "char_end_exclusive": 1006,
+                "text": "BBBB\nC",
+                "created_at": chunk_list_payload["items"][1]["created_at"],
+                "updated_at": chunk_list_payload["items"][1]["updated_at"],
+            },
+        ],
+        "summary": {
+            "total_count": 2,
+            "total_characters": 1006,
+            "media_type": "message/rfc822",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+
+    assert isolated_chunk_list_status == 404
+    assert isolated_chunk_list_payload == {
+        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+    }
+
+    assert isolated_ingest_status == 404
+    assert isolated_ingest_payload == {
+        "detail": f"task artifact {register_payload['artifact']['id']} was not found"
+    }
+
+
+def test_task_artifact_rfc822_ingestion_excludes_nested_email_bodies(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    email_file = workspace_path / "mail" / "forwarded.eml"
+    email_file.parent.mkdir(parents=True)
+    email_file.write_bytes(
+        _build_rfc822_email_bytes(
+            plain_parts=["Outer body"],
+            nested_message_bytes=_build_rfc822_email_bytes(
+                headers=[
+                    ("From", "Nested <nested@example.com>"),
+                    ("To", "Team <team@example.com>"),
+                    ("Subject", "Nested"),
+                ],
+                plain_body="Inner body",
+            ),
+        )
+    )
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(email_file),
+            "media_type_hint": "message/rfc822",
+        },
+    )
+    assert register_status == 201
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    chunk_list_status, chunk_list_payload = invoke_request(
+        "GET",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/chunks",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+
+    expected_text = (
+        "From: Alice <alice@example.com>\n"
+        "To: Bob <bob@example.com>\n"
+        "Subject: Sprint Update\n\n"
+        "Outer body"
+    )
+    assert ingest_status == 200
+    assert ingest_payload == {
+        "artifact": {
+            "id": register_payload["artifact"]["id"],
+            "task_id": str(owner["task_id"]),
+            "task_workspace_id": workspace_payload["workspace"]["id"],
+            "status": "registered",
+            "ingestion_status": "ingested",
+            "relative_path": "mail/forwarded.eml",
+            "media_type_hint": "message/rfc822",
+            "created_at": register_payload["artifact"]["created_at"],
+            "updated_at": ingest_payload["artifact"]["updated_at"],
+        },
+        "summary": {
+            "total_count": 1,
+            "total_characters": len(expected_text),
+            "media_type": "message/rfc822",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
+    }
+
+    assert chunk_list_status == 200
+    assert chunk_list_payload == {
+        "items": [
+            {
+                "id": chunk_list_payload["items"][0]["id"],
+                "task_artifact_id": register_payload["artifact"]["id"],
+                "sequence_no": 1,
+                "char_start": 0,
+                "char_end_exclusive": len(expected_text),
+                "text": expected_text,
+                "created_at": chunk_list_payload["items"][0]["created_at"],
+                "updated_at": chunk_list_payload["items"][0]["updated_at"],
+            }
+        ],
+        "summary": {
+            "total_count": 1,
+            "total_characters": len(expected_text),
+            "media_type": "message/rfc822",
+            "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
+            "order": ["sequence_no_asc", "id_asc"],
+        },
     }
 
 
@@ -1131,6 +1492,78 @@ def test_task_artifact_ingestion_rejects_textless_or_malformed_docx(
     }
 
 
+def test_task_artifact_ingestion_rejects_textless_or_malformed_rfc822_email(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    textless_email = workspace_path / "mail" / "empty.eml"
+    textless_email.parent.mkdir(parents=True)
+    textless_email.write_bytes(_build_rfc822_email_bytes(html_body="<p>html only</p>"))
+    malformed_email = workspace_path / "mail" / "broken.eml"
+    malformed_email.write_bytes(_build_rfc822_email_bytes(malformed_multipart=True))
+
+    textless_register_status, textless_register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(textless_email),
+            "media_type_hint": "message/rfc822",
+        },
+    )
+    malformed_register_status, malformed_register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(malformed_email),
+            "media_type_hint": "message/rfc822",
+        },
+    )
+    assert textless_register_status == 201
+    assert malformed_register_status == 201
+
+    textless_ingest_status, textless_ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{textless_register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    malformed_ingest_status, malformed_ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{malformed_register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    assert textless_ingest_status == 400
+    assert textless_ingest_payload == {
+        "detail": "artifact mail/empty.eml does not contain extractable RFC822 email text"
+    }
+    assert malformed_ingest_status == 400
+    assert malformed_ingest_payload == {
+        "detail": "artifact mail/broken.eml is not a valid RFC822 email"
+    }
+
+
 def test_task_artifact_ingestion_enforces_rooted_workspace_paths(
     migrated_database_urls,
     monkeypatch,
@@ -1243,6 +1676,71 @@ def test_task_artifact_docx_ingestion_enforces_rooted_workspace_paths(
                 """
                 UPDATE task_artifacts
                 SET relative_path = '../../../escape.docx'
+                WHERE id = %s
+                """,
+                (register_payload["artifact"]["id"],),
+            )
+            conn.commit()
+
+    ingest_status, ingest_payload = invoke_request(
+        "POST",
+        f"/v0/task-artifacts/{register_payload['artifact']['id']}/ingest",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    assert ingest_status == 400
+    assert ingest_payload == {
+        "detail": f"artifact path {outside_file.resolve()} escapes workspace root {workspace_path.resolve()}"
+    }
+
+
+def test_task_artifact_rfc822_ingestion_enforces_rooted_workspace_paths(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_task(migrated_database_urls["app"], email="owner@example.com")
+    workspace_root = tmp_path / "task-workspaces"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            task_workspace_root=str(workspace_root),
+        ),
+    )
+
+    workspace_status, workspace_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{owner['task_id']}/workspace",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert workspace_status == 201
+
+    workspace_path = Path(workspace_payload["workspace"]["local_path"])
+    safe_file = workspace_path / "mail" / "update.eml"
+    safe_file.parent.mkdir(parents=True)
+    safe_file.write_bytes(_build_rfc822_email_bytes(plain_body="spec"))
+    outside_file = tmp_path / "escape.eml"
+    outside_file.write_bytes(_build_rfc822_email_bytes(plain_body="escape"))
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        f"/v0/task-workspaces/{workspace_payload['workspace']['id']}/artifacts",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "local_path": str(safe_file),
+            "media_type_hint": "message/rfc822",
+        },
+    )
+    assert register_status == 201
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE task_artifacts
+                SET relative_path = '../../../escape.eml'
                 WHERE id = %s
                 """,
                 (register_payload["artifact"]["id"],),
