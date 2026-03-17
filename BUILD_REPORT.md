@@ -2,85 +2,198 @@
 
 ## sprint objective
 
-Implement Sprint 6C: stabilize the `apps/web` workspace so lint and build are clean, repeatable, non-interactive verification steps while preserving the shipped Sprint 6A and Sprint 6B shell routes and workflow behavior.
+Implement Sprint 6D by exposing deterministic user-scoped read-only trace review APIs for:
+
+- `GET /v0/traces`
+- `GET /v0/traces/{trace_id}`
+- `GET /v0/traces/{trace_id}/events`
+
+The sprint stayed limited to explain-why trace reads over existing persisted `traces` and `trace_events` data.
 
 ## completed work
 
-- committed a stable ESLint setup in `apps/web` and switched the web lint script to `eslint . --max-warnings=0` so `npm run lint` no longer invokes interactive `next lint` setup
-- intentionally adopted the Next-generated TypeScript config updates in `apps/web/tsconfig.json`
-  - added `esModuleInterop: true`
-  - added the `next` TypeScript plugin
-  - added `.next/types/**/*.ts` to `include`
-- intentionally adopted the framework-managed `apps/web/next-env.d.ts` header text produced by Next.js
-- made one behavior-preserving component change in `apps/web/components/approval-actions.tsx` to satisfy the committed hook lint rule without changing approval UI flow
-- verified that `npm run build` no longer changes the contents of `apps/web/tsconfig.json` or `apps/web/next-env.d.ts` after those adopted config updates were in place
+- introduced stable trace review contracts in `apps/api/src/alicebot_api/contracts.py`
+  - `TraceReviewSummaryRecord`
+  - `TraceReviewRecord`
+  - `TraceReviewListSummary`
+  - `TraceReviewListResponse`
+  - `TraceReviewDetailResponse`
+  - `TraceReviewEventRecord`
+  - `TraceReviewEventListSummary`
+  - `TraceReviewEventListResponse`
+  - `TRACE_REVIEW_LIST_ORDER`
+  - `TRACE_REVIEW_EVENT_LIST_ORDER`
+- added a narrow trace review module in `apps/api/src/alicebot_api/traces.py`
+  - `list_trace_records()`
+  - `get_trace_record()`
+  - `list_trace_event_records()`
+  - `TraceNotFoundError`
+- extended `apps/api/src/alicebot_api/store.py` with read-only trace review queries
+  - `list_trace_reviews()`
+  - `get_trace_review_optional()`
+  - deterministic list SQL with trace-event counts
+  - deterministic trace-event SQL ordering
+- added FastAPI endpoints in `apps/api/src/alicebot_api/main.py`
+  - `GET /v0/traces`
+  - `GET /v0/traces/{trace_id}`
+  - `GET /v0/traces/{trace_id}/events`
+- added unit coverage in `tests/unit/test_traces.py` for
+  - deterministic list ordering
+  - stable detail shape
+  - stable event-list shape
+  - invisible-trace not-found behavior
+  - endpoint translation and 404 mapping
+- added Postgres-backed integration coverage in `tests/integration/test_traces_api.py` for
+  - deterministic trace list ordering
+  - trace detail reads
+  - ordered trace-event reads
+  - cross-user isolation
+  - invisible-trace 404 behavior
 
 ## incomplete work
 
-- no backend endpoint, schema, or contract changes
-- no new routes or workflow features
-- no shell redesign or adjacent UI expansion
-- no Gmail, Calendar, auth, runner, or connector scope expansion
-- no additional frontend tests beyond the existing narrow verification set
+- none inside the sprint’s scoped backend deliverables
+- no UI migration from fixture-backed `/traces`
+- no trace creation or mutation changes
+- no filtering, search, or expanded explainability surface beyond the three read endpoints
 
 ## files changed
 
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/traces.py`
+- `tests/unit/test_traces.py`
+- `tests/integration/test_traces_api.py`
 - `BUILD_REPORT.md`
-- `apps/web/package.json`
-- `apps/web/eslint.config.mjs`
-- `apps/web/tsconfig.json`
-- `apps/web/next-env.d.ts`
-- `apps/web/components/approval-actions.tsx`
+
+## exact ordering rules
+
+- trace list reads use `created_at DESC, id DESC`
+- trace-event reads use `sequence_no ASC, id ASC`
 
 ## tests run
 
-- `npm run lint` in `apps/web`
+- `./.venv/bin/python -m pytest tests/unit/test_traces.py`
   - PASS
-  - non-interactive after the committed ESLint config and script change
-- `npm test` in `apps/web`
+  - `5` tests passed
+- `./.venv/bin/python -m pytest tests/integration/test_traces_api.py`
+  - initial sandboxed run could not reach local Postgres on `localhost:5432`
+  - rerun as part of the full integration suite below passed
+- `./.venv/bin/python -m pytest tests/unit`
   - PASS
-  - `2` test files, `5` tests passed
-- `npm run build` in `apps/web`
+  - `451` tests passed
+- `./.venv/bin/python -m pytest tests/integration`
   - PASS
-  - generated shipped routes remained intact: `/`, `/chat`, `/approvals`, `/tasks`, `/traces`
+  - `143` tests passed
 
-## exact verification results
+## unit and integration test results
 
-- lint command used: `npm run lint`
-- test command used: `npm test`
-- build command used: `npm run build`
-- TypeScript or Next-generated config changes intentionally adopted: yes
-  - `apps/web/tsconfig.json`
-  - `apps/web/next-env.d.ts`
-- build stability check:
-  - `shasum apps/web/tsconfig.json apps/web/next-env.d.ts` was unchanged before vs. after `npm run build`
-  - pre-build checksum:
-    - `23632802ddf6784e5989d71338904efe50848844  apps/web/tsconfig.json`
-    - `f75a118439f630e5ca41d376cedef8db9b6d7fc6  apps/web/next-env.d.ts`
-  - post-build checksum:
-    - `23632802ddf6784e5989d71338904efe50848844  apps/web/tsconfig.json`
-    - `f75a118439f630e5ca41d376cedef8db9b6d7fc6  apps/web/next-env.d.ts`
+- unit result: PASS
+  - trace review module coverage and endpoint translation coverage passed
+- integration result: PASS
+  - live Postgres-backed trace review list/detail/event and isolation coverage passed
 
-## route and behavior confirmation
+## example trace list response
 
-- route generation from `next build` still includes `/`, `/chat`, `/approvals`, `/tasks`, and `/traces`
-- Sprint 6A and 6B governed request, approval, and task behavior remained intact
-- no workflow logic or API contract changes were introduced; the only non-config code change was the `approval-actions` hook dependency cleanup required by lint
+```json
+{
+  "items": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "thread_id": "11111111-1111-4111-8111-111111111111",
+      "kind": "tool.proxy.execute",
+      "compiler_version": "response_generation_v0",
+      "status": "completed",
+      "created_at": "2026-03-17T09:00:00+00:00",
+      "trace_event_count": 2
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "thread_id": "11111111-1111-4111-8111-111111111111",
+      "kind": "context.compile",
+      "compiler_version": "continuity_v0",
+      "status": "completed",
+      "created_at": "2026-03-17T09:00:00+00:00",
+      "trace_event_count": 1
+    }
+  ],
+  "summary": {
+    "total_count": 2,
+    "order": ["created_at_desc", "id_desc"]
+  }
+}
+```
+
+## example trace detail response
+
+```json
+{
+  "trace": {
+    "id": "00000000-0000-4000-8000-000000000002",
+    "thread_id": "11111111-1111-4111-8111-111111111111",
+    "kind": "tool.proxy.execute",
+    "compiler_version": "response_generation_v0",
+    "status": "completed",
+    "limits": {
+      "max_sessions": 1,
+      "max_events": 2
+    },
+    "created_at": "2026-03-17T09:00:00+00:00",
+    "trace_event_count": 2
+  }
+}
+```
+
+## example trace-event list response
+
+```json
+{
+  "items": [
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "trace_id": "00000000-0000-4000-8000-000000000002",
+      "sequence_no": 1,
+      "kind": "tool.proxy.execute.request",
+      "payload": {
+        "approval_id": "approval-2"
+      },
+      "created_at": "2026-03-17T09:00:00+00:00"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "trace_id": "00000000-0000-4000-8000-000000000002",
+      "sequence_no": 2,
+      "kind": "tool.proxy.execute.summary",
+      "payload": {
+        "approval_id": "approval-2"
+      },
+      "created_at": "2026-03-17T09:00:00+00:00"
+    }
+  ],
+  "summary": {
+    "trace_id": "00000000-0000-4000-8000-000000000002",
+    "total_count": 2,
+    "order": ["sequence_no_asc", "id_asc"]
+  }
+}
+```
 
 ## blockers/issues
 
-- no active blockers after the repair
-- initial pre-fix issue reproduced exactly as described in the sprint packet:
-  - `npm run lint` prompted for ESLint initialization because the workspace had no committed lint config
-  - `next build` rewrote `apps/web/tsconfig.json` and `apps/web/next-env.d.ts` until those framework-required changes were intentionally adopted
+- no remaining product-scope blockers
+- one execution-time environment issue occurred during verification
+  - sandboxed integration setup could not connect to local Postgres on `localhost:5432`
+  - rerunning the required integration suite with local database access resolved verification
 
 ## recommended next step
 
-Run review against this repair sprint and, if it passes, treat the committed ESLint config plus adopted Next TypeScript settings as the new stable baseline for future `apps/web` UI work.
+Hook the existing `/traces` web surface off these live endpoints in a separate sprint, while preserving the same narrow persisted-data-only contract.
 
 ## intentionally deferred after this sprint
 
-- any new product workflow surface beyond the existing `/`, `/chat`, `/approvals`, `/tasks`, and `/traces` routes
-- any backend work
-- any visual redesign
-- any additional test expansion beyond narrow preservation coverage
+- any UI changes
+- any trace mutation endpoints
+- any new trace production behavior
+- any connector, Gmail, Calendar, approval-flow, or execution-scope expansion
+- any search, filtering, pagination, or explainability enrichment beyond persisted trace and trace-event reads

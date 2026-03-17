@@ -70,6 +70,18 @@ class TraceEventRow(TypedDict):
     created_at: datetime
 
 
+class TraceReviewRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    thread_id: UUID
+    kind: str
+    compiler_version: str
+    status: str
+    limits: JsonObject
+    created_at: datetime
+    trace_event_count: int
+
+
 class MemoryRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -463,6 +475,60 @@ GET_TRACE_SQL = """
                 WHERE id = %s
                 """
 
+LIST_TRACE_REVIEWS_SQL = """
+                SELECT
+                  traces.id,
+                  traces.user_id,
+                  traces.thread_id,
+                  traces.kind,
+                  traces.compiler_version,
+                  traces.status,
+                  traces.limits,
+                  traces.created_at,
+                  COUNT(trace_events.id) AS trace_event_count
+                FROM traces
+                LEFT JOIN trace_events
+                  ON trace_events.trace_id = traces.id
+                 AND trace_events.user_id = traces.user_id
+                GROUP BY
+                  traces.id,
+                  traces.user_id,
+                  traces.thread_id,
+                  traces.kind,
+                  traces.compiler_version,
+                  traces.status,
+                  traces.limits,
+                  traces.created_at
+                ORDER BY traces.created_at DESC, traces.id DESC
+                """
+
+GET_TRACE_REVIEW_SQL = """
+                SELECT
+                  traces.id,
+                  traces.user_id,
+                  traces.thread_id,
+                  traces.kind,
+                  traces.compiler_version,
+                  traces.status,
+                  traces.limits,
+                  traces.created_at,
+                  COUNT(trace_events.id) AS trace_event_count
+                FROM traces
+                LEFT JOIN trace_events
+                  ON trace_events.trace_id = traces.id
+                 AND trace_events.user_id = traces.user_id
+                WHERE traces.id = %s
+                GROUP BY
+                  traces.id,
+                  traces.user_id,
+                  traces.thread_id,
+                  traces.kind,
+                  traces.compiler_version,
+                  traces.status,
+                  traces.limits,
+                  traces.created_at
+                """
+
 INSERT_TRACE_EVENT_SQL = """
                 INSERT INTO trace_events (user_id, trace_id, sequence_no, kind, payload)
                 VALUES (app.current_user_id(), %s, %s, %s, %s)
@@ -473,7 +539,7 @@ LIST_TRACE_EVENTS_SQL = """
                 SELECT id, user_id, trace_id, sequence_no, kind, payload, created_at
                 FROM trace_events
                 WHERE trace_id = %s
-                ORDER BY sequence_no ASC
+                ORDER BY sequence_no ASC, id ASC
                 """
 
 INSERT_MEMORY_SQL = """
@@ -2572,6 +2638,12 @@ class ContinuityStore:
 
     def get_trace(self, trace_id: UUID) -> TraceRow:
         return self._fetch_one("get_trace", GET_TRACE_SQL, (trace_id,))
+
+    def get_trace_review_optional(self, trace_id: UUID) -> TraceReviewRow | None:
+        return self._fetch_optional_one(GET_TRACE_REVIEW_SQL, (trace_id,))
+
+    def list_trace_reviews(self) -> list[TraceReviewRow]:
+        return self._fetch_all(LIST_TRACE_REVIEWS_SQL)
 
     def append_trace_event(
         self,
