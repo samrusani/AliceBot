@@ -1,42 +1,9 @@
+import Link from "next/link";
+
+import type { TaskStepItem, TaskStepListSummary } from "../lib/api";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
-
-export type TaskStepItem = {
-  id: string;
-  task_id: string;
-  sequence_no: number;
-  kind: string;
-  status: string;
-  request: {
-    thread_id: string;
-    tool_id: string;
-    action: string;
-    scope: string;
-    domain_hint: string | null;
-    risk_hint: string | null;
-    attributes: Record<string, unknown>;
-  };
-  outcome: {
-    routing_decision: string;
-    approval_id: string | null;
-    approval_status: string | null;
-    execution_id: string | null;
-    execution_status: string | null;
-    blocked_reason: string | null;
-  };
-  lineage: {
-    parent_step_id: string | null;
-    source_approval_id: string | null;
-    source_execution_id: string | null;
-  };
-  trace: {
-    trace_id: string;
-    trace_kind: string;
-  };
-  created_at: string;
-  updated_at: string;
-};
 
 function formatAttributeValue(value: unknown) {
   if (value == null) {
@@ -50,13 +17,30 @@ function formatAttributeValue(value: unknown) {
   return JSON.stringify(value);
 }
 
-export function TaskStepList({ steps }: { steps: TaskStepItem[] }) {
+export function TaskStepList({
+  steps,
+  summary,
+  source,
+}: {
+  steps: TaskStepItem[];
+  summary: TaskStepListSummary | null;
+  source: "live" | "fixture";
+}) {
   return (
     <SectionCard
       eyebrow="Task steps"
       title="Ordered lifecycle steps"
       description="The timeline preserves request intent, downstream approval or execution state, and trace linkage in one readable sequence."
     >
+      {summary ? (
+        <div className="cluster">
+          <span className="meta-pill">{summary.total_count} steps</span>
+          <span className="meta-pill">
+            Latest {summary.latest_sequence_no ?? "none"} / {summary.latest_status ?? "empty"}
+          </span>
+          <span className="meta-pill">{source === "live" ? "Live sequencing" : "Fixture sequencing"}</span>
+        </div>
+      ) : null}
       {steps.length === 0 ? (
         <EmptyState
           title="No task steps available"
@@ -91,7 +75,15 @@ export function TaskStepList({ steps }: { steps: TaskStepItem[] }) {
                   </div>
                   <div>
                     <dt>Approval status</dt>
-                    <dd>{step.outcome.approval_status ?? "No approval"}</dd>
+                    <dd>
+                      {step.outcome.approval_id ? (
+                        <Link href={`/approvals?approval=${step.outcome.approval_id}`} className="inline-link">
+                          {step.outcome.approval_status ?? "Linked approval"}
+                        </Link>
+                      ) : (
+                        "No approval"
+                      )}
+                    </dd>
                   </div>
                   <div>
                     <dt>Execution status</dt>
@@ -104,6 +96,23 @@ export function TaskStepList({ steps }: { steps: TaskStepItem[] }) {
                     </dd>
                   </div>
                 </div>
+                {step.lineage.parent_step_id || step.lineage.source_approval_id || step.lineage.source_execution_id ? (
+                  <div className="attribute-list">
+                    {step.lineage.parent_step_id ? (
+                      <span className="attribute-item">Parent step: {step.lineage.parent_step_id}</span>
+                    ) : null}
+                    {step.lineage.source_approval_id ? (
+                      <span className="attribute-item">
+                        Source approval: {step.lineage.source_approval_id}
+                      </span>
+                    ) : null}
+                    {step.lineage.source_execution_id ? (
+                      <span className="attribute-item">
+                        Source execution: {step.lineage.source_execution_id}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
                 {step.outcome.blocked_reason ? (
                   <p>Blocked reason: {step.outcome.blocked_reason}</p>
                 ) : null}

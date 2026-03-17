@@ -583,6 +583,12 @@ code,
   color: var(--text);
 }
 
+.button-secondary--danger {
+  color: var(--danger);
+  border-color: rgba(141, 68, 64, 0.16);
+  background: rgba(141, 68, 64, 0.06);
+}
+
 .composer-card {
   display: grid;
   gap: 24px;
@@ -624,6 +630,15 @@ code,
   gap: 10px;
 }
 
+.form-field-group {
+  display: grid;
+  gap: 16px;
+}
+
+.form-field-group--two-up {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .form-field label {
   font-size: 0.9rem;
   font-weight: 600;
@@ -661,6 +676,10 @@ code,
 }
 
 .composer-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
   color: var(--text-soft);
   font-size: 0.9rem;
 }
@@ -720,6 +739,13 @@ code,
 
 .history-entry__trace,
 .cluster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.history-entry__state-row,
+.approval-action-bar__buttons {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
@@ -799,6 +825,13 @@ code,
   font-size: 0.82rem;
 }
 
+.inline-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: rgba(39, 75, 99, 0.28);
+  text-underline-offset: 0.16em;
+}
+
 .detail-grid {
   display: grid;
   gap: 18px;
@@ -843,6 +876,47 @@ code,
 .timeline-item__summary {
   display: grid;
   gap: 8px;
+}
+
+.approval-action-bar,
+.approval-action-bar__summary {
+  display: grid;
+  gap: 14px;
+}
+
+.loading-card {
+  min-height: 100%;
+}
+
+.loading-placeholder {
+  border-radius: 16px;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.56) 0%,
+      rgba(255, 255, 255, 0.86) 50%,
+      rgba(255, 255, 255, 0.56) 100%
+    );
+  background-size: 220% 100%;
+  animation: loading-sheen 1.4s ease-in-out infinite;
+  border: 1px solid rgba(42, 52, 66, 0.08);
+}
+
+.loading-placeholder--card {
+  min-height: 108px;
+}
+
+.loading-placeholder--line {
+  height: 18px;
+}
+
+.loading-placeholder--wide {
+  width: 82%;
+}
+
+.loading-placeholder--button {
+  width: 180px;
+  height: 44px;
 }
 
 .trace-events {
@@ -927,5 +1001,19 @@ code,
 
   .key-value-grid {
     grid-template-columns: 1fr;
+  }
+
+  .form-field-group--two-up {
+    grid-template-columns: 1fr;
+  }
+}
+
+@keyframes loading-sheen {
+  0% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0% 50%;
   }
 }
