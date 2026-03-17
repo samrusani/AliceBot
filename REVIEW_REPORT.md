@@ -6,20 +6,15 @@ PASS
 
 ## criteria met
 
-- `/chat` now submits governed requests through the existing approval-request seam and keeps fixture fallback explicit when live API config is absent.
-- `/approvals` now uses only shipped approval endpoints for list, detail, approve, and reject flows.
-- `/tasks` now uses only shipped task endpoints for list, detail, and task-step inspection, and it exposes approval linkage in the task view.
-- `/approvals` and `/tasks` now have explicit route-level loading boundaries that preserve the shell layout during slow live reads.
-- Automated coverage now exists for the new web workflow layer:
-  - API helper request/error behavior
-  - approval action-bar resolution flow and route refresh behavior
-- The sprint stayed a UI sprint. No backend endpoint, schema, auth, Gmail, Calendar, runner, or execution-scope expansion was introduced.
-- The new files added are within the Sprint 6B in-scope component and helper surface.
-- The UI still materially follows `DESIGN_SYSTEM.md`: restrained palette, bounded cards, stable split layouts, readable chips/badges, and clean mobile stacking are preserved.
-- `BUILD_REPORT.md` now matches the implemented state, including the loading boundaries, added tests, and actual commands run.
-- Verification run for review:
-  - `npm run test` in `apps/web`: PASS
-  - `npm run build` in `apps/web`: PASS
+- `apps/web/eslint.config.mjs` is now tracked in git, so the non-interactive lint setup is part of the sprint change set.
+- `npm run lint` in `apps/web` runs non-interactively and passes with `eslint . --max-warnings=0`.
+- `npm test` in `apps/web` passes: `2` test files, `5` tests passed.
+- `npm run build` in `apps/web` passes.
+- The build output includes the shipped routes `/`, `/chat`, `/approvals`, `/tasks`, and `/traces`.
+- `apps/web/tsconfig.json` and `apps/web/next-env.d.ts` remain byte-stable before and after `npm run build`; the `shasum` values were unchanged.
+- The implementation stayed inside the repair sprint scope: no backend endpoint, schema, auth, Gmail, Calendar, runner, or product-scope expansion was introduced.
+- The only behavior code change remains the narrow `approval-actions` hook dependency cleanup, and the existing approval flow coverage still passes.
+- `BUILD_REPORT.md` now matches the current tracked repair: committed ESLint config, adopted Next TypeScript config normalization, exact verification commands, and explicit deferred scope.
 
 ## criteria missed
 
@@ -27,31 +22,28 @@ PASS
 
 ## quality issues
 
-- No blocking implementation issues found in the Sprint 6B UI slice.
-- Residual non-blocking issue: `npm run lint` is still not a usable repo check because `next lint` drops into interactive ESLint setup.
-- Residual non-blocking issue: `next build` still rewrites `apps/web/tsconfig.json` and `apps/web/next-env.d.ts` during verification unless those generated changes are adopted permanently.
+- No blocking quality issues found in the current sprint change set.
+- Coverage remains intentionally narrow, but it is adequate for this repair sprint because the functional code change is minimal and behavior-preserving.
 
 ## regression risks
 
 - Low.
-- The main residual risk is tooling churn rather than workflow correctness: future builds may continue to touch Next TypeScript config files until the repo either accepts or intentionally normalizes those generated settings.
-- Test coverage is now present but still narrow, so additional UI boundaries could regress without broader component or route coverage.
+- Residual risk is mostly future UI drift outside this sprint, not the stabilization change itself. Current automated coverage still does not provide route-level smoke tests across all shipped pages.
 
 ## docs issues
 
-- No blocking docs issues remain.
-- `BUILD_REPORT.md` now reflects the actual loading-state and test coverage added in the follow-up.
+- No blocking docs issues found.
+- No `ARCHITECTURE.md` update is needed for this repair sprint.
 
 ## should anything be added to RULES.md?
 
-- No required rules change.
-- Optional future rule only: require a committed non-interactive lint setup for frontend workspaces before treating `lint` as a standard verification step.
+- No required change.
+- Optional future rule: frontend workspaces should commit a repo-owned non-interactive lint configuration before `lint` is treated as a standard verification gate.
 
 ## should anything update ARCHITECTURE.md?
 
-- No. This sprint stayed inside the existing documented backend seams and did not reveal an architecture contradiction.
+- No. This sprint stayed in tooling/workspace stabilization and did not reveal an architecture contradiction.
 
 ## recommended next action
 
-- Accept Sprint 6B.
-- If the team wants a cleanup follow-up, stabilize the web lint/config story so `npm run lint` becomes a real non-interactive check and `next build` stops creating local config churn.
+- Accept Sprint 6C and treat the tracked ESLint config plus adopted Next TypeScript settings as the new stable baseline for future `apps/web` work.
