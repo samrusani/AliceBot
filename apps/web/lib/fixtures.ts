@@ -3,6 +3,9 @@ import type {
   ApprovalRequestPayload,
   RequestHistoryEntry,
   ResponseHistoryEntry,
+  ThreadEventItem,
+  ThreadItem,
+  ThreadSessionItem,
   TaskItem,
   TaskStepItem,
   TaskStepListSummary,
@@ -30,6 +33,160 @@ const PURCHASE_TOOL: ToolRecord = {
 
 const THREAD_MAGNESIUM = "11111111-1111-4111-8111-111111111111";
 const THREAD_VITAMIN_D = "11111111-1111-4111-8111-111111111112";
+const THREAD_CLEANUP = "11111111-1111-4111-8111-111111111113";
+
+export const threadFixtures: ThreadItem[] = [
+  {
+    id: THREAD_MAGNESIUM,
+    title: "Magnesium continuity review",
+    created_at: "2026-03-17T06:40:00Z",
+    updated_at: "2026-03-17T08:45:00Z",
+  },
+  {
+    id: THREAD_VITAMIN_D,
+    title: "Vitamin D reorder follow-up",
+    created_at: "2026-03-16T13:58:00Z",
+    updated_at: "2026-03-16T14:32:00Z",
+  },
+  {
+    id: THREAD_CLEANUP,
+    title: "Quarterly routine cleanup",
+    created_at: "2026-03-15T09:20:00Z",
+    updated_at: "2026-03-15T09:20:00Z",
+  },
+];
+
+export const threadSessionFixtures: Record<string, ThreadSessionItem[]> = {
+  [THREAD_MAGNESIUM]: [
+    {
+      id: "session-magnesium-1",
+      thread_id: THREAD_MAGNESIUM,
+      status: "completed",
+      started_at: "2026-03-17T06:40:00Z",
+      ended_at: "2026-03-17T06:52:00Z",
+      created_at: "2026-03-17T06:40:00Z",
+    },
+    {
+      id: "session-magnesium-2",
+      thread_id: THREAD_MAGNESIUM,
+      status: "active",
+      started_at: "2026-03-17T08:40:00Z",
+      ended_at: null,
+      created_at: "2026-03-17T08:40:00Z",
+    },
+  ],
+  [THREAD_VITAMIN_D]: [
+    {
+      id: "session-vitamin-d-1",
+      thread_id: THREAD_VITAMIN_D,
+      status: "completed",
+      started_at: "2026-03-16T14:00:00Z",
+      ended_at: "2026-03-16T14:32:00Z",
+      created_at: "2026-03-16T14:00:00Z",
+    },
+  ],
+  [THREAD_CLEANUP]: [],
+};
+
+export const threadEventFixtures: Record<string, ThreadEventItem[]> = {
+  [THREAD_MAGNESIUM]: [
+    {
+      id: "event-magnesium-1",
+      thread_id: THREAD_MAGNESIUM,
+      session_id: "session-magnesium-1",
+      sequence_no: 1,
+      kind: "message.user",
+      payload: {
+        text: "Review my magnesium reorder context before I place another order.",
+      },
+      created_at: "2026-03-17T06:41:00Z",
+    },
+    {
+      id: "event-magnesium-2",
+      thread_id: THREAD_MAGNESIUM,
+      session_id: "session-magnesium-1",
+      sequence_no: 2,
+      kind: "approval.request",
+      payload: {
+        action: "place_order",
+        scope: "supplements",
+        status: "pending",
+      },
+      created_at: "2026-03-17T06:50:00Z",
+    },
+    {
+      id: "event-magnesium-3",
+      thread_id: THREAD_MAGNESIUM,
+      session_id: "session-magnesium-2",
+      sequence_no: 3,
+      kind: "message.user",
+      payload: {
+        text: "Summarize what is still waiting for approval.",
+      },
+      created_at: "2026-03-17T08:43:00Z",
+    },
+    {
+      id: "event-magnesium-4",
+      thread_id: THREAD_MAGNESIUM,
+      session_id: "session-magnesium-2",
+      sequence_no: 4,
+      kind: "message.assistant",
+      payload: {
+        text: "The latest magnesium purchase request is still waiting on approval and keeps the merchant and package details explicit.",
+      },
+      created_at: "2026-03-17T08:45:00Z",
+    },
+  ],
+  [THREAD_VITAMIN_D]: [
+    {
+      id: "event-vitamin-d-1",
+      thread_id: THREAD_VITAMIN_D,
+      session_id: "session-vitamin-d-1",
+      sequence_no: 1,
+      kind: "message.user",
+      payload: {
+        text: "What happened with my last Vitamin D reorder?",
+      },
+      created_at: "2026-03-16T14:05:00Z",
+    },
+    {
+      id: "event-vitamin-d-2",
+      thread_id: THREAD_VITAMIN_D,
+      session_id: "session-vitamin-d-1",
+      sequence_no: 2,
+      kind: "approval.resolution",
+      payload: {
+        status: "approved",
+        summary: "The operator approved the reorder before execution.",
+      },
+      created_at: "2026-03-16T14:22:00Z",
+    },
+    {
+      id: "event-vitamin-d-3",
+      thread_id: THREAD_VITAMIN_D,
+      session_id: "session-vitamin-d-1",
+      sequence_no: 3,
+      kind: "tool.execution",
+      payload: {
+        status: "completed",
+        summary: "Merchant proxy completed the approved supplement reorder.",
+      },
+      created_at: "2026-03-16T14:24:00Z",
+    },
+    {
+      id: "event-vitamin-d-4",
+      thread_id: THREAD_VITAMIN_D,
+      session_id: "session-vitamin-d-1",
+      sequence_no: 4,
+      kind: "message.assistant",
+      payload: {
+        text: "The prior Vitamin D request was approved and executed. Open the task or trace review if you need the full record.",
+      },
+      created_at: "2026-03-16T14:32:00Z",
+    },
+  ],
+  [THREAD_CLEANUP]: [],
+};
 
 export const traceFixtures: TraceItem[] = [
   {
@@ -701,6 +858,18 @@ export function getFixtureExecutionByApprovalId(approvalId: string) {
   return executionFixtures.find((item) => item.approval_id === approvalId) ?? null;
 }
 
+export function getFixtureThread(threadId: string) {
+  return threadFixtures.find((item) => item.id === threadId) ?? null;
+}
+
+export function getFixtureThreadSessions(threadId: string) {
+  return threadSessionFixtures[threadId] ?? [];
+}
+
+export function getFixtureThreadEvents(threadId: string) {
+  return threadEventFixtures[threadId] ?? [];
+}
+
 export function getFixtureTaskSteps(taskId: string) {
   return taskStepFixtures[taskId] ?? [];
 }
@@ -779,5 +948,17 @@ export function buildFixtureResponseEntry(
       responseTraceId: `fixture-response-trace-${nonce}`,
       responseTraceEventCount: 2,
     },
+  };
+}
+
+export function buildFixtureThread(title: string): ThreadItem {
+  const nonce = Date.now().toString(36);
+  const timestamp = new Date().toISOString();
+
+  return {
+    id: `fixture-thread-${nonce}`,
+    title,
+    created_at: timestamp,
+    updated_at: timestamp,
   };
 }
