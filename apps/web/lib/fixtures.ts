@@ -2,6 +2,7 @@ import type {
   ApprovalItem,
   ApprovalRequestPayload,
   RequestHistoryEntry,
+  ResponseHistoryEntry,
   TaskItem,
   TaskStepItem,
   TaskStepListSummary,
@@ -86,6 +87,51 @@ export const traceFixtures: TraceItem[] = [
     eventSource: "fixture",
   },
   {
+    id: "trace-response-101",
+    kind: "response.generate",
+    status: "completed",
+    title: "Assistant response review",
+    summary:
+      "The assistant response used the compiled thread context and returned a bounded reply with persisted trace metadata.",
+    eventCount: 2,
+    createdAt: "2026-03-17T08:45:04Z",
+    source: "response_generation_v0",
+    scope: "Thread magnesium response",
+    related: {
+      threadId: "thread-magnesium",
+      compilerVersion: "response_generation_v0",
+    },
+    metadata: [
+      "Trace: trace-response-101",
+      "Thread: thread-magnesium",
+      "Linked compile trace: trace-ctx-401",
+      "Compiler: response_generation_v0",
+      "Status: completed",
+    ],
+    evidence: [
+      "Prompt assembly stayed inside the shipped no-tools response path.",
+      "Assistant output was persisted as an immutable continuity event.",
+    ],
+    events: [
+      {
+        id: "event-10",
+        kind: "response.prompt.assembled",
+        title: "Prompt assembled",
+        detail: "System, developer, context, and conversation sections were combined into one response prompt.",
+        facts: ["Sequence 1", "Linked compile trace: trace-ctx-401"],
+      },
+      {
+        id: "event-11",
+        kind: "response.model.completed",
+        title: "Model completed",
+        detail: "The assistant returned a natural-language summary without invoking tools or hidden routing.",
+        facts: ["Sequence 2", "Provider: openai_responses"],
+      },
+    ],
+    detailSource: "fixture",
+    eventSource: "fixture",
+  },
+  {
     id: "trace-approval-101",
     kind: "approval.request",
     status: "requires_review",
@@ -136,6 +182,51 @@ export const traceFixtures: TraceItem[] = [
         title: "Task updated",
         detail: "Task lifecycle moved into a pending approval state while retaining request provenance.",
         facts: ["Sequence 3", "Captured at Mar 17, 06:50"],
+      },
+    ],
+    detailSource: "fixture",
+    eventSource: "fixture",
+  },
+  {
+    id: "trace-response-100",
+    kind: "response.generate",
+    status: "completed",
+    title: "Assistant response review",
+    summary:
+      "The assistant summarized the last governed Vitamin D action and kept the linked response trace readable for operator review.",
+    eventCount: 2,
+    createdAt: "2026-03-16T14:32:00Z",
+    source: "response_generation_v0",
+    scope: "Thread vitamin D response",
+    related: {
+      threadId: "thread-vitamin-d",
+      compilerVersion: "response_generation_v0",
+    },
+    metadata: [
+      "Trace: trace-response-100",
+      "Thread: thread-vitamin-d",
+      "Linked compile trace: trace-ctx-401",
+      "Compiler: response_generation_v0",
+      "Status: completed",
+    ],
+    evidence: [
+      "The response referenced prior approval and execution state already stored on the thread.",
+      "Trace review remains separated from governed execution controls.",
+    ],
+    events: [
+      {
+        id: "event-12",
+        kind: "response.prompt.assembled",
+        title: "Prompt assembled",
+        detail: "Conversation history and prior execution state were assembled into a bounded response prompt.",
+        facts: ["Sequence 1", "Linked compile trace: trace-ctx-401"],
+      },
+      {
+        id: "event-13",
+        kind: "response.model.completed",
+        title: "Model completed",
+        detail: "The assistant returned an answer that pointed the operator back to task and trace review instead of acting.",
+        facts: ["Sequence 2", "Provider: openai_responses"],
       },
     ],
     detailSource: "fixture",
@@ -269,6 +360,51 @@ export const requestHistoryFixtures: RequestHistoryEntry[] = [
       routingTraceEventCount: 3,
       requestTraceId: "66666666-6666-4666-8666-666666666667",
       requestTraceEventCount: 6,
+    },
+  },
+];
+
+export const responseHistoryFixtures: ResponseHistoryEntry[] = [
+  {
+    id: "trace-response-101",
+    submittedAt: "2026-03-17T08:45:00Z",
+    source: "fixture",
+    threadId: THREAD_MAGNESIUM,
+    message: "Summarize my current magnesium supplement context before I decide whether to reorder.",
+    assistantText:
+      "You previously reordered Thorne Magnesium Bisglycinate and the latest governed request is still waiting on approval. The current thread context also reflects a preference for keeping merchant and package size explicit before any purchase action.",
+    assistantEventId: "assistant-event-101",
+    assistantSequenceNo: 14,
+    modelProvider: "openai_responses",
+    model: "gpt-5-mini",
+    summary:
+      "Fixture mode shows the assistant-response layout and linked traces without persisting continuity events to the backend.",
+    trace: {
+      compileTraceId: "trace-ctx-401",
+      compileTraceEventCount: 3,
+      responseTraceId: "trace-response-101",
+      responseTraceEventCount: 2,
+    },
+  },
+  {
+    id: "trace-response-100",
+    submittedAt: "2026-03-16T14:32:00Z",
+    source: "fixture",
+    threadId: THREAD_VITAMIN_D,
+    message: "What do I need to know about the last Vitamin D request?",
+    assistantText:
+      "The prior Vitamin D3 + K2 request already moved through approval and execution. The trace history shows the approval was resolved before the proxy handler completed, so the remaining question is whether you want to open the task or execution review for detail.",
+    assistantEventId: "assistant-event-100",
+    assistantSequenceNo: 11,
+    modelProvider: "openai_responses",
+    model: "gpt-5-mini",
+    summary:
+      "Response history stays bounded with the operator prompt, assistant answer, and both compile and response trace references visible.",
+    trace: {
+      compileTraceId: "trace-ctx-401",
+      compileTraceEventCount: 3,
+      responseTraceId: "trace-response-100",
+      responseTraceEventCount: 2,
     },
   },
 ];
@@ -614,6 +750,34 @@ export function buildFixtureRequestEntry(payload: ApprovalRequestPayload): Reque
       routingTraceEventCount: 3,
       requestTraceId: `fixture-trace-${nonce}`,
       requestTraceEventCount: 6,
+    },
+  };
+}
+
+export function buildFixtureResponseEntry(
+  payload: Pick<ResponseHistoryEntry, "threadId" | "message">,
+): ResponseHistoryEntry {
+  const nonce = Date.now().toString(36);
+
+  return {
+    id: `fixture-response-${nonce}`,
+    submittedAt: new Date().toISOString(),
+    source: "fixture",
+    threadId: payload.threadId,
+    message: payload.message,
+    assistantText:
+      "Fixture mode generated a preview response only. Add live API configuration to persist the operator message, assistant reply, and linked continuity traces.",
+    assistantEventId: `fixture-assistant-${nonce}`,
+    assistantSequenceNo: 0,
+    modelProvider: "openai_responses",
+    model: "fixture-preview",
+    summary:
+      "The preview keeps the assistant-response seam explicit without inventing stored backend history.",
+    trace: {
+      compileTraceId: `fixture-compile-${nonce}`,
+      compileTraceEventCount: 3,
+      responseTraceId: `fixture-response-trace-${nonce}`,
+      responseTraceEventCount: 2,
     },
   };
 }
