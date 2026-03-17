@@ -1,44 +1,9 @@
 import Link from "next/link";
 
+import type { TaskItem } from "../lib/api";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
-
-export type TaskItem = {
-  id: string;
-  thread_id: string;
-  tool_id: string;
-  status: string;
-  request: {
-    thread_id: string;
-    tool_id: string;
-    action: string;
-    scope: string;
-    domain_hint: string | null;
-    risk_hint: string | null;
-    attributes: Record<string, unknown>;
-  };
-  tool: {
-    id: string;
-    tool_key: string;
-    name: string;
-    description: string;
-    version: string;
-    metadata_version: string;
-    active: boolean;
-    tags: string[];
-    action_hints: string[];
-    scope_hints: string[];
-    domain_hints: string[];
-    risk_hints: string[];
-    metadata: Record<string, unknown>;
-    created_at: string;
-  };
-  latest_approval_id: string | null;
-  latest_execution_id: string | null;
-  created_at: string;
-  updated_at: string;
-};
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("en", {

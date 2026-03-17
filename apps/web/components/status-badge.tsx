@@ -10,19 +10,28 @@ function normalizeStatus(status: string) {
 function toneForStatus(status: string) {
   const normalized = normalizeStatus(status);
 
-  if (["approved", "executed", "completed", "active"].includes(normalized)) {
+  if (["approved", "executed", "completed", "active", "ready", "success"].includes(normalized)) {
     return "success";
   }
 
-  if (["pending", "pending_approval", "requires_review", "created", "blocked"].includes(normalized)) {
+  if (
+    [
+      "pending",
+      "pending_approval",
+      "requires_review",
+      "created",
+      "blocked",
+      "approval_required",
+    ].includes(normalized)
+  ) {
     return normalized === "blocked" ? "danger" : "warning";
   }
 
-  if (["denied", "rejected", "inactive", "superseded"].includes(normalized)) {
+  if (["denied", "rejected", "inactive", "superseded", "error", "failed"].includes(normalized)) {
     return "danger";
   }
 
-  if (["info", "live"].includes(normalized)) {
+  if (["info", "live", "loading", "submitting"].includes(normalized)) {
     return "info";
   }
 

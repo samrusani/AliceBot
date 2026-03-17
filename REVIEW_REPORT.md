@@ -6,33 +6,19 @@ PASS
 
 ## criteria met
 
-- The web app no longer renders the placeholder landing view at `/`; it now provides a real operator shell with stable navigation and bounded overview content.
-- The exact in-scope routes are present and implemented:
-  - `/`
-  - `/chat`
-  - `/approvals`
-  - `/tasks`
-  - `/traces`
-- The shared component surface required by the sprint exists and is used across the app shell and route views:
-  - `app-shell`
-  - `page-header`
-  - `section-card`
-  - `status-badge`
-  - `empty-state`
-  - `request-composer`
-  - `approval-list`
-  - `task-list`
-  - `task-step-list`
-  - `trace-list`
-- The UI materially follows `DESIGN_SYSTEM.md`: restrained palette, calm hierarchy, consistent card treatment, stable navigation state, and responsive stacking are all present in the shipped shell.
-- The sprint stayed within existing backend concepts and did not widen backend scope. Live web wiring uses only existing shipped endpoints:
-  - `POST /v0/responses`
-  - `GET /v0/approvals`
-  - `GET /v0/tasks`
-  - `GET /v0/tasks/{task_id}/steps`
-- The fixture content was narrowed back into supplement/ecommerce examples, so the earlier Calendar-scope concern is no longer present.
-- `BUILD_REPORT.md` now matches Sprint 6A and includes the required screens, shared components, exact files changed, data-backing mode by route, commands run, build results, visual verification notes, and deferred scope.
-- Review verification:
+- `/chat` now submits governed requests through the existing approval-request seam and keeps fixture fallback explicit when live API config is absent.
+- `/approvals` now uses only shipped approval endpoints for list, detail, approve, and reject flows.
+- `/tasks` now uses only shipped task endpoints for list, detail, and task-step inspection, and it exposes approval linkage in the task view.
+- `/approvals` and `/tasks` now have explicit route-level loading boundaries that preserve the shell layout during slow live reads.
+- Automated coverage now exists for the new web workflow layer:
+  - API helper request/error behavior
+  - approval action-bar resolution flow and route refresh behavior
+- The sprint stayed a UI sprint. No backend endpoint, schema, auth, Gmail, Calendar, runner, or execution-scope expansion was introduced.
+- The new files added are within the Sprint 6B in-scope component and helper surface.
+- The UI still materially follows `DESIGN_SYSTEM.md`: restrained palette, bounded cards, stable split layouts, readable chips/badges, and clean mobile stacking are preserved.
+- `BUILD_REPORT.md` now matches the implemented state, including the loading boundaries, added tests, and actual commands run.
+- Verification run for review:
+  - `npm run test` in `apps/web`: PASS
   - `npm run build` in `apps/web`: PASS
 
 ## criteria missed
@@ -41,32 +27,31 @@ PASS
 
 ## quality issues
 
-- No blocking implementation issues found in the Sprint 6A UI surface.
-- Minor non-blocking issue: `next build` still rewrites `apps/web/tsconfig.json` and `apps/web/next-env.d.ts` during the build. The builder documented and reverted that churn, so it no longer widens the final sprint diff, but it remains a workspace cleanliness annoyance.
-- Minor non-blocking issue: `npm run lint` is still not a stable non-interactive check because Next prompts for ESLint initialization instead of using a committed lint config.
+- No blocking implementation issues found in the Sprint 6B UI slice.
+- Residual non-blocking issue: `npm run lint` is still not a usable repo check because `next lint` drops into interactive ESLint setup.
+- Residual non-blocking issue: `next build` still rewrites `apps/web/tsconfig.json` and `apps/web/next-env.d.ts` during verification unless those generated changes are adopted permanently.
 
 ## regression risks
 
 - Low.
-- The main residual risk is operational rather than functional: future reviewers or CI may see local config churn from Next build autoconfiguration unless the web workspace eventually adopts the generated TypeScript settings deliberately.
-- The `/traces` route remains fixture-backed by design, so operators should not infer live trace listing coverage beyond what `BUILD_REPORT.md` describes.
+- The main residual risk is tooling churn rather than workflow correctness: future builds may continue to touch Next TypeScript config files until the repo either accepts or intentionally normalizes those generated settings.
+- Test coverage is now present but still narrow, so additional UI boundaries could regress without broader component or route coverage.
 
 ## docs issues
 
 - No blocking docs issues remain.
-- `BUILD_REPORT.md` now satisfies the packet’s reporting requirements.
+- `BUILD_REPORT.md` now reflects the actual loading-state and test coverage added in the follow-up.
 
 ## should anything be added to RULES.md?
 
 - No required rules change.
-- Optional future rule only: if the team wants stricter workspace cleanliness, add a rule that generated framework config churn discovered during build must either be committed intentionally or explicitly documented and reverted before handoff.
+- Optional future rule only: require a committed non-interactive lint setup for frontend workspaces before treating `lint` as a standard verification step.
 
 ## should anything update ARCHITECTURE.md?
 
-- No.
-- The sprint stayed within the documented backend seams and did not reveal an architecture contradiction.
+- No. This sprint stayed inside the existing documented backend seams and did not reveal an architecture contradiction.
 
 ## recommended next action
 
-- Accept Sprint 6A.
-- If the team wants a cleaner frontend workflow next, open a narrow follow-up to stabilize lint setup and decide whether the Next-generated TypeScript config changes should be adopted permanently or continue to be reverted.
+- Accept Sprint 6B.
+- If the team wants a cleanup follow-up, stabilize the web lint/config story so `npm run lint` becomes a real non-interactive check and `next build` stops creating local config churn.

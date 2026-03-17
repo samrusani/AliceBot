@@ -1,0 +1,348 @@
+export type ApiSource = "live" | "fixture";
+export type PageDataMode = "live" | "fixture" | "mixed";
+
+export type ApiConfig = {
+  apiBaseUrl: string;
+  userId: string;
+  defaultThreadId: string;
+  defaultToolId: string;
+};
+
+export type ToolRoutingReason = {
+  code: string;
+  source: string;
+  message: string;
+  tool_id: string | null;
+  policy_id: string | null;
+  consent_key: string | null;
+};
+
+export type ToolRecord = {
+  id: string;
+  tool_key: string;
+  name: string;
+  description: string;
+  version: string;
+  metadata_version: string;
+  active: boolean;
+  tags: string[];
+  action_hints: string[];
+  scope_hints: string[];
+  domain_hints: string[];
+  risk_hints: string[];
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type GovernedRequestRecord = {
+  thread_id: string;
+  tool_id: string;
+  action: string;
+  scope: string;
+  domain_hint: string | null;
+  risk_hint: string | null;
+  attributes: Record<string, unknown>;
+};
+
+export type ApprovalItem = {
+  id: string;
+  thread_id: string;
+  task_step_id: string | null;
+  status: string;
+  request: GovernedRequestRecord;
+  tool: ToolRecord;
+  routing: {
+    decision: string;
+    reasons: ToolRoutingReason[];
+    trace: {
+      trace_id: string;
+      trace_event_count: number;
+    };
+  };
+  created_at: string;
+  resolution: {
+    resolved_at: string;
+    resolved_by_user_id: string;
+  } | null;
+};
+
+export type TaskItem = {
+  id: string;
+  thread_id: string;
+  tool_id: string;
+  status: string;
+  request: GovernedRequestRecord;
+  tool: ToolRecord;
+  latest_approval_id: string | null;
+  latest_execution_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskStepItem = {
+  id: string;
+  task_id: string;
+  sequence_no: number;
+  kind: string;
+  status: string;
+  request: GovernedRequestRecord;
+  outcome: {
+    routing_decision: string;
+    approval_id: string | null;
+    approval_status: string | null;
+    execution_id: string | null;
+    execution_status: string | null;
+    blocked_reason: string | null;
+  };
+  lineage: {
+    parent_step_id: string | null;
+    source_approval_id: string | null;
+    source_execution_id: string | null;
+  };
+  trace: {
+    trace_id: string;
+    trace_kind: string;
+  };
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskStepListSummary = {
+  task_id: string;
+  total_count: number;
+  latest_sequence_no: number | null;
+  latest_status: string | null;
+  next_sequence_no: number;
+  append_allowed: boolean;
+  order: string[];
+};
+
+export type ApprovalRequestPayload = {
+  user_id: string;
+  thread_id: string;
+  tool_id: string;
+  action: string;
+  scope: string;
+  domain_hint: string | null;
+  risk_hint: string | null;
+  attributes: Record<string, unknown>;
+};
+
+export type ApprovalRequestResponse = {
+  request: GovernedRequestRecord;
+  decision: string;
+  tool: ToolRecord;
+  reasons: ToolRoutingReason[];
+  task: TaskItem;
+  approval: ApprovalItem | null;
+  routing_trace: {
+    trace_id: string;
+    trace_event_count: number;
+  };
+  trace: {
+    trace_id: string;
+    trace_event_count: number;
+  };
+};
+
+export type ApprovalResolutionResponse = {
+  approval: ApprovalItem;
+  trace: {
+    trace_id: string;
+    trace_event_count: number;
+  };
+};
+
+export type RequestHistoryEntry = {
+  id: string;
+  submittedAt: string;
+  source: ApiSource;
+  threadId: string;
+  toolId: string;
+  toolName: string;
+  action: string;
+  scope: string;
+  domainHint: string | null;
+  riskHint: string | null;
+  attributes: Record<string, unknown>;
+  decision: string;
+  taskId: string;
+  taskStatus: string;
+  approvalId: string | null;
+  approvalStatus: string | null;
+  summary: string;
+  reasons: string[];
+  trace: {
+    routingTraceId: string;
+    routingTraceEventCount: number;
+    requestTraceId: string;
+    requestTraceEventCount: number;
+  };
+};
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+function readEnv(publicValue: string | undefined, serverValue: string | undefined) {
+  if (typeof window !== "undefined") {
+    return publicValue ?? "";
+  }
+
+  return publicValue ?? serverValue ?? "";
+}
+
+export function getApiConfig(): ApiConfig {
+  return {
+    apiBaseUrl: readEnv(
+      process.env.NEXT_PUBLIC_ALICEBOT_API_BASE_URL,
+      process.env.ALICEBOT_API_BASE_URL,
+    ),
+    userId: readEnv(process.env.NEXT_PUBLIC_ALICEBOT_USER_ID, process.env.ALICEBOT_USER_ID),
+    defaultThreadId: readEnv(
+      process.env.NEXT_PUBLIC_ALICEBOT_THREAD_ID,
+      process.env.ALICEBOT_THREAD_ID,
+    ),
+    defaultToolId: readEnv(process.env.NEXT_PUBLIC_ALICEBOT_TOOL_ID, process.env.ALICEBOT_TOOL_ID),
+  };
+}
+
+export function hasLiveApiConfig(config: Pick<ApiConfig, "apiBaseUrl" | "userId">) {
+  return Boolean(config.apiBaseUrl && config.userId);
+}
+
+export function combinePageModes(...modes: Array<ApiSource | null | undefined>): PageDataMode {
+  const presentModes = modes.filter(Boolean) as ApiSource[];
+  if (presentModes.length === 0) {
+    return "fixture";
+  }
+
+  const uniqueModes = Array.from(new Set(presentModes));
+  if (uniqueModes.length === 1) {
+    return uniqueModes[0];
+  }
+
+  return "mixed";
+}
+
+export function pageModeLabel(mode: PageDataMode) {
+  if (mode === "live") {
+    return "Live API";
+  }
+
+  if (mode === "mixed") {
+    return "Mixed fallback";
+  }
+
+  return "Fixture-backed";
+}
+
+function buildApiUrl(
+  apiBaseUrl: string,
+  path: string,
+  query?: Record<string, string | undefined>,
+) {
+  const url = new URL(path, `${apiBaseUrl.replace(/\/$/, "")}/`);
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value) {
+      url.searchParams.set(key, value);
+    }
+  }
+  return url.toString();
+}
+
+async function requestJson<T>(
+  apiBaseUrl: string,
+  path: string,
+  init?: RequestInit,
+  query?: Record<string, string | undefined>,
+): Promise<T> {
+  const response = await fetch(buildApiUrl(apiBaseUrl, path, query), {
+    cache: "no-store",
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers ?? {}),
+    },
+  });
+
+  const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
+  if (!response.ok) {
+    throw new ApiError(payload?.detail ?? "Request failed", response.status);
+  }
+
+  return payload as T;
+}
+
+export function submitApprovalRequest(
+  apiBaseUrl: string,
+  payload: ApprovalRequestPayload,
+) {
+  return requestJson<ApprovalRequestResponse>(apiBaseUrl, "/v0/approvals/requests", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listApprovals(apiBaseUrl: string, userId: string) {
+  return requestJson<{ items: ApprovalItem[]; summary: { total_count: number; order: string[] } }>(
+    apiBaseUrl,
+    "/v0/approvals",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getApprovalDetail(apiBaseUrl: string, approvalId: string, userId: string) {
+  return requestJson<{ approval: ApprovalItem }>(
+    apiBaseUrl,
+    `/v0/approvals/${approvalId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function resolveApproval(
+  apiBaseUrl: string,
+  approvalId: string,
+  action: "approve" | "reject",
+  userId: string,
+) {
+  return requestJson<ApprovalResolutionResponse>(apiBaseUrl, `/v0/approvals/${approvalId}/${action}`, {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+export function listTasks(apiBaseUrl: string, userId: string) {
+  return requestJson<{ items: TaskItem[]; summary: { total_count: number; order: string[] } }>(
+    apiBaseUrl,
+    "/v0/tasks",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getTaskDetail(apiBaseUrl: string, taskId: string, userId: string) {
+  return requestJson<{ task: TaskItem }>(
+    apiBaseUrl,
+    `/v0/tasks/${taskId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getTaskSteps(apiBaseUrl: string, taskId: string, userId: string) {
+  return requestJson<{ items: TaskStepItem[]; summary: TaskStepListSummary }>(
+    apiBaseUrl,
+    `/v0/tasks/${taskId}/steps`,
+    undefined,
+    { user_id: userId },
+  );
+}
