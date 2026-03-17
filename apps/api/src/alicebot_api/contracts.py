@@ -100,6 +100,9 @@ TRACE_KIND_CONTEXT_COMPILE = "context.compile"
 TRACE_KIND_RESPONSE_GENERATE = "response.generate"
 TRACE_REVIEW_LIST_ORDER = ["created_at_desc", "id_desc"]
 TRACE_REVIEW_EVENT_LIST_ORDER = ["sequence_no_asc", "id_asc"]
+THREAD_LIST_ORDER = ["created_at_desc", "id_desc"]
+THREAD_SESSION_LIST_ORDER = ["started_at_asc", "created_at_asc", "id_asc"]
+THREAD_EVENT_LIST_ORDER = ["sequence_no_asc"]
 MEMORY_REVIEW_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
 MEMORY_REVIEW_QUEUE_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
 MEMORY_REVISION_REVIEW_ORDER = ["sequence_no_asc"]
@@ -314,6 +317,77 @@ class TraceCreate:
 class TraceEventRecord:
     kind: str
     payload: JsonObject
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadCreateInput:
+    title: str
+
+
+class ThreadRecord(TypedDict):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+
+
+class ThreadCreateResponse(TypedDict):
+    thread: ThreadRecord
+
+
+class ThreadListSummary(TypedDict):
+    total_count: int
+    order: list[str]
+
+
+class ThreadListResponse(TypedDict):
+    items: list[ThreadRecord]
+    summary: ThreadListSummary
+
+
+class ThreadDetailResponse(TypedDict):
+    thread: ThreadRecord
+
+
+class ThreadSessionRecord(TypedDict):
+    id: str
+    thread_id: str
+    status: str
+    started_at: str | None
+    ended_at: str | None
+    created_at: str
+
+
+class ThreadSessionListSummary(TypedDict):
+    thread_id: str
+    total_count: int
+    order: list[str]
+
+
+class ThreadSessionListResponse(TypedDict):
+    items: list[ThreadSessionRecord]
+    summary: ThreadSessionListSummary
+
+
+class ThreadEventRecord(TypedDict):
+    id: str
+    thread_id: str
+    session_id: str | None
+    sequence_no: int
+    kind: str
+    payload: JsonObject
+    created_at: str
+
+
+class ThreadEventListSummary(TypedDict):
+    thread_id: str
+    total_count: int
+    order: list[str]
+
+
+class ThreadEventListResponse(TypedDict):
+    items: list[ThreadEventRecord]
+    summary: ThreadEventListSummary
 
 
 class TraceReviewSummaryRecord(TypedDict):
