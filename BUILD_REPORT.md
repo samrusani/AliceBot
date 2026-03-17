@@ -2,131 +2,216 @@
 
 ## sprint objective
 
-Implement Sprint 6G by turning `/chat` into a dual-mode operator conversation surface with:
+Implement Sprint 6H by exposing narrow user-scoped continuity APIs over the shipped continuity store:
 
-- assistant response mode backed by `POST /v0/responses`
-- governed request mode retained through `POST /v0/approvals/requests`
+- `POST /v0/threads`
+- `GET /v0/threads`
+- `GET /v0/threads/{thread_id}`
+- `GET /v0/threads/{thread_id}/sessions`
+- `GET /v0/threads/{thread_id}/events`
 
-The sprint stays inside the shipped backend seams and keeps the two behaviors visibly separate.
+The work stays inside backend continuity scope and does not widen response generation, task orchestration, Gmail, or UI behavior.
 
 ## completed work
 
-- updated `apps/web/app/chat/page.tsx` to:
-  - make assistant mode the default `/chat` state
-  - add an explicit mode toggle between assistant chat and governed request submission
-  - seed fixture history only when live API configuration is absent
-  - keep the side rail mode-specific so supporting guidance stays relevant instead of noisy
-- added `apps/web/components/mode-toggle.tsx` as a stable two-state switch with clear labeling and active-state emphasis
-- added `apps/web/components/response-composer.tsx` to:
-  - submit normal assistant questions through `POST /v0/responses`
-  - keep thread identity explicit
-  - provide explicit fixture preview fallback when live API configuration is absent
-- added `apps/web/components/response-history.tsx` to show bounded assistant history with:
-  - operator prompt
-  - assistant reply
-  - model metadata
-  - compile and response trace summaries
-  - direct links into `/traces`
-- refined `apps/web/components/request-composer.tsx` so governed mode reads as an intentional approval-gated workflow instead of a chat-like surface
-- extended `apps/web/lib/api.ts` with typed assistant-response submission support for `POST /v0/responses`
-- extended `apps/web/lib/fixtures.ts` with assistant response fixtures, fixture trace coverage, and deterministic preview entries
-- refined `apps/web/app/globals.css` for the scoped `/chat` surface with:
-  - stronger hierarchy
-  - calmer spacing
-  - bounded history panels
-  - more deliberate prompt/reply grouping
-  - safer wrapping for long ids, trace references, and body text
-  - cleaner mobile stacking for the mode switch and chat workspace
-- added narrow frontend coverage in:
-  - `apps/web/lib/api.test.ts`
-  - `apps/web/app/chat/page.test.tsx`
-  - `apps/web/components/response-composer.test.tsx`
-  - `apps/web/components/response-history.test.tsx`
+- added continuity response contracts and ordering metadata in `apps/api/src/alicebot_api/contracts.py`
+- introduced `ThreadCreateInput`
+- introduced `ThreadRecord`
+- introduced `ThreadCreateResponse`
+- introduced `ThreadListSummary`
+- introduced `ThreadListResponse`
+- introduced `ThreadDetailResponse`
+- introduced `ThreadSessionRecord`
+- introduced `ThreadSessionListSummary`
+- introduced `ThreadSessionListResponse`
+- introduced `ThreadEventRecord`
+- introduced `ThreadEventListSummary`
+- introduced `ThreadEventListResponse`
+- introduced continuity ordering constants:
+  - `THREAD_LIST_ORDER`
+  - `THREAD_SESSION_LIST_ORDER`
+  - `THREAD_EVENT_LIST_ORDER`
+- added deterministic thread listing support in `apps/api/src/alicebot_api/store.py` with `list_threads()`
+- implemented the five scoped continuity endpoints in `apps/api/src/alicebot_api/main.py`
+- kept continuity reads user-scoped by reusing the existing RLS-backed `ContinuityStore`
+- added unit coverage for create/list/detail/session/event response shape, ordering, and invisible-thread handling
+- added Postgres-backed integration coverage for create/list/detail/session/event behavior and cross-user isolation
+- added a migration guard asserting the shipped thread created-time index remains present for deterministic continuity review queries
+
+## exact ordering rules
+
+- thread list order: `created_at DESC`, then `id DESC`
+- thread session list order: `started_at ASC`, then `created_at ASC`, then `id ASC`
+- thread event list order: `sequence_no ASC`
 
 ## incomplete work
 
-- no scoped sprint deliverables remain incomplete in code
+- no in-scope code deliverables remain incomplete
 - intentionally not added:
-  - backend changes
-  - thread browsing or thread creation UI
-  - auth changes
-  - new routes outside `/chat`
-  - hidden tool routing or autonomous action behavior
+  - thread rename
+  - thread archive
+  - session mutation APIs
+  - event mutation or deletion behavior
+  - thread search, pagination, or filtering
+  - `/chat` UI thread selection or thread creation UX
 
-## exact /chat files and components updated
+## files changed
 
-- `apps/web/app/chat/page.tsx`
-- `apps/web/app/chat/page.test.tsx`
-- `apps/web/app/globals.css`
-- `apps/web/components/request-composer.tsx`
-- `apps/web/components/response-composer.tsx`
-- `apps/web/components/response-history.tsx`
-- `apps/web/components/mode-toggle.tsx`
-- `apps/web/components/status-badge.tsx`
-- `apps/web/lib/api.ts`
-- `apps/web/lib/fixtures.ts`
-- `apps/web/lib/api.test.ts`
-- `apps/web/components/response-composer.test.tsx`
-- `apps/web/components/response-history.test.tsx`
+- `ARCHITECTURE.md`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/main.py`
+- `tests/unit/test_20260310_0001_foundation_continuity.py`
+- `tests/unit/test_events.py`
+- `tests/integration/test_continuity_api.py`
 - `BUILD_REPORT.md`
 
-## route backing mode
+## tests run
 
-- assistant mode in `/chat` is:
-  - live-API-backed when API configuration is present
-  - fixture-backed when API configuration is absent
-- governed request mode in `/chat` is:
-  - live-API-backed when API configuration is present
-  - fixture-backed when API configuration is absent
+- `./.venv/bin/python -m pytest tests/unit/test_events.py tests/unit/test_20260310_0001_foundation_continuity.py tests/integration/test_continuity_api.py`
+  - result: partial pass, then blocked by sandbox-local Postgres access for integration setup
+- `./.venv/bin/python -m pytest tests/unit/test_main.py -q`
+  - result: PASS (`41` passed)
+- `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py`
+  - result: PASS (`2` passed)
+- `./.venv/bin/python -m pytest tests/unit`
+  - result: PASS (`454` passed)
+- `./.venv/bin/python -m pytest tests/integration`
+  - result: PASS (`145` passed)
 
-## backend endpoints consumed
+## example thread create response
 
-- `POST /v0/responses`
-- `POST /v0/approvals/requests`
+```json
+{
+  "thread": {
+    "id": "30000000-0000-4000-8000-000000000003",
+    "title": "Gamma thread",
+    "created_at": "2026-03-17T10:00:00+00:00",
+    "updated_at": "2026-03-17T10:00:00+00:00"
+  }
+}
+```
 
-## exact commands run
+## example thread list response
 
-- `cd /Users/samirusani/Desktop/Codex/AliceBot/apps/web && npm run lint`
-- `cd /Users/samirusani/Desktop/Codex/AliceBot/apps/web && npm test`
-- `cd /Users/samirusani/Desktop/Codex/AliceBot/apps/web && npm run build`
+```json
+{
+  "items": [
+    {
+      "id": "30000000-0000-4000-8000-000000000003",
+      "title": "Gamma thread",
+      "created_at": "2026-03-17T10:00:00+00:00",
+      "updated_at": "2026-03-17T10:00:00+00:00"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "title": "Beta thread",
+      "created_at": "2026-03-17T09:00:00+00:00",
+      "updated_at": "2026-03-17T09:00:00+00:00"
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "title": "Alpha thread",
+      "created_at": "2026-03-17T09:00:00+00:00",
+      "updated_at": "2026-03-17T09:00:00+00:00"
+    }
+  ],
+  "summary": {
+    "total_count": 3,
+    "order": ["created_at_desc", "id_desc"]
+  }
+}
+```
 
-## lint, test, and build results
+## example thread detail response
 
-- lint result: PASS
-- test result: PASS
-  - `7` test files passed
-  - `28` tests passed
-- build result: PASS
+```json
+{
+  "thread": {
+    "id": "00000000-0000-4000-8000-000000000002",
+    "title": "Beta thread",
+    "created_at": "2026-03-17T09:00:00+00:00",
+    "updated_at": "2026-03-17T09:00:00+00:00"
+  }
+}
+```
 
-## desktop and mobile visual verification notes
+## example thread-session list response
 
-- no browser-driven visual QA pass was executed in this turn
-- desktop note:
-  - assistant mode now presents the composer and bounded response history as two coordinated panels instead of one long undifferentiated form
-  - the mode switch is visible near the page header and reads as a stable route-level decision rather than an inline afterthought
-  - response prompt, reply, ids, and trace summaries all use explicit containment styles with overflow wrapping
-  - live-configured `/chat` now starts empty in both modes instead of showing synthetic fixture history
-- mobile note:
-  - the mode switch collapses to one column below the existing breakpoint
-  - the assistant workspace collapses from a two-panel layout to one column so the composer remains primary and the history panel follows cleanly
-  - buttons continue to expand to full width on narrow screens to avoid cramped action rows
+```json
+{
+  "items": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "thread_id": "00000000-0000-4000-8000-000000000002",
+      "status": "completed",
+      "started_at": "2026-03-17T09:00:00+00:00",
+      "ended_at": "2026-03-17T09:05:00+00:00",
+      "created_at": "2026-03-17T09:00:00+00:00"
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "thread_id": "00000000-0000-4000-8000-000000000002",
+      "status": "active",
+      "started_at": "2026-03-17T10:00:00+00:00",
+      "ended_at": null,
+      "created_at": "2026-03-17T10:00:00+00:00"
+    }
+  ],
+  "summary": {
+    "thread_id": "00000000-0000-4000-8000-000000000002",
+    "total_count": 2,
+    "order": ["started_at_asc", "created_at_asc", "id_asc"]
+  }
+}
+```
+
+## example thread-event list response
+
+```json
+{
+  "items": [
+    {
+      "id": "20000000-0000-4000-8000-000000000002",
+      "thread_id": "00000000-0000-4000-8000-000000000002",
+      "session_id": "10000000-0000-4000-8000-000000000002",
+      "sequence_no": 1,
+      "kind": "message.user",
+      "payload": {"text": "Hello"},
+      "created_at": "2026-03-17T10:00:00+00:00"
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "thread_id": "00000000-0000-4000-8000-000000000002",
+      "session_id": "10000000-0000-4000-8000-000000000002",
+      "sequence_no": 2,
+      "kind": "message.assistant",
+      "payload": {"text": "Hello back"},
+      "created_at": "2026-03-17T10:01:00+00:00"
+    }
+  ],
+  "summary": {
+    "thread_id": "00000000-0000-4000-8000-000000000002",
+    "total_count": 2,
+    "order": ["sequence_no_asc"]
+  }
+}
+```
 
 ## blockers/issues
 
-- no blockers remain inside sprint scope
-- no backend contract changes were required
+- no remaining code blockers inside sprint scope
+- local sandbox execution initially blocked localhost Postgres access for integration setup; rerunning the Postgres-backed suite with unrestricted execution resolved verification
+- `ARCHITECTURE.md` was updated after review so the documented runtime/API inventory matches the shipped `/v0/threads*` continuity surface
 
 ## recommended next step
 
-Run a browser-based QA pass against both assistant mode and governed mode to validate:
-
-- real long-form assistant replies in the bounded history panel
-- mode-switch readability and perceived hierarchy on tablet widths
-- trace-link destinations against a live configured backend
+Use these continuity endpoints in a follow-up `/chat` sprint so the operator can create a thread, browse visible threads, and load thread history without typing raw thread ids manually.
 
 ## intentionally deferred after this sprint
 
-- thread browsing, thread create flows, or any broader conversation management UI
-- backend changes beyond the shipped `/v0/responses` and `/v0/approvals/requests` seams
-- any Gmail, Calendar, auth, runner, or broader workflow expansion
-- redesign of unrelated routes outside the scoped `/chat` surface
+- all UI work for thread selection, thread creation, and session history presentation
+- any new session write endpoint
+- any event rewrite, delete, or archive behavior
+- any broader chat orchestration changes
+- any Gmail, Calendar, auth, approval, task, execution, or runner scope expansion

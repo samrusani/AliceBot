@@ -418,6 +418,12 @@ GET_THREAD_SQL = """
                 WHERE id = %s
                 """
 
+LIST_THREADS_SQL = """
+                SELECT id, user_id, title, created_at, updated_at
+                FROM threads
+                ORDER BY created_at DESC, id DESC
+                """
+
 INSERT_SESSION_SQL = """
                 INSERT INTO sessions (user_id, thread_id, status)
                 VALUES (app.current_user_id(), %s, %s)
@@ -2583,6 +2589,9 @@ class ContinuityStore:
 
     def get_thread_optional(self, thread_id: UUID) -> ThreadRow | None:
         return self._fetch_optional_one(GET_THREAD_SQL, (thread_id,))
+
+    def list_threads(self) -> list[ThreadRow]:
+        return self._fetch_all(LIST_THREADS_SQL)
 
     def create_session(self, thread_id: UUID, status: str = "active") -> SessionRow:
         return self._fetch_one("create_session", INSERT_SESSION_SQL, (thread_id, status))
