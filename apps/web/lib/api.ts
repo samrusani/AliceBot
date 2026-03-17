@@ -234,6 +234,35 @@ export type ApprovalResolutionResponse = {
   };
 };
 
+export type AssistantResponsePayload = {
+  user_id: string;
+  thread_id: string;
+  message: string;
+  max_sessions?: number;
+  max_events?: number;
+  max_memories?: number;
+  max_entities?: number;
+  max_entity_edges?: number;
+};
+
+export type AssistantResponseTrace = {
+  compile_trace_id: string;
+  compile_trace_event_count: number;
+  response_trace_id: string;
+  response_trace_event_count: number;
+};
+
+export type AssistantResponseSuccess = {
+  assistant: {
+    event_id: string;
+    sequence_no: number;
+    text: string;
+    model_provider: string;
+    model: string;
+  };
+  trace: AssistantResponseTrace;
+};
+
 export type RequestHistoryEntry = {
   id: string;
   submittedAt: string;
@@ -258,6 +287,26 @@ export type RequestHistoryEntry = {
     routingTraceEventCount: number;
     requestTraceId: string;
     requestTraceEventCount: number;
+  };
+};
+
+export type ResponseHistoryEntry = {
+  id: string;
+  submittedAt: string;
+  source: ApiSource;
+  threadId: string;
+  message: string;
+  assistantText: string;
+  assistantEventId: string;
+  assistantSequenceNo: number;
+  modelProvider: string;
+  model: string;
+  summary: string;
+  trace: {
+    compileTraceId: string;
+    compileTraceEventCount: number;
+    responseTraceId: string;
+    responseTraceEventCount: number;
   };
 };
 
@@ -366,6 +415,16 @@ export function submitApprovalRequest(
   payload: ApprovalRequestPayload,
 ) {
   return requestJson<ApprovalRequestResponse>(apiBaseUrl, "/v0/approvals/requests", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function submitAssistantResponse(
+  apiBaseUrl: string,
+  payload: AssistantResponsePayload,
+) {
+  return requestJson<AssistantResponseSuccess>(apiBaseUrl, "/v0/responses", {
     method: "POST",
     body: JSON.stringify(payload),
   });

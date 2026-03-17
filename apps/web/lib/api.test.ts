@@ -10,6 +10,7 @@ import {
   listTraces,
   pageModeLabel,
   resolveApproval,
+  submitAssistantResponse,
   submitApprovalRequest,
 } from "./api";
 
@@ -137,6 +138,48 @@ describe("api helpers", () => {
       domain_hint: "ecommerce",
       risk_hint: "purchase",
       attributes: { quantity: "1" },
+    });
+  });
+
+  it("posts assistant messages to the shipped response endpoint", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          assistant: {
+            event_id: "assistant-event-1",
+            sequence_no: 3,
+            text: "You prefer oat milk.",
+            model_provider: "openai_responses",
+            model: "gpt-5-mini",
+          },
+          trace: {
+            compile_trace_id: "compile-trace-1",
+            compile_trace_event_count: 3,
+            response_trace_id: "response-trace-1",
+            response_trace_event_count: 2,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await submitAssistantResponse("https://api.example.com", {
+      user_id: "user-1",
+      thread_id: "thread-1",
+      message: "What do I usually take in coffee?",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/responses",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+      }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      thread_id: "thread-1",
+      message: "What do I usually take in coffee?",
     });
   });
 

@@ -36,6 +36,10 @@ function toneForStatus(status: string) {
     return "info";
   }
 
+  if (["fixture", "preview", "draft"].includes(normalized)) {
+    return "neutral";
+  }
+
   return "neutral";
 }
 
