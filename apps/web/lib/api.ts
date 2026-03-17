@@ -8,6 +8,54 @@ export type ApiConfig = {
   defaultToolId: string;
 };
 
+export type ThreadItem = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ThreadSessionItem = {
+  id: string;
+  thread_id: string;
+  status: string;
+  started_at: string | null;
+  ended_at: string | null;
+  created_at: string;
+};
+
+export type ThreadEventItem = {
+  id: string;
+  thread_id: string;
+  session_id: string | null;
+  sequence_no: number;
+  kind: string;
+  payload: unknown;
+  created_at: string;
+};
+
+export type ThreadCreatePayload = {
+  user_id: string;
+  title: string;
+};
+
+export type ThreadListSummary = {
+  total_count: number;
+  order: string[];
+};
+
+export type ThreadSessionListSummary = {
+  thread_id: string;
+  total_count: number;
+  order: string[];
+};
+
+export type ThreadEventListSummary = {
+  thread_id: string;
+  total_count: number;
+  order: string[];
+};
+
 export type ToolRoutingReason = {
   code: string;
   source: string;
@@ -428,6 +476,49 @@ export function submitAssistantResponse(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function createThread(apiBaseUrl: string, payload: ThreadCreatePayload) {
+  return requestJson<{ thread: ThreadItem }>(apiBaseUrl, "/v0/threads", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listThreads(apiBaseUrl: string, userId: string) {
+  return requestJson<{ items: ThreadItem[]; summary: ThreadListSummary }>(
+    apiBaseUrl,
+    "/v0/threads",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getThreadDetail(apiBaseUrl: string, threadId: string, userId: string) {
+  return requestJson<{ thread: ThreadItem }>(
+    apiBaseUrl,
+    `/v0/threads/${threadId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getThreadSessions(apiBaseUrl: string, threadId: string, userId: string) {
+  return requestJson<{ items: ThreadSessionItem[]; summary: ThreadSessionListSummary }>(
+    apiBaseUrl,
+    `/v0/threads/${threadId}/sessions`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getThreadEvents(apiBaseUrl: string, threadId: string, userId: string) {
+  return requestJson<{ items: ThreadEventItem[]; summary: ThreadEventListSummary }>(
+    apiBaseUrl,
+    `/v0/threads/${threadId}/events`,
+    undefined,
+    { user_id: userId },
+  );
 }
 
 export function listApprovals(apiBaseUrl: string, userId: string) {
