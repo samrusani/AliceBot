@@ -57,3 +57,9 @@ def test_base_schema_does_not_create_redundant_events_sequence_index() -> None:
     module = load_migration_module()
 
     assert "CREATE INDEX events_thread_sequence_idx" not in module._UPGRADE_SCHEMA_STATEMENT
+
+
+def test_base_schema_keeps_thread_created_index_for_deterministic_review_queries() -> None:
+    module = load_migration_module()
+
+    assert "CREATE INDEX threads_user_created_idx" in module._UPGRADE_SCHEMA_STATEMENT

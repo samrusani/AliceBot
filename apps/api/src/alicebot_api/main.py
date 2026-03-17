@@ -50,6 +50,9 @@ from alicebot_api.contracts import (
     GmailMessageIngestInput,
     MemoryCandidateInput,
     MemoryEmbeddingUpsertInput,
+    THREAD_EVENT_LIST_ORDER,
+    THREAD_LIST_ORDER,
+    THREAD_SESSION_LIST_ORDER,
     MemoryReviewLabelValue,
     MemoryReviewStatusFilter,
     PolicyCreateInput,
@@ -76,6 +79,18 @@ from alicebot_api.contracts import (
     ToolRoutingDecision,
     ToolRoutingRequestInput,
     ToolCreateInput,
+    ThreadCreateInput,
+    ThreadCreateResponse,
+    ThreadDetailResponse,
+    ThreadEventListResponse,
+    ThreadEventListSummary,
+    ThreadEventRecord,
+    ThreadListResponse,
+    ThreadListSummary,
+    ThreadRecord,
+    ThreadSessionListResponse,
+    ThreadSessionListSummary,
+    ThreadSessionRecord,
 )
 from alicebot_api.artifacts import (
     TaskArtifactAlreadyExistsError,
@@ -237,7 +252,13 @@ from alicebot_api.proxy_execution import (
     ProxyExecutionHandlerNotFoundError,
     execute_approved_proxy_request,
 )
-from alicebot_api.store import ContinuityStore, ContinuityStoreInvariantError
+from alicebot_api.store import (
+    ContinuityStore,
+    ContinuityStoreInvariantError,
+    EventRow,
+    SessionRow,
+    ThreadRow,
+)
 from alicebot_api.traces import (
     TraceNotFoundError,
     get_trace_record,
@@ -377,6 +398,11 @@ class GenerateResponseRequest(BaseModel):
     max_memories: int = Field(default=DEFAULT_MAX_MEMORIES, ge=0, le=50)
     max_entities: int = Field(default=DEFAULT_MAX_ENTITIES, ge=0, le=50)
     max_entity_edges: int = Field(default=DEFAULT_MAX_ENTITY_EDGES, ge=0, le=100)
+
+
+class CreateThreadRequest(BaseModel):
+    user_id: UUID
+    title: str = Field(min_length=1, max_length=200)
 
 
 class AdmitMemoryRequest(BaseModel):
@@ -657,6 +683,38 @@ class SupersedeExecutionBudgetRequest(BaseModel):
     max_completed_executions: int = Field(ge=1, le=1000000)
 
 
+def _serialize_thread(thread: ThreadRow) -> ThreadRecord:
+    return {
+        "id": str(thread["id"]),
+        "title": thread["title"],
+        "created_at": thread["created_at"].isoformat(),
+        "updated_at": thread["updated_at"].isoformat(),
+    }
+
+
+def _serialize_thread_session(session: SessionRow) -> ThreadSessionRecord:
+    return {
+        "id": str(session["id"]),
+        "thread_id": str(session["thread_id"]),
+        "status": session["status"],
+        "started_at": None if session["started_at"] is None else session["started_at"].isoformat(),
+        "ended_at": None if session["ended_at"] is None else session["ended_at"].isoformat(),
+        "created_at": session["created_at"].isoformat(),
+    }
+
+
+def _serialize_thread_event(event: EventRow) -> ThreadEventRecord:
+    return {
+        "id": str(event["id"]),
+        "thread_id": str(event["thread_id"]),
+        "session_id": None if event["session_id"] is None else str(event["session_id"]),
+        "sequence_no": event["sequence_no"],
+        "kind": event["kind"],
+        "payload": event["payload"],
+        "created_at": event["created_at"].isoformat(),
+    }
+
+
 def redact_url_credentials(raw_url: str) -> str:
     parsed = urlsplit(raw_url)
 
@@ -840,6 +898,111 @@ def generate_assistant_response(request: GenerateResponseRequest) -> JSONRespons
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder(result),
+    )
+
+
+@app.post("/v0/threads")
+def create_thread(request: CreateThreadRequest) -> JSONResponse:
+    settings = get_settings()
+    thread_input = ThreadCreateInput(title=request.title)
+
+    with user_connection(settings.database_url, request.user_id) as conn:
+        created = ContinuityStore(conn).create_thread(thread_input.title)
+
+    payload: ThreadCreateResponse = {"thread": _serialize_thread(created)}
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/threads")
+def list_threads(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        items = [_serialize_thread(thread) for thread in ContinuityStore(conn).list_threads()]
+
+    summary: ThreadListSummary = {
+        "total_count": len(items),
+        "order": list(THREAD_LIST_ORDER),
+    }
+    payload: ThreadListResponse = {
+        "items": items,
+        "summary": summary,
+    }
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/threads/{thread_id}")
+def get_thread(thread_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        thread = ContinuityStore(conn).get_thread_optional(thread_id)
+
+    if thread is None:
+        return JSONResponse(status_code=404, content={"detail": f"thread {thread_id} was not found"})
+
+    payload: ThreadDetailResponse = {"thread": _serialize_thread(thread)}
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/threads/{thread_id}/sessions")
+def list_thread_sessions(thread_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        store = ContinuityStore(conn)
+        thread = store.get_thread_optional(thread_id)
+        if thread is None:
+            return JSONResponse(status_code=404, content={"detail": f"thread {thread_id} was not found"})
+        items = [_serialize_thread_session(session) for session in store.list_thread_sessions(thread_id)]
+
+    summary: ThreadSessionListSummary = {
+        "thread_id": str(thread["id"]),
+        "total_count": len(items),
+        "order": list(THREAD_SESSION_LIST_ORDER),
+    }
+    payload: ThreadSessionListResponse = {
+        "items": items,
+        "summary": summary,
+    }
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/threads/{thread_id}/events")
+def list_thread_events(thread_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        store = ContinuityStore(conn)
+        thread = store.get_thread_optional(thread_id)
+        if thread is None:
+            return JSONResponse(status_code=404, content={"detail": f"thread {thread_id} was not found"})
+        items = [_serialize_thread_event(event) for event in store.list_thread_events(thread_id)]
+
+    summary: ThreadEventListSummary = {
+        "thread_id": str(thread["id"]),
+        "total_count": len(items),
+        "order": list(THREAD_EVENT_LIST_ORDER),
+    }
+    payload: ThreadEventListResponse = {
+        "items": items,
+        "summary": summary,
+    }
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
     )
 
 

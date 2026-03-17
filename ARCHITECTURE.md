@@ -2,9 +2,10 @@
 
 ## Current Implemented Slice
 
-AliceBot now implements the accepted repo slice through Sprint 5T. The shipped backend includes:
+AliceBot now implements the accepted repo slice through Sprint 6H. The shipped backend includes:
 
 - foundation continuity storage over `users`, `threads`, `sessions`, and append-only `events`
+- narrow continuity APIs for thread create/list/detail plus thread session/event review over those durable continuity records
 - deterministic tracing and context compilation over durable continuity, memory, entity, and entity-edge records
 - governed memory admission, explicit-preference extraction, memory review labels, review queue reads, evaluation summary reads, explicit embedding config and memory-embedding storage, direct semantic retrieval, and deterministic hybrid compile-path memory merge
 - deterministic prompt assembly and one no-tools response path that persists assistant replies as immutable continuity events
@@ -21,7 +22,7 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
 - `docker-compose.yml` starts local Postgres with `pgvector`, Redis, and MinIO.
 - `scripts/dev_up.sh`, `scripts/migrate.sh`, and `scripts/api_dev.sh` provide the local startup path, with readiness gating before migrations.
 - `apps/api` exposes FastAPI endpoints for:
-  - health and compile: `/healthz`, `POST /v0/context/compile`, `POST /v0/responses`
+  - health, continuity, and compile: `/healthz`, `POST /v0/threads`, `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, `GET /v0/threads/{thread_id}/events`, `POST /v0/context/compile`, `POST /v0/responses`
   - memory and retrieval: `POST /v0/memories/admit`, `POST /v0/memories/extract-explicit-preferences`, `GET /v0/memories`, `GET /v0/memories/review-queue`, `GET /v0/memories/evaluation-summary`, `POST /v0/memories/semantic-retrieval`, `GET /v0/memories/{memory_id}`, `GET /v0/memories/{memory_id}/revisions`, `POST /v0/memories/{memory_id}/labels`, `GET /v0/memories/{memory_id}/labels`
   - embeddings and graph seams: `POST /v0/embedding-configs`, `GET /v0/embedding-configs`, `POST /v0/memory-embeddings`, `GET /v0/memories/{memory_id}/embeddings`, `GET /v0/memory-embeddings/{memory_embedding_id}`, `POST /v0/entities`, `GET /v0/entities`, `GET /v0/entities/{entity_id}`, `POST /v0/entity-edges`, `GET /v0/entities/{entity_id}/edges`
   - governance: `POST /v0/consents`, `GET /v0/consents`, `POST /v0/policies`, `GET /v0/policies`, `GET /v0/policies/{policy_id}`, `POST /v0/policies/evaluate`, `POST /v0/tools`, `GET /v0/tools`, `GET /v0/tools/{tool_id}`, `POST /v0/tools/allowlist/evaluate`, `POST /v0/tools/route`, `POST /v0/approvals/requests`, `GET /v0/approvals`, `GET /v0/approvals/{approval_id}`, `POST /v0/approvals/{approval_id}/approve`, `POST /v0/approvals/{approval_id}/reject`, `POST /v0/approvals/{approval_id}/execute`
@@ -64,9 +65,20 @@ The current multi-step boundary is narrow and explicit. Manual continuation is i
 - `apps/web`: minimal shell only; no shipped workflow UI.
 - `workers`: scaffold only; no background jobs or runner logic are implemented.
 - `infra`: local development bootstrap assets only.
-- `tests`: unit and Postgres-backed integration coverage for the shipped seams above, including Sprint 4O task-step lineage/manual continuation, Sprint 4S step-linked execution synchronization, Sprint 5A task-workspace provisioning, Sprint 5C task-artifact registration, Sprint 5D local artifact ingestion plus chunk reads, Sprint 5E lexical artifact-chunk retrieval, Sprint 5F compile-path artifact chunk integration, Sprint 5G artifact-chunk embedding persistence and reads, Sprint 5H direct semantic artifact-chunk retrieval, Sprint 5I compile-path semantic artifact retrieval, Sprint 5J deterministic hybrid lexical-plus-semantic artifact merge in compile, Sprint 5L narrow PDF artifact ingestion, Sprint 5M narrow DOCX artifact ingestion, Sprint 5N narrow RFC822 email artifact ingestion, Sprint 5O read-only Gmail account plus single-message ingestion coverage, Sprint 5P Gmail credential hardening coverage, Sprint 5Q Gmail refresh-token lifecycle coverage, Sprint 5R Gmail refresh-token rotation handling coverage, and Sprint 5T Gmail external secret-manager coverage.
+- `tests`: unit and Postgres-backed integration coverage for the shipped seams above, including Sprint 4O task-step lineage/manual continuation, Sprint 4S step-linked execution synchronization, Sprint 5A task-workspace provisioning, Sprint 5C task-artifact registration, Sprint 5D local artifact ingestion plus chunk reads, Sprint 5E lexical artifact-chunk retrieval, Sprint 5F compile-path artifact chunk integration, Sprint 5G artifact-chunk embedding persistence and reads, Sprint 5H direct semantic artifact-chunk retrieval, Sprint 5I compile-path semantic artifact retrieval, Sprint 5J deterministic hybrid lexical-plus-semantic artifact merge in compile, Sprint 5L narrow PDF artifact ingestion, Sprint 5M narrow DOCX artifact ingestion, Sprint 5N narrow RFC822 email artifact ingestion, Sprint 5O read-only Gmail account plus single-message ingestion coverage, Sprint 5P Gmail credential hardening coverage, Sprint 5Q Gmail refresh-token lifecycle coverage, Sprint 5R Gmail refresh-token rotation handling coverage, Sprint 5T Gmail external secret-manager coverage, and Sprint 6H continuity API create/list/detail plus thread session/event review coverage.
 
 ## Core Flows Implemented Now
+
+### Continuity Review
+
+1. Accept a user-scoped `POST /v0/threads` request with one caller-supplied thread title.
+2. Persist exactly one visible `threads` row through the existing continuity store.
+3. List visible threads through `GET /v0/threads` in deterministic `created_at DESC, id DESC` order.
+4. Read one visible thread through `GET /v0/threads/{thread_id}`.
+5. Read visible sessions for one visible thread through `GET /v0/threads/{thread_id}/sessions` in deterministic `started_at ASC, created_at ASC, id ASC` order.
+6. Read immutable visible events for one visible thread through `GET /v0/threads/{thread_id}/events` in deterministic `sequence_no ASC` order.
+7. Return stable summary metadata for thread, session, and event list reads.
+8. Reuse only already-persisted continuity data; session mutation, event mutation, rename, archive, pagination, and search remain out of scope.
 
 ### Deterministic Context Compilation
 
