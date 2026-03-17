@@ -98,6 +98,8 @@ PROMPT_ASSEMBLY_VERSION_V0 = "prompt_assembly_v0"
 RESPONSE_GENERATION_VERSION_V0 = "response_generation_v0"
 TRACE_KIND_CONTEXT_COMPILE = "context.compile"
 TRACE_KIND_RESPONSE_GENERATE = "response.generate"
+TRACE_REVIEW_LIST_ORDER = ["created_at_desc", "id_desc"]
+TRACE_REVIEW_EVENT_LIST_ORDER = ["sequence_no_asc", "id_asc"]
 MEMORY_REVIEW_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
 MEMORY_REVIEW_QUEUE_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
 MEMORY_REVISION_REVIEW_ORDER = ["sequence_no_asc"]
@@ -312,6 +314,54 @@ class TraceCreate:
 class TraceEventRecord:
     kind: str
     payload: JsonObject
+
+
+class TraceReviewSummaryRecord(TypedDict):
+    id: str
+    thread_id: str
+    kind: str
+    compiler_version: str
+    status: str
+    created_at: str
+    trace_event_count: int
+
+
+class TraceReviewRecord(TraceReviewSummaryRecord):
+    limits: JsonObject
+
+
+class TraceReviewListSummary(TypedDict):
+    total_count: int
+    order: list[str]
+
+
+class TraceReviewListResponse(TypedDict):
+    items: list[TraceReviewSummaryRecord]
+    summary: TraceReviewListSummary
+
+
+class TraceReviewDetailResponse(TypedDict):
+    trace: TraceReviewRecord
+
+
+class TraceReviewEventRecord(TypedDict):
+    id: str
+    trace_id: str
+    sequence_no: int
+    kind: str
+    payload: JsonObject
+    created_at: str
+
+
+class TraceReviewEventListSummary(TypedDict):
+    trace_id: str
+    total_count: int
+    order: list[str]
+
+
+class TraceReviewEventListResponse(TypedDict):
+    items: list[TraceReviewEventRecord]
+    summary: TraceReviewEventListSummary
 
 
 @dataclass(frozen=True, slots=True)

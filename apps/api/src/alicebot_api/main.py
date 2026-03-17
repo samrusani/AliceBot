@@ -238,6 +238,12 @@ from alicebot_api.proxy_execution import (
     execute_approved_proxy_request,
 )
 from alicebot_api.store import ContinuityStore, ContinuityStoreInvariantError
+from alicebot_api.traces import (
+    TraceNotFoundError,
+    get_trace_record,
+    list_trace_event_records,
+    list_trace_records,
+)
 
 
 app = FastAPI(title="AliceBot API", version="0.1.0")
@@ -834,6 +840,62 @@ def generate_assistant_response(request: GenerateResponseRequest) -> JSONRespons
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder(result),
+    )
+
+
+@app.get("/v0/traces")
+def list_traces(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_trace_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/traces/{trace_id}")
+def get_trace(trace_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_trace_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                trace_id=trace_id,
+            )
+    except TraceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/traces/{trace_id}/events")
+def list_trace_events(trace_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_trace_event_records(
+                ContinuityStore(conn),
+                user_id=user_id,
+                trace_id=trace_id,
+            )
+    except TraceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
     )
 
 
