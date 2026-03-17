@@ -7,12 +7,14 @@ import {
   getApiConfig,
   getTaskDetail,
   getTaskSteps,
+  getToolExecution,
   hasLiveApiConfig,
   listTasks,
   pageModeLabel,
   type ApiSource,
 } from "../../lib/api";
 import {
+  getFixtureExecution,
   getFixtureTask,
   getFixtureTaskStepSummary,
   getFixtureTaskSteps,
@@ -79,14 +81,41 @@ export default async function TasksPage({
     }
   }
 
-  const pageMode = combinePageModes(listSource, selectedTask ? taskSource : null, selectedTask ? stepSource : null);
+  let execution = selectedTask?.latest_execution_id ? getFixtureExecution(selectedTask.latest_execution_id) : null;
+  let executionSource: ApiSource | null = execution ? "fixture" : null;
+  let executionUnavailableMessage: string | null = null;
+
+  if (selectedTask?.latest_execution_id && liveModeReady && taskSource === "live") {
+    try {
+      const payload = await getToolExecution(
+        apiConfig.apiBaseUrl,
+        selectedTask.latest_execution_id,
+        apiConfig.userId,
+      );
+      execution = payload.execution;
+      executionSource = "live";
+    } catch {
+      execution = getFixtureExecution(selectedTask.latest_execution_id);
+      executionSource = execution ? "fixture" : null;
+      executionUnavailableMessage = execution
+        ? null
+        : "The latest execution record could not be read from the configured backend.";
+    }
+  }
+
+  const pageMode = combinePageModes(
+    listSource,
+    selectedTask ? taskSource : null,
+    selectedTask ? stepSource : null,
+    execution ? executionSource : null,
+  );
 
   return (
     <div className="page-stack">
       <PageHeader
         eyebrow="Tasks"
         title="Task lifecycle inspection"
-        description="Tasks and task steps stay legible in a split review layout so state, provenance, approval linkage, and next action remain visible without overflow or guesswork."
+        description="Tasks and task steps stay legible in a split review layout so approval linkage, execution state, and downstream outcome remain visible without overflow or guesswork."
         meta={
           <div className="header-meta">
             <span className="subtle-chip">{pageModeLabel(pageMode)}</span>
@@ -99,7 +128,14 @@ export default async function TasksPage({
         <TaskList tasks={items} selectedId={selectedTask?.id} />
 
         <div className="stack">
-          <TaskSummary task={selectedTask} taskSource={taskSource} stepSource={stepSource} />
+          <TaskSummary
+            task={selectedTask}
+            taskSource={taskSource}
+            stepSource={stepSource}
+            execution={execution}
+            executionSource={executionSource}
+            executionUnavailableMessage={executionUnavailableMessage}
+          />
           <TaskStepList steps={steps} summary={stepSummary} source={stepSource} />
         </div>
       </div>

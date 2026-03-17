@@ -6,21 +6,19 @@ PASS
 
 ## criteria met
 
-- The sprint stayed a UI sprint and did not widen backend scope.
-- `/traces` now uses the shipped trace review APIs when API configuration is present via the shared helper reads in [apps/web/lib/api.ts](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/lib/api.ts) and the route wiring in [apps/web/app/traces/page.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/app/traces/page.tsx).
-- `/traces` no longer depends exclusively on local fixture data. When API configuration is absent, the route falls back explicitly to fixture data from [apps/web/lib/fixtures.ts](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/lib/fixtures.ts).
-- Loading, empty, unavailable, and bounded partial-detail/event states are implemented across [apps/web/app/traces/loading.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/app/traces/loading.tsx), [apps/web/app/traces/page.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/app/traces/page.tsx), and [apps/web/components/trace-list.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/trace-list.tsx).
-- The trace UI keeps the intended bounded visual hierarchy: summary first, key metadata second, ordered events third.
-- The implementation stays within the Sprint 6E in-scope files and does not add Gmail, Calendar, auth, runner, filtering, search, pagination, mutation, or backend changes.
-- `BUILD_REPORT.md` is aligned to Sprint 6E and documents the route mode, shipped endpoints, exact commands, verification results, visual notes, and deferred scope.
-- Frontend coverage was added in:
-  - [apps/web/lib/api.test.ts](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/lib/api.test.ts)
-  - [apps/web/components/trace-list.test.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/trace-list.test.tsx)
+- The sprint stayed a UI sprint and did not widen backend scope. The implementation remains confined to the web shell and uses only the shipped approval/task/execution seams.
+- The UI can trigger `POST /v0/approvals/{approval_id}/execute` for eligible approved approvals through `apps/web/lib/api.ts` and `apps/web/components/approval-actions.tsx`.
+- The UI can show resulting execution state using existing execution and task reads in `apps/web/app/approvals/page.tsx`, `apps/web/app/tasks/page.tsx`, `apps/web/components/approval-detail.tsx`, `apps/web/components/task-summary.tsx`, `apps/web/components/task-step-list.tsx`, and `apps/web/components/execution-summary.tsx`.
+- `/approvals` and `/tasks` make execution state understandable without widening backend scope. Loading, success, blocked/failure, empty, and unavailable states are all explicitly surfaced.
+- When API configuration is absent, execution controls degrade to explicit fixture/read-only behavior rather than broken interaction.
+- The sprint stayed within the listed in-scope screens, components, and files.
+- `DESIGN_SYSTEM.md` was followed materially. The execution controls and review surfaces remain bounded and consistent with the existing operator-shell tone.
+- `BUILD_REPORT.md` is aligned with the implemented sprint scope and now reflects the current verification totals.
 - Verification passed in `apps/web`:
   - `npm run lint`
   - `npm test`
   - `npm run build`
-  - current totals: `3` test files, `13` tests
+  - current totals: `4` test files, `20` tests
 - `next build` did not leave tracked churn in `apps/web/tsconfig.json` or `apps/web/next-env.d.ts`.
 
 ## criteria missed
@@ -29,15 +27,15 @@ PASS
 
 ## quality issues
 
-- No blocking quality issues found in the current Sprint 6E implementation.
+- No blocking quality issues found in the current Sprint 6F implementation.
 
 ## regression risks
 
-- Residual product risk is limited to real-data wording and density because the visual verification notes are code-inspection notes rather than a browser QA pass. This does not block Sprint 6E acceptance but is still worth validating against a live configured backend.
+- Residual risk is limited to live-data wording and density because the visual notes are still based on code inspection rather than a browser QA pass against a configured backend. That does not block sprint acceptance.
 
 ## docs issues
 
-- No blocking docs issues remain for Sprint 6E.
+- No blocking docs issues remain for Sprint 6F.
 
 ## should anything be added to RULES.md?
 
@@ -49,5 +47,5 @@ PASS
 
 ## recommended next action
 
-- Sprint 6E can be considered review-passed.
-- Next follow-up should be a browser-based QA pass against a live configured backend with real trace records to validate the operator-facing wording and event density.
+- Sprint 6F can be considered review-passed.
+- Next follow-up should be a browser-based QA pass against a live configured backend to validate the approved-to-executed or blocked transition and the exact operator-facing wording in live failure cases.
