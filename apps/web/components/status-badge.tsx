@@ -22,6 +22,7 @@ function toneForStatus(status: string) {
       "created",
       "blocked",
       "approval_required",
+      "executing",
     ].includes(normalized)
   ) {
     return normalized === "blocked" ? "danger" : "warning";

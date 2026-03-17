@@ -34,6 +34,8 @@ export type ToolRecord = {
   created_at: string;
 };
 
+export type JsonObject = Record<string, unknown>;
+
 export type GovernedRequestRecord = {
   thread_id: string;
   tool_id: string;
@@ -115,6 +117,51 @@ export type TaskStepListSummary = {
   next_sequence_no: number;
   append_allowed: boolean;
   order: string[];
+};
+
+export type ToolExecutionResult = {
+  handler_key: string | null;
+  status: string;
+  output: JsonObject | null;
+  reason: string | null;
+  budget_decision?: JsonObject;
+};
+
+export type ToolExecutionItem = {
+  id: string;
+  approval_id: string;
+  task_step_id: string;
+  thread_id: string;
+  tool_id: string;
+  trace_id: string;
+  request_event_id: string | null;
+  result_event_id: string | null;
+  status: string;
+  handler_key: string | null;
+  request: GovernedRequestRecord;
+  tool: ToolRecord;
+  result: ToolExecutionResult;
+  executed_at: string;
+};
+
+export type ApprovalExecutionResponse = {
+  request: {
+    approval_id: string;
+    task_step_id: string;
+  };
+  approval: ApprovalItem;
+  tool: ToolRecord;
+  result: ToolExecutionResult;
+  events: {
+    request_event_id: string;
+    request_sequence_no: number;
+    result_event_id: string;
+    result_sequence_no: number;
+  } | null;
+  trace: {
+    trace_id: string;
+    trace_event_count: number;
+  };
 };
 
 export type TraceReviewSummaryItem = {
@@ -376,6 +423,31 @@ export function getTaskSteps(apiBaseUrl: string, taskId: string, userId: string)
   return requestJson<{ items: TaskStepItem[]; summary: TaskStepListSummary }>(
     apiBaseUrl,
     `/v0/tasks/${taskId}/steps`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function executeApproval(apiBaseUrl: string, approvalId: string, userId: string) {
+  return requestJson<ApprovalExecutionResponse>(apiBaseUrl, `/v0/approvals/${approvalId}/execute`, {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+export function listToolExecutions(apiBaseUrl: string, userId: string) {
+  return requestJson<{ items: ToolExecutionItem[]; summary: { total_count: number; order: string[] } }>(
+    apiBaseUrl,
+    "/v0/tool-executions",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getToolExecution(apiBaseUrl: string, executionId: string, userId: string) {
+  return requestJson<{ execution: ToolExecutionItem }>(
+    apiBaseUrl,
+    `/v0/tool-executions/${executionId}`,
     undefined,
     { user_id: userId },
   );
