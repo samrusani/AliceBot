@@ -2,187 +2,156 @@
 
 ## Sprint Title
 
-Sprint 6B: Governed Request Submission and Actionable Approval Workflow
+Sprint 6C: Web Workspace Verification Stabilization
 
 ## Sprint Type
 
-ui
+repair
 
 ## Sprint Reason
 
-Sprint 6A delivered the first real AliceBot web shell, but it is still mostly a review surface. The highest-value next MVP gap is not another Gmail or docs sprint; it is turning the shell into a usable governed workflow surface. The backend already ships approval request creation, approval resolution, and task/task-step reads, so the next safe step is to wire those existing seams into the web UI without expanding backend scope.
+Sprint 6B successfully turned the shell into a governed workflow surface, but the accepted review still identified two recurring frontend quality issues: `npm run lint` is not a usable non-interactive check, and `next build` still rewrites `apps/web/tsconfig.json` plus `apps/web/next-env.d.ts` during verification. Before stacking more UI work on top of the shell, the web workspace needs one narrow stabilization sprint so future UI delivery is not slowed down by avoidable tooling churn.
 
 ## Sprint Intent
 
-Extend the web shell so the operator can submit governed requests, review live approval details, approve or reject them from the UI, and inspect the resulting task/task-step state, using existing backend endpoints only.
+Stabilize the `apps/web` workspace so lint and build are clean, repeatable, non-interactive verification steps, while preserving the Sprint 6A and Sprint 6B operator shell behavior and avoiding any backend scope changes.
 
 ## Git Instructions
 
-- Branch Name: `codex/sprint-6b-governed-request-approval-ui`
+- Branch Name: `codex/sprint-6c-web-workspace-verification-stabilization`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR, no stacked PRs unless Control Tower explicitly opens a follow-up sprint
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- Sprint 6A proved the web shell can render a calm, high-trust operator interface aligned to `DESIGN_SYSTEM.md`.
-- The current shell still leaves the key governed workflow mostly inert:
-  - requests are not yet clearly submitted through the approval-request seam
-  - approvals are inspectable but not actionable from the UI
-  - tasks can be viewed but not as the immediate downstream result of a governed request
-- The product brief requires web-based chat and task orchestration with explicit approval for consequential actions.
-- The narrowest safe next step is to wire the existing approval and task seams into the shell, not to invent new backend features.
+- Sprint 6A opened the first real web shell.
+- Sprint 6B made the shell workflow-bearing with governed request submission, approvals, and live task inspection.
+- The accepted review for Sprint 6B called out:
+  - `npm run lint` is still interactive because the web workspace lacks a committed lint setup
+  - `next build` still rewrites `apps/web/tsconfig.json` and `apps/web/next-env.d.ts`
+- Those are not merge blockers for 6B, but they will keep generating review friction and workspace churn if not fixed now.
+- The narrowest safe next step is to stabilize the web workspace itself, not to widen UI scope or reopen backend work.
 
 ## Design Truth
 
-- `DESIGN_SYSTEM.md` remains in force for this sprint.
-- The UI must keep the calm, premium, restrained operator feel established in Sprint 6A.
-- Interaction states must feel stable and explicit:
-  - pending
-  - submitting
-  - approved
-  - rejected
-  - loading
-  - empty
-- Avoid noisy notification patterns or consumer-chat styling.
-
-## Exact Screens In Scope
-
-- `/chat`
-  - governed request composer
-  - request mode focused on the shipped approval-request seam
-  - resulting request summary state
-- `/approvals`
-  - live approval inbox list
-  - approval detail inspector
-  - approve action
-  - reject action
-- `/tasks`
-  - live task list
-  - selected task summary
-  - live task-step inspection
-  - visible linkage from approval outcome to task state when available
-
-## Exact Components In Scope
-
-- existing shared shell primitives from Sprint 6A, refined as needed
-- governed request form
-- approval detail inspector
-- approval action bar
-- task summary panel
-- task-step status list
-- inline success/error state messaging for approval actions
-- empty/loading state variants for live workflow screens
+- `DESIGN_SYSTEM.md` remains the design source of truth.
+- This sprint is not a new visual redesign sprint.
+- UI behavior and styling should remain materially unchanged except where small markup or styling adjustments are needed to support stable lint/build verification.
 
 ## Exact Files In Scope
 
-- `DESIGN_SYSTEM.md`
-  - reference only; do not rewrite unless the sprint reveals a concrete contradiction that must be corrected
+- `apps/web/package.json`
+- `apps/web/tsconfig.json`
+- `apps/web/next-env.d.ts`
+- `apps/web/next.config.mjs`
+- `apps/web/eslint.config.mjs`
+- `apps/web/app/layout.tsx`
+- `apps/web/app/page.tsx`
 - `apps/web/app/chat/page.tsx`
 - `apps/web/app/approvals/page.tsx`
 - `apps/web/app/tasks/page.tsx`
+- `apps/web/app/traces/page.tsx`
+- `apps/web/app/approvals/loading.tsx`
+- `apps/web/app/tasks/loading.tsx`
 - `apps/web/app/globals.css`
-- `apps/web/components/request-composer.tsx`
-- `apps/web/components/approval-list.tsx`
-- `apps/web/components/task-list.tsx`
-- `apps/web/components/task-step-list.tsx`
+- `apps/web/components/app-shell.tsx`
+- `apps/web/components/page-header.tsx`
 - `apps/web/components/section-card.tsx`
 - `apps/web/components/status-badge.tsx`
 - `apps/web/components/empty-state.tsx`
+- `apps/web/components/request-composer.tsx`
+- `apps/web/components/approval-list.tsx`
 - `apps/web/components/approval-actions.tsx`
 - `apps/web/components/approval-detail.tsx`
+- `apps/web/components/task-list.tsx`
 - `apps/web/components/task-summary.tsx`
+- `apps/web/components/task-step-list.tsx`
+- `apps/web/components/trace-list.tsx`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/fixtures.ts`
-- `apps/web/package.json`
+- `apps/web/lib/api.test.ts`
+- `apps/web/components/approval-actions.test.tsx`
+- `apps/web/test/setup.ts`
+- `apps/web/vitest.config.ts`
+- `BUILD_REPORT.md`
 
 ## In Scope
 
-- Wire `/chat` to the existing governed request path using shipped backend behavior only.
-- Support governed request submission through existing endpoints such as:
-  - `POST /v0/approvals/requests`
-- Support live approval review using existing endpoints such as:
-  - `GET /v0/approvals`
-  - `GET /v0/approvals/{approval_id}` if already available through the current web layer pattern
-  - `POST /v0/approvals/{approval_id}/approve`
-  - `POST /v0/approvals/{approval_id}/reject`
-- Support live task and task-step review using existing endpoints such as:
-  - `GET /v0/tasks`
-  - `GET /v0/tasks/{task_id}`
-  - `GET /v0/tasks/{task_id}/steps`
-- Keep fixture-backed fallback behavior explicit when API configuration is absent.
-- Keep all workflow state user-scoped and visibly deterministic.
+- Commit a stable non-interactive lint configuration for `apps/web`.
+- Ensure `npm run lint` runs without prompting for ESLint initialization.
+- Ensure `npm run build` no longer creates uncommitted churn in `apps/web/tsconfig.json` or `apps/web/next-env.d.ts`.
+- Adopt or normalize any framework-generated TypeScript config changes deliberately so future builds stay clean.
+- Keep the Sprint 6A and 6B screens, routes, and workflow behavior intact.
+- Update or add narrow frontend tests only as needed to preserve current behavior while the workspace config is being stabilized.
 
 ## Out of Scope
 
 - No new backend endpoints.
 - No backend schema changes.
-- No approval execution from the web UI yet.
-- No task-step mutations from the web UI beyond review.
-- No general trace-event listing backend work.
+- No new product workflow features.
 - No Gmail breadth, Calendar UI, or connector expansion.
 - No auth redesign.
-- No full magnesium reorder workflow yet.
+- No new pages or routes beyond what already shipped in 6A/6B.
+- No visual redesign of the shell.
 - No runner-style orchestration UI.
 
 ## Required Deliverables
 
-- A governed request submission surface in `/chat`.
-- Actionable approve and reject controls in `/approvals`.
-- Live task and task-step inspection that reflects governed-request outcomes in `/tasks`.
-- Stable loading, empty, success, and failure states for those workflow surfaces.
+- A committed non-interactive lint setup for `apps/web`.
+- A stable build setup that does not rewrite tracked web config files during routine verification.
+- Preserved Sprint 6A and 6B behavior across the shipped routes and workflow surfaces.
 - Updated `BUILD_REPORT.md` with exact verification results and explicit deferred scope.
 
 ## Acceptance Criteria
 
-- `/chat` can submit a governed request through an existing shipped backend path when API configuration is present.
-- `/approvals` can approve and reject approvals through existing shipped backend endpoints when API configuration is present.
-- `/tasks` reflects live task/task-step state from existing shipped endpoints when API configuration is present.
-- When API configuration is absent, the UI falls back to explicit fixture-backed or empty states instead of broken behavior.
-- The sprint stays within the exact in-scope screens, components, and files listed above.
-- The UI continues to follow `DESIGN_SYSTEM.md` materially.
+- `npm run lint` in `apps/web` runs non-interactively and passes.
 - `npm run build` in `apps/web` passes.
-- Any added checks pass if introduced.
+- Running `npm run build` after a clean checkout does not create uncommitted churn in `apps/web/tsconfig.json` or `apps/web/next-env.d.ts`.
+- The shipped routes remain intact:
+  - `/`
+  - `/chat`
+  - `/approvals`
+  - `/tasks`
+  - `/traces`
+- The governed request, approval, and task UI behavior from Sprint 6B remains intact.
+- No backend scope expansion enters the sprint.
 
 ## Implementation Constraints
 
 - Keep the sprint narrow and boring.
-- Reuse existing backend seams only; do not hide backend feature requests inside the UI sprint.
-- Keep the governed-request flow explicit and reviewable, not magical.
-- Preserve the visual calm and text containment established in Sprint 6A.
-- If an endpoint or payload is not stable enough for live use, degrade cleanly to an explicit unavailable state rather than inventing new backend logic.
+- Treat this as workspace stabilization, not a feature sprint.
+- Prefer adopting framework-required config intentionally over repeatedly reverting generated files.
+- Do not hide UI redesign work inside lint/build cleanup.
+- If markup changes are needed to satisfy the committed lint rules, keep them minimal and behavior-preserving.
 
 ## Suggested Work Breakdown
 
-1. Refactor the current shell data layer into a clearer shared API helper plus fixtures.
-2. Wire governed request submission into `/chat`.
-3. Add approval detail plus approve/reject actions in `/approvals`.
-4. Strengthen `/tasks` to show the downstream task/task-step state from the governed workflow.
-5. Add deterministic loading, success, error, and empty states.
-6. Run frontend build and any introduced checks.
-7. Update `BUILD_REPORT.md` with executed verification.
+1. Add a committed ESLint configuration for `apps/web`.
+2. Normalize package scripts so lint/test/build form a stable non-interactive verification set.
+3. Resolve the `next build` config churn by adopting or normalizing the generated TypeScript settings deliberately.
+4. Run lint, tests, and build to confirm a clean repeatable web workspace.
+5. Update `BUILD_REPORT.md` with exact verification and any intentionally adopted config changes.
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- the exact screens and components implemented or updated
-- the exact files changed
-- which routes are live-API-backed, fixture-backed, or mixed
-- the exact shipped backend endpoints consumed by the UI
-- exact commands run
-- build and test results
-- concise desktop and mobile visual verification notes
-- what remains intentionally deferred after this sprint
+- the exact workspace/config files changed
+- the lint command and build command used
+- whether TypeScript or Next-generated config changes were intentionally adopted
+- exact verification results for lint, test, and build
+- confirmation that Sprint 6A/6B route behavior remained intact
+- what remains intentionally deferred after this repair sprint
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- the sprint stayed a UI sprint and did not widen backend product scope
-- the governed request, approval, and task workflow uses only existing shipped backend seams
-- `DESIGN_SYSTEM.md` was followed materially
-- loading, empty, success, and error states are stable and readable
-- no hidden Gmail breadth, Calendar, runner, auth-scope, or backend-scope expansion entered the sprint
+- the sprint stayed a repair sprint and did not widen backend or product scope
+- `npm run lint` is now non-interactive and passes
+- `npm run build` is stable and no longer rewrites tracked config files during routine verification
+- Sprint 6A/6B route behavior remains intact
+- no hidden UI redesign, Gmail breadth, Calendar, auth, runner, or backend-scope expansion entered the sprint
 
 ## Exit Condition
 
-This sprint is complete when the AliceBot web shell can submit governed requests, resolve approvals through approve/reject UI actions, and reflect resulting task/task-step state through the existing backend seams, while staying within the current UI and backend boundaries.
+This sprint is complete when the `apps/web` workspace has stable non-interactive lint/build verification, no longer creates routine config churn during `next build`, and preserves the shipped operator shell behavior from Sprints 6A and 6B.
