@@ -63,7 +63,8 @@ describe("ResponseComposer", () => {
         initialEntries={[]}
         apiBaseUrl="https://api.example.com"
         userId="user-1"
-        defaultThreadId="thread-1"
+        selectedThreadId="thread-1"
+        selectedThreadTitle="Gamma thread"
       />,
     );
 
@@ -89,7 +90,13 @@ describe("ResponseComposer", () => {
   });
 
   it("adds an explicit fixture preview when live API configuration is absent", async () => {
-    render(<ResponseComposer initialEntries={[]} defaultThreadId="thread-1" />);
+    render(
+      <ResponseComposer
+        initialEntries={[]}
+        selectedThreadId="thread-1"
+        selectedThreadTitle="Gamma thread"
+      />,
+    );
 
     fireEvent.change(screen.getByLabelText("Ask the assistant"), {
       target: { value: "Summarize the latest thread state." },
@@ -99,5 +106,12 @@ describe("ResponseComposer", () => {
     expect(submitAssistantResponseMock).not.toHaveBeenCalled();
     expect(await screen.findByText(/Fixture mode generated a preview response only/i)).toBeInTheDocument();
     expect(screen.getByText(/Fixture response preview added/i)).toBeInTheDocument();
+  });
+
+  it("requires a selected thread before enabling assistant submission", () => {
+    render(<ResponseComposer initialEntries={[]} />);
+
+    expect(screen.getByRole("button", { name: "Ask assistant" })).toBeDisabled();
+    expect(screen.getByText(/Select or create a thread from the right rail/i)).toBeInTheDocument();
   });
 });

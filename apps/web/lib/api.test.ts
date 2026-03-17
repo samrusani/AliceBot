@@ -3,10 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   combinePageModes,
+  createThread,
+  getThreadDetail,
+  getThreadEvents,
+  getThreadSessions,
   executeApproval,
   getToolExecution,
   getTraceDetail,
   getTraceEvents,
+  listThreads,
   listTraces,
   pageModeLabel,
   resolveApproval,
@@ -180,6 +185,121 @@ describe("api helpers", () => {
       user_id: "user-1",
       thread_id: "thread-1",
       message: "What do I usually take in coffee?",
+    });
+  });
+
+  it("uses the shipped continuity endpoints for thread create and review", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            thread: {
+              id: "thread-1",
+              title: "Gamma thread",
+              created_at: "2026-03-17T10:00:00Z",
+              updated_at: "2026-03-17T10:00:00Z",
+            },
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: "thread-1",
+                title: "Gamma thread",
+                created_at: "2026-03-17T10:00:00Z",
+                updated_at: "2026-03-17T10:00:00Z",
+              },
+            ],
+            summary: {
+              total_count: 1,
+              order: ["created_at_desc", "id_desc"],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            thread: {
+              id: "thread-1",
+              title: "Gamma thread",
+              created_at: "2026-03-17T10:00:00Z",
+              updated_at: "2026-03-17T10:00:00Z",
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: "session-1",
+                thread_id: "thread-1",
+                status: "active",
+                started_at: "2026-03-17T10:00:00Z",
+                ended_at: null,
+                created_at: "2026-03-17T10:00:00Z",
+              },
+            ],
+            summary: {
+              thread_id: "thread-1",
+              total_count: 1,
+              order: ["started_at_asc", "created_at_asc", "id_asc"],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: "event-1",
+                thread_id: "thread-1",
+                session_id: "session-1",
+                sequence_no: 1,
+                kind: "message.user",
+                payload: { text: "Hello" },
+                created_at: "2026-03-17T10:00:00Z",
+              },
+            ],
+            summary: {
+              thread_id: "thread-1",
+              total_count: 1,
+              order: ["sequence_no_asc"],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+    await createThread("https://api.example.com", {
+      user_id: "user-1",
+      title: "Gamma thread",
+    });
+    await listThreads("https://api.example.com", "user-1");
+    await getThreadDetail("https://api.example.com", "thread-1", "user-1");
+    await getThreadSessions("https://api.example.com", "thread-1", "user-1");
+    await getThreadEvents("https://api.example.com", "thread-1", "user-1");
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "https://api.example.com/v0/threads",
+      "https://api.example.com/v0/threads?user_id=user-1",
+      "https://api.example.com/v0/threads/thread-1?user_id=user-1",
+      "https://api.example.com/v0/threads/thread-1/sessions?user_id=user-1",
+      "https://api.example.com/v0/threads/thread-1/events?user_id=user-1",
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      title: "Gamma thread",
     });
   });
 

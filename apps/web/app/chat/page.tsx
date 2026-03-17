@@ -2,12 +2,43 @@ import { ModeToggle, type ChatMode } from "../../components/mode-toggle";
 import { PageHeader } from "../../components/page-header";
 import { RequestComposer } from "../../components/request-composer";
 import { ResponseComposer } from "../../components/response-composer";
-import { SectionCard } from "../../components/section-card";
-import { getApiConfig, hasLiveApiConfig } from "../../lib/api";
-import { requestHistoryFixtures, responseHistoryFixtures } from "../../lib/fixtures";
+import { ThreadCreate } from "../../components/thread-create";
+import { ThreadEventList } from "../../components/thread-event-list";
+import { ThreadList } from "../../components/thread-list";
+import { ThreadSummary } from "../../components/thread-summary";
+import type { ThreadEventItem, ThreadItem, ThreadSessionItem } from "../../lib/api";
+import {
+  getApiConfig,
+  getThreadDetail,
+  getThreadEvents,
+  getThreadSessions,
+  hasLiveApiConfig,
+  listThreads,
+} from "../../lib/api";
+import {
+  getFixtureThread,
+  getFixtureThreadEvents,
+  getFixtureThreadSessions,
+  requestHistoryFixtures,
+  responseHistoryFixtures,
+  threadFixtures,
+} from "../../lib/fixtures";
 
 type ChatPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
+};
+
+type ContinuitySource = "live" | "fixture" | "unavailable";
+
+type ContinuityViewModel = {
+  threadListSource: ContinuitySource;
+  continuitySource: ContinuitySource;
+  unavailableReason?: string;
+  threads: ThreadItem[];
+  selectedThreadId: string;
+  selectedThread: ThreadItem | null;
+  sessions: ThreadSessionItem[];
+  events: ThreadEventItem[];
 };
 
 function normalizeMode(value: string | string[] | undefined): ChatMode {
@@ -18,11 +49,135 @@ function normalizeMode(value: string | string[] | undefined): ChatMode {
   return value === "request" ? "request" : "assistant";
 }
 
+function normalizeThreadId(value: string | string[] | undefined) {
+  if (Array.isArray(value)) {
+    return normalizeThreadId(value[0]);
+  }
+
+  return value?.trim() ?? "";
+}
+
+function resolveSelectedThreadId(
+  requestedThreadId: string,
+  defaultThreadId: string,
+  threads: ThreadItem[],
+) {
+  const availableIds = new Set(threads.map((thread) => thread.id));
+
+  if (requestedThreadId && availableIds.has(requestedThreadId)) {
+    return requestedThreadId;
+  }
+
+  if (defaultThreadId && availableIds.has(defaultThreadId)) {
+    return defaultThreadId;
+  }
+
+  return threads[0]?.id ?? "";
+}
+
+async function loadFixtureContinuity(
+  requestedThreadId: string,
+  defaultThreadId: string,
+): Promise<ContinuityViewModel> {
+  const selectedThreadId = resolveSelectedThreadId(requestedThreadId, defaultThreadId, threadFixtures);
+
+  return {
+    threadListSource: "fixture",
+    continuitySource: "fixture",
+    threads: threadFixtures,
+    selectedThreadId,
+    selectedThread: selectedThreadId ? getFixtureThread(selectedThreadId) : null,
+    sessions: selectedThreadId ? getFixtureThreadSessions(selectedThreadId) : [],
+    events: selectedThreadId ? getFixtureThreadEvents(selectedThreadId) : [],
+  };
+}
+
+async function loadLiveContinuity(
+  apiBaseUrl: string,
+  userId: string,
+  requestedThreadId: string,
+  defaultThreadId: string,
+): Promise<ContinuityViewModel> {
+  try {
+    const threadResponse = await listThreads(apiBaseUrl, userId);
+    const threads = threadResponse.items;
+    const selectedThreadId = resolveSelectedThreadId(requestedThreadId, defaultThreadId, threads);
+
+    if (!selectedThreadId) {
+      return {
+        threadListSource: "live",
+        continuitySource: "live",
+        threads,
+        selectedThreadId: "",
+        selectedThread: null,
+        sessions: [],
+        events: [],
+      };
+    }
+
+    const [threadResult, sessionsResult, eventsResult] = await Promise.allSettled([
+      getThreadDetail(apiBaseUrl, selectedThreadId, userId),
+      getThreadSessions(apiBaseUrl, selectedThreadId, userId),
+      getThreadEvents(apiBaseUrl, selectedThreadId, userId),
+    ]);
+
+    const unavailableReason =
+      threadResult.status === "rejected"
+        ? threadResult.reason instanceof Error
+          ? threadResult.reason.message
+          : "Thread detail failed to load."
+        : sessionsResult.status === "rejected"
+          ? sessionsResult.reason instanceof Error
+            ? sessionsResult.reason.message
+            : "Thread sessions failed to load."
+          : eventsResult.status === "rejected"
+            ? eventsResult.reason instanceof Error
+              ? eventsResult.reason.message
+              : "Thread events failed to load."
+            : undefined;
+
+    return {
+      threadListSource: "live",
+      continuitySource: unavailableReason ? "unavailable" : "live",
+      unavailableReason,
+      threads,
+      selectedThreadId,
+      selectedThread:
+        threadResult.status === "fulfilled"
+          ? threadResult.value.thread
+          : threads.find((thread) => thread.id === selectedThreadId) ?? null,
+      sessions: sessionsResult.status === "fulfilled" ? sessionsResult.value.items : [],
+      events: eventsResult.status === "fulfilled" ? eventsResult.value.items : [],
+    };
+  } catch (error) {
+    return {
+      threadListSource: "unavailable",
+      continuitySource: "unavailable",
+      unavailableReason: error instanceof Error ? error.message : "Thread continuity failed to load.",
+      threads: [],
+      selectedThreadId: "",
+      selectedThread: null,
+      sessions: [],
+      events: [],
+    };
+  }
+}
+
 export default async function ChatPage({ searchParams }: ChatPageProps) {
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const mode = normalizeMode(resolvedSearchParams?.mode);
+  const requestedThreadId = normalizeThreadId(resolvedSearchParams?.thread);
   const apiConfig = getApiConfig();
   const liveModeReady = hasLiveApiConfig(apiConfig);
+  const continuity = liveModeReady
+    ? await loadLiveContinuity(
+        apiConfig.apiBaseUrl,
+        apiConfig.userId,
+        requestedThreadId,
+        apiConfig.defaultThreadId,
+      )
+    : await loadFixtureContinuity(requestedThreadId, apiConfig.defaultThreadId);
+
   const initialResponseEntries = liveModeReady ? [] : responseHistoryFixtures;
   const initialRequestEntries = liveModeReady ? [] : requestHistoryFixtures;
 
@@ -31,16 +186,26 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
       <PageHeader
         eyebrow="Operator conversation surface"
         title="Chat with the assistant or route a governed request"
-        description="Normal conversation and approval-gated actions now share one calm shell, but the two behaviors stay visibly separate so consequential work never hides inside a chat transcript."
+        description="Normal conversation and approval-gated actions now share one calm shell. Thread identity stays explicit, bounded, and visible so continuity never depends on a raw UUID field."
         meta={
           <div className="header-meta">
-            <span className="subtle-chip">{liveModeReady ? "Live submission enabled" : "Fixture preview mode"}</span>
-            <span className="subtle-chip">Responses and approvals stay explicit</span>
+            <span className="subtle-chip">
+              {continuity.continuitySource === "unavailable"
+                ? "Continuity unavailable"
+                : liveModeReady
+                  ? "Live continuity enabled"
+                  : "Fixture continuity preview"}
+            </span>
+            <span className="subtle-chip">
+              {continuity.selectedThread
+                ? `Selected: ${continuity.selectedThread.title}`
+                : "Select or create a thread"}
+            </span>
           </div>
         }
       />
 
-      <ModeToggle currentMode={mode} />
+      <ModeToggle currentMode={mode} selectedThreadId={continuity.selectedThreadId} />
 
       <div className="content-grid content-grid--wide">
         {mode === "assistant" ? (
@@ -48,92 +213,50 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
             initialEntries={initialResponseEntries}
             apiBaseUrl={apiConfig.apiBaseUrl}
             userId={apiConfig.userId}
-            defaultThreadId={apiConfig.defaultThreadId}
+            selectedThreadId={continuity.selectedThreadId}
+            selectedThreadTitle={continuity.selectedThread?.title}
           />
         ) : (
-          <RequestComposer initialEntries={initialRequestEntries} {...apiConfig} />
+          <RequestComposer
+            initialEntries={initialRequestEntries}
+            apiBaseUrl={apiConfig.apiBaseUrl}
+            userId={apiConfig.userId}
+            selectedThreadId={continuity.selectedThreadId}
+            selectedThreadTitle={continuity.selectedThread?.title}
+            defaultToolId={apiConfig.defaultToolId}
+          />
         )}
 
         <div className="stack">
-          {mode === "assistant" ? (
-            <>
-              <SectionCard
-                eyebrow="Assistant mode"
-                title="Normal conversation first"
-                description="This mode stays for analysis, summaries, and question answering without implying approval-gated execution."
-              >
-                <ul className="bullet-list">
-                  <li>Questions are submitted directly to `POST /v0/responses` with only the shipped user, thread, and message fields.</li>
-                  <li>The operator still provides thread identity explicitly instead of relying on hidden routing or auto-selected context.</li>
-                  <li>Each reply keeps compile and response trace summaries attached so explainability remains one click away.</li>
-                </ul>
-              </SectionCard>
+          <ThreadList
+            threads={continuity.threads}
+            selectedThreadId={continuity.selectedThreadId}
+            currentMode={mode}
+            source={continuity.threadListSource}
+            unavailableReason={continuity.unavailableReason}
+          />
 
-              <SectionCard
-                eyebrow="Mode boundary"
-                title="What stays out of assistant mode"
-                description="Consequential work remains visibly separated from normal conversation to preserve trust and reviewability."
-              >
-                <dl className="key-value-grid">
-                  <div>
-                    <dt>Assistant mode</dt>
-                    <dd>Answer questions, summarize state, and explain prior work without submitting an approval request.</dd>
-                  </div>
-                  <div>
-                    <dt>Governed mode</dt>
-                    <dd>Submit action-oriented payloads that can create approval and task records through the shipped request seam.</dd>
-                  </div>
-                  <div>
-                    <dt>Fallback</dt>
-                    <dd>Fixture previews stay explicit when live API configuration is absent instead of failing silently.</dd>
-                  </div>
-                  <div>
-                    <dt>Trace review</dt>
-                    <dd>Compile and response trace IDs remain linked from each reply so the operator can inspect why the answer was produced.</dd>
-                  </div>
-                </dl>
-              </SectionCard>
-            </>
-          ) : (
-            <>
-              <SectionCard
-                eyebrow="Governed mode"
-                title="Consequential actions remain reviewable"
-                description="The request surface keeps operational intent explicit and bounded instead of blurring it into casual conversation."
-              >
-                <ul className="bullet-list">
-                  <li>Requests are submitted directly to `POST /v0/approvals/requests` using shipped payload fields only.</li>
-                  <li>The operator supplies thread and tool identifiers explicitly instead of relying on hidden web-side routing.</li>
-                  <li>Every resulting summary keeps decision, approval linkage, task status, and trace references visible.</li>
-                </ul>
-              </SectionCard>
+          <ThreadCreate
+            apiBaseUrl={liveModeReady ? apiConfig.apiBaseUrl : undefined}
+            userId={liveModeReady ? apiConfig.userId : undefined}
+            currentMode={mode}
+          />
 
-              <SectionCard
-                eyebrow="Request schema"
-                title="Submission fields"
-                description="The governed path stays narrow on purpose so approvals and downstream task state remain deterministic."
-              >
-                <dl className="key-value-grid">
-                  <div>
-                    <dt>Required</dt>
-                    <dd>Thread ID, tool ID, action, scope</dd>
-                  </div>
-                  <div>
-                    <dt>Optional</dt>
-                    <dd>Domain hint, risk hint</dd>
-                  </div>
-                  <div>
-                    <dt>Attributes</dt>
-                    <dd>JSON object sent unchanged to the backend</dd>
-                  </div>
-                  <div>
-                    <dt>Fallback</dt>
-                    <dd>Fixture preview instead of broken live submission</dd>
-                  </div>
-                </dl>
-              </SectionCard>
-            </>
-          )}
+          <ThreadSummary
+            thread={continuity.selectedThread}
+            sessions={continuity.sessions}
+            events={continuity.events}
+            source={continuity.continuitySource}
+            unavailableReason={continuity.unavailableReason}
+          />
+
+          <ThreadEventList
+            threadTitle={continuity.selectedThread?.title}
+            sessions={continuity.sessions}
+            events={continuity.events}
+            source={continuity.continuitySource}
+            unavailableReason={continuity.unavailableReason}
+          />
         </div>
       </div>
     </div>
