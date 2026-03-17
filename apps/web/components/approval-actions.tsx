@@ -20,12 +20,12 @@ type FeedbackState = {
   message: string;
 };
 
-function actionAvailabilityMessage(liveModeReady: boolean, approval: ApprovalItem) {
+function actionAvailabilityMessage(liveModeReady: boolean, approvalStatus: ApprovalItem["status"]) {
   if (!liveModeReady) {
     return "Approve and reject controls are disabled in fixture mode.";
   }
 
-  if (approval.status !== "pending") {
+  if (approvalStatus !== "pending") {
     return "This approval has already been resolved. The action bar is now read-only.";
   }
 
@@ -41,7 +41,7 @@ export function ApprovalActions({
   const router = useRouter();
   const [feedback, setFeedback] = useState<FeedbackState>({
     tone: "info",
-    message: actionAvailabilityMessage(Boolean(apiBaseUrl && userId), approval),
+    message: actionAvailabilityMessage(Boolean(apiBaseUrl && userId), approval.status),
   });
   const [pendingAction, setPendingAction] = useState<"approve" | "reject" | null>(null);
 
@@ -51,10 +51,10 @@ export function ApprovalActions({
   useEffect(() => {
     setFeedback({
       tone: "info",
-      message: actionAvailabilityMessage(liveModeReady, approval),
+      message: actionAvailabilityMessage(liveModeReady, approval.status),
     });
     setPendingAction(null);
-  }, [approval.id, liveModeReady]);
+  }, [approval.id, approval.status, liveModeReady]);
 
   async function handleResolve(action: "approve" | "reject") {
     if (!apiBaseUrl || !userId) {
