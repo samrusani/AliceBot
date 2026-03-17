@@ -1,7 +1,8 @@
 import Link from "next/link";
 
-import type { ApiSource, TaskItem } from "../lib/api";
+import type { ApiSource, TaskItem, ToolExecutionItem } from "../lib/api";
 import { EmptyState } from "./empty-state";
+import { ExecutionSummary } from "./execution-summary";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
 
@@ -9,9 +10,19 @@ type TaskSummaryProps = {
   task: TaskItem | null;
   taskSource: ApiSource;
   stepSource: ApiSource;
+  execution: ToolExecutionItem | null;
+  executionSource?: ApiSource | null;
+  executionUnavailableMessage?: string | null;
 };
 
-export function TaskSummary({ task, taskSource, stepSource }: TaskSummaryProps) {
+export function TaskSummary({
+  task,
+  taskSource,
+  stepSource,
+  execution,
+  executionSource,
+  executionUnavailableMessage,
+}: TaskSummaryProps) {
   if (!task) {
     return (
       <SectionCard
@@ -31,7 +42,7 @@ export function TaskSummary({ task, taskSource, stepSource }: TaskSummaryProps) 
     <SectionCard
       eyebrow="Selected task"
       title={task.tool.name}
-      description="Latest task state, approval linkage, and downstream execution context stay grouped in one bounded summary."
+      description="Latest task state, approval linkage, and execution review stay grouped in one bounded task summary."
     >
       <div className="detail-grid">
         <div className="detail-summary">
@@ -82,6 +93,17 @@ export function TaskSummary({ task, taskSource, stepSource }: TaskSummaryProps) 
               </Link>
             </div>
           ) : null}
+        </div>
+
+        <div className="detail-group">
+          <h3>Execution review</h3>
+          <ExecutionSummary
+            execution={execution}
+            source={executionSource}
+            unavailableMessage={executionUnavailableMessage}
+            emptyTitle="Task has not executed yet"
+            emptyDescription="When execution runs for this task, the latest execution record and output snapshot will appear here."
+          />
         </div>
       </div>
     </SectionCard>

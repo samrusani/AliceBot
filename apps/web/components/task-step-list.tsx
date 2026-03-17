@@ -99,22 +99,32 @@ export function TaskStepList({
                 {step.lineage.parent_step_id || step.lineage.source_approval_id || step.lineage.source_execution_id ? (
                   <div className="attribute-list">
                     {step.lineage.parent_step_id ? (
-                      <span className="attribute-item">Parent step: {step.lineage.parent_step_id}</span>
+                      <span key="parent-step" className="attribute-item">
+                        Parent step: {step.lineage.parent_step_id}
+                      </span>
                     ) : null}
                     {step.lineage.source_approval_id ? (
-                      <span className="attribute-item">
+                      <span key="source-approval" className="attribute-item">
                         Source approval: {step.lineage.source_approval_id}
                       </span>
                     ) : null}
                     {step.lineage.source_execution_id ? (
-                      <span className="attribute-item">
+                      <span key="source-execution" className="attribute-item">
                         Source execution: {step.lineage.source_execution_id}
                       </span>
                     ) : null}
                   </div>
                 ) : null}
+                {step.outcome.execution_id ? (
+                  <div className="attribute-list">
+                    <span className="attribute-item">Execution record: {step.outcome.execution_id}</span>
+                  </div>
+                ) : null}
                 {step.outcome.blocked_reason ? (
-                  <p>Blocked reason: {step.outcome.blocked_reason}</p>
+                  <div className="execution-summary__note execution-summary__note--danger">
+                    <p className="execution-summary__label">Blocked reason</p>
+                    <p>{step.outcome.blocked_reason}</p>
+                  </div>
                 ) : null}
               </div>
             </article>
