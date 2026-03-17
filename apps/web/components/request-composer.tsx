@@ -1,40 +1,21 @@
 "use client";
 
+import Link from "next/link";
 import type { FormEvent } from "react";
-import { useState, useTransition } from "react";
+import { useState } from "react";
 
-export type RequestHistoryEntry = {
-  id: string;
-  request: string;
-  response: string;
-  submittedAt: string;
-  source: "live" | "fixture";
-  trace?: {
-    compileTraceId: string;
-    compileTraceEventCount: number;
-    responseTraceId: string;
-    responseTraceEventCount: number;
-  };
-};
+import type { ApprovalRequestPayload, RequestHistoryEntry } from "../lib/api";
+import { submitApprovalRequest } from "../lib/api";
+import { buildFixtureRequestEntry } from "../lib/fixtures";
+import { EmptyState } from "./empty-state";
+import { StatusBadge } from "./status-badge";
 
 type RequestComposerProps = {
   initialEntries: RequestHistoryEntry[];
   apiBaseUrl?: string;
   userId?: string;
-  threadId?: string;
-};
-
-type LiveResponsePayload = {
-  assistant: {
-    event_id: string;
-    text: string;
-  };
-  trace: {
-    compile_trace_id: string;
-    compile_trace_event_count: number;
-    response_trace_id: string;
-    response_trace_event_count: number;
-  };
+  defaultThreadId?: string;
+  defaultToolId?: string;
 };
 
 function formatDate(value: string) {
@@ -46,105 +27,134 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
-function buildFixtureEntry(message: string): RequestHistoryEntry {
-  const excerpt = message.trim().slice(0, 120);
-  const requestLabel = excerpt.length > 0 ? excerpt : "Operator request";
-  const nonce = Date.now().toString(36);
-
-  return {
-    id: `fixture-${nonce}`,
-    request: requestLabel,
-    response:
-      `Prepared a governed response preview for "${requestLabel}". In live mode this surface returns assistant output together with compile and response trace references from the backend.`,
-    submittedAt: new Date().toISOString(),
-    source: "fixture",
-    trace: {
-      compileTraceId: `trace-ctx-${nonce}`,
-      compileTraceEventCount: 5,
-      responseTraceId: `trace-resp-${nonce}`,
-      responseTraceEventCount: 3,
-    },
-  };
-}
-
 export function RequestComposer({
   initialEntries,
   apiBaseUrl,
   userId,
-  threadId,
+  defaultThreadId,
+  defaultToolId,
 }: RequestComposerProps) {
-  const [message, setMessage] = useState("");
+  const [threadId, setThreadId] = useState(defaultThreadId ?? "");
+  const [toolId, setToolId] = useState(defaultToolId ?? "");
+  const [action, setAction] = useState("place_order");
+  const [scope, setScope] = useState("supplements");
+  const [domainHint, setDomainHint] = useState("ecommerce");
+  const [riskHint, setRiskHint] = useState("purchase");
+  const [attributesText, setAttributesText] = useState(
+    JSON.stringify(
+      {
+        merchant: "Thorne",
+        item: "Magnesium Bisglycinate",
+        quantity: "1",
+      },
+      null,
+      2,
+    ),
+  );
   const [entries, setEntries] = useState(initialEntries);
-  const [statusText, setStatusText] = useState("Ready for a governed operator request.");
-  const [isPending, startTransition] = useTransition();
+  const [statusText, setStatusText] = useState("Ready to submit a governed approval request.");
+  const [statusTone, setStatusTone] = useState<"info" | "success" | "danger">("info");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const liveModeReady = Boolean(apiBaseUrl && userId && threadId);
+  const liveModeReady = Boolean(apiBaseUrl && userId);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const nextMessage = message.trim();
-    if (!nextMessage) {
+    const nextThreadId = threadId.trim();
+    const nextToolId = toolId.trim();
+    const nextAction = action.trim();
+    const nextScope = scope.trim();
+
+    if (!nextThreadId || !nextToolId || !nextAction || !nextScope) {
+      setStatusTone("danger");
+      setStatusText("Thread ID, tool ID, action, and scope are all required.");
       return;
     }
 
-    setStatusText(liveModeReady ? "Submitting request to the response endpoint..." : "Saving fixture-backed preview...");
+    let attributes: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(attributesText);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Attributes must be a JSON object.");
+      }
+      attributes = parsed as Record<string, unknown>;
+    } catch (error) {
+      setStatusTone("danger");
+      setStatusText(error instanceof Error ? error.message : "Attributes JSON is invalid.");
+      return;
+    }
+
+    const payload: ApprovalRequestPayload = {
+      user_id: userId ?? "fixture-user",
+      thread_id: nextThreadId,
+      tool_id: nextToolId,
+      action: nextAction,
+      scope: nextScope,
+      domain_hint: domainHint.trim() || null,
+      risk_hint: riskHint.trim() || null,
+      attributes,
+    };
+
+    setStatusTone("info");
+    setStatusText(
+      liveModeReady
+        ? "Submitting governed request through the approval-request endpoint..."
+        : "Preparing a fixture-backed governed request preview...",
+    );
+    setIsSubmitting(true);
 
     if (!liveModeReady) {
-      const entry = buildFixtureEntry(nextMessage);
-      startTransition(() => {
-        setEntries((current) => [entry, ...current]);
-        setMessage("");
-        setStatusText("Fixture response added. Configure the web API env vars to switch this view into live mode.");
-      });
+      const entry = buildFixtureRequestEntry(payload);
+      setEntries((current) => [entry, ...current]);
+      setStatusTone("success");
+      setStatusText(
+        "Fixture request summary added. Configure the web API base URL and user ID to persist live approvals and tasks.",
+      );
+      setIsSubmitting(false);
       return;
     }
 
     try {
-      const response = await fetch(`${apiBaseUrl?.replace(/\/$/, "")}/v0/responses`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          user_id: userId,
-          thread_id: threadId,
-          message: nextMessage,
-          max_sessions: 8,
-          max_events: 80,
-          max_memories: 20,
-          max_entities: 12,
-          max_entity_edges: 20,
-        }),
-      });
-
-      const payload = (await response.json()) as LiveResponsePayload | { detail?: string };
-      if (!response.ok || !("assistant" in payload)) {
-        throw new Error("detail" in payload && payload.detail ? payload.detail : "Request failed");
-      }
-
+      const response = await submitApprovalRequest(apiBaseUrl!, payload);
       const entry: RequestHistoryEntry = {
-        id: payload.assistant.event_id,
-        request: nextMessage,
-        response: payload.assistant.text,
+        id: response.trace.trace_id,
         submittedAt: new Date().toISOString(),
         source: "live",
+        threadId: response.request.thread_id,
+        toolId: response.request.tool_id,
+        toolName: response.tool.name,
+        action: response.request.action,
+        scope: response.request.scope,
+        domainHint: response.request.domain_hint,
+        riskHint: response.request.risk_hint,
+        attributes: response.request.attributes,
+        decision: response.decision,
+        taskId: response.task.id,
+        taskStatus: response.task.status,
+        approvalId: response.approval?.id ?? null,
+        approvalStatus: response.approval?.status ?? null,
+        summary: response.approval
+          ? "The request persisted an approval and downstream task state through the shipped governed workflow."
+          : "The request was routed without a persisted approval record and still returned downstream task state.",
+        reasons: response.reasons.map((reason) => reason.message),
         trace: {
-          compileTraceId: payload.trace.compile_trace_id,
-          compileTraceEventCount: payload.trace.compile_trace_event_count,
-          responseTraceId: payload.trace.response_trace_id,
-          responseTraceEventCount: payload.trace.response_trace_event_count,
+          routingTraceId: response.routing_trace.trace_id,
+          routingTraceEventCount: response.routing_trace.trace_event_count,
+          requestTraceId: response.trace.trace_id,
+          requestTraceEventCount: response.trace.trace_event_count,
         },
       };
 
-      startTransition(() => {
-        setEntries((current) => [entry, ...current]);
-        setMessage("");
-        setStatusText("Live response received and trace references recorded.");
-      });
+      setEntries((current) => [entry, ...current]);
+      setStatusTone("success");
+      setStatusText("Governed request submitted successfully. Approval and task linkage are now visible below.");
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Request failed";
+      setStatusTone("danger");
       setStatusText(`Unable to submit live request: ${detail}`);
+    } finally {
+      setIsSubmitting(false);
     }
   }
 
@@ -154,36 +164,128 @@ export function RequestComposer({
         <div className="governance-banner">
           <strong>{liveModeReady ? "Live operator mode" : "Fixture operator mode"}</strong>
           <span>
-            Requests stay explicitly governed and recent trace references remain attached to each response.
+            Requests stay explicitly governed and recent routing plus request traces remain attached to each submission.
           </span>
         </div>
 
+        <div className="form-field-group form-field-group--two-up">
+          <div className="form-field">
+            <label htmlFor="thread-id">Thread ID</label>
+            <input
+              id="thread-id"
+              name="thread-id"
+              value={threadId}
+              onChange={(event) => setThreadId(event.target.value)}
+              placeholder="Thread UUID"
+            />
+          </div>
+          <div className="form-field">
+            <label htmlFor="tool-id">Tool ID</label>
+            <input
+              id="tool-id"
+              name="tool-id"
+              value={toolId}
+              onChange={(event) => setToolId(event.target.value)}
+              placeholder="Tool UUID"
+            />
+          </div>
+        </div>
+
         <div className="form-field">
-          <label htmlFor="operator-request">Operator request</label>
+          <label htmlFor="governed-action">Governed request</label>
           <p className="field-hint">
-            Keep requests bounded to existing backend concepts. This surface is optimized for clarity
-            and review rather than casual back-and-forth.
+            Submit the shipped approval-request payload directly. This surface is request-oriented, not a freeform chat transcript.
           </p>
         </div>
       </div>
 
       <form className="detail-stack" onSubmit={handleSubmit}>
+        <div className="form-field-group form-field-group--two-up">
+          <div className="form-field">
+            <label htmlFor="governed-action">Action</label>
+            <input
+              id="governed-action"
+              name="governed-action"
+              value={action}
+              onChange={(event) => setAction(event.target.value)}
+              placeholder="place_order"
+            />
+          </div>
+          <div className="form-field">
+            <label htmlFor="governed-scope">Scope</label>
+            <input
+              id="governed-scope"
+              name="governed-scope"
+              value={scope}
+              onChange={(event) => setScope(event.target.value)}
+              placeholder="supplements"
+            />
+          </div>
+          <div className="form-field">
+            <label htmlFor="domain-hint">Domain hint</label>
+            <input
+              id="domain-hint"
+              name="domain-hint"
+              value={domainHint}
+              onChange={(event) => setDomainHint(event.target.value)}
+              placeholder="ecommerce"
+            />
+          </div>
+          <div className="form-field">
+            <label htmlFor="risk-hint">Risk hint</label>
+            <input
+              id="risk-hint"
+              name="risk-hint"
+              value={riskHint}
+              onChange={(event) => setRiskHint(event.target.value)}
+              placeholder="purchase"
+            />
+          </div>
+        </div>
+
         <div className="form-field">
+          <label htmlFor="request-attributes">Attributes JSON</label>
           <textarea
-            id="operator-request"
-            name="operator-request"
-            placeholder="Example: Summarize the open approval-linked tasks and tell me what still requires explicit approval."
-            value={message}
-            onChange={(event) => setMessage(event.target.value)}
+            id="request-attributes"
+            name="request-attributes"
+            placeholder='{"merchant":"Thorne","item":"Magnesium Bisglycinate","quantity":"1"}'
+            value={attributesText}
+            onChange={(event) => setAttributesText(event.target.value)}
           />
         </div>
 
         <div className="composer-actions">
           <div className="composer-status" aria-live="polite">
-            {statusText}
+            <StatusBadge
+              status={
+                isSubmitting
+                  ? "submitting"
+                  : statusTone === "success"
+                    ? "success"
+                    : statusTone === "danger"
+                      ? "error"
+                      : "info"
+              }
+              label={
+                isSubmitting
+                  ? "Submitting"
+                  : statusTone === "success"
+                    ? "Ready"
+                    : statusTone === "danger"
+                      ? "Attention"
+                      : "Prepared"
+              }
+            />
+            <span>{statusText}</span>
           </div>
-          <button type="submit" className="button" disabled={isPending || message.trim().length === 0}>
-            {isPending ? "Working..." : "Submit governed request"}
+          <button
+            type="submit"
+            className="button"
+            disabled={
+              isSubmitting || !threadId.trim() || !toolId.trim() || !action.trim() || !scope.trim()
+            }
+          >
+            {isSubmitting ? "Submitting..." : "Submit governed request"}
           </button>
         </div>
       </form>
@@ -191,39 +293,75 @@ export function RequestComposer({
       <div className="detail-stack">
         <div className="list-panel__header">
           <div>
-            <h2>Recent requests and responses</h2>
-            <p>Latest entries stay grouped with timing and trace references.</p>
+            <h2>Recent governed request summaries</h2>
+            <p>Latest submissions stay grouped with decision, approval linkage, task state, and traces.</p>
           </div>
         </div>
 
-        <div className="history-list">
-          {entries.map((entry) => (
-            <article key={entry.id} className="history-entry">
-              <div className="history-entry__topline">
-                <span className="history-entry__label">{entry.source === "live" ? "Live response" : "Fixture preview"}</span>
-                <span className="subtle-chip">{formatDate(entry.submittedAt)}</span>
-              </div>
-              <div className="detail-stack">
-                <p>
-                  <strong>Request:</strong> {entry.request}
-                </p>
-                <p>
-                  <strong>Response:</strong> {entry.response}
-                </p>
-              </div>
-              {entry.trace ? (
+        {entries.length === 0 ? (
+          <EmptyState
+            title="No governed requests yet"
+            description="Submitted requests will appear here with approval and task linkage once the operator starts using the form."
+          />
+        ) : (
+          <div className="history-list">
+            {entries.map((entry) => (
+              <article key={entry.id} className="history-entry">
+                <div className="history-entry__topline">
+                  <div className="detail-stack">
+                    <span className="history-entry__label">
+                      {entry.source === "live" ? "Live submission" : "Fixture preview"}
+                    </span>
+                    <h3 className="list-row__title">
+                      {entry.action} / {entry.scope}
+                    </h3>
+                  </div>
+                  <span className="subtle-chip">{formatDate(entry.submittedAt)}</span>
+                </div>
+
+                <div className="history-entry__state-row">
+                  <StatusBadge status={entry.decision} label={`Decision ${entry.decision.replace(/_/g, " ")}`} />
+                  <StatusBadge status={entry.taskStatus} label={`Task ${entry.taskStatus.replace(/_/g, " ")}`} />
+                  {entry.approvalStatus ? (
+                    <StatusBadge
+                      status={entry.approvalStatus}
+                      label={`Approval ${entry.approvalStatus.replace(/_/g, " ")}`}
+                    />
+                  ) : null}
+                </div>
+
+                <p>{entry.summary}</p>
+
+                <div className="attribute-list">
+                  <span className="attribute-item">Thread: {entry.threadId}</span>
+                  <span className="attribute-item">Tool: {entry.toolId}</span>
+                  {entry.domainHint ? <span className="attribute-item">Domain: {entry.domainHint}</span> : null}
+                  {entry.riskHint ? <span className="attribute-item">Risk: {entry.riskHint}</span> : null}
+                </div>
+
                 <div className="history-entry__trace">
                   <span className="meta-pill">
-                    Compile {entry.trace.compileTraceId} · {entry.trace.compileTraceEventCount} events
+                    Route {entry.trace.routingTraceId} · {entry.trace.routingTraceEventCount} events
                   </span>
                   <span className="meta-pill">
-                    Response {entry.trace.responseTraceId} · {entry.trace.responseTraceEventCount} events
+                    Request {entry.trace.requestTraceId} · {entry.trace.requestTraceEventCount} events
                   </span>
                 </div>
-              ) : null}
-            </article>
-          ))}
-        </div>
+
+                <div className="cluster">
+                  <Link href={`/tasks?task=${entry.taskId}`} className="button-secondary">
+                    Open task
+                  </Link>
+                  {entry.approvalId ? (
+                    <Link href={`/approvals?approval=${entry.approvalId}`} className="button-secondary">
+                      Open approval
+                    </Link>
+                  ) : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );
