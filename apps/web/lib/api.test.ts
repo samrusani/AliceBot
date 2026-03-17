@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   combinePageModes,
+  getTraceDetail,
+  getTraceEvents,
+  listTraces,
   pageModeLabel,
   resolveApproval,
   submitApprovalRequest,
@@ -153,5 +156,100 @@ describe("api helpers", () => {
         method: "POST",
       }),
     );
+  });
+
+  it("reads the shipped trace review endpoints with user-scoped query params", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "trace-1",
+              thread_id: "thread-1",
+              kind: "context.compile",
+              compiler_version: "continuity_v0",
+              status: "completed",
+              created_at: "2026-03-17T00:00:00Z",
+              trace_event_count: 2,
+            },
+          ],
+          summary: {
+            total_count: 1,
+            order: ["created_at_desc", "id_desc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          trace: {
+            id: "trace-1",
+            thread_id: "thread-1",
+            kind: "context.compile",
+            compiler_version: "continuity_v0",
+            status: "completed",
+            created_at: "2026-03-17T00:00:00Z",
+            trace_event_count: 2,
+            limits: {
+              max_sessions: 3,
+              max_events: 8,
+            },
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "event-1",
+              trace_id: "trace-1",
+              sequence_no: 1,
+              kind: "context.summary",
+              payload: {
+                thread_id: "thread-1",
+              },
+              created_at: "2026-03-17T00:00:01Z",
+            },
+          ],
+          summary: {
+            trace_id: "trace-1",
+            total_count: 1,
+            order: ["sequence_no_asc", "id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await listTraces("https://api.example.com", "user-1");
+    await getTraceDetail("https://api.example.com", "trace-1", "user-1");
+    await getTraceEvents("https://api.example.com", "trace-1", "user-1");
+
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "https://api.example.com/v0/traces?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+          headers: expect.objectContaining({ "Content-Type": "application/json" }),
+        }),
+      ],
+      [
+        "https://api.example.com/v0/traces/trace-1?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/traces/trace-1/events?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+    ]);
   });
 });
