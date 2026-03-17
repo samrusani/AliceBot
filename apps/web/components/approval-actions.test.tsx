@@ -4,9 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApprovalActions } from "./approval-actions";
 
-const { refreshMock, resolveApprovalMock } = vi.hoisted(() => ({
+const { refreshMock, resolveApprovalMock, executeApprovalMock } = vi.hoisted(() => ({
   refreshMock: vi.fn(),
   resolveApprovalMock: vi.fn(),
+  executeApprovalMock: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
@@ -20,6 +21,7 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     resolveApproval: resolveApprovalMock,
+    executeApproval: executeApprovalMock,
   };
 });
 
@@ -67,10 +69,36 @@ const pendingApproval = {
   resolution: null,
 };
 
+function ApprovalActionsHarness({
+  initialApproval = pendingApproval,
+  initialHasExecution = false,
+}: {
+  initialApproval?: typeof pendingApproval;
+  initialHasExecution?: boolean;
+}) {
+  const [approval, setApproval] = React.useState(initialApproval);
+  const [hasExecution, setHasExecution] = React.useState(initialHasExecution);
+
+  return (
+    <ApprovalActions
+      approval={approval}
+      hasExecution={hasExecution}
+      apiBaseUrl="https://api.example.com"
+      userId="user-1"
+      onResolved={setApproval}
+      onExecuted={(payload) => {
+        setApproval(payload.approval);
+        setHasExecution(true);
+      }}
+    />
+  );
+}
+
 describe("ApprovalActions", () => {
   beforeEach(() => {
     refreshMock.mockReset();
     resolveApprovalMock.mockReset();
+    executeApprovalMock.mockReset();
   });
 
   afterEach(() => {
@@ -78,15 +106,21 @@ describe("ApprovalActions", () => {
   });
 
   it("disables live actions in fixture mode", () => {
-    render(<ApprovalActions approval={pendingApproval} onResolved={vi.fn()} />);
+    render(
+      <ApprovalActions
+        approval={pendingApproval}
+        hasExecution={false}
+        onResolved={vi.fn()}
+        onExecuted={vi.fn()}
+      />,
+    );
 
     expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
     expect(screen.getByText(/disabled in fixture mode/i)).toBeInTheDocument();
   });
 
-  it("submits approval resolution and refreshes the route on success", async () => {
-    const onResolved = vi.fn();
+  it("preserves approval success feedback after the parent rerenders with the resolved approval", async () => {
     resolveApprovalMock.mockResolvedValue({
       approval: {
         ...pendingApproval,
@@ -102,14 +136,7 @@ describe("ApprovalActions", () => {
       },
     });
 
-    render(
-      <ApprovalActions
-        approval={pendingApproval}
-        apiBaseUrl="https://api.example.com"
-        userId="user-1"
-        onResolved={onResolved}
-      />,
-    );
+    render(<ApprovalActionsHarness />);
 
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
 
@@ -123,14 +150,124 @@ describe("ApprovalActions", () => {
     });
 
     await waitFor(() => {
-      expect(onResolved).toHaveBeenCalledWith(
-        expect.objectContaining({
-          status: "approved",
-        }),
-      );
+      expect(screen.getByText(/Approval resolved as approved/i)).toBeInTheDocument();
     });
 
     expect(refreshMock).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(/Approval resolved as approved/i)).toBeInTheDocument();
+    expect(screen.getByText("Resolution saved")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Execute approved request" })).toBeInTheDocument();
+  });
+
+  it("preserves execution success feedback after the parent rerenders with linked execution state", async () => {
+    executeApprovalMock.mockResolvedValue({
+      request: {
+        approval_id: "approval-1",
+        task_step_id: "step-1",
+      },
+      approval: {
+        ...pendingApproval,
+        status: "approved",
+        resolution: {
+          resolved_at: "2026-03-17T01:00:00Z",
+          resolved_by_user_id: "user-1",
+        },
+      },
+      tool: pendingApproval.tool,
+      result: {
+        handler_key: "proxy.echo",
+        status: "completed",
+        output: { ok: true },
+        reason: null,
+      },
+      events: {
+        request_event_id: "event-1",
+        request_sequence_no: 1,
+        result_event_id: "event-2",
+        result_sequence_no: 2,
+      },
+      trace: {
+        trace_id: "trace-2",
+        trace_event_count: 4,
+      },
+    });
+
+    const approvedApproval = {
+      ...pendingApproval,
+      status: "approved" as const,
+      resolution: {
+        resolved_at: "2026-03-17T01:00:00Z",
+        resolved_by_user_id: "user-1",
+      },
+    };
+
+    render(<ApprovalActionsHarness initialApproval={approvedApproval} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Execute approved request" }));
+
+    await waitFor(() => {
+      expect(executeApprovalMock).toHaveBeenCalledWith(
+        "https://api.example.com",
+        "approval-1",
+        "user-1",
+      );
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Execution completed/i)).toBeInTheDocument();
+    });
+
+    expect(refreshMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Execution saved")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Executed" })).toBeDisabled();
+  });
+
+  it("shows an explicit blocked execution badge after a blocked execute response", async () => {
+    executeApprovalMock.mockResolvedValue({
+      request: {
+        approval_id: "approval-1",
+        task_step_id: "step-1",
+      },
+      approval: {
+        ...pendingApproval,
+        status: "approved",
+        resolution: {
+          resolved_at: "2026-03-17T01:00:00Z",
+          resolved_by_user_id: "user-1",
+        },
+      },
+      tool: pendingApproval.tool,
+      result: {
+        handler_key: null,
+        status: "blocked",
+        output: null,
+        reason: "tool budget exceeded",
+      },
+      events: null,
+      trace: {
+        trace_id: "trace-3",
+        trace_event_count: 4,
+      },
+    });
+
+    render(
+      <ApprovalActionsHarness
+        initialApproval={{
+          ...pendingApproval,
+          status: "approved",
+          resolution: {
+            resolved_at: "2026-03-17T01:00:00Z",
+            resolved_by_user_id: "user-1",
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Execute approved request" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Execution blocked")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/recorded as blocked/i)).toBeInTheDocument();
   });
 });

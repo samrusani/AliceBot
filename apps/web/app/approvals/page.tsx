@@ -3,14 +3,16 @@ import { ApprovalList } from "../../components/approval-list";
 import { PageHeader } from "../../components/page-header";
 import {
   combinePageModes,
+  getToolExecution,
   getApiConfig,
   getApprovalDetail,
   hasLiveApiConfig,
+  listToolExecutions,
   listApprovals,
   pageModeLabel,
   type ApiSource,
 } from "../../lib/api";
-import { approvalFixtures, getFixtureApproval } from "../../lib/fixtures";
+import { approvalFixtures, getFixtureApproval, getFixtureExecutionByApprovalId } from "../../lib/fixtures";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -56,14 +58,50 @@ export default async function ApprovalsPage({
     }
   }
 
-  const pageMode = combinePageModes(listSource, detail ? detailSource : null);
+  let execution = detail ? getFixtureExecutionByApprovalId(detail.id) : null;
+  let executionSource: ApiSource | null = execution ? "fixture" : null;
+  let executionUnavailableMessage: string | null = null;
+
+  if (detail && liveModeReady && detailSource === "live") {
+    try {
+      const payload = await listToolExecutions(apiConfig.apiBaseUrl, apiConfig.userId);
+      const linked = payload.items.find((item) => item.approval_id === detail.id) ?? null;
+
+      if (linked) {
+        try {
+          const detailPayload = await getToolExecution(apiConfig.apiBaseUrl, linked.id, apiConfig.userId);
+          execution = detailPayload.execution;
+          executionSource = "live";
+        } catch {
+          execution = linked;
+          executionSource = "live";
+        }
+      } else {
+        execution = null;
+        executionSource = null;
+      }
+    } catch {
+      if (detail.status === "approved") {
+        execution = null;
+        executionSource = null;
+        executionUnavailableMessage =
+          "The linked execution review could not be loaded from the configured backend.";
+      }
+    }
+  }
+
+  const pageMode = combinePageModes(
+    listSource,
+    detail ? detailSource : null,
+    execution ? executionSource : null,
+  );
 
   return (
     <div className="page-stack">
       <PageHeader
         eyebrow="Approvals"
         title="Approval inbox and review"
-        description="Review consequential actions with one stable split layout: queue on the left, rationale and request detail on the right, with explicit approve and reject controls."
+        description="Review consequential actions in one calm split layout, then execute approved requests and inspect the resulting execution state without leaving the shell."
         meta={
           <div className="header-meta">
             <span className="subtle-chip">{pageModeLabel(pageMode)}</span>
@@ -77,6 +115,9 @@ export default async function ApprovalsPage({
         <ApprovalDetail
           initialApproval={detail}
           detailSource={detailSource}
+          initialExecution={execution}
+          executionSource={executionSource}
+          executionUnavailableMessage={executionUnavailableMessage}
           apiBaseUrl={apiConfig.apiBaseUrl}
           userId={apiConfig.userId}
         />

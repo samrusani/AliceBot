@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from "react";
 
-import type { ApprovalItem, ApiSource } from "../lib/api";
+import type { ApprovalExecutionResponse, ApprovalItem, ApiSource, ToolExecutionItem } from "../lib/api";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
 import { ApprovalActions } from "./approval-actions";
+import { ExecutionSummary } from "./execution-summary";
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("en", {
@@ -32,6 +33,9 @@ function formatAttributeValue(value: unknown) {
 type ApprovalDetailProps = {
   initialApproval: ApprovalItem | null;
   detailSource: ApiSource;
+  initialExecution: ToolExecutionItem | null;
+  executionSource?: ApiSource | null;
+  executionUnavailableMessage?: string | null;
   apiBaseUrl?: string;
   userId?: string;
 };
@@ -39,14 +43,21 @@ type ApprovalDetailProps = {
 export function ApprovalDetail({
   initialApproval,
   detailSource,
+  initialExecution,
+  executionSource,
+  executionUnavailableMessage,
   apiBaseUrl,
   userId,
 }: ApprovalDetailProps) {
   const [approval, setApproval] = useState(initialApproval);
+  const [execution, setExecution] = useState(initialExecution);
+  const [executionPreview, setExecutionPreview] = useState<ApprovalExecutionResponse | null>(null);
 
   useEffect(() => {
     setApproval(initialApproval);
-  }, [initialApproval]);
+    setExecution(initialExecution);
+    setExecutionPreview(null);
+  }, [initialApproval, initialExecution]);
 
   if (!approval) {
     return (
@@ -67,7 +78,7 @@ export function ApprovalDetail({
     <SectionCard
       eyebrow="Approval detail"
       title={approval.tool.name}
-      description="Request detail, routing rationale, and action handling stay in one bounded inspector."
+      description="Request detail, routing rationale, resolution, and execution review stay composed inside one bounded inspector."
     >
       <div className="detail-grid">
         <div className="detail-summary">
@@ -139,9 +150,26 @@ export function ApprovalDetail({
           <h3>Approval action bar</h3>
           <ApprovalActions
             approval={approval}
+            hasExecution={Boolean(execution || executionPreview)}
             apiBaseUrl={apiBaseUrl}
             userId={userId}
             onResolved={setApproval}
+            onExecuted={(payload) => {
+              setApproval(payload.approval);
+              setExecutionPreview(payload);
+            }}
+          />
+        </div>
+
+        <div className="detail-group">
+          <h3>Execution review</h3>
+          <ExecutionSummary
+            execution={execution}
+            preview={executionPreview}
+            source={executionSource}
+            unavailableMessage={executionPreview ? null : executionUnavailableMessage}
+            emptyTitle="Approval is ready but not executed"
+            emptyDescription="Once an approved request is executed, the resulting record and output snapshot will appear here."
           />
         </div>
       </div>
