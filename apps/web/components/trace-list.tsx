@@ -1,8 +1,17 @@
 import Link from "next/link";
 
+import type { ApiSource } from "../lib/api";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
+
+export type TraceEventItem = {
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  facts?: string[];
+};
 
 export type TraceItem = {
   id: string;
@@ -19,14 +28,15 @@ export type TraceItem = {
     taskId?: string;
     approvalId?: string;
     executionId?: string;
+    compilerVersion?: string;
   };
+  metadata: string[];
   evidence: string[];
-  events: Array<{
-    id: string;
-    kind: string;
-    title: string;
-    detail: string;
-  }>;
+  events: TraceEventItem[];
+  detailSource: ApiSource;
+  eventSource: ApiSource;
+  detailUnavailable?: boolean;
+  eventsUnavailable?: boolean;
 };
 
 function formatDate(value: string) {
@@ -41,22 +51,65 @@ function formatDate(value: string) {
 export function TraceList({
   traces,
   selectedId,
+  apiUnavailable = false,
 }: {
   traces: TraceItem[];
   selectedId?: string;
+  apiUnavailable?: boolean;
 }) {
+  if (apiUnavailable) {
+    return (
+      <div className="split-layout">
+        <SectionCard
+          eyebrow="Trace list"
+          title="Trace API unavailable"
+          description="The live explain-why list could not be loaded from the configured backend."
+        >
+          <EmptyState
+            title="Explainability review is unavailable"
+            description="The configured trace review endpoints did not return a usable response. Verify the API and retry."
+          />
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Trace detail"
+          title="Detail unavailable"
+          description="Detail and ordered events stay hidden until the trace review API becomes reachable again."
+        >
+          <EmptyState
+            title="No live trace detail"
+            description="The detail panel remains bounded instead of falling back to stale or invented event data."
+          />
+        </SectionCard>
+      </div>
+    );
+  }
+
   if (traces.length === 0) {
     return (
-      <SectionCard
-        eyebrow="Traces"
-        title="No trace records"
-        description="Explainability entries will appear here when trace sources are available."
-      >
-        <EmptyState
-          title="Trace review is empty"
-          description="No trace summaries are available in the current mode."
-        />
-      </SectionCard>
+      <div className="split-layout">
+        <SectionCard
+          eyebrow="Trace list"
+          title="No trace records"
+          description="Explainability entries will appear here when trace sources are available."
+        >
+          <EmptyState
+            title="Trace review is empty"
+            description="No trace summaries are available in the current mode."
+          />
+        </SectionCard>
+
+        <SectionCard
+          eyebrow="Trace detail"
+          title="No trace selected"
+          description="Select a trace once explainability records are available."
+        >
+          <EmptyState
+            title="Explain-why detail is idle"
+            description="The detail panel stays empty until a trace summary can be selected."
+          />
+        </SectionCard>
+      </div>
     );
   }
 
@@ -67,7 +120,7 @@ export function TraceList({
       <SectionCard
         eyebrow="Trace list"
         title="Explainability summaries"
-        description="Trace rows surface kind, scope, event count, and state before you open a detail panel."
+        description="Trace rows surface kind, status, and event count before you open the bounded review panel."
       >
         <div className="list-panel">
           <div className="list-panel__header">
@@ -89,7 +142,7 @@ export function TraceList({
                 </div>
                 <p>{trace.summary}</p>
                 <div className="list-row__meta">
-                  <span className="meta-pill">{trace.kind.replace(/_/g, " ")}</span>
+                  <span className="meta-pill">{trace.kind.replaceAll(".", " ")}</span>
                   <span className="meta-pill">{trace.eventCount} events</span>
                 </div>
               </Link>
@@ -101,13 +154,17 @@ export function TraceList({
       <SectionCard
         eyebrow="Trace detail"
         title={selected.title}
-        description="Detail view keeps trace evidence, related records, and key events grouped without turning into a debugger dump."
+        description={
+          selected.detailUnavailable
+            ? "The selected live trace detail could not be read, so this panel stays on the bounded summary already returned by the list."
+            : "Summary, key metadata, and ordered events stay grouped here without expanding into a raw debugging dump."
+        }
       >
         <div className="trace-panel">
           <div className="detail-summary">
             <StatusBadge status={selected.status} />
             <span className="detail-summary__label">
-              {selected.kind.replace(/_/g, " ")} · {selected.eventCount} events
+              {selected.kind.replaceAll(".", " ")} · {selected.eventCount} events
             </span>
           </div>
 
@@ -116,6 +173,12 @@ export function TraceList({
             <div className="attribute-list">
               <span className="attribute-item">Source: {selected.source}</span>
               <span className="attribute-item">Scope: {selected.scope}</span>
+              <span className="attribute-item">
+                Detail: {selected.detailSource === "live" ? "Live trace detail" : "Fixture trace detail"}
+              </span>
+              <span className="attribute-item">
+                Events: {selected.eventSource === "live" ? "Live event review" : "Fixture event review"}
+              </span>
               {selected.related.threadId ? (
                 <span className="attribute-item">Thread: {selected.related.threadId}</span>
               ) : null}
@@ -128,13 +191,16 @@ export function TraceList({
               {selected.related.executionId ? (
                 <span className="attribute-item">Execution: {selected.related.executionId}</span>
               ) : null}
+              {selected.related.compilerVersion ? (
+                <span className="attribute-item">Compiler: {selected.related.compilerVersion}</span>
+              ) : null}
             </div>
           </div>
 
           <div className="detail-group">
-            <h3>Evidence in view</h3>
+            <h3>Key metadata</h3>
             <div className="evidence-list">
-              {selected.evidence.map((item) => (
+              {selected.metadata.map((item) => (
                 <span key={item} className="evidence-chip">
                   {item}
                 </span>
@@ -142,21 +208,55 @@ export function TraceList({
             </div>
           </div>
 
+          {selected.evidence.length > 0 ? (
+            <div className="detail-group">
+              <h3>Review notes</h3>
+              <div className="evidence-list">
+                {selected.evidence.map((item) => (
+                  <span key={item} className="evidence-chip">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           <div className="detail-group">
-            <h3>Key events</h3>
-            <ol className="trace-events">
-              {selected.events.map((event) => (
-                <li key={event.id} className="trace-event">
-                  <div className="trace-event__topline">
-                    <div className="detail-stack">
-                      <span className="list-row__eyebrow">{event.kind}</span>
-                      <h4>{event.title}</h4>
+            <h3>Ordered events</h3>
+            {selected.eventsUnavailable ? (
+              <EmptyState
+                title="Ordered events unavailable"
+                description="The trace summary loaded, but the ordered event review could not be read from the current backing source."
+              />
+            ) : selected.events.length === 0 ? (
+              <EmptyState
+                title="No ordered events"
+                description="This trace currently has no event records to review."
+              />
+            ) : (
+              <ol className="trace-events">
+                {selected.events.map((event) => (
+                  <li key={event.id} className="trace-event">
+                    <div className="trace-event__topline">
+                      <div className="detail-stack">
+                        <span className="list-row__eyebrow">{event.kind}</span>
+                        <h4>{event.title}</h4>
+                      </div>
                     </div>
-                  </div>
-                  <p>{event.detail}</p>
-                </li>
-              ))}
-            </ol>
+                    <p>{event.detail}</p>
+                    {event.facts?.length ? (
+                      <div className="attribute-list">
+                        {event.facts.map((fact) => (
+                          <span key={fact} className="attribute-item">
+                            {fact}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
         </div>
       </SectionCard>

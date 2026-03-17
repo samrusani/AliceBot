@@ -6,49 +6,48 @@ PASS
 
 ## criteria met
 
-- `GET /v0/traces`, `GET /v0/traces/{trace_id}`, and `GET /v0/traces/{trace_id}/events` are implemented in `apps/api/src/alicebot_api/main.py`.
-- The sprint stayed limited to read-only trace review over existing persisted `traces` and `trace_events` data.
-- Stable trace review contracts were added in `apps/api/src/alicebot_api/contracts.py`.
-- The review seam in `apps/api/src/alicebot_api/traces.py` returns deterministic list, detail, and event payloads.
-- Deterministic ordering is explicit and test-backed:
-  - trace list: `created_at DESC, id DESC`
-  - trace events: `sequence_no ASC, id ASC`
-- User isolation is preserved through user-scoped connections plus existing row-level security behavior, and invisible traces return `404`.
-- Unit coverage was added for ordering, response shape, endpoint mapping, and invisible-trace handling.
-- Integration coverage was added for list/detail/event reads, cross-user isolation, and invisible-trace `404` behavior.
-- Acceptance verification passed:
-  - `./.venv/bin/python -m pytest tests/unit` -> `451 passed`
-  - `./.venv/bin/python -m pytest tests/integration` -> `143 passed`
+- The sprint stayed a UI sprint and did not widen backend scope.
+- `/traces` now uses the shipped trace review APIs when API configuration is present via the shared helper reads in [apps/web/lib/api.ts](apps/web/lib/api.ts) and the route wiring in [apps/web/app/traces/page.tsx](apps/web/app/traces/page.tsx).
+- `/traces` no longer depends exclusively on local fixture data. When API configuration is absent, the route falls back explicitly to fixture data from [apps/web/lib/fixtures.ts](apps/web/lib/fixtures.ts).
+- Loading, empty, unavailable, and bounded partial-detail/event states are implemented across [apps/web/app/traces/loading.tsx](apps/web/app/traces/loading.tsx), [apps/web/app/traces/page.tsx](apps/web/app/traces/page.tsx), and [apps/web/components/trace-list.tsx](apps/web/components/trace-list.tsx).
+- The trace UI keeps the intended bounded visual hierarchy: summary first, key metadata second, ordered events third.
+- The implementation stays within the Sprint 6E in-scope files and does not add Gmail, Calendar, auth, runner, filtering, search, pagination, mutation, or backend changes.
+- `BUILD_REPORT.md` is aligned to Sprint 6E and documents the route mode, shipped endpoints, exact commands, verification results, visual notes, and deferred scope.
+- Frontend coverage was added in:
+  - [apps/web/lib/api.test.ts](apps/web/lib/api.test.ts)
+  - [apps/web/components/trace-list.test.tsx](apps/web/components/trace-list.test.tsx)
+- Verification passed in `apps/web`:
+  - `npm run lint`
+  - `npm test`
+  - `npm run build`
+  - current totals: `3` test files, `13` tests
+- `next build` did not leave tracked churn in `apps/web/tsconfig.json` or `apps/web/next-env.d.ts`.
 
 ## criteria missed
 
-- none
+- None.
 
 ## quality issues
 
-- none blocking
-- No sloppy scope expansion was found. The diff is confined to the intended API/store/contracts/test surface plus `BUILD_REPORT.md`.
+- No blocking quality issues found in the current Sprint 6E implementation.
 
 ## regression risks
 
-- Low risk overall. The new seam is narrow and read-only.
-- The main ongoing dependency is correct use of `user_connection()` so row-level security remains active for trace visibility. Current unit and integration coverage exercises that path.
+- Residual product risk is limited to real-data wording and density because the visual verification notes are code-inspection notes rather than a browser QA pass. This does not block Sprint 6E acceptance but is still worth validating against a live configured backend.
 
 ## docs issues
 
-- none blocking
-- `BUILD_REPORT.md` matches the sprint packet requirements, including contracts, ordering rules, commands run, example responses, and deferred scope.
+- No blocking docs issues remain for Sprint 6E.
 
 ## should anything be added to RULES.md?
 
-- no
+- No.
 
 ## should anything update ARCHITECTURE.md?
 
-- no required update for sprint acceptance
-- Optional future update: document the new read-only trace review API surface when the `/traces` UI switches from fixtures to live backend reads.
+- No.
 
 ## recommended next action
 
-- Accept the sprint.
-- In a follow-up sprint, replace the fixture-backed `/traces` UI with these live endpoints without widening the backend contract.
+- Sprint 6E can be considered review-passed.
+- Next follow-up should be a browser-based QA pass against a live configured backend with real trace records to validate the operator-facing wording and event density.
