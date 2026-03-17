@@ -2,76 +2,117 @@
 
 ## sprint objective
 
-Implement Sprint 5U: synchronize the live truth artifacts with the accepted repo state through Sprint 5T so planning and handoff docs accurately describe the shipped Gmail externalization seam and its remaining narrow transition boundary.
+Implement Sprint 6A: replace the placeholder web app with the first real AliceBot operator shell for governed requests, approvals, tasks, task steps, and explain-why review, aligned to `DESIGN_SYSTEM.md` and bounded to existing backend seams only.
 
-## completed work
+## exact screens implemented
 
-- Audited the shipped Sprint 5T repo state against the current truth docs.
-- Confirmed `ARCHITECTURE.md` already matched the accepted Sprint 5T implementation, so no architecture correction was required.
-- Updated `ROADMAP.md` from a Sprint 5R baseline to a Sprint 5T baseline.
-- Updated `.ai/handoff/CURRENT_STATE.md` from a Sprint 5R baseline to a Sprint 5T baseline.
-- Replaced stale forward-looking language that still treated Gmail external secret-manager integration as future work.
-- Reframed the immediate next narrow Gmail seam as `legacy_db_v0` cleanup rather than external-secret-manager integration.
-- Preserved all out-of-scope boundaries: no runtime, schema, API, connector-breadth, runner, or UI changes.
+- `/`
+  - app shell landing view
+  - summary metrics
+  - primary navigation entry cards
+- `/chat`
+  - governed request composer
+  - recent request/response history
+  - trace reference display
+- `/approvals`
+  - approval inbox list
+  - approval detail inspector
+- `/tasks`
+  - task list
+  - selected task summary
+  - task-step inspection list
+- `/traces`
+  - explainability trace list
+  - trace detail review panel
 
-## incomplete work
+## exact shared components implemented
 
-- None inside Sprint 5U scope.
+- `app-shell`
+- `page-header`
+- `section-card`
+- `status-badge`
+- `empty-state`
+- `request-composer`
+- `approval-list`
+- `task-list`
+- `task-step-list`
+- `trace-list`
 
-## files changed
+## exact files changed
 
-- `ROADMAP.md`
-- `.ai/handoff/CURRENT_STATE.md`
 - `BUILD_REPORT.md`
+- `apps/web/app/layout.tsx`
+- `apps/web/app/page.tsx`
+- `apps/web/app/chat/page.tsx`
+- `apps/web/app/approvals/page.tsx`
+- `apps/web/app/tasks/page.tsx`
+- `apps/web/app/traces/page.tsx`
+- `apps/web/app/globals.css`
+- `apps/web/components/app-shell.tsx`
+- `apps/web/components/page-header.tsx`
+- `apps/web/components/section-card.tsx`
+- `apps/web/components/status-badge.tsx`
+- `apps/web/components/empty-state.tsx`
+- `apps/web/components/request-composer.tsx`
+- `apps/web/components/approval-list.tsx`
+- `apps/web/components/task-list.tsx`
+- `apps/web/components/task-step-list.tsx`
+- `apps/web/components/trace-list.tsx`
 
-## tests run
+## data-backing by screen
 
-- `git diff --check -- ROADMAP.md .ai/handoff/CURRENT_STATE.md BUILD_REPORT.md`
+- `/`: fixture/static shell content
+- `/chat`: mixed
+  - live API when `NEXT_PUBLIC_ALICEBOT_API_BASE_URL` or `ALICEBOT_API_BASE_URL` plus user/thread ids are present
+  - explicit local fixtures otherwise
+- `/approvals`: mixed
+  - live `GET /v0/approvals` when API base URL and user id are present
+  - explicit local fixtures otherwise
+- `/tasks`: mixed
+  - live `GET /v0/tasks` and `GET /v0/tasks/{task_id}/steps` when API base URL and user id are present
+  - explicit local fixtures otherwise
+- `/traces`: fixture-backed
+  - trace summaries and detail events are local fixtures because the repo does not currently expose a general trace-event listing endpoint in the shipped web scope
 
-## blockers/issues
+## commands run
 
-- No implementation blockers occurred.
-- `ARCHITECTURE.md` was audited but not edited because it already reflected the accepted Sprint 5T state.
-- The worktree already contained unrelated changes outside sprint scope; they were left untouched.
+- `npm install` in `apps/web`
+- `npm run build` in `apps/web`
 
-## accepted evidence used
+## build and test results
 
-- `ARCHITECTURE.md` current Sprint 5T implemented-slice and Gmail boundary text.
-- `BUILD_REPORT.md` from Sprint 5T, which records the accepted external secret-manager seam, locator-only primary credential storage, and the `legacy_db_v0` transition path.
-- `REVIEW_REPORT.md` with `PASS` for Sprint 5T and accepted verification totals:
-  - `./.venv/bin/python -m pytest tests/unit` -> `446 passed`
-  - `./.venv/bin/python -m pytest tests/integration` -> `141 passed`
-- Repo implementation and test evidence in:
-  - `apps/api/src/alicebot_api/gmail.py`
-  - `apps/api/src/alicebot_api/gmail_secret_manager.py`
-  - `tests/integration/test_gmail_accounts_api.py`
-  - `tests/integration/test_migrations.py`
+- `npm run build` in `apps/web`: PASS
+- Production build output included the intended routes:
+  - `/`
+  - `/chat`
+  - `/approvals`
+  - `/tasks`
+  - `/traces`
+- `npm run lint`: not run
+  - current project setup prompts interactively for ESLint initialization instead of providing a stable non-interactive check
 
-## specific stale statements corrected
+## visual verification notes
 
-- `ROADMAP.md` no longer says the repo is current only through Sprint 5R.
-- `ROADMAP.md` no longer says external secret-manager integration is the next Gmail auth seam.
-- `.ai/handoff/CURRENT_STATE.md` no longer says the repo is current only through Sprint 5R.
-- `.ai/handoff/CURRENT_STATE.md` no longer lists external secret-manager integration as not implemented.
-- `.ai/handoff/CURRENT_STATE.md` no longer points planning at external secret-manager integration as the immediate next move.
-- `.ai/handoff/CURRENT_STATE.md` now carries the accepted Sprint 5T verification totals instead of the older Sprint 5R totals.
+- Desktop behavior:
+  - left navigation rail remains persistent
+  - top bar and page headers hold a clear hierarchy without crowding
+  - approvals, tasks, and traces use split review layouts with bounded inspector panels
+- Mobile and narrow-width behavior:
+  - sidebar collapses into a horizontal mobile navigation row
+  - grids stack to single-column layouts
+  - cards, pills, IDs, and attributes use wrapping and containment rules to avoid overflow or clipping
+- Screenshots:
+  - no browser screenshots captured in this sprint report
 
-## confirmation of non-runtime scope
+## blockers or issues encountered
 
-- No runtime code changed.
-- No schema or migration files changed.
-- No API contract changed.
-- No Gmail connector breadth changed.
-- No runner or UI scope entered the diff.
+- Running `npm run build` caused Next.js to rewrite `apps/web/tsconfig.json` and `apps/web/next-env.d.ts` locally; those generated changes were reverted to keep the sprint diff inside the packet’s scoped file list.
+- `npm install` generated `apps/web/package-lock.json`; that file was removed from the final diff for the same reason.
 
-## what remains intentionally deferred after truth synchronization
+## deferred scope after this sprint
 
-- Removal of the remaining `legacy_db_v0` transition path for older Gmail credential rows.
-- Gmail search, mailbox sync, attachment ingestion, and write-capable Gmail actions.
-- Calendar connector scope.
-- Richer document parsing beyond the current narrow local ingestion seams.
-- Runner-style orchestration and UI work.
-
-## recommended next step
-
-Open one narrow follow-up sprint to remove the remaining `legacy_db_v0` transition path deliberately, without widening into Gmail search, sync, attachments, Calendar, runner, or UI scope.
+- live trace-event listing and deep explainability wiring beyond the current fixture-backed `/traces` screen
+- approvals mutation actions from the web UI
+- task-step mutations from the web UI
+- authentication redesign
+- Gmail breadth, Calendar connector UI, runner UI, or any new backend endpoints
