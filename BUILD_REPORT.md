@@ -2,77 +2,89 @@
 
 ## sprint objective
 
-Implement Sprint 6E by replacing the fixture-only `/traces` route with a live explain-why review surface that uses the shipped backend trace review APIs when API configuration is present, while preserving explicit fixture fallback only when live configuration is absent.
+Implement Sprint 6F by extending the AliceBot web shell so approved approvals can be executed from `/approvals` and their resulting execution state can be reviewed from `/approvals` and `/tasks` using only the shipped approval-execution and tool-execution read endpoints.
 
 ## completed work
 
-- extended `apps/web/lib/api.ts` with typed trace review reads for:
-  - `GET /v0/traces`
-  - `GET /v0/traces/{trace_id}`
-  - `GET /v0/traces/{trace_id}/events`
-- moved `/traces` fixture data into `apps/web/lib/fixtures.ts` and added `getFixtureTrace()` for explicit no-config fallback
-- replaced `apps/web/app/traces/page.tsx` with live route wiring that:
-  - uses live trace list/detail/event reads when API configuration is present
-  - stays fixture-backed when API configuration is absent
-  - shows an explicit API-unavailable state when live trace reads fail
-  - keeps partial live detail bounded when detail or event reads fail
-- added `apps/web/app/traces/loading.tsx` route-level loading UI
-- updated `apps/web/components/trace-list.tsx` to render:
-  - live trace summaries
-  - key metadata
-  - ordered event review
-  - empty state
-  - API-unavailable state
-  - bounded partial event-unavailable state
-- added narrow frontend coverage in:
+- extended `apps/web/lib/api.ts` with typed execution support for:
+  - `POST /v0/approvals/{approval_id}/execute`
+  - `GET /v0/tool-executions`
+  - `GET /v0/tool-executions/{execution_id}`
+- added fixture-backed execution records in `apps/web/lib/fixtures.ts` so fixture mode now covers:
+  - approved but not executed
+  - executed task and execution review
+- updated `apps/web/app/approvals/page.tsx` to:
+  - discover linked execution records for the selected approval
+  - surface explicit live unavailable state when execution review cannot be loaded
+  - keep fixture fallback explicit when live API configuration is absent
+- updated `apps/web/app/tasks/page.tsx` to:
+  - read latest execution detail from `task.latest_execution_id`
+  - fall back to fixture execution detail only when a matching fixture exists
+  - surface explicit unavailable messaging when a live execution read fails without fixture coverage
+- extended `apps/web/components/approval-actions.tsx` to:
+  - keep approve/reject for pending approvals
+  - show execute for eligible approved approvals
+  - show bounded loading, success, failure, and read-only states
+- extended `apps/web/components/approval-detail.tsx` and `apps/web/components/task-summary.tsx` with the new bounded `apps/web/components/execution-summary.tsx`
+- updated `apps/web/components/task-step-list.tsx` to make execution linkage and blocked reasons clearer inside the existing step timeline
+- refined `apps/web/app/globals.css` for the scoped surfaces with stronger containment, calmer grouping, better wrapping behavior, and more stable responsive stacking
+- added or updated narrow frontend coverage in:
   - `apps/web/lib/api.test.ts`
-  - `apps/web/components/trace-list.test.tsx`
-  - route-level `/traces` branching coverage for fixture-backed, live-unavailable, and partial live-event states
+  - `apps/web/components/approval-actions.test.tsx`
+  - `apps/web/components/execution-summary.test.tsx`
 
 ## incomplete work
 
-- none inside the sprint’s scoped `/traces` UI deliverables
+- no scoped sprint deliverables remain incomplete in code
 - intentionally not added:
-  - trace filtering
-  - trace search
-  - trace pagination
-  - trace mutation UI
   - backend changes
+  - new routes
+  - execution mutation beyond the shipped approval execute seam
+  - execution filtering, search, or pagination
+  - broader task workflow redesign outside `/approvals` and `/tasks`
 
 ## files changed
 
-- `apps/web/app/traces/page.tsx`
-- `apps/web/app/traces/loading.tsx`
-- `apps/web/components/trace-list.tsx`
+- `apps/web/app/approvals/page.tsx`
+- `apps/web/app/tasks/page.tsx`
+- `apps/web/app/globals.css`
+- `apps/web/components/approval-actions.tsx`
+- `apps/web/components/approval-detail.tsx`
+- `apps/web/components/task-summary.tsx`
+- `apps/web/components/task-step-list.tsx`
+- `apps/web/components/status-badge.tsx`
+- `apps/web/components/execution-summary.tsx`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/fixtures.ts`
 - `apps/web/lib/api.test.ts`
-- `apps/web/components/trace-list.test.tsx`
+- `apps/web/components/approval-actions.test.tsx`
+- `apps/web/components/execution-summary.test.tsx`
 - `BUILD_REPORT.md`
 
 ## route backing mode
 
-- `/traces` is live-API-backed when API configuration is present
-- `/traces` is fixture-backed when API configuration is absent
-- `/traces` shows an explicit unavailable state when live API configuration is present but trace reads fail
-- the route is not mixed in the steady-state implementation
+- `/approvals` is:
+  - live-API-backed for approval list/detail and linked execution review when API configuration is present
+  - fixture-backed when API configuration is absent
+  - explicitly unavailable for linked execution review when live execution reads fail
+- `/tasks` is:
+  - live-API-backed for task detail, step detail, and latest execution review when API configuration is present
+  - fixture-backed when API configuration is absent
+  - mixed only when a live task falls back to fixture execution detail
 
 ## backend endpoints consumed
 
-- `GET /v0/traces`
-- `GET /v0/traces/{trace_id}`
-- `GET /v0/traces/{trace_id}/events`
-
-## tests run
-
-- `npm run lint`
-  - PASS
-- `npm test`
-  - PASS
-  - `3` test files passed
-  - `13` tests passed
-- `npm run build`
-  - PASS
+- `POST /v0/approvals/{approval_id}/execute`
+- `GET /v0/tool-executions`
+- `GET /v0/tool-executions/{execution_id}`
+- existing carried-forward reads already used by the shell:
+  - `GET /v0/approvals`
+  - `GET /v0/approvals/{approval_id}`
+  - `POST /v0/approvals/{approval_id}/approve`
+  - `POST /v0/approvals/{approval_id}/reject`
+  - `GET /v0/tasks`
+  - `GET /v0/tasks/{task_id}`
+  - `GET /v0/tasks/{task_id}/steps`
 
 ## exact commands run
 
@@ -84,26 +96,35 @@ Implement Sprint 6E by replacing the fixture-only `/traces` route with a live ex
 
 - lint result: PASS
 - test result: PASS
+  - `4` test files passed
+  - `20` tests passed
 - build result: PASS
 
 ## desktop and mobile visual verification notes
 
-- no browser-based visual QA pass was executed in this turn
-- desktop note: code inspection indicates the existing split review layout remains in place for `/traces`, with summary, metadata, and ordered events kept in bounded cards
-- mobile note: code inspection indicates the trace route still collapses to one column below the shared shell breakpoints in `apps/web/app/globals.css`
+- no browser-driven visual QA pass was executed in this turn
+- desktop note:
+  - code inspection indicates `/approvals` and `/tasks` now use stronger internal grouping for action handling and execution review
+  - ids, badges, and payload snapshots have explicit wrapping and overflow handling inside bounded cards
+- mobile note:
+  - the shared shell still collapses the split layouts to one column below the existing breakpoint
+  - execution review, action bars, and buttons now stack into full-width rows to preserve containment on narrow screens
 
 ## blockers/issues
 
-- no implementation blockers remain inside sprint scope
+- no blockers remain inside sprint scope
 - no backend contract changes were required
 
 ## recommended next step
 
-Run a browser-based QA pass against a live configured backend with real trace records to validate the wording and density of the generated live summaries and event facts.
+Run a browser-based QA pass against a live configured backend to validate:
+- the execute transition from approved to executed or blocked
+- the exact empty/unavailable messaging in live failure cases
+- the density of output snapshots on long real-world payloads
 
 ## intentionally deferred after this sprint
 
-- any Gmail, Calendar, auth, runner, or broader task workflow scope
-- any redesign outside the existing `/traces` shell
-- any trace enrichment beyond the shipped list/detail/event endpoints
-- any search, filtering, pagination, or mutation controls
+- any Gmail, Calendar, auth, runner, or broader workflow expansion
+- any execution list filters, sorting controls, or search UI
+- any task-step mutation UI beyond existing backend reads
+- any redesign outside the scoped `/approvals` and `/tasks` review surfaces

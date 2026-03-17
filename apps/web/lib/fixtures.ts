@@ -5,6 +5,7 @@ import type {
   TaskItem,
   TaskStepItem,
   TaskStepListSummary,
+  ToolExecutionItem,
   ToolRecord,
 } from "./api";
 import type { TraceItem } from "../components/trace-list";
@@ -395,7 +396,7 @@ export const taskFixtures: TaskItem[] = [
     id: "33333333-3333-4333-8333-333333333334",
     thread_id: THREAD_VITAMIN_D,
     tool_id: PURCHASE_TOOL.id,
-    status: "approved",
+    status: "executed",
     request: {
       thread_id: THREAD_VITAMIN_D,
       tool_id: PURCHASE_TOOL.id,
@@ -410,9 +411,52 @@ export const taskFixtures: TaskItem[] = [
     },
     tool: PURCHASE_TOOL,
     latest_approval_id: "44444444-4444-4444-8444-444444444445",
-    latest_execution_id: null,
+    latest_execution_id: "99999999-1111-4111-8111-111111111111",
     created_at: "2026-03-16T14:00:00Z",
-    updated_at: "2026-03-16T14:22:00Z",
+    updated_at: "2026-03-16T14:24:00Z",
+  },
+];
+
+export const executionFixtures: ToolExecutionItem[] = [
+  {
+    id: "99999999-1111-4111-8111-111111111111",
+    approval_id: "44444444-4444-4444-8444-444444444445",
+    task_step_id: "77777777-7777-4777-8777-777777777778",
+    thread_id: THREAD_VITAMIN_D,
+    tool_id: PURCHASE_TOOL.id,
+    trace_id: "trace-exec-311",
+    request_event_id: "event-request-311",
+    result_event_id: "event-result-311",
+    status: "completed",
+    handler_key: "proxy.echo",
+    request: {
+      thread_id: THREAD_VITAMIN_D,
+      tool_id: PURCHASE_TOOL.id,
+      action: "place_order",
+      scope: "supplements",
+      domain_hint: "ecommerce",
+      risk_hint: "purchase",
+      attributes: {
+        merchant: "Fullscript",
+        item: "Vitamin D3 + K2",
+        quantity: "1",
+      },
+    },
+    tool: PURCHASE_TOOL,
+    result: {
+      handler_key: "proxy.echo",
+      status: "completed",
+      output: {
+        mode: "no_side_effect",
+        tool_key: "proxy.echo",
+        action: "place_order",
+        scope: "supplements",
+        merchant: "Fullscript",
+        item: "Vitamin D3 + K2",
+      },
+      reason: null,
+    },
+    executed_at: "2026-03-16T14:24:00Z",
   },
 ];
 
@@ -464,7 +508,7 @@ export const taskStepFixtures: Record<string, TaskStepItem[]> = {
       task_id: "33333333-3333-4333-8333-333333333334",
       sequence_no: 1,
       kind: "governed_request",
-      status: "approved",
+      status: "executed",
       request: {
         thread_id: THREAD_VITAMIN_D,
         tool_id: PURCHASE_TOOL.id,
@@ -482,21 +526,21 @@ export const taskStepFixtures: Record<string, TaskStepItem[]> = {
         routing_decision: "require_approval",
         approval_id: "44444444-4444-4444-8444-444444444445",
         approval_status: "approved",
-        execution_id: null,
-        execution_status: null,
+        execution_id: "99999999-1111-4111-8111-111111111111",
+        execution_status: "completed",
         blocked_reason: null,
       },
       lineage: {
         parent_step_id: null,
         source_approval_id: null,
-        source_execution_id: null,
+        source_execution_id: "99999999-1111-4111-8111-111111111111",
       },
       trace: {
-        trace_id: "66666666-6666-4666-8666-666666666667",
-        trace_kind: "approval_resolution",
+        trace_id: "trace-exec-311",
+        trace_kind: "tool.proxy.execute",
       },
       created_at: "2026-03-16T14:00:00Z",
-      updated_at: "2026-03-16T14:22:00Z",
+      updated_at: "2026-03-16T14:24:00Z",
     },
   ],
 };
@@ -511,6 +555,14 @@ export function getFixtureTrace(traceId: string) {
 
 export function getFixtureTask(taskId: string) {
   return taskFixtures.find((item) => item.id === taskId) ?? null;
+}
+
+export function getFixtureExecution(executionId: string) {
+  return executionFixtures.find((item) => item.id === executionId) ?? null;
+}
+
+export function getFixtureExecutionByApprovalId(approvalId: string) {
+  return executionFixtures.find((item) => item.approval_id === approvalId) ?? null;
 }
 
 export function getFixtureTaskSteps(taskId: string) {
