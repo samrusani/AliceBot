@@ -14,7 +14,8 @@ type RequestComposerProps = {
   initialEntries: RequestHistoryEntry[];
   apiBaseUrl?: string;
   userId?: string;
-  defaultThreadId?: string;
+  selectedThreadId?: string;
+  selectedThreadTitle?: string;
   defaultToolId?: string;
 };
 
@@ -31,10 +32,10 @@ export function RequestComposer({
   initialEntries,
   apiBaseUrl,
   userId,
-  defaultThreadId,
+  selectedThreadId,
+  selectedThreadTitle,
   defaultToolId,
 }: RequestComposerProps) {
-  const [threadId, setThreadId] = useState(defaultThreadId ?? "");
   const [toolId, setToolId] = useState(defaultToolId ?? "");
   const [action, setAction] = useState("place_order");
   const [scope, setScope] = useState("supplements");
@@ -57,18 +58,21 @@ export function RequestComposer({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const liveModeReady = Boolean(apiBaseUrl && userId);
+  const activeThreadId = selectedThreadId?.trim() ?? "";
+  const visibleEntries = activeThreadId
+    ? entries.filter((entry) => entry.threadId === activeThreadId)
+    : [];
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const nextThreadId = threadId.trim();
     const nextToolId = toolId.trim();
     const nextAction = action.trim();
     const nextScope = scope.trim();
 
-    if (!nextThreadId || !nextToolId || !nextAction || !nextScope) {
+    if (!activeThreadId || !nextToolId || !nextAction || !nextScope) {
       setStatusTone("danger");
-      setStatusText("Thread ID, tool ID, action, and scope are all required.");
+      setStatusText("Select a thread, then provide tool ID, action, and scope.");
       return;
     }
 
@@ -87,7 +91,7 @@ export function RequestComposer({
 
     const payload: ApprovalRequestPayload = {
       user_id: userId ?? "fixture-user",
-      thread_id: nextThreadId,
+      thread_id: activeThreadId,
       tool_id: nextToolId,
       action: nextAction,
       scope: nextScope,
@@ -166,17 +170,20 @@ export function RequestComposer({
           <span>Requests stay explicitly governed and the resulting approval, task, and trace links remain attached.</span>
         </div>
 
-        <div className="form-field-group form-field-group--two-up">
-          <div className="form-field">
-            <label htmlFor="thread-id">Thread ID</label>
-            <input
-              id="thread-id"
-              name="thread-id"
-              value={threadId}
-              onChange={(event) => setThreadId(event.target.value)}
-              placeholder="Thread UUID"
-            />
+        <div className="selected-thread-panel">
+          <div className="selected-thread-panel__copy">
+            <span className="history-entry__label">Linked thread</span>
+            <h2 className="composer-title">{selectedThreadTitle ?? "Choose a visible thread"}</h2>
+            <p className="field-hint">
+              {activeThreadId
+                ? "Governed requests stay explicitly linked to the selected continuity record."
+                : "Select or create a thread from the right rail before submitting a governed request."}
+            </p>
           </div>
+          {activeThreadId ? <span className="meta-pill mono">{activeThreadId}</span> : null}
+        </div>
+
+        <div className="form-field-group form-field-group--two-up">
           <div className="form-field">
             <label htmlFor="tool-id">Tool ID</label>
             <input
@@ -281,7 +288,7 @@ export function RequestComposer({
             type="submit"
             className="button"
             disabled={
-              isSubmitting || !threadId.trim() || !toolId.trim() || !action.trim() || !scope.trim()
+              isSubmitting || !activeThreadId || !toolId.trim() || !action.trim() || !scope.trim()
             }
           >
             {isSubmitting ? "Submitting..." : "Submit governed request"}
@@ -298,14 +305,19 @@ export function RequestComposer({
           </div>
         </div>
 
-        {entries.length === 0 ? (
+        {!activeThreadId ? (
+          <EmptyState
+            title="Select a thread first"
+            description="Governed request summaries appear here after one visible thread is selected and used."
+          />
+        ) : visibleEntries.length === 0 ? (
           <EmptyState
             title="No governed requests yet"
-            description="Submitted requests will appear here with approval and task linkage once the operator starts using the form."
+            description="Submitted requests for the selected thread appear here with approval and task linkage."
           />
         ) : (
           <div className="history-list">
-            {entries.map((entry) => (
+            {visibleEntries.map((entry) => (
               <article key={entry.id} className="history-entry">
                 <div className="history-entry__topline">
                   <div className="detail-stack">
