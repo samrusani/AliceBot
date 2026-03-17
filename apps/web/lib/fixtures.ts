@@ -7,6 +7,7 @@ import type {
   TaskStepListSummary,
   ToolRecord,
 } from "./api";
+import type { TraceItem } from "../components/trace-list";
 
 const PURCHASE_TOOL: ToolRecord = {
   id: "22222222-2222-4222-8222-222222222222",
@@ -27,6 +28,178 @@ const PURCHASE_TOOL: ToolRecord = {
 
 const THREAD_MAGNESIUM = "11111111-1111-4111-8111-111111111111";
 const THREAD_VITAMIN_D = "11111111-1111-4111-8111-111111111112";
+
+export const traceFixtures: TraceItem[] = [
+  {
+    id: "trace-ctx-401",
+    kind: "context.compile",
+    status: "completed",
+    title: "Context compile review",
+    summary:
+      "Compiled prior task state, admitted memories, and recent thread continuity before assistant response assembly.",
+    eventCount: 3,
+    createdAt: "2026-03-17T08:45:00Z",
+    source: "continuity_v0",
+    scope: "Thread magnesium review",
+    related: {
+      threadId: "thread-magnesium",
+      compilerVersion: "continuity_v0",
+    },
+    metadata: [
+      "Trace: trace-ctx-401",
+      "Thread: thread-magnesium",
+      "Compiler: continuity_v0",
+      "Status: completed",
+      "Limit max_sessions: 3",
+      "Limit max_events: 8",
+    ],
+    evidence: [
+      "Memory evidence admitted for supplement preference and merchant history.",
+      "Recent approval state included as part of the continuity pack.",
+      "Task-step lineage referenced before response generation.",
+    ],
+    events: [
+      {
+        id: "event-1",
+        kind: "compiler.scope",
+        title: "Scope resolved",
+        detail: "Single-user thread scope and compile limits were established for the request.",
+        facts: ["Sequence 1", "Captured at Mar 17, 08:45"],
+      },
+      {
+        id: "event-2",
+        kind: "memory.retrieve",
+        title: "Memory evidence attached",
+        detail: "Preference and purchase-history memories were ranked into the response context pack.",
+        facts: ["Sequence 2", "Captured at Mar 17, 08:45"],
+      },
+      {
+        id: "event-3",
+        kind: "task.retrieve",
+        title: "Task lifecycle linked",
+        detail: "Open task and step state were included so the answer could acknowledge the approval dependency.",
+        facts: ["Sequence 3", "Captured at Mar 17, 08:45"],
+      },
+    ],
+    detailSource: "fixture",
+    eventSource: "fixture",
+  },
+  {
+    id: "trace-approval-101",
+    kind: "approval.request",
+    status: "requires_review",
+    title: "Approval request review",
+    summary:
+      "Routing required user approval before the merchant proxy could execute the purchase request.",
+    eventCount: 3,
+    createdAt: "2026-03-17T06:50:00Z",
+    source: "approval_request_v0",
+    scope: "Supplement purchase review",
+    related: {
+      threadId: "thread-magnesium",
+      taskId: "task-201",
+      approvalId: "approval-101",
+      compilerVersion: "approval_request_v0",
+    },
+    metadata: [
+      "Trace: trace-approval-101",
+      "Thread: thread-magnesium",
+      "Task: task-201",
+      "Approval: approval-101",
+      "Compiler: approval_request_v0",
+      "Status: requires_review",
+    ],
+    evidence: [
+      "Policy rule marked purchase actions as approval-gated.",
+      "Tool metadata matched the requested action and scope.",
+      "Task-step trace link points back to the original governed request.",
+    ],
+    events: [
+      {
+        id: "event-4",
+        kind: "tool.route",
+        title: "Routing completed",
+        detail: "The merchant proxy was selected as the governing tool for the request.",
+        facts: ["Sequence 1", "Captured at Mar 17, 06:50"],
+      },
+      {
+        id: "event-5",
+        kind: "approval.state",
+        title: "Approval opened",
+        detail: "Approval record persisted with pending resolution state and task-step linkage.",
+        facts: ["Sequence 2", "Captured at Mar 17, 06:50"],
+      },
+      {
+        id: "event-6",
+        kind: "task.lifecycle",
+        title: "Task updated",
+        detail: "Task lifecycle moved into a pending approval state while retaining request provenance.",
+        facts: ["Sequence 3", "Captured at Mar 17, 06:50"],
+      },
+    ],
+    detailSource: "fixture",
+    eventSource: "fixture",
+  },
+  {
+    id: "trace-exec-311",
+    kind: "tool.proxy.execute",
+    status: "completed",
+    title: "Proxy execution review",
+    summary:
+      "Approved supplement purchase request executed through the proxy handler with task and trace linkage preserved.",
+    eventCount: 3,
+    createdAt: "2026-03-16T14:24:00Z",
+    source: "proxy_execution_v0",
+    scope: "Supplement execution review",
+    related: {
+      threadId: "thread-vitamin-d",
+      taskId: "task-182",
+      approvalId: "approval-100",
+      executionId: "execution-311",
+      compilerVersion: "proxy_execution_v0",
+    },
+    metadata: [
+      "Trace: trace-exec-311",
+      "Thread: thread-vitamin-d",
+      "Task: task-182",
+      "Approval: approval-100",
+      "Execution: execution-311",
+      "Compiler: proxy_execution_v0",
+      "Status: completed",
+    ],
+    evidence: [
+      "Execution occurred only after approval resolution.",
+      "Handler output and trace references stayed attached to the governed action record.",
+      "Task and task-step lifecycle traces were appended alongside execution status.",
+    ],
+    events: [
+      {
+        id: "event-7",
+        kind: "approval.check",
+        title: "Approval validated",
+        detail: "Execution preflight confirmed the approval was in an executable state.",
+        facts: ["Sequence 1", "Captured at Mar 16, 14:24"],
+      },
+      {
+        id: "event-8",
+        kind: "budget.check",
+        title: "Budget check passed",
+        detail: "Execution budget constraints did not block the governed action.",
+        facts: ["Sequence 2", "Captured at Mar 16, 14:24"],
+      },
+      {
+        id: "event-9",
+        kind: "execution.result",
+        title: "Handler completed",
+        detail:
+          "Proxy output was recorded for the approved supplement reorder with a linked execution trace and task-step status update.",
+        facts: ["Sequence 3", "Captured at Mar 16, 14:24"],
+      },
+    ],
+    detailSource: "fixture",
+    eventSource: "fixture",
+  },
+];
 
 export const requestHistoryFixtures: RequestHistoryEntry[] = [
   {
@@ -330,6 +503,10 @@ export const taskStepFixtures: Record<string, TaskStepItem[]> = {
 
 export function getFixtureApproval(approvalId: string) {
   return approvalFixtures.find((item) => item.id === approvalId) ?? null;
+}
+
+export function getFixtureTrace(traceId: string) {
+  return traceFixtures.find((item) => item.id === traceId) ?? null;
 }
 
 export function getFixtureTask(taskId: string) {

@@ -117,6 +117,40 @@ export type TaskStepListSummary = {
   order: string[];
 };
 
+export type TraceReviewSummaryItem = {
+  id: string;
+  thread_id: string;
+  kind: string;
+  compiler_version: string;
+  status: string;
+  created_at: string;
+  trace_event_count: number;
+};
+
+export type TraceReviewItem = TraceReviewSummaryItem & {
+  limits: Record<string, unknown>;
+};
+
+export type TraceReviewEventItem = {
+  id: string;
+  trace_id: string;
+  sequence_no: number;
+  kind: string;
+  payload: unknown;
+  created_at: string;
+};
+
+export type TraceReviewListSummary = {
+  total_count: number;
+  order: string[];
+};
+
+export type TraceReviewEventListSummary = {
+  trace_id: string;
+  total_count: number;
+  order: string[];
+};
+
 export type ApprovalRequestPayload = {
   user_id: string;
   thread_id: string;
@@ -342,6 +376,33 @@ export function getTaskSteps(apiBaseUrl: string, taskId: string, userId: string)
   return requestJson<{ items: TaskStepItem[]; summary: TaskStepListSummary }>(
     apiBaseUrl,
     `/v0/tasks/${taskId}/steps`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function listTraces(apiBaseUrl: string, userId: string) {
+  return requestJson<{ items: TraceReviewSummaryItem[]; summary: TraceReviewListSummary }>(
+    apiBaseUrl,
+    "/v0/traces",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getTraceDetail(apiBaseUrl: string, traceId: string, userId: string) {
+  return requestJson<{ trace: TraceReviewItem }>(
+    apiBaseUrl,
+    `/v0/traces/${traceId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getTraceEvents(apiBaseUrl: string, traceId: string, userId: string) {
+  return requestJson<{ items: TraceReviewEventItem[]; summary: TraceReviewEventListSummary }>(
+    apiBaseUrl,
+    `/v0/traces/${traceId}/events`,
     undefined,
     { user_id: userId },
   );
