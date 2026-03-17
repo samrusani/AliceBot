@@ -6,13 +6,34 @@ PASS
 
 ## criteria met
 
-- The sprint stayed documentation-only. The diff changes only `.ai/active/SPRINT_PACKET.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`, and `BUILD_REPORT.md`; no runtime, schema, API, connector-breadth, runner, or UI files changed.
-- `ROADMAP.md` now reflects the accepted repo state through Sprint 5T instead of Sprint 5R.
-- `ROADMAP.md` no longer describes external secret-manager integration as future work and now correctly frames the next narrow seam as `legacy_db_v0` cleanup.
-- `.ai/handoff/CURRENT_STATE.md` now reflects the implemented Sprint 5T Gmail seam: external-secret-backed primary credential storage, secret-free reads, renewal through the externalized seam, rotated refresh-token persistence, and the narrow `legacy_db_v0` transition path.
-- The updated truth artifacts distinguish implemented Gmail externalization behavior from deferred Gmail breadth and from the still-deferred `legacy_db_v0` cleanup sprint.
-- `BUILD_REPORT.md` identifies the synchronized truth artifacts, cites accepted Sprint 5T evidence, names the stale statements corrected, confirms the non-runtime scope, and states what remains deferred.
-- `ARCHITECTURE.md` already matched the accepted Sprint 5T implementation and did not require edits; the unchanged text remains consistent with the updated roadmap and handoff documents.
+- The web app no longer renders the placeholder landing view at `/`; it now provides a real operator shell with stable navigation and bounded overview content.
+- The exact in-scope routes are present and implemented:
+  - `/`
+  - `/chat`
+  - `/approvals`
+  - `/tasks`
+  - `/traces`
+- The shared component surface required by the sprint exists and is used across the app shell and route views:
+  - `app-shell`
+  - `page-header`
+  - `section-card`
+  - `status-badge`
+  - `empty-state`
+  - `request-composer`
+  - `approval-list`
+  - `task-list`
+  - `task-step-list`
+  - `trace-list`
+- The UI materially follows `DESIGN_SYSTEM.md`: restrained palette, calm hierarchy, consistent card treatment, stable navigation state, and responsive stacking are all present in the shipped shell.
+- The sprint stayed within existing backend concepts and did not widen backend scope. Live web wiring uses only existing shipped endpoints:
+  - `POST /v0/responses`
+  - `GET /v0/approvals`
+  - `GET /v0/tasks`
+  - `GET /v0/tasks/{task_id}/steps`
+- The fixture content was narrowed back into supplement/ecommerce examples, so the earlier Calendar-scope concern is no longer present.
+- `BUILD_REPORT.md` now matches Sprint 6A and includes the required screens, shared components, exact files changed, data-backing mode by route, commands run, build results, visual verification notes, and deferred scope.
+- Review verification:
+  - `npm run build` in `apps/web`: PASS
 
 ## criteria missed
 
@@ -20,31 +41,32 @@ PASS
 
 ## quality issues
 
-- No blocking quality issues found in the Sprint 5U diff.
-- The builder kept the sprint narrow and did not overreach beyond the truth-sync scope.
+- No blocking implementation issues found in the Sprint 6A UI surface.
+- Minor non-blocking issue: `next build` still rewrites `apps/web/tsconfig.json` and `apps/web/next-env.d.ts` during the build. The builder documented and reverted that churn, so it no longer widens the final sprint diff, but it remains a workspace cleanliness annoyance.
+- Minor non-blocking issue: `npm run lint` is still not a stable non-interactive check because Next prompts for ESLint initialization instead of using a committed lint config.
 
 ## regression risks
 
 - Low.
-- The only meaningful residual risk is planning drift if future truth-sync sprints again update `ROADMAP.md` and `.ai/handoff/CURRENT_STATE.md` without checking them against the accepted implementation and accepted reports.
-- Runtime risk from this sprint is effectively nil because no runtime files changed.
+- The main residual risk is operational rather than functional: future reviewers or CI may see local config churn from Next build autoconfiguration unless the web workspace eventually adopts the generated TypeScript settings deliberately.
+- The `/traces` route remains fixture-backed by design, so operators should not infer live trace listing coverage beyond what `BUILD_REPORT.md` describes.
 
 ## docs issues
 
-- No blocking docs issues.
-- Minor note only: the evidence cited in `BUILD_REPORT.md` depends partly on accepted Sprint 5T artifacts now visible through git history rather than through separate preserved files in the working tree. That is still adequate for this sprint and does not block acceptance.
+- No blocking docs issues remain.
+- `BUILD_REPORT.md` now satisfies the packet’s reporting requirements.
 
 ## should anything be added to RULES.md?
 
-- No.
-- The repo already had sufficient scope-control rules. The problem addressed here was stale truth artifacts, not a missing durable rule.
+- No required rules change.
+- Optional future rule only: if the team wants stricter workspace cleanliness, add a rule that generated framework config churn discovered during build must either be committed intentionally or explicitly documented and reverted before handoff.
 
 ## should anything update ARCHITECTURE.md?
 
 - No.
-- The current `ARCHITECTURE.md` already describes the accepted Sprint 5T Gmail seam accurately, including the external secret-manager boundary and the narrow `legacy_db_v0` transition path.
+- The sprint stayed within the documented backend seams and did not reveal an architecture contradiction.
 
 ## recommended next action
 
-- Accept Sprint 5U.
-- Open one narrow follow-up sprint to remove the remaining `legacy_db_v0` transition path without widening into Gmail search, sync, attachments, Calendar, runner, or UI scope.
+- Accept Sprint 6A.
+- If the team wants a cleaner frontend workflow next, open a narrow follow-up to stabilize lint setup and decide whether the Next-generated TypeScript config changes should be adopted permanently or continue to be reverted.

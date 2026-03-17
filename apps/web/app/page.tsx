@@ -1,51 +1,145 @@
-const milestones = [
-  "API foundation and migrations",
-  "Continuity event store",
-  "Web dashboard shell",
-  "Worker orchestration",
+import Link from "next/link";
+
+import { PageHeader } from "../components/page-header";
+import { SectionCard } from "../components/section-card";
+import { StatusBadge } from "../components/status-badge";
+
+const summaryCards = [
+  {
+    value: "5",
+    label: "Operator views",
+    detail: "Home, request composition, approvals, task inspection, and explainability are all exposed in one bounded shell.",
+  },
+  {
+    value: "3",
+    label: "Governance seams",
+    detail: "Requests, approvals, and tool executions stay visible instead of being hidden behind a consumer chat wrapper.",
+  },
+  {
+    value: "2",
+    label: "Data modes",
+    detail: "Pages can read live backend seams when configured and degrade to explicit fixtures when no API contract is present.",
+  },
+  {
+    value: "100%",
+    label: "Scoped surface",
+    detail: "The shell stays within the sprint packet: no auth expansion, no connector breadth, and no backend contract changes.",
+  },
+];
+
+const routeCards = [
+  {
+    href: "/chat",
+    title: "Governed Requests",
+    description: "Compose bounded operator requests, review response history, and keep compilation and response traces visible.",
+    status: "active",
+  },
+  {
+    href: "/approvals",
+    title: "Approval Inbox",
+    description: "Review pending approvals with tool, scope, routing, and rationale all contained in a stable inspector layout.",
+    status: "pending_approval",
+  },
+  {
+    href: "/tasks",
+    title: "Task Inspection",
+    description: "Inspect task lifecycle state, related governed requests, and ordered task-step progress without leaving the shell.",
+    status: "approved",
+  },
+  {
+    href: "/traces",
+    title: "Explain-Why Review",
+    description: "Trace context compilation and governed actions through a calm evidence-first review surface.",
+    status: "executed",
+  },
+];
+
+const shellNotes = [
+  "Stable navigation with obvious current location and restrained emphasis.",
+  "Cards and lists sized for readable density rather than dashboard clutter.",
+  "Responsive stacking that protects text containment on tablet and mobile widths.",
 ];
 
 export default function HomePage() {
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        display: "grid",
-        placeItems: "center",
-        background:
-          "radial-gradient(circle at top, rgba(245, 196, 122, 0.35), transparent 45%), #f4efe6",
-        color: "#1f2933",
-        padding: "2rem",
-        fontFamily: "Georgia, 'Times New Roman', serif",
-      }}
-    >
-      <section
-        style={{
-          width: "min(720px, 100%)",
-          border: "1px solid rgba(31, 41, 51, 0.12)",
-          borderRadius: "24px",
-          padding: "2rem",
-          background: "rgba(255, 255, 255, 0.82)",
-          boxShadow: "0 20px 60px rgba(31, 41, 51, 0.08)",
-        }}
-      >
-        <p style={{ letterSpacing: "0.18em", textTransform: "uppercase" }}>
-          AliceBot Foundation
-        </p>
-        <h1 style={{ fontSize: "clamp(2.5rem, 6vw, 4rem)", margin: "0.5rem 0 1rem" }}>
-          Operational shell for the modular monolith
-        </h1>
-        <p style={{ fontSize: "1.1rem", lineHeight: 1.7 }}>
-          The web app is intentionally minimal in this sprint. It exists to prove repository
-          structure while continuity, migrations, and safety primitives land in the API layer.
-        </p>
-        <ul style={{ margin: "1.5rem 0 0", paddingLeft: "1.25rem", lineHeight: 1.8 }}>
-          {milestones.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="AliceBot"
+        title="Operator shell for governed work"
+        description="The first web surface is intentionally narrow: it exposes existing backend seams with calm hierarchy, strong containment, and clear review paths."
+        meta={
+          <div className="header-meta">
+            <span className="subtle-chip">Sprint 6A shell</span>
+            <span className="subtle-chip">Design-system aligned</span>
+          </div>
+        }
+      />
+
+      <section className="metric-grid" aria-label="Shell summary">
+        {summaryCards.map((card) => (
+          <SectionCard key={card.label} className="section-card--metric">
+            <div className="metric-value">{card.value}</div>
+            <div className="metric-label">{card.label}</div>
+            <p className="metric-detail">{card.detail}</p>
+          </SectionCard>
+        ))}
       </section>
-    </main>
+
+      <div className="content-grid content-grid--wide">
+        <SectionCard
+          eyebrow="Core views"
+          title="Primary operator surfaces"
+          description="Each route is deliberately narrow, with one clear purpose and predictable visual rhythm."
+        >
+          <div className="route-grid">
+            {routeCards.map((route) => (
+              <Link key={route.href} href={route.href} className="nav-card">
+                <div className="nav-card__topline">
+                  <h3>{route.title}</h3>
+                  <StatusBadge status={route.status} />
+                </div>
+                <p>{route.description}</p>
+                <span className="nav-card__cta">Open view</span>
+              </Link>
+            ))}
+          </div>
+        </SectionCard>
+
+        <div className="stack">
+          <SectionCard
+            eyebrow="UI priorities"
+            title="What this shell optimizes for"
+            description="The interface favors trust, clarity, and reviewability before throughput."
+          >
+            <ul className="bullet-list">
+              {shellNotes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          </SectionCard>
+
+          <SectionCard
+            eyebrow="System posture"
+            title="Governed by default"
+            description="The landing view frames the product around visible control points rather than hidden automation."
+          >
+            <dl className="key-value-grid">
+              <div>
+                <dt>Request path</dt>
+                <dd>Explicitly labeled as governed and reviewable.</dd>
+              </div>
+              <div>
+                <dt>Consequential actions</dt>
+                <dd>Held behind approval and execution review states.</dd>
+              </div>
+              <div>
+                <dt>Explainability</dt>
+                <dd>Trace review sits beside operational work, not in a debug-only corner.</dd>
+              </div>
+            </dl>
+          </SectionCard>
+        </div>
+      </div>
+    </div>
   );
 }
-
