@@ -159,13 +159,11 @@ export function RequestComposer({
   }
 
   return (
-    <section className="composer-card">
-      <div className="composer-card__header">
+    <section className="composer-card composer-card--request">
+      <div className="composer-card__header composer-card__header--tight">
         <div className="governance-banner">
           <strong>{liveModeReady ? "Live operator mode" : "Fixture operator mode"}</strong>
-          <span>
-            Requests stay explicitly governed and recent routing plus request traces remain attached to each submission.
-          </span>
+          <span>Requests stay explicitly governed and the resulting approval, task, and trace links remain attached.</span>
         </div>
 
         <div className="form-field-group form-field-group--two-up">
@@ -191,10 +189,11 @@ export function RequestComposer({
           </div>
         </div>
 
-        <div className="form-field">
-          <label htmlFor="governed-action">Governed request</label>
+        <div className="composer-intro">
+          <p className="eyebrow">Governed request</p>
+          <h2 className="composer-title">Approval-gated action submission</h2>
           <p className="field-hint">
-            Submit the shipped approval-request payload directly. This surface is request-oriented, not a freeform chat transcript.
+            Submit the shipped approval-request payload directly. This mode is purpose-built for consequential actions, not freeform conversation.
           </p>
         </div>
       </div>
@@ -293,6 +292,7 @@ export function RequestComposer({
       <div className="detail-stack">
         <div className="list-panel__header">
           <div>
+            <p className="eyebrow">Recent activity</p>
             <h2>Recent governed request summaries</h2>
             <p>Latest submissions stay grouped with decision, approval linkage, task state, and traces.</p>
           </div>
