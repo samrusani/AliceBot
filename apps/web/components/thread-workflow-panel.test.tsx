@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   approvalFixtures,
   executionFixtures,
+  getFixtureTaskStepSummary,
+  getFixtureTaskSteps,
   taskFixtures,
   threadFixtures,
 } from "../lib/fixtures";
@@ -47,6 +49,9 @@ describe("ThreadWorkflowPanel", () => {
         taskSource="fixture"
         execution={executionFixtures[0]}
         executionSource="fixture"
+        taskSteps={getFixtureTaskSteps(taskFixtures[1].id)}
+        taskStepSummary={getFixtureTaskStepSummary(taskFixtures[1].id)}
+        taskStepSource="fixture"
       />,
     );
 
@@ -59,6 +64,8 @@ describe("ThreadWorkflowPanel", () => {
     expect(screen.getByText("Selected task")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Executed" })).toBeDisabled();
     expect(screen.getByText("Open linked approval")).toBeInTheDocument();
+    expect(screen.getByText("Ordered lifecycle steps")).toBeInTheDocument();
+    expect(screen.getByText("1 steps")).toBeInTheDocument();
   });
 
   it("shows an explicit empty state when the selected thread has no linked workflow", () => {
@@ -92,6 +99,10 @@ describe("ThreadWorkflowPanel", () => {
         execution={null}
         executionSource="unavailable"
         executionUnavailableReason="Execution API timed out."
+        taskSteps={[]}
+        taskStepSummary={null}
+        taskStepSource="unavailable"
+        taskStepUnavailableReason="Task step API timed out."
         apiBaseUrl="https://api.example.com"
         userId="user-1"
       />,
@@ -101,6 +112,8 @@ describe("ThreadWorkflowPanel", () => {
     expect(screen.getByText("Approval review unavailable")).toBeInTheDocument();
     expect(screen.getByText("Approval API timed out.")).toBeInTheDocument();
     expect(screen.getByText("Selected task")).toBeInTheDocument();
+    expect(screen.getByText("Task-step timeline unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Task step API timed out.")).toBeInTheDocument();
     expect(screen.getByText("Execution review could not be loaded")).toBeInTheDocument();
     expect(screen.getByText("Execution API timed out.")).toBeInTheDocument();
   });
@@ -115,6 +128,9 @@ describe("ThreadWorkflowPanel", () => {
         taskSource="fixture"
         execution={executionFixtures[0]}
         executionSource="fixture"
+        taskSteps={getFixtureTaskSteps(taskFixtures[1].id)}
+        taskStepSummary={getFixtureTaskStepSummary(taskFixtures[1].id)}
+        taskStepSource="fixture"
       />,
     );
 

@@ -12,6 +12,8 @@ import type {
   ApiSource,
   ApprovalItem,
   TaskItem,
+  TaskStepItem,
+  TaskStepListSummary,
   ThreadEventItem,
   ThreadItem,
   ThreadSessionItem,
@@ -20,6 +22,7 @@ import type {
 import {
   deriveThreadWorkflowState,
   getApiConfig,
+  getTaskSteps,
   getThreadDetail,
   getThreadEvents,
   getThreadSessions,
@@ -36,6 +39,8 @@ import {
   getFixtureThread,
   getFixtureThreadEvents,
   getFixtureThreadSessions,
+  getFixtureTaskStepSummary,
+  getFixtureTaskSteps,
   requestHistoryFixtures,
   taskFixtures,
   threadFixtures,
@@ -70,6 +75,10 @@ type WorkflowViewModel = {
   execution: ToolExecutionItem | null;
   executionSource: WorkflowSource | null;
   executionUnavailableReason?: string;
+  taskSteps: TaskStepItem[];
+  taskStepSummary: TaskStepListSummary | null;
+  taskStepSource: WorkflowSource | null;
+  taskStepUnavailableReason?: string;
 };
 
 function normalizeMode(value: string | string[] | undefined): ChatMode {
@@ -115,6 +124,9 @@ async function loadFixtureWorkflow(selectedThreadId: string): Promise<WorkflowVi
       taskSource: "fixture",
       execution: null,
       executionSource: null,
+      taskSteps: [],
+      taskStepSummary: null,
+      taskStepSource: null,
     };
   }
 
@@ -132,6 +144,9 @@ async function loadFixtureWorkflow(selectedThreadId: string): Promise<WorkflowVi
     taskSource: "fixture",
     execution,
     executionSource: execution ? "fixture" : null,
+    taskSteps: task ? getFixtureTaskSteps(task.id) : [],
+    taskStepSummary: task ? getFixtureTaskStepSummary(task.id) : null,
+    taskStepSource: task ? "fixture" : null,
   };
 }
 
@@ -148,6 +163,9 @@ async function loadLiveWorkflow(
       taskSource: "live",
       execution: null,
       executionSource: null,
+      taskSteps: [],
+      taskStepSummary: null,
+      taskStepSource: null,
     };
   }
 
@@ -166,6 +184,23 @@ async function loadLiveWorkflow(
     taskItems,
     executionItems,
   );
+  let taskSteps: TaskStepItem[] = [];
+  let taskStepSummary: TaskStepListSummary | null = null;
+  let taskStepSource: WorkflowSource | null = derivedWorkflow.task ? "live" : null;
+  let taskStepUnavailableReason: string | undefined;
+
+  if (derivedWorkflow.task) {
+    try {
+      const taskStepPayload = await getTaskSteps(apiBaseUrl, derivedWorkflow.task.id, userId);
+      taskSteps = taskStepPayload.items;
+      taskStepSummary = taskStepPayload.summary;
+      taskStepSource = "live";
+    } catch (error) {
+      taskStepSource = "unavailable";
+      taskStepUnavailableReason =
+        error instanceof Error ? error.message : "Task-step timeline could not be loaded.";
+    }
+  }
 
   const expectsExecutionReview = shouldExpectThreadExecutionReview(
     derivedWorkflow.approval,
@@ -207,6 +242,10 @@ async function loadLiveWorkflow(
           ? executionsResult.reason.message
           : "Execution state could not be loaded."
         : undefined,
+    taskSteps,
+    taskStepSummary,
+    taskStepSource,
+    taskStepUnavailableReason,
   };
 }
 
@@ -319,7 +358,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
   const initialRequestEntries = liveModeReady ? [] : requestHistoryFixtures;
 
   return (
-    <div className="page-stack">
+    <div className="page-stack page-stack--chat">
       <PageHeader
         eyebrow="Operator conversation surface"
         title="Chat with the assistant or route a governed request"
@@ -390,6 +429,10 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
             execution={workflow.execution}
             executionSource={workflow.executionSource}
             executionUnavailableReason={workflow.executionUnavailableReason}
+            taskSteps={workflow.taskSteps}
+            taskStepSummary={workflow.taskStepSummary}
+            taskStepSource={workflow.taskStepSource}
+            taskStepUnavailableReason={workflow.taskStepUnavailableReason}
             apiBaseUrl={liveModeReady ? apiConfig.apiBaseUrl : undefined}
             userId={liveModeReady ? apiConfig.userId : undefined}
           />

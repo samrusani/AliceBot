@@ -283,6 +283,10 @@ code,
   gap: 28px;
 }
 
+.page-stack--chat {
+  gap: 24px;
+}
+
 .page-header {
   display: flex;
   flex-wrap: wrap;
@@ -329,7 +333,7 @@ code,
 .chat-layout__main,
 .chat-layout__rail {
   display: grid;
-  gap: 24px;
+  gap: 20px;
 }
 
 .chat-layout__rail {
@@ -337,7 +341,7 @@ code,
 }
 
 .chat-layout {
-  grid-template-columns: minmax(0, 1.34fr) minmax(320px, 0.82fr);
+  grid-template-columns: minmax(0, 1.42fr) minmax(320px, 0.78fr);
   align-items: flex-start;
 }
 
@@ -415,6 +419,7 @@ code,
   color: var(--text-soft);
   line-height: 1.6;
   max-width: 72ch;
+  overflow-wrap: anywhere;
 }
 
 .metric-value {
@@ -592,6 +597,7 @@ code,
   margin: 0;
   color: var(--text-soft);
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .button,
@@ -1039,6 +1045,11 @@ code,
   gap: 10px;
 }
 
+.thread-workflow-panel__chips .subtle-chip {
+  max-width: 100%;
+  white-space: normal;
+}
+
 .thread-workflow-panel__stack {
   display: grid;
   gap: 16px;
@@ -1067,6 +1078,25 @@ code,
 
 .thread-workflow-panel .execution-summary__code {
   max-height: 220px;
+}
+
+.task-summary--embedded .detail-group {
+  padding: 16px;
+}
+
+.task-step-list {
+  gap: 18px;
+}
+
+.task-step-list--embedded .timeline-list {
+  max-height: 560px;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.task-step-list--embedded .timeline-item {
+  padding: 16px;
+  border-radius: 16px;
 }
 
 .thread-review-grid {
@@ -1107,6 +1137,8 @@ code,
   font-size: 0.84rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
   max-width: 100%;
 }
 
@@ -1221,11 +1253,30 @@ code,
 .timeline-item {
   display: grid;
   gap: 14px;
+  position: relative;
+  padding-left: 16px;
+}
+
+.timeline-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 999px;
+  background: rgba(39, 75, 99, 0.18);
 }
 
 .timeline-item__summary {
   display: grid;
   gap: 12px;
+}
+
+.timeline-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .approval-action-bar,
@@ -1396,6 +1447,12 @@ code,
   .metric-grid,
   .route-grid {
     grid-template-columns: 1fr;
+  }
+
+  .task-step-list--embedded .timeline-list {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
   }
 }
 
