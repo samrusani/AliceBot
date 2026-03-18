@@ -5,6 +5,8 @@ import {
   combinePageModes,
   createThread,
   deriveThreadWorkflowState,
+  getTaskArtifactDetail,
+  getTaskWorkspaceDetail,
   getEntityDetail,
   getMemoryDetail,
   getMemoryEvaluationSummary,
@@ -16,6 +18,9 @@ import {
   executeApproval,
   listEntities,
   listEntityEdges,
+  listTaskArtifactChunks,
+  listTaskArtifacts,
+  listTaskWorkspaces,
   listMemories,
   listMemoryLabels,
   listMemoryReviewQueue,
@@ -934,6 +939,152 @@ describe("api helpers", () => {
       ],
       [
         "https://api.example.com/v0/entities/entity-1/edges?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+    ]);
+  });
+
+  it("reads task workspace and artifact review endpoints with user-scoped query params", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "workspace-1",
+              task_id: "task-1",
+              status: "active",
+              local_path: "/tmp/workspace/task-1",
+              created_at: "2026-03-18T00:00:00Z",
+              updated_at: "2026-03-18T00:00:00Z",
+            },
+          ],
+          summary: {
+            total_count: 1,
+            order: ["created_at_asc", "id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          workspace: {
+            id: "workspace-1",
+            task_id: "task-1",
+            status: "active",
+            local_path: "/tmp/workspace/task-1",
+            created_at: "2026-03-18T00:00:00Z",
+            updated_at: "2026-03-18T00:00:00Z",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "artifact-1",
+              task_id: "task-1",
+              task_workspace_id: "workspace-1",
+              status: "registered",
+              ingestion_status: "ingested",
+              relative_path: "notes/review.md",
+              media_type_hint: "text/markdown",
+              created_at: "2026-03-18T00:00:00Z",
+              updated_at: "2026-03-18T00:01:00Z",
+            },
+          ],
+          summary: {
+            total_count: 1,
+            order: ["created_at_asc", "id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          artifact: {
+            id: "artifact-1",
+            task_id: "task-1",
+            task_workspace_id: "workspace-1",
+            status: "registered",
+            ingestion_status: "ingested",
+            relative_path: "notes/review.md",
+            media_type_hint: "text/markdown",
+            created_at: "2026-03-18T00:00:00Z",
+            updated_at: "2026-03-18T00:01:00Z",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "chunk-1",
+              task_artifact_id: "artifact-1",
+              sequence_no: 1,
+              char_start: 0,
+              char_end_exclusive: 12,
+              text: "hello world",
+              created_at: "2026-03-18T00:02:00Z",
+              updated_at: "2026-03-18T00:02:00Z",
+            },
+          ],
+          summary: {
+            total_count: 1,
+            total_characters: 12,
+            media_type: "text/markdown",
+            chunking_rule: "artifact_ingestion_v0",
+            order: ["sequence_no_asc", "id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await listTaskWorkspaces("https://api.example.com", "user-1");
+    await getTaskWorkspaceDetail("https://api.example.com", "workspace-1", "user-1");
+    await listTaskArtifacts("https://api.example.com", "user-1");
+    await getTaskArtifactDetail("https://api.example.com", "artifact-1", "user-1");
+    await listTaskArtifactChunks("https://api.example.com", "artifact-1", "user-1");
+
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "https://api.example.com/v0/task-workspaces?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/task-workspaces/workspace-1?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/task-artifacts?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/task-artifacts/artifact-1?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/task-artifacts/artifact-1/chunks?user_id=user-1",
         expect.objectContaining({
           cache: "no-store",
         }),

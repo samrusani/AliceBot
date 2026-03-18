@@ -381,6 +381,61 @@ export type EntityEdgeListSummary = {
   order: string[];
 };
 
+export type TaskWorkspaceStatus = "active";
+
+export type TaskWorkspaceRecord = {
+  id: string;
+  task_id: string;
+  status: TaskWorkspaceStatus;
+  local_path: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskWorkspaceListSummary = {
+  total_count: number;
+  order: string[];
+};
+
+export type TaskArtifactStatus = "registered";
+export type TaskArtifactIngestionStatus = "pending" | "ingested";
+
+export type TaskArtifactRecord = {
+  id: string;
+  task_id: string;
+  task_workspace_id: string;
+  status: TaskArtifactStatus;
+  ingestion_status: TaskArtifactIngestionStatus;
+  relative_path: string;
+  media_type_hint: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskArtifactListSummary = {
+  total_count: number;
+  order: string[];
+};
+
+export type TaskArtifactChunkRecord = {
+  id: string;
+  task_artifact_id: string;
+  sequence_no: number;
+  char_start: number;
+  char_end_exclusive: number;
+  text: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskArtifactChunkListSummary = {
+  total_count: number;
+  total_characters: number;
+  media_type: string;
+  chunking_rule: string;
+  order: string[];
+};
+
 export type MemoryReviewLabelPayload = {
   user_id: string;
   label: MemoryReviewLabelValue;
@@ -863,6 +918,51 @@ export function getTraceEvents(apiBaseUrl: string, traceId: string, userId: stri
   return requestJson<{ items: TraceReviewEventItem[]; summary: TraceReviewEventListSummary }>(
     apiBaseUrl,
     `/v0/traces/${traceId}/events`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function listTaskWorkspaces(apiBaseUrl: string, userId: string) {
+  return requestJson<{ items: TaskWorkspaceRecord[]; summary: TaskWorkspaceListSummary }>(
+    apiBaseUrl,
+    "/v0/task-workspaces",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getTaskWorkspaceDetail(apiBaseUrl: string, taskWorkspaceId: string, userId: string) {
+  return requestJson<{ workspace: TaskWorkspaceRecord }>(
+    apiBaseUrl,
+    `/v0/task-workspaces/${taskWorkspaceId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function listTaskArtifacts(apiBaseUrl: string, userId: string) {
+  return requestJson<{ items: TaskArtifactRecord[]; summary: TaskArtifactListSummary }>(
+    apiBaseUrl,
+    "/v0/task-artifacts",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getTaskArtifactDetail(apiBaseUrl: string, taskArtifactId: string, userId: string) {
+  return requestJson<{ artifact: TaskArtifactRecord }>(
+    apiBaseUrl,
+    `/v0/task-artifacts/${taskArtifactId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function listTaskArtifactChunks(apiBaseUrl: string, taskArtifactId: string, userId: string) {
+  return requestJson<{ items: TaskArtifactChunkRecord[]; summary: TaskArtifactChunkListSummary }>(
+    apiBaseUrl,
+    `/v0/task-artifacts/${taskArtifactId}/chunks`,
     undefined,
     { user_id: userId },
   );
