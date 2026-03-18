@@ -1,9 +1,18 @@
-import type { ApiSource, ApprovalItem, TaskItem, ThreadItem, ToolExecutionItem } from "../lib/api";
+import type {
+  ApiSource,
+  ApprovalItem,
+  TaskItem,
+  TaskStepItem,
+  TaskStepListSummary,
+  ThreadItem,
+  ToolExecutionItem,
+} from "../lib/api";
 import { ApprovalDetail } from "./approval-detail";
 import { EmptyState } from "./empty-state";
 import { ExecutionSummary } from "./execution-summary";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
+import { TaskStepList } from "./task-step-list";
 import { TaskSummary } from "./task-summary";
 
 type WorkflowSource = ApiSource | "unavailable";
@@ -19,6 +28,10 @@ type ThreadWorkflowPanelProps = {
   execution: ToolExecutionItem | null;
   executionSource: WorkflowSource | null;
   executionUnavailableReason?: string;
+  taskSteps?: TaskStepItem[];
+  taskStepSummary?: TaskStepListSummary | null;
+  taskStepSource?: WorkflowSource | null;
+  taskStepUnavailableReason?: string;
   apiBaseUrl?: string;
   userId?: string;
 };
@@ -48,6 +61,10 @@ export function ThreadWorkflowPanel({
   execution,
   executionSource,
   executionUnavailableReason,
+  taskSteps = [],
+  taskStepSummary = null,
+  taskStepSource = null,
+  taskStepUnavailableReason,
   apiBaseUrl,
   userId,
 }: ThreadWorkflowPanelProps) {
@@ -69,6 +86,7 @@ export function ThreadWorkflowPanel({
   const hasWorkflow = Boolean(approval || task || execution);
   const hasUnavailableState =
     approvalSource === "unavailable" || taskSource === "unavailable" || executionSource === "unavailable";
+  const resolvedTaskStepSource = taskStepSource ?? (task ? taskSource : null);
 
   return (
     <SectionCard
@@ -123,7 +141,13 @@ export function ThreadWorkflowPanel({
             <TaskSummary
               task={task}
               taskSource={taskSource === "fixture" ? "fixture" : "live"}
-              stepSource={taskSource === "fixture" ? "fixture" : "live"}
+              stepSource={
+                resolvedTaskStepSource === "fixture"
+                  ? "fixture"
+                  : resolvedTaskStepSource === "unavailable"
+                    ? "unavailable"
+                    : "live"
+              }
               execution={execution}
               executionSource={executionSource === "fixture" || executionSource === "live" ? executionSource : null}
               executionUnavailableMessage={executionUnavailableReason}
@@ -139,6 +163,33 @@ export function ThreadWorkflowPanel({
               }
               className="empty-state--compact"
             />
+          ) : null}
+
+          {task ? (
+            resolvedTaskStepSource === "unavailable" ? (
+              <SectionCard
+                eyebrow="Task steps"
+                title="Task-step timeline unavailable"
+                description="The selected-thread task-step sequence could not be loaded from the configured backend."
+                className="section-card--embedded task-step-list--embedded"
+              >
+                <EmptyState
+                  title="Task-step review unavailable"
+                  description={
+                    taskStepUnavailableReason ??
+                    "Task-step records could not be loaded for the selected thread's latest linked task."
+                  }
+                  className="empty-state--compact"
+                />
+              </SectionCard>
+            ) : (
+              <TaskStepList
+                steps={taskSteps}
+                summary={taskStepSummary}
+                source={resolvedTaskStepSource === "fixture" ? "fixture" : "live"}
+                chrome="embedded"
+              />
+            )
           ) : null}
 
           {!approval && !task && (execution || executionSource === "unavailable") ? (
