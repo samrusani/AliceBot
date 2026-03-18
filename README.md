@@ -1,12 +1,12 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Sprint 6I: a FastAPI backend plus a bounded Next.js operator shell.
+AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Sprint 6N: a FastAPI backend plus a bounded Next.js operator shell.
 
 ## Current Implemented Slice
 
 - `apps/api` is the core shipped surface. It includes continuity, context compilation, assistant responses, governed memory and retrieval, policy/tool/approval governance, execution budgets, tasks and task steps, rooted local workspaces and artifacts, artifact retrieval, traces, and the narrow read-only Gmail seam.
 - `apps/web` is shipped operator UI, not scaffold-only. The shell includes `/`, `/chat`, `/approvals`, `/tasks`, and `/traces`, with live-backend reads when configured and explicit fixture fallback otherwise.
-- `/chat` supports both assistant and governed-request modes, selected-thread continuity, compact thread creation, and bounded continuity review.
+- `/chat` supports both assistant and governed-request modes, selected-thread continuity, compact thread creation, thread-linked governed workflow review, ordered task-step timeline review, bounded explain-why trace embedding, and bounded supporting continuity review.
 - `workers` remains scaffold-only.
 
 ## Quick Start
