@@ -28,6 +28,10 @@ function formatStatus(status: string | undefined) {
   return status.replace(/_/g, " ");
 }
 
+function isConversationEvent(event: ThreadEventItem) {
+  return event.kind === "message.user" || event.kind === "message.assistant";
+}
+
 export function ThreadSummary({
   thread,
   sessions,
@@ -66,6 +70,8 @@ export function ThreadSummary({
   }
 
   const latestSession = sessions[sessions.length - 1];
+  const conversationCount = events.filter(isConversationEvent).length;
+  const operationalCount = events.length - conversationCount;
 
   return (
     <SectionCard
@@ -73,8 +79,8 @@ export function ThreadSummary({
       title={thread.title}
       description={
         source === "live"
-          ? "Thread identity, lifecycle timing, and bounded continuity counts stay visible before any new message or governed action."
-          : "Fixture preview keeps the current thread identity and continuity footprint explicit."
+          ? "Thread identity and continuity footprint stay explicit while the transcript remains the primary reading surface."
+          : "Fixture preview keeps the selected thread identity and continuity footprint explicit."
       }
     >
       <div className="thread-summary__topline">
@@ -106,6 +112,14 @@ export function ThreadSummary({
           <dd>{source === "live" ? "Live continuity API" : "Fixture preview"}</dd>
         </div>
       </dl>
+
+      <div className="detail-group detail-group--muted">
+        <span className="history-entry__label">Continuity breakdown</span>
+        <p>
+          {conversationCount} conversation entries and {operationalCount} supporting operational
+          events are attached to this thread.
+        </p>
+      </div>
 
       <div className="detail-group">
         <span className="history-entry__label">Thread ID</span>

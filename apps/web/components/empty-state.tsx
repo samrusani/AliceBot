@@ -5,11 +5,18 @@ type EmptyStateProps = {
   description: string;
   actionHref?: string;
   actionLabel?: string;
+  className?: string;
 };
 
-export function EmptyState({ title, description, actionHref, actionLabel }: EmptyStateProps) {
+export function EmptyState({
+  title,
+  description,
+  actionHref,
+  actionLabel,
+  className,
+}: EmptyStateProps) {
   return (
-    <div className="empty-state">
+    <div className={["empty-state", className].filter(Boolean).join(" ")}>
       <h3 className="empty-state__title">{title}</h3>
       <p className="empty-state__description">{description}</p>
       {actionHref && actionLabel ? (
