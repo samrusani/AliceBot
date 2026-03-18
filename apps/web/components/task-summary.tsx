@@ -9,7 +9,7 @@ import { StatusBadge } from "./status-badge";
 type TaskSummaryProps = {
   task: TaskItem | null;
   taskSource: ApiSource;
-  stepSource: ApiSource;
+  stepSource: ApiSource | "unavailable";
   execution: ToolExecutionItem | null;
   executionSource?: ApiSource | null;
   executionUnavailableMessage?: string | null;
@@ -47,8 +47,14 @@ export function TaskSummary({
     <SectionCard
       eyebrow="Selected task"
       title={task.tool.name}
-      description="Latest task state, approval linkage, and execution review stay grouped in one bounded task summary."
-      className={chrome === "embedded" ? "section-card--embedded" : undefined}
+      description="Latest task state, approval linkage, and execution review stay grouped in one bounded summary."
+      className={[
+        chrome === "embedded" ? "section-card--embedded" : null,
+        "task-summary",
+        chrome === "embedded" ? "task-summary--embedded" : null,
+      ]
+        .filter(Boolean)
+        .join(" ")}
     >
       <div className="detail-grid">
         <div className="detail-summary">
@@ -81,7 +87,13 @@ export function TaskSummary({
           </div>
           <div>
             <dt>Step source</dt>
-            <dd>{stepSource === "live" ? "Live task-step detail" : "Fixture task-step fallback"}</dd>
+            <dd>
+              {stepSource === "live"
+                ? "Live task-step detail"
+                : stepSource === "fixture"
+                  ? "Fixture task-step fallback"
+                  : "Task-step read unavailable"}
+            </dd>
           </div>
         </dl>
 

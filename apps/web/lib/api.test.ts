@@ -5,6 +5,7 @@ import {
   combinePageModes,
   createThread,
   deriveThreadWorkflowState,
+  getTaskSteps,
   getThreadDetail,
   getThreadEvents,
   getThreadSessions,
@@ -681,6 +682,72 @@ describe("api helpers", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       user_id: "user-1",
     });
+  });
+
+  it("reads task-step timelines from the shipped endpoint", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "step-1",
+              task_id: "task-1",
+              sequence_no: 1,
+              kind: "governed_request",
+              status: "created",
+              request: {
+                thread_id: "thread-1",
+                tool_id: "tool-1",
+                action: "place_order",
+                scope: "supplements",
+                domain_hint: "ecommerce",
+                risk_hint: "purchase",
+                attributes: {},
+              },
+              outcome: {
+                routing_decision: "require_approval",
+                approval_id: "approval-1",
+                approval_status: "pending",
+                execution_id: null,
+                execution_status: null,
+                blocked_reason: null,
+              },
+              lineage: {
+                parent_step_id: null,
+                source_approval_id: null,
+                source_execution_id: null,
+              },
+              trace: {
+                trace_id: "trace-1",
+                trace_kind: "approval_request",
+              },
+              created_at: "2026-03-17T00:00:00Z",
+              updated_at: "2026-03-17T00:00:00Z",
+            },
+          ],
+          summary: {
+            task_id: "task-1",
+            total_count: 1,
+            latest_sequence_no: 1,
+            latest_status: "created",
+            next_sequence_no: 2,
+            append_allowed: false,
+            order: ["step-1"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await getTaskSteps("https://api.example.com", "task-1", "user-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/tasks/task-1/steps?user_id=user-1",
+      expect.objectContaining({
+        cache: "no-store",
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+      }),
+    );
   });
 
   it("reads the shipped trace review endpoints with user-scoped query params", async () => {

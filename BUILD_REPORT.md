@@ -2,26 +2,26 @@
 
 ## sprint objective
 
-Deliver Sprint 6L by extending `/chat` with bounded selected-thread governed workflow review so approval, task, and execution state stay visible beside the durable transcript without widening backend scope.
+Deliver Sprint 6M by extending `/chat` with a bounded selected-thread task-step timeline for the latest linked task, while keeping transcript-first hierarchy and reusing shipped task-step reads.
 
-## exact `/chat` workflow files and components updated
+## exact `/chat` task-step files and components updated
 
 - `apps/web/app/chat/page.tsx`
 - `apps/web/app/globals.css`
-- `apps/web/components/approval-detail.tsx`
-- `apps/web/components/task-summary.tsx`
 - `apps/web/components/thread-workflow-panel.tsx`
 - `apps/web/components/thread-workflow-panel.test.tsx`
-- `apps/web/lib/api.ts`
+- `apps/web/components/task-step-list.tsx`
+- `apps/web/components/task-step-list.test.tsx`
+- `apps/web/components/task-summary.tsx`
 - `apps/web/lib/api.test.ts`
 - `BUILD_REPORT.md`
 
-## thread-linked workflow backing mode
+## selected-thread task-step review backing mode
 
 - Mixed.
-- Live workflow review uses existing shipped reads from approvals, tasks, and tool executions when API configuration is present.
-- Fixture workflow review is used when API configuration is absent.
-- Live workflow failures degrade to explicit unavailable states inside the chat workflow panel instead of implying missing workflow.
+- Live mode: selected-thread workflow derives latest linked task from shipped list reads, then loads task-step timeline from shipped task-step endpoint.
+- Fixture mode: selected-thread task and task-step timeline are fixture-backed when API configuration is absent.
+- Partial unavailable mode: live task-step read failures show explicit unavailable state in the workflow panel without breaking transcript or task review.
 
 ## shipped backend endpoints consumed
 
@@ -31,6 +31,7 @@ Deliver Sprint 6L by extending `/chat` with bounded selected-thread governed wor
 - `GET /v0/threads/{thread_id}/sessions`
 - `GET /v0/approvals`
 - `GET /v0/tasks`
+- `GET /v0/tasks/{task_id}/steps`
 - `GET /v0/tool-executions`
 - `POST /v0/approvals/{approval_id}/approve`
 - `POST /v0/approvals/{approval_id}/reject`
@@ -41,47 +42,45 @@ Deliver Sprint 6L by extending `/chat` with bounded selected-thread governed wor
 
 ## completed work
 
-- Added a new `thread-workflow-panel` to `/chat` so selected-thread workflow state now appears in the rail as a bounded secondary review surface.
-- Derived the latest relevant approval and task state client-side from shipped list endpoints and existing fixtures, keyed by the selected thread.
-- Restricted execution review to explicit linkage only: selected-task `latest_execution_id` first, then execution records explicitly linked to the selected approval, with no thread-level fallback.
-- Reused `approval-detail`, `approval-actions`, `task-summary`, and `execution-summary` inside compact embedded cards so the chat route inherits the same workflow semantics as `/approvals` and `/tasks`.
-- Restored bounded execution review when approval detail is absent by rendering execution review through the task summary or a standalone embedded execution block when needed.
-- Preserved transcript-first hierarchy by keeping workflow review secondary and visually quieter than the conversation column.
-- Tightened rail containment with embedded card chrome, single-column key-value layouts, bounded execution code blocks, and full-width action layouts that avoid cramped wrapping.
-- Added in-scope regression coverage for mixed-history execution linkage and approval-missing execution review in `apps/web/lib/api.test.ts` and `apps/web/components/thread-workflow-panel.test.tsx`.
+- Extended chat workflow loading to include selected-thread latest-task step timeline using existing shipped endpoint and explicit unavailable handling.
+- Reused `TaskStepList` inside `thread-workflow-panel` as an embedded bounded tertiary panel.
+- Added explicit embedded empty/unavailable timeline states when task-step data is missing or unreadable.
+- Refined task-step timeline readability with step metadata, calmer embedded chrome, bounded scroll in chat rail, and improved chip/text containment.
+- Tightened chat hierarchy and spacing with chat-specific layout refinements so transcript remains primary and right-rail workflow remains secondary/tertiary.
+- Added regression tests for embedded timeline rendering and task-step API request contract.
 
 ## exact commands run
 
-- `npm run lint`
-- `npm test`
-- `npm run build`
+- `npm run lint` (in `apps/web`)
+- `npm test` (in `apps/web`)
+- `npm run build` (in `apps/web`)
 
 ## verification results
 
 - `npm run lint`: passed
-- `npm test`: passed, `13` test files and `46` tests passed
+- `npm test`: passed, `14` test files and `50` tests passed
 - `npm run build`: passed
 
 ## concise desktop visual verification notes
 
-- No fresh interactive desktop browser verification was performed during this fix turn.
-- Desktop layout expectations were reviewed by component and CSS inspection only, alongside a successful production build.
-- A manual desktop pass for real long-thread and long-execution payloads remains advisable before merge.
+- Interactive desktop browser QA was not run in this environment.
+- Desktop hierarchy/containment was verified via component + CSS inspection and production build output.
+- Recommended before merge: quick manual desktop pass on `/chat` with long thread titles and long task-step attribute values.
 
 ## concise mobile visual verification notes
 
-- No fresh interactive mobile or responsive browser verification was performed during this fix turn.
-- Mobile behavior expectations were reviewed from the existing responsive CSS and component structure only.
-- A manual narrow-viewport pass remains advisable before merge.
+- Interactive mobile viewport QA was not run in this environment.
+- Mobile behavior was checked against responsive CSS rules, including single-column fallback and embedded timeline unbounding.
+- Recommended before merge: quick manual viewport pass at <=`740px` on `/chat` with populated timeline steps.
 
 ## deferred scope
 
-- No backend changes or new thread-specific workflow endpoints.
-- No redesign of `/approvals` or `/tasks`.
-- No task-step mutation UI beyond the shipped approval resolution and execute actions.
-- No inbox, dashboard, pagination, search, or broader workflow surfacing beyond the selected thread.
-- No changes to `DESIGN_SYSTEM.md`; the sprint did not reveal a concrete contradiction that required rewriting the design system.
+- No backend changes or new endpoints.
+- No task-step mutation UI.
+- No redesign of `/tasks`, `/approvals`, or unrelated routes.
+- No Gmail, Calendar, runner, connector, or broader orchestration scope expansion.
+- No `DESIGN_SYSTEM.md` rewrite; no concrete contradiction was introduced.
 
 ## worktree notes
 
-- `.ai/active/SPRINT_PACKET.md` was already modified before this sprint work and was not changed here.
+- `.ai/active/SPRINT_PACKET.md` and `REVIEW_REPORT.md` were already modified before this implementation and were not edited as part of this sprint change.

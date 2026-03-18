@@ -17,20 +17,38 @@ function formatAttributeValue(value: unknown) {
   return JSON.stringify(value);
 }
 
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
 export function TaskStepList({
   steps,
   summary,
   source,
+  chrome = "card",
 }: {
   steps: TaskStepItem[];
   summary: TaskStepListSummary | null;
   source: "live" | "fixture";
+  chrome?: "card" | "embedded";
 }) {
   return (
     <SectionCard
       eyebrow="Task steps"
       title="Ordered lifecycle steps"
       description="The timeline preserves request intent, downstream approval or execution state, and trace linkage in one readable sequence."
+      className={[
+        chrome === "embedded" ? "section-card--embedded" : null,
+        "task-step-list",
+        chrome === "embedded" ? "task-step-list--embedded" : null,
+      ]
+        .filter(Boolean)
+        .join(" ")}
     >
       {summary ? (
         <div className="cluster">
@@ -58,6 +76,11 @@ export function TaskStepList({
                   </h3>
                 </div>
                 <StatusBadge status={step.status} />
+              </div>
+
+              <div className="timeline-item__meta">
+                <span className="meta-pill">{step.kind.replace(/_/g, " ")}</span>
+                <span className="meta-pill">{formatDate(step.updated_at)}</span>
               </div>
 
               <div className="timeline-item__summary">
