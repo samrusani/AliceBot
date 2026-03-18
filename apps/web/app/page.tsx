@@ -6,14 +6,16 @@ import { StatusBadge } from "../components/status-badge";
 
 const summaryCards = [
   {
-    value: "7",
+    value: "8",
     label: "Operator views",
-    detail: "Home, request composition, approvals, task inspection, memory review, entity review, and explainability are all exposed in one bounded shell.",
+    detail:
+      "Home, request composition, approvals, task inspection, artifact review, memory review, entity review, and explainability are all exposed in one bounded shell.",
   },
   {
-    value: "5",
+    value: "6",
     label: "Governance seams",
-    detail: "Requests, approvals, tasks, memory review, and entity review seams stay visible instead of being hidden behind a consumer chat wrapper.",
+    detail:
+      "Requests, approvals, tasks, artifact review, memory review, and entity review seams stay visible instead of being hidden behind a consumer chat wrapper.",
   },
   {
     value: "2",
@@ -45,6 +47,12 @@ const routeCards = [
     title: "Task Inspection",
     description: "Inspect task lifecycle state, related governed requests, and ordered task-step progress without leaving the shell.",
     status: "approved",
+  },
+  {
+    href: "/artifacts",
+    title: "Artifact Review",
+    description: "Inspect persisted artifacts, selected detail, linked task workspace metadata, and ordered chunk evidence.",
+    status: "ingested",
   },
   {
     href: "/memories",
@@ -81,7 +89,7 @@ export default function HomePage() {
         description="The first web surface is intentionally narrow: it exposes existing backend seams with calm hierarchy, strong containment, and clear review paths."
         meta={
           <div className="header-meta">
-            <span className="subtle-chip">Sprint 6Q shell</span>
+            <span className="subtle-chip">Sprint 6R shell</span>
             <span className="subtle-chip">Design-system aligned</span>
           </div>
         }

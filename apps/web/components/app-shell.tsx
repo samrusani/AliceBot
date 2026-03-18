@@ -27,6 +27,11 @@ const navigation = [
     caption: "Inspect lifecycle state and task steps",
   },
   {
+    href: "/artifacts",
+    label: "Artifacts",
+    caption: "Review task artifacts, workspaces, and chunks",
+  },
+  {
     href: "/memories",
     label: "Memories",
     caption: "Review memory detail, revisions, and labels",
@@ -65,7 +70,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             <p className="eyebrow">AliceBot</p>
             <h1 className="brand-title">Operator shell</h1>
             <p className="brand-description">
-              Calm, governed views for requests, approvals, tasks, memories, entities, and explainability.
+              Calm, governed views for requests, approvals, tasks, artifacts, memories, entities, and
+              explainability.
             </p>
           </div>
 
