@@ -31,11 +31,13 @@ export function TaskStepList({
   summary,
   source,
   chrome = "card",
+  traceHrefPrefix,
 }: {
   steps: TaskStepItem[];
   summary: TaskStepListSummary | null;
   source: "live" | "fixture";
   chrome?: "card" | "embedded";
+  traceHrefPrefix?: string;
 }) {
   return (
     <SectionCard
@@ -115,7 +117,17 @@ export function TaskStepList({
                   <div>
                     <dt>Trace</dt>
                     <dd className="mono">
-                      {step.trace.trace_id} · {step.trace.trace_kind}
+                      {traceHrefPrefix ? (
+                        <Link
+                          href={`${traceHrefPrefix}${encodeURIComponent(step.trace.trace_id)}`}
+                          className="inline-link"
+                        >
+                          {step.trace.trace_id}
+                        </Link>
+                      ) : (
+                        step.trace.trace_id
+                      )}{" "}
+                      · {step.trace.trace_kind}
                     </dd>
                   </div>
                 </div>

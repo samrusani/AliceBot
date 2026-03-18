@@ -3,6 +3,7 @@ import { PageHeader } from "../../components/page-header";
 import { RequestComposer } from "../../components/request-composer";
 import { ResponseComposer } from "../../components/response-composer";
 import { ResponseHistory } from "../../components/response-history";
+import { ThreadTracePanel, type ThreadTraceTarget } from "../../components/thread-trace-panel";
 import { ThreadWorkflowPanel } from "../../components/thread-workflow-panel";
 import { ThreadCreate } from "../../components/thread-create";
 import { ThreadEventList } from "../../components/thread-event-list";
@@ -42,6 +43,7 @@ import {
   getFixtureTaskStepSummary,
   getFixtureTaskSteps,
   requestHistoryFixtures,
+  responseHistoryFixtures,
   taskFixtures,
   threadFixtures,
 } from "../../lib/fixtures";
@@ -95,6 +97,73 @@ function normalizeThreadId(value: string | string[] | undefined) {
   }
 
   return value?.trim() ?? "";
+}
+
+function normalizeTraceId(value: string | string[] | undefined) {
+  if (Array.isArray(value)) {
+    return normalizeTraceId(value[0]);
+  }
+
+  return value?.trim() ?? "";
+}
+
+function buildChatTraceHrefPrefix(mode: ChatMode, threadId: string) {
+  const params = new URLSearchParams();
+
+  if (mode === "request") {
+    params.set("mode", "request");
+  }
+
+  if (threadId) {
+    params.set("thread", threadId);
+  }
+
+  return `/chat?${params.toString()}${params.size > 0 ? "&" : ""}trace=`;
+}
+
+function buildThreadTraceTargets(
+  selectedThreadId: string,
+  workflow: WorkflowViewModel,
+  liveModeReady: boolean,
+): ThreadTraceTarget[] {
+  const targetMap = new Map<string, ThreadTraceTarget>();
+
+  function registerTarget(id: string | null | undefined, label: string) {
+    const normalizedId = id?.trim();
+    if (!normalizedId || targetMap.has(normalizedId)) {
+      return;
+    }
+
+    targetMap.set(normalizedId, {
+      id: normalizedId,
+      label,
+    });
+  }
+
+  registerTarget(workflow.execution?.trace_id, "Execution trace");
+  registerTarget(workflow.approval?.routing.trace.trace_id, "Approval routing trace");
+
+  for (const step of [...workflow.taskSteps].sort((left, right) => right.sequence_no - left.sequence_no)) {
+    registerTarget(step.trace.trace_id, `Task step ${step.sequence_no} trace`);
+  }
+
+  if (!liveModeReady && selectedThreadId) {
+    for (const entry of responseHistoryFixtures
+      .filter((item) => item.threadId === selectedThreadId)
+      .sort((left, right) => new Date(right.submittedAt).getTime() - new Date(left.submittedAt).getTime())) {
+      registerTarget(entry.trace.responseTraceId, "Assistant response trace");
+      registerTarget(entry.trace.compileTraceId, "Assistant compile trace");
+    }
+
+    for (const entry of requestHistoryFixtures
+      .filter((item) => item.threadId === selectedThreadId)
+      .sort((left, right) => new Date(right.submittedAt).getTime() - new Date(left.submittedAt).getTime())) {
+      registerTarget(entry.trace.requestTraceId, "Governed request trace");
+      registerTarget(entry.trace.routingTraceId, "Routing decision trace");
+    }
+  }
+
+  return [...targetMap.values()];
 }
 
 function resolveSelectedThreadId(
@@ -341,6 +410,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const mode = normalizeMode(resolvedSearchParams?.mode);
   const requestedThreadId = normalizeThreadId(resolvedSearchParams?.thread);
+  const requestedTraceId = normalizeTraceId(resolvedSearchParams?.trace);
   const apiConfig = getApiConfig();
   const liveModeReady = hasLiveApiConfig(apiConfig);
   const continuity = liveModeReady
@@ -354,6 +424,17 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
   const workflow = liveModeReady
     ? await loadLiveWorkflow(apiConfig.apiBaseUrl, apiConfig.userId, continuity.selectedThreadId)
     : await loadFixtureWorkflow(continuity.selectedThreadId);
+  const traceTargets = buildThreadTraceTargets(continuity.selectedThreadId, workflow, liveModeReady);
+  const traceHrefPrefix = buildChatTraceHrefPrefix(mode, continuity.selectedThreadId);
+  const threadTracePanel = await ThreadTracePanel({
+    thread: continuity.selectedThread,
+    source: liveModeReady ? "live" : "fixture",
+    traceTargets,
+    selectedTraceId: requestedTraceId,
+    traceHrefPrefix,
+    apiBaseUrl: liveModeReady ? apiConfig.apiBaseUrl : undefined,
+    userId: liveModeReady ? apiConfig.userId : undefined,
+  });
 
   const initialRequestEntries = liveModeReady ? [] : requestHistoryFixtures;
 
@@ -404,6 +485,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
                 events={continuity.events}
                 source={continuity.continuitySource}
                 unavailableReason={continuity.unavailableReason}
+                traceHrefPrefix={traceHrefPrefix}
               />
               <RequestComposer
                 initialEntries={initialRequestEntries}
@@ -435,7 +517,10 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
             taskStepUnavailableReason={workflow.taskStepUnavailableReason}
             apiBaseUrl={liveModeReady ? apiConfig.apiBaseUrl : undefined}
             userId={liveModeReady ? apiConfig.userId : undefined}
+            traceHrefPrefix={traceHrefPrefix}
           />
+
+          {threadTracePanel}
 
           <ThreadSummary
             thread={continuity.selectedThread}
