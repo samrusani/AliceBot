@@ -1,6 +1,10 @@
 import type {
   ApprovalItem,
   ApprovalRequestPayload,
+  EntityEdgeListSummary,
+  EntityEdgeRecord,
+  EntityListSummary,
+  EntityRecord,
   MemoryEvaluationSummary,
   MemoryReviewLabelRecord,
   MemoryReviewLabelSummary,
@@ -416,6 +420,99 @@ export const memoryLabelSummaryFixtures: Record<string, MemoryReviewLabelSummary
     },
     order: [...MEMORY_LABEL_VALUE_ORDER],
   },
+};
+
+const ENTITY_ALICE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1";
+const ENTITY_THORNE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2";
+const ENTITY_MAGNESIUM = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3";
+const ENTITY_ROUTINE = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb4";
+
+const ENTITY_EDGE_A = "cccccccc-cccc-4ccc-8ccc-ccccccccccc1";
+const ENTITY_EDGE_B = "cccccccc-cccc-4ccc-8ccc-ccccccccccc2";
+const ENTITY_EDGE_C = "cccccccc-cccc-4ccc-8ccc-ccccccccccc3";
+
+export const entityFixtures: EntityRecord[] = [
+  {
+    id: ENTITY_ALICE,
+    entity_type: "person",
+    name: "Alice",
+    source_memory_ids: [MEMORY_MERCHANT, MEMORY_MAGNESIUM],
+    created_at: "2026-03-16T10:30:00Z",
+  },
+  {
+    id: ENTITY_THORNE,
+    entity_type: "merchant",
+    name: "Thorne",
+    source_memory_ids: [MEMORY_MERCHANT],
+    created_at: "2026-03-16T10:31:00Z",
+  },
+  {
+    id: ENTITY_MAGNESIUM,
+    entity_type: "product",
+    name: "Magnesium Bisglycinate 90 capsules",
+    source_memory_ids: [MEMORY_MAGNESIUM],
+    created_at: "2026-03-16T10:32:00Z",
+  },
+  {
+    id: ENTITY_ROUTINE,
+    entity_type: "routine",
+    name: "Morning supplement routine",
+    source_memory_ids: [MEMORY_MAGNESIUM, MEMORY_DELIVERY],
+    created_at: "2026-03-16T10:33:00Z",
+  },
+];
+
+export const entityListSummaryFixture: EntityListSummary = {
+  total_count: entityFixtures.length,
+  order: ["created_at_asc", "id_asc"],
+};
+
+const entityEdgeCatalog: EntityEdgeRecord[] = [
+  {
+    id: ENTITY_EDGE_A,
+    from_entity_id: ENTITY_ALICE,
+    to_entity_id: ENTITY_THORNE,
+    relationship_type: "prefers_merchant",
+    valid_from: "2026-03-16T10:20:00Z",
+    valid_to: null,
+    source_memory_ids: [MEMORY_MERCHANT],
+    created_at: "2026-03-16T10:40:00Z",
+  },
+  {
+    id: ENTITY_EDGE_B,
+    from_entity_id: ENTITY_ALICE,
+    to_entity_id: ENTITY_MAGNESIUM,
+    relationship_type: "prefers_product",
+    valid_from: "2026-03-16T10:25:00Z",
+    valid_to: null,
+    source_memory_ids: [MEMORY_MAGNESIUM],
+    created_at: "2026-03-16T10:42:00Z",
+  },
+  {
+    id: ENTITY_EDGE_C,
+    from_entity_id: ENTITY_ROUTINE,
+    to_entity_id: ENTITY_MAGNESIUM,
+    relationship_type: "includes_product",
+    valid_from: "2026-03-16T10:33:00Z",
+    valid_to: null,
+    source_memory_ids: [MEMORY_MAGNESIUM, MEMORY_DELIVERY],
+    created_at: "2026-03-16T10:44:00Z",
+  },
+];
+
+export const entityEdgeFixtures: Record<string, EntityEdgeRecord[]> = {
+  [ENTITY_ALICE]: entityEdgeCatalog.filter(
+    (edge) => edge.from_entity_id === ENTITY_ALICE || edge.to_entity_id === ENTITY_ALICE,
+  ),
+  [ENTITY_THORNE]: entityEdgeCatalog.filter(
+    (edge) => edge.from_entity_id === ENTITY_THORNE || edge.to_entity_id === ENTITY_THORNE,
+  ),
+  [ENTITY_MAGNESIUM]: entityEdgeCatalog.filter(
+    (edge) => edge.from_entity_id === ENTITY_MAGNESIUM || edge.to_entity_id === ENTITY_MAGNESIUM,
+  ),
+  [ENTITY_ROUTINE]: entityEdgeCatalog.filter(
+    (edge) => edge.from_entity_id === ENTITY_ROUTINE || edge.to_entity_id === ENTITY_ROUTINE,
+  ),
 };
 
 export const traceFixtures: TraceItem[] = [
@@ -1094,6 +1191,23 @@ export function getFixtureThread(threadId: string) {
 
 export function getFixtureMemory(memoryId: string) {
   return memoryFixtures.find((item) => item.id === memoryId) ?? null;
+}
+
+export function getFixtureEntity(entityId: string) {
+  return entityFixtures.find((item) => item.id === entityId) ?? null;
+}
+
+export function getFixtureEntityEdges(entityId: string) {
+  return entityEdgeFixtures[entityId] ?? [];
+}
+
+export function getFixtureEntityEdgeSummary(entityId: string): EntityEdgeListSummary {
+  const items = getFixtureEntityEdges(entityId);
+  return {
+    entity_id: entityId,
+    total_count: items.length,
+    order: ["created_at_asc", "id_asc"],
+  };
 }
 
 export function getFixtureMemoryRevisions(memoryId: string) {

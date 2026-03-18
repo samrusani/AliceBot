@@ -5,6 +5,7 @@ import {
   combinePageModes,
   createThread,
   deriveThreadWorkflowState,
+  getEntityDetail,
   getMemoryDetail,
   getMemoryEvaluationSummary,
   getMemoryRevisions,
@@ -13,6 +14,8 @@ import {
   getThreadEvents,
   getThreadSessions,
   executeApproval,
+  listEntities,
+  listEntityEdges,
   listMemories,
   listMemoryLabels,
   listMemoryReviewQueue,
@@ -845,6 +848,92 @@ describe("api helpers", () => {
       ],
       [
         "https://api.example.com/v0/traces/trace-1/events?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+    ]);
+  });
+
+  it("reads entity review list, detail, and edge endpoints with user-scoped query params", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "entity-1",
+              entity_type: "person",
+              name: "Alice",
+              source_memory_ids: ["memory-1"],
+              created_at: "2026-03-18T00:00:00Z",
+            },
+          ],
+          summary: {
+            total_count: 1,
+            order: ["created_at_asc", "id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          entity: {
+            id: "entity-1",
+            entity_type: "person",
+            name: "Alice",
+            source_memory_ids: ["memory-1"],
+            created_at: "2026-03-18T00:00:00Z",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "edge-1",
+              from_entity_id: "entity-1",
+              to_entity_id: "entity-2",
+              relationship_type: "prefers_merchant",
+              valid_from: "2026-03-18T00:00:00Z",
+              valid_to: null,
+              source_memory_ids: ["memory-1"],
+              created_at: "2026-03-18T00:01:00Z",
+            },
+          ],
+          summary: {
+            entity_id: "entity-1",
+            total_count: 1,
+            order: ["created_at_asc", "id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await listEntities("https://api.example.com", "user-1");
+    await getEntityDetail("https://api.example.com", "entity-1", "user-1");
+    await listEntityEdges("https://api.example.com", "entity-1", "user-1");
+
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "https://api.example.com/v0/entities?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/entities/entity-1?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/entities/entity-1/edges?user_id=user-1",
         expect.objectContaining({
           cache: "no-store",
         }),
