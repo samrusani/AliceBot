@@ -5,11 +5,17 @@ import {
   combinePageModes,
   createThread,
   deriveThreadWorkflowState,
+  getMemoryDetail,
+  getMemoryEvaluationSummary,
+  getMemoryRevisions,
   getTaskSteps,
   getThreadDetail,
   getThreadEvents,
   getThreadSessions,
   executeApproval,
+  listMemories,
+  listMemoryLabels,
+  listMemoryReviewQueue,
   getToolExecution,
   getTraceDetail,
   getTraceEvents,
@@ -20,6 +26,7 @@ import {
   shouldExpectThreadExecutionReview,
   submitAssistantResponse,
   submitApprovalRequest,
+  submitMemoryLabel,
 } from "./api";
 
 describe("api helpers", () => {
@@ -843,5 +850,208 @@ describe("api helpers", () => {
         }),
       ],
     ]);
+  });
+
+  it("reads memory review list, queue, summary, detail, revisions, and labels from shipped endpoints", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [],
+          summary: {
+            status: "active",
+            limit: 5,
+            returned_count: 0,
+            total_count: 0,
+            has_more: false,
+            order: ["updated_at_desc", "created_at_desc", "id_desc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [],
+          summary: {
+            memory_status: "active",
+            review_state: "unlabeled",
+            limit: 3,
+            returned_count: 0,
+            total_count: 0,
+            has_more: false,
+            order: ["updated_at_desc", "created_at_desc", "id_desc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          summary: {
+            total_memory_count: 3,
+            active_memory_count: 3,
+            deleted_memory_count: 0,
+            labeled_memory_count: 1,
+            unlabeled_memory_count: 2,
+            total_label_row_count: 2,
+            label_row_counts_by_value: {
+              correct: 1,
+              incorrect: 0,
+              outdated: 1,
+              insufficient_evidence: 0,
+            },
+            label_value_order: ["correct", "incorrect", "outdated", "insufficient_evidence"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          memory: {
+            id: "memory-1",
+            memory_key: "user.preference.merchant",
+            value: { merchant: "Thorne" },
+            status: "active",
+            source_event_ids: ["event-1"],
+            created_at: "2026-03-17T00:00:00Z",
+            updated_at: "2026-03-18T00:00:00Z",
+            deleted_at: null,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [],
+          summary: {
+            memory_id: "memory-1",
+            limit: 10,
+            returned_count: 0,
+            total_count: 0,
+            has_more: false,
+            order: ["sequence_no_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [],
+          summary: {
+            memory_id: "memory-1",
+            total_count: 0,
+            counts_by_label: {
+              correct: 0,
+              incorrect: 0,
+              outdated: 0,
+              insufficient_evidence: 0,
+            },
+            order: ["correct", "incorrect", "outdated", "insufficient_evidence"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await listMemories("https://api.example.com", "user-1", { status: "active", limit: 5 });
+    await listMemoryReviewQueue("https://api.example.com", "user-1", 3);
+    await getMemoryEvaluationSummary("https://api.example.com", "user-1");
+    await getMemoryDetail("https://api.example.com", "memory-1", "user-1");
+    await getMemoryRevisions("https://api.example.com", "memory-1", "user-1", 10);
+    await listMemoryLabels("https://api.example.com", "memory-1", "user-1");
+
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "https://api.example.com/v0/memories?user_id=user-1&status=active&limit=5",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/memories/review-queue?user_id=user-1&limit=3",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/memories/evaluation-summary?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/memories/memory-1?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/memories/memory-1/revisions?user_id=user-1&limit=10",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/memories/memory-1/labels?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+    ]);
+  });
+
+  it("posts memory review labels to the shipped endpoint", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          label: {
+            id: "label-1",
+            memory_id: "memory-1",
+            reviewer_user_id: "user-1",
+            label: "correct",
+            note: "Still matches latest evidence.",
+            created_at: "2026-03-18T00:00:00Z",
+          },
+          summary: {
+            memory_id: "memory-1",
+            total_count: 1,
+            counts_by_label: {
+              correct: 1,
+              incorrect: 0,
+              outdated: 0,
+              insufficient_evidence: 0,
+            },
+            order: ["correct", "incorrect", "outdated", "insufficient_evidence"],
+          },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await submitMemoryLabel("https://api.example.com", "memory-1", {
+      user_id: "user-1",
+      label: "correct",
+      note: "Still matches latest evidence.",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/memories/memory-1/labels",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      label: "correct",
+      note: "Still matches latest evidence.",
+    });
   });
 });
