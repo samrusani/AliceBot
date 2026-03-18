@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import type {
   ApiSource,
   ApprovalItem,
@@ -34,6 +36,7 @@ type ThreadWorkflowPanelProps = {
   taskStepUnavailableReason?: string;
   apiBaseUrl?: string;
   userId?: string;
+  traceHrefPrefix?: string;
 };
 
 function workflowModeLabel(
@@ -67,6 +70,7 @@ export function ThreadWorkflowPanel({
   taskStepUnavailableReason,
   apiBaseUrl,
   userId,
+  traceHrefPrefix,
 }: ThreadWorkflowPanelProps) {
   if (!thread) {
     return (
@@ -87,6 +91,15 @@ export function ThreadWorkflowPanel({
   const hasUnavailableState =
     approvalSource === "unavailable" || taskSource === "unavailable" || executionSource === "unavailable";
   const resolvedTaskStepSource = taskStepSource ?? (task ? taskSource : null);
+  const linkedTraceTargets = new Map<string, string>();
+
+  if (approval?.routing.trace.trace_id) {
+    linkedTraceTargets.set(approval.routing.trace.trace_id, "Open approval routing trace");
+  }
+
+  if (execution?.trace_id && !linkedTraceTargets.has(execution.trace_id)) {
+    linkedTraceTargets.set(execution.trace_id, "Open execution trace");
+  }
 
   return (
     <SectionCard
@@ -107,6 +120,23 @@ export function ThreadWorkflowPanel({
           ) : null}
         </div>
       </div>
+
+      {linkedTraceTargets.size > 0 ? (
+        <div className="thread-workflow-panel__trace-links">
+          <p className="history-entry__label">Explain-why shortcuts</p>
+          <div className="cluster">
+            {[...linkedTraceTargets.entries()].map(([traceId, label]) => (
+              <Link
+                key={traceId}
+                href={`${traceHrefPrefix ?? "/traces?trace="}${encodeURIComponent(traceId)}`}
+                className="button-secondary button-secondary--compact"
+              >
+                {label}
+              </Link>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {!hasWorkflow && !hasUnavailableState ? (
         <EmptyState
@@ -188,6 +218,7 @@ export function ThreadWorkflowPanel({
                 summary={taskStepSummary}
                 source={resolvedTaskStepSource === "fixture" ? "fixture" : "live"}
                 chrome="embedded"
+                traceHrefPrefix={traceHrefPrefix}
               />
             )
           ) : null}
