@@ -6,32 +6,33 @@ PASS
 
 ## criteria met
 
-- The sprint stayed documentation-only; no runtime, schema, API, or UI source files were changed.
-- [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md) now reflects the implemented repo state through Sprint 6I instead of stopping at Sprint 6H.
-- [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md) now plans from the shipped backend-plus-web-shell baseline instead of the older Sprint 5T and Gmail-cleanup-only framing.
-- [.ai/handoff/CURRENT_STATE.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/handoff/CURRENT_STATE.md) no longer describes `apps/web` as scaffold-only and now points to durable repo evidence.
-- [README.md](/Users/samirusani/Desktop/Codex/AliceBot/README.md) no longer claims the repo is current only through Sprint 5A and now explains where live versus archived sprint reports live.
-- [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md) now matches the sprint-owned file set and distinguishes unrelated pre-existing worktree drift.
-- The active docs are materially more compact and less redundant than the prior versions.
+- `/chat` now renders a readable selected-thread transcript from continuity events when continuity reads succeed.
+- The transcript is continuity-first rather than seeded from fixture `responseHistory` data in live mode.
+- Assistant mode remains explicit and still submits through `POST /v0/responses`.
+- Governed-request mode remains explicit and still submits through `POST /v0/approvals/requests`.
+- Non-conversation events are kept out of the main transcript and moved into a bounded supporting review panel.
+- Fixture and unavailable states remain explicit instead of degrading into broken UI.
+- The implementation stayed a UI sprint. I found no backend scope expansion, new endpoints, or Gmail/Calendar/auth/runner widening.
+- `pnpm lint`, `pnpm test`, and `pnpm build` all passed in `apps/web` during review.
 
 ## criteria missed
 
-- No blocking acceptance criteria missed.
+- None in the current sprint implementation diff.
 
 ## quality issues
 
-- No blocking quality issues remain in the sprint-owned documentation diff.
-- The remaining local modification in `.ai/active/SPRINT_PACKET.md` is a control artifact outside sprint ownership and is now called out explicitly in the build report.
+- No blocking quality issues found in the reviewed UI slice.
+- The follow-up compatibility changes are reasonable and do not dilute the transcript-first behavior.
 
 ## regression risks
 
-- Low. The sprint is documentation-only.
-- The only verification caveat is environmental: focused backend integration tests requiring localhost Postgres could not run in this sandbox, but backend unit checks and the web test suite passed.
+- Desktop and mobile verification in `BUILD_REPORT.md` is inspection-based rather than clearly browser-rendered validation. The implementation looks coherent and the build passes, but there is still some residual layout risk until the transcript-first `/chat` view is checked in a real browser at both breakpoints.
+- Transcript extraction currently depends on conversation events exposing readable `payload.text` or `payload.summary`. That matches the shipped event contract I found, so this is not a current failure, but it is the main future contract-coupling point in the new UI.
 
 ## docs issues
 
-- No blocking docs issues remain after the report-location clarification.
-- Live sprint reports now have one explicit home at repo root, while accepted historical reports remain under `docs/archive/sprints`.
+- `ARCHITECTURE.md` now reflects Sprint 6K and the transcript-first `/chat` behavior.
+- `BUILD_REPORT.md` now calls out the pre-existing `.ai/active/SPRINT_PACKET.md` drift clearly enough for PR hygiene.
 
 ## should anything be added to RULES.md?
 
@@ -39,9 +40,9 @@ PASS
 
 ## should anything update ARCHITECTURE.md?
 
-- No.
+- No further update is required for this sprint review.
 
 ## recommended next action
 
-- Proceed with the sprint as passed.
-- Archive the current root `BUILD_REPORT.md` and `REVIEW_REPORT.md` into `docs/archive/sprints` once this sprint is accepted, so the next sprint can reuse the repo-root report paths cleanly.
+- Mark the sprint reviewer-approved and prepare the PR.
+- Keep the pre-existing `.ai/active/SPRINT_PACKET.md` worktree change out of the sprint PR unless the PR explicitly intends to ship control-artifact edits.

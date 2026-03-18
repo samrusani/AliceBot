@@ -28,16 +28,25 @@ afterEach(() => {
 });
 
 describe("ResponseHistory", () => {
-  it("renders an empty state when no assistant replies are available", () => {
-    render(<ResponseHistory entries={[]} />);
-
-    expect(screen.getByText("No assistant replies yet")).toBeInTheDocument();
-    expect(screen.getByText(/Submitted questions will appear here/i)).toBeInTheDocument();
-  });
-
-  it("renders bounded prompt, reply, and trace links for each entry", () => {
+  it("renders an empty state when the selected thread has no transcript yet", () => {
     render(
       <ResponseHistory
+        entries={[]}
+        events={[]}
+        threadTitle="Gamma thread"
+        source="live"
+      />,
+    );
+
+    expect(screen.getByText("No transcript yet")).toBeInTheDocument();
+    expect(screen.getByText(/Conversation messages will appear here/i)).toBeInTheDocument();
+  });
+
+  it("renders continuity-derived transcript entries and trace links for local responses", () => {
+    render(
+      <ResponseHistory
+        threadTitle="Gamma thread"
+        source="live"
         entries={[
           {
             id: "response-trace-1",
@@ -59,11 +68,37 @@ describe("ResponseHistory", () => {
             },
           },
         ]}
+        events={[
+          {
+            id: "event-1",
+            thread_id: "thread-1",
+            session_id: "session-1",
+            sequence_no: 1,
+            kind: "message.user",
+            payload: { text: "Hello there." },
+            created_at: "2026-03-17T08:40:00Z",
+          },
+          {
+            id: "event-2",
+            thread_id: "thread-1",
+            session_id: "session-1",
+            sequence_no: 2,
+            kind: "message.assistant",
+            payload: {
+              text: "I have the earlier continuity context ready.",
+              model: {
+                provider: "openai_responses",
+                model: "gpt-5-mini",
+              },
+            },
+            created_at: "2026-03-17T08:41:00Z",
+          },
+        ]}
       />,
     );
 
-    expect(screen.getByText("Operator prompt")).toBeInTheDocument();
-    expect(screen.getByText("Assistant reply")).toBeInTheDocument();
+    expect(screen.getByText("Selected-thread transcript")).toBeInTheDocument();
+    expect(screen.getByText("Hello there.")).toBeInTheDocument();
     expect(screen.getByText("The latest governed request is still waiting on approval.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open compile trace" })).toHaveAttribute(
       "href",
