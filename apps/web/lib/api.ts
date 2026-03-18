@@ -246,6 +246,115 @@ export type TraceReviewEventListSummary = {
   order: string[];
 };
 
+export type MemoryReviewStatus = "active" | "deleted";
+export type MemoryReviewStatusFilter = MemoryReviewStatus | "all";
+export type MemoryReviewLabelValue =
+  | "correct"
+  | "incorrect"
+  | "outdated"
+  | "insufficient_evidence";
+
+export type MemoryReviewRecord = {
+  id: string;
+  memory_key: string;
+  value: unknown;
+  status: MemoryReviewStatus;
+  source_event_ids: string[];
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+};
+
+export type MemoryReviewListSummary = {
+  status: MemoryReviewStatusFilter;
+  limit: number;
+  returned_count: number;
+  total_count: number;
+  has_more: boolean;
+  order: string[];
+};
+
+export type MemoryRevisionReviewRecord = {
+  id: string;
+  memory_id: string;
+  sequence_no: number;
+  action: string;
+  memory_key: string;
+  previous_value: unknown | null;
+  new_value: unknown | null;
+  source_event_ids: string[];
+  created_at: string;
+};
+
+export type MemoryRevisionReviewListSummary = {
+  memory_id: string;
+  limit: number;
+  returned_count: number;
+  total_count: number;
+  has_more: boolean;
+  order: string[];
+};
+
+export type MemoryReviewLabelCounts = {
+  correct: number;
+  incorrect: number;
+  outdated: number;
+  insufficient_evidence: number;
+};
+
+export type MemoryReviewLabelRecord = {
+  id: string;
+  memory_id: string;
+  reviewer_user_id: string;
+  label: MemoryReviewLabelValue;
+  note: string | null;
+  created_at: string;
+};
+
+export type MemoryReviewLabelSummary = {
+  memory_id: string;
+  total_count: number;
+  counts_by_label: MemoryReviewLabelCounts;
+  order: MemoryReviewLabelValue[];
+};
+
+export type MemoryReviewQueueItem = {
+  id: string;
+  memory_key: string;
+  value: unknown;
+  status: "active";
+  source_event_ids: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type MemoryReviewQueueSummary = {
+  memory_status: "active";
+  review_state: "unlabeled";
+  limit: number;
+  returned_count: number;
+  total_count: number;
+  has_more: boolean;
+  order: string[];
+};
+
+export type MemoryEvaluationSummary = {
+  total_memory_count: number;
+  active_memory_count: number;
+  deleted_memory_count: number;
+  labeled_memory_count: number;
+  unlabeled_memory_count: number;
+  total_label_row_count: number;
+  label_row_counts_by_value: MemoryReviewLabelCounts;
+  label_value_order: MemoryReviewLabelValue[];
+};
+
+export type MemoryReviewLabelPayload = {
+  user_id: string;
+  label: MemoryReviewLabelValue;
+  note?: string | null;
+};
+
 export type ApprovalRequestPayload = {
   user_id: string;
   thread_id: string;
@@ -724,5 +833,96 @@ export function getTraceEvents(apiBaseUrl: string, traceId: string, userId: stri
     `/v0/traces/${traceId}/events`,
     undefined,
     { user_id: userId },
+  );
+}
+
+export function listMemories(
+  apiBaseUrl: string,
+  userId: string,
+  options?: {
+    status?: MemoryReviewStatusFilter;
+    limit?: number;
+  },
+) {
+  return requestJson<{ items: MemoryReviewRecord[]; summary: MemoryReviewListSummary }>(
+    apiBaseUrl,
+    "/v0/memories",
+    undefined,
+    {
+      user_id: userId,
+      status: options?.status,
+      limit: options?.limit ? String(options.limit) : undefined,
+    },
+  );
+}
+
+export function listMemoryReviewQueue(apiBaseUrl: string, userId: string, limit?: number) {
+  return requestJson<{ items: MemoryReviewQueueItem[]; summary: MemoryReviewQueueSummary }>(
+    apiBaseUrl,
+    "/v0/memories/review-queue",
+    undefined,
+    {
+      user_id: userId,
+      limit: limit ? String(limit) : undefined,
+    },
+  );
+}
+
+export function getMemoryEvaluationSummary(apiBaseUrl: string, userId: string) {
+  return requestJson<{ summary: MemoryEvaluationSummary }>(
+    apiBaseUrl,
+    "/v0/memories/evaluation-summary",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getMemoryDetail(apiBaseUrl: string, memoryId: string, userId: string) {
+  return requestJson<{ memory: MemoryReviewRecord }>(
+    apiBaseUrl,
+    `/v0/memories/${memoryId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getMemoryRevisions(
+  apiBaseUrl: string,
+  memoryId: string,
+  userId: string,
+  limit?: number,
+) {
+  return requestJson<{ items: MemoryRevisionReviewRecord[]; summary: MemoryRevisionReviewListSummary }>(
+    apiBaseUrl,
+    `/v0/memories/${memoryId}/revisions`,
+    undefined,
+    {
+      user_id: userId,
+      limit: limit ? String(limit) : undefined,
+    },
+  );
+}
+
+export function listMemoryLabels(apiBaseUrl: string, memoryId: string, userId: string) {
+  return requestJson<{ items: MemoryReviewLabelRecord[]; summary: MemoryReviewLabelSummary }>(
+    apiBaseUrl,
+    `/v0/memories/${memoryId}/labels`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function submitMemoryLabel(
+  apiBaseUrl: string,
+  memoryId: string,
+  payload: MemoryReviewLabelPayload,
+) {
+  return requestJson<{ label: MemoryReviewLabelRecord; summary: MemoryReviewLabelSummary }>(
+    apiBaseUrl,
+    `/v0/memories/${memoryId}/labels`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
   );
 }

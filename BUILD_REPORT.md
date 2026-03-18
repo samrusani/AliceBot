@@ -1,75 +1,115 @@
-# BUILD_REPORT
+# BUILD_REPORT.md
 
-## sprint objective
+## Sprint Objective
+Implement Sprint 6P: add a bounded `/memories` memory review workspace in the web shell using only shipped memory-review backend seams, with explicit live/fixture/unavailable behavior and bounded label submission.
 
-Synchronize canonical project-truth docs to the accepted implemented repo state through Sprint 6N (including `/chat` transcript continuity, thread-linked governed workflow review, thread-linked task-step timeline review, and thread-linked explain-why embedding) without changing runtime behavior or product scope.
+## Completed Work
+- Added new route and loading shell:
+  - `apps/web/app/memories/page.tsx`
+  - `apps/web/app/memories/loading.tsx`
+- Added new memory workspace components:
+  - `apps/web/components/memory-summary.tsx`
+  - `apps/web/components/memory-list.tsx`
+  - `apps/web/components/memory-detail.tsx`
+  - `apps/web/components/memory-revision-list.tsx`
+  - `apps/web/components/memory-label-list.tsx`
+  - `apps/web/components/memory-label-form.tsx`
+- Extended shared API layer in `apps/web/lib/api.ts` with typed memory-review contracts and calls for:
+  - list memories
+  - review queue
+  - evaluation summary
+  - memory detail
+  - memory revisions
+  - memory labels list
+  - memory label submission
+- Added fixture-backed memory review data and helpers in `apps/web/lib/fixtures.ts` for:
+  - evaluation summary
+  - active memory list
+  - review queue
+  - per-memory revisions
+  - per-memory labels/label summaries
+- Added/updated tests:
+  - `apps/web/lib/api.test.ts` memory endpoint coverage and label POST coverage
+  - `apps/web/app/memories/page.test.tsx` route-level live/fixture/unavailable coverage
+  - `apps/web/components/memory-list.test.tsx`
+  - `apps/web/components/memory-label-form.test.tsx`
+  - `apps/web/components/status-badge.test.tsx` memory status-tone mapping coverage
+- Updated shell integration and shared surface text:
+  - `apps/web/components/app-shell.tsx` (Memories nav item)
+  - `apps/web/app/layout.tsx` metadata copy
+  - `apps/web/app/page.tsx` overview cards include memory workspace
+  - `apps/web/components/status-badge.tsx` added memory-label and unavailable tone handling
+  - `apps/web/app/globals.css` added memory layout + responsive behavior + select field styling
 
-## completed work
+## Memory Surface Backing Mode
+- `memory-summary`: mixed (live when available, fixture fallback, explicit live-source failure note)
+- `memory-list`: mixed (live when available, fixture fallback; queue/active filter support)
+- `memory-detail`: mixed (live when available, fixture fallback, explicit unavailable message)
+- `memory-revision-list`: mixed (live when available, fixture fallback, explicit unavailable message)
+- `memory-label-list`: mixed (live when available, fixture fallback, explicit unavailable message)
+- `memory-label-form`: live-only submission via shipped POST seam; explicit unavailable state when not in live-ready mode
 
-- Updated `ARCHITECTURE.md` to align the implemented slice from Sprint 6K to Sprint 6N and explicitly describe shipped `/chat` behavior through transcript continuity, thread-linked workflow review, task-step timeline review, and bounded explain-why embedding.
-- Updated `ROADMAP.md` current-position language from Sprint 6I to Sprint 6N and reframed next-delivery baseline from the already-shipped chat-plus-governance surface.
-- Updated `.ai/handoff/CURRENT_STATE.md` to reflect Sprint 6N as current, refreshed implemented `/chat` surfaces, and aligned planning guardrails to the current baseline.
-- Updated `README.md` onboarding status from Sprint 6I to Sprint 6N and refreshed the `/chat` implemented-surface summary.
-- Corrected stale canonical claims that the repo was only current through Sprint 6I / Sprint 6K.
+## Exact Backend Endpoints Consumed
+- `GET /v0/memories`
+- `GET /v0/memories/review-queue`
+- `GET /v0/memories/evaluation-summary`
+- `GET /v0/memories/{memory_id}`
+- `GET /v0/memories/{memory_id}/revisions`
+- `GET /v0/memories/{memory_id}/labels`
+- `POST /v0/memories/{memory_id}/labels`
 
-## incomplete work
+## Incomplete Work
+- None inside sprint scope.
 
-- None in sprint scope.
+## Intentionally Deferred (Per Sprint Scope)
+- No backend changes.
+- No memory deletion/mutation UI beyond label submission.
+- No entity review UI.
+- No Gmail/Calendar/auth/runner/connector expansion.
+- No redesign of unrelated routes.
 
-## files changed
-
-- `ARCHITECTURE.md`
-- `ROADMAP.md`
-- `.ai/handoff/CURRENT_STATE.md`
-- `README.md`
+## Files Changed
+- `apps/web/app/layout.tsx`
+- `apps/web/app/page.tsx`
+- `apps/web/app/memories/page.tsx`
+- `apps/web/app/memories/loading.tsx`
+- `apps/web/app/globals.css`
+- `apps/web/components/app-shell.tsx`
+- `apps/web/components/status-badge.tsx`
+- `apps/web/components/memory-summary.tsx`
+- `apps/web/components/memory-list.tsx`
+- `apps/web/components/memory-detail.tsx`
+- `apps/web/components/memory-revision-list.tsx`
+- `apps/web/components/memory-label-list.tsx`
+- `apps/web/components/memory-label-form.tsx`
+- `apps/web/components/memory-list.test.tsx`
+- `apps/web/components/memory-label-form.test.tsx`
+- `apps/web/app/memories/page.test.tsx`
+- `apps/web/components/status-badge.test.tsx`
+- `apps/web/lib/api.ts`
+- `apps/web/lib/fixtures.ts`
+- `apps/web/lib/api.test.ts`
 - `BUILD_REPORT.md`
 
-## accepted repo evidence used
+## Tests Run
+Commands executed in `apps/web`:
+- `npm run lint`
+- `npm test`
+- `npm run build`
 
-- `/chat` composition and right-rail integration through selected thread continuity, workflow, timeline, and explainability: `apps/web/app/chat/page.tsx`
-- Thread-linked governed workflow panel: `apps/web/components/thread-workflow-panel.tsx`
-- Thread-linked task-step timeline panel: `apps/web/components/task-step-list.tsx`
-- Transcript continuity and trace shortcuts: `apps/web/components/response-history.tsx`
-- Thread-linked explain-why panel and thread-scoped trace selection: `apps/web/components/thread-trace-panel.tsx`
-- Supporting operational continuity panel: `apps/web/components/thread-event-list.tsx`
-- `/chat` and explainability regression coverage: `apps/web/app/chat/page.test.tsx`, `apps/web/components/thread-workflow-panel.test.tsx`, `apps/web/components/task-step-list.test.tsx`, `apps/web/components/response-history.test.tsx`, `apps/web/components/thread-trace-panel.test.tsx`
-- Backend continuity/response durability references still in place: `tests/integration/test_continuity_api.py`, `tests/integration/test_continuity_store.py`, `tests/integration/test_responses_api.py`
+Results:
+- `npm run lint`: PASS
+- `npm test`: PASS (19 test files, 65 tests)
+- `npm run build`: PASS (includes `/memories` route in build output)
 
-## stale claims corrected
+## Desktop/Mobile Visual Verification Notes
+- Desktop: `/memories` uses two-column bounded review layout (`memory-layout`) with summary first, detail second, revisions/labels third.
+- Mobile/tablet: memory grids collapse to single column via existing responsive breakpoint (`@media (max-width: 1120px)`), preserving reading order and containment.
+- Verification method: CSS/layout inspection and successful production build. No manual browser screenshot pass was run in this task.
 
-- `ARCHITECTURE.md`: corrected “accepted repo slice through Sprint 6K” to Sprint 6N and removed implied omission of shipped `/chat` workflow/timeline/explainability.
-- `ROADMAP.md`: corrected “accepted repo state is current through Sprint 6I” to Sprint 6N.
-- `.ai/handoff/CURRENT_STATE.md`: corrected “working repo state is current through Sprint 6I” to Sprint 6N and updated guardrail baseline text.
-- `README.md`: corrected “accepted slice through Sprint 6I” to Sprint 6N.
+## Blockers/Issues
+- No blockers after implementation.
+- One type-narrowing build error was encountered during first `npm run build`; fixed by tightening source typing in `apps/web/app/memories/page.tsx`.
 
-## files archived
-
-- None. No concrete stale document required archival for this sprint.
-
-## tests run
-
-- No runtime or UI test suite rerun in this sprint because changes were documentation-only and did not modify runtime code, schema, API contracts, or UI behavior.
-- Evidence audit commands were run to validate shipped-state claims against implementation and tests.
-
-## blockers/issues
-
-- No blockers.
-- Pre-existing unrelated worktree modifications were present before implementation and were left untouched: `.ai/active/SPRINT_PACKET.md`, `REVIEW_REPORT.md`.
-
-## scope and behavior confirmation
-
-- Confirmed documentation-only sprint.
-- Confirmed no runtime code changes.
-- Confirmed no schema changes.
-- Confirmed no API changes.
-- Confirmed no UI behavior changes.
-- Confirmed no Gmail, Calendar, auth, runner, or connector scope expansion.
-
-## intentionally deferred after this truth-sync sprint
-
-- Any new feature delivery beyond synchronization (including roadmap reprioritization or broader compaction/archive work).
-- Runtime validation work unrelated to this docs synchronization sprint.
-
-## recommended next step
-
-Start the next builder sprint from the synchronized Sprint 6N baseline and keep future canonical-doc updates coupled to accepted sprint completion to avoid renewed truth drift.
+## Recommended Next Step
+Run a manual UI pass of `/memories` against a live configured backend to validate operator copy, state transitions, and label submission UX with real payloads.
