@@ -32,6 +32,11 @@ const navigation = [
     caption: "Review memory detail, revisions, and labels",
   },
   {
+    href: "/entities",
+    label: "Entities",
+    caption: "Review entity detail and related edges",
+  },
+  {
     href: "/traces",
     label: "Traces",
     caption: "Explain-why and governed action review",
@@ -60,7 +65,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <p className="eyebrow">AliceBot</p>
             <h1 className="brand-title">Operator shell</h1>
             <p className="brand-description">
-              Calm, governed views for requests, approvals, tasks, memories, and explainability.
+              Calm, governed views for requests, approvals, tasks, memories, entities, and explainability.
             </p>
           </div>
 

@@ -338,7 +338,8 @@ code,
 }
 
 .memory-layout,
-.memory-followup-grid {
+.memory-followup-grid,
+.entity-layout {
   display: grid;
   gap: 24px;
 }
@@ -350,6 +351,11 @@ code,
 
 .memory-followup-grid {
   grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+  align-items: flex-start;
+}
+
+.entity-layout {
+  grid-template-columns: minmax(320px, 0.92fr) minmax(0, 1.2fr);
   align-items: flex-start;
 }
 
@@ -1526,6 +1532,7 @@ code,
   .chat-layout,
   .memory-layout,
   .memory-followup-grid,
+  .entity-layout,
   .chat-workspace,
   .metric-grid,
   .route-grid {
