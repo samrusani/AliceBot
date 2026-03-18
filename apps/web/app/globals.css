@@ -337,6 +337,22 @@ code,
   gap: 20px;
 }
 
+.memory-layout,
+.memory-followup-grid {
+  display: grid;
+  gap: 24px;
+}
+
+.memory-layout {
+  grid-template-columns: minmax(320px, 0.92fr) minmax(0, 1.2fr);
+  align-items: flex-start;
+}
+
+.memory-followup-grid {
+  grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
+  align-items: flex-start;
+}
+
 .chat-layout__rail {
   align-content: start;
   grid-auto-rows: max-content;
@@ -804,7 +820,8 @@ code,
 }
 
 .form-field textarea,
-.form-field input {
+.form-field input,
+.form-field select {
   width: 100%;
   padding: 16px 18px;
   background: rgba(255, 255, 255, 0.74);
@@ -824,7 +841,8 @@ code,
 }
 
 .form-field textarea:focus-visible,
-.form-field input:focus-visible {
+.form-field input:focus-visible,
+.form-field select:focus-visible {
   outline: none;
   border-color: rgba(39, 75, 99, 0.26);
   box-shadow: 0 0 0 4px rgba(39, 75, 99, 0.08);
@@ -1506,6 +1524,8 @@ code,
   .dashboard-grid--detail,
   .split-layout,
   .chat-layout,
+  .memory-layout,
+  .memory-followup-grid,
   .chat-workspace,
   .metric-grid,
   .route-grid {
