@@ -2,330 +2,83 @@
 
 ## Current Implemented Slice
 
-AliceBot now implements the accepted repo slice through Sprint 6H. The shipped backend includes:
+AliceBot now implements the accepted repo slice through Sprint 6I.
 
-- foundation continuity storage over `users`, `threads`, `sessions`, and append-only `events`
-- narrow continuity APIs for thread create/list/detail plus thread session/event review over those durable continuity records
-- deterministic tracing and context compilation over durable continuity, memory, entity, and entity-edge records
-- governed memory admission, explicit-preference extraction, memory review labels, review queue reads, evaluation summary reads, explicit embedding config and memory-embedding storage, direct semantic retrieval, and deterministic hybrid compile-path memory merge
-- deterministic prompt assembly and one no-tools response path that persists assistant replies as immutable continuity events
-- user-scoped consents, policies, policy evaluation, tool registry, allowlist evaluation, tool routing, approval request persistence, approval resolution, approved-only proxy execution through the in-process `proxy.echo` handler, durable execution review, and execution-budget lifecycle plus enforcement
-- a narrow read-only Gmail connector seam with user-scoped `gmail_accounts` metadata persistence, separate user-scoped `gmail_account_credentials` locator metadata for the primary credential path, one explicit Gmail secret-manager adapter seam for secret reads and writes, deterministic account reads without secret exposure, refresh-token-capable credential renewal for expired access tokens, rotated refresh-token persistence when the provider returns a replacement token, an explicit `legacy_db_v0` transition path externalized on first credential read for older rows, and one explicit selected-message ingestion path that materializes one Gmail message as a rooted `.eml` task artifact and then reuses the existing RFC822 artifact ingestion pipeline
-- durable `tasks`, `task_steps`, `task_workspaces`, `task_artifacts`, `task_artifact_chunks`, and `task_artifact_chunk_embeddings`, deterministic task-step sequencing, explicit task-step transitions, explicit manual continuation with lineage through `parent_step_id`, `source_approval_id`, and `source_execution_id`, explicit `tool_executions.task_step_id` linkage for execution synchronization, deterministic rooted local task-workspace provisioning, explicit rooted local artifact registration, deterministic local plain-text, markdown, narrow PDF text, narrow DOCX text, and narrow RFC822 email text ingestion into durable chunk rows, deterministic lexical artifact-chunk retrieval over durable chunk rows, explicit user-scoped artifact-chunk embedding persistence tied to existing embedding configs, explicit task-scoped or artifact-scoped semantic artifact-chunk retrieval over those durable embeddings, and compile-path artifact retrieval that can include lexical results, semantic results, or one deterministic hybrid lexical-plus-semantic merged artifact section with per-chunk source provenance
+- `apps/api` is the core shipped surface. It provides continuity storage and review over `users`, `threads`, `sessions`, and append-only `events`; deterministic context compilation; governed memory admission and review; embeddings and semantic retrieval; entities and entity edges; policy, tool, approval, and execution governance; the no-tools assistant-response seam at `POST /v0/responses`; explicit task and task-step lifecycle reads and mutations; rooted local task workspaces and artifact ingestion; artifact chunk retrieval and embeddings; and the narrow read-only Gmail seam with external-secret-backed credentials plus selected-message ingestion into the RFC822 artifact pipeline.
+- `apps/web` is a shipped operator shell over those backend seams, not a scaffold-only placeholder. The current routes are `/`, `/chat`, `/approvals`, `/tasks`, and `/traces`. The shell can read live backend seams when configured and otherwise falls back to explicit fixture states instead of pretending the backend is connected.
+- `/chat` now carries both shipped operator modes: governed request composition and assistant-response mode. It uses visible thread selection instead of a raw typed thread id, supports compact thread creation through the continuity API, and shows bounded thread continuity review through thread detail, session, and event reads.
+- `workers` remains scaffold-only. No background runner, automatic multi-step progression, or asynchronous job system is implemented.
 
-The current multi-step boundary is narrow and explicit. Manual continuation is implemented and review-passed. Approval resolution and proxy execution now both use explicit task-step linkage rather than first-step inference. Task workspaces are now implemented only as deterministic rooted local boundaries, and task artifacts are now implemented only as explicit rooted local-file registrations, narrow deterministic artifact ingestion under those workspaces, lexical retrieval over persisted chunk rows, explicit artifact-chunk embedding storage tied to existing embedding configs, direct semantic retrieval over those durable artifact-chunk embeddings for one visible task or one visible artifact at a time, and compile-path artifact retrieval that deterministically merges lexical and semantic candidates into one artifact section when both are requested for the same scope. The live richer-document boundary is still intentionally narrow: plain text and markdown ingest directly, PDF support is limited to narrow local text extraction, DOCX support is limited to narrow local text extraction from `word/document.xml`, RFC822 email support is limited to top-level selected headers plus extractable plain-text body content while excluding nested `message/rfc822` content, and the live connector boundary is limited to one read-only Gmail account seam plus one explicit selected-message ingestion path into the rooted RFC822 artifact pipeline, with the primary Gmail credential path now storing only locator metadata on `gmail_account_credentials`, resolving secrets through one explicit Gmail secret-manager adapter seam before fetches continue, renewing expired refresh-capable credentials through that same seam, persisting any provider-returned rotated refresh token back through that same seam, keeping a narrow `legacy_db_v0` first-read externalization path for older rows only, and never exposing secret material on the normal account metadata table surface. OCR, image extraction, layout reconstruction, Gmail search, mailbox sync, attachments, Calendar connectors, reranking beyond the current lexical-first hybrid merge, and new side-effect surfaces are still planned later and must not be described as live behavior.
+The repo is intentionally still narrow. Document ingestion remains local and deterministic. The only live execution handler is the no-external-I/O `proxy.echo` path. Gmail remains read-only and selected-message-only. Rich parsing, mailbox sync, attachments, Calendar, broader proxying, and runner-style orchestration are still planned later.
 
 ## Implemented Now
 
 ### Runtime
 
 - `docker-compose.yml` starts local Postgres with `pgvector`, Redis, and MinIO.
-- `scripts/dev_up.sh`, `scripts/migrate.sh`, and `scripts/api_dev.sh` provide the local startup path, with readiness gating before migrations.
+- `scripts/dev_up.sh`, `scripts/migrate.sh`, and `scripts/api_dev.sh` provide the local startup path.
 - `apps/api` exposes FastAPI endpoints for:
-  - health, continuity, and compile: `/healthz`, `POST /v0/threads`, `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, `GET /v0/threads/{thread_id}/events`, `POST /v0/context/compile`, `POST /v0/responses`
-  - memory and retrieval: `POST /v0/memories/admit`, `POST /v0/memories/extract-explicit-preferences`, `GET /v0/memories`, `GET /v0/memories/review-queue`, `GET /v0/memories/evaluation-summary`, `POST /v0/memories/semantic-retrieval`, `GET /v0/memories/{memory_id}`, `GET /v0/memories/{memory_id}/revisions`, `POST /v0/memories/{memory_id}/labels`, `GET /v0/memories/{memory_id}/labels`
-  - embeddings and graph seams: `POST /v0/embedding-configs`, `GET /v0/embedding-configs`, `POST /v0/memory-embeddings`, `GET /v0/memories/{memory_id}/embeddings`, `GET /v0/memory-embeddings/{memory_embedding_id}`, `POST /v0/entities`, `GET /v0/entities`, `GET /v0/entities/{entity_id}`, `POST /v0/entity-edges`, `GET /v0/entities/{entity_id}/edges`
-  - governance: `POST /v0/consents`, `GET /v0/consents`, `POST /v0/policies`, `GET /v0/policies`, `GET /v0/policies/{policy_id}`, `POST /v0/policies/evaluate`, `POST /v0/tools`, `GET /v0/tools`, `GET /v0/tools/{tool_id}`, `POST /v0/tools/allowlist/evaluate`, `POST /v0/tools/route`, `POST /v0/approvals/requests`, `GET /v0/approvals`, `GET /v0/approvals/{approval_id}`, `POST /v0/approvals/{approval_id}/approve`, `POST /v0/approvals/{approval_id}/reject`, `POST /v0/approvals/{approval_id}/execute`
-  - Gmail and task execution review: `POST /v0/gmail-accounts`, `GET /v0/gmail-accounts`, `GET /v0/gmail-accounts/{gmail_account_id}`, `POST /v0/gmail-accounts/{gmail_account_id}/messages/{provider_message_id}/ingest`, `GET /v0/tasks`, `GET /v0/tasks/{task_id}`, `POST /v0/tasks/{task_id}/workspace`, `GET /v0/task-workspaces`, `GET /v0/task-workspaces/{task_workspace_id}`, `POST /v0/task-workspaces/{task_workspace_id}/artifacts`, `GET /v0/task-artifacts`, `GET /v0/task-artifacts/{task_artifact_id}`, `POST /v0/task-artifacts/{task_artifact_id}/ingest`, `GET /v0/task-artifacts/{task_artifact_id}/chunks`, `POST /v0/tasks/{task_id}/artifact-chunks/retrieve`, `POST /v0/task-artifacts/{task_artifact_id}/chunks/retrieve`, `POST /v0/tasks/{task_id}/artifact-chunks/semantic-retrieval`, `POST /v0/task-artifacts/{task_artifact_id}/chunks/semantic-retrieval`, `POST /v0/task-artifact-chunk-embeddings`, `GET /v0/task-artifacts/{task_artifact_id}/chunk-embeddings`, `GET /v0/task-artifact-chunks/{task_artifact_chunk_id}/embeddings`, `GET /v0/task-artifact-chunk-embeddings/{task_artifact_chunk_embedding_id}`, `GET /v0/tasks/{task_id}/steps`, `GET /v0/task-steps/{task_step_id}`, `POST /v0/tasks/{task_id}/steps`, `POST /v0/task-steps/{task_step_id}/transition`, `POST /v0/execution-budgets`, `GET /v0/execution-budgets`, `GET /v0/execution-budgets/{execution_budget_id}`, `POST /v0/execution-budgets/{execution_budget_id}/deactivate`, `POST /v0/execution-budgets/{execution_budget_id}/supersede`, `GET /v0/tool-executions`, `GET /v0/tool-executions/{execution_id}`
-- `apps/web` and `workers` remain starter shells only.
+  - continuity and response generation: `/healthz`, `POST /v0/threads`, `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, `GET /v0/threads/{thread_id}/events`, `POST /v0/context/compile`, `POST /v0/responses`
+  - memory, embeddings, and graph seams
+  - policy, tool, approval, execution-budget, and proxy execution governance
+  - task, task-step, task-workspace, task-artifact, artifact-chunk, and trace review reads and mutations
+  - narrow Gmail account connect/read plus selected-message ingestion
+- `apps/web` exposes the current operator shell:
+  - `/`: bounded home view over the shipped shell surfaces
+  - `/chat`: assistant mode, governed request mode, thread selection, thread creation, bounded continuity review, and response/request history
+  - `/approvals`: approval inbox and execution review
+  - `/tasks`: task summary and ordered task-step review
+  - `/traces`: trace summary, detail, and ordered event review
+- `tests` cover both the backend seams and the web shell. Durable repo evidence includes integration coverage for continuity and responses plus Vitest coverage for `/chat`, thread selection, bounded continuity review, and assistant-response submission.
 
-### Data Foundation
+### Data And Safety Boundaries
 
-- Postgres is the current system of record.
-- Alembic manages schema changes through `apps/api/alembic`.
-- The live schema includes:
-  - continuity tables: `users`, `threads`, `sessions`, `events`
-  - trace tables: `traces`, `trace_events`
-  - memory and retrieval tables: `memories`, `memory_revisions`, `memory_review_labels`, `embedding_configs`, `memory_embeddings`
-  - graph tables: `entities`, `entity_edges`
-  - governance tables: `consents`, `policies`, `tools`, `approvals`, `tool_executions`, `execution_budgets`
-  - connector tables: `gmail_accounts`, `gmail_account_credentials`
-  - task lifecycle tables: `tasks`, `task_steps`, `task_workspaces`, `task_artifacts`, `task_artifact_chunks`, `task_artifact_chunk_embeddings`
-- `events`, `trace_events`, and `memory_revisions` are append-only by application contract and database enforcement.
-- `memory_review_labels` are append-only by database enforcement.
-- `tasks` are explicit user-scoped lifecycle records keyed to one thread and one tool, with durable request/tool snapshots, status in `pending_approval | approved | executed | denied | blocked`, and latest approval/execution pointers for the current narrow lifecycle seam.
-- `task_steps` are explicit user-scoped ordered lifecycle records keyed by `(user_id, task_id, sequence_no)`, with `kind = 'governed_request'`, status in `created | approved | executed | blocked | denied`, durable request/outcome snapshots, and one trace reference describing the latest mutation.
-- Sprint 4O added lineage columns on `task_steps`:
-  - `parent_step_id`
-  - `source_approval_id`
-  - `source_execution_id`
-- Lineage fields are guarded by composite user-scoped foreign keys and a self-reference check so a step cannot cite itself as its parent.
-- `tool_executions` now persist an explicit `task_step_id` linked by a composite foreign key to `task_steps(id, user_id)`.
-- `task_workspaces` persist one active workspace record per visible task and user, store a deterministic `local_path`, and enforce that active uniqueness through a partial unique index on `(user_id, task_id)`.
-- `task_artifacts` persist explicit user-scoped artifact rows linked to both `tasks` and `task_workspaces`, store `status = registered`, `ingestion_status in ('pending', 'ingested')`, store only a workspace-relative `relative_path` plus optional `media_type_hint`, and enforce deterministic duplicate rejection through a unique index on `(user_id, task_workspace_id, relative_path)`.
-- `task_artifact_chunks` persist explicit user-scoped durable chunk rows linked to one artifact, store ordered `sequence_no`, zero-based `char_start`, exclusive `char_end_exclusive`, and chunk `text`, and enforce deterministic uniqueness through a unique index on `(user_id, task_artifact_id, sequence_no)`.
-- `task_artifact_chunk_embeddings` persist explicit user-scoped durable embedding rows linked to one visible chunk and one visible embedding config, store validated `dimensions` and `vector`, and enforce deterministic uniqueness through a unique index on `(user_id, task_artifact_chunk_id, embedding_config_id)`.
-- `execution_budgets` enforce at most one active budget per `(user_id, tool_key, domain_hint)` selector scope through a partial unique index.
-- Per-request user context is set in the database through `app.current_user_id()`.
-- `TASK_WORKSPACE_ROOT` defines the only allowed base directory for workspace provisioning, and the live path rule is `resolved_root / user_id / task_id`.
-
-### Repo Boundaries In This Slice
-
-- `apps/api`: implemented API, store, contracts, service logic, and migrations for continuity, tracing, memory, embeddings, entities, policies, tools, approvals, proxy execution, execution budgets, a narrow read-only Gmail connector seam with protected refresh-token lifecycle and refresh-token rotation handling support, tasks, task steps, task workspaces, task artifacts, artifact-chunk embeddings, deterministic lexical artifact chunk retrieval, deterministic semantic artifact chunk retrieval over durable embeddings, compile-path semantic artifact retrieval, and deterministic hybrid lexical-plus-semantic artifact merge in compile.
-- `apps/web`: minimal shell only; no shipped workflow UI.
-- `workers`: scaffold only; no background jobs or runner logic are implemented.
-- `infra`: local development bootstrap assets only.
-- `tests`: unit and Postgres-backed integration coverage for the shipped seams above, including Sprint 4O task-step lineage/manual continuation, Sprint 4S step-linked execution synchronization, Sprint 5A task-workspace provisioning, Sprint 5C task-artifact registration, Sprint 5D local artifact ingestion plus chunk reads, Sprint 5E lexical artifact-chunk retrieval, Sprint 5F compile-path artifact chunk integration, Sprint 5G artifact-chunk embedding persistence and reads, Sprint 5H direct semantic artifact-chunk retrieval, Sprint 5I compile-path semantic artifact retrieval, Sprint 5J deterministic hybrid lexical-plus-semantic artifact merge in compile, Sprint 5L narrow PDF artifact ingestion, Sprint 5M narrow DOCX artifact ingestion, Sprint 5N narrow RFC822 email artifact ingestion, Sprint 5O read-only Gmail account plus single-message ingestion coverage, Sprint 5P Gmail credential hardening coverage, Sprint 5Q Gmail refresh-token lifecycle coverage, Sprint 5R Gmail refresh-token rotation handling coverage, Sprint 5T Gmail external secret-manager coverage, and Sprint 6H continuity API create/list/detail plus thread session/event review coverage.
+- Postgres is the system of record.
+- Row-level security is enforced on user-owned continuity, trace, memory, governance, task, workspace, artifact, and Gmail tables.
+- `events`, `trace_events`, and `memory_revisions` are append-only by contract.
+- Task-step lineage and execution linkage stay explicit through `parent_step_id`, `source_approval_id`, `source_execution_id`, and `tool_executions.task_step_id`.
+- Task workspaces are rooted local directories under `TASK_WORKSPACE_ROOT`.
+- Task artifacts are explicit rooted local-file registrations only; compile and retrieval read persisted chunk rows, not raw files.
+- Gmail credential material stays off normal metadata tables and flows through the dedicated secret-manager seam.
 
 ## Core Flows Implemented Now
 
-### Continuity Review
+### Continuity And Chat
 
-1. Accept a user-scoped `POST /v0/threads` request with one caller-supplied thread title.
-2. Persist exactly one visible `threads` row through the existing continuity store.
-3. List visible threads through `GET /v0/threads` in deterministic `created_at DESC, id DESC` order.
-4. Read one visible thread through `GET /v0/threads/{thread_id}`.
-5. Read visible sessions for one visible thread through `GET /v0/threads/{thread_id}/sessions` in deterministic `started_at ASC, created_at ASC, id ASC` order.
-6. Read immutable visible events for one visible thread through `GET /v0/threads/{thread_id}/events` in deterministic `sequence_no ASC` order.
-7. Return stable summary metadata for thread, session, and event list reads.
-8. Reuse only already-persisted continuity data; session mutation, event mutation, rename, archive, pagination, and search remain out of scope.
+1. `POST /v0/threads` creates one visible thread.
+2. `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, and `GET /v0/threads/{thread_id}/events` expose bounded continuity review over persisted records.
+3. `POST /v0/responses` compiles context deterministically, persists the submitted user message plus the assistant reply as immutable events, and returns linked compile and response trace metadata.
+4. `/chat` consumes those shipped seams directly. Selected-thread identity stays explicit across assistant and governed-request modes, and recent continuity review stays bounded instead of becoming an unbounded transcript.
 
-### Deterministic Context Compilation
+### Governance, Tasks, And Explainability
 
-1. Accept a user-scoped `POST /v0/context/compile` request.
-2. Read durable continuity records in deterministic order.
-3. Merge in active memories, entities, and entity edges through the currently shipped symbolic and optional semantic retrieval paths.
-4. Optionally retrieve artifact chunks through lexical retrieval, semantic retrieval, or both, scoped to exactly one visible task or one visible artifact per request.
-5. Reuse only persisted `task_artifact_chunks` rows and persisted artifact-chunk embeddings during compile; compile does not read raw files.
-6. When both artifact retrieval modes are present for the same scope, merge candidates by durable chunk id into one `artifact_chunks` section, preserve lexical match and semantic score provenance, and apply deterministic lexical-first source precedence.
-7. Keep retrieved artifact chunks separate from memory and entity sections, with deterministic per-section limits, ordering, and summary metadata.
-8. Persist a `context.compile` trace plus explicit inclusion and exclusion events, including artifact chunk deduplication, inclusion, and exclusion decisions.
-9. Return one deterministic `context_pack` describing scope, limits, selected context, artifact chunk results, and trace metadata.
+1. `POST /v0/approvals/requests` creates one task and one initial task step for each governed request.
+2. Approval resolution and approved execution reuse explicit task-step linkage instead of inferring from first-step-only assumptions.
+3. `GET /v0/approvals`, `GET /v0/tasks`, `GET /v0/tasks/{task_id}/steps`, `GET /v0/traces`, and related detail reads expose durable review state through the web shell.
+4. The shipped explainability surface is calm and bounded: summary first, detail second, ordered trace events last.
 
-### Artifact Chunk Retrieval
+### Workspaces, Artifacts, And Gmail
 
-1. Register and ingest visible local artifacts into durable `task_artifacts` and `task_artifact_chunks`.
-2. Persist explicit artifact-chunk embeddings in `task_artifact_chunk_embeddings`, keyed to an existing visible embedding config.
-3. Support deterministic lexical artifact-chunk retrieval for one visible task or one visible artifact.
-4. Support deterministic semantic artifact-chunk retrieval for one visible task or one visible artifact, using a caller-supplied query vector plus explicit `embedding_config_id`.
-5. Exclude artifacts whose `ingestion_status` is not `ingested`.
-6. Reuse those same persisted lexical and semantic retrieval seams inside compile for one visible task or one visible artifact.
-7. When compile receives both lexical and semantic artifact retrieval for the same scope, deduplicate by durable chunk id, preserve per-chunk source provenance, and count dual-source inclusions explicitly.
-8. Order hybrid compile candidates deterministically by source precedence, lexical rank, semantic rank, `relative_path`, `sequence_no`, and `id`.
-9. Return stable summary metadata covering scope, query terms, embedding config, query-vector dimensions, candidate counts, deduplication counts, inclusion counts, exclusion counts, and ordering rules.
-
-### Narrow Gmail Connector
-
-1. Accept a user-scoped `POST /v0/gmail-accounts` request for one read-only Gmail account metadata record.
-2. Persist exactly the narrow connector metadata required for later reads on `gmail_accounts`: `provider_account_id`, `email_address`, optional `display_name`, and the fixed Gmail read-only scope.
-3. Persist only Gmail credential locator metadata on `gmail_account_credentials` for the primary path, and store the secret payload itself through one explicit Gmail secret-manager adapter seam bound to the same visible user/account ownership scope.
-4. Expose deterministic user-scoped Gmail account list and detail reads without secret material.
-5. Accept a user-scoped `POST /v0/gmail-accounts/{gmail_account_id}/messages/{provider_message_id}/ingest` request for one visible Gmail account and one visible task workspace.
-6. Resolve the Gmail access token through the Gmail secret-manager adapter seam before any Gmail fetch, file write, or artifact registration, and renew it first through one explicit refresh path when the visible refresh-capable credential is expired.
-7. When the refresh provider returns a replacement refresh token, persist that rotated token back through the same Gmail secret-manager adapter seam before Gmail fetches continue.
-8. Derive one deterministic workspace-relative artifact path as `gmail/<sanitized-provider-account-id>/<sanitized-provider-message-id>.eml`.
-9. Reject duplicate `(task_workspace_id, relative_path)` collisions before any Gmail fetch or file write.
-10. Fetch exactly one selected Gmail message through the read-only Gmail API path `users/me/messages/{provider_message_id}?format=raw`.
-11. Require Gmail to return RFC822 `raw` content, validate it against the existing narrow `message/rfc822` extraction rules, and reject unsupported content deterministically.
-12. Materialize the message as one rooted `.eml` file inside the selected task workspace and then reuse the existing task-artifact registration plus artifact-ingestion seam.
-13. Persist only the resulting `task_artifacts` and `task_artifact_chunks` rows; account-wide sync, search, attachments, Calendar, and write-capable actions remain out of scope.
-
-### Governed Memory And Retrieval
-
-1. Accept explicit memory candidates through `POST /v0/memories/admit`.
-2. Require cited source events, default to `NOOP`, and persist `memory_revisions` only for evidence-backed non-`NOOP` mutations.
-3. Support a narrow deterministic explicit-preference extractor over stored `message.user` events.
-4. Persist user-scoped embedding configs and memory embeddings explicitly.
-5. Support direct semantic retrieval over active memories for a caller-selected embedding config.
-6. Merge symbolic and semantic memory results deterministically into the compile path with trace-visible source provenance.
-7. Expose review reads, unlabeled review queue reads, evaluation summary reads, and append-only memory-review labels.
-
-### Policy, Tool, Approval, And Execution Governance
-
-1. Evaluate policies deterministically over active user-scoped policy and consent state.
-2. Evaluate tool allowlists against active tool metadata plus policy decisions.
-3. Route one requested invocation deterministically to `ready`, `denied`, or `approval_required`.
-4. Persist durable approval rows only for `approval_required` outcomes.
-5. Resolve approvals explicitly through approve and reject endpoints.
-6. Execute approved requests only through the registered proxy-handler map.
-7. In the current repo, only `proxy.echo` is enabled, and it performs no external I/O.
-8. Persist one durable `tool_executions` row for every approved execution attempt, including budget-blocked attempts.
-9. Enforce narrow execution budgets by selector scope and optional rolling window before approved dispatch.
-
-### Task Lifecycle Creation
-
-1. `POST /v0/approvals/requests` always creates one durable `tasks` row and one initial `task_steps` row, even when no approval row is persisted.
-2. The initial task and task step reflect the routing decision:
-  - `approval_required` creates `task.status = pending_approval` and `task_step.status = created`
-  - `ready` creates `task.status = approved` and `task_step.status = approved`
-  - `denied` creates `task.status = denied` and `task_step.status = denied`
-3. The initial task step is always `sequence_no = 1`.
-4. Approval-request traces include task lifecycle and task-step lifecycle events alongside the approval request events.
-
-### Approval Resolution And Proxy Execution Synchronization
-
-1. Approval resolution reuses the existing task seam and updates the durable task plus the explicitly linked task step from `approvals.task_step_id`.
-2. Approval resolution rejects missing, invisible, cross-task, and inconsistent approval-to-step linkage deterministically.
-3. Approved proxy execution validates the approval’s linked task step before dispatch and persists `tool_executions.task_step_id` on every durable execution row.
-4. Execution synchronization now reuses `tool_executions.task_step_id` and updates the explicitly linked step by id rather than inferring `sequence_no = 1`.
-5. Execution synchronization rejects missing, invisible, cross-task, and inconsistent execution-to-step linkage deterministically before mutating task or task-step state.
-
-### Task-Step Manual Continuation
-
-1. Accept a user-scoped `POST /v0/tasks/{task_id}/steps` request to append exactly one next step to an existing task.
-2. Lock the task-step sequence before allocating the next `sequence_no`.
-3. Require the task to already have visible steps.
-4. Allow append only when the latest visible step is in `executed`, `blocked`, or `denied`.
-5. Require explicit lineage:
-  - `lineage.parent_step_id` must be present
-  - the parent step must belong to the same visible task
-  - the parent step must be the latest visible task step
-6. Optionally allow `lineage.source_approval_id` and `lineage.source_execution_id`, but only when:
-  - the referenced records are visible in the current user scope
-  - the referenced records already appear on the parent step outcome
-7. Persist the new `task_steps` row with the lineage fields and incremented `sequence_no`.
-8. Update the parent `tasks` row to the task status implied by the appended step status.
-9. Persist one `task.step.continuation` trace plus request, lineage, summary, task lifecycle, and task-step lifecycle events.
-10. Return the updated task, the appended step, deterministic sequencing metadata, and trace summary.
-
-### Task-Step Transition
-
-1. Accept a user-scoped `POST /v0/task-steps/{task_step_id}/transition` request.
-2. Require the referenced step to be the latest visible step on its task.
-3. Enforce the explicit status graph:
-  - `created -> approved | denied`
-  - `approved -> executed | blocked`
-  - terminal states have no further transitions
-4. Require approval linkage when the step must reflect approval state and execution linkage when the step must reflect execution state.
-5. Update the target step in place with a new trace reference and outcome snapshot.
-6. Update the parent task status and latest approval/execution pointers consistently.
-7. Persist one `task.step.transition` trace plus request, state, summary, task lifecycle, and task-step lifecycle events.
-
-### Task And Task-Step Reads
-
-1. `GET /v0/tasks` lists durable task rows in deterministic `created_at ASC, id ASC` order.
-2. `GET /v0/tasks/{task_id}` returns one user-visible task detail record.
-3. `GET /v0/tasks/{task_id}/steps` returns task steps in deterministic `sequence_no ASC, created_at ASC, id ASC` order plus sequencing summary metadata.
-4. `GET /v0/task-steps/{task_step_id}` returns one user-visible task-step detail record.
-5. Task-step list and detail reads expose lineage fields directly.
-
-### Task Workspace Provisioning
-
-1. Accept a user-scoped `POST /v0/tasks/{task_id}/workspace` request for one visible task.
-2. Resolve the configured `TASK_WORKSPACE_ROOT`.
-3. Build the deterministic local path as `resolved_root / user_id / task_id`.
-4. Reject provisioning if the resolved workspace path escapes the resolved workspace root.
-5. Lock workspace creation for the target task before checking for an existing active workspace.
-6. Reject duplicate active workspace creation for the same visible task deterministically.
-7. Create the local directory boundary and persist one `task_workspaces` row with `status = active` and the rooted `local_path`.
-8. `GET /v0/task-workspaces` lists visible workspaces in deterministic `created_at ASC, id ASC` order.
-9. `GET /v0/task-workspaces/{task_workspace_id}` returns one user-visible workspace detail record.
-
-### Task Artifact Registration And Reads
-
-1. Accept a user-scoped `POST /v0/task-workspaces/{task_workspace_id}/artifacts` request for one visible workspace.
-2. Resolve the provided local file path and require it to exist as a regular file.
-3. Resolve the persisted workspace `local_path` and reject registration if the file path escapes that rooted workspace boundary.
-4. Persist only the workspace-relative POSIX path plus optional `media_type_hint`; no absolute artifact path is stored.
-5. Lock registration for the target workspace before checking for an existing artifact with the same relative path.
-6. Reject duplicate registration for the same visible `(task_workspace_id, relative_path)` deterministically.
-7. Persist one `task_artifacts` row with `status = registered` and `ingestion_status = pending`.
-8. `GET /v0/task-artifacts` lists visible artifact rows in deterministic `created_at ASC, id ASC` order.
-9. `GET /v0/task-artifacts/{task_artifact_id}` returns one user-visible artifact detail record.
-
-### Task Artifact Ingestion And Chunk Reads
-
-1. Accept a user-scoped `POST /v0/task-artifacts/{task_artifact_id}/ingest` request for one visible registered artifact.
-2. Lock ingestion for that artifact before deciding whether work is needed.
-3. Resolve the persisted workspace `local_path` plus persisted artifact `relative_path`, and reject any rooted-path escape deterministically.
-4. Support only the current narrow explicit set: `text/plain`, `text/markdown`, narrow local `application/pdf` text extraction, narrow local `application/vnd.openxmlformats-officedocument.wordprocessingml.document` text extraction from `word/document.xml`, and narrow local `message/rfc822` extraction.
-5. For plain text and markdown, read file bytes deterministically and require valid UTF-8 text.
-6. For PDFs, extract only narrow local text content; OCR, image extraction, and broader PDF compatibility remain out of scope.
-7. For DOCX, extract only narrow local text from `word/document.xml`; OCR, image extraction, headers/footers/comments expansion, and layout reconstruction remain out of scope.
-8. For RFC822 email, extract only the selected top-level headers plus extractable plain-text body content; nested `message/rfc822` content, HTML rendering, and attachment extraction remain out of scope.
-9. Reject malformed or textless richer-document inputs deterministically instead of producing misleading chunks.
-10. Normalize line endings by rewriting `\r\n` and `\r` to `\n`.
-11. Chunk normalized text deterministically with rule `normalized_utf8_text_fixed_window_1000_chars_v1`.
-12. Persist ordered `task_artifact_chunks` rows with `sequence_no`, `char_start`, `char_end_exclusive`, and `text`.
-13. Update the parent artifact to `ingestion_status = ingested`.
-14. If the artifact is already ingested, return the existing artifact and chunk summary without reinserting chunks.
-15. `GET /v0/task-artifacts/{task_artifact_id}/chunks` returns visible chunk rows in deterministic `sequence_no ASC, id ASC` order plus stable summary metadata.
-
-### Artifact Chunk Retrieval
-
-1. Accept a user-scoped retrieval request scoped to exactly one visible task or one visible artifact.
-2. Normalize the query deterministically by casefolding and extracting unique lexical `\w+` terms in first-occurrence order.
-3. Read only persisted `task_artifact_chunks` rows for visible artifacts; compile and retrieval paths do not read raw files.
-4. Exclude artifacts whose `ingestion_status != 'ingested'`.
-5. Match chunks by lexical query-term overlap and record match metadata including matched query terms and first match offset.
-6. Order matches deterministically by matched query term count desc, first match offset asc, relative path asc, sequence no asc, and id asc.
-7. Return stable summary metadata describing query terms, scope, searched artifact count, and ordering.
-
-### Artifact Chunk Embedding Storage
-
-1. Accept a user-scoped `POST /v0/task-artifact-chunk-embeddings` request.
-2. Require `task_artifact_chunk_id` to reference one visible persisted chunk.
-3. Require `embedding_config_id` to reference one visible persisted embedding config.
-4. Normalize the submitted vector as finite numeric values only.
-5. Reject writes unless the vector length matches `embedding_config.dimensions`.
-6. Persist or update exactly one embedding per visible `(task_artifact_chunk_id, embedding_config_id)` pair.
-7. Expose deterministic reads by artifact scope, chunk scope, and embedding id.
-8. Order list reads by chunk sequence first, then `created_at ASC`, then `id ASC`.
-
-## Security Model Implemented Now
-
-- User-owned continuity, trace, memory, embedding, entity, governance, task, task-step, task-workspace, task-artifact, task-artifact-chunk, and task-artifact-chunk-embedding tables enforce row-level security.
-- The runtime role is limited to the narrow `SELECT` / `INSERT` / `UPDATE` permissions required by the shipped seams; there is no broad DDL or unrestricted table access at runtime.
-- Cross-user references are constrained through composite foreign keys on `(id, user_id)` where the schema needs ownership-linked joins.
-- Approval, execution, memory, entity, task/task-step, task-workspace, task-artifact, task-artifact-chunk, and task-artifact-chunk-embedding reads all operate only inside the current user scope.
-- Task-step manual continuation adds both schema-level and service-level lineage protection:
-  - schema-level: user-scoped foreign keys and parent-not-self check
-  - service-level: same-task, latest-step, visible-approval, visible-execution, and parent-outcome-match validation
-- In-place updates and deletes remain blocked for append-only continuity and trace records.
+1. Tasks can provision one rooted local workspace and register local artifacts under that boundary.
+2. Artifact ingestion supports the narrow current set only: plain text, markdown, narrow local PDF text extraction, narrow DOCX text extraction from `word/document.xml`, and narrow RFC822 email extraction.
+3. Artifact retrieval works over persisted chunk rows and persisted chunk embeddings, including deterministic lexical retrieval, direct semantic retrieval, and the current lexical-first hybrid compile merge.
+4. Gmail remains narrow: one read-only account seam, secret-free account reads, external-secret-backed primary credentials, refresh-token renewal and rotation handling, and one selected-message ingestion path that lands in the existing RFC822 artifact workflow.
 
 ## Testing Coverage Implemented Now
 
-- Unit and integration tests cover continuity, compiler, response generation, memory admission, review labels, review queue, embeddings, semantic retrieval, compile-path hybrid memory retrieval, artifact lexical retrieval, artifact semantic retrieval, compile-path semantic artifact retrieval, hybrid artifact compile merge, entities, policies, tools, approvals, proxy execution, execution budgets, and execution review.
-- Sprints 4O through 5R added explicit task lifecycle, artifact retrieval, richer-document ingestion, and narrow Gmail coverage:
-  - migrations for `tasks`, `task_steps`, and task-step lineage
-  - staged/backfilled migration coverage for `tool_executions.task_step_id`
-  - task and task-step store contracts
-  - task list/detail and task-step list/detail reads
-  - deterministic sequencing summaries
-  - manual continuation success paths
-  - task-step transition success paths
-  - explicit later-step execution synchronization by linked `task_step_id`
-  - deterministic task-workspace path generation and rooted-path enforcement
-  - workspace create/list/detail response shape
-  - duplicate active workspace rejection
-  - task-workspace per-user isolation
-  - artifact register/list/detail response shape
-  - rooted artifact-path enforcement beneath the persisted workspace path
-  - duplicate artifact registration rejection for the same workspace-relative path
-  - supported `text/plain` and `text/markdown` ingestion
-  - deterministic line-ending normalization and fixed-window chunk boundaries
-  - invalid UTF-8 rejection
-  - idempotent re-ingestion of already ingested artifacts
-  - deterministic lexical artifact-chunk retrieval by task and by artifact
-  - compile-path artifact chunk inclusion, exclusion, ordering, and per-user isolation
-  - artifact-chunk embedding write and read coverage
-  - direct semantic artifact-chunk retrieval by task and by artifact
-  - compile-path semantic artifact retrieval including trace visibility, exclusion rules, and scope isolation
-  - deterministic hybrid artifact compile merge with dual-source provenance, deduplication, lexical-first precedence, and shared limit enforcement
-  - narrow PDF ingestion success and failure paths
-  - narrow DOCX ingestion success and failure paths
-  - narrow RFC822 ingestion success and failure paths
-  - read-only Gmail account connect/list/detail coverage with secret-free reads
-  - selected Gmail message ingestion through the rooted RFC822 artifact path
-  - primary Gmail credential locator storage isolation in `gmail_account_credentials`
-  - refresh-token renewal for expired refresh-capable Gmail credentials
-  - rotated refresh-token persistence when the provider returns a replacement token
-  - external Gmail secret-manager reference persistence and resolution
-  - task-artifact and task-artifact-chunk per-user isolation
-  - trace visibility for continuation and transition events
-  - user isolation for task and task-step reads and mutations
-  - adversarial lineage validation for cross-task, cross-user, and parent-step mismatch cases
+- Backend continuity and response seams are covered in `tests/integration/test_continuity_api.py`, `tests/integration/test_continuity_store.py`, `tests/integration/test_responses_api.py`, and related unit coverage under `tests/unit`.
+- Web continuity adoption is covered in `apps/web/app/chat/page.test.tsx`, `apps/web/components/thread-list.test.tsx`, `apps/web/components/thread-summary.test.tsx`, `apps/web/components/thread-event-list.test.tsx`, `apps/web/components/thread-create.test.tsx`, and `apps/web/components/response-composer.test.tsx`.
+- The shell also has route and API-client coverage for approvals, tasks, traces, and shared API utilities under `apps/web`.
 
 ## Planned Later
 
-The following areas remain planned later and must not be described as implemented:
+The following remain planned later and must not be described as implemented:
 
-- runner-style orchestration and automatic multi-step progression beyond the current explicit manual continuation seam
-- artifact reranking, weighted fusion, or precedence changes beyond the current lexical-first hybrid compile merge and direct lexical/direct semantic ordering seams
-- rich document parsing beyond the current narrow UTF-8 text and markdown ingestion boundary
+- runner-style orchestration and automatic multi-step progression
+- auth beyond the current database user-context model
+- richer document parsing, OCR, image extraction, or layout reconstruction
 - Gmail search, mailbox sync, attachment ingestion, write-capable Gmail actions, and Calendar connectors
-- broader tool proxying and real-world side effects beyond the current no-I/O `proxy.echo` handler
-- model-driven extraction, reranking, and broader memory review automation
-- production deployment automation beyond the local developer stack
+- broader proxy execution breadth or real-world side effects beyond `proxy.echo`
+- retrieval reranking or weighted fusion beyond the current lexical-first hybrid compile merge
 
-Future docs and code should continue to distinguish the implemented seams above from these later milestones.
+Future planning should start from the shipped API-plus-web-shell baseline above, not from older Gmail-era or scaffold-era descriptions.
