@@ -13,6 +13,8 @@ type TaskSummaryProps = {
   execution: ToolExecutionItem | null;
   executionSource?: ApiSource | null;
   executionUnavailableMessage?: string | null;
+  chrome?: "card" | "embedded";
+  showExecutionReview?: boolean;
 };
 
 export function TaskSummary({
@@ -22,6 +24,8 @@ export function TaskSummary({
   execution,
   executionSource,
   executionUnavailableMessage,
+  chrome = "card",
+  showExecutionReview = true,
 }: TaskSummaryProps) {
   if (!task) {
     return (
@@ -29,6 +33,7 @@ export function TaskSummary({
         eyebrow="Selected task"
         title="No task selected"
         description="Choose a task to inspect its current governed state and ordered task steps."
+        className={chrome === "embedded" ? "section-card--embedded" : undefined}
       >
         <EmptyState
           title="Task inspector is idle"
@@ -43,6 +48,7 @@ export function TaskSummary({
       eyebrow="Selected task"
       title={task.tool.name}
       description="Latest task state, approval linkage, and execution review stay grouped in one bounded task summary."
+      className={chrome === "embedded" ? "section-card--embedded" : undefined}
     >
       <div className="detail-grid">
         <div className="detail-summary">
@@ -95,16 +101,18 @@ export function TaskSummary({
           ) : null}
         </div>
 
-        <div className="detail-group">
-          <h3>Execution review</h3>
-          <ExecutionSummary
-            execution={execution}
-            source={executionSource}
-            unavailableMessage={executionUnavailableMessage}
-            emptyTitle="Task has not executed yet"
-            emptyDescription="When execution runs for this task, the latest execution record and output snapshot will appear here."
-          />
-        </div>
+        {showExecutionReview ? (
+          <div className="detail-group">
+            <h3>Execution review</h3>
+            <ExecutionSummary
+              execution={execution}
+              source={executionSource}
+              unavailableMessage={executionUnavailableMessage}
+              emptyTitle="Task has not executed yet"
+              emptyDescription="When execution runs for this task, the latest execution record and output snapshot will appear here."
+            />
+          </div>
+        ) : null}
       </div>
     </SectionCard>
   );

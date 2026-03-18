@@ -332,6 +332,10 @@ code,
   gap: 24px;
 }
 
+.chat-layout__rail {
+  align-content: start;
+}
+
 .chat-layout {
   grid-template-columns: minmax(0, 1.34fr) minmax(320px, 0.82fr);
   align-items: flex-start;
@@ -372,6 +376,15 @@ code,
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-md);
   backdrop-filter: blur(14px);
+}
+
+.section-card--embedded {
+  gap: 16px;
+  padding: 20px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.56);
+  box-shadow: none;
+  backdrop-filter: blur(10px);
 }
 
 .section-card--history {
@@ -1005,6 +1018,55 @@ code,
 .detail-grid {
   display: grid;
   gap: 20px;
+}
+
+.thread-workflow-panel {
+  gap: 18px;
+}
+
+.thread-workflow-panel__summary {
+  display: grid;
+  gap: 14px;
+  padding: 18px 20px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.68);
+  border: 1px solid rgba(42, 52, 66, 0.08);
+}
+
+.thread-workflow-panel__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.thread-workflow-panel__stack {
+  display: grid;
+  gap: 16px;
+}
+
+.thread-workflow-panel .detail-grid,
+.thread-workflow-panel .detail-group,
+.thread-workflow-panel .approval-action-bar,
+.thread-workflow-panel .execution-summary {
+  gap: 14px;
+}
+
+.thread-workflow-panel .key-value-grid {
+  grid-template-columns: 1fr;
+}
+
+.thread-workflow-panel .approval-action-bar__buttons {
+  align-items: stretch;
+}
+
+.thread-workflow-panel .approval-action-bar__buttons > .button,
+.thread-workflow-panel .approval-action-bar__buttons > .button-secondary,
+.thread-workflow-panel .cluster > .button-secondary {
+  width: 100%;
+}
+
+.thread-workflow-panel .execution-summary__code {
+  max-height: 220px;
 }
 
 .thread-review-grid {
