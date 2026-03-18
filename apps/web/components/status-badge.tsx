@@ -10,7 +10,7 @@ function normalizeStatus(status: string) {
 function toneForStatus(status: string) {
   const normalized = normalizeStatus(status);
 
-  if (["approved", "executed", "completed", "active", "ready", "success"].includes(normalized)) {
+  if (["approved", "executed", "completed", "active", "ready", "success", "ingested"].includes(normalized)) {
     return "success";
   }
 
@@ -49,7 +49,7 @@ function toneForStatus(status: string) {
     return "danger";
   }
 
-  if (["info", "live", "loading", "submitting"].includes(normalized)) {
+  if (["info", "live", "loading", "submitting", "registered"].includes(normalized)) {
     return "info";
   }
 

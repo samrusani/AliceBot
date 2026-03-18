@@ -14,6 +14,12 @@ import type {
   MemoryReviewRecord,
   MemoryRevisionReviewRecord,
   MemoryRevisionReviewListSummary,
+  TaskArtifactChunkListSummary,
+  TaskArtifactChunkRecord,
+  TaskArtifactListSummary,
+  TaskArtifactRecord,
+  TaskWorkspaceListSummary,
+  TaskWorkspaceRecord,
   RequestHistoryEntry,
   ResponseHistoryEntry,
   ThreadEventItem,
@@ -513,6 +519,115 @@ export const entityEdgeFixtures: Record<string, EntityEdgeRecord[]> = {
   [ENTITY_ROUTINE]: entityEdgeCatalog.filter(
     (edge) => edge.from_entity_id === ENTITY_ROUTINE || edge.to_entity_id === ENTITY_ROUTINE,
   ),
+};
+
+const TASK_WORKSPACE_MAGNESIUM = "dddddddd-dddd-4ddd-8ddd-ddddddddddd1";
+const TASK_WORKSPACE_VITAMIN_D = "dddddddd-dddd-4ddd-8ddd-ddddddddddd2";
+
+const TASK_ARTIFACT_MAGNESIUM_NOTE = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1";
+const TASK_ARTIFACT_VITAMIN_EMAIL = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2";
+const TASK_ARTIFACT_PENDING_PDF = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee3";
+
+export const taskWorkspaceFixtures: TaskWorkspaceRecord[] = [
+  {
+    id: TASK_WORKSPACE_MAGNESIUM,
+    task_id: "33333333-3333-4333-8333-333333333333",
+    status: "active",
+    local_path: "/var/alicebot/workspaces/33333333-3333-4333-8333-333333333333",
+    created_at: "2026-03-17T06:48:00Z",
+    updated_at: "2026-03-17T06:48:00Z",
+  },
+  {
+    id: TASK_WORKSPACE_VITAMIN_D,
+    task_id: "33333333-3333-4333-8333-333333333334",
+    status: "active",
+    local_path: "/var/alicebot/workspaces/33333333-3333-4333-8333-333333333334",
+    created_at: "2026-03-16T13:58:00Z",
+    updated_at: "2026-03-16T13:58:00Z",
+  },
+];
+
+export const taskWorkspaceListSummaryFixture: TaskWorkspaceListSummary = {
+  total_count: taskWorkspaceFixtures.length,
+  order: ["created_at_asc", "id_asc"],
+};
+
+export const taskArtifactFixtures: TaskArtifactRecord[] = [
+  {
+    id: TASK_ARTIFACT_MAGNESIUM_NOTE,
+    task_id: "33333333-3333-4333-8333-333333333333",
+    task_workspace_id: TASK_WORKSPACE_MAGNESIUM,
+    status: "registered",
+    ingestion_status: "ingested",
+    relative_path: "notes/magnesium-review.md",
+    media_type_hint: "text/markdown",
+    created_at: "2026-03-17T07:10:00Z",
+    updated_at: "2026-03-17T07:12:00Z",
+  },
+  {
+    id: TASK_ARTIFACT_VITAMIN_EMAIL,
+    task_id: "33333333-3333-4333-8333-333333333334",
+    task_workspace_id: TASK_WORKSPACE_VITAMIN_D,
+    status: "registered",
+    ingestion_status: "ingested",
+    relative_path: "gmail/2026-03-16-order-confirmation.eml",
+    media_type_hint: "message/rfc822",
+    created_at: "2026-03-16T14:18:00Z",
+    updated_at: "2026-03-16T14:19:00Z",
+  },
+  {
+    id: TASK_ARTIFACT_PENDING_PDF,
+    task_id: "33333333-3333-4333-8333-333333333333",
+    task_workspace_id: TASK_WORKSPACE_MAGNESIUM,
+    status: "registered",
+    ingestion_status: "pending",
+    relative_path: "docs/lab-panel.pdf",
+    media_type_hint: "application/pdf",
+    created_at: "2026-03-17T08:01:00Z",
+    updated_at: "2026-03-17T08:01:00Z",
+  },
+];
+
+export const taskArtifactListSummaryFixture: TaskArtifactListSummary = {
+  total_count: taskArtifactFixtures.length,
+  order: ["created_at_asc", "id_asc"],
+};
+
+export const taskArtifactChunkFixtures: Record<string, TaskArtifactChunkRecord[]> = {
+  [TASK_ARTIFACT_MAGNESIUM_NOTE]: [
+    {
+      id: "ffffffff-ffff-4fff-8fff-fffffffffff1",
+      task_artifact_id: TASK_ARTIFACT_MAGNESIUM_NOTE,
+      sequence_no: 1,
+      char_start: 0,
+      char_end_exclusive: 196,
+      text: "## Magnesium review\nLast approved merchant: Thorne.\nPreferred package size: 90 capsules.\nPending approval still blocks any new purchase action.\n",
+      created_at: "2026-03-17T07:12:00Z",
+      updated_at: "2026-03-17T07:12:00Z",
+    },
+    {
+      id: "ffffffff-ffff-4fff-8fff-fffffffffff2",
+      task_artifact_id: TASK_ARTIFACT_MAGNESIUM_NOTE,
+      sequence_no: 2,
+      char_start: 196,
+      char_end_exclusive: 392,
+      text: "## Follow-up\nOperator should confirm whether merchant preference still matches current constraints before requesting execution.\n",
+      created_at: "2026-03-17T07:12:00Z",
+      updated_at: "2026-03-17T07:12:00Z",
+    },
+  ],
+  [TASK_ARTIFACT_VITAMIN_EMAIL]: [
+    {
+      id: "ffffffff-ffff-4fff-8fff-fffffffffff3",
+      task_artifact_id: TASK_ARTIFACT_VITAMIN_EMAIL,
+      sequence_no: 1,
+      char_start: 0,
+      char_end_exclusive: 238,
+      text: "From: orders@example.com\nSubject: Vitamin D3 + K2 order confirmation\nBody: Your order was approved and fulfilled on 2026-03-16.\n",
+      created_at: "2026-03-16T14:19:00Z",
+      updated_at: "2026-03-16T14:19:00Z",
+    },
+  ],
 };
 
 export const traceFixtures: TraceItem[] = [
@@ -1195,6 +1310,32 @@ export function getFixtureMemory(memoryId: string) {
 
 export function getFixtureEntity(entityId: string) {
   return entityFixtures.find((item) => item.id === entityId) ?? null;
+}
+
+export function getFixtureTaskWorkspace(taskWorkspaceId: string) {
+  return taskWorkspaceFixtures.find((item) => item.id === taskWorkspaceId) ?? null;
+}
+
+export function getFixtureTaskArtifact(taskArtifactId: string) {
+  return taskArtifactFixtures.find((item) => item.id === taskArtifactId) ?? null;
+}
+
+export function getFixtureTaskArtifactChunks(taskArtifactId: string) {
+  return taskArtifactChunkFixtures[taskArtifactId] ?? [];
+}
+
+export function getFixtureTaskArtifactChunkSummary(taskArtifactId: string): TaskArtifactChunkListSummary {
+  const artifact = getFixtureTaskArtifact(taskArtifactId);
+  const items = getFixtureTaskArtifactChunks(taskArtifactId);
+  const totalCharacters = items.reduce((acc, item) => acc + Math.max(0, item.char_end_exclusive - item.char_start), 0);
+
+  return {
+    total_count: items.length,
+    total_characters: totalCharacters,
+    media_type: artifact?.media_type_hint ?? "text/plain",
+    chunking_rule: "artifact_ingestion_v0",
+    order: ["sequence_no_asc", "id_asc"],
+  };
 }
 
 export function getFixtureEntityEdges(entityId: string) {

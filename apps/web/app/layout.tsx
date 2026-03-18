@@ -8,7 +8,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "AliceBot Operator Shell",
   description:
-    "Governed operator interface for requests, approvals, tasks, memories, entities, and explainability.",
+    "Governed operator interface for requests, approvals, tasks, artifacts, memories, entities, and explainability.",
 };
 
 export default function RootLayout({
