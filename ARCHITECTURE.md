@@ -2,11 +2,11 @@
 
 ## Current Implemented Slice
 
-AliceBot now implements the accepted repo slice through Sprint 6I.
+AliceBot now implements the accepted repo slice through Sprint 6K.
 
 - `apps/api` is the core shipped surface. It provides continuity storage and review over `users`, `threads`, `sessions`, and append-only `events`; deterministic context compilation; governed memory admission and review; embeddings and semantic retrieval; entities and entity edges; policy, tool, approval, and execution governance; the no-tools assistant-response seam at `POST /v0/responses`; explicit task and task-step lifecycle reads and mutations; rooted local task workspaces and artifact ingestion; artifact chunk retrieval and embeddings; and the narrow read-only Gmail seam with external-secret-backed credentials plus selected-message ingestion into the RFC822 artifact pipeline.
 - `apps/web` is a shipped operator shell over those backend seams, not a scaffold-only placeholder. The current routes are `/`, `/chat`, `/approvals`, `/tasks`, and `/traces`. The shell can read live backend seams when configured and otherwise falls back to explicit fixture states instead of pretending the backend is connected.
-- `/chat` now carries both shipped operator modes: governed request composition and assistant-response mode. It uses visible thread selection instead of a raw typed thread id, supports compact thread creation through the continuity API, and shows bounded thread continuity review through thread detail, session, and event reads.
+- `/chat` now carries both shipped operator modes: governed request composition and assistant-response mode. It uses visible thread selection instead of a raw typed thread id, supports compact thread creation through the continuity API, renders a selected-thread transcript from immutable continuity events, and keeps supporting session and operational review bounded in the right rail.
 - `workers` remains scaffold-only. No background runner, automatic multi-step progression, or asynchronous job system is implemented.
 
 The repo is intentionally still narrow. Document ingestion remains local and deterministic. The only live execution handler is the no-external-I/O `proxy.echo` path. Gmail remains read-only and selected-message-only. Rich parsing, mailbox sync, attachments, Calendar, broader proxying, and runner-style orchestration are still planned later.
@@ -25,7 +25,7 @@ The repo is intentionally still narrow. Document ingestion remains local and det
   - narrow Gmail account connect/read plus selected-message ingestion
 - `apps/web` exposes the current operator shell:
   - `/`: bounded home view over the shipped shell surfaces
-  - `/chat`: assistant mode, governed request mode, thread selection, thread creation, bounded continuity review, and response/request history
+  - `/chat`: assistant mode, governed request mode, thread selection, thread creation, transcript-first continuity review, and bounded supporting operational review
   - `/approvals`: approval inbox and execution review
   - `/tasks`: task summary and ordered task-step review
   - `/traces`: trace summary, detail, and ordered event review
@@ -48,7 +48,7 @@ The repo is intentionally still narrow. Document ingestion remains local and det
 1. `POST /v0/threads` creates one visible thread.
 2. `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, and `GET /v0/threads/{thread_id}/events` expose bounded continuity review over persisted records.
 3. `POST /v0/responses` compiles context deterministically, persists the submitted user message plus the assistant reply as immutable events, and returns linked compile and response trace metadata.
-4. `/chat` consumes those shipped seams directly. Selected-thread identity stays explicit across assistant and governed-request modes, and recent continuity review stays bounded instead of becoming an unbounded transcript.
+4. `/chat` consumes those shipped seams directly. Selected-thread identity stays explicit across assistant and governed-request modes, immutable thread events drive the primary transcript surface, and non-conversation continuity stays in bounded supporting review instead of polluting the main conversation record.
 
 ### Governance, Tasks, And Explainability
 
