@@ -14,6 +14,7 @@ type ResponseHistoryProps = {
   threadTitle?: string;
   source?: ContinuitySource;
   unavailableReason?: string;
+  traceHrefPrefix?: string;
 };
 
 type TranscriptItem = {
@@ -179,6 +180,7 @@ export function ResponseHistory({
   threadTitle,
   source = "fixture",
   unavailableReason,
+  traceHrefPrefix,
 }: ResponseHistoryProps) {
   if (source === "unavailable") {
     return (
@@ -281,10 +283,16 @@ export function ResponseHistory({
 
                 {item.trace ? (
                   <div className="cluster">
-                    <Link href={`/traces?trace=${item.trace.compileTraceId}`} className="button-secondary">
+                    <Link
+                      href={`${traceHrefPrefix ?? "/traces?trace="}${encodeURIComponent(item.trace.compileTraceId)}`}
+                      className="button-secondary"
+                    >
                       Open compile trace
                     </Link>
-                    <Link href={`/traces?trace=${item.trace.responseTraceId}`} className="button-secondary">
+                    <Link
+                      href={`${traceHrefPrefix ?? "/traces?trace="}${encodeURIComponent(item.trace.responseTraceId)}`}
+                      className="button-secondary"
+                    >
                       Open response trace
                     </Link>
                   </div>
