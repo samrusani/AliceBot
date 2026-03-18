@@ -14,6 +14,10 @@ function toneForStatus(status: string) {
     return "success";
   }
 
+  if (normalized === "correct") {
+    return "success";
+  }
+
   if (
     [
       "pending",
@@ -23,12 +27,25 @@ function toneForStatus(status: string) {
       "blocked",
       "approval_required",
       "executing",
+      "outdated",
+      "insufficient_evidence",
     ].includes(normalized)
   ) {
     return normalized === "blocked" ? "danger" : "warning";
   }
 
-  if (["denied", "rejected", "inactive", "superseded", "error", "failed"].includes(normalized)) {
+  if (
+    [
+      "denied",
+      "rejected",
+      "inactive",
+      "superseded",
+      "error",
+      "failed",
+      "incorrect",
+      "deleted",
+    ].includes(normalized)
+  ) {
     return "danger";
   }
 
@@ -36,7 +53,7 @@ function toneForStatus(status: string) {
     return "info";
   }
 
-  if (["fixture", "preview", "draft"].includes(normalized)) {
+  if (["fixture", "preview", "draft", "unavailable"].includes(normalized)) {
     return "neutral";
   }
 
