@@ -6,14 +6,14 @@ import { StatusBadge } from "../components/status-badge";
 
 const summaryCards = [
   {
-    value: "5",
+    value: "6",
     label: "Operator views",
-    detail: "Home, request composition, approvals, task inspection, and explainability are all exposed in one bounded shell.",
+    detail: "Home, request composition, approvals, task inspection, memory review, and explainability are all exposed in one bounded shell.",
   },
   {
-    value: "3",
+    value: "4",
     label: "Governance seams",
-    detail: "Requests, approvals, and tool executions stay visible instead of being hidden behind a consumer chat wrapper.",
+    detail: "Requests, approvals, tasks, and memory-review seams stay visible instead of being hidden behind a consumer chat wrapper.",
   },
   {
     value: "2",
@@ -45,6 +45,12 @@ const routeCards = [
     title: "Task Inspection",
     description: "Inspect task lifecycle state, related governed requests, and ordered task-step progress without leaving the shell.",
     status: "approved",
+  },
+  {
+    href: "/memories",
+    title: "Memory Review",
+    description: "Inspect active memory records, revisions, and review labels through the shipped memory-review seam.",
+    status: "requires_review",
   },
   {
     href: "/traces",

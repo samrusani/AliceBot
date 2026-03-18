@@ -1,6 +1,15 @@
 import type {
   ApprovalItem,
   ApprovalRequestPayload,
+  MemoryEvaluationSummary,
+  MemoryReviewLabelRecord,
+  MemoryReviewLabelSummary,
+  MemoryReviewListSummary,
+  MemoryReviewQueueItem,
+  MemoryReviewQueueSummary,
+  MemoryReviewRecord,
+  MemoryRevisionReviewRecord,
+  MemoryRevisionReviewListSummary,
   RequestHistoryEntry,
   ResponseHistoryEntry,
   ThreadEventItem,
@@ -186,6 +195,227 @@ export const threadEventFixtures: Record<string, ThreadEventItem[]> = {
     },
   ],
   [THREAD_CLEANUP]: [],
+};
+
+const MEMORY_MERCHANT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+const MEMORY_MAGNESIUM = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
+const MEMORY_DELIVERY = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
+
+const MEMORY_LABEL_VALUE_ORDER: MemoryReviewLabelSummary["order"] = [
+  "correct",
+  "incorrect",
+  "outdated",
+  "insufficient_evidence",
+];
+
+export const memoryFixtures: MemoryReviewRecord[] = [
+  {
+    id: MEMORY_MERCHANT,
+    memory_key: "user.preference.merchant.supplements",
+    value: {
+      merchant: "Thorne",
+      confidence: "high",
+      reason: "Previously approved orders favored this merchant for magnesium.",
+    },
+    status: "active",
+    source_event_ids: ["event-magnesium-2", "event-magnesium-3"],
+    created_at: "2026-03-16T10:20:00Z",
+    updated_at: "2026-03-17T08:10:00Z",
+    deleted_at: null,
+  },
+  {
+    id: MEMORY_MAGNESIUM,
+    memory_key: "user.preference.supplement.magnesium_bisglycinate",
+    value: {
+      item: "Magnesium Bisglycinate",
+      quantity: "1",
+      package: "90 capsules",
+    },
+    status: "active",
+    source_event_ids: ["event-magnesium-1", "event-magnesium-2"],
+    created_at: "2026-03-16T10:25:00Z",
+    updated_at: "2026-03-17T08:12:00Z",
+    deleted_at: null,
+  },
+  {
+    id: MEMORY_DELIVERY,
+    memory_key: "user.preference.delivery.window",
+    value: {
+      window: "weekday_morning",
+      note: "Avoid weekend deliveries for supplements.",
+    },
+    status: "active",
+    source_event_ids: ["event-vitamin-d-1"],
+    created_at: "2026-03-14T09:10:00Z",
+    updated_at: "2026-03-16T09:10:00Z",
+    deleted_at: null,
+  },
+];
+
+export const memoryReviewQueueFixtures: MemoryReviewQueueItem[] = [
+  {
+    id: MEMORY_MAGNESIUM,
+    memory_key: "user.preference.supplement.magnesium_bisglycinate",
+    value: {
+      item: "Magnesium Bisglycinate",
+      quantity: "1",
+      package: "90 capsules",
+    },
+    status: "active",
+    source_event_ids: ["event-magnesium-1", "event-magnesium-2"],
+    created_at: "2026-03-16T10:25:00Z",
+    updated_at: "2026-03-17T08:12:00Z",
+  },
+  {
+    id: MEMORY_DELIVERY,
+    memory_key: "user.preference.delivery.window",
+    value: {
+      window: "weekday_morning",
+      note: "Avoid weekend deliveries for supplements.",
+    },
+    status: "active",
+    source_event_ids: ["event-vitamin-d-1"],
+    created_at: "2026-03-14T09:10:00Z",
+    updated_at: "2026-03-16T09:10:00Z",
+  },
+];
+
+export const memoryReviewListSummaryFixture: MemoryReviewListSummary = {
+  status: "active",
+  limit: 20,
+  returned_count: memoryFixtures.length,
+  total_count: memoryFixtures.length,
+  has_more: false,
+  order: ["updated_at_desc", "created_at_desc", "id_desc"],
+};
+
+export const memoryReviewQueueSummaryFixture: MemoryReviewQueueSummary = {
+  memory_status: "active",
+  review_state: "unlabeled",
+  limit: 20,
+  returned_count: memoryReviewQueueFixtures.length,
+  total_count: memoryReviewQueueFixtures.length,
+  has_more: false,
+  order: ["updated_at_desc", "created_at_desc", "id_desc"],
+};
+
+export const memoryEvaluationSummaryFixture: MemoryEvaluationSummary = {
+  total_memory_count: 4,
+  active_memory_count: 3,
+  deleted_memory_count: 1,
+  labeled_memory_count: 1,
+  unlabeled_memory_count: 3,
+  total_label_row_count: 2,
+  label_row_counts_by_value: {
+    correct: 1,
+    incorrect: 0,
+    outdated: 1,
+    insufficient_evidence: 0,
+  },
+  label_value_order: [...MEMORY_LABEL_VALUE_ORDER],
+};
+
+export const memoryRevisionFixtures: Record<string, MemoryRevisionReviewRecord[]> = {
+  [MEMORY_MERCHANT]: [
+    {
+      id: "memory-revision-1",
+      memory_id: MEMORY_MERCHANT,
+      sequence_no: 1,
+      action: "ADD",
+      memory_key: "user.preference.merchant.supplements",
+      previous_value: null,
+      new_value: {
+        merchant: "Thorne",
+      },
+      source_event_ids: ["event-magnesium-1"],
+      created_at: "2026-03-16T10:20:00Z",
+    },
+    {
+      id: "memory-revision-2",
+      memory_id: MEMORY_MERCHANT,
+      sequence_no: 2,
+      action: "UPDATE",
+      memory_key: "user.preference.merchant.supplements",
+      previous_value: {
+        merchant: "Thorne",
+      },
+      new_value: {
+        merchant: "Thorne",
+        confidence: "high",
+        reason: "Previously approved orders favored this merchant for magnesium.",
+      },
+      source_event_ids: ["event-magnesium-2", "event-magnesium-3"],
+      created_at: "2026-03-17T08:10:00Z",
+    },
+  ],
+  [MEMORY_MAGNESIUM]: [
+    {
+      id: "memory-revision-3",
+      memory_id: MEMORY_MAGNESIUM,
+      sequence_no: 1,
+      action: "ADD",
+      memory_key: "user.preference.supplement.magnesium_bisglycinate",
+      previous_value: null,
+      new_value: {
+        item: "Magnesium Bisglycinate",
+        quantity: "1",
+        package: "90 capsules",
+      },
+      source_event_ids: ["event-magnesium-1", "event-magnesium-2"],
+      created_at: "2026-03-16T10:25:00Z",
+    },
+  ],
+  [MEMORY_DELIVERY]: [
+    {
+      id: "memory-revision-4",
+      memory_id: MEMORY_DELIVERY,
+      sequence_no: 1,
+      action: "ADD",
+      memory_key: "user.preference.delivery.window",
+      previous_value: null,
+      new_value: {
+        window: "weekday_morning",
+        note: "Avoid weekend deliveries for supplements.",
+      },
+      source_event_ids: ["event-vitamin-d-1"],
+      created_at: "2026-03-14T09:10:00Z",
+    },
+  ],
+};
+
+export const memoryLabelFixtures: Record<string, MemoryReviewLabelRecord[]> = {
+  [MEMORY_MERCHANT]: [
+    {
+      id: "memory-label-1",
+      memory_id: MEMORY_MERCHANT,
+      reviewer_user_id: "99999999-9999-4999-8999-999999999999",
+      label: "correct",
+      note: "Still matches the latest approved reorder context.",
+      created_at: "2026-03-17T08:20:00Z",
+    },
+    {
+      id: "memory-label-2",
+      memory_id: MEMORY_MERCHANT,
+      reviewer_user_id: "99999999-9999-4999-8999-999999999999",
+      label: "outdated",
+      note: "Verify against any newer merchant change before next order.",
+      created_at: "2026-03-17T08:21:00Z",
+    },
+  ],
+};
+
+export const memoryLabelSummaryFixtures: Record<string, MemoryReviewLabelSummary> = {
+  [MEMORY_MERCHANT]: {
+    memory_id: MEMORY_MERCHANT,
+    total_count: 2,
+    counts_by_label: {
+      correct: 1,
+      incorrect: 0,
+      outdated: 1,
+      insufficient_evidence: 0,
+    },
+    order: [...MEMORY_LABEL_VALUE_ORDER],
+  },
 };
 
 export const traceFixtures: TraceItem[] = [
@@ -860,6 +1090,49 @@ export function getFixtureExecutionByApprovalId(approvalId: string) {
 
 export function getFixtureThread(threadId: string) {
   return threadFixtures.find((item) => item.id === threadId) ?? null;
+}
+
+export function getFixtureMemory(memoryId: string) {
+  return memoryFixtures.find((item) => item.id === memoryId) ?? null;
+}
+
+export function getFixtureMemoryRevisions(memoryId: string) {
+  return memoryRevisionFixtures[memoryId] ?? [];
+}
+
+export function getFixtureMemoryRevisionSummary(memoryId: string): MemoryRevisionReviewListSummary {
+  const items = getFixtureMemoryRevisions(memoryId);
+  return {
+    memory_id: memoryId,
+    limit: 20,
+    returned_count: items.length,
+    total_count: items.length,
+    has_more: false,
+    order: ["sequence_no_asc"],
+  };
+}
+
+export function getFixtureMemoryLabels(memoryId: string) {
+  return memoryLabelFixtures[memoryId] ?? [];
+}
+
+export function getFixtureMemoryLabelSummary(memoryId: string): MemoryReviewLabelSummary {
+  const existing = memoryLabelSummaryFixtures[memoryId];
+  if (existing) {
+    return existing;
+  }
+
+  return {
+    memory_id: memoryId,
+    total_count: 0,
+    counts_by_label: {
+      correct: 0,
+      incorrect: 0,
+      outdated: 0,
+      insufficient_evidence: 0,
+    },
+    order: [...MEMORY_LABEL_VALUE_ORDER],
+  };
 }
 
 export function getFixtureThreadSessions(threadId: string) {
