@@ -2,100 +2,89 @@
 
 ## sprint objective
 
-Implement Sprint 6I by extending `/chat` with visible thread selection, compact thread creation, and bounded continuity review using only the shipped continuity APIs, while preserving the existing assistant-response and governed-request seams.
+Synchronize the canonical truth artifacts with the implemented repo state through Sprint 6I and compact active documentation so future planning starts from the shipped API-plus-web-shell baseline instead of stale Sprint 5-era or Sprint 6H-only narratives.
 
-## exact `/chat` files and components updated
+## completed work
 
-- `apps/web/app/chat/page.tsx`
-- `apps/web/app/chat/page.test.tsx`
-- `apps/web/app/globals.css`
-- `apps/web/components/mode-toggle.tsx`
-- `apps/web/components/request-composer.tsx`
-- `apps/web/components/request-composer.test.tsx`
-- `apps/web/components/response-composer.tsx`
-- `apps/web/components/response-composer.test.tsx`
-- `apps/web/components/thread-list.tsx`
-- `apps/web/components/thread-list.test.tsx`
-- `apps/web/components/thread-create.tsx`
-- `apps/web/components/thread-create.test.tsx`
-- `apps/web/components/thread-summary.tsx`
-- `apps/web/components/thread-summary.test.tsx`
-- `apps/web/components/thread-event-list.tsx`
-- `apps/web/components/thread-event-list.test.tsx`
-- `apps/web/lib/api.ts`
-- `apps/web/lib/api.test.ts`
-- `apps/web/lib/fixtures.ts`
+- Updated `ARCHITECTURE.md` to reflect the shipped repo state through Sprint 6I, including the continuity APIs, assistant-response seam, shipped web shell, and `/chat` thread-selection plus bounded continuity-review adoption.
+- Rewrote `ROADMAP.md` so current position starts from Sprint 6I and the next focus is framed from the shipped backend-plus-web-shell baseline instead of the stale Gmail-cleanup-only storyline.
+- Compressed and corrected `.ai/handoff/CURRENT_STATE.md` so it no longer describes `apps/web` as scaffold-only, now points at durable repo evidence, and now states that live sprint reports stay at repo root until archival.
+- Updated `README.md` so onboarding-level repo status is truthful and compact, and so the current-vs-archived sprint report locations are explicit.
+- Rewrote `REVIEW_REPORT.md` so it reviews this documentation compaction sprint instead of the prior `/chat` UI sprint.
+- Left `RULES.md` unchanged because no concrete stale or duplicated rule required modification.
+- Made no archive moves because the current sprint reports intentionally remain live at repo root until archival and older accepted history already remains traceable through `docs/archive/sprints`.
+
+## incomplete work
+
+- No in-scope documentation deliverable was left incomplete.
+- `RULES.md` and `docs/archive/**` were intentionally not changed because no required update or archival move was identified.
+
+## files changed
+
+- `REVIEW_REPORT.md`
+- `ARCHITECTURE.md`
+- `ROADMAP.md`
+- `.ai/handoff/CURRENT_STATE.md`
+- `README.md`
 - `BUILD_REPORT.md`
 
-## continuity data mode
+## unrelated pre-existing worktree drift
 
-- live API-backed when the web API base URL and user ID are configured
-- fixture-backed for thread selection, thread summary, continuity review, and history when API configuration is absent
-- explicit unavailable state for thread creation when API configuration is absent
+- `.ai/active/SPRINT_PACKET.md` was already locally modified as a control artifact and was not edited by this sprint implementation.
 
-## shipped backend continuity endpoints consumed
+## accepted repo evidence used
 
-- `POST /v0/threads`
-- `GET /v0/threads`
-- `GET /v0/threads/{thread_id}`
-- `GET /v0/threads/{thread_id}/sessions`
-- `GET /v0/threads/{thread_id}/events`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/response_generation.py`
+- `apps/web/app/chat/page.tsx`
+- `apps/web/app/approvals/page.tsx`
+- `apps/web/app/tasks/page.tsx`
+- `apps/web/app/traces/page.tsx`
+- `apps/web/components/thread-list.tsx`
+- `apps/web/components/thread-summary.tsx`
+- `apps/web/components/thread-event-list.tsx`
+- `apps/web/components/response-composer.tsx`
+- `tests/integration/test_continuity_api.py`
+- `tests/integration/test_continuity_store.py`
+- `tests/integration/test_responses_api.py`
+- `apps/web/app/chat/page.test.tsx`
+- `apps/web/components/thread-list.test.tsx`
+- `apps/web/components/thread-summary.test.tsx`
+- `apps/web/components/thread-event-list.test.tsx`
+- `apps/web/components/response-composer.test.tsx`
 
-## additional existing seams preserved
+## stale claims corrected
 
-- `POST /v0/responses`
-- `POST /v0/approvals/requests`
+- `ARCHITECTURE.md` no longer says the repo is current only through Sprint 6H.
+- `ARCHITECTURE.md`, `README.md`, and `.ai/handoff/CURRENT_STATE.md` no longer describe `apps/web` as scaffold-only.
+- `ROADMAP.md` and `.ai/handoff/CURRENT_STATE.md` no longer plan from Sprint 5T or from the Gmail-era “next move” by default.
+- `README.md` no longer claims the repo is current only through Sprint 5A.
 
-## completed UI work
+## files moved to docs/archive
 
-- replaced the raw manual thread-ID-first assistant flow with a selected-thread-driven `/chat` surface
-- added a bounded right-rail continuity stack:
-  - visible thread list
-  - compact thread-create card
-  - selected-thread identity summary
-  - bounded recent continuity review for sessions and events
-- updated assistant mode to submit against the selected thread instead of a typed UUID field
-- updated governed mode to reuse the selected thread explicitly while keeping tool/action/scope controls unchanged
-- preserved thread continuity across mode switches by carrying the selected thread in the route query
-- added fixture continuity data so fallback states remain explicit and readable when the live API is not configured
-- tightened spacing, containment, overflow handling, and responsive stacking for long IDs, pills, and continuity cards
+- None.
+- Current sprint reports intentionally remain live at repo root; `docs/archive/sprints` is the home for older accepted sprint reports after archival.
 
-## exact commands run
+## tests run
 
-- `cd apps/web && npm run lint`
-- `cd apps/web && npm test`
-- `cd apps/web && npm run build`
+- `./.venv/bin/python -m pytest tests/unit/test_events.py tests/unit/test_main.py tests/unit/test_response_generation.py`
+- `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py`
+- `pnpm --dir apps/web test`
 
-## verification results
+## blockers/issues
 
-- `npm run lint`: PASS
-- `npm test`: PASS (`40` tests)
-- `npm run build`: PASS
+- No implementation blockers inside sprint scope.
+- `./.venv/bin/python -m pytest tests/unit/test_events.py tests/unit/test_main.py tests/unit/test_response_generation.py` passed: `48 passed`
+- `pnpm --dir apps/web test` passed: `40 passed`
+- `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py` could not run in this sandbox because localhost Postgres connections to `127.0.0.1:5432` were blocked with `psycopg.OperationalError: Operation not permitted`
+- No runtime, schema, API, or UI behavior was changed; this sprint was documentation-only.
 
-## concise desktop visual verification notes
+## intentionally deferred
 
-- `/chat` now reads with a clearer hierarchy: composer/history on the left, continuity selection/review on the right
-- selected thread identity is repeated in a controlled way at the page header, composer, and summary card so context stays explicit without relying on a raw UUID input
-- long thread IDs and metadata pills wrap inside their containers instead of leaking outside cards
-- continuity review remains bounded and readable rather than becoming a transcript-style event dump
+- `RULES.md` changes, because no concrete stale rule required adjustment
+- archive moves, because existing archived sprint artifacts already preserve traceability
+- any runtime, schema, API, UI, Gmail, Calendar, auth, or orchestration work outside the truth-sync scope
 
-## concise mobile visual verification notes
+## recommended next step
 
-- the wide layout collapses to one column at the existing responsive breakpoints
-- thread review subpanels collapse from two columns to one column on small screens
-- composer actions and secondary buttons expand to full width on mobile to avoid cramped wrapping
-- selected-thread banners and summary toplines stack cleanly instead of forcing horizontal overflow
-
-## blockers or issues
-
-- no remaining blockers inside sprint scope
-- no screenshot automation or browser capture was run during this pass; visual notes are based on the implemented layout, CSS breakpoints, and successful web build/test verification
-
-## intentionally deferred after this sprint
-
-- thread rename, archive, search, filter, and pagination
-- full transcript tooling or unbounded event review
-- thread-event mutation UI
-- new backend continuity endpoints
-- unrelated route redesigns
-- Gmail, Calendar, auth, runner, connector, task-orchestration, or broader workflow scope expansion
+Plan the next sprint from the shipped Sprint 6I backend-plus-web-shell baseline and choose one narrow product seam on top of existing continuity, response, approval, task, or trace contracts rather than reopening stale Gmail-cleanup assumptions by default.

@@ -2,51 +2,39 @@
 
 ## Canonical Truth
 
-- The working repo state is current through Sprint 5T, including narrow PDF/DOCX/RFC822 artifact ingestion, read-only Gmail account persistence and single-message ingestion, external-secret-backed Gmail credential storage on the primary path, refresh-token renewal through that seam, rotated refresh-token persistence through that seam, and the narrow `legacy_db_v0` transition path for older credential rows.
-- Use [PRODUCT_BRIEF.md](/Users/samirusani/Desktop/Codex/AliceBot/PRODUCT_BRIEF.md) for product scope, [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md) for implemented technical boundaries, [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md) for forward planning, and [RULES.md](/Users/samirusani/Desktop/Codex/AliceBot/RULES.md) for durable operating rules.
-- Historical build and review reports remain the source of sprint-by-sprint detail; the active handoff should stay compact and current.
+- The working repo state is current through Sprint 6I.
+- Use [PRODUCT_BRIEF.md](/Users/samirusani/Desktop/Codex/AliceBot/PRODUCT_BRIEF.md) for product scope, [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md) for implemented boundaries, [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md) for forward planning, and [RULES.md](/Users/samirusani/Desktop/Codex/AliceBot/RULES.md) for durable operating rules.
+- The live sprint reports are [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md) and [REVIEW_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md) at repo root; older accepted sprint history belongs in [docs/archive/sprints](/Users/samirusani/Desktop/Codex/AliceBot/docs/archive/sprints), not in this handoff.
 
-## Implemented Repo Slice
+## Implemented Surfaces
 
-- `apps/api` is the only shipped product surface. It implements continuity, tracing, deterministic context compilation, governed memory admission and review, embeddings, semantic retrieval, entities, policy and tool governance, approval persistence and resolution, approved-only `proxy.echo` execution, execution budgets, task/task-step lifecycle reads and mutations, explicit manual continuation lineage, explicit task-step linkage for approval and execution synchronization, deterministic rooted local task-workspace provisioning, explicit task-artifact registration, narrow local text/PDF/DOCX/RFC822 artifact ingestion into durable chunk rows, artifact-chunk embeddings, direct lexical and semantic artifact retrieval, compile-path semantic artifact retrieval, deterministic hybrid lexical-plus-semantic artifact merge inside the compile response, and a narrow read-only Gmail seam with external-secret-backed primary credentials plus single-message ingestion into the existing RFC822 artifact path.
-- The live schema includes continuity, trace, memory, embedding, entity, governance, `tasks`, `task_steps`, `task_workspaces`, `task_artifacts`, `task_artifact_chunks`, and `task_artifact_chunk_embeddings` tables with row-level security on user-owned data.
-- The live schema also includes `gmail_accounts` and `gmail_account_credentials` for the shipped Gmail seam; account metadata reads stay secret-free while `gmail_account_credentials` now stores locator metadata on the primary path and keeps the narrow `legacy_db_v0` transition state explicit for older rows.
-- `apps/web` and `workers` remain starter scaffolds only.
+- `apps/api` is the core shipped product surface. It implements continuity, context compilation, assistant responses, governed memory and retrieval, policy/tool/approval governance, execution budgets, tasks and task steps, rooted local workspaces and artifacts, artifact chunk retrieval and embeddings, traces, and the narrow read-only Gmail seam with selected-message ingestion.
+- `apps/web` is also a shipped surface now. The operator shell includes `/`, `/chat`, `/approvals`, `/tasks`, and `/traces`, with live reads when API config is present and explicit fixture fallback when it is not.
+- `/chat` now ships assistant-response mode, governed-request mode, visible thread selection, compact thread creation, and bounded continuity review over thread sessions and events.
+- `workers` remains scaffold-only.
 
 ## Current Boundaries
 
-- Task workspaces are implemented only as deterministic rooted local directories plus durable `task_workspaces` records.
-- Task artifacts are implemented only as explicit rooted local-file registrations under those workspaces plus narrow deterministic ingestion for `text/plain`, `text/markdown`, `application/pdf`, DOCX text from `word/document.xml`, and `message/rfc822`.
-- Artifact retrieval operates only over persisted chunk rows and persisted chunk embeddings for one visible task or one visible artifact at a time; compile does not read raw files directly.
-- Compile can now include artifact chunks from lexical retrieval, semantic retrieval, or a deterministic hybrid merge of both into one artifact section with explicit per-chunk source provenance.
-- The shipped multi-step task path is still explicit and narrow: later steps are appended manually with lineage, while approval and execution synchronization use explicit linked `task_step_id` references.
-- The shipped Gmail path is still explicit and narrow: one read-only account seam, one selected-message ingestion path, secret-free account reads, one explicit secret-manager seam for primary credential reads and writes, refresh-capable credential renewal through that seam, rotated refresh-token persistence through that seam, and one explicit `legacy_db_v0` first-read externalization path for older rows.
-- The only execution handler in the repo is the in-process no-external-I/O `proxy.echo` path.
-
-## Not Implemented
-
-- Rich document parsing beyond the shipped narrow local text/PDF/DOCX/RFC822 ingestion seam.
-- Gmail search, mailbox sync, attachment ingestion, write-capable Gmail actions, and Calendar connectors.
-- Removal of the remaining `legacy_db_v0` transition path for older Gmail credential rows.
-- Runner-style orchestration or automatic multi-step progression.
-- Artifact reranking or weighted fusion beyond the current lexical-first hybrid compile merge.
-- Auth beyond the current database user-context model.
+- Continuity stays explicit and thread-scoped: thread create/list/detail plus session and event review are live; thread rename, archive, search, pagination, and event mutation are not.
+- Assistant replies go only through `POST /v0/responses`, persist immutable continuity events, and return linked compile and response traces.
+- Governed actions still route through policy, allowlist, approval, and approved-only proxy execution; `proxy.echo` is still the only live execution handler.
+- Task workspaces and artifacts remain rooted local boundaries. Ingestion remains narrow to plain text, markdown, narrow PDF text, narrow DOCX text from `word/document.xml`, and narrow RFC822 extraction.
+- Gmail remains read-only and selected-message-only, with secret material handled through the dedicated secret-manager seam and the remaining `legacy_db_v0` transition path still present for older credential rows.
 
 ## Active Risks
 
 - Memory extraction and retrieval quality remain the main product risk.
 - Auth is still incomplete beyond database user context.
-- Artifact ingestion and retrieval are intentionally narrow and local; broader document parsing, broader Gmail scope, `legacy_db_v0` cleanup, and any retrieval changes beyond the shipped hybrid compile contract still need their own accepted seams.
+- Connector breadth, richer parsing, and orchestration are still deferred, but the bigger short-term risk is planning from stale docs instead of the shipped API-plus-web baseline.
 
-## Latest Accepted Verification
+## Repo Evidence To Trust
 
-- Latest accepted runtime verification totals for the shipped Sprint 5T seams were:
-  - `./.venv/bin/python -m pytest tests/unit` -> `446 passed`
-  - `./.venv/bin/python -m pytest tests/integration` -> `141 passed`
-- Sprint 5U is documentation-only truth synchronization; it does not change runtime, schema, or API behavior.
+- Backend continuity and response seams: `tests/integration/test_continuity_api.py`, `tests/integration/test_continuity_store.py`, `tests/integration/test_responses_api.py`
+- Web continuity adoption: `apps/web/app/chat/page.tsx`, `apps/web/app/chat/page.test.tsx`, `apps/web/components/thread-list.tsx`, `apps/web/components/thread-summary.tsx`, `apps/web/components/thread-event-list.tsx`, `apps/web/components/response-composer.tsx`
+- Broader shipped shell: `apps/web/app/approvals/page.tsx`, `apps/web/app/tasks/page.tsx`, `apps/web/app/traces/page.tsx`
 
 ## Planning Guardrails
 
-- Plan from the implemented Sprint 5T repo state, not from older milestone narratives.
-- Do not describe broader Gmail scope, Calendar work, runner work, UI work, `legacy_db_v0` cleanup, or artifact reranking beyond the current lexical-first hybrid compile merge as shipped.
-- The immediate next move after this truth-sync sprint is one more narrow Gmail auth-adjacent sprint, most likely removal of the remaining `legacy_db_v0` transition path for the existing credential seam, without combining it with search, sync, Calendar, or UI expansion.
+- Plan from the implemented Sprint 6I repo state, not from older Sprint 5-era narratives.
+- Do not describe broader Gmail scope, Calendar work, richer parsing, broader proxy execution, auth expansion, or runner orchestration as shipped.
+- The immediate next move should be chosen from the current shipped backend-plus-web-shell baseline, not assumed to be leftover Gmail cleanup by default.

@@ -1,12 +1,13 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted backend slice through Sprint 5A plus local developer tooling.
+AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Sprint 6I: a FastAPI backend plus a bounded Next.js operator shell.
 
 ## Current Implemented Slice
 
-- `apps/api` is the shipped surface. It includes continuity storage, tracing, deterministic context compilation, governed memory admission and review, embeddings, semantic retrieval, entities, policy and tool governance, approval persistence and resolution, approved-only `proxy.echo` execution, execution budgets, tasks, task steps, explicit manual continuation lineage, step-linked approval/execution synchronization, and deterministic rooted local task-workspace provisioning.
-- `apps/web` and `workers` are starter scaffolds only.
-- Task workspaces are currently local rooted directories plus durable records. Artifact indexing, document ingestion, connectors, and runner orchestration are not shipped.
+- `apps/api` is the core shipped surface. It includes continuity, context compilation, assistant responses, governed memory and retrieval, policy/tool/approval governance, execution budgets, tasks and task steps, rooted local workspaces and artifacts, artifact retrieval, traces, and the narrow read-only Gmail seam.
+- `apps/web` is shipped operator UI, not scaffold-only. The shell includes `/`, `/chat`, `/approvals`, `/tasks`, and `/traces`, with live-backend reads when configured and explicit fixture fallback otherwise.
+- `/chat` supports both assistant and governed-request modes, selected-thread continuity, compact thread creation, and bounded continuity review.
+- `workers` remains scaffold-only.
 
 ## Quick Start
 
@@ -19,23 +20,25 @@ AliceBot is a private, permissioned personal AI operating system. The current re
 Useful checks:
 
 - API health: [http://127.0.0.1:8000/healthz](http://127.0.0.1:8000/healthz)
-- Full backend tests: `./.venv/bin/python -m pytest tests/unit tests/integration`
+- Backend tests: `./.venv/bin/python -m pytest tests/unit tests/integration`
+- Web tests: `pnpm --dir apps/web test`
 - Web shell: `pnpm --dir apps/web dev`
 
 ## Repo Map
 
-- [PRODUCT_BRIEF.md](/Users/samirusani/Desktop/Codex/AliceBot/PRODUCT_BRIEF.md): stable product scope and ship gates.
-- [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md): implemented technical boundaries and planned-later boundaries.
-- [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md): forward-looking milestone direction from the current repo position.
-- [RULES.md](/Users/samirusani/Desktop/Codex/AliceBot/RULES.md): durable engineering and scope rules.
-- [.ai/handoff/CURRENT_STATE.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/handoff/CURRENT_STATE.md): compact current-state recovery snapshot.
-- [.ai/active/SPRINT_PACKET.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/active/SPRINT_PACKET.md): active builder scope.
-- [docs/archive/sprints](/Users/samirusani/Desktop/Codex/AliceBot/docs/archive/sprints): archived sprint build and review history.
+- [PRODUCT_BRIEF.md](/Users/samirusani/Desktop/Codex/AliceBot/PRODUCT_BRIEF.md): stable product scope and ship gates
+- [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md): implemented technical boundaries
+- [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md): forward planning from the current repo state
+- [RULES.md](/Users/samirusani/Desktop/Codex/AliceBot/RULES.md): durable engineering and scope rules
+- [.ai/handoff/CURRENT_STATE.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/handoff/CURRENT_STATE.md): compact recovery snapshot
+- [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md): current sprint build report
+- [REVIEW_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md): current sprint review report
+- [docs/archive/sprints](/Users/samirusani/Desktop/Codex/AliceBot/docs/archive/sprints): accepted historical sprint build and review artifacts
 
 ## Environment Notes
 
 - Postgres is the system of record.
 - Local Docker Compose includes Postgres with `pgvector`, Redis, and MinIO.
-- The helper scripts source the repo-root `.env` and prefer `.venv/bin/python` when present.
-- `TASK_WORKSPACE_ROOT` defaults to `/tmp/alicebot/task-workspaces` and is the only allowed root for task-workspace provisioning.
+- Helper scripts source the repo-root `.env` and prefer `.venv/bin/python` when present.
+- `TASK_WORKSPACE_ROOT` defaults to `/tmp/alicebot/task-workspaces`.
 - `/healthz` performs a live Postgres check; Redis and MinIO are reported as configured but not live-checked.

@@ -6,63 +6,42 @@ PASS
 
 ## criteria met
 
-- Implemented the exact in-scope continuity API surface:
-  - `POST /v0/threads`
-  - `GET /v0/threads`
-  - `GET /v0/threads/{thread_id}`
-  - `GET /v0/threads/{thread_id}/sessions`
-  - `GET /v0/threads/{thread_id}/events`
-- Kept the change narrow to continuity scope in the reviewed code diff:
-  - `apps/api/src/alicebot_api/contracts.py`
-  - `apps/api/src/alicebot_api/store.py`
-  - `apps/api/src/alicebot_api/main.py`
-  - `tests/unit/test_20260310_0001_foundation_continuity.py`
-  - `tests/unit/test_events.py`
-  - `tests/integration/test_continuity_api.py`
-  - `BUILD_REPORT.md`
-- Added typed contracts and stable summary metadata for thread create/list/detail, session list, and event list responses.
-- Added deterministic thread list ordering in the store: `created_at DESC, id DESC`.
-- Reused existing durable continuity data plus narrow thread creation only; no session or event mutation surface was added.
-- Preserved user isolation through the existing user-scoped connection and continuity store path.
-- Added unit and Postgres-backed integration coverage for create, detail, ordering, event/session reads, not-found behavior, and cross-user isolation.
-- Acceptance verification passed in this review:
-  - `./.venv/bin/python -m pytest tests/unit/test_main.py -q` -> PASS (`41` passed)
-  - `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py` -> PASS (`2` passed)
-  - `./.venv/bin/python -m pytest tests/unit` -> PASS (`454` passed)
-  - `./.venv/bin/python -m pytest tests/integration` -> PASS (`145` passed)
+- The sprint stayed documentation-only; no runtime, schema, API, or UI source files were changed.
+- [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md) now reflects the implemented repo state through Sprint 6I instead of stopping at Sprint 6H.
+- [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md) now plans from the shipped backend-plus-web-shell baseline instead of the older Sprint 5T and Gmail-cleanup-only framing.
+- [.ai/handoff/CURRENT_STATE.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/handoff/CURRENT_STATE.md) no longer describes `apps/web` as scaffold-only and now points to durable repo evidence.
+- [README.md](/Users/samirusani/Desktop/Codex/AliceBot/README.md) no longer claims the repo is current only through Sprint 5A and now explains where live versus archived sprint reports live.
+- [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md) now matches the sprint-owned file set and distinguishes unrelated pre-existing worktree drift.
+- The active docs are materially more compact and less redundant than the prior versions.
 
 ## criteria missed
 
-- None functionally against the active Sprint 6H packet.
+- No blocking acceptance criteria missed.
 
 ## quality issues
 
-- No material implementation defects or unsafe behavior were found in the scoped API, store, or tests.
-- `tests/unit/test_events.py` now carries thread continuity endpoint tests in addition to event-contract tests. This is not a blocker, but the file is becoming semantically overloaded.
+- No blocking quality issues remain in the sprint-owned documentation diff.
+- The remaining local modification in `.ai/active/SPRINT_PACKET.md` is a control artifact outside sprint ownership and is now called out explicitly in the build report.
 
 ## regression risks
 
-- Low regression risk in the shipped continuity slice.
-- The new reads are deterministic and test-backed for ordering and isolation.
-- User visibility still depends on the existing RLS-backed continuity path; the integration suite passing reduces risk materially.
-- No additional regression risk was introduced by the follow-up documentation-only edits.
+- Low. The sprint is documentation-only.
+- The only verification caveat is environmental: focused backend integration tests requiring localhost Postgres could not run in this sandbox, but backend unit checks and the web test suite passed.
 
 ## docs issues
 
-- None.
-- `BUILD_REPORT.md` meets the sprint packet requirements.
-- `ARCHITECTURE.md` now reflects Sprint 6H and documents the `/v0/threads*` continuity surface accurately.
+- No blocking docs issues remain after the report-location clarification.
+- Live sprint reports now have one explicit home at repo root, while accepted historical reports remain under `docs/archive/sprints`.
 
 ## should anything be added to RULES.md?
 
 - No.
-- The existing rules already cover sprint-packet immutability, narrow scope, typed contracts, and test-backed delivery.
 
 ## should anything update ARCHITECTURE.md?
 
-- No further architecture updates are required for this sprint.
+- No.
 
 ## recommended next action
 
-- Sprint 6H is review-passed and ready for the normal merge/approval path.
-- Follow-up work should move to the next scoped sprint that consumes these continuity endpoints in `/chat`.
+- Proceed with the sprint as passed.
+- Archive the current root `BUILD_REPORT.md` and `REVIEW_REPORT.md` into `docs/archive/sprints` once this sprint is accepted, so the next sprint can reuse the repo-root report paths cleanly.
