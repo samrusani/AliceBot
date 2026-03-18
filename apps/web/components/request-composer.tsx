@@ -36,6 +36,7 @@ export function RequestComposer({
   selectedThreadTitle,
   defaultToolId,
 }: RequestComposerProps) {
+  const activeThreadId = selectedThreadId?.trim() ?? "";
   const [toolId, setToolId] = useState(defaultToolId ?? "");
   const [action, setAction] = useState("place_order");
   const [scope, setScope] = useState("supplements");
@@ -53,12 +54,15 @@ export function RequestComposer({
     ),
   );
   const [entries, setEntries] = useState(initialEntries);
-  const [statusText, setStatusText] = useState("Ready to submit a governed approval request.");
+  const [statusText, setStatusText] = useState(
+    activeThreadId
+      ? "Ready to submit a governed approval request for the selected thread."
+      : "Select a thread before submitting a governed approval request.",
+  );
   const [statusTone, setStatusTone] = useState<"info" | "success" | "danger">("info");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const liveModeReady = Boolean(apiBaseUrl && userId);
-  const activeThreadId = selectedThreadId?.trim() ?? "";
   const visibleEntries = activeThreadId
     ? entries.filter((entry) => entry.threadId === activeThreadId)
     : [];
@@ -198,9 +202,9 @@ export function RequestComposer({
 
         <div className="composer-intro">
           <p className="eyebrow">Governed request</p>
-          <h2 className="composer-title">Approval-gated action submission</h2>
+          <h2 className="composer-title">Submit an approval-gated action</h2>
           <p className="field-hint">
-            Submit the shipped approval-request payload directly. This mode is purpose-built for consequential actions, not freeform conversation.
+            Use the existing approval-request seam for consequential actions while the selected-thread transcript above remains the durable conversation record.
           </p>
         </div>
       </div>

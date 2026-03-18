@@ -2,89 +2,83 @@
 
 ## sprint objective
 
-Synchronize the canonical truth artifacts with the implemented repo state through Sprint 6I and compact active documentation so future planning starts from the shipped API-plus-web-shell baseline instead of stale Sprint 5-era or Sprint 6H-only narratives.
+Deliver the Sprint 6K `/chat` transcript surface so selected-thread continuity becomes the primary reading surface, while keeping assistant-response mode, governed-request mode, explicit thread identity, and bounded supporting continuity review intact.
+
+## transcript files and components updated
+
+- `ARCHITECTURE.md`
+- `apps/web/app/chat/page.tsx`
+- `apps/web/app/globals.css`
+- `apps/web/components/response-composer.tsx`
+- `apps/web/components/request-composer.tsx`
+- `apps/web/components/response-history.tsx`
+- `apps/web/components/thread-event-list.tsx`
+- `apps/web/components/thread-summary.tsx`
+- `apps/web/components/empty-state.tsx`
+- `apps/web/components/response-history.test.tsx`
+- `apps/web/components/thread-event-list.test.tsx`
+
+## transcript backing mode
+
+- Mixed.
+- Live continuity is used when API configuration is present.
+- Fixture continuity is used when API configuration is absent.
+- Assistant transcript seeding no longer depends on fixture `responseHistory` preload data; the visible transcript is derived from continuity events plus only the current client-session response result when needed before refresh.
+
+## shipped backend endpoints consumed
+
+- `GET /v0/threads`
+- `GET /v0/threads/{thread_id}`
+- `GET /v0/threads/{thread_id}/events`
+- `GET /v0/threads/{thread_id}/sessions`
+- `POST /v0/responses`
+- `POST /v0/approvals/requests`
+- `POST /v0/threads`
 
 ## completed work
 
-- Updated `ARCHITECTURE.md` to reflect the shipped repo state through Sprint 6I, including the continuity APIs, assistant-response seam, shipped web shell, and `/chat` thread-selection plus bounded continuity-review adoption.
-- Rewrote `ROADMAP.md` so current position starts from Sprint 6I and the next focus is framed from the shipped backend-plus-web-shell baseline instead of the stale Gmail-cleanup-only storyline.
-- Compressed and corrected `.ai/handoff/CURRENT_STATE.md` so it no longer describes `apps/web` as scaffold-only, now points at durable repo evidence, and now states that live sprint reports stay at repo root until archival.
-- Updated `README.md` so onboarding-level repo status is truthful and compact, and so the current-vs-archived sprint report locations are explicit.
-- Rewrote `REVIEW_REPORT.md` so it reviews this documentation compaction sprint instead of the prior `/chat` UI sprint.
-- Left `RULES.md` unchanged because no concrete stale or duplicated rule required modification.
-- Made no archive moves because the current sprint reports intentionally remain live at repo root until archival and older accepted history already remains traceable through `docs/archive/sprints`.
+- Reworked `/chat` into a transcript-first layout with a dedicated main column and a calmer supporting rail.
+- Repurposed `response-history` into a selected-thread transcript view driven by immutable continuity events.
+- Kept assistant submissions visible by merging freshly submitted client-session assistant responses into the transcript until the next continuity refresh.
+- Filtered non-conversation continuity out of the main transcript and narrowed `thread-event-list` into bounded operational review.
+- Refined thread summary hierarchy so conversation count, operational count, session count, and latest continuity timing stay explicit.
+- Tightened containment and responsive styling for long thread titles, metadata chips, transcript rows, and compact empty states.
+- Kept governed-request mode aligned to the selected-thread transcript without widening backend or route scope.
+- Updated `ARCHITECTURE.md` after review so the shipped slice description reflects Sprint 6K transcript-first `/chat` behavior.
 
-## incomplete work
+## exact commands run
 
-- No in-scope documentation deliverable was left incomplete.
-- `RULES.md` and `docs/archive/**` were intentionally not changed because no required update or archival move was identified.
+- `pnpm lint`
+- `pnpm test`
+- `pnpm build`
 
-## files changed
+## verification results
 
-- `REVIEW_REPORT.md`
-- `ARCHITECTURE.md`
-- `ROADMAP.md`
-- `.ai/handoff/CURRENT_STATE.md`
-- `README.md`
-- `BUILD_REPORT.md`
+- `pnpm lint`: passed
+- `pnpm test`: passed, `12` test files and `40` tests passed
+- `pnpm build`: passed
 
-## unrelated pre-existing worktree drift
+## desktop visual verification notes
 
-- `.ai/active/SPRINT_PACKET.md` was already locally modified as a control artifact and was not edited by this sprint implementation.
+- Verified by code inspection plus production build output that `/chat` now renders transcript content in the primary column and moves thread summary, thread selection, creation, and operational review into the supporting rail.
+- Transcript entries are chronological, bounded, and use restrained role styling rather than consumer-chat bubbles.
+- Long thread labels, UUIDs, and metadata chips now allow wrapping instead of forcing overflow-prone single-line treatment.
 
-## accepted repo evidence used
+## mobile visual verification notes
 
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/response_generation.py`
-- `apps/web/app/chat/page.tsx`
-- `apps/web/app/approvals/page.tsx`
-- `apps/web/app/tasks/page.tsx`
-- `apps/web/app/traces/page.tsx`
-- `apps/web/components/thread-list.tsx`
-- `apps/web/components/thread-summary.tsx`
-- `apps/web/components/thread-event-list.tsx`
-- `apps/web/components/response-composer.tsx`
-- `tests/integration/test_continuity_api.py`
-- `tests/integration/test_continuity_store.py`
-- `tests/integration/test_responses_api.py`
-- `apps/web/app/chat/page.test.tsx`
-- `apps/web/components/thread-list.test.tsx`
-- `apps/web/components/thread-summary.test.tsx`
-- `apps/web/components/thread-event-list.test.tsx`
-- `apps/web/components/response-composer.test.tsx`
+- Verified by responsive CSS review that the chat layout collapses to one column under the existing breakpoint and keeps transcript cards, support cards, and composer actions stacked cleanly.
+- Transcript toplines and footers switch to vertical alignment on narrow screens, and buttons remain full width.
+- Compact empty states are used inside review groups so supporting panels do not create oversized dead space on smaller screens.
 
-## stale claims corrected
+## deferred scope
 
-- `ARCHITECTURE.md` no longer says the repo is current only through Sprint 6H.
-- `ARCHITECTURE.md`, `README.md`, and `.ai/handoff/CURRENT_STATE.md` no longer describe `apps/web` as scaffold-only.
-- `ROADMAP.md` and `.ai/handoff/CURRENT_STATE.md` no longer plan from Sprint 5T or from the Gmail-era “next move” by default.
-- `README.md` no longer claims the repo is current only through Sprint 5A.
+- No backend changes.
+- No new continuity endpoints.
+- No pagination, search, archive, or inbox behavior.
+- No additional trace enrichment on persisted continuity transcript rows beyond the shipped response trace links already available from immediate response submissions.
+- No redesign outside `/chat` and the scoped shared components.
 
-## files moved to docs/archive
+## worktree notes
 
-- None.
-- Current sprint reports intentionally remain live at repo root; `docs/archive/sprints` is the home for older accepted sprint reports after archival.
-
-## tests run
-
-- `./.venv/bin/python -m pytest tests/unit/test_events.py tests/unit/test_main.py tests/unit/test_response_generation.py`
-- `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py`
-- `pnpm --dir apps/web test`
-
-## blockers/issues
-
-- No implementation blockers inside sprint scope.
-- `./.venv/bin/python -m pytest tests/unit/test_events.py tests/unit/test_main.py tests/unit/test_response_generation.py` passed: `48 passed`
-- `pnpm --dir apps/web test` passed: `40 passed`
-- `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py` could not run in this sandbox because localhost Postgres connections to `127.0.0.1:5432` were blocked with `psycopg.OperationalError: Operation not permitted`
-- No runtime, schema, API, or UI behavior was changed; this sprint was documentation-only.
-
-## intentionally deferred
-
-- `RULES.md` changes, because no concrete stale rule required adjustment
-- archive moves, because existing archived sprint artifacts already preserve traceability
-- any runtime, schema, API, UI, Gmail, Calendar, auth, or orchestration work outside the truth-sync scope
-
-## recommended next step
-
-Plan the next sprint from the shipped Sprint 6I backend-plus-web-shell baseline and choose one narrow product seam on top of existing continuity, response, approval, task, or trace contracts rather than reopening stale Gmail-cleanup assumptions by default.
+- `.ai/active/SPRINT_PACKET.md` was already modified before this implementation and was not changed by this sprint work.
+- `.ai/active/SPRINT_PACKET.md` remains a pre-existing control-artifact edit and should stay out of the sprint PR unless the PR explicitly intends to ship sprint-packet changes.

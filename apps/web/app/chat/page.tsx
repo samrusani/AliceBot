@@ -2,6 +2,7 @@ import { ModeToggle, type ChatMode } from "../../components/mode-toggle";
 import { PageHeader } from "../../components/page-header";
 import { RequestComposer } from "../../components/request-composer";
 import { ResponseComposer } from "../../components/response-composer";
+import { ResponseHistory } from "../../components/response-history";
 import { ThreadCreate } from "../../components/thread-create";
 import { ThreadEventList } from "../../components/thread-event-list";
 import { ThreadList } from "../../components/thread-list";
@@ -20,7 +21,6 @@ import {
   getFixtureThreadEvents,
   getFixtureThreadSessions,
   requestHistoryFixtures,
-  responseHistoryFixtures,
   threadFixtures,
 } from "../../lib/fixtures";
 
@@ -178,7 +178,6 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
       )
     : await loadFixtureContinuity(requestedThreadId, apiConfig.defaultThreadId);
 
-  const initialResponseEntries = liveModeReady ? [] : responseHistoryFixtures;
   const initialRequestEntries = liveModeReady ? [] : requestHistoryFixtures;
 
   return (
@@ -207,46 +206,54 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
 
       <ModeToggle currentMode={mode} selectedThreadId={continuity.selectedThreadId} />
 
-      <div className="content-grid content-grid--wide">
-        {mode === "assistant" ? (
-          <ResponseComposer
-            initialEntries={initialResponseEntries}
-            apiBaseUrl={apiConfig.apiBaseUrl}
-            userId={apiConfig.userId}
-            selectedThreadId={continuity.selectedThreadId}
-            selectedThreadTitle={continuity.selectedThread?.title}
-          />
-        ) : (
-          <RequestComposer
-            initialEntries={initialRequestEntries}
-            apiBaseUrl={apiConfig.apiBaseUrl}
-            userId={apiConfig.userId}
-            selectedThreadId={continuity.selectedThreadId}
-            selectedThreadTitle={continuity.selectedThread?.title}
-            defaultToolId={apiConfig.defaultToolId}
-          />
-        )}
+      <div className="chat-layout">
+        <div className="chat-layout__main">
+          {mode === "assistant" ? (
+            <ResponseComposer
+              initialEntries={[]}
+              apiBaseUrl={apiConfig.apiBaseUrl}
+              userId={apiConfig.userId}
+              selectedThreadId={continuity.selectedThreadId}
+              selectedThreadTitle={continuity.selectedThread?.title}
+              events={continuity.events}
+              source={continuity.continuitySource}
+              unavailableReason={continuity.unavailableReason}
+            />
+          ) : (
+            <>
+              <ResponseHistory
+                entries={[]}
+                threadTitle={continuity.selectedThread?.title}
+                events={continuity.events}
+                source={continuity.continuitySource}
+                unavailableReason={continuity.unavailableReason}
+              />
+              <RequestComposer
+                initialEntries={initialRequestEntries}
+                apiBaseUrl={apiConfig.apiBaseUrl}
+                userId={apiConfig.userId}
+                selectedThreadId={continuity.selectedThreadId}
+                selectedThreadTitle={continuity.selectedThread?.title}
+                defaultToolId={apiConfig.defaultToolId}
+              />
+            </>
+          )}
+        </div>
 
-        <div className="stack">
-          <ThreadList
-            threads={continuity.threads}
-            selectedThreadId={continuity.selectedThreadId}
-            currentMode={mode}
-            source={continuity.threadListSource}
-            unavailableReason={continuity.unavailableReason}
-          />
-
-          <ThreadCreate
-            apiBaseUrl={liveModeReady ? apiConfig.apiBaseUrl : undefined}
-            userId={liveModeReady ? apiConfig.userId : undefined}
-            currentMode={mode}
-          />
-
+        <div className="chat-layout__rail">
           <ThreadSummary
             thread={continuity.selectedThread}
             sessions={continuity.sessions}
             events={continuity.events}
             source={continuity.continuitySource}
+            unavailableReason={continuity.unavailableReason}
+          />
+
+          <ThreadList
+            threads={continuity.threads}
+            selectedThreadId={continuity.selectedThreadId}
+            currentMode={mode}
+            source={continuity.threadListSource}
             unavailableReason={continuity.unavailableReason}
           />
 
@@ -256,6 +263,12 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
             events={continuity.events}
             source={continuity.continuitySource}
             unavailableReason={continuity.unavailableReason}
+          />
+
+          <ThreadCreate
+            apiBaseUrl={liveModeReady ? apiConfig.apiBaseUrl : undefined}
+            userId={liveModeReady ? apiConfig.userId : undefined}
+            currentMode={mode}
           />
         </div>
       </div>
