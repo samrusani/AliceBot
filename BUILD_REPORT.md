@@ -2,28 +2,26 @@
 
 ## sprint objective
 
-Deliver the Sprint 6K `/chat` transcript surface so selected-thread continuity becomes the primary reading surface, while keeping assistant-response mode, governed-request mode, explicit thread identity, and bounded supporting continuity review intact.
+Deliver Sprint 6L by extending `/chat` with bounded selected-thread governed workflow review so approval, task, and execution state stay visible beside the durable transcript without widening backend scope.
 
-## transcript files and components updated
+## exact `/chat` workflow files and components updated
 
-- `ARCHITECTURE.md`
 - `apps/web/app/chat/page.tsx`
 - `apps/web/app/globals.css`
-- `apps/web/components/response-composer.tsx`
-- `apps/web/components/request-composer.tsx`
-- `apps/web/components/response-history.tsx`
-- `apps/web/components/thread-event-list.tsx`
-- `apps/web/components/thread-summary.tsx`
-- `apps/web/components/empty-state.tsx`
-- `apps/web/components/response-history.test.tsx`
-- `apps/web/components/thread-event-list.test.tsx`
+- `apps/web/components/approval-detail.tsx`
+- `apps/web/components/task-summary.tsx`
+- `apps/web/components/thread-workflow-panel.tsx`
+- `apps/web/components/thread-workflow-panel.test.tsx`
+- `apps/web/lib/api.ts`
+- `apps/web/lib/api.test.ts`
+- `BUILD_REPORT.md`
 
-## transcript backing mode
+## thread-linked workflow backing mode
 
 - Mixed.
-- Live continuity is used when API configuration is present.
-- Fixture continuity is used when API configuration is absent.
-- Assistant transcript seeding no longer depends on fixture `responseHistory` preload data; the visible transcript is derived from continuity events plus only the current client-session response result when needed before refresh.
+- Live workflow review uses existing shipped reads from approvals, tasks, and tool executions when API configuration is present.
+- Fixture workflow review is used when API configuration is absent.
+- Live workflow failures degrade to explicit unavailable states inside the chat workflow panel instead of implying missing workflow.
 
 ## shipped backend endpoints consumed
 
@@ -31,54 +29,59 @@ Deliver the Sprint 6K `/chat` transcript surface so selected-thread continuity b
 - `GET /v0/threads/{thread_id}`
 - `GET /v0/threads/{thread_id}/events`
 - `GET /v0/threads/{thread_id}/sessions`
-- `POST /v0/responses`
+- `GET /v0/approvals`
+- `GET /v0/tasks`
+- `GET /v0/tool-executions`
+- `POST /v0/approvals/{approval_id}/approve`
+- `POST /v0/approvals/{approval_id}/reject`
+- `POST /v0/approvals/{approval_id}/execute`
 - `POST /v0/approvals/requests`
 - `POST /v0/threads`
+- `POST /v0/responses`
 
 ## completed work
 
-- Reworked `/chat` into a transcript-first layout with a dedicated main column and a calmer supporting rail.
-- Repurposed `response-history` into a selected-thread transcript view driven by immutable continuity events.
-- Kept assistant submissions visible by merging freshly submitted client-session assistant responses into the transcript until the next continuity refresh.
-- Filtered non-conversation continuity out of the main transcript and narrowed `thread-event-list` into bounded operational review.
-- Refined thread summary hierarchy so conversation count, operational count, session count, and latest continuity timing stay explicit.
-- Tightened containment and responsive styling for long thread titles, metadata chips, transcript rows, and compact empty states.
-- Kept governed-request mode aligned to the selected-thread transcript without widening backend or route scope.
-- Updated `ARCHITECTURE.md` after review so the shipped slice description reflects Sprint 6K transcript-first `/chat` behavior.
+- Added a new `thread-workflow-panel` to `/chat` so selected-thread workflow state now appears in the rail as a bounded secondary review surface.
+- Derived the latest relevant approval and task state client-side from shipped list endpoints and existing fixtures, keyed by the selected thread.
+- Restricted execution review to explicit linkage only: selected-task `latest_execution_id` first, then execution records explicitly linked to the selected approval, with no thread-level fallback.
+- Reused `approval-detail`, `approval-actions`, `task-summary`, and `execution-summary` inside compact embedded cards so the chat route inherits the same workflow semantics as `/approvals` and `/tasks`.
+- Restored bounded execution review when approval detail is absent by rendering execution review through the task summary or a standalone embedded execution block when needed.
+- Preserved transcript-first hierarchy by keeping workflow review secondary and visually quieter than the conversation column.
+- Tightened rail containment with embedded card chrome, single-column key-value layouts, bounded execution code blocks, and full-width action layouts that avoid cramped wrapping.
+- Added in-scope regression coverage for mixed-history execution linkage and approval-missing execution review in `apps/web/lib/api.test.ts` and `apps/web/components/thread-workflow-panel.test.tsx`.
 
 ## exact commands run
 
-- `pnpm lint`
-- `pnpm test`
-- `pnpm build`
+- `npm run lint`
+- `npm test`
+- `npm run build`
 
 ## verification results
 
-- `pnpm lint`: passed
-- `pnpm test`: passed, `12` test files and `40` tests passed
-- `pnpm build`: passed
+- `npm run lint`: passed
+- `npm test`: passed, `13` test files and `46` tests passed
+- `npm run build`: passed
 
-## desktop visual verification notes
+## concise desktop visual verification notes
 
-- Verified by code inspection plus production build output that `/chat` now renders transcript content in the primary column and moves thread summary, thread selection, creation, and operational review into the supporting rail.
-- Transcript entries are chronological, bounded, and use restrained role styling rather than consumer-chat bubbles.
-- Long thread labels, UUIDs, and metadata chips now allow wrapping instead of forcing overflow-prone single-line treatment.
+- No fresh interactive desktop browser verification was performed during this fix turn.
+- Desktop layout expectations were reviewed by component and CSS inspection only, alongside a successful production build.
+- A manual desktop pass for real long-thread and long-execution payloads remains advisable before merge.
 
-## mobile visual verification notes
+## concise mobile visual verification notes
 
-- Verified by responsive CSS review that the chat layout collapses to one column under the existing breakpoint and keeps transcript cards, support cards, and composer actions stacked cleanly.
-- Transcript toplines and footers switch to vertical alignment on narrow screens, and buttons remain full width.
-- Compact empty states are used inside review groups so supporting panels do not create oversized dead space on smaller screens.
+- No fresh interactive mobile or responsive browser verification was performed during this fix turn.
+- Mobile behavior expectations were reviewed from the existing responsive CSS and component structure only.
+- A manual narrow-viewport pass remains advisable before merge.
 
 ## deferred scope
 
-- No backend changes.
-- No new continuity endpoints.
-- No pagination, search, archive, or inbox behavior.
-- No additional trace enrichment on persisted continuity transcript rows beyond the shipped response trace links already available from immediate response submissions.
-- No redesign outside `/chat` and the scoped shared components.
+- No backend changes or new thread-specific workflow endpoints.
+- No redesign of `/approvals` or `/tasks`.
+- No task-step mutation UI beyond the shipped approval resolution and execute actions.
+- No inbox, dashboard, pagination, search, or broader workflow surfacing beyond the selected thread.
+- No changes to `DESIGN_SYSTEM.md`; the sprint did not reveal a concrete contradiction that required rewriting the design system.
 
 ## worktree notes
 
-- `.ai/active/SPRINT_PACKET.md` was already modified before this implementation and was not changed by this sprint work.
-- `.ai/active/SPRINT_PACKET.md` remains a pre-existing control-artifact edit and should stay out of the sprint PR unless the PR explicitly intends to ship sprint-packet changes.
+- `.ai/active/SPRINT_PACKET.md` was already modified before this sprint work and was not changed here.

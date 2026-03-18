@@ -38,6 +38,7 @@ type ApprovalDetailProps = {
   executionUnavailableMessage?: string | null;
   apiBaseUrl?: string;
   userId?: string;
+  chrome?: "card" | "embedded";
 };
 
 export function ApprovalDetail({
@@ -48,6 +49,7 @@ export function ApprovalDetail({
   executionUnavailableMessage,
   apiBaseUrl,
   userId,
+  chrome = "card",
 }: ApprovalDetailProps) {
   const [approval, setApproval] = useState(initialApproval);
   const [execution, setExecution] = useState(initialExecution);
@@ -65,6 +67,7 @@ export function ApprovalDetail({
         eyebrow="Approval detail"
         title="No approval selected"
         description="Choose an approval from the inbox to inspect its governing request and resolution state."
+        className={chrome === "embedded" ? "section-card--embedded" : undefined}
       >
         <EmptyState
           title="Approval inspector is idle"
@@ -79,6 +82,7 @@ export function ApprovalDetail({
       eyebrow="Approval detail"
       title={approval.tool.name}
       description="Request detail, routing rationale, resolution, and execution review stay composed inside one bounded inspector."
+      className={chrome === "embedded" ? "section-card--embedded" : undefined}
     >
       <div className="detail-grid">
         <div className="detail-summary">

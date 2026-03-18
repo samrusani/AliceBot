@@ -274,6 +274,12 @@ export type ApprovalRequestResponse = {
   };
 };
 
+export type ThreadWorkflowState = {
+  approval: ApprovalItem | null;
+  task: TaskItem | null;
+  execution: ToolExecutionItem | null;
+};
+
 export type ApprovalResolutionResponse = {
   approval: ApprovalItem;
   trace: {
@@ -419,6 +425,97 @@ export function pageModeLabel(mode: PageDataMode) {
   }
 
   return "Fixture-backed";
+}
+
+function compareIsoDatesDesc(left: string, right: string) {
+  return new Date(right).getTime() - new Date(left).getTime();
+}
+
+function pickLatestApproval(items: ApprovalItem[]) {
+  return [...items].sort((left, right) => compareIsoDatesDesc(left.created_at, right.created_at))[0] ?? null;
+}
+
+function pickLatestTask(items: TaskItem[], approval: ApprovalItem | null) {
+  if (approval) {
+    const linkedTask =
+      [...items]
+        .filter((item) => item.latest_approval_id === approval.id)
+        .sort((left, right) => {
+          const updatedDelta = compareIsoDatesDesc(left.updated_at, right.updated_at);
+          if (updatedDelta !== 0) {
+            return updatedDelta;
+          }
+
+          return compareIsoDatesDesc(left.created_at, right.created_at);
+        })[0] ?? null;
+
+    if (linkedTask) {
+      return linkedTask;
+    }
+  }
+
+  return [...items].sort((left, right) => {
+    const updatedDelta = compareIsoDatesDesc(left.updated_at, right.updated_at);
+    if (updatedDelta !== 0) {
+      return updatedDelta;
+    }
+
+    return compareIsoDatesDesc(left.created_at, right.created_at);
+  })[0] ?? null;
+}
+
+function pickExplicitlyLinkedExecution(
+  items: ToolExecutionItem[],
+  task: TaskItem | null,
+  approval: ApprovalItem | null,
+) {
+  if (task?.latest_execution_id) {
+    return items.find((item) => item.id === task.latest_execution_id) ?? null;
+  }
+
+  if (approval) {
+    return (
+      [...items]
+        .filter((item) => item.approval_id === approval.id)
+        .sort((left, right) => compareIsoDatesDesc(left.executed_at, right.executed_at))[0] ?? null
+    );
+  }
+
+  return null;
+}
+
+export function deriveThreadWorkflowState(
+  threadId: string,
+  approvals: ApprovalItem[],
+  tasks: TaskItem[],
+  executions: ToolExecutionItem[],
+): ThreadWorkflowState {
+  const threadApprovals = approvals.filter((item) => item.thread_id === threadId);
+  const approval = pickLatestApproval(threadApprovals);
+  const threadTasks = tasks.filter((item) => item.thread_id === threadId);
+  const task = pickLatestTask(threadTasks, approval);
+  const threadExecutions = executions.filter((item) => item.thread_id === threadId);
+  const execution = pickExplicitlyLinkedExecution(threadExecutions, task, approval);
+
+  return {
+    approval,
+    task,
+    execution,
+  };
+}
+
+export function shouldExpectThreadExecutionReview(
+  approval: ApprovalItem | null,
+  task: TaskItem | null,
+) {
+  const normalizedApprovalStatus = approval?.status.trim().toLowerCase() ?? "";
+  const normalizedTaskStatus = task?.status.trim().toLowerCase() ?? "";
+
+  return Boolean(
+    task?.latest_execution_id ||
+      ["approved", "executed", "completed"].includes(normalizedApprovalStatus) ||
+      ["executed", "completed"].includes(normalizedTaskStatus),
+  );
 }
 
 function buildApiUrl(
