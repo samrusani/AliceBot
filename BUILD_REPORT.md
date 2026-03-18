@@ -1,96 +1,79 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Sprint 6R: add a bounded `/artifacts` artifact review workspace UI in the web shell that uses only shipped backend task-workspace/task-artifact/chunk read endpoints, with stable loading/empty/unavailable behavior and explicit live/fixture fallback.
+Synchronize canonical truth artifacts to the implemented repo baseline through Sprint 6R so planning and review start from current shipped reality.
 
 ## Completed Work
-- Added new route files:
+- Updated `ROADMAP.md`:
+  - corrected current-state claim from Sprint 6N to Sprint 6R
+  - updated shipped shell inventory to include `/artifacts`, `/memories`, and `/entities`
+  - reframed next-delivery guidance from the full shipped API + web-shell baseline
+- Updated `.ai/handoff/CURRENT_STATE.md`:
+  - corrected canonical truth from Sprint 6N to Sprint 6R
+  - updated implemented surfaces to include `/artifacts`, `/memories`, and `/entities`
+  - updated planning guardrails to start from Sprint 6R baseline
+  - refreshed repo-evidence section with route/test files for chat plus artifact/entity/memory workspaces
+- Updated `README.md`:
+  - corrected onboarding status from Sprint 6N to Sprint 6R
+  - updated operator-shell route inventory to include `/artifacts`, `/memories`, and `/entities`
+- Updated `ARCHITECTURE.md`:
+  - corrected accepted implemented slice from Sprint 6N to Sprint 6R
+  - updated shipped shell route inventory to include `/artifacts`, `/memories`, and `/entities`
+  - added concise description of bounded review-workspace behavior and corresponding route tests
+- Replaced `BUILD_REPORT.md` with this Sprint 6S truth-sync report.
+
+## Accepted Repo Evidence Used
+- Shell route inventory and discoverability:
+  - `apps/web/components/app-shell.tsx`
+  - `apps/web/app/page.tsx`
   - `apps/web/app/artifacts/page.tsx`
-  - `apps/web/app/artifacts/loading.tsx`
-- Implemented bounded artifact review components:
-  - `apps/web/components/artifact-list.tsx`
-  - `apps/web/components/artifact-detail.tsx`
-  - `apps/web/components/artifact-workspace-summary.tsx`
-  - `apps/web/components/artifact-chunk-list.tsx`
-- Extended shared API layer in `apps/web/lib/api.ts` with typed read functions and contracts for:
-  - task workspace list/detail
-  - task artifact list/detail
-  - task artifact chunk list
-- Added fixture-backed artifact/workspace/chunk data and helpers in `apps/web/lib/fixtures.ts` to preserve explicit fallback behavior when live API is absent or partially unavailable.
-- Integrated `/artifacts` into shell discoverability:
-  - Added navigation entry in `apps/web/components/app-shell.tsx`
-  - Added home route card and summary updates in `apps/web/app/page.tsx`
-  - Updated shell metadata description in `apps/web/app/layout.tsx`
-- Updated styling in `apps/web/app/globals.css` for artifact layouts and readable chunk evidence rendering.
-- Added sprint-scope tests:
-  - `apps/web/components/artifact-list.test.tsx`
-  - `apps/web/components/artifact-chunk-list.test.tsx`
+  - `apps/web/app/memories/page.tsx`
+  - `apps/web/app/entities/page.tsx`
+- Route-level verification for shipped review workspaces:
   - `apps/web/app/artifacts/page.test.tsx`
-  - Expanded `apps/web/lib/api.test.ts` to verify workspace/artifact/chunk endpoint usage.
-- Updated status handling in `apps/web/components/status-badge.tsx` for `ingested` and `registered` badge tones used by artifact surfaces.
+  - `apps/web/app/memories/page.test.tsx`
+  - `apps/web/app/entities/page.test.tsx`
+- Existing chat baseline evidence retained in canonical docs:
+  - `apps/web/app/chat/page.tsx`
+  - `apps/web/app/chat/page.test.tsx`
 
-## Artifact Surface Backing Mode
-- Artifact list (`artifact-list`): mixed-capable (`live` when configured, `fixture` fallback, explicit unavailable note when live list read fails).
-- Selected artifact detail (`artifact-detail`): mixed-capable (`live` detail with fixture fallback when available).
-- Linked workspace summary (`artifact-workspace-summary`): mixed-capable (`live` workspace detail with fixture fallback when available, explicit unavailable state when neither is available).
-- Chunk review (`artifact-chunk-list`): mixed-capable (`live` chunks with fixture fallback when available, explicit unavailable state when neither is available).
-
-## Exact Backend Endpoints Consumed By `/artifacts` Runtime Flow
-- `GET /v0/task-workspaces/{task_workspace_id}`
-- `GET /v0/task-artifacts`
-- `GET /v0/task-artifacts/{task_artifact_id}`
-- `GET /v0/task-artifacts/{task_artifact_id}/chunks`
-
-## Additional Endpoint Implemented/Tested In Shared API Helper Layer
-- `GET /v0/task-workspaces` (implemented in `apps/web/lib/api.ts` and covered by `apps/web/lib/api.test.ts`, but not called in `/artifacts` page orchestration)
+## Stale Claims Corrected
+- `ROADMAP.md`: “current through Sprint 6N” -> “current through Sprint 6R”
+- `.ai/handoff/CURRENT_STATE.md`: “current through Sprint 6N” -> “current through Sprint 6R”
+- `README.md`: “accepted slice through Sprint 6N” -> “accepted slice through Sprint 6R”
+- `ARCHITECTURE.md`: “accepted repo slice through Sprint 6N” -> “accepted repo slice through Sprint 6R”
+- Canonical shell inventory now consistently includes `/memories`, `/entities`, and `/artifacts`.
 
 ## Incomplete Work
-- None within Sprint 6R acceptance scope.
+- None within Sprint 6S scope.
 
 ## Files Changed
-- `apps/web/app/layout.tsx`
-- `apps/web/app/page.tsx`
-- `apps/web/app/artifacts/page.tsx`
-- `apps/web/app/artifacts/loading.tsx`
-- `apps/web/app/artifacts/page.test.tsx`
-- `apps/web/app/globals.css`
-- `apps/web/components/app-shell.tsx`
-- `apps/web/components/status-badge.tsx`
-- `apps/web/components/artifact-list.tsx`
-- `apps/web/components/artifact-detail.tsx`
-- `apps/web/components/artifact-workspace-summary.tsx`
-- `apps/web/components/artifact-chunk-list.tsx`
-- `apps/web/lib/api.ts`
-- `apps/web/lib/fixtures.ts`
-- `apps/web/lib/api.test.ts`
-- `apps/web/components/artifact-list.test.tsx`
-- `apps/web/components/artifact-chunk-list.test.tsx`
+- `ROADMAP.md`
+- `.ai/handoff/CURRENT_STATE.md`
+- `README.md`
+- `ARCHITECTURE.md`
 - `BUILD_REPORT.md`
 
-## Exact Commands Run
-- `npm run lint` (in `apps/web`)
-- `npm test` (in `apps/web`)
-- `npm run build` (in `apps/web`)
-
-## Test and Verification Results
-- `npm run lint`: PASS
-- `npm test`: PASS (`25` test files, `79` tests passed)
-- `npm run build`: PASS (Next.js production build completed, `/artifacts` route included in output)
-
-## Desktop and Mobile Visual Verification Notes
-- Desktop: `/artifacts` follows the bounded review flow in two stages: list/detail first, workspace/chunks second; card rhythm, badge patterns, and spacing are consistent with existing shell primitives.
-- Mobile/tablet: artifact layouts collapse to single-column under existing responsive breakpoints; list/detail/chunk content remain contained with readable wrapping and scroll-bounded chunk text blocks.
+## Tests Run
+- `rg -n "Sprint 6R|/memories|/entities|/artifacts" ROADMAP.md .ai/handoff/CURRENT_STATE.md README.md ARCHITECTURE.md` (PASS)
+- `pnpm --dir apps/web test app/memories/page.test.tsx app/entities/page.test.tsx app/artifacts/page.test.tsx` (PASS: 3 files, 7 tests)
 
 ## Blockers / Issues
 - No blockers encountered.
 
-## Intentionally Deferred (Out of Scope)
-- Artifact registration or ingestion actions.
-- Retrieval or semantic retrieval controls.
-- Gmail account management UI.
-- Backend contract changes or new endpoints.
-- Calendar/auth/runner/connector expansion.
-- Broad file-browser/document-manager features.
+## Archive Actions
+- No files archived under `docs/archive/**` in this sprint.
+
+## Scope and Change-Type Confirmation
+- No runtime code changes.
+- No schema changes.
+- No API changes.
+- No UI behavior changes.
+- No Gmail, Calendar, auth, runner, or connector-scope changes.
+
+## Intentionally Deferred After Truth Sync
+- Any new feature delivery beyond the synchronized Sprint 6R baseline.
+- Any broader compaction/archive campaign outside concrete stale-artifact handling.
 
 ## Recommended Next Step
-Run reviewer pass focused on Sprint 6R review criteria (scope containment, endpoint usage, bounded UI behavior), then open PR from `codex/sprint-6r-artifact-review-workspace-ui` once Control Tower approves.
+Run reviewer verification against Sprint 6S acceptance criteria, then open the next delivery sprint from this synchronized Sprint 6R documentation baseline.
