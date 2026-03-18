@@ -4,6 +4,7 @@ import {
   ApiError,
   combinePageModes,
   createThread,
+  deriveThreadWorkflowState,
   getThreadDetail,
   getThreadEvents,
   getThreadSessions,
@@ -15,6 +16,7 @@ import {
   listTraces,
   pageModeLabel,
   resolveApproval,
+  shouldExpectThreadExecutionReview,
   submitAssistantResponse,
   submitApprovalRequest,
 } from "./api";
@@ -34,6 +36,202 @@ describe("api helpers", () => {
   it("combines live and fixture sources into a mixed page mode", () => {
     expect(combinePageModes("live", "fixture")).toBe("mixed");
     expect(pageModeLabel("mixed")).toBe("Mixed fallback");
+  });
+
+  it("does not borrow an older unrelated execution from the same thread", () => {
+    const approval = {
+      id: "approval-new",
+      thread_id: "thread-1",
+      task_step_id: "step-new",
+      status: "approved",
+      request: {
+        thread_id: "thread-1",
+        tool_id: "tool-1",
+        action: "place_order",
+        scope: "supplements",
+        domain_hint: "ecommerce",
+        risk_hint: "purchase",
+        attributes: {},
+      },
+      tool: {
+        id: "tool-1",
+        tool_key: "merchant_proxy",
+        name: "Merchant Proxy",
+        description: "Proxy",
+        version: "0.1.0",
+        metadata_version: "tool_metadata_v0",
+        active: true,
+        tags: [],
+        action_hints: [],
+        scope_hints: [],
+        domain_hints: [],
+        risk_hints: [],
+        metadata: {},
+        created_at: "2026-03-17T00:00:00Z",
+      },
+      routing: {
+        decision: "require_approval",
+        reasons: [],
+        trace: {
+          trace_id: "trace-approval-new",
+          trace_event_count: 3,
+        },
+      },
+      created_at: "2026-03-18T10:00:00Z",
+      resolution: {
+        resolved_at: "2026-03-18T10:05:00Z",
+        resolved_by_user_id: "user-1",
+      },
+    };
+
+    const olderApproval = {
+      ...approval,
+      id: "approval-old",
+      task_step_id: "step-old",
+      created_at: "2026-03-17T10:00:00Z",
+    };
+
+    const task = {
+      id: "task-new",
+      thread_id: "thread-1",
+      tool_id: "tool-1",
+      status: "approved",
+      request: approval.request,
+      tool: approval.tool,
+      latest_approval_id: "approval-new",
+      latest_execution_id: null,
+      created_at: "2026-03-18T10:00:00Z",
+      updated_at: "2026-03-18T10:05:00Z",
+    };
+
+    const olderTask = {
+      ...task,
+      id: "task-old",
+      latest_approval_id: "approval-old",
+      latest_execution_id: "execution-old",
+      created_at: "2026-03-17T10:00:00Z",
+      updated_at: "2026-03-17T10:10:00Z",
+    };
+
+    const olderExecution = {
+      id: "execution-old",
+      approval_id: "approval-old",
+      task_step_id: "step-old",
+      thread_id: "thread-1",
+      tool_id: "tool-1",
+      trace_id: "trace-execution-old",
+      request_event_id: "request-event-old",
+      result_event_id: "result-event-old",
+      status: "completed",
+      handler_key: "proxy.echo",
+      request: approval.request,
+      tool: approval.tool,
+      result: {
+        handler_key: "proxy.echo",
+        status: "completed",
+        output: { ok: true },
+        reason: null,
+      },
+      executed_at: "2026-03-17T10:10:00Z",
+    };
+
+    const workflow = deriveThreadWorkflowState(
+      "thread-1",
+      [olderApproval, approval],
+      [olderTask, task],
+      [olderExecution],
+    );
+
+    expect(workflow.approval?.id).toBe("approval-new");
+    expect(workflow.task?.id).toBe("task-new");
+    expect(workflow.execution).toBeNull();
+    expect(shouldExpectThreadExecutionReview(workflow.approval, workflow.task)).toBe(true);
+  });
+
+  it("returns explicitly linked execution when the selected task carries latest_execution_id", () => {
+    const approval = {
+      id: "approval-1",
+      thread_id: "thread-1",
+      task_step_id: "step-1",
+      status: "approved",
+      request: {
+        thread_id: "thread-1",
+        tool_id: "tool-1",
+        action: "place_order",
+        scope: "supplements",
+        domain_hint: "ecommerce",
+        risk_hint: "purchase",
+        attributes: {},
+      },
+      tool: {
+        id: "tool-1",
+        tool_key: "merchant_proxy",
+        name: "Merchant Proxy",
+        description: "Proxy",
+        version: "0.1.0",
+        metadata_version: "tool_metadata_v0",
+        active: true,
+        tags: [],
+        action_hints: [],
+        scope_hints: [],
+        domain_hints: [],
+        risk_hints: [],
+        metadata: {},
+        created_at: "2026-03-17T00:00:00Z",
+      },
+      routing: {
+        decision: "require_approval",
+        reasons: [],
+        trace: {
+          trace_id: "trace-approval-1",
+          trace_event_count: 3,
+        },
+      },
+      created_at: "2026-03-18T10:00:00Z",
+      resolution: {
+        resolved_at: "2026-03-18T10:05:00Z",
+        resolved_by_user_id: "user-1",
+      },
+    };
+
+    const task = {
+      id: "task-1",
+      thread_id: "thread-1",
+      tool_id: "tool-1",
+      status: "executed",
+      request: approval.request,
+      tool: approval.tool,
+      latest_approval_id: "approval-1",
+      latest_execution_id: "execution-1",
+      created_at: "2026-03-18T10:00:00Z",
+      updated_at: "2026-03-18T10:06:00Z",
+    };
+
+    const execution = {
+      id: "execution-1",
+      approval_id: "approval-1",
+      task_step_id: "step-1",
+      thread_id: "thread-1",
+      tool_id: "tool-1",
+      trace_id: "trace-execution-1",
+      request_event_id: "request-event-1",
+      result_event_id: "result-event-1",
+      status: "completed",
+      handler_key: "proxy.echo",
+      request: approval.request,
+      tool: approval.tool,
+      result: {
+        handler_key: "proxy.echo",
+        status: "completed",
+        output: { ok: true },
+        reason: null,
+      },
+      executed_at: "2026-03-18T10:06:00Z",
+    };
+
+    const workflow = deriveThreadWorkflowState("thread-1", [approval], [task], [execution]);
+
+    expect(workflow.execution?.id).toBe("execution-1");
   });
 
   it("posts governed approval requests to the shipped endpoint", async () => {
