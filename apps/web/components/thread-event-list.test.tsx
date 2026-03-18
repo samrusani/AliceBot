@@ -46,7 +46,7 @@ describe("ThreadEventList", () => {
       />,
     );
 
-    expect(screen.getByText("Recent continuity state")).toBeInTheDocument();
+    expect(screen.getByText("Bounded supporting continuity")).toBeInTheDocument();
     expect(screen.getByText(/place_order in supplements is pending/i)).toBeInTheDocument();
     expect(screen.getByText("Sequence 2")).toBeInTheDocument();
     expect(screen.getByText("Active")).toBeInTheDocument();
@@ -62,6 +62,6 @@ describe("ThreadEventList", () => {
       />,
     );
 
-    expect(screen.getByText("No continuity captured yet")).toBeInTheDocument();
+    expect(screen.getByText("No supporting continuity yet")).toBeInTheDocument();
   });
 });
