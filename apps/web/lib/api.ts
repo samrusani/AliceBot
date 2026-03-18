@@ -349,6 +349,38 @@ export type MemoryEvaluationSummary = {
   label_value_order: MemoryReviewLabelValue[];
 };
 
+export type EntityType = "person" | "merchant" | "product" | "project" | "routine";
+
+export type EntityRecord = {
+  id: string;
+  entity_type: EntityType;
+  name: string;
+  source_memory_ids: string[];
+  created_at: string;
+};
+
+export type EntityListSummary = {
+  total_count: number;
+  order: string[];
+};
+
+export type EntityEdgeRecord = {
+  id: string;
+  from_entity_id: string;
+  to_entity_id: string;
+  relationship_type: string;
+  valid_from: string | null;
+  valid_to: string | null;
+  source_memory_ids: string[];
+  created_at: string;
+};
+
+export type EntityEdgeListSummary = {
+  entity_id: string;
+  total_count: number;
+  order: string[];
+};
+
 export type MemoryReviewLabelPayload = {
   user_id: string;
   label: MemoryReviewLabelValue;
@@ -831,6 +863,33 @@ export function getTraceEvents(apiBaseUrl: string, traceId: string, userId: stri
   return requestJson<{ items: TraceReviewEventItem[]; summary: TraceReviewEventListSummary }>(
     apiBaseUrl,
     `/v0/traces/${traceId}/events`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function listEntities(apiBaseUrl: string, userId: string) {
+  return requestJson<{ items: EntityRecord[]; summary: EntityListSummary }>(
+    apiBaseUrl,
+    "/v0/entities",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getEntityDetail(apiBaseUrl: string, entityId: string, userId: string) {
+  return requestJson<{ entity: EntityRecord }>(
+    apiBaseUrl,
+    `/v0/entities/${entityId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function listEntityEdges(apiBaseUrl: string, entityId: string, userId: string) {
+  return requestJson<{ items: EntityEdgeRecord[]; summary: EntityEdgeListSummary }>(
+    apiBaseUrl,
+    `/v0/entities/${entityId}/edges`,
     undefined,
     { user_id: userId },
   );
