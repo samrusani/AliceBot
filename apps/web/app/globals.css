@@ -339,7 +339,8 @@ code,
 
 .memory-layout,
 .memory-followup-grid,
-.entity-layout {
+.entity-layout,
+.artifact-layout {
   display: grid;
   gap: 24px;
 }
@@ -356,6 +357,18 @@ code,
 
 .entity-layout {
   grid-template-columns: minmax(320px, 0.92fr) minmax(0, 1.2fr);
+  align-items: flex-start;
+}
+
+.artifact-layout {
+  grid-template-columns: minmax(320px, 0.95fr) minmax(0, 1.17fr);
+  align-items: flex-start;
+}
+
+.artifact-review-grid {
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.3fr);
   align-items: flex-start;
 }
 
@@ -1512,6 +1525,21 @@ code,
   gap: 14px;
 }
 
+.artifact-chunk__text {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(42, 52, 66, 0.08);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+
 .responsive-note {
   color: var(--text-muted);
   font-size: 0.82rem;
@@ -1533,6 +1561,8 @@ code,
   .memory-layout,
   .memory-followup-grid,
   .entity-layout,
+  .artifact-layout,
+  .artifact-review-grid,
   .chat-workspace,
   .metric-grid,
   .route-grid {
