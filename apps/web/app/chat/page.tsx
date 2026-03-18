@@ -3,24 +3,41 @@ import { PageHeader } from "../../components/page-header";
 import { RequestComposer } from "../../components/request-composer";
 import { ResponseComposer } from "../../components/response-composer";
 import { ResponseHistory } from "../../components/response-history";
+import { ThreadWorkflowPanel } from "../../components/thread-workflow-panel";
 import { ThreadCreate } from "../../components/thread-create";
 import { ThreadEventList } from "../../components/thread-event-list";
 import { ThreadList } from "../../components/thread-list";
 import { ThreadSummary } from "../../components/thread-summary";
-import type { ThreadEventItem, ThreadItem, ThreadSessionItem } from "../../lib/api";
+import type {
+  ApiSource,
+  ApprovalItem,
+  TaskItem,
+  ThreadEventItem,
+  ThreadItem,
+  ThreadSessionItem,
+  ToolExecutionItem,
+} from "../../lib/api";
 import {
+  deriveThreadWorkflowState,
   getApiConfig,
   getThreadDetail,
   getThreadEvents,
   getThreadSessions,
   hasLiveApiConfig,
+  listApprovals,
   listThreads,
+  listTasks,
+  listToolExecutions,
+  shouldExpectThreadExecutionReview,
 } from "../../lib/api";
 import {
+  approvalFixtures,
+  executionFixtures,
   getFixtureThread,
   getFixtureThreadEvents,
   getFixtureThreadSessions,
   requestHistoryFixtures,
+  taskFixtures,
   threadFixtures,
 } from "../../lib/fixtures";
 
@@ -39,6 +56,20 @@ type ContinuityViewModel = {
   selectedThread: ThreadItem | null;
   sessions: ThreadSessionItem[];
   events: ThreadEventItem[];
+};
+
+type WorkflowSource = ApiSource | "unavailable";
+
+type WorkflowViewModel = {
+  approval: ApprovalItem | null;
+  approvalSource: WorkflowSource;
+  approvalUnavailableReason?: string;
+  task: TaskItem | null;
+  taskSource: WorkflowSource;
+  taskUnavailableReason?: string;
+  execution: ToolExecutionItem | null;
+  executionSource: WorkflowSource | null;
+  executionUnavailableReason?: string;
 };
 
 function normalizeMode(value: string | string[] | undefined): ChatMode {
@@ -73,6 +104,110 @@ function resolveSelectedThreadId(
   }
 
   return threads[0]?.id ?? "";
+}
+
+async function loadFixtureWorkflow(selectedThreadId: string): Promise<WorkflowViewModel> {
+  if (!selectedThreadId) {
+    return {
+      approval: null,
+      approvalSource: "fixture",
+      task: null,
+      taskSource: "fixture",
+      execution: null,
+      executionSource: null,
+    };
+  }
+
+  const { approval, task, execution } = deriveThreadWorkflowState(
+    selectedThreadId,
+    approvalFixtures,
+    taskFixtures,
+    executionFixtures,
+  );
+
+  return {
+    approval,
+    approvalSource: "fixture",
+    task,
+    taskSource: "fixture",
+    execution,
+    executionSource: execution ? "fixture" : null,
+  };
+}
+
+async function loadLiveWorkflow(
+  apiBaseUrl: string,
+  userId: string,
+  selectedThreadId: string,
+): Promise<WorkflowViewModel> {
+  if (!selectedThreadId) {
+    return {
+      approval: null,
+      approvalSource: "live",
+      task: null,
+      taskSource: "live",
+      execution: null,
+      executionSource: null,
+    };
+  }
+
+  const [approvalsResult, tasksResult, executionsResult] = await Promise.allSettled([
+    listApprovals(apiBaseUrl, userId),
+    listTasks(apiBaseUrl, userId),
+    listToolExecutions(apiBaseUrl, userId),
+  ]);
+
+  const approvalItems = approvalsResult.status === "fulfilled" ? approvalsResult.value.items : [];
+  const taskItems = tasksResult.status === "fulfilled" ? tasksResult.value.items : [];
+  const executionItems = executionsResult.status === "fulfilled" ? executionsResult.value.items : [];
+  const derivedWorkflow = deriveThreadWorkflowState(
+    selectedThreadId,
+    approvalItems,
+    taskItems,
+    executionItems,
+  );
+
+  const expectsExecutionReview = shouldExpectThreadExecutionReview(
+    derivedWorkflow.approval,
+    derivedWorkflow.task,
+  );
+
+  return {
+    approval: derivedWorkflow.approval,
+    approvalSource:
+      approvalsResult.status === "fulfilled"
+        ? "live"
+        : "unavailable",
+    approvalUnavailableReason:
+      approvalsResult.status === "rejected"
+        ? approvalsResult.reason instanceof Error
+          ? approvalsResult.reason.message
+          : "Approvals could not be loaded."
+        : undefined,
+    task: derivedWorkflow.task,
+    taskSource: tasksResult.status === "fulfilled" ? "live" : "unavailable",
+    taskUnavailableReason:
+      tasksResult.status === "rejected"
+        ? tasksResult.reason instanceof Error
+          ? tasksResult.reason.message
+          : "Tasks could not be loaded."
+        : undefined,
+    execution: derivedWorkflow.execution,
+    executionSource:
+      executionsResult.status === "fulfilled"
+        ? derivedWorkflow.execution
+          ? "live"
+          : null
+        : expectsExecutionReview
+          ? "unavailable"
+          : null,
+    executionUnavailableReason:
+      executionsResult.status === "rejected" && expectsExecutionReview
+        ? executionsResult.reason instanceof Error
+          ? executionsResult.reason.message
+          : "Execution state could not be loaded."
+        : undefined,
+  };
 }
 
 async function loadFixtureContinuity(
@@ -177,6 +312,9 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
         apiConfig.defaultThreadId,
       )
     : await loadFixtureContinuity(requestedThreadId, apiConfig.defaultThreadId);
+  const workflow = liveModeReady
+    ? await loadLiveWorkflow(apiConfig.apiBaseUrl, apiConfig.userId, continuity.selectedThreadId)
+    : await loadFixtureWorkflow(continuity.selectedThreadId);
 
   const initialRequestEntries = liveModeReady ? [] : requestHistoryFixtures;
 
@@ -241,6 +379,21 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
         </div>
 
         <div className="chat-layout__rail">
+          <ThreadWorkflowPanel
+            thread={continuity.selectedThread}
+            approval={workflow.approval}
+            approvalSource={workflow.approvalSource}
+            approvalUnavailableReason={workflow.approvalUnavailableReason}
+            task={workflow.task}
+            taskSource={workflow.taskSource}
+            taskUnavailableReason={workflow.taskUnavailableReason}
+            execution={workflow.execution}
+            executionSource={workflow.executionSource}
+            executionUnavailableReason={workflow.executionUnavailableReason}
+            apiBaseUrl={liveModeReady ? apiConfig.apiBaseUrl : undefined}
+            userId={liveModeReady ? apiConfig.userId : undefined}
+          />
+
           <ThreadSummary
             thread={continuity.selectedThread}
             sessions={continuity.sessions}
