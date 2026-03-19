@@ -51,6 +51,18 @@ function samplePostureCopy(gate: ReturnType<typeof deriveMemoryQualityGate>) {
   return `Sample posture: ${gate.adjudicatedSampleCount}/${gate.minimumAdjudicatedSample} adjudicated labels.`;
 }
 
+function sampleProgressCopy(gate: ReturnType<typeof deriveMemoryQualityGate>) {
+  if (gate.remainingToMinimumSample === null) {
+    return "Progress to minimum sample is unavailable.";
+  }
+
+  if (gate.remainingToMinimumSample === 0) {
+    return "Progress: minimum adjudicated sample is met.";
+  }
+
+  return `Progress: ${gate.remainingToMinimumSample} label${gate.remainingToMinimumSample === 1 ? "" : "s"} remaining to reach the minimum sample.`;
+}
+
 function queuePostureCopy(gate: ReturnType<typeof deriveMemoryQualityGate>) {
   if (gate.queuePosture === "unavailable") {
     return "Queue posture unavailable.";
@@ -90,11 +102,16 @@ export function MemoryQualityGate({ summary, summarySource }: MemoryQualityGateP
           <dt>Unlabeled queue</dt>
           <dd>{gate.unlabeledQueueCount ?? "—"}</dd>
         </div>
+        <div>
+          <dt>Remaining to minimum sample</dt>
+          <dd>{gate.remainingToMinimumSample ?? "—"}</dd>
+        </div>
       </dl>
 
       <div className="memory-quality-gate__copy">
         <p>{interpretationCopy(gate)}</p>
         <p>{samplePostureCopy(gate)}</p>
+        <p>{sampleProgressCopy(gate)}</p>
         <p>{queuePostureCopy(gate)}</p>
       </div>
 

@@ -60,6 +60,7 @@ describe("MemorySummary", () => {
 
     expect(screen.getByText("Ship-gate readiness")).toBeInTheDocument();
     expect(screen.getByText("On track")).toBeInTheDocument();
+    expect(screen.getByText("Progress: minimum adjudicated sample is met.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Active list" })).toHaveAttribute("href", "/memories");
     expect(screen.getByRole("link", { name: "Unlabeled queue" })).toHaveAttribute(
       "href",

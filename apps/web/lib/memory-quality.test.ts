@@ -14,6 +14,7 @@ describe("memory quality gate utility", () => {
     expect(gate.status).toBe("unavailable");
     expect(gate.precision).toBeNull();
     expect(gate.adjudicatedSampleCount).toBeNull();
+    expect(gate.remainingToMinimumSample).toBeNull();
     expect(gate.unlabeledQueueCount).toBeNull();
     expect(gate.samplePosture).toBe("unavailable");
     expect(gate.queuePosture).toBe("unavailable");
@@ -38,6 +39,7 @@ describe("memory quality gate utility", () => {
 
     expect(gate.status).toBe("insufficient_evidence");
     expect(gate.precision).toBe(1);
+    expect(gate.remainingToMinimumSample).toBe(1);
     expect(gate.samplePosture).toBe("insufficient_sample");
     expect(gate.queuePosture).toBe("queue_backlog");
   });
@@ -63,6 +65,7 @@ describe("memory quality gate utility", () => {
     expect(gate.precision).toBe(0.7);
     expect(gate.samplePosture).toBe("enough_sample");
     expect(gate.queuePosture).toBe("queue_clear");
+    expect(gate.remainingToMinimumSample).toBe(0);
     expect(gate.precisionTarget).toBe(MEMORY_QUALITY_PRECISION_TARGET);
     expect(gate.minimumAdjudicatedSample).toBe(MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE);
   });
