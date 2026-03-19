@@ -4,36 +4,38 @@
 PASS
 
 ## criteria met
-- Sprint stayed within Sprint 7H documentation/control-artifact scope; changed files are docs, handoff, rules, and reports only.
-- Canonical baseline files no longer claim Sprint 6X as current state:
-  - `README.md`
-  - `ROADMAP.md`
-  - `ARCHITECTURE.md`
-  - `.ai/handoff/CURRENT_STATE.md`
-- MVP default go/no-go command is explicitly documented as `python3 scripts/run_mvp_validation_matrix.py` in canonical docs/runbooks.
-- `docs/runbooks/mvp-validation-matrix.md` now uses a portable web matrix command (`npm --prefix apps/web run test:mvp:validation-matrix`) and no `/Users/...` absolute path.
-- Portability patterns (`file://`, `vscode://`, local absolute user-home paths) are absent from targeted shared canonical docs/runbooks when checked with a shell-safe grep command.
-- No hidden product/backend/runtime/schema scope expansion was introduced.
+- Acceptance criteria met for strict memory gate semantics in `scripts/run_mvp_readiness_gates.py`:
+  - `precision > 0.80` (strictly greater)
+  - `adjudicated_sample >= 20`
+- Boundary behavior is explicitly enforced and tested:
+  - `precision == 0.80` evaluates to `FAIL`/`NO_GO` (`memory_needs_review` induced path and integration test coverage).
+  - Sample below minimum remains `BLOCKED` even with perfect precision.
+- Deterministic validation matrix behavior remains intact:
+  - `python3 scripts/run_mvp_validation_matrix.py` returns `PASS`.
+  - `python3 scripts/run_mvp_validation_matrix.py --induce-step backend_integration_matrix` returns `NO_GO` with explicit failing step and deterministic induced exit behavior.
+- Scope discipline maintained:
+  - Code and doc changes remained in Sprint 7I readiness-hardening surfaces.
+  - No connector/auth/orchestration/UI/backend feature expansion detected.
 
 ## criteria missed
-- None of the Sprint 7H acceptance criteria are functionally missed.
+- None.
 
 ## quality issues
-- None significant for sprint scope.
+- No implementation-quality issues found in sprint-scoped changes.
 
 ## regression risks
-- Low product regression risk because changes are docs/rules/report only.
-- Low process risk after fixing the portability-check command in `BUILD_REPORT.md` to a shell-safe form.
+- Low functional risk.
+- Expected operational tightening: memory gate now intentionally rejects the former floor case (`precision == 0.80`) and requires larger adjudicated sample (`>= 20`).
 
 ## docs issues
-- None. Portability-check command formatting in `BUILD_REPORT.md` is shell-safe and copy-paste reproducible.
+- None. Runbooks are aligned with the strict threshold semantics and boundary interpretation.
 
 ## should anything be added to RULES.md?
-- Optional: add one line requiring shell commands in reports/runbooks to be copy-paste runnable in a POSIX shell (especially regex patterns with backslashes).
+- No.
 
 ## should anything update ARCHITECTURE.md?
-- No additional architecture updates required for Sprint 7H.
+- No.
 
 ## recommended next action
-1. Accept Sprint 7H.
-2. Keep using the documented shell-safe portability checks for future docs/control sprints.
+1. Accept Sprint 7I.
+2. Keep `python3 scripts/run_mvp_validation_matrix.py` as the release-candidate gate in CI/reviewer flow.

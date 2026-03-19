@@ -60,19 +60,19 @@ def test_cache_reuse_gate_enforces_threshold_math() -> None:
 def test_memory_quality_gate_posture_alignment() -> None:
     pass_gate = readiness_gates._evaluate_memory_quality_gate(
         {
-            "label_row_counts_by_value": {"correct": 8, "incorrect": 2},
+            "label_row_counts_by_value": {"correct": 17, "incorrect": 3},
             "unlabeled_memory_count": 0,
         }
     )
     fail_gate = readiness_gates._evaluate_memory_quality_gate(
         {
-            "label_row_counts_by_value": {"correct": 6, "incorrect": 4},
+            "label_row_counts_by_value": {"correct": 15, "incorrect": 5},
             "unlabeled_memory_count": 0,
         }
     )
     blocked_gate = readiness_gates._evaluate_memory_quality_gate(
         {
-            "label_row_counts_by_value": {"correct": 5, "incorrect": 1},
+            "label_row_counts_by_value": {"correct": 9, "incorrect": 1},
             "unlabeled_memory_count": 0,
         }
     )
@@ -82,6 +82,33 @@ def test_memory_quality_gate_posture_alignment() -> None:
     assert fail_gate.status == "FAIL"
     assert "posture=needs_review" in fail_gate.measured
     assert blocked_gate.status == "BLOCKED"
+    assert "posture=insufficient_evidence" in blocked_gate.measured
+    assert pass_gate.threshold == "precision > 0.80 and adjudicated_sample >= 20"
+
+
+def test_memory_quality_gate_rejects_precision_boundary_at_point_80() -> None:
+    boundary_gate = readiness_gates._evaluate_memory_quality_gate(
+        {
+            "label_row_counts_by_value": {"correct": 16, "incorrect": 4},
+            "unlabeled_memory_count": 0,
+        }
+    )
+
+    assert boundary_gate.status == "FAIL"
+    assert "precision=0.800000" in boundary_gate.measured
+    assert "posture=needs_review" in boundary_gate.measured
+
+
+def test_memory_quality_gate_blocks_when_sample_is_below_20_even_with_perfect_precision() -> None:
+    blocked_gate = readiness_gates._evaluate_memory_quality_gate(
+        {
+            "label_row_counts_by_value": {"correct": 19, "incorrect": 0},
+            "unlabeled_memory_count": 0,
+        }
+    )
+
+    assert blocked_gate.status == "BLOCKED"
+    assert "adjudicated_sample=19" in blocked_gate.measured
     assert "posture=insufficient_evidence" in blocked_gate.measured
 
 
