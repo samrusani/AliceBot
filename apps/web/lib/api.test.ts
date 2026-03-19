@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   combinePageModes,
+  connectGmailAccount,
   createThread,
   deriveThreadWorkflowState,
+  getGmailAccountDetail,
   getTaskArtifactDetail,
   getTaskWorkspaceDetail,
   getEntityDetail,
@@ -16,8 +18,10 @@ import {
   getThreadEvents,
   getThreadSessions,
   executeApproval,
+  ingestGmailMessage,
   listEntities,
   listEntityEdges,
+  listGmailAccounts,
   listTaskArtifactChunks,
   listTaskArtifacts,
   listTaskWorkspaces,
@@ -944,6 +948,172 @@ describe("api helpers", () => {
         }),
       ],
     ]);
+  });
+
+  it("reads and writes Gmail account and selected-message ingestion endpoints", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          account: {
+            id: "gmail-account-1",
+            provider: "gmail",
+            auth_kind: "oauth_access_token",
+            provider_account_id: "acct-owner-001",
+            email_address: "owner@gmail.example",
+            display_name: "Owner",
+            scope: "https://www.googleapis.com/auth/gmail.readonly",
+            created_at: "2026-03-18T00:00:00Z",
+            updated_at: "2026-03-18T00:00:00Z",
+          },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "gmail-account-1",
+              provider: "gmail",
+              auth_kind: "oauth_access_token",
+              provider_account_id: "acct-owner-001",
+              email_address: "owner@gmail.example",
+              display_name: "Owner",
+              scope: "https://www.googleapis.com/auth/gmail.readonly",
+              created_at: "2026-03-18T00:00:00Z",
+              updated_at: "2026-03-18T00:00:00Z",
+            },
+          ],
+          summary: {
+            total_count: 1,
+            order: ["created_at_asc", "id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          account: {
+            id: "gmail-account-1",
+            provider: "gmail",
+            auth_kind: "oauth_access_token",
+            provider_account_id: "acct-owner-001",
+            email_address: "owner@gmail.example",
+            display_name: "Owner",
+            scope: "https://www.googleapis.com/auth/gmail.readonly",
+            created_at: "2026-03-18T00:00:00Z",
+            updated_at: "2026-03-18T00:00:00Z",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          account: {
+            id: "gmail-account-1",
+            provider: "gmail",
+            auth_kind: "oauth_access_token",
+            provider_account_id: "acct-owner-001",
+            email_address: "owner@gmail.example",
+            display_name: "Owner",
+            scope: "https://www.googleapis.com/auth/gmail.readonly",
+            created_at: "2026-03-18T00:00:00Z",
+            updated_at: "2026-03-18T00:00:00Z",
+          },
+          message: {
+            provider_message_id: "msg-001",
+            artifact_relative_path: "gmail/acct-owner-001/msg-001.eml",
+            media_type: "message/rfc822",
+          },
+          artifact: {
+            id: "artifact-1",
+            task_id: "task-1",
+            task_workspace_id: "workspace-1",
+            status: "registered",
+            ingestion_status: "ingested",
+            relative_path: "gmail/acct-owner-001/msg-001.eml",
+            media_type_hint: "message/rfc822",
+            created_at: "2026-03-18T00:05:00Z",
+            updated_at: "2026-03-18T00:06:00Z",
+          },
+          summary: {
+            total_count: 1,
+            total_characters: 240,
+            media_type: "message/rfc822",
+            chunking_rule: "normalized_utf8_text_fixed_window_1000_chars_v1",
+            order: ["sequence_no_asc", "id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await connectGmailAccount("https://api.example.com", {
+      user_id: "user-1",
+      provider_account_id: "acct-owner-001",
+      email_address: "owner@gmail.example",
+      display_name: "Owner",
+      scope: "https://www.googleapis.com/auth/gmail.readonly",
+      access_token: "access-token-1",
+    });
+    await listGmailAccounts("https://api.example.com", "user-1");
+    await getGmailAccountDetail("https://api.example.com", "gmail-account-1", "user-1");
+    await ingestGmailMessage(
+      "https://api.example.com",
+      "gmail-account-1",
+      "msg-001",
+      {
+        user_id: "user-1",
+        task_workspace_id: "workspace-1",
+      },
+    );
+
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "https://api.example.com/v0/gmail-accounts",
+        expect.objectContaining({
+          method: "POST",
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/gmail-accounts?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/gmail-accounts/gmail-account-1?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/gmail-accounts/gmail-account-1/messages/msg-001/ingest",
+        expect.objectContaining({
+          method: "POST",
+          cache: "no-store",
+        }),
+      ],
+    ]);
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      provider_account_id: "acct-owner-001",
+      email_address: "owner@gmail.example",
+      display_name: "Owner",
+      scope: "https://www.googleapis.com/auth/gmail.readonly",
+      access_token: "access-token-1",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      task_workspace_id: "workspace-1",
+    });
   });
 
   it("reads task workspace and artifact review endpoints with user-scoped query params", async () => {
