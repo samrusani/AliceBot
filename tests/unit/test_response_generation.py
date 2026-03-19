@@ -273,6 +273,64 @@ def test_invoke_model_sends_tools_disabled_request_and_parses_response(monkeypat
     )
 
 
+def test_invoke_model_parses_optional_cached_input_token_telemetry(monkeypatch) -> None:
+    def fake_urlopen(_request, timeout):
+        del timeout
+        return FakeHTTPResponse(
+            json.dumps(
+                {
+                    "id": "resp_telemetry",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "Assistant reply"}],
+                        }
+                    ],
+                    "usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 8,
+                        "total_tokens": 108,
+                        "input_tokens_details": {"cached_tokens": 76},
+                    },
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr("alicebot_api.response_generation.urlopen", fake_urlopen)
+
+    prompt = assemble_prompt(
+        request=PromptAssemblyInput(
+            context_pack=make_context_pack(),
+            system_instruction="System instruction",
+            developer_instruction="Developer instruction",
+        ),
+        compile_trace_id="compile-trace-123",
+    )
+
+    response = invoke_model(
+        settings=Settings(
+            model_provider="openai_responses",
+            model_base_url="https://example.test/v1",
+            model_name="gpt-5-mini",
+            model_api_key="secret-key",
+            model_timeout_seconds=17,
+        ),
+        request=ModelInvocationRequest(
+            provider="openai_responses",
+            model="gpt-5-mini",
+            prompt=prompt,
+        ),
+    )
+
+    assert response.usage == {
+        "input_tokens": 100,
+        "output_tokens": 8,
+        "total_tokens": 108,
+        "cached_input_tokens": 76,
+    }
+
+
 def test_build_assistant_response_payload_captures_model_and_prompt_metadata() -> None:
     prompt = assemble_prompt(
         request=PromptAssemblyInput(
@@ -290,7 +348,12 @@ def test_build_assistant_response_payload_captures_model_and_prompt_metadata() -
             response_id="resp_123",
             finish_reason="completed",
             output_text="Assistant reply",
-            usage={"input_tokens": 12, "output_tokens": 4, "total_tokens": 16},
+            usage={
+                "input_tokens": 12,
+                "output_tokens": 4,
+                "total_tokens": 16,
+                "cached_input_tokens": 9,
+            },
         ),
     )
 
@@ -301,7 +364,12 @@ def test_build_assistant_response_payload_captures_model_and_prompt_metadata() -
             "model": "gpt-5-mini",
             "response_id": "resp_123",
             "finish_reason": "completed",
-            "usage": {"input_tokens": 12, "output_tokens": 4, "total_tokens": 16},
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 4,
+                "total_tokens": 16,
+                "cached_input_tokens": 9,
+            },
         },
         "prompt": {
             "assembly_version": "prompt_assembly_v0",
