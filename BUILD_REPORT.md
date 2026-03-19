@@ -1,101 +1,67 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Sprint 7C memory-review throughput updates on `/memories`: add deterministic queue-mode label-and-advance flow and add progress visibility for labels remaining to minimum adjudicated sample.
+Deliver Sprint 7E MVP acceptance evidence suite: one deterministic command that validates shipped MVP-critical journeys and yields a clear pass/fail signal.
 
 ## Completed Work
-- Added memory-quality progress metric in utility layer:
-  - `remaining_to_minimum_sample = max(0, minimum_sample - adjudicated_sample)`
-  - surfaced as `remainingToMinimumSample` in `deriveMemoryQualityGate(...)` output.
-- Updated memory-quality gate UI to render progress deterministically:
-  - new key metric row: `Remaining to minimum sample`
-  - new copy line:
-    - unavailable: `Progress to minimum sample is unavailable.`
-    - met: `Progress: minimum adjudicated sample is met.`
-    - unmet: `Progress: N labels remaining to reach the minimum sample.`
-- Added deterministic queue advance wiring in `/memories` route:
-  - computes next queue target from current visible queue order only.
-  - passes `activeFilter` and `nextQueueMemoryId` into `memory-label-form`.
-- Extended `memory-label-form` with explicit queue action:
-  - existing action preserved: `Submit review label`
-  - queue action added (only when queue mode + next exists): `Submit and next in queue`
-  - single-submit behavior unchanged outside queue mode.
-  - queue submit-and-next posts label first, then navigates to:
-    - `/memories?filter=queue&memory={nextQueueMemoryId}`
-- Updated runbook for queue adjudication workflow and stop conditions.
-- Added deterministic tests for:
-  - remaining-to-sample metric behavior
-  - queue submit-and-next button visibility rules
-  - queue submit-and-next navigation behavior
-  - disabled states in non-live mode with clear messaging
+- Added acceptance suite tests in `/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_mvp_acceptance_suite.py` covering:
+  - context-aware response using admitted memory evidence
+  - preference correction reflected in compile + response path
+  - approval-required lifecycle through resolution and execution linkage
+  - explainability via trace availability for consequential actions
+  - canonical magnesium reorder flow with explicit memory write-back evidence
+- Added deterministic acceptance runner `/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_mvp_acceptance.py`:
+  - runs an explicit node-id subset only
+  - exits `0` on pass, non-zero on failure
+  - supports deterministic induced-failure mode via `--induce-failure`
+- Added runbook `/Users/samirusani/Desktop/Codex/AliceBot/docs/runbooks/mvp-acceptance-suite.md` with prerequisites, exact commands, pass/fail interpretation, induced-failure check, and deferred criteria.
+- Updated `/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md` and `/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md` for Sprint 7E only.
 
 ## Incomplete Work
-- None within Sprint 7C scope.
+- None within Sprint 7E scope.
 
 ## Files Changed
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/web/app/memories/page.tsx`
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/web/app/memories/page.test.tsx`
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/memory-label-form.tsx`
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/memory-label-form.test.tsx`
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/memory-quality-gate.tsx`
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/memory-quality-gate.test.tsx`
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/memory-summary.test.tsx`
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/web/lib/memory-quality.ts`
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/web/lib/memory-quality.test.ts`
-- `/Users/samirusani/Desktop/Codex/AliceBot/docs/runbooks/memory-quality-gate.md`
+- `/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_mvp_acceptance_suite.py`
+- `/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_mvp_acceptance.py`
+- `/Users/samirusani/Desktop/Codex/AliceBot/docs/runbooks/mvp-acceptance-suite.md`
 - `/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md`
+- `/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md`
 
-## Queue-Advance Rules (Shipped)
-- Queue-advance action is shown only when:
-  - filter is `queue`
-  - selected memory has a next item in the current visible queue ordering.
-- Deterministic next target:
-  - based on current `visibleMemories` order in route state
-  - `nextQueueMemoryId = visibleMemories[selectedIndex + 1]?.id ?? null`
-- Submission behavior:
-  - always explicit, user-triggered POST
-  - no background labeling
-  - no auto-labeling
-- Non-queue mode:
-  - preserves existing single-submit behavior (`router.refresh()` only).
+## Exact Acceptance Tests Included
+- `tests/integration/test_mvp_acceptance_suite.py::test_acceptance_response_path_uses_admitted_memory_and_preference_correction`
+- `tests/integration/test_mvp_acceptance_suite.py::test_acceptance_approval_lifecycle_resolution_execution_and_trace_availability`
+- `tests/integration/test_mvp_acceptance_suite.py::test_acceptance_canonical_magnesium_reorder_flow_with_memory_write_back_evidence`
 
-## Sample-Progress Formula (Shipped)
-- `adjudicated_sample = correct + incorrect`
-- `remaining_to_minimum_sample = max(0, 10 - adjudicated_sample)`
+## Exact Acceptance Runner Command(s)
+- `python3 scripts/run_mvp_acceptance.py`
+- `python3 scripts/run_mvp_acceptance.py --induce-failure approval_execution`
+- `./.venv/bin/python -m pytest tests/integration/test_mvp_acceptance_suite.py`
 
-## Queue-Advance Surface Source Mode
-- Mixed by design, depending on data source state:
-  - Live: action enabled when selected memory detail source is live and API config is present.
-  - Fixture/Unavailable: controls remain visible but submission actions are disabled with explicit explanation.
+## Pass/Fail Output Summary
+- `python3 scripts/run_mvp_acceptance.py` => PASS (`3 passed`, runner exit `0`).
+- `python3 scripts/run_mvp_acceptance.py --induce-failure approval_execution` => FAIL as expected (`1 failed, 2 passed`, runner exit `1`).
+- `./.venv/bin/python -m pytest tests/integration/test_mvp_acceptance_suite.py` => PASS (`3 passed`).
 
-## Endpoints Consumed (No New Contracts)
-- `GET /v0/memories/review-queue`
-- `POST /v0/memories/{memory_id}/labels`
-- `GET /v0/memories/evaluation-summary`
+## Induced-Failure Validation Summary
+- Induced failure was validated with scenario `approval_execution`.
+- Failure is deterministic and explicit: `_assert_not_induced_failure("approval_execution")` raises with message:
+  - `induced failure requested for scenario 'approval_execution' via MVP_ACCEPTANCE_INDUCED_FAILURE_SCENARIO`.
+- Runner returns non-zero and prints `MVP acceptance suite result: FAIL (exit code 1)`.
 
 ## Tests Run
-Commands executed in `/Users/samirusani/Desktop/Codex/AliceBot/apps/web`:
-- `npm run lint`
-- `npm test`
-- `npm run build`
-
-Results:
-- `npm run lint`: PASS
-- `npm test`: PASS (`35` files, `115` tests)
-- `npm run build`: PASS (Next.js production build completed successfully)
-
-## Desktop/Mobile Verification Notes
-- Desktop: verified behavior via unit/integration tests for queue advance visibility, submit-and-next navigation, and progress copy.
-- Mobile: no dedicated viewport automation added this sprint; responsive behavior relies on existing shared button/layout rules already present in `globals.css` (unchanged in this sprint).
+- `python3 scripts/run_mvp_acceptance.py`
+- `python3 scripts/run_mvp_acceptance.py --induce-failure approval_execution`
+- `./.venv/bin/python -m pytest tests/integration/test_mvp_acceptance_suite.py`
 
 ## Blockers/Issues
-- No implementation blockers encountered.
+- No code blockers.
+- Note: integration tests require access to local Postgres (`localhost:5432`), so execution needed unsandboxed network permissions in this environment.
 
-## Deferred Scope (Intentional)
-- No backend endpoint changes.
-- No memory extraction/retrieval/reranking changes.
-- No auth/runner/orchestration changes.
-- No unrelated route redesign.
+## Explicit Deferred Criteria Not Measured by This Suite
+- UI workflow or operator-shell rendering behavior.
+- Performance/latency characterization.
+- Connector breadth expansion and auth/orchestration changes.
+- Any new backend contracts, migrations, or schema changes.
 
 ## Recommended Next Step
-Run Reviewer validation against Sprint 7C acceptance criteria, focusing on deterministic queue progression and live/fixture/unavailable operator messaging on `/memories`.
+Run `python3 scripts/run_mvp_acceptance.py` in reviewer environment and use `docs/runbooks/mvp-acceptance-suite.md` as the acceptance evidence entrypoint.
