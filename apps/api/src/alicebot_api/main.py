@@ -45,7 +45,10 @@ from alicebot_api.contracts import (
     EntityCreateInput,
     EntityType,
     ExplicitPreferenceExtractionRequestInput,
+    CALENDAR_READONLY_SCOPE,
     GMAIL_READONLY_SCOPE,
+    CalendarAccountConnectInput,
+    CalendarEventIngestInput,
     GmailAccountConnectInput,
     GmailMessageIngestInput,
     MemoryCandidateInput,
@@ -169,6 +172,22 @@ from alicebot_api.gmail import (
     ingest_gmail_message_record,
     list_gmail_account_records,
 )
+from alicebot_api.calendar import (
+    CalendarAccountAlreadyExistsError,
+    CalendarAccountNotFoundError,
+    CalendarCredentialInvalidError,
+    CalendarCredentialNotFoundError,
+    CalendarCredentialPersistenceError,
+    CalendarCredentialValidationError,
+    CalendarEventFetchError,
+    CalendarEventNotFoundError,
+    CalendarEventUnsupportedError,
+    create_calendar_account_record,
+    get_calendar_account_record,
+    ingest_calendar_event_record,
+    list_calendar_account_records,
+)
+from alicebot_api.calendar_secret_manager import build_calendar_secret_manager
 from alicebot_api.gmail_secret_manager import build_gmail_secret_manager
 from alicebot_api.embedding import (
     EmbeddingConfigValidationError,
@@ -601,6 +620,20 @@ class ConnectGmailAccountRequest(BaseModel):
 
 
 class IngestGmailMessageRequest(BaseModel):
+    user_id: UUID
+    task_workspace_id: UUID
+
+
+class ConnectCalendarAccountRequest(BaseModel):
+    user_id: UUID
+    provider_account_id: str = Field(min_length=1, max_length=320)
+    email_address: str = Field(min_length=1, max_length=320)
+    display_name: str | None = Field(default=None, min_length=1, max_length=200)
+    scope: Literal["https://www.googleapis.com/auth/calendar.readonly"] = CALENDAR_READONLY_SCOPE
+    access_token: str = Field(min_length=1, max_length=8000)
+
+
+class IngestCalendarEventRequest(BaseModel):
     user_id: UUID
     task_workspace_id: UUID
 
@@ -1646,6 +1679,122 @@ def ingest_gmail_message(
     except TaskArtifactValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except (GmailMessageFetchError, GmailCredentialRefreshError) as exc:
+        return JSONResponse(status_code=502, content={"detail": str(exc)})
+    except TaskArtifactAlreadyExistsError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/calendar-accounts")
+def connect_calendar_account(request: ConnectCalendarAccountRequest) -> JSONResponse:
+    settings = get_settings()
+    secret_manager = build_calendar_secret_manager(settings.calendar_secret_manager_url)
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_calendar_account_record(
+                ContinuityStore(conn),
+                secret_manager,
+                user_id=request.user_id,
+                request=CalendarAccountConnectInput(
+                    provider_account_id=request.provider_account_id,
+                    email_address=request.email_address,
+                    display_name=request.display_name,
+                    scope=request.scope,
+                    access_token=request.access_token,
+                ),
+            )
+    except CalendarCredentialValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except CalendarCredentialPersistenceError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+    except CalendarAccountAlreadyExistsError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/calendar-accounts")
+def list_calendar_accounts(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_calendar_account_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/calendar-accounts/{calendar_account_id}")
+def get_calendar_account(calendar_account_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_calendar_account_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                calendar_account_id=calendar_account_id,
+            )
+    except CalendarAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/calendar-accounts/{calendar_account_id}/events/{provider_event_id}/ingest")
+def ingest_calendar_event(
+    calendar_account_id: UUID,
+    provider_event_id: str,
+    request: IngestCalendarEventRequest,
+) -> JSONResponse:
+    settings = get_settings()
+    secret_manager = build_calendar_secret_manager(settings.calendar_secret_manager_url)
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = ingest_calendar_event_record(
+                ContinuityStore(conn),
+                secret_manager,
+                user_id=request.user_id,
+                request=CalendarEventIngestInput(
+                    calendar_account_id=calendar_account_id,
+                    task_workspace_id=request.task_workspace_id,
+                    provider_event_id=provider_event_id,
+                ),
+            )
+    except CalendarAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except CalendarEventNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except CalendarEventUnsupportedError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except (
+        CalendarCredentialNotFoundError,
+        CalendarCredentialInvalidError,
+        CalendarCredentialPersistenceError,
+    ) as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+    except TaskArtifactValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except CalendarEventFetchError as exc:
         return JSONResponse(status_code=502, content={"detail": str(exc)})
     except TaskArtifactAlreadyExistsError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
