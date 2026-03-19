@@ -63,10 +63,16 @@ class _OpenAIResponseOutputItem(TypedDict, total=False):
     content: list[_OpenAIResponseContentItem]
 
 
+class _OpenAIInputTokenDetails(TypedDict, total=False):
+    cached_tokens: int | None
+
+
 class _OpenAIResponseUsage(TypedDict, total=False):
     input_tokens: int | None
     output_tokens: int | None
     total_tokens: int | None
+    input_tokens_details: _OpenAIInputTokenDetails | None
+    prompt_tokens_details: _OpenAIInputTokenDetails | None
 
 
 class _OpenAIResponsePayload(TypedDict, total=False):
@@ -183,11 +189,20 @@ def _parse_usage(response_payload: _OpenAIResponsePayload) -> ModelUsagePayload:
     usage = response_payload.get("usage", {})
     if not isinstance(usage, dict):
         return {"input_tokens": None, "output_tokens": None, "total_tokens": None}
-    return {
+    usage_payload: ModelUsagePayload = {
         "input_tokens": usage.get("input_tokens"),
         "output_tokens": usage.get("output_tokens"),
         "total_tokens": usage.get("total_tokens"),
     }
+    for details_key in ("input_tokens_details", "prompt_tokens_details"):
+        details = usage.get(details_key)
+        if not isinstance(details, dict):
+            continue
+        cached_tokens = details.get("cached_tokens")
+        if isinstance(cached_tokens, int):
+            usage_payload["cached_input_tokens"] = cached_tokens
+            break
+    return usage_payload
 
 
 def _parse_openai_response_payload(raw_payload: bytes) -> _OpenAIResponsePayload:

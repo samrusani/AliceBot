@@ -209,6 +209,71 @@ def test_generate_response_persists_user_and_assistant_events_and_trace_metadata
                 )
 
 
+def test_generate_response_persists_optional_cached_token_telemetry_in_event_and_trace(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = seed_response_thread(migrated_database_urls["app"])
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            model_provider="openai_responses",
+            model_name="gpt-5-mini",
+            model_api_key="test-key",
+        ),
+    )
+
+    def fake_invoke_model(*, settings, request):
+        del settings
+        del request
+        return response_generation_module.ModelInvocationResponse(
+            provider="openai_responses",
+            model="gpt-5-mini",
+            response_id="resp_cached",
+            finish_reason="completed",
+            output_text="You prefer oat milk.",
+            usage={
+                "input_tokens": 20,
+                "output_tokens": 6,
+                "total_tokens": 26,
+                "cached_input_tokens": 16,
+            },
+        )
+
+    monkeypatch.setattr(response_generation_module, "invoke_model", fake_invoke_model)
+
+    status_code, payload = invoke_generate_response(
+        {
+            "user_id": str(seeded["user_id"]),
+            "thread_id": str(seeded["thread_id"]),
+            "message": "What do I usually take in coffee?",
+        }
+    )
+
+    assert status_code == 200
+
+    with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        events = store.list_thread_events(seeded["thread_id"])
+        response_trace_events = store.list_trace_events(UUID(payload["trace"]["response_trace_id"]))
+
+    assert events[2]["payload"]["model"]["usage"] == {
+        "input_tokens": 20,
+        "output_tokens": 6,
+        "total_tokens": 26,
+        "cached_input_tokens": 16,
+    }
+    assert response_trace_events[1]["payload"]["usage"] == {
+        "input_tokens": 20,
+        "output_tokens": 6,
+        "total_tokens": 26,
+        "cached_input_tokens": 16,
+    }
+
+
 def test_generate_response_returns_clean_failure_without_persisting_assistant_event(
     migrated_database_urls,
     monkeypatch,
