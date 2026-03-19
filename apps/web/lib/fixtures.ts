@@ -1,6 +1,8 @@
 import type {
   ApprovalItem,
   ApprovalRequestPayload,
+  CalendarAccountListSummary,
+  CalendarAccountRecord,
   EntityEdgeListSummary,
   EntityEdgeRecord,
   EntityListSummary,
@@ -557,6 +559,36 @@ export const gmailAccountFixtures: GmailAccountRecord[] = [
 
 export const gmailAccountListSummaryFixture: GmailAccountListSummary = {
   total_count: gmailAccountFixtures.length,
+  order: ["created_at_asc", "id_asc"],
+};
+
+export const calendarAccountFixtures: CalendarAccountRecord[] = [
+  {
+    id: "c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1",
+    provider: "google_calendar",
+    auth_kind: "oauth_access_token",
+    provider_account_id: "acct-owner-001",
+    email_address: "owner@gmail.example",
+    display_name: "Owner",
+    scope: "https://www.googleapis.com/auth/calendar.readonly",
+    created_at: "2026-03-16T14:00:00Z",
+    updated_at: "2026-03-16T14:00:00Z",
+  },
+  {
+    id: "c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2",
+    provider: "google_calendar",
+    auth_kind: "oauth_access_token",
+    provider_account_id: "acct-ops-002",
+    email_address: "ops@gmail.example",
+    display_name: "Ops",
+    scope: "https://www.googleapis.com/auth/calendar.readonly",
+    created_at: "2026-03-17T08:32:00Z",
+    updated_at: "2026-03-17T08:32:00Z",
+  },
+];
+
+export const calendarAccountListSummaryFixture: CalendarAccountListSummary = {
+  total_count: calendarAccountFixtures.length,
   order: ["created_at_asc", "id_asc"],
 };
 
@@ -1346,6 +1378,10 @@ export function getFixtureEntity(entityId: string) {
 
 export function getFixtureGmailAccount(gmailAccountId: string) {
   return gmailAccountFixtures.find((item) => item.id === gmailAccountId) ?? null;
+}
+
+export function getFixtureCalendarAccount(calendarAccountId: string) {
+  return calendarAccountFixtures.find((item) => item.id === calendarAccountId) ?? null;
 }
 
 export function getFixtureTaskWorkspace(taskWorkspaceId: string) {
