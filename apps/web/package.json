@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --max-warnings=0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:mvp:validation-matrix": "vitest run app/chat/page.test.tsx components/approval-actions.test.tsx components/approval-detail.test.tsx components/task-step-list.test.tsx components/thread-workflow-panel.test.tsx app/artifacts/page.test.tsx components/gmail-account-list.test.tsx components/gmail-message-ingest-form.test.tsx app/calendar/page.test.tsx app/memories/page.test.tsx app/entities/page.test.tsx components/trace-list.test.tsx lib/api.test.ts"
   },
   "dependencies": {
     "next": "15.2.0",

@@ -1,94 +1,94 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Deliver Sprint 7F quantitative MVP readiness evidence: one deterministic command that emits explicit pass/fail/blocked results for acceptance prerequisite, latency p95, cache reuse, and memory quality posture.
+Implement Sprint 7G MVP extensive validation matrix: one deterministic command that runs readiness prerequisite + bounded backend seams + bounded web operator-shell suites and returns explicit `PASS`/`NO_GO`.
 
 ## Completed Work
-- Added additive usage telemetry support for optional cached token evidence:
-  - `cached_input_tokens` is now carried in the model usage contract when provider telemetry is present.
-  - Response usage parsing now extracts cached-token telemetry from provider details (`input_tokens_details.cached_tokens` or `prompt_tokens_details.cached_tokens`) without breaking existing payloads.
-- Added deterministic test coverage for usage parsing and payload shapes:
-  - unit coverage for telemetry absent/present parsing behavior.
-  - integration coverage that response event payload and response trace payload retain optional cached telemetry when present.
-- Added `scripts/run_mvp_readiness_gates.py`:
-  - acceptance suite prerequisite gate (reuses `scripts/run_mvp_acceptance.py`)
-  - latency gate (`p95_seconds < 5.0`) from repeated retrieval-plus-response probes
-  - cache-reuse gate (`cache_reuse_ratio >= 0.70`) with explicit `BLOCKED` when cached telemetry is unavailable
-  - memory-quality gate from shipped summary semantics (`precision >= 0.80` and `adjudicated_sample >= 10`)
-  - explicit per-gate output (`PASS` / `FAIL` / `BLOCKED`) and non-zero exit code on any non-pass gate
-- Added `tests/integration/test_mvp_readiness_gates.py` validating deterministic gate math and exit-code behavior.
-- Added runbook `docs/runbooks/mvp-readiness-gates.md` and aligned `docs/runbooks/memory-quality-gate.md` to runner semantics.
-- Updated sprint reports for Sprint 7F.
+- Added `scripts/run_mvp_validation_matrix.py` with deterministic step order:
+  - `readiness_gates` (`python3 scripts/run_mvp_readiness_gates.py`)
+  - `backend_integration_matrix` (bounded seam-focused integration test list)
+  - `web_validation_matrix` (explicit Vitest matrix for `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, `/traces`)
+- Added explicit failing-step signaling and final result contract:
+  - Per-step `PASS`/`FAIL`, command, duration, exit code, coverage
+  - `Failing steps: ...` line on non-pass runs
+  - exit code `0` only when all steps pass
+- Added deterministic induced-failure support:
+  - `--induce-step {readiness_gates|backend_integration_matrix|web_validation_matrix}`
+  - forced exit code `97` on selected step for no-go contract verification
+- Added `tests/integration/test_mvp_validation_matrix.py`:
+  - sequence/coverage contract assertions
+  - exit-code contract assertions
+  - induced failure propagation and output-shape assertions
+- Added web matrix command to `apps/web/package.json`:
+  - `test:mvp:validation-matrix`
+  - explicit bounded suite list (no autodiscovery)
+- Added `docs/runbooks/mvp-validation-matrix.md`:
+  - prerequisites, exact command, runtime class, deterministic negative check, triage flow
+- Updated `docs/runbooks/mvp-readiness-gates.md` to document readiness as matrix prerequisite step.
 
 ## Incomplete Work
-- None within Sprint 7F scope.
+- None within Sprint 7G scope.
+
+## Exact Matrix Steps Executed
+1. `readiness_gates`
+2. `backend_integration_matrix`
+3. `web_validation_matrix`
+
+## Exact Commands And Environment Assumptions
+Commands used:
+- `python3 -m pytest -q tests/integration/test_mvp_validation_matrix.py tests/integration/test_mvp_readiness_gates.py`
+- `python3 scripts/run_mvp_validation_matrix.py`
+- `python3 scripts/run_mvp_validation_matrix.py --induce-step backend_integration_matrix`
+
+Environment assumptions:
+- Local Postgres reachable on configured admin/app URLs (required by readiness/backend steps).
+- Python dependencies installed in project environment.
+- Web dependencies installed for `apps/web` (`npm --prefix apps/web install`).
+
+## Per-Step Outcome Table (Latest Normal Matrix Run)
+
+| Step | Status | Duration (s) | Exit Status |
+|---|---|---:|---:|
+| `readiness_gates` | `PASS` | `3.404` | `0` |
+| `backend_integration_matrix` | `PASS` | `27.834` | `0` |
+| `web_validation_matrix` | `PASS` | `2.302` | `0` |
+
+Normal command result:
+- `python3 scripts/run_mvp_validation_matrix.py` -> `MVP validation matrix result: PASS` (process exit `0`)
+
+## Induced-Failure Verification Summary
+- Command: `python3 scripts/run_mvp_validation_matrix.py --induce-step backend_integration_matrix`
+- Result:
+  - `readiness_gates`: `PASS`
+  - `backend_integration_matrix`: `FAIL` (`exit_code=97`, `induced_failure: true`)
+  - `web_validation_matrix`: `PASS`
+  - explicit output: `Failing steps: backend_integration_matrix`
+  - final output: `MVP validation matrix result: NO_GO`
+  - process exit: non-zero (`1`)
 
 ## Files Changed
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/response_generation.py`
-- `tests/unit/test_response_generation.py`
-- `tests/integration/test_responses_api.py`
-- `tests/integration/test_mvp_readiness_gates.py`
-- `scripts/run_mvp_readiness_gates.py`
+- `scripts/run_mvp_validation_matrix.py`
+- `tests/integration/test_mvp_validation_matrix.py`
+- `apps/web/package.json`
+- `docs/runbooks/mvp-validation-matrix.md`
 - `docs/runbooks/mvp-readiness-gates.md`
-- `docs/runbooks/memory-quality-gate.md`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
-## Exact Readiness Gates Executed
-- `acceptance_suite`
-- `latency_p95`
-- `cache_reuse`
-- `memory_quality`
-
-## Exact Commands And Environment Assumptions
-- `python3 -m pytest -q tests/unit/test_response_generation.py`
-- `python3 -m pytest -q tests/integration/test_mvp_readiness_gates.py`
-- `python3 -m pytest -q tests/integration/test_responses_api.py`
-- `python3 scripts/run_mvp_acceptance.py`
-- `python3 scripts/run_mvp_readiness_gates.py`
-- `python3 scripts/run_mvp_readiness_gates.py --induce-gate cache_blocked`
-
-Environment assumptions:
-- Local Postgres reachable on configured admin/app URLs.
-- Python dependencies installed in project environment.
-- Runner uses deterministic in-process model stubs for probe calls; no external model API dependency for readiness probe gate math.
-
-## Per-Gate Outcome Table (Latest Normal Run)
-
-| Gate | Status | Measured | Threshold |
-|---|---|---|---|
-| `acceptance_suite` | `PASS` | `exit_code=0` | `exit_code == 0` |
-| `latency_p95` | `PASS` | `p95_seconds=0.039442` (8 probe samples) | `p95_seconds < 5.0` |
-| `cache_reuse` | `PASS` | `cache_reuse_ratio=0.800000` | `cache_reuse_ratio >= 0.70` |
-| `memory_quality` | `PASS` | `precision=0.800000; adjudicated_sample=10; unlabeled_memory_count=0; posture=on_track` | `precision >= 0.80 and adjudicated_sample >= 10` |
-
-Command result: `python3 scripts/run_mvp_readiness_gates.py` exited `0` with `MVP readiness gate result: PASS`.
-
-## Blocked/Insufficient-Evidence Handling Summary
-- Cache gate handling is explicit and non-pass by design when cached telemetry is unavailable.
-- Verified with induced run:
-  - `python3 scripts/run_mvp_readiness_gates.py --induce-gate cache_blocked`
-  - `cache_reuse` reported `BLOCKED` with `cache_reuse_ratio=unavailable`
-  - overall runner result was `NO_GO` with non-zero exit code.
-- Memory gate handling maps insufficient adjudicated sample to explicit `BLOCKED` posture (`insufficient_evidence`).
-
 ## Tests Run
-- `python3 -m pytest -q tests/unit/test_response_generation.py` -> `4 passed`
-- `python3 -m pytest -q tests/integration/test_mvp_readiness_gates.py` -> `6 passed`
-- `python3 -m pytest -q tests/integration/test_responses_api.py` -> `4 passed`
-- `python3 scripts/run_mvp_acceptance.py` -> `PASS` (`3 passed`, exit `0`)
-- `python3 scripts/run_mvp_readiness_gates.py` -> `PASS` (all gates `PASS`, exit `0`)
-- `python3 scripts/run_mvp_readiness_gates.py --induce-gate cache_blocked` -> `NO_GO` (`cache_reuse` `BLOCKED`, exit non-zero)
+- `python3 -m pytest -q tests/integration/test_mvp_validation_matrix.py tests/integration/test_mvp_readiness_gates.py` -> `9 passed`
+- `python3 scripts/run_mvp_validation_matrix.py` -> `PASS` (all 3 matrix steps passed)
+- `python3 scripts/run_mvp_validation_matrix.py --induce-step backend_integration_matrix` -> `NO_GO` (single deterministic induced failure surfaced)
 
 ## Blockers/Issues
-- Localhost Postgres access is sandbox-restricted in this environment, so DB-backed integration tests and runner commands required unsandboxed execution.
-- Runner output includes Alembic migration logs during temporary DB setup; this is expected but verbose.
+- Sandboxed localhost DB access fails with `psycopg.OperationalError: ... Operation not permitted`; DB-backed matrix commands required unsandboxed execution for evidence collection.
+- Runner output includes upstream readiness/Alembic logs, which are expected but verbose.
 
 ## Explicit Deferred Criteria Not Covered By This Sprint
-- No new endpoint, schema, or connector-scope expansion.
-- No UI redesign or web-route changes.
-- No external load-testing framework or broad performance benchmark suite beyond bounded readiness probes.
+- No new endpoints, migrations, or schema changes.
+- No connector capability expansion or write-capability changes.
+- No auth/orchestration/worker-runtime expansion.
+- No new web routes or UI redesign.
 
 ## Recommended Next Step
-Run `python3 scripts/run_mvp_readiness_gates.py` in reviewer/CI environment and use `docs/runbooks/mvp-readiness-gates.md` as the canonical go/no-go interpretation guide.
+Run `python3 scripts/run_mvp_validation_matrix.py` in reviewer CI on merge gate and use `docs/runbooks/mvp-validation-matrix.md` as the canonical triage flow for any non-pass step.
