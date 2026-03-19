@@ -20,6 +20,8 @@ import { StatusBadge } from "./status-badge";
 type CalendarEventIngestFormProps = {
   account: CalendarAccountRecord | null;
   accountSource: ApiSource | "unavailable" | null;
+  selectedProviderEventId: string;
+  selectedEventSource: ApiSource | "unavailable" | null;
   taskWorkspaces: TaskWorkspaceRecord[];
   taskWorkspaceSource: ApiSource | "unavailable";
   apiBaseUrl?: string;
@@ -29,6 +31,8 @@ type CalendarEventIngestFormProps = {
 export function CalendarEventIngestForm({
   account,
   accountSource,
+  selectedProviderEventId,
+  selectedEventSource,
   taskWorkspaces,
   taskWorkspaceSource,
   apiBaseUrl,
@@ -36,13 +40,13 @@ export function CalendarEventIngestForm({
 }: CalendarEventIngestFormProps) {
   const router = useRouter();
 
-  const [providerEventId, setProviderEventId] = useState("");
   const [taskWorkspaceId, setTaskWorkspaceId] = useState(taskWorkspaces[0]?.id ?? "");
   const [result, setResult] = useState<CalendarEventIngestionResponse | null>(null);
   const [resultSource, setResultSource] = useState<ApiSource | "unavailable" | null>(null);
   const [resultUnavailableReason, setResultUnavailableReason] = useState<string | undefined>(undefined);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusTone, setStatusTone] = useState<"info" | "success" | "danger">("info");
+  const hasSelectedEvent = Boolean(selectedProviderEventId.trim());
 
   const liveModeReady = useMemo(
     () =>
@@ -62,8 +66,10 @@ export function CalendarEventIngestForm({
       ? "Select a Calendar account to enable single-event ingestion."
       : taskWorkspaces.length === 0
         ? "No task workspace is available for ingestion target selection."
+        : !hasSelectedEvent
+          ? "Select one discovered event before submitting ingestion."
         : liveModeReady
-          ? "Enter one provider event ID and select one task workspace."
+          ? "Select one task workspace to ingest the discovered event."
           : "Event ingestion is unavailable until live API configuration, live account detail, and live task workspace list are present.",
   );
 
@@ -87,6 +93,12 @@ export function CalendarEventIngestForm({
       return;
     }
 
+    if (!hasSelectedEvent) {
+      setStatusTone("info");
+      setStatusText("Select one discovered event before submitting ingestion.");
+      return;
+    }
+
     if (!liveModeReady) {
       setStatusTone("info");
       setStatusText(
@@ -96,8 +108,8 @@ export function CalendarEventIngestForm({
     }
 
     setStatusTone("info");
-    setStatusText("Enter one provider event ID and select one task workspace.");
-  }, [account, liveModeReady, taskWorkspaces.length]);
+    setStatusText("Select one task workspace to ingest the discovered event.");
+  }, [account, hasSelectedEvent, liveModeReady, taskWorkspaces.length]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -111,6 +123,12 @@ export function CalendarEventIngestForm({
     if (!taskWorkspaceId) {
       setStatusTone("danger");
       setStatusText("Select a task workspace before submitting ingestion.");
+      return;
+    }
+
+    if (!hasSelectedEvent) {
+      setStatusTone("danger");
+      setStatusText("Select one discovered event before submitting ingestion.");
       return;
     }
 
@@ -128,10 +146,15 @@ export function CalendarEventIngestForm({
     setResultUnavailableReason(undefined);
 
     try {
-      const payload = await ingestCalendarEvent(apiBaseUrl, account.id, providerEventId.trim(), {
-        user_id: userId,
-        task_workspace_id: taskWorkspaceId,
-      });
+      const payload = await ingestCalendarEvent(
+        apiBaseUrl,
+        account.id,
+        selectedProviderEventId.trim(),
+        {
+          user_id: userId,
+          task_workspace_id: taskWorkspaceId,
+        },
+      );
 
       setResult(payload);
       setResultSource("live");
@@ -151,7 +174,7 @@ export function CalendarEventIngestForm({
   }
 
   const canSubmit = Boolean(
-    liveModeReady && taskWorkspaceId && providerEventId.trim() && !isSubmitting,
+    liveModeReady && taskWorkspaceId && hasSelectedEvent && !isSubmitting,
   );
 
   if (!account) {
@@ -177,7 +200,7 @@ export function CalendarEventIngestForm({
       <SectionCard
         eyebrow="Ingest event"
         title="Single-event ingestion"
-        description="Ingest one provider event ID into one selected task workspace through the shipped text artifact seam."
+        description="Ingest one selected discovered event into one selected task workspace through the shipped text artifact seam."
       >
         <form className="detail-stack" onSubmit={handleSubmit}>
           <div className="cluster">
@@ -201,19 +224,25 @@ export function CalendarEventIngestForm({
                     : "Workspaces unavailable"
               }
             />
+            <StatusBadge
+              status={selectedEventSource ?? "unavailable"}
+              label={
+                selectedEventSource === "live"
+                  ? "Live selection"
+                  : selectedEventSource === "fixture"
+                    ? "Fixture selection"
+                    : "Selection unavailable"
+              }
+            />
           </div>
 
-          <div className="form-field">
-            <label htmlFor="calendar-provider-event-id">Provider event ID</label>
-            <input
-              id="calendar-provider-event-id"
-              name="calendar-provider-event-id"
-              value={providerEventId}
-              onChange={(event) => setProviderEventId(event.target.value)}
-              placeholder="evt-001"
-              required
-              disabled={!liveModeReady || isSubmitting}
-            />
+          <div className="detail-group detail-group--muted">
+            <h3>Selected discovered event</h3>
+            {hasSelectedEvent ? (
+              <p className="mono">{selectedProviderEventId}</p>
+            ) : (
+              <p className="muted-copy">Select one discovered event from the event list first.</p>
+            )}
           </div>
 
           <div className="form-field">

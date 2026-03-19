@@ -2,13 +2,21 @@ import { CalendarAccountConnectForm } from "../../components/calendar-account-co
 import { CalendarAccountDetail } from "../../components/calendar-account-detail";
 import { CalendarAccountList } from "../../components/calendar-account-list";
 import { CalendarEventIngestForm } from "../../components/calendar-event-ingest-form";
+import { CalendarEventList } from "../../components/calendar-event-list";
 import { PageHeader } from "../../components/page-header";
-import type { ApiSource, CalendarAccountListSummary, CalendarAccountRecord } from "../../lib/api";
+import type {
+  ApiSource,
+  CalendarAccountListSummary,
+  CalendarAccountRecord,
+  CalendarEventListSummary,
+  CalendarEventSummaryRecord,
+} from "../../lib/api";
 import {
   combinePageModes,
   getApiConfig,
   getCalendarAccountDetail,
   hasLiveApiConfig,
+  listCalendarEvents,
   listCalendarAccounts,
   listTaskWorkspaces,
   pageModeLabel,
@@ -17,11 +25,14 @@ import {
   calendarAccountFixtures,
   calendarAccountListSummaryFixture,
   getFixtureCalendarAccount,
+  getFixtureCalendarEventList,
   taskWorkspaceFixtures,
   taskWorkspaceListSummaryFixture,
 } from "../../lib/fixtures";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+const DEFAULT_CALENDAR_EVENT_LIMIT = 20;
+const MAX_CALENDAR_EVENT_LIMIT = 50;
 
 function normalizeParam(value: string | string[] | undefined) {
   if (Array.isArray(value)) {
@@ -44,6 +55,28 @@ function resolveSelectedAccountId(requestedAccountId: string, items: CalendarAcc
   return items[0]?.id ?? "";
 }
 
+function resolveSelectedEventId(requestedEventId: string, items: CalendarEventSummaryRecord[]) {
+  if (!items.length) {
+    return "";
+  }
+
+  const availableIds = new Set(items.map((item) => item.provider_event_id));
+  if (requestedEventId && availableIds.has(requestedEventId)) {
+    return requestedEventId;
+  }
+
+  return "";
+}
+
+function resolveDiscoveryLimit(rawLimit: string) {
+  const parsed = Number.parseInt(rawLimit, 10);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_CALENDAR_EVENT_LIMIT;
+  }
+
+  return Math.max(1, Math.min(MAX_CALENDAR_EVENT_LIMIT, parsed));
+}
+
 export default async function CalendarPage({
   searchParams,
 }: {
@@ -54,6 +87,10 @@ export default async function CalendarPage({
     string | string[] | undefined
   >;
   const requestedAccountId = normalizeParam(params.account);
+  const requestedEventId = normalizeParam(params.event);
+  const requestedEventLimit = resolveDiscoveryLimit(normalizeParam(params.limit));
+  const requestedTimeMin = normalizeParam(params.time_min);
+  const requestedTimeMax = normalizeParam(params.time_max);
   const apiConfig = getApiConfig();
   const liveModeReady = hasLiveApiConfig(apiConfig);
 
@@ -109,6 +146,49 @@ export default async function CalendarPage({
     }
   }
 
+  let discoveredEvents: CalendarEventSummaryRecord[] = [];
+  let discoveredEventSummary: CalendarEventListSummary | null = null;
+  let discoveredEventSource: ApiSource | "unavailable" | null = null;
+  let discoveredEventUnavailableReason: string | undefined;
+
+  if (selectedAccount) {
+    const fixturePayload = getFixtureCalendarEventList(selectedAccount.id, {
+      limit: requestedEventLimit,
+      timeMin: requestedTimeMin,
+      timeMax: requestedTimeMax,
+    });
+    discoveredEvents = fixturePayload.items;
+    discoveredEventSummary = fixturePayload.summary;
+    discoveredEventSource = "fixture";
+  }
+
+  if (selectedAccount && liveModeReady && selectedAccountSource === "live") {
+    try {
+      const payload = await listCalendarEvents(
+        apiConfig.apiBaseUrl,
+        selectedAccount.id,
+        apiConfig.userId,
+        {
+          limit: requestedEventLimit,
+          timeMin: requestedTimeMin || undefined,
+          timeMax: requestedTimeMax || undefined,
+        },
+      );
+      discoveredEvents = payload.items;
+      discoveredEventSummary = payload.summary;
+      discoveredEventSource = "live";
+    } catch (error) {
+      discoveredEventUnavailableReason =
+        error instanceof Error ? error.message : "Calendar event discovery could not be loaded.";
+
+      if (!discoveredEventSummary && discoveredEvents.length === 0) {
+        discoveredEventSource = "unavailable";
+      }
+    }
+  }
+
+  const selectedEventId = resolveSelectedEventId(requestedEventId, discoveredEvents);
+
   let taskWorkspaces = taskWorkspaceFixtures;
   let taskWorkspaceSummary = taskWorkspaceListSummaryFixture;
   let taskWorkspaceSource: ApiSource | "unavailable" = "fixture";
@@ -132,6 +212,7 @@ export default async function CalendarPage({
   const pageMode = combinePageModes(
     accountListSource === "unavailable" ? null : accountListSource,
     selectedAccountSource === "unavailable" ? null : selectedAccountSource,
+    discoveredEventSource === "unavailable" ? null : discoveredEventSource,
     taskWorkspaceSource === "unavailable" ? null : taskWorkspaceSource,
   );
 
@@ -145,6 +226,7 @@ export default async function CalendarPage({
           <div className="header-meta">
             <span className="subtle-chip">{pageModeLabel(pageMode)}</span>
             <span className="subtle-chip">{accounts.length} visible accounts</span>
+            <span className="subtle-chip">{discoveredEventSummary?.total_count ?? 0} discovered events</span>
             <span className="subtle-chip">{taskWorkspaceSummary.total_count} task workspaces</span>
             {selectedAccount ? (
               <span className="subtle-chip">Selected: {selectedAccount.email_address}</span>
@@ -173,15 +255,29 @@ export default async function CalendarPage({
           apiBaseUrl={apiConfig.apiBaseUrl}
           userId={apiConfig.userId}
         />
-        <CalendarEventIngestForm
+        <CalendarEventList
           account={selectedAccount}
-          accountSource={selectedAccountSource}
-          taskWorkspaces={taskWorkspaces}
-          taskWorkspaceSource={taskWorkspaceSource}
-          apiBaseUrl={apiConfig.apiBaseUrl}
-          userId={apiConfig.userId}
+          source={discoveredEventSource}
+          events={discoveredEvents}
+          summary={discoveredEventSummary}
+          selectedEventId={selectedEventId}
+          unavailableReason={discoveredEventUnavailableReason}
+          limit={requestedEventLimit}
+          timeMin={requestedTimeMin}
+          timeMax={requestedTimeMax}
         />
       </div>
+
+      <CalendarEventIngestForm
+        account={selectedAccount}
+        accountSource={selectedAccountSource}
+        selectedProviderEventId={selectedEventId}
+        selectedEventSource={discoveredEventSource}
+        taskWorkspaces={taskWorkspaces}
+        taskWorkspaceSource={taskWorkspaceSource}
+        apiBaseUrl={apiConfig.apiBaseUrl}
+        userId={apiConfig.userId}
+      />
 
       {taskWorkspaceUnavailableReason ? (
         <p className="responsive-note">Live task workspace list read failed: {taskWorkspaceUnavailableReason}</p>

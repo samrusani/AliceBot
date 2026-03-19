@@ -88,6 +88,8 @@ describe("CalendarEventIngestForm", () => {
       <CalendarEventIngestForm
         account={baseAccount}
         accountSource="live"
+        selectedProviderEventId="evt-001"
+        selectedEventSource="live"
         taskWorkspaces={baseWorkspaces}
         taskWorkspaceSource="live"
         apiBaseUrl="https://api.example.com"
@@ -95,9 +97,6 @@ describe("CalendarEventIngestForm", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("Provider event ID"), {
-      target: { value: "evt-001" },
-    });
     fireEvent.click(screen.getByRole("button", { name: "Ingest selected event" }));
 
     await waitFor(() => {
@@ -121,6 +120,8 @@ describe("CalendarEventIngestForm", () => {
       <CalendarEventIngestForm
         account={baseAccount}
         accountSource="fixture"
+        selectedProviderEventId="evt-001"
+        selectedEventSource="fixture"
         taskWorkspaces={baseWorkspaces}
         taskWorkspaceSource="fixture"
       />,
@@ -132,6 +133,25 @@ describe("CalendarEventIngestForm", () => {
         "Event ingestion is unavailable until live API configuration, live account detail, and live task workspace list are present.",
       ),
     ).toBeInTheDocument();
+    expect(ingestCalendarEventMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps ingestion disabled when no discovered event is selected", () => {
+    render(
+      <CalendarEventIngestForm
+        account={baseAccount}
+        accountSource="live"
+        selectedProviderEventId=""
+        selectedEventSource="live"
+        taskWorkspaces={baseWorkspaces}
+        taskWorkspaceSource="live"
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Ingest selected event" })).toBeDisabled();
+    expect(screen.getByText("Select one discovered event before submitting ingestion.")).toBeInTheDocument();
     expect(ingestCalendarEventMock).not.toHaveBeenCalled();
   });
 });

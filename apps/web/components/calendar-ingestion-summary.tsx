@@ -39,7 +39,7 @@ export function CalendarIngestionSummary({
       <SectionCard
         eyebrow="Ingestion summary"
         title="No event ingested yet"
-        description="Run one selected-event ingestion to review artifact linkage and media metadata."
+        description="Run one discovered-event ingestion to review artifact linkage and media metadata."
       >
         <EmptyState
           title="Summary is idle"
