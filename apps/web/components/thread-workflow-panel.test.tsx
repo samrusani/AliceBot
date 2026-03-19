@@ -63,6 +63,8 @@ describe("ThreadWorkflowPanel", () => {
     expect(screen.getByText("Approval detail")).toBeInTheDocument();
     expect(screen.getByText("Selected task")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Executed" })).toBeDisabled();
+    expect(screen.getByText("Post-execution memory write-back")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit memory write-back" })).toBeDisabled();
     expect(screen.getByText("Open linked approval")).toBeInTheDocument();
     expect(screen.getByText("Ordered lifecycle steps")).toBeInTheDocument();
     expect(screen.getByText("1 steps")).toBeInTheDocument();

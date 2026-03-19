@@ -8,6 +8,7 @@ import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
 import { ApprovalActions } from "./approval-actions";
 import { ExecutionSummary } from "./execution-summary";
+import { WorkflowMemoryWritebackForm } from "./workflow-memory-writeback-form";
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("en", {
@@ -174,6 +175,17 @@ export function ApprovalDetail({
             unavailableMessage={executionPreview ? null : executionUnavailableMessage}
             emptyTitle="Approval is ready but not executed"
             emptyDescription="Once an approved request is executed, the resulting record and output snapshot will appear here."
+          />
+        </div>
+
+        <div className="detail-group">
+          <h3>Post-execution memory write-back</h3>
+          <WorkflowMemoryWritebackForm
+            execution={execution}
+            preview={executionPreview}
+            source={executionSource ?? null}
+            apiBaseUrl={apiBaseUrl}
+            userId={userId}
           />
         </div>
       </div>

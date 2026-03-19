@@ -126,6 +126,10 @@ describe("ExecutionSummary", () => {
     expect(screen.getByText("Execution record in review")).toBeInTheDocument();
     expect(screen.getByText("Live execution detail")).toBeInTheDocument();
     expect(screen.getByText("Merchant Proxy")).toBeInTheDocument();
+    expect(screen.getByText("Request event")).toBeInTheDocument();
+    expect(screen.getByText("Result event")).toBeInTheDocument();
+    expect(screen.getByText("event-1")).toBeInTheDocument();
+    expect(screen.getByText("event-2")).toBeInTheDocument();
     expect(screen.getByText(/"mode": "no_side_effect"/i)).toBeInTheDocument();
   });
 
@@ -156,6 +160,7 @@ describe("ExecutionSummary", () => {
 
     expect(screen.getByText("Latest execution result")).toBeInTheDocument();
     expect(screen.getByText("Latest execute response")).toBeInTheDocument();
+    expect(screen.getByText("Result event")).toBeInTheDocument();
     expect(screen.queryByText("Execution review could not be loaded")).not.toBeInTheDocument();
   });
 });
