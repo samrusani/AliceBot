@@ -37,6 +37,11 @@ const navigation = [
     caption: "Review connected accounts and ingest one selected message",
   },
   {
+    href: "/calendar",
+    label: "Calendar",
+    caption: "Review connected accounts and ingest one selected event",
+  },
+  {
     href: "/memories",
     label: "Memories",
     caption: "Review memory detail, revisions, and labels",
@@ -75,8 +80,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             <p className="eyebrow">AliceBot</p>
             <h1 className="brand-title">Operator shell</h1>
             <p className="brand-description">
-              Calm, governed views for requests, approvals, tasks, artifacts, Gmail, memories,
-              entities, and explainability.
+              Calm, governed views for requests, approvals, tasks, artifacts, Gmail, Calendar,
+              memories, entities, and explainability.
             </p>
           </div>
 
