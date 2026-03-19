@@ -1,6 +1,6 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Sprint 6X: a FastAPI backend plus a bounded Next.js operator shell.
+AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Sprint 7G: a FastAPI backend plus a bounded Next.js operator shell with deterministic MVP readiness and validation matrix gating.
 
 ## Current Implemented Slice
 
@@ -22,6 +22,8 @@ AliceBot is a private, permissioned personal AI operating system. The current re
 Useful checks:
 
 - API health: [http://127.0.0.1:8000/healthz](http://127.0.0.1:8000/healthz)
+- MVP readiness gates: `python3 scripts/run_mvp_readiness_gates.py`
+- MVP default go/no-go validation gate: `python3 scripts/run_mvp_validation_matrix.py`
 - Backend tests: `./.venv/bin/python -m pytest tests/unit tests/integration`
 - Web tests: `pnpm --dir apps/web test`
 - Web shell: `pnpm --dir apps/web dev`

@@ -2,6 +2,7 @@
 
 ## Objective
 Run one deterministic command that executes MVP readiness prerequisites plus bounded backend and web verification matrices, then emits a clear `PASS` or `NO_GO`.
+Use this as the default MVP release-candidate go/no-go gate.
 
 ## Prerequisites
 - Python dependencies installed for backend integration tests (`python3 -m venv .venv` and `./.venv/bin/python -m pip install -e '.[dev]'`).
