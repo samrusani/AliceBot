@@ -1,181 +1,96 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Sprint 6U: add a narrow read-only Calendar connector seam that supports user-scoped calendar account connection metadata and explicit single-event ingestion into existing task artifact/chunk seams.
+Implement Sprint 6V: add a bounded `/calendar` workspace in the web shell for Calendar account review, selected account detail, explicit Calendar account connection, and explicit single-event ingestion into one selected task workspace using only shipped backend seams.
 
 ## Completed Work
-- Added Calendar schema + migration support:
-  - `calendar_accounts`
-  - `calendar_account_credentials`
-  - RLS, owner policies, and runtime grants aligned with existing connector patterns.
-- Added Calendar protected credential storage path with file-based external secret manager semantics:
-  - secret ref format: `users/{user_id}/calendar-account-credentials/{calendar_account_id}.json`
-  - credential metadata persisted in `calendar_account_credentials`
-  - credential payload externalized (`credential_blob` remains `NULL`)
-- Added stable Calendar contracts:
-  - account connect input/response
-  - account list/detail responses
-  - selected-event ingestion input/response
-- Added Calendar store seams:
-  - create/list/detail account methods
-  - credential create/read methods
-- Added Calendar service seam (`calendar.py`):
-  - deterministic create/list/detail account behavior
-  - explicit event fetch by provider event id only
-  - event conversion into `text/plain` artifact content
-  - registration + ingestion through existing task artifact/chunk pipeline
-  - deterministic error surfaces for not-found/unsupported/credential/fetch cases
-- Added Calendar secret manager module mirroring existing connector secret-manager rules.
-- Added Calendar API endpoints:
+- Added Calendar API typing + helper methods in `apps/web/lib/api.ts` for:
   - `POST /v0/calendar-accounts`
   - `GET /v0/calendar-accounts`
   - `GET /v0/calendar-accounts/{calendar_account_id}`
   - `POST /v0/calendar-accounts/{calendar_account_id}/events/{provider_event_id}/ingest`
-- Added unit and integration tests for persistence, deterministic listing, ingestion routing, stable response shape, cross-user isolation, and deterministic missing/unsupported failures.
-- Synced docs to implemented state so Calendar is no longer described as future/absent:
-  - `ARCHITECTURE.md`
-  - `README.md`
+  - `GET /v0/task-workspaces` (already present; reused for Calendar ingestion target selection)
+- Added Calendar fixtures/helpers in `apps/web/lib/fixtures.ts`:
+  - `calendarAccountFixtures`
+  - `calendarAccountListSummaryFixture`
+  - `getFixtureCalendarAccount(...)`
+- Added `/calendar` route and loading state:
+  - `apps/web/app/calendar/page.tsx`
+  - `apps/web/app/calendar/loading.tsx`
+- Added scoped Calendar components:
+  - `calendar-account-list`
+  - `calendar-account-detail`
+  - `calendar-account-connect-form`
+  - `calendar-event-ingest-form`
+  - `calendar-ingestion-summary`
+- Added shell integration for discoverability:
+  - Calendar navigation item in `apps/web/components/app-shell.tsx`
+  - Calendar card and updated counts in `apps/web/app/page.tsx`
+  - Calendar mention in `apps/web/app/layout.tsx` metadata
+- Added minimal style integration for Calendar layout wrappers in `apps/web/app/globals.css`:
+  - `calendar-layout`
+  - `calendar-action-grid`
+  - responsive collapse at existing breakpoints
+- Added test coverage:
+  - Calendar API endpoint helper assertions in `apps/web/lib/api.test.ts`
+  - Calendar account list rendering behavior test
+  - Calendar event ingestion form behavior test
 
-## Exact Contract Changes Introduced
-- New constants in `apps/api/src/alicebot_api/contracts.py`:
-  - `CALENDAR_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]`
-  - `CALENDAR_PROVIDER = "google_calendar"`
-  - `CALENDAR_AUTH_KIND_OAUTH_ACCESS_TOKEN = "oauth_access_token"`
-  - `CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"`
-  - `CALENDAR_PROTECTED_CREDENTIAL_KIND = "calendar_oauth_access_token_v1"`
-- New dataclasses:
-  - `CalendarAccountConnectInput`
-  - `CalendarEventIngestInput`
-- New typed responses/records:
-  - `CalendarAccountRecord`
-  - `CalendarAccountConnectResponse`
-  - `CalendarAccountListSummary`
-  - `CalendarAccountListResponse`
-  - `CalendarAccountDetailResponse`
-  - `CalendarEventIngestionRecord`
-  - `CalendarEventIngestionResponse`
-
-## Calendar Event-to-Artifact Conversion Rule
-- Fetch one explicit provider event id from Google Calendar events API (`/calendar/v3/calendars/primary/events/{event_id}`).
-- Require event shape to include:
-  - non-empty `id`
-  - `start.dateTime` or `start.date`
-  - `end.dateTime` or `end.date`
-- If shape is missing required fields, fail deterministically with:
-  - `calendar event {provider_event_id} is not supported for ingestion`
-- Convert event payload into normalized UTF-8 `text/plain` document containing deterministic labeled lines:
-  - provider metadata
-  - requested/source event ids
-  - status/summary/location/start/end/organizer/html link
-  - description block
-- Persist to workspace path:
-  - `calendar/{sanitized_provider_account_id}/{sanitized_provider_event_id}.txt`
-- Register and ingest through existing `task_artifacts` and `task_artifact_chunks` seams.
+## Calendar Surface Backing Mode
+- `calendar-account-list`: live API when configured; fixture-backed fallback when live config is absent or live list read fails; explicit unavailable state when source is unavailable and no accounts are present.
+- `calendar-account-detail`: live API detail when configured and list is live; fixture fallback for selected account detail failure; explicit unavailable state when no fallback exists.
+- `calendar-account-connect-form`: live-only write action (`POST /v0/calendar-accounts`); explicit unavailable/disabled behavior without live API config.
+- `calendar-event-ingest-form`: live-only write action (`POST /v0/calendar-accounts/{id}/events/{provider_event_id}/ingest`) gated on live account detail + live task workspace list + live API config.
+- `calendar-ingestion-summary`: live result display after successful ingestion; explicit idle and unavailable states otherwise.
+- `/calendar` page mode chip: `Live API`, `Fixture-backed`, or `Mixed fallback` via `combinePageModes(...)`.
 
 ## Incomplete Work
-- None for the scoped Sprint 6U deliverables.
+- None for Sprint 6V in-scope deliverables.
 
 ## Files Changed
-- `apps/api/alembic/versions/20260319_0030_calendar_accounts_and_credentials.py`
-- `ARCHITECTURE.md`
-- `README.md`
-- `apps/api/src/alicebot_api/calendar.py`
-- `apps/api/src/alicebot_api/calendar_secret_manager.py`
-- `apps/api/src/alicebot_api/config.py`
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/store.py`
-- `tests/integration/test_calendar_accounts_api.py`
-- `tests/integration/test_migrations.py`
-- `tests/unit/test_20260319_0030_calendar_accounts_and_credentials.py`
-- `tests/unit/test_calendar.py`
-- `tests/unit/test_calendar_main.py`
-- `tests/unit/test_calendar_secret_manager.py`
-- `tests/unit/test_config.py`
+- `apps/web/app/layout.tsx`
+- `apps/web/app/page.tsx`
+- `apps/web/app/calendar/page.tsx`
+- `apps/web/app/calendar/loading.tsx`
+- `apps/web/app/globals.css`
+- `apps/web/components/app-shell.tsx`
+- `apps/web/components/calendar-account-list.tsx`
+- `apps/web/components/calendar-account-detail.tsx`
+- `apps/web/components/calendar-account-connect-form.tsx`
+- `apps/web/components/calendar-event-ingest-form.tsx`
+- `apps/web/components/calendar-ingestion-summary.tsx`
+- `apps/web/lib/api.ts`
+- `apps/web/lib/fixtures.ts`
+- `apps/web/lib/api.test.ts`
+- `apps/web/components/calendar-account-list.test.tsx`
+- `apps/web/components/calendar-event-ingest-form.test.tsx`
 - `BUILD_REPORT.md`
 
 ## Tests Run
 ### Exact Commands
-- `./.venv/bin/python -m pytest tests/unit/test_calendar.py tests/unit/test_calendar_main.py tests/unit/test_calendar_secret_manager.py tests/unit/test_20260319_0030_calendar_accounts_and_credentials.py tests/unit/test_config.py -q`
-- `./.venv/bin/python -m pytest tests/unit`
-- `./.venv/bin/python -m pytest tests/integration`
+- `npm run lint` (run in `apps/web`)
+- `npm test` (run in `apps/web`)
+- `npm run build` (run in `apps/web`)
 
 ### Results
-- Targeted unit tests: PASS (`28 passed`)
-- Full unit suite: PASS (`478 passed`)
-- Full integration suite: PASS (`150 passed`)
+- `npm run lint`: PASS
+- `npm test`: PASS (`29` files, `89` tests)
+- `npm run build`: PASS (Next.js production build succeeded; `/calendar` route generated)
 
-## Example Calendar Account Response
-```json
-{
-  "account": {
-    "id": "3e4c7d67-cf56-4cd5-a8c0-8d4d18e7f1f2",
-    "provider": "google_calendar",
-    "auth_kind": "oauth_access_token",
-    "provider_account_id": "acct-owner-001",
-    "email_address": "owner@gmail.example",
-    "display_name": "Owner",
-    "scope": "https://www.googleapis.com/auth/calendar.readonly",
-    "created_at": "2026-03-19T10:00:00+00:00",
-    "updated_at": "2026-03-19T10:00:00+00:00"
-  }
-}
-```
-
-## Example Selected-Event Ingestion Response
-```json
-{
-  "account": {
-    "id": "3e4c7d67-cf56-4cd5-a8c0-8d4d18e7f1f2",
-    "provider": "google_calendar",
-    "auth_kind": "oauth_access_token",
-    "provider_account_id": "acct-owner-001",
-    "email_address": "owner@gmail.example",
-    "display_name": "Owner",
-    "scope": "https://www.googleapis.com/auth/calendar.readonly",
-    "created_at": "2026-03-19T10:00:00+00:00",
-    "updated_at": "2026-03-19T10:00:00+00:00"
-  },
-  "event": {
-    "provider_event_id": "evt-001",
-    "artifact_relative_path": "calendar/acct-owner-001/evt-001.txt",
-    "media_type": "text/plain"
-  },
-  "artifact": {
-    "id": "6fd2c8f1-a3a1-4272-8e46-7900f8f6d2c9",
-    "task_id": "fb3f9ab8-55ce-4237-b43e-f393dcb5a6d2",
-    "task_workspace_id": "c6b542ff-7d67-42ed-a7ea-cf0a6f3b0366",
-    "status": "registered",
-    "ingestion_status": "ingested",
-    "relative_path": "calendar/acct-owner-001/evt-001.txt",
-    "media_type_hint": "text/plain",
-    "created_at": "2026-03-19T10:00:00+00:00",
-    "updated_at": "2026-03-19T10:00:01+00:00"
-  },
-  "summary": {
-    "total_count": 1,
-    "total_characters": 312,
-    "media_type": "text/plain",
-    "chunking_rule": "normalized_utf8_text_fixed_window_1000_chars_v1",
-    "order": ["sequence_no_asc", "id_asc"]
-  }
-}
-```
+## Desktop and Mobile Visual Verification Notes
+- Desktop verification (code-level): `/calendar` uses two-column `calendar-layout` (account list + selected detail) and two-column `calendar-action-grid` (connect + ingest stack), matching existing bounded workspace patterns.
+- Mobile/tablet verification (code-level): `calendar-layout` and `calendar-action-grid` collapse to one column under `@media (max-width: 1120px)`; form two-up fields collapse to single column under `@media (max-width: 740px)`.
 
 ## Blockers / Issues
-- No functional implementation blockers.
-- Note: integration tests require reachable local Postgres; once available, full integration suite passes.
+- No implementation blockers.
+- No backend changes were required.
 
 ## Intentionally Deferred Scope
-- Calendar UI.
-- Calendar search/list-events APIs.
-- Recurring event expansion.
-- Background sync/backfill.
-- Write-capable calendar actions.
-- Gmail scope expansion.
-- Compile contract changes.
-- Runner orchestration changes.
-- Auth redesign.
+- Calendar event list/search UI.
+- Recurrence expansion, sync, or backfill controls.
+- Calendar write actions.
+- Artifact editing from Calendar workspace.
+- Gmail/auth/runner/backend scope expansion.
 
 ## Recommended Next Step
-Proceed to reviewer verification focused on sprint-scope boundaries and deterministic isolation behavior, then open the sprint PR for Control Tower approval.
+Run sprint review against `/calendar` UI behavior and scope boundaries, then open/merge the sprint PR per Control Tower policy if reviewer outcome is `PASS`.
