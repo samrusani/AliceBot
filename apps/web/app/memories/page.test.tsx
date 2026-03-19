@@ -93,6 +93,7 @@ describe("MemoriesPage", () => {
     expect(screen.getByText("Fixture-backed")).toBeInTheDocument();
     expect(screen.getByText("Summary Fixture")).toBeInTheDocument();
     expect(screen.getByText("Queue Fixture")).toBeInTheDocument();
+    expect(screen.getAllByText("Insufficient evidence").length).toBeGreaterThan(0);
     expect(screen.getByText("Fixture list")).toBeInTheDocument();
     expect(screen.getByText("Fixture detail")).toBeInTheDocument();
     expect(
@@ -147,15 +148,15 @@ describe("MemoriesPage", () => {
     });
     getMemoryEvaluationSummaryMock.mockResolvedValue({
       summary: {
-        total_memory_count: 1,
-        active_memory_count: 1,
+        total_memory_count: 10,
+        active_memory_count: 10,
         deleted_memory_count: 0,
-        labeled_memory_count: 1,
+        labeled_memory_count: 10,
         unlabeled_memory_count: 0,
-        total_label_row_count: 1,
+        total_label_row_count: 10,
         label_row_counts_by_value: {
-          correct: 1,
-          incorrect: 0,
+          correct: 8,
+          incorrect: 2,
           outdated: 0,
           insufficient_evidence: 0,
         },
@@ -232,6 +233,7 @@ describe("MemoriesPage", () => {
     expect(screen.getByText("Live API")).toBeInTheDocument();
     expect(screen.getByText("Summary Live")).toBeInTheDocument();
     expect(screen.getByText("Queue Live")).toBeInTheDocument();
+    expect(screen.getByText("On track")).toBeInTheDocument();
     expect(screen.getByText("Live list")).toBeInTheDocument();
     expect(screen.getByText("Live detail")).toBeInTheDocument();
     expect(screen.getByText("Live revisions")).toBeInTheDocument();
@@ -293,6 +295,7 @@ describe("MemoriesPage", () => {
 
     expect(screen.getByText("Summary: summary down")).toBeInTheDocument();
     expect(screen.getByText("Queue: queue down")).toBeInTheDocument();
+    expect(screen.getAllByText("Insufficient evidence").length).toBeGreaterThan(0);
     expect(screen.getByText("Detail read")).toBeInTheDocument();
     expect(screen.getByText("detail down")).toBeInTheDocument();
     expect(screen.getByText("Revisions unavailable")).toBeInTheDocument();

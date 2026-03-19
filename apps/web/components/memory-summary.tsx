@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import type { ApiSource, MemoryEvaluationSummary, MemoryReviewQueueSummary } from "../lib/api";
+import { MemoryQualityGate } from "./memory-quality-gate";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
 
@@ -76,6 +77,11 @@ export function MemorySummary({
             <dd>{summary?.unlabeled_memory_count ?? 0}</dd>
           </div>
         </dl>
+
+        <MemoryQualityGate
+          summary={summary}
+          summarySource={summarySource}
+        />
 
         <div className="cluster">
           <Link

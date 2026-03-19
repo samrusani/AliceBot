@@ -1,77 +1,71 @@
 # BUILD_REPORT.md
 
 ## sprint objective
-Prove the canonical magnesium reorder ship-gate flow end-to-end in shipped operator surfaces and seams:
-request -> approval -> execution -> explicit memory write-back.
+Implement Sprint 7B memory-quality gate readiness in `/memories`: deterministic, test-backed gate math and bounded UI showing precision, adjudicated sample, queue pressure, and gate status from existing evaluation summary data.
 
 ## completed work
-- Added explicit web memory-admit helper in [`apps/web/lib/api.ts`](apps/web/lib/api.ts):
-  - `MemoryAdmitPayload`
-  - `MemoryAdmissionResponse`
-  - `PersistedMemoryRecord`
-  - `PersistedMemoryRevisionRecord`
-  - `admitMemory(...)` for `POST /v0/memories/admit`
-- Added bounded post-execution write-back UI component [`apps/web/components/workflow-memory-writeback-form.tsx`](apps/web/components/workflow-memory-writeback-form.tsx):
-  - explicit operator submit button (no auto-write)
-  - bounded inputs (`memory_key`, JSON `value`, `delete_requested`)
-  - execution-evidence source IDs derived from execution-linked event IDs
-  - stable success/failure/validation/read-only messaging
-- Integrated write-back surface into approval review in [`apps/web/components/approval-detail.tsx`](apps/web/components/approval-detail.tsx), which covers:
-  - `/approvals` detail surface
-  - embedded `/chat` workflow panel approval detail
-- Extended execution evidence rendering in [`apps/web/components/execution-summary.tsx`](apps/web/components/execution-summary.tsx):
-  - request event ID and result event ID are now visible in execution review
-- Added styles for the new bounded write-back form in [`apps/web/app/globals.css`](apps/web/app/globals.css)
-- Added/updated web tests:
-  - [`apps/web/lib/api.test.ts`](apps/web/lib/api.test.ts) (memory admit helper + error handling)
-  - [`apps/web/components/approval-detail.test.tsx`](apps/web/components/approval-detail.test.tsx) (success, validation failure, fixture/read-only)
-  - [`apps/web/components/thread-workflow-panel.test.tsx`](apps/web/components/thread-workflow-panel.test.tsx) (embedded write-back affordance visibility)
-  - [`apps/web/components/execution-summary.test.tsx`](apps/web/components/execution-summary.test.tsx) (event evidence display)
-- Added canonical MVP ship-gate integration test:
-  - [`tests/integration/test_mvp_magnesium_reorder_flow.py`](tests/integration/test_mvp_magnesium_reorder_flow.py)
-  - Verifies approval creation, resolution, execute event evidence, memory admit/update, and persisted revision outcomes
-- Added operator runbook:
-  - [`docs/runbooks/mvp-ship-gate-magnesium-reorder.md`](docs/runbooks/mvp-ship-gate-magnesium-reorder.md)
+- Added shared deterministic gate utility:
+  - [`apps/web/lib/memory-quality.ts`](apps/web/lib/memory-quality.ts)
+  - [`apps/web/lib/memory-quality.test.ts`](apps/web/lib/memory-quality.test.ts)
+- Added bounded memory-quality gate component:
+  - [`apps/web/components/memory-quality-gate.tsx`](apps/web/components/memory-quality-gate.tsx)
+  - [`apps/web/components/memory-quality-gate.test.tsx`](apps/web/components/memory-quality-gate.test.tsx)
+- Integrated gate into memory summary without altering queue/active posture controls:
+  - [`apps/web/components/memory-summary.tsx`](apps/web/components/memory-summary.tsx)
+  - [`apps/web/components/memory-summary.test.tsx`](apps/web/components/memory-summary.test.tsx)
+- Extended `/memories` route tests for gate state rendering in fixture/live fallback scenarios:
+  - [`apps/web/app/memories/page.test.tsx`](apps/web/app/memories/page.test.tsx)
+- Added fixture variants for deterministic on-track and needs-review test/readiness states:
+  - [`apps/web/lib/fixtures.ts`](apps/web/lib/fixtures.ts)
+- Added gate runbook:
+  - [`docs/runbooks/memory-quality-gate.md`](docs/runbooks/memory-quality-gate.md)
+- Added gate styles in shared web stylesheet:
+  - [`apps/web/app/globals.css`](apps/web/app/globals.css)
 
 ## incomplete work
 - None within sprint scope.
 
-## exact approvals/workflow files/components updated
-- `approval-detail`:
-  - [`apps/web/components/approval-detail.tsx`](apps/web/components/approval-detail.tsx)
-  - [`apps/web/components/approval-detail.test.tsx`](apps/web/components/approval-detail.test.tsx)
-- `execution-summary`:
-  - [`apps/web/components/execution-summary.tsx`](apps/web/components/execution-summary.tsx)
-  - [`apps/web/components/execution-summary.test.tsx`](apps/web/components/execution-summary.test.tsx)
-- `thread-workflow-panel` tests (embedded coverage):
-  - [`apps/web/components/thread-workflow-panel.test.tsx`](apps/web/components/thread-workflow-panel.test.tsx)
-- New write-back component:
-  - [`apps/web/components/workflow-memory-writeback-form.tsx`](apps/web/components/workflow-memory-writeback-form.tsx)
-- Shared API client:
-  - [`apps/web/lib/api.ts`](apps/web/lib/api.ts)
-  - [`apps/web/lib/api.test.ts`](apps/web/lib/api.test.ts)
+## exact /memories files/components updated
+- `memory-summary`:
+  - [`apps/web/components/memory-summary.tsx`](apps/web/components/memory-summary.tsx)
+  - [`apps/web/components/memory-summary.test.tsx`](apps/web/components/memory-summary.test.tsx)
+- `memory-quality-gate`:
+  - [`apps/web/components/memory-quality-gate.tsx`](apps/web/components/memory-quality-gate.tsx)
+  - [`apps/web/components/memory-quality-gate.test.tsx`](apps/web/components/memory-quality-gate.test.tsx)
+- `/memories` route tests:
+  - [`apps/web/app/memories/page.test.tsx`](apps/web/app/memories/page.test.tsx)
 
-## write-back surface mode
-- Live: enabled when approval workflow has live execution evidence and live API config.
-- Fixture: visible but read-only; submission disabled.
-- Mixed: handled naturally through approval/execution source inputs; submit only when evidence is live/preview-backed.
+## explicit gate formula and thresholds used
+- `adjudicated_sample = correct + incorrect`
+- `precision = correct / (correct + incorrect)` (undefined denominator returns explicit unavailable precision display)
+- precision target: `0.80`
+- minimum adjudicated sample threshold: `10`
+- gate states:
+  - `on_track`: `precision >= 0.80` and `adjudicated_sample >= 10`
+  - `needs_review`: `precision < 0.80` and `adjudicated_sample >= 10`
+  - `insufficient_evidence`: `adjudicated_sample < 10`
+  - `unavailable`: summary data not available for computation
 
-## exact shipped endpoints consumed
-- `POST /v0/approvals/{approval_id}/execute`
-- `POST /v0/memories/admit`
+## gate surface mode
+- Live: when summary source is live.
+- Fixture: when summary source is fixture (default and fallback).
+- Unavailable: supported explicitly by the gate component when summary source is unavailable/null.
+- Mixed page mode: page-level mode can be mixed if other `/memories` sections differ in source; gate remains derived only from summary source.
+
+## exact shipped endpoint consumed
+- `GET /v0/memories/evaluation-summary`
 
 ## files changed
 - [`apps/web/app/globals.css`](apps/web/app/globals.css)
-- [`apps/web/components/approval-detail.tsx`](apps/web/components/approval-detail.tsx)
-- [`apps/web/components/approval-detail.test.tsx`](apps/web/components/approval-detail.test.tsx)
-- [`apps/web/components/execution-summary.tsx`](apps/web/components/execution-summary.tsx)
-- [`apps/web/components/execution-summary.test.tsx`](apps/web/components/execution-summary.test.tsx)
-- [`apps/web/components/thread-workflow-panel.test.tsx`](apps/web/components/thread-workflow-panel.test.tsx)
-- [`apps/web/components/workflow-memory-writeback-form.tsx`](apps/web/components/workflow-memory-writeback-form.tsx)
-- [`apps/web/lib/api.ts`](apps/web/lib/api.ts)
-- [`apps/web/lib/api.test.ts`](apps/web/lib/api.test.ts)
-- [`tests/integration/test_mvp_magnesium_reorder_flow.py`](tests/integration/test_mvp_magnesium_reorder_flow.py)
-- [`docs/runbooks/mvp-ship-gate-magnesium-reorder.md`](docs/runbooks/mvp-ship-gate-magnesium-reorder.md)
+- [`apps/web/app/memories/page.test.tsx`](apps/web/app/memories/page.test.tsx)
+- [`apps/web/components/memory-quality-gate.test.tsx`](apps/web/components/memory-quality-gate.test.tsx)
+- [`apps/web/components/memory-quality-gate.tsx`](apps/web/components/memory-quality-gate.tsx)
+- [`apps/web/components/memory-summary.test.tsx`](apps/web/components/memory-summary.test.tsx)
+- [`apps/web/components/memory-summary.tsx`](apps/web/components/memory-summary.tsx)
+- [`apps/web/lib/fixtures.ts`](apps/web/lib/fixtures.ts)
+- [`apps/web/lib/memory-quality.test.ts`](apps/web/lib/memory-quality.test.ts)
+- [`apps/web/lib/memory-quality.ts`](apps/web/lib/memory-quality.ts)
+- [`docs/runbooks/memory-quality-gate.md`](docs/runbooks/memory-quality-gate.md)
 - [`BUILD_REPORT.md`](BUILD_REPORT.md)
 
 ## tests run
@@ -79,26 +73,23 @@ Commands executed:
 - `cd apps/web && npm run lint`
 - `cd apps/web && npm test`
 - `cd apps/web && npm run build`
-- `cd /Users/redacted/Desktop/Codex/AliceBot && ./.venv/bin/python -m pytest tests/integration/test_proxy_execution_api.py tests/integration/test_memory_admission.py tests/integration/test_mvp_magnesium_reorder_flow.py`
 
 Results:
 - `npm run lint`: PASS
-- `npm test`: PASS (32 files, 100 tests)
+- `npm test`: PASS (35 files, 111 tests)
 - `npm run build`: PASS
-- scoped backend integration pytest: PASS (19 passed)
 
 ## concise desktop/mobile verification notes
-- Desktop/mobile manual browser walkthrough was not run in this build session.
-- Automated verification passed for web lint/test/build and scoped backend integration flow.
+- No manual desktop/mobile browser walkthrough was performed in this build session.
+- Responsive CSS behavior for the new gate top-line was covered in stylesheet updates; verification here is automated lint/test/build only.
 
 ## blockers/issues
-- No implementation blockers.
-- Initial sandbox run of integration pytest could not access localhost Postgres; rerun with elevated permissions passed.
+- No blockers.
 
 ## intentionally deferred after this sprint
-- No backend endpoint additions.
-- No automation/daemon for memory auto-admission.
-- No connector, runner, auth, or broader route redesign scope.
+- No backend endpoint additions or API contract expansion.
+- No auth, runner/orchestration, connector, or retrieval/memory-algorithm scope changes.
+- No redesign outside bounded `/memories` summary gate surface.
 
 ## recommended next step
-Perform a focused manual QA pass on `/approvals` and `/chat` (desktop + mobile viewport) to confirm final interaction polish of the new post-execution memory write-back form under live and fixture modes.
+Run a manual `/memories` QA pass (desktop + mobile viewport) against live API data to confirm visual/readability behavior of `on_track`, `needs_review`, and fallback fixture states with real label distributions.
