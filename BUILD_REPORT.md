@@ -1,96 +1,61 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Sprint 6V: add a bounded `/calendar` workspace in the web shell for Calendar account review, selected account detail, explicit Calendar account connection, and explicit single-event ingestion into one selected task workspace using only shipped backend seams.
+Synchronize canonical truth artifacts with the accepted repo state through Sprint 6V so roadmap, handoff, README, and architecture docs reflect the shipped Gmail and Calendar operator-shell baseline without changing runtime behavior or product scope.
 
 ## Completed Work
-- Added Calendar API typing + helper methods in `apps/web/lib/api.ts` for:
-  - `POST /v0/calendar-accounts`
-  - `GET /v0/calendar-accounts`
-  - `GET /v0/calendar-accounts/{calendar_account_id}`
-  - `POST /v0/calendar-accounts/{calendar_account_id}/events/{provider_event_id}/ingest`
-  - `GET /v0/task-workspaces` (already present; reused for Calendar ingestion target selection)
-- Added Calendar fixtures/helpers in `apps/web/lib/fixtures.ts`:
-  - `calendarAccountFixtures`
-  - `calendarAccountListSummaryFixture`
-  - `getFixtureCalendarAccount(...)`
-- Added `/calendar` route and loading state:
-  - `apps/web/app/calendar/page.tsx`
-  - `apps/web/app/calendar/loading.tsx`
-- Added scoped Calendar components:
-  - `calendar-account-list`
-  - `calendar-account-detail`
-  - `calendar-account-connect-form`
-  - `calendar-event-ingest-form`
-  - `calendar-ingestion-summary`
-- Added shell integration for discoverability:
-  - Calendar navigation item in `apps/web/components/app-shell.tsx`
-  - Calendar card and updated counts in `apps/web/app/page.tsx`
-  - Calendar mention in `apps/web/app/layout.tsx` metadata
-- Added minimal style integration for Calendar layout wrappers in `apps/web/app/globals.css`:
-  - `calendar-layout`
-  - `calendar-action-grid`
-  - responsive collapse at existing breakpoints
-- Added test coverage:
-  - Calendar API endpoint helper assertions in `apps/web/lib/api.test.ts`
-  - Calendar account list rendering behavior test
-  - Calendar event ingestion form behavior test
+- Updated `ROADMAP.md` to move the stated accepted baseline from Sprint 6R to Sprint 6V, include `/gmail` and `/calendar` in the shipped shell baseline, and frame next planning from the actual current operator surface.
+- Updated `.ai/handoff/CURRENT_STATE.md` to move the stated working baseline from Sprint 6R to Sprint 6V, add shipped Gmail and Calendar web workspaces, and tighten current boundary and planning language around narrow connector seams.
+- Updated `README.md` to move the stated accepted slice from Sprint 6U to Sprint 6V and correct the route inventory to include `/gmail` and `/calendar`.
+- Updated `ARCHITECTURE.md` to move the accepted slice from Sprint 6U to Sprint 6V, include `/gmail` and `/calendar` in the operator-shell route inventory, and keep Gmail/Calendar connector boundaries explicit and narrow.
+- Confirmed no archival move was required; `docs/archive/**` was not changed.
+- Confirmed the sprint stayed documentation-only: no runtime code, schema, API, or UI behavior changed.
 
-## Calendar Surface Backing Mode
-- `calendar-account-list`: live API when configured; fixture-backed fallback when live config is absent or live list read fails; explicit unavailable state when source is unavailable and no accounts are present.
-- `calendar-account-detail`: live API detail when configured and list is live; fixture fallback for selected account detail failure; explicit unavailable state when no fallback exists.
-- `calendar-account-connect-form`: live-only write action (`POST /v0/calendar-accounts`); explicit unavailable/disabled behavior without live API config.
-- `calendar-event-ingest-form`: live-only write action (`POST /v0/calendar-accounts/{id}/events/{provider_event_id}/ingest`) gated on live account detail + live task workspace list + live API config.
-- `calendar-ingestion-summary`: live result display after successful ingestion; explicit idle and unavailable states otherwise.
-- `/calendar` page mode chip: `Live API`, `Fixture-backed`, or `Mixed fallback` via `combinePageModes(...)`.
+## Stale Claims Corrected
+- `ROADMAP.md` no longer says the accepted repo state is current only through Sprint 6R.
+- `.ai/handoff/CURRENT_STATE.md` no longer says the working repo state is current only through Sprint 6R.
+- `README.md` no longer says the accepted slice is only through Sprint 6U.
+- `README.md` and `ARCHITECTURE.md` no longer omit `/gmail` and `/calendar` from the shipped shell route inventory.
+- Roadmap and handoff planning language no longer imply Calendar is still pre-shell or that next planning should start from the older Sprint 6R baseline.
+
+## Accepted Repo Evidence Used
+- `apps/web/components/app-shell.tsx`
+- `apps/web/app/page.tsx`
+- `apps/web/app/gmail/page.tsx`
+- `apps/web/app/calendar/page.tsx`
+- `apps/web/lib/api.ts`
+- `apps/web/lib/api.test.ts`
+- `tests/integration/test_gmail_accounts_api.py`
+- `tests/integration/test_calendar_accounts_api.py`
+- `tests/unit/test_gmail.py`
+- `tests/unit/test_calendar.py`
+- `tests/unit/test_20260316_0026_gmail_accounts.py`
+- `tests/unit/test_20260319_0030_calendar_accounts_and_credentials.py`
 
 ## Incomplete Work
-- None for Sprint 6V in-scope deliverables.
+- None within Sprint 6W scope.
 
 ## Files Changed
-- `apps/web/app/layout.tsx`
-- `apps/web/app/page.tsx`
-- `apps/web/app/calendar/page.tsx`
-- `apps/web/app/calendar/loading.tsx`
-- `apps/web/app/globals.css`
-- `apps/web/components/app-shell.tsx`
-- `apps/web/components/calendar-account-list.tsx`
-- `apps/web/components/calendar-account-detail.tsx`
-- `apps/web/components/calendar-account-connect-form.tsx`
-- `apps/web/components/calendar-event-ingest-form.tsx`
-- `apps/web/components/calendar-ingestion-summary.tsx`
-- `apps/web/lib/api.ts`
-- `apps/web/lib/fixtures.ts`
-- `apps/web/lib/api.test.ts`
-- `apps/web/components/calendar-account-list.test.tsx`
-- `apps/web/components/calendar-event-ingest-form.test.tsx`
+- `ROADMAP.md`
+- `.ai/handoff/CURRENT_STATE.md`
+- `README.md`
+- `ARCHITECTURE.md`
 - `BUILD_REPORT.md`
 
 ## Tests Run
-### Exact Commands
-- `npm run lint` (run in `apps/web`)
-- `npm test` (run in `apps/web`)
-- `npm run build` (run in `apps/web`)
-
-### Results
-- `npm run lint`: PASS
-- `npm test`: PASS (`29` files, `89` tests)
-- `npm run build`: PASS (Next.js production build succeeded; `/calendar` route generated)
-
-## Desktop and Mobile Visual Verification Notes
-- Desktop verification (code-level): `/calendar` uses two-column `calendar-layout` (account list + selected detail) and two-column `calendar-action-grid` (connect + ingest stack), matching existing bounded workspace patterns.
-- Mobile/tablet verification (code-level): `calendar-layout` and `calendar-action-grid` collapse to one column under `@media (max-width: 1120px)`; form two-up fields collapse to single column under `@media (max-width: 740px)`.
+- `git diff --check -- ROADMAP.md .ai/handoff/CURRENT_STATE.md README.md ARCHITECTURE.md BUILD_REPORT.md`: PASS
+- `rg -n "Sprint 6R|Sprint 6U|/gmail|/calendar|current through Sprint 6V|accepted slice through Sprint 6V" ROADMAP.md .ai/handoff/CURRENT_STATE.md README.md ARCHITECTURE.md BUILD_REPORT.md`: PASS
+- No runtime or UI test suites were run because this sprint is documentation-only.
 
 ## Blockers / Issues
-- No implementation blockers.
-- No backend changes were required.
+- No blockers.
+- Existing unrelated modifications remain in `.ai/active/SPRINT_PACKET.md` and `REVIEW_REPORT.md`; they were left untouched.
 
-## Intentionally Deferred Scope
-- Calendar event list/search UI.
-- Recurrence expansion, sync, or backfill controls.
-- Calendar write actions.
-- Artifact editing from Calendar workspace.
-- Gmail/auth/runner/backend scope expansion.
+## Intentionally Deferred After This Truth-Sync Sprint
+- Any runtime, schema, API, or UI work.
+- Broader Gmail scope beyond the shipped read-only account review and selected-message ingestion seam.
+- Broader Calendar scope beyond the shipped read-only account review and selected-event ingestion seam.
+- Auth expansion, richer parsing, runner orchestration, or broader proxy execution work.
 
 ## Recommended Next Step
-Run sprint review against `/calendar` UI behavior and scope boundaries, then open/merge the sprint PR per Control Tower policy if reviewer outcome is `PASS`.
+Run review against the synchronized truth artifacts, then choose the next narrow sprint from the actual shipped Sprint 6V baseline rather than reopening doc drift or older Sprint 6R assumptions.

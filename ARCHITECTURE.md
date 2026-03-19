@@ -2,11 +2,12 @@
 
 ## Current Implemented Slice
 
-AliceBot now implements the accepted repo slice through Sprint 6U.
+AliceBot now implements the accepted repo slice through Sprint 6V.
 
 - `apps/api` is the core shipped surface. It provides continuity storage and review over `users`, `threads`, `sessions`, and append-only `events`; deterministic context compilation; governed memory admission and review; embeddings and semantic retrieval; entities and entity edges; policy, tool, approval, and execution governance; the no-tools assistant-response seam at `POST /v0/responses`; explicit task and task-step lifecycle reads and mutations; rooted local task workspaces and artifact ingestion; artifact chunk retrieval and embeddings; and narrow read-only Gmail and Calendar seams with external-secret-backed credentials plus selected-item ingestion into the artifact pipeline.
-- `apps/web` is a shipped operator shell over those backend seams, not a scaffold-only placeholder. The current routes are `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/memories`, `/entities`, and `/traces`. The shell can read live backend seams when configured and otherwise falls back to explicit fixture states instead of pretending the backend is connected.
+- `apps/web` is a shipped operator shell over those backend seams, not a scaffold-only placeholder. The current routes are `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`. The shell can read live backend seams when configured and otherwise falls back to explicit fixture states instead of pretending the backend is connected.
 - `/chat` now carries both shipped operator modes: governed request composition and assistant-response mode. It uses visible thread selection instead of a raw typed thread id, supports compact thread creation through the continuity API, renders a selected-thread transcript from immutable continuity events, and keeps supporting session and operational review, thread-linked governed workflow review, ordered task-step timeline review, and bounded explain-why trace review in the right rail.
+- `/gmail` and `/calendar` are shipped bounded connector workspaces over existing backend seams: visible account list review, selected-account detail, explicit account connection, and explicit single-item ingestion into one chosen task workspace, with live/fixture/unavailable states kept explicit.
 - `/artifacts`, `/memories`, and `/entities` are now shipped bounded review workspaces that expose existing artifact, memory, and entity read seams with explicit live/fixture/unavailable modes.
 - `workers` remains scaffold-only. No background runner, automatic multi-step progression, or asynchronous job system is implemented.
 
@@ -31,6 +32,8 @@ The repo is intentionally still narrow. Document ingestion remains local and det
   - `/approvals`: approval inbox and execution review
   - `/tasks`: task summary and ordered task-step review
   - `/artifacts`: artifact list and selected detail, linked workspace summary, and ordered chunk review
+  - `/gmail`: connected-account review, selected-account detail, explicit connect, and selected-message ingestion into one chosen task workspace
+  - `/calendar`: connected-account review, selected-account detail, explicit connect, and selected-event ingestion into one chosen task workspace
   - `/memories`: memory summary and queue posture, selected detail, revision review, and label review
   - `/entities`: entity list and selected detail with related edge review
   - `/traces`: trace summary, detail, and ordered event review
@@ -75,6 +78,7 @@ The repo is intentionally still narrow. Document ingestion remains local and det
 - Backend continuity and response seams are covered in `tests/integration/test_continuity_api.py`, `tests/integration/test_continuity_store.py`, `tests/integration/test_responses_api.py`, and related unit coverage under `tests/unit`.
 - Web continuity and `/chat` operator review adoption are covered in `apps/web/app/chat/page.test.tsx`, `apps/web/components/thread-list.test.tsx`, `apps/web/components/thread-summary.test.tsx`, `apps/web/components/thread-event-list.test.tsx`, `apps/web/components/thread-create.test.tsx`, `apps/web/components/response-composer.test.tsx`, `apps/web/components/thread-workflow-panel.test.tsx`, `apps/web/components/task-step-list.test.tsx`, `apps/web/components/response-history.test.tsx`, and `apps/web/components/thread-trace-panel.test.tsx`.
 - Review workspaces are covered at route level in `apps/web/app/artifacts/page.test.tsx`, `apps/web/app/memories/page.test.tsx`, and `apps/web/app/entities/page.test.tsx`, with matching component and API-client coverage under `apps/web`.
+- Connector workspaces are covered through `apps/web/lib/api.test.ts`, `apps/web/components/gmail-account-list.test.tsx`, `apps/web/components/calendar-account-list.test.tsx`, and `apps/web/components/calendar-event-ingest-form.test.tsx`.
 - The shell also has route and API-client coverage for approvals, tasks, traces, and shared API utilities under `apps/web`.
 
 ## Planned Later
