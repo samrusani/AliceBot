@@ -3,6 +3,8 @@ import type {
   ApprovalRequestPayload,
   CalendarAccountListSummary,
   CalendarAccountRecord,
+  CalendarEventListSummary,
+  CalendarEventSummaryRecord,
   EntityEdgeListSummary,
   EntityEdgeRecord,
   EntityListSummary,
@@ -590,6 +592,58 @@ export const calendarAccountFixtures: CalendarAccountRecord[] = [
 export const calendarAccountListSummaryFixture: CalendarAccountListSummary = {
   total_count: calendarAccountFixtures.length,
   order: ["created_at_asc", "id_asc"],
+};
+
+export const calendarEventFixtures: Record<string, CalendarEventSummaryRecord[]> = {
+  "c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1": [
+    {
+      provider_event_id: "evt-owner-planning",
+      status: "confirmed",
+      summary: "Sprint planning review",
+      start_time: "2026-03-20T09:00:00+00:00",
+      end_time: "2026-03-20T09:30:00+00:00",
+      html_link: "https://calendar.google.com/event?eid=evt-owner-planning",
+      updated_at: "2026-03-19T08:14:00+00:00",
+    },
+    {
+      provider_event_id: "evt-owner-retro",
+      status: "tentative",
+      summary: "Retro prep",
+      start_time: "2026-03-20T11:00:00+00:00",
+      end_time: "2026-03-20T11:45:00+00:00",
+      html_link: "https://calendar.google.com/event?eid=evt-owner-retro",
+      updated_at: "2026-03-19T08:42:00+00:00",
+    },
+    {
+      provider_event_id: "evt-owner-all-day",
+      status: "confirmed",
+      summary: "Quarterly planning day",
+      start_time: "2026-03-21",
+      end_time: "2026-03-22",
+      html_link: null,
+      updated_at: "2026-03-18T10:00:00+00:00",
+    },
+  ],
+  "c2c2c2c2-c2c2-4c2c-8c2c-c2c2c2c2c2c2": [
+    {
+      provider_event_id: "evt-ops-review",
+      status: "confirmed",
+      summary: "Ops account audit",
+      start_time: "2026-03-20T14:00:00+00:00",
+      end_time: "2026-03-20T14:30:00+00:00",
+      html_link: "https://calendar.google.com/event?eid=evt-ops-review",
+      updated_at: "2026-03-19T07:55:00+00:00",
+    },
+    {
+      provider_event_id: "evt-ops-hand-off",
+      status: "confirmed",
+      summary: "Shift hand-off",
+      start_time: "2026-03-20T16:00:00+00:00",
+      end_time: "2026-03-20T16:20:00+00:00",
+      html_link: "https://calendar.google.com/event?eid=evt-ops-hand-off",
+      updated_at: "2026-03-19T09:20:00+00:00",
+    },
+  ],
 };
 
 export const taskWorkspaceFixtures: TaskWorkspaceRecord[] = [
@@ -1382,6 +1436,85 @@ export function getFixtureGmailAccount(gmailAccountId: string) {
 
 export function getFixtureCalendarAccount(calendarAccountId: string) {
   return calendarAccountFixtures.find((item) => item.id === calendarAccountId) ?? null;
+}
+
+function parseFixtureDate(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function normalizeFixtureCalendarEventSortKey(startTime: string | null) {
+  if (!startTime) {
+    return "~";
+  }
+
+  const parsed = parseFixtureDate(startTime);
+  return parsed ? parsed.toISOString() : "~";
+}
+
+export function getFixtureCalendarEvents(calendarAccountId: string) {
+  return calendarEventFixtures[calendarAccountId] ?? [];
+}
+
+export function getFixtureCalendarEventList(
+  calendarAccountId: string,
+  options?: {
+    limit?: number;
+    timeMin?: string;
+    timeMax?: string;
+  },
+): {
+  items: CalendarEventSummaryRecord[];
+  summary: CalendarEventListSummary;
+} {
+  const boundedLimit = Math.max(1, Math.min(50, options?.limit ?? 20));
+  const timeMin = options?.timeMin?.trim() ? options.timeMin.trim() : null;
+  const timeMax = options?.timeMax?.trim() ? options.timeMax.trim() : null;
+  const timeMinDate = parseFixtureDate(timeMin);
+  const timeMaxDate = parseFixtureDate(timeMax);
+
+  const filteredItems = getFixtureCalendarEvents(calendarAccountId).filter((item) => {
+    const startDate = parseFixtureDate(item.start_time);
+
+    if (timeMinDate && startDate && startDate < timeMinDate) {
+      return false;
+    }
+    if (timeMaxDate && startDate && startDate > timeMaxDate) {
+      return false;
+    }
+
+    return true;
+  });
+
+  const items = [...filteredItems]
+    .sort((left, right) => {
+      const leftStart = normalizeFixtureCalendarEventSortKey(left.start_time);
+      const rightStart = normalizeFixtureCalendarEventSortKey(right.start_time);
+      if (leftStart === rightStart) {
+        return left.provider_event_id.localeCompare(right.provider_event_id);
+      }
+      return leftStart.localeCompare(rightStart);
+    })
+    .slice(0, boundedLimit);
+
+  return {
+    items,
+    summary: {
+      total_count: items.length,
+      limit: boundedLimit,
+      order: ["start_time_asc", "provider_event_id_asc"],
+      time_min: timeMin,
+      time_max: timeMax,
+    },
+  };
 }
 
 export function getFixtureTaskWorkspace(taskWorkspaceId: string) {

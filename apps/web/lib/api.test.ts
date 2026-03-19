@@ -23,6 +23,7 @@ import {
   ingestCalendarEvent,
   ingestGmailMessage,
   listCalendarAccounts,
+  listCalendarEvents,
   listEntities,
   listEntityEdges,
   listGmailAccounts,
@@ -1120,7 +1121,43 @@ describe("api helpers", () => {
     });
   });
 
-  it("reads and writes Calendar account and selected-event ingestion endpoints", async () => {
+  it("reads Calendar discovery and writes selected-event ingestion endpoints", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          account: {
+            id: "calendar-account-1",
+            provider: "google_calendar",
+            auth_kind: "oauth_access_token",
+            provider_account_id: "acct-owner-001",
+            email_address: "owner@gmail.example",
+            display_name: "Owner",
+            scope: "https://www.googleapis.com/auth/calendar.readonly",
+            created_at: "2026-03-18T00:00:00Z",
+            updated_at: "2026-03-18T00:00:00Z",
+          },
+          items: [
+            {
+              provider_event_id: "evt-001",
+              status: "confirmed",
+              summary: "Sprint planning review",
+              start_time: "2026-03-20T09:00:00+00:00",
+              end_time: "2026-03-20T09:30:00+00:00",
+              html_link: "https://calendar.google.com/event?eid=evt-001",
+              updated_at: "2026-03-19T10:00:00+00:00",
+            },
+          ],
+          summary: {
+            total_count: 1,
+            limit: 20,
+            order: ["start_time_asc", "provider_event_id_asc"],
+            time_min: "2026-03-20T00:00:00Z",
+            time_max: "2026-03-21T00:00:00Z",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -1233,6 +1270,11 @@ describe("api helpers", () => {
     });
     await listCalendarAccounts("https://api.example.com", "user-1");
     await getCalendarAccountDetail("https://api.example.com", "calendar-account-1", "user-1");
+    await listCalendarEvents("https://api.example.com", "calendar-account-1", "user-1", {
+      limit: 20,
+      timeMin: "2026-03-20T00:00:00Z",
+      timeMax: "2026-03-21T00:00:00Z",
+    });
     await ingestCalendarEvent(
       "https://api.example.com",
       "calendar-account-1",
@@ -1264,6 +1306,12 @@ describe("api helpers", () => {
         }),
       ],
       [
+        "https://api.example.com/v0/calendar-accounts/calendar-account-1/events?user_id=user-1&limit=20&time_min=2026-03-20T00%3A00%3A00Z&time_max=2026-03-21T00%3A00%3A00Z",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
         "https://api.example.com/v0/calendar-accounts/calendar-account-1/events/evt-001/ingest",
         expect.objectContaining({
           method: "POST",
@@ -1280,7 +1328,7 @@ describe("api helpers", () => {
       scope: "https://www.googleapis.com/auth/calendar.readonly",
       access_token: "access-token-1",
     });
-    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetchMock.mock.calls[4]?.[1]?.body))).toEqual({
       user_id: "user-1",
       task_workspace_id: "workspace-1",
     });
