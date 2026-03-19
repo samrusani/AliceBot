@@ -2,7 +2,7 @@
 
 ## Current Implemented Slice
 
-AliceBot now implements the accepted repo slice through Sprint 6X.
+AliceBot now implements the accepted repo slice through Sprint 7G.
 
 - `apps/api` is the core shipped surface. It provides continuity storage and review over `users`, `threads`, `sessions`, and append-only `events`; deterministic context compilation; governed memory admission and review; embeddings and semantic retrieval; entities and entity edges; policy, tool, approval, and execution governance; the no-tools assistant-response seam at `POST /v0/responses`; explicit task and task-step lifecycle reads and mutations; rooted local task workspaces and artifact ingestion; artifact chunk retrieval and embeddings; and narrow read-only Gmail and Calendar seams with external-secret-backed credentials plus bounded Calendar event discovery and selected-item ingestion into the artifact pipeline.
 - `apps/web` is a shipped operator shell over those backend seams, not a scaffold-only placeholder. The current routes are `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`. The shell can read live backend seams when configured and otherwise falls back to explicit fixture states instead of pretending the backend is connected.
@@ -19,6 +19,7 @@ The repo is intentionally still narrow. Document ingestion remains local and det
 
 - `docker-compose.yml` starts local Postgres with `pgvector`, Redis, and MinIO.
 - `scripts/dev_up.sh`, `scripts/migrate.sh`, and `scripts/api_dev.sh` provide the local startup path.
+- `scripts/run_mvp_readiness_gates.py` and `scripts/run_mvp_validation_matrix.py` provide deterministic MVP release-candidate gate evidence, with the validation matrix command as the default go/no-go gate.
 - `apps/api` exposes FastAPI endpoints for:
   - continuity and response generation: `/healthz`, `POST /v0/threads`, `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, `GET /v0/threads/{thread_id}/events`, `POST /v0/context/compile`, `POST /v0/responses`
   - memory, embeddings, and graph seams

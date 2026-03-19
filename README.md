@@ -1,6 +1,6 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Sprint 6X: a FastAPI backend plus a bounded Next.js operator shell.
+AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Sprint 7G: a FastAPI backend plus a bounded Next.js operator shell with deterministic MVP readiness and validation matrix gating.
 
 ## Current Implemented Slice
 
@@ -22,20 +22,22 @@ AliceBot is a private, permissioned personal AI operating system. The current re
 Useful checks:
 
 - API health: [http://127.0.0.1:8000/healthz](http://127.0.0.1:8000/healthz)
+- MVP readiness gates: `python3 scripts/run_mvp_readiness_gates.py`
+- MVP default go/no-go validation gate: `python3 scripts/run_mvp_validation_matrix.py`
 - Backend tests: `./.venv/bin/python -m pytest tests/unit tests/integration`
 - Web tests: `pnpm --dir apps/web test`
 - Web shell: `pnpm --dir apps/web dev`
 
 ## Repo Map
 
-- [PRODUCT_BRIEF.md](/Users/samirusani/Desktop/Codex/AliceBot/PRODUCT_BRIEF.md): stable product scope and ship gates
-- [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md): implemented technical boundaries
-- [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md): forward planning from the current repo state
-- [RULES.md](/Users/samirusani/Desktop/Codex/AliceBot/RULES.md): durable engineering and scope rules
-- [.ai/handoff/CURRENT_STATE.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/handoff/CURRENT_STATE.md): compact recovery snapshot
-- [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md): current sprint build report
-- [REVIEW_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md): current sprint review report
-- [docs/archive/sprints](/Users/samirusani/Desktop/Codex/AliceBot/docs/archive/sprints): accepted historical sprint build and review artifacts
+- [PRODUCT_BRIEF.md](PRODUCT_BRIEF.md): stable product scope and ship gates
+- [ARCHITECTURE.md](ARCHITECTURE.md): implemented technical boundaries
+- [ROADMAP.md](ROADMAP.md): forward planning from the current repo state
+- [RULES.md](RULES.md): durable engineering and scope rules
+- [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURRENT_STATE.md): compact recovery snapshot
+- [BUILD_REPORT.md](BUILD_REPORT.md): current sprint build report
+- [REVIEW_REPORT.md](REVIEW_REPORT.md): current sprint review report
+- [docs/archive/sprints](docs/archive/sprints): accepted historical sprint build and review artifacts
 
 ## Environment Notes
 

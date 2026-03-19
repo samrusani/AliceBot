@@ -6,6 +6,8 @@
 - Treat `.ai/active/SPRINT_PACKET.md` as an input/control artifact: do not edit it during implementation unless Control Tower explicitly changes the sprint.
 - Never describe planned behavior as already implemented.
 - Keep canonical truth files concise, current, and durable.
+- Shared runbooks and canonical docs must use machine-independent commands and links; do not use local user-home absolute paths.
+- When a sprint changes the operating baseline, update canonical truth docs in the same sprint before handoff.
 - Archive stale planning or history material instead of deleting it when traceability still matters.
 - Do not widen product scope without an explicit roadmap or sprint change.
 
