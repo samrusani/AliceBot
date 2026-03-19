@@ -340,7 +340,9 @@ code,
 .memory-layout,
 .memory-followup-grid,
 .entity-layout,
-.artifact-layout {
+.artifact-layout,
+.gmail-layout,
+.gmail-action-grid {
   display: grid;
   gap: 24px;
 }
@@ -365,10 +367,20 @@ code,
   align-items: flex-start;
 }
 
+.gmail-layout {
+  grid-template-columns: minmax(320px, 0.95fr) minmax(0, 1.17fr);
+  align-items: flex-start;
+}
+
 .artifact-review-grid {
   display: grid;
   gap: 24px;
   grid-template-columns: minmax(300px, 0.9fr) minmax(0, 1.3fr);
+  align-items: flex-start;
+}
+
+.gmail-action-grid {
+  grid-template-columns: minmax(300px, 0.95fr) minmax(0, 1.05fr);
   align-items: flex-start;
 }
 
@@ -1563,6 +1575,8 @@ code,
   .entity-layout,
   .artifact-layout,
   .artifact-review-grid,
+  .gmail-layout,
+  .gmail-action-grid,
   .chat-workspace,
   .metric-grid,
   .route-grid {
