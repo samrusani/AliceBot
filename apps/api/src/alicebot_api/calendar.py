@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, date, datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from uuid import UUID
 
@@ -26,7 +27,9 @@ from alicebot_api.calendar_secret_manager import (
 )
 from alicebot_api.contracts import (
     CALENDAR_ACCOUNT_LIST_ORDER,
+    CALENDAR_EVENT_LIST_ORDER,
     CALENDAR_AUTH_KIND_OAUTH_ACCESS_TOKEN,
+    MAX_CALENDAR_EVENT_LIST_LIMIT,
     CALENDAR_PROTECTED_CREDENTIAL_KIND,
     CALENDAR_PROVIDER,
     CALENDAR_READONLY_SCOPE,
@@ -35,6 +38,9 @@ from alicebot_api.contracts import (
     CalendarAccountDetailResponse,
     CalendarAccountListResponse,
     CalendarAccountRecord,
+    CalendarEventListInput,
+    CalendarEventListResponse,
+    CalendarEventSummaryRecord,
     CalendarEventIngestInput,
     CalendarEventIngestionResponse,
     TaskArtifactIngestInput,
@@ -72,6 +78,10 @@ class CalendarEventUnsupportedError(ValueError):
 
 class CalendarEventFetchError(RuntimeError):
     """Raised when the Calendar API call fails for non-deterministic upstream reasons."""
+
+
+class CalendarEventListValidationError(ValueError):
+    """Raised when Calendar event list query filters are invalid."""
 
 
 class CalendarCredentialNotFoundError(RuntimeError):
@@ -291,6 +301,161 @@ def get_calendar_account_record(
     if row is None:
         raise CalendarAccountNotFoundError(f"calendar account {calendar_account_id} was not found")
     return {"account": serialize_calendar_account_row(row)}
+
+
+def _extract_optional_calendar_event_time(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    date_time = _coerce_nonempty_string(value.get("dateTime"))
+    if date_time is not None:
+        return date_time
+    return _coerce_nonempty_string(value.get("date"))
+
+
+def _serialize_calendar_event_summary(payload: object) -> CalendarEventSummaryRecord | None:
+    if not isinstance(payload, dict):
+        return None
+    provider_event_id = _coerce_nonempty_string(payload.get("id"))
+    if provider_event_id is None:
+        return None
+    return {
+        "provider_event_id": provider_event_id,
+        "status": _coerce_nonempty_string(payload.get("status")),
+        "summary": _coerce_nonempty_string(payload.get("summary")),
+        "start_time": _extract_optional_calendar_event_time(payload.get("start")),
+        "end_time": _extract_optional_calendar_event_time(payload.get("end")),
+        "html_link": _coerce_nonempty_string(payload.get("htmlLink")),
+        "updated_at": _coerce_nonempty_string(payload.get("updated")),
+    }
+
+
+def _normalize_start_time_for_sort(start_time: str | None) -> str | None:
+    if start_time is None:
+        return None
+
+    # All-day events use date-only values; normalize to midnight UTC.
+    if len(start_time) == 10:
+        try:
+            parsed_date = date.fromisoformat(start_time)
+        except ValueError:
+            return None
+        return datetime(
+            parsed_date.year,
+            parsed_date.month,
+            parsed_date.day,
+            tzinfo=UTC,
+        ).isoformat()
+
+    normalized = start_time.replace("Z", "+00:00")
+    try:
+        parsed_datetime = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed_datetime.tzinfo is None:
+        parsed_datetime = parsed_datetime.replace(tzinfo=UTC)
+    return parsed_datetime.astimezone(UTC).isoformat()
+
+
+def _calendar_event_sort_key(record: CalendarEventSummaryRecord) -> tuple[str, str]:
+    start_time = record["start_time"]
+    return (
+        _normalize_start_time_for_sort(start_time) or "~",
+        record["provider_event_id"],
+    )
+
+
+def fetch_calendar_event_list_payload(
+    *,
+    access_token: str,
+    limit: int = MAX_CALENDAR_EVENT_LIST_LIMIT,
+    time_min: datetime | None = None,
+    time_max: datetime | None = None,
+) -> list[JsonObject]:
+    query_params: dict[str, str] = {
+        "maxResults": str(limit),
+        "showDeleted": "false",
+        "singleEvents": "false",
+    }
+    if time_min is not None:
+        query_params["timeMin"] = time_min.isoformat()
+    if time_max is not None:
+        query_params["timeMax"] = time_max.isoformat()
+    query_string = urlencode(query_params)
+    request = Request(
+        f"https://www.googleapis.com/calendar/v3/calendars/primary/events?{query_string}",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+
+    try:
+        with urlopen(request, timeout=CALENDAR_EVENT_FETCH_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise CalendarEventFetchError("calendar events could not be fetched") from exc
+    except (OSError, URLError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CalendarEventFetchError("calendar events could not be fetched") from exc
+
+    if not isinstance(payload, dict):
+        raise CalendarEventFetchError("calendar events could not be fetched")
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list):
+        raise CalendarEventFetchError("calendar events could not be fetched")
+
+    items: list[JsonObject] = []
+    for item in raw_items:
+        if isinstance(item, dict):
+            items.append(item)
+    return items
+
+
+def list_calendar_event_records(
+    store: ContinuityStore,
+    secret_manager: CalendarSecretManager,
+    *,
+    user_id: UUID,
+    request: CalendarEventListInput,
+) -> CalendarEventListResponse:
+    del user_id
+
+    if request.time_min is not None and request.time_max is not None and request.time_min > request.time_max:
+        raise CalendarEventListValidationError("calendar event time_min must be less than or equal to time_max")
+
+    account = store.get_calendar_account_optional(request.calendar_account_id)
+    if account is None:
+        raise CalendarAccountNotFoundError(f"calendar account {request.calendar_account_id} was not found")
+
+    bounded_limit = max(1, min(request.limit, MAX_CALENDAR_EVENT_LIST_LIMIT))
+    access_token = resolve_calendar_access_token(
+        store,
+        secret_manager,
+        calendar_account_id=request.calendar_account_id,
+    )
+    raw_items = fetch_calendar_event_list_payload(
+        access_token=access_token,
+        limit=MAX_CALENDAR_EVENT_LIST_LIMIT,
+        time_min=request.time_min,
+        time_max=request.time_max,
+    )
+    records = [
+        record
+        for record in (_serialize_calendar_event_summary(item) for item in raw_items)
+        if record is not None
+    ]
+    items = sorted(records, key=_calendar_event_sort_key)[:bounded_limit]
+    return {
+        "account": serialize_calendar_account_row(account),
+        "items": items,
+        "summary": {
+            "total_count": len(items),
+            "limit": bounded_limit,
+            "order": list(CALENDAR_EVENT_LIST_ORDER),
+            "time_min": None if request.time_min is None else request.time_min.isoformat(),
+            "time_max": None if request.time_max is None else request.time_max.isoformat(),
+        },
+    }
 
 
 def _sanitize_path_segment(value: str) -> str:
