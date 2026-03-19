@@ -2,6 +2,7 @@
 
 ## Objective
 Run one deterministic command that executes MVP readiness prerequisites plus bounded backend and web verification matrices, then emits a clear `PASS` or `NO_GO`.
+Use this as the default MVP release-candidate go/no-go gate.
 
 ## Prerequisites
 - Python dependencies installed for backend integration tests (`python3 -m venv .venv` and `./.venv/bin/python -m pip install -e '.[dev]'`).
@@ -19,7 +20,7 @@ The runner executes this deterministic step order:
 2. `backend_integration_matrix`
    - `python3 -m pytest -q tests/integration/test_continuity_api.py tests/integration/test_responses_api.py tests/integration/test_approval_api.py tests/integration/test_proxy_execution_api.py tests/integration/test_tasks_api.py tests/integration/test_traces_api.py tests/integration/test_memory_review_api.py tests/integration/test_entities_api.py tests/integration/test_task_artifacts_api.py tests/integration/test_gmail_accounts_api.py tests/integration/test_calendar_accounts_api.py`
 3. `web_validation_matrix`
-   - `npm --prefix /Users/samirusani/Desktop/Codex/AliceBot/apps/web run test:mvp:validation-matrix`
+   - `npm --prefix apps/web run test:mvp:validation-matrix`
 
 Expected behavior:
 - Prints per-step status with command, duration, exit code, and coverage.
