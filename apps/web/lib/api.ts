@@ -477,6 +477,36 @@ export type CalendarEventIngestionResponse = {
   summary: TaskArtifactChunkListSummary;
 };
 
+export type CalendarEventSummaryRecord = {
+  provider_event_id: string;
+  status: string | null;
+  summary: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  html_link: string | null;
+  updated_at: string | null;
+};
+
+export type CalendarEventListSummary = {
+  total_count: number;
+  limit: number;
+  order: string[];
+  time_min: string | null;
+  time_max: string | null;
+};
+
+export type CalendarEventListResponse = {
+  account: CalendarAccountRecord;
+  items: CalendarEventSummaryRecord[];
+  summary: CalendarEventListSummary;
+};
+
+export type CalendarEventListQuery = {
+  limit?: number;
+  timeMin?: string;
+  timeMax?: string;
+};
+
 export type TaskWorkspaceStatus = "active";
 
 export type TaskWorkspaceRecord = {
@@ -1092,6 +1122,32 @@ export function getCalendarAccountDetail(
     `/v0/calendar-accounts/${calendarAccountId}`,
     undefined,
     { user_id: userId },
+  );
+}
+
+export function listCalendarEvents(
+  apiBaseUrl: string,
+  calendarAccountId: string,
+  userId: string,
+  query?: CalendarEventListQuery,
+) {
+  const limitValue =
+    typeof query?.limit === "number" && Number.isFinite(query.limit) && query.limit > 0
+      ? String(Math.trunc(query.limit))
+      : undefined;
+  const timeMin = query?.timeMin?.trim() ? query.timeMin.trim() : undefined;
+  const timeMax = query?.timeMax?.trim() ? query.timeMax.trim() : undefined;
+
+  return requestJson<CalendarEventListResponse>(
+    apiBaseUrl,
+    `/v0/calendar-accounts/${calendarAccountId}/events`,
+    undefined,
+    {
+      user_id: userId,
+      limit: limitValue,
+      time_min: timeMin,
+      time_max: timeMax,
+    },
   );
 }
 
