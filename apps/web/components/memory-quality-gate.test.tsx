@@ -33,6 +33,7 @@ describe("MemoryQualityGate", () => {
 
     expect(screen.getByText("On track")).toBeInTheDocument();
     expect(screen.getByText("80%")).toBeInTheDocument();
+    expect(screen.getByText("Progress: minimum adjudicated sample is met.")).toBeInTheDocument();
     expect(screen.getByText("Queue posture: unlabeled queue is clear.")).toBeInTheDocument();
   });
 
@@ -65,6 +66,7 @@ describe("MemoryQualityGate", () => {
     expect(
       screen.getByText("Queue posture: 2 unlabeled memories still need review."),
     ).toBeInTheDocument();
+    expect(screen.getByText("Progress: minimum adjudicated sample is met.")).toBeInTheDocument();
   });
 
   it("renders insufficient-evidence posture when adjudicated sample is below minimum", () => {
@@ -91,6 +93,9 @@ describe("MemoryQualityGate", () => {
 
     expect(screen.getByText("Insufficient evidence")).toBeInTheDocument();
     expect(screen.getByText("Sample posture: 1/10 adjudicated labels.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Progress: 9 labels remaining to reach the minimum sample."),
+    ).toBeInTheDocument();
   });
 
   it("renders unavailable-data posture when summary data cannot be computed", () => {
@@ -101,6 +106,7 @@ describe("MemoryQualityGate", () => {
       screen.getByText("Evaluation summary data is unavailable, so gate readiness cannot be computed."),
     ).toBeInTheDocument();
     expect(screen.getByText("Sample posture unavailable.")).toBeInTheDocument();
+    expect(screen.getByText("Progress to minimum sample is unavailable.")).toBeInTheDocument();
     expect(screen.getByText("Queue posture unavailable.")).toBeInTheDocument();
   });
 });

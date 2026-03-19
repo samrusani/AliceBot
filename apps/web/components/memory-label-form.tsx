@@ -1,7 +1,7 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { useRouter } from "next/navigation";
 
@@ -16,6 +16,8 @@ type MemoryLabelFormProps = {
   source: ApiSource | "unavailable" | null;
   apiBaseUrl?: string;
   userId?: string;
+  activeFilter?: "active" | "queue";
+  nextQueueMemoryId?: string | null;
 };
 
 const LABEL_OPTIONS: Array<{
@@ -28,9 +30,18 @@ const LABEL_OPTIONS: Array<{
   { value: "insufficient_evidence", label: "Insufficient evidence" },
 ];
 
-export function MemoryLabelForm({ memoryId, source, apiBaseUrl, userId }: MemoryLabelFormProps) {
+export function MemoryLabelForm({
+  memoryId,
+  source,
+  apiBaseUrl,
+  userId,
+  activeFilter = "active",
+  nextQueueMemoryId = null,
+}: MemoryLabelFormProps) {
   const router = useRouter();
+  const submitActionRef = useRef<"submit" | "submit_and_next">("submit");
   const liveModeReady = Boolean(memoryId && apiBaseUrl && userId && source === "live");
+  const queueModeWithNext = activeFilter === "queue" && Boolean(nextQueueMemoryId);
   const [label, setLabel] = useState<MemoryReviewLabelValue>("correct");
   const [note, setNote] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -39,7 +50,9 @@ export function MemoryLabelForm({ memoryId, source, apiBaseUrl, userId }: Memory
     !memoryId
       ? "Select a memory to enable label submission."
       : liveModeReady
-        ? "Choose a label and submit when review is complete."
+        ? queueModeWithNext
+          ? "Choose a label, then submit once or submit and move to the next queue item."
+          : "Choose a label and submit when review is complete."
         : "Label submission is unavailable until live API configuration and live memory detail are present.",
   );
   const canSubmit = liveModeReady && !isSubmitting;
@@ -63,6 +76,9 @@ export function MemoryLabelForm({ memoryId, source, apiBaseUrl, userId }: Memory
     setStatusTone("info");
     setStatusText("Submitting memory review label...");
 
+    const submitAndNextRequested = submitActionRef.current === "submit_and_next";
+    submitActionRef.current = "submit";
+
     try {
       const payload = await submitMemoryLabel(apiBaseUrl, memoryId, {
         user_id: userId,
@@ -71,11 +87,19 @@ export function MemoryLabelForm({ memoryId, source, apiBaseUrl, userId }: Memory
       });
 
       setStatusTone("success");
-      setStatusText(
-        `Label saved. ${payload.summary.total_count} total label${payload.summary.total_count === 1 ? "" : "s"} now recorded for this memory.`,
-      );
+      if (submitAndNextRequested && activeFilter === "queue" && nextQueueMemoryId) {
+        setStatusText("Label saved. Advancing to next queue memory.");
+      } else {
+        setStatusText(
+          `Label saved. ${payload.summary.total_count} total label${payload.summary.total_count === 1 ? "" : "s"} now recorded for this memory.`,
+        );
+      }
       setNote("");
-      router.refresh();
+      if (submitAndNextRequested && activeFilter === "queue" && nextQueueMemoryId) {
+        router.push(`/memories?filter=queue&memory=${encodeURIComponent(nextQueueMemoryId)}`);
+      } else {
+        router.refresh();
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Submission failed";
       setStatusTone("danger");
@@ -164,9 +188,29 @@ export function MemoryLabelForm({ memoryId, source, apiBaseUrl, userId }: Memory
             />
             <span>{statusText}</span>
           </div>
-          <button type="submit" className="button" disabled={!canSubmit}>
+          <button
+            type="submit"
+            className="button"
+            disabled={!canSubmit}
+            onClick={() => {
+              submitActionRef.current = "submit";
+            }}
+          >
             {isSubmitting ? "Submitting..." : "Submit review label"}
           </button>
+          {queueModeWithNext ? (
+            <button
+              type="submit"
+              value="submit_and_next"
+              className="button-secondary"
+              disabled={!canSubmit}
+              onClick={() => {
+                submitActionRef.current = "submit_and_next";
+              }}
+            >
+              {isSubmitting ? "Submitting..." : "Submit and next in queue"}
+            </button>
+          ) : null}
         </div>
       </form>
     </SectionCard>

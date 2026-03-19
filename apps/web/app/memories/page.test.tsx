@@ -303,4 +303,33 @@ describe("MemoriesPage", () => {
     expect(screen.getByText("Labels unavailable")).toBeInTheDocument();
     expect(screen.getByText("labels down")).toBeInTheDocument();
   });
+
+  it("shows queue submit-and-next action only when queue mode has a deterministic next item", async () => {
+    render(
+      await MemoriesPage({
+        searchParams: Promise.resolve({
+          filter: "queue",
+        }),
+      }),
+    );
+
+    expect(screen.getByRole("button", { name: "Submit review label" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Submit and next in queue" })).toBeInTheDocument();
+  });
+
+  it("hides queue submit-and-next action when selected queue item is last in current order", async () => {
+    render(
+      await MemoriesPage({
+        searchParams: Promise.resolve({
+          filter: "queue",
+          memory: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+        }),
+      }),
+    );
+
+    expect(screen.getByRole("button", { name: "Submit review label" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Submit and next in queue" }),
+    ).not.toBeInTheDocument();
+  });
 });
