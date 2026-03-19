@@ -1,61 +1,125 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Synchronize canonical truth artifacts with the accepted repo state through Sprint 6V so roadmap, handoff, README, and architecture docs reflect the shipped Gmail and Calendar operator-shell baseline without changing runtime behavior or product scope.
+Implement Sprint 6X: a deterministic, user-scoped, read-only Calendar event discovery API for one connected account at `GET /v0/calendar-accounts/{calendar_account_id}/events`, with bounded filters, stable ordering metadata, and no expansion into sync/recurrence/write/UI scope.
 
 ## Completed Work
-- Updated `ROADMAP.md` to move the stated accepted baseline from Sprint 6R to Sprint 6V, include `/gmail` and `/calendar` in the shipped shell baseline, and frame next planning from the actual current operator surface.
-- Updated `.ai/handoff/CURRENT_STATE.md` to move the stated working baseline from Sprint 6R to Sprint 6V, add shipped Gmail and Calendar web workspaces, and tighten current boundary and planning language around narrow connector seams.
-- Updated `README.md` to move the stated accepted slice from Sprint 6U to Sprint 6V and correct the route inventory to include `/gmail` and `/calendar`.
-- Updated `ARCHITECTURE.md` to move the accepted slice from Sprint 6U to Sprint 6V, include `/gmail` and `/calendar` in the operator-shell route inventory, and keep Gmail/Calendar connector boundaries explicit and narrow.
-- Confirmed no archival move was required; `docs/archive/**` was not changed.
-- Confirmed the sprint stayed documentation-only: no runtime code, schema, API, or UI behavior changed.
+- Added Calendar event discovery contracts in `apps/api/src/alicebot_api/contracts.py`:
+  - Constants:
+    - `DEFAULT_CALENDAR_EVENT_LIST_LIMIT = 20`
+    - `MAX_CALENDAR_EVENT_LIST_LIMIT = 50`
+    - `CALENDAR_EVENT_LIST_ORDER = ["start_time_asc", "provider_event_id_asc"]`
+  - Request input contract:
+    - `CalendarEventListInput(calendar_account_id, limit, time_min, time_max)`
+  - Response contracts:
+    - `CalendarEventSummaryRecord`
+    - `CalendarEventListSummary`
+    - `CalendarEventListResponse`
+- Implemented read-only event discovery service logic in `apps/api/src/alicebot_api/calendar.py`:
+  - `fetch_calendar_event_list_payload(...)` using existing credential/secret seams.
+  - `list_calendar_event_records(...)` for one account with user-scoped visibility.
+  - `CalendarEventListValidationError` for invalid time windows.
+  - Deterministic normalization and sorting of events.
+- Added endpoint in `apps/api/src/alicebot_api/main.py`:
+  - `GET /v0/calendar-accounts/{calendar_account_id}/events`
+  - Query params: `user_id`, `limit`, `time_min`, `time_max`
+  - Deterministic error mapping:
+    - 404: missing/non-visible account
+    - 409: credential missing/invalid/persistence issues
+    - 400: invalid query window (`time_min > time_max`)
+    - 502: upstream provider fetch failures
+- Added/updated tests:
+  - `tests/unit/test_calendar.py`
+  - `tests/unit/test_calendar_main.py`
+  - `tests/integration/test_calendar_accounts_api.py`
 
-## Stale Claims Corrected
-- `ROADMAP.md` no longer says the accepted repo state is current only through Sprint 6R.
-- `.ai/handoff/CURRENT_STATE.md` no longer says the working repo state is current only through Sprint 6R.
-- `README.md` no longer says the accepted slice is only through Sprint 6U.
-- `README.md` and `ARCHITECTURE.md` no longer omit `/gmail` and `/calendar` from the shipped shell route inventory.
-- Roadmap and handoff planning language no longer imply Calendar is still pre-shell or that next planning should start from the older Sprint 6R baseline.
+## Ordering And Limit Rule
+- Ordering rule in response summary: `order = ["start_time_asc", "provider_event_id_asc"]`.
+- Deterministic sort key applied server-side after provider fetch:
+  1. `start_time` normalized to UTC datetime ascending (all-day `date` values normalize to midnight UTC)
+  2. `provider_event_id` ascending
+- Limit behavior:
+  - Default `limit=20`
+  - Hard max `limit=50`
+  - Response summary always returns applied `limit`.
 
-## Accepted Repo Evidence Used
-- `apps/web/components/app-shell.tsx`
-- `apps/web/app/page.tsx`
-- `apps/web/app/gmail/page.tsx`
-- `apps/web/app/calendar/page.tsx`
-- `apps/web/lib/api.ts`
-- `apps/web/lib/api.test.ts`
-- `tests/integration/test_gmail_accounts_api.py`
-- `tests/integration/test_calendar_accounts_api.py`
-- `tests/unit/test_gmail.py`
-- `tests/unit/test_calendar.py`
-- `tests/unit/test_20260316_0026_gmail_accounts.py`
-- `tests/unit/test_20260319_0030_calendar_accounts_and_credentials.py`
+## Example Calendar Event List Response
+```json
+{
+  "account": {
+    "id": "2f90c8ea-6f04-4d7f-9e5e-b8e7cbfd4b3e",
+    "provider": "google_calendar",
+    "auth_kind": "oauth_access_token",
+    "provider_account_id": "acct-owner-001",
+    "email_address": "owner@gmail.example",
+    "display_name": "Owner",
+    "scope": "https://www.googleapis.com/auth/calendar.readonly",
+    "created_at": "2026-03-19T11:02:10.100000+00:00",
+    "updated_at": "2026-03-19T11:02:10.100000+00:00"
+  },
+  "items": [
+    {
+      "provider_event_id": "evt-a",
+      "status": "tentative",
+      "summary": "First",
+      "start_time": "2026-03-20",
+      "end_time": "2026-03-21",
+      "html_link": null,
+      "updated_at": "2026-03-19T09:00:00+00:00"
+    },
+    {
+      "provider_event_id": "evt-b",
+      "status": "confirmed",
+      "summary": "Second",
+      "start_time": "2026-03-25T09:00:00+00:00",
+      "end_time": "2026-03-25T09:45:00+00:00",
+      "html_link": null,
+      "updated_at": "2026-03-24T08:30:00+00:00"
+    }
+  ],
+  "summary": {
+    "total_count": 2,
+    "limit": 2,
+    "order": ["start_time_asc", "provider_event_id_asc"],
+    "time_min": "2026-03-20T00:00:00+00:00",
+    "time_max": "2026-03-27T00:00:00+00:00"
+  }
+}
+```
 
 ## Incomplete Work
-- None within Sprint 6W scope.
+- None within Sprint 6X scope.
 
 ## Files Changed
-- `ROADMAP.md`
-- `.ai/handoff/CURRENT_STATE.md`
-- `README.md`
-- `ARCHITECTURE.md`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/calendar.py`
+- `apps/api/src/alicebot_api/main.py`
+- `tests/unit/test_calendar.py`
+- `tests/unit/test_calendar_main.py`
+- `tests/integration/test_calendar_accounts_api.py`
 - `BUILD_REPORT.md`
 
 ## Tests Run
-- `git diff --check -- ROADMAP.md .ai/handoff/CURRENT_STATE.md README.md ARCHITECTURE.md BUILD_REPORT.md`: PASS
-- `rg -n "Sprint 6R|Sprint 6U|/gmail|/calendar|current through Sprint 6V|accepted slice through Sprint 6V" ROADMAP.md .ai/handoff/CURRENT_STATE.md README.md ARCHITECTURE.md BUILD_REPORT.md`: PASS
-- No runtime or UI test suites were run because this sprint is documentation-only.
+- `./.venv/bin/python -m pytest tests/unit/test_calendar.py tests/unit/test_calendar_main.py tests/integration/test_calendar_accounts_api.py` -> PASS (`30 passed`)
+- `./.venv/bin/python -m pytest tests/unit` -> PASS (`484 passed`)
+- `./.venv/bin/python -m pytest tests/integration` -> PASS (`153 passed`)
 
 ## Blockers / Issues
-- No blockers.
-- Existing unrelated modifications remain in `.ai/active/SPRINT_PACKET.md` and `REVIEW_REPORT.md`; they were left untouched.
+- No implementation blockers.
+- Integration tests required DB access outside sandbox to reach local Postgres (`localhost:5432`), then passed with escalated execution.
+- Existing unrelated pre-existing modifications remained untouched in:
+  - `.ai/active/SPRINT_PACKET.md`
+  - `REVIEW_REPORT.md`
 
-## Intentionally Deferred After This Truth-Sync Sprint
-- Any runtime, schema, API, or UI work.
-- Broader Gmail scope beyond the shipped read-only account review and selected-message ingestion seam.
-- Broader Calendar scope beyond the shipped read-only account review and selected-event ingestion seam.
-- Auth expansion, richer parsing, runner orchestration, or broader proxy execution work.
+## Intentionally Deferred After This Sprint
+- UI changes.
+- Event ingestion behavior changes.
+- Recurring event expansion.
+- Background sync/backfill.
+- Write-capable calendar actions.
+- Gmail scope expansion.
+- Auth redesign.
+- Runner orchestration.
 
 ## Recommended Next Step
-Run review against the synchronized truth artifacts, then choose the next narrow sprint from the actual shipped Sprint 6V baseline rather than reopening doc drift or older Sprint 6R assumptions.
+Proceed to reviewer validation focused on deterministic event discovery behavior (ordering/limits/isolation/error mapping), then merge if review is PASS.
