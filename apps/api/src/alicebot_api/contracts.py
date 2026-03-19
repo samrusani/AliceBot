@@ -799,6 +799,7 @@ class ModelUsagePayload(TypedDict):
     input_tokens: int | None
     output_tokens: int | None
     total_tokens: int | None
+    cached_input_tokens: NotRequired[int | None]
 
 
 class ModelInvocationTracePayload(TypedDict):

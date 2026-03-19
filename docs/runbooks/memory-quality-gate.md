@@ -62,3 +62,10 @@ Use `/memories` to read a deterministic ship-gate signal for memory quality befo
 - Treat `on_track` as readiness signal for memory quality sampling.
 - Treat `needs_review` and `insufficient_evidence` as stop-and-investigate states before ship decisions.
 - If data is unavailable, fix source availability first; do not infer readiness from stale assumptions.
+
+## Readiness Runner Alignment
+- `python3 scripts/run_mvp_readiness_gates.py` uses this same summary math and thresholds.
+- Runner mapping:
+  - `on_track` -> gate `PASS`
+  - `needs_review` -> gate `FAIL`
+  - `insufficient_evidence` or unavailable data -> gate `BLOCKED`
