@@ -268,8 +268,31 @@ class GmailAccountRow(TypedDict):
     updated_at: datetime
 
 
+class CalendarAccountRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    provider_account_id: str
+    email_address: str
+    display_name: str | None
+    scope: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class ProtectedGmailCredentialRow(TypedDict):
     gmail_account_id: UUID
+    user_id: UUID
+    auth_kind: str
+    credential_kind: str
+    secret_manager_kind: str
+    secret_ref: str | None
+    credential_blob: JsonObject | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProtectedCalendarCredentialRow(TypedDict):
+    calendar_account_id: UUID
     user_id: UUID
     auth_kind: str
     credential_kind: str
@@ -1707,6 +1730,130 @@ LIST_GMAIL_ACCOUNTS_SQL = """
                   created_at,
                   updated_at
                 FROM gmail_accounts
+                ORDER BY created_at ASC, id ASC
+                """
+
+INSERT_CALENDAR_ACCOUNT_SQL = """
+                INSERT INTO calendar_accounts (
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope,
+                  created_at,
+                  updated_at
+                """
+
+INSERT_CALENDAR_ACCOUNT_CREDENTIAL_SQL = """
+                INSERT INTO calendar_account_credentials (
+                  calendar_account_id,
+                  user_id,
+                  auth_kind,
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
+                  credential_blob,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  %s,
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  calendar_account_id,
+                  user_id,
+                  auth_kind,
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
+                  credential_blob,
+                  created_at,
+                  updated_at
+                """
+
+GET_CALENDAR_ACCOUNT_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope,
+                  created_at,
+                  updated_at
+                FROM calendar_accounts
+                WHERE id = %s
+                """
+
+GET_CALENDAR_ACCOUNT_BY_PROVIDER_ACCOUNT_ID_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope,
+                  created_at,
+                  updated_at
+                FROM calendar_accounts
+                WHERE provider_account_id = %s
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                """
+
+GET_CALENDAR_ACCOUNT_CREDENTIAL_SQL = """
+                SELECT
+                  calendar_account_id,
+                  user_id,
+                  auth_kind,
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
+                  credential_blob,
+                  created_at,
+                  updated_at
+                FROM calendar_account_credentials
+                WHERE calendar_account_id = %s
+                """
+
+LIST_CALENDAR_ACCOUNTS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope,
+                  created_at,
+                  updated_at
+                FROM calendar_accounts
                 ORDER BY created_at ASC, id ASC
                 """
 
@@ -3317,6 +3464,67 @@ class ContinuityStore:
 
     def list_gmail_accounts(self) -> list[GmailAccountRow]:
         return self._fetch_all(LIST_GMAIL_ACCOUNTS_SQL)
+
+    def create_calendar_account(
+        self,
+        *,
+        provider_account_id: str,
+        email_address: str,
+        display_name: str | None,
+        scope: str,
+    ) -> CalendarAccountRow:
+        return self._fetch_one(
+            "create_calendar_account",
+            INSERT_CALENDAR_ACCOUNT_SQL,
+            (provider_account_id, email_address, display_name, scope),
+        )
+
+    def create_calendar_account_credential(
+        self,
+        *,
+        calendar_account_id: UUID,
+        auth_kind: str,
+        credential_kind: str,
+        secret_manager_kind: str,
+        secret_ref: str | None,
+        credential_blob: JsonObject | None,
+    ) -> ProtectedCalendarCredentialRow:
+        return self._fetch_one(
+            "create_calendar_account_credential",
+            INSERT_CALENDAR_ACCOUNT_CREDENTIAL_SQL,
+            (
+                calendar_account_id,
+                auth_kind,
+                credential_kind,
+                secret_manager_kind,
+                secret_ref,
+                None if credential_blob is None else Jsonb(credential_blob),
+            ),
+        )
+
+    def get_calendar_account_optional(self, calendar_account_id: UUID) -> CalendarAccountRow | None:
+        return self._fetch_optional_one(GET_CALENDAR_ACCOUNT_SQL, (calendar_account_id,))
+
+    def get_calendar_account_credential_optional(
+        self,
+        calendar_account_id: UUID,
+    ) -> ProtectedCalendarCredentialRow | None:
+        return self._fetch_optional_one(
+            GET_CALENDAR_ACCOUNT_CREDENTIAL_SQL,
+            (calendar_account_id,),
+        )
+
+    def get_calendar_account_by_provider_account_id_optional(
+        self,
+        provider_account_id: str,
+    ) -> CalendarAccountRow | None:
+        return self._fetch_optional_one(
+            GET_CALENDAR_ACCOUNT_BY_PROVIDER_ACCOUNT_ID_SQL,
+            (provider_account_id,),
+        )
+
+    def list_calendar_accounts(self) -> list[CalendarAccountRow]:
+        return self._fetch_all(LIST_CALENDAR_ACCOUNTS_SQL)
 
     def lock_task_workspaces(self, task_id: UUID) -> None:
         with self.conn.cursor() as cur:
