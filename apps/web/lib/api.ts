@@ -431,6 +431,52 @@ export type GmailMessageIngestionResponse = {
   summary: TaskArtifactChunkListSummary;
 };
 
+export type CalendarReadonlyScope = "https://www.googleapis.com/auth/calendar.readonly";
+
+export type CalendarAccountRecord = {
+  id: string;
+  provider: string;
+  auth_kind: string;
+  provider_account_id: string;
+  email_address: string;
+  display_name: string | null;
+  scope: CalendarReadonlyScope;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CalendarAccountListSummary = {
+  total_count: number;
+  order: string[];
+};
+
+export type CalendarAccountConnectPayload = {
+  user_id: string;
+  provider_account_id: string;
+  email_address: string;
+  display_name?: string | null;
+  scope: CalendarReadonlyScope;
+  access_token: string;
+};
+
+export type CalendarEventIngestPayload = {
+  user_id: string;
+  task_workspace_id: string;
+};
+
+export type CalendarEventIngestionRecord = {
+  provider_event_id: string;
+  artifact_relative_path: string;
+  media_type: string;
+};
+
+export type CalendarEventIngestionResponse = {
+  account: CalendarAccountRecord;
+  event: CalendarEventIngestionRecord;
+  artifact: TaskArtifactRecord;
+  summary: TaskArtifactChunkListSummary;
+};
+
 export type TaskWorkspaceStatus = "active";
 
 export type TaskWorkspaceRecord = {
@@ -1010,6 +1056,54 @@ export function ingestGmailMessage(
   return requestJson<GmailMessageIngestionResponse>(
     apiBaseUrl,
     `/v0/gmail-accounts/${gmailAccountId}/messages/${providerMessageId}/ingest`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function connectCalendarAccount(
+  apiBaseUrl: string,
+  payload: CalendarAccountConnectPayload,
+) {
+  return requestJson<{ account: CalendarAccountRecord }>(apiBaseUrl, "/v0/calendar-accounts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listCalendarAccounts(apiBaseUrl: string, userId: string) {
+  return requestJson<{ items: CalendarAccountRecord[]; summary: CalendarAccountListSummary }>(
+    apiBaseUrl,
+    "/v0/calendar-accounts",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getCalendarAccountDetail(
+  apiBaseUrl: string,
+  calendarAccountId: string,
+  userId: string,
+) {
+  return requestJson<{ account: CalendarAccountRecord }>(
+    apiBaseUrl,
+    `/v0/calendar-accounts/${calendarAccountId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function ingestCalendarEvent(
+  apiBaseUrl: string,
+  calendarAccountId: string,
+  providerEventId: string,
+  payload: CalendarEventIngestPayload,
+) {
+  return requestJson<CalendarEventIngestionResponse>(
+    apiBaseUrl,
+    `/v0/calendar-accounts/${calendarAccountId}/events/${providerEventId}/ingest`,
     {
       method: "POST",
       body: JSON.stringify(payload),

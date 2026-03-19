@@ -342,7 +342,9 @@ code,
 .entity-layout,
 .artifact-layout,
 .gmail-layout,
-.gmail-action-grid {
+.gmail-action-grid,
+.calendar-layout,
+.calendar-action-grid {
   display: grid;
   gap: 24px;
 }
@@ -367,7 +369,8 @@ code,
   align-items: flex-start;
 }
 
-.gmail-layout {
+.gmail-layout,
+.calendar-layout {
   grid-template-columns: minmax(320px, 0.95fr) minmax(0, 1.17fr);
   align-items: flex-start;
 }
@@ -379,7 +382,8 @@ code,
   align-items: flex-start;
 }
 
-.gmail-action-grid {
+.gmail-action-grid,
+.calendar-action-grid {
   grid-template-columns: minmax(300px, 0.95fr) minmax(0, 1.05fr);
   align-items: flex-start;
 }
@@ -1577,6 +1581,8 @@ code,
   .artifact-review-grid,
   .gmail-layout,
   .gmail-action-grid,
+  .calendar-layout,
+  .calendar-action-grid,
   .chat-workspace,
   .metric-grid,
   .route-grid {

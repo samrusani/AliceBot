@@ -6,16 +6,16 @@ import { StatusBadge } from "../components/status-badge";
 
 const summaryCards = [
   {
-    value: "9",
+    value: "10",
     label: "Operator views",
     detail:
-      "Home, request composition, approvals, task inspection, artifact review, Gmail review, memory review, entity review, and explainability are all exposed in one bounded shell.",
+      "Home, request composition, approvals, task inspection, artifact review, Gmail review, Calendar review, memory review, entity review, and explainability are all exposed in one bounded shell.",
   },
   {
-    value: "7",
+    value: "8",
     label: "Governance seams",
     detail:
-      "Requests, approvals, tasks, artifact review, Gmail account/ingestion seams, memory review, and entity review stay visible instead of being hidden behind a consumer chat wrapper.",
+      "Requests, approvals, tasks, artifact review, Gmail account/ingestion seams, Calendar account/ingestion seams, memory review, and entity review stay visible instead of being hidden behind a consumer chat wrapper.",
   },
   {
     value: "2",
@@ -62,6 +62,13 @@ const routeCards = [
     status: "active",
   },
   {
+    href: "/calendar",
+    title: "Calendar Review",
+    description:
+      "Review connected Calendar accounts, inspect one selected account, and explicitly ingest one selected event into a task workspace.",
+    status: "active",
+  },
+  {
     href: "/memories",
     title: "Memory Review",
     description: "Inspect active memory records, revisions, and review labels through the shipped memory-review seam.",
@@ -96,7 +103,7 @@ export default function HomePage() {
         description="The first web surface is intentionally narrow: it exposes existing backend seams with calm hierarchy, strong containment, and clear review paths."
         meta={
           <div className="header-meta">
-            <span className="subtle-chip">Sprint 6T shell</span>
+            <span className="subtle-chip">Sprint 6V shell</span>
             <span className="subtle-chip">Design-system aligned</span>
           </div>
         }
