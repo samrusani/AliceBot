@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  admitMemory,
   ApiError,
   combinePageModes,
   connectCalendarAccount,
@@ -1634,6 +1635,106 @@ describe("api helpers", () => {
         }),
       ],
     ]);
+  });
+
+  it("posts explicit memory admissions to the shipped endpoint", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          decision: "ADD",
+          reason: "memory_created",
+          memory: {
+            id: "memory-1",
+            user_id: "user-1",
+            memory_key: "user.preference.supplement.magnesium",
+            value: {
+              merchant: "Thorne",
+            },
+            status: "active",
+            source_event_ids: ["event-2", "event-1"],
+            created_at: "2026-03-19T00:00:00Z",
+            updated_at: "2026-03-19T00:00:00Z",
+            deleted_at: null,
+          },
+          revision: {
+            id: "revision-1",
+            user_id: "user-1",
+            memory_id: "memory-1",
+            sequence_no: 1,
+            action: "ADD",
+            memory_key: "user.preference.supplement.magnesium",
+            previous_value: null,
+            new_value: {
+              merchant: "Thorne",
+            },
+            source_event_ids: ["event-2", "event-1"],
+            candidate: {
+              memory_key: "user.preference.supplement.magnesium",
+              value: {
+                merchant: "Thorne",
+              },
+              source_event_ids: ["event-2", "event-1"],
+              delete_requested: false,
+            },
+            created_at: "2026-03-19T00:00:00Z",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await admitMemory("https://api.example.com", {
+      user_id: "user-1",
+      memory_key: "user.preference.supplement.magnesium",
+      value: {
+        merchant: "Thorne",
+      },
+      source_event_ids: ["event-2", "event-1"],
+      delete_requested: false,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/memories/admit",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      memory_key: "user.preference.supplement.magnesium",
+      value: {
+        merchant: "Thorne",
+      },
+      source_event_ids: ["event-2", "event-1"],
+      delete_requested: false,
+    });
+  });
+
+  it("throws ApiError when memory admission returns a backend error envelope", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: "source_event_ids must all reference existing events owned by the user",
+        }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await expect(
+      admitMemory("https://api.example.com", {
+        user_id: "user-1",
+        memory_key: "user.preference.supplement.magnesium",
+        value: {
+          merchant: "Thorne",
+        },
+        source_event_ids: ["missing-event"],
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<ApiError>({
+        message: "source_event_ids must all reference existing events owned by the user",
+        status: 400,
+      }),
+    );
   });
 
   it("posts memory review labels to the shipped endpoint", async () => {

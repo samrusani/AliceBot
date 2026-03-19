@@ -1241,6 +1241,31 @@ code,
   line-height: 1.25;
 }
 
+.workflow-memory-writeback__value-field textarea {
+  min-height: 140px;
+}
+
+.workflow-memory-writeback__toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+.workflow-memory-writeback__toggle input {
+  margin-top: 3px;
+}
+
+.workflow-memory-writeback__evidence {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(248, 245, 240, 0.92);
+  border: 1px solid rgba(42, 52, 66, 0.08);
+}
+
 .attribute-item,
 .evidence-chip {
   display: inline-flex;
