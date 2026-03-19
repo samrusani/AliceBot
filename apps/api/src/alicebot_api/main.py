@@ -25,6 +25,7 @@ from alicebot_api.contracts import (
     ConsentUpsertInput,
     CompileContextSemanticRetrievalInput,
     DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+    DEFAULT_CALENDAR_EVENT_LIST_LIMIT,
     DEFAULT_MAX_EVENTS,
     DEFAULT_MAX_ENTITY_EDGES,
     DEFAULT_MAX_ENTITIES,
@@ -34,6 +35,7 @@ from alicebot_api.contracts import (
     DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     MAX_MEMORY_REVIEW_LIMIT,
     MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+    MAX_CALENDAR_EVENT_LIST_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
     EmbeddingConfigStatus,
@@ -48,6 +50,7 @@ from alicebot_api.contracts import (
     CALENDAR_READONLY_SCOPE,
     GMAIL_READONLY_SCOPE,
     CalendarAccountConnectInput,
+    CalendarEventListInput,
     CalendarEventIngestInput,
     GmailAccountConnectInput,
     GmailMessageIngestInput,
@@ -180,12 +183,14 @@ from alicebot_api.calendar import (
     CalendarCredentialPersistenceError,
     CalendarCredentialValidationError,
     CalendarEventFetchError,
+    CalendarEventListValidationError,
     CalendarEventNotFoundError,
     CalendarEventUnsupportedError,
     create_calendar_account_record,
     get_calendar_account_record,
     ingest_calendar_event_record,
     list_calendar_account_records,
+    list_calendar_event_records,
 )
 from alicebot_api.calendar_secret_manager import build_calendar_secret_manager
 from alicebot_api.gmail_secret_manager import build_gmail_secret_manager
@@ -1750,6 +1755,49 @@ def get_calendar_account(calendar_account_id: UUID, user_id: UUID) -> JSONRespon
             )
     except CalendarAccountNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/calendar-accounts/{calendar_account_id}/events")
+def list_calendar_events(
+    calendar_account_id: UUID,
+    user_id: UUID,
+    limit: int = Query(default=DEFAULT_CALENDAR_EVENT_LIST_LIMIT, ge=1, le=MAX_CALENDAR_EVENT_LIST_LIMIT),
+    time_min: datetime | None = Query(default=None),
+    time_max: datetime | None = Query(default=None),
+) -> JSONResponse:
+    settings = get_settings()
+    secret_manager = build_calendar_secret_manager(settings.calendar_secret_manager_url)
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_calendar_event_records(
+                ContinuityStore(conn),
+                secret_manager,
+                user_id=user_id,
+                request=CalendarEventListInput(
+                    calendar_account_id=calendar_account_id,
+                    limit=limit,
+                    time_min=time_min,
+                    time_max=time_max,
+                ),
+            )
+    except CalendarAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except (
+        CalendarCredentialNotFoundError,
+        CalendarCredentialInvalidError,
+        CalendarCredentialPersistenceError,
+    ) as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+    except CalendarEventListValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except CalendarEventFetchError as exc:
+        return JSONResponse(status_code=502, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,

@@ -93,6 +93,8 @@ DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 5
 MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 50
 DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 5
 MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 50
+DEFAULT_CALENDAR_EVENT_LIST_LIMIT = 20
+MAX_CALENDAR_EVENT_LIST_LIMIT = 50
 COMPILER_VERSION_V0 = "continuity_v0"
 PROMPT_ASSEMBLY_VERSION_V0 = "prompt_assembly_v0"
 RESPONSE_GENERATION_VERSION_V0 = "response_generation_v0"
@@ -143,6 +145,7 @@ TASK_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_WORKSPACE_LIST_ORDER = ["created_at_asc", "id_asc"]
 GMAIL_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]
 CALENDAR_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]
+CALENDAR_EVENT_LIST_ORDER = ["start_time_asc", "provider_event_id_asc"]
 TASK_ARTIFACT_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_LIST_ORDER = ["sequence_no_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_EMBEDDING_LIST_ORDER = [
@@ -1983,6 +1986,14 @@ class CalendarEventIngestInput:
     provider_event_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class CalendarEventListInput:
+    calendar_account_id: UUID
+    limit: int = DEFAULT_CALENDAR_EVENT_LIST_LIMIT
+    time_min: datetime | None = None
+    time_max: datetime | None = None
+
+
 class CalendarAccountRecord(TypedDict):
     id: str
     provider: str
@@ -2024,6 +2035,30 @@ class CalendarEventIngestionResponse(TypedDict):
     event: CalendarEventIngestionRecord
     artifact: TaskArtifactRecord
     summary: TaskArtifactChunkListSummary
+
+
+class CalendarEventSummaryRecord(TypedDict):
+    provider_event_id: str
+    status: str | None
+    summary: str | None
+    start_time: str | None
+    end_time: str | None
+    html_link: str | None
+    updated_at: str | None
+
+
+class CalendarEventListSummary(TypedDict):
+    total_count: int
+    limit: int
+    order: list[str]
+    time_min: str | None
+    time_max: str | None
+
+
+class CalendarEventListResponse(TypedDict):
+    account: CalendarAccountRecord
+    items: list[CalendarEventSummaryRecord]
+    summary: CalendarEventListSummary
 
 
 @dataclass(frozen=True, slots=True)
