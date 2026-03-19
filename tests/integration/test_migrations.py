@@ -577,6 +577,102 @@ def test_gmail_external_secret_manager_migration_round_trip_preserves_legacy_tra
             )
 
 
+def test_calendar_account_migration_round_trip_preserves_table_shape(database_urls):
+    config = make_alembic_config(database_urls["admin"])
+    user_id = "00000000-0000-0000-0000-000000000401"
+    calendar_account_id = "00000000-0000-0000-0000-000000000402"
+
+    command.upgrade(config, "20260316_0029")
+    command.upgrade(config, "20260319_0030")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO users (id, email, display_name)
+                VALUES (%s, 'calendar-migration@example.com', 'Calendar Migration User')
+                """,
+                (user_id,),
+            )
+            cur.execute(
+                """
+                INSERT INTO calendar_accounts (
+                  id,
+                  user_id,
+                  provider_account_id,
+                  email_address,
+                  display_name,
+                  scope
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  'acct-calendar-001',
+                  'owner@gmail.example',
+                  'Owner',
+                  'https://www.googleapis.com/auth/calendar.readonly'
+                )
+                """,
+                (calendar_account_id, user_id),
+            )
+            cur.execute(
+                """
+                INSERT INTO calendar_account_credentials (
+                  calendar_account_id,
+                  user_id,
+                  auth_kind,
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
+                  credential_blob
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  'oauth_access_token',
+                  'calendar_oauth_access_token_v1',
+                  'file_v1',
+                  'users/00000000-0000-0000-0000-000000000401/calendar-account-credentials/cred.json',
+                  NULL
+                )
+                """,
+                (calendar_account_id, user_id),
+            )
+        conn.commit()
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  auth_kind,
+                  credential_kind,
+                  secret_manager_kind,
+                  secret_ref,
+                  credential_blob IS NULL
+                FROM calendar_account_credentials
+                WHERE calendar_account_id = %s
+                """,
+                (calendar_account_id,),
+            )
+            assert cur.fetchone() == (
+                "oauth_access_token",
+                "calendar_oauth_access_token_v1",
+                "file_v1",
+                "users/00000000-0000-0000-0000-000000000401/calendar-account-credentials/cred.json",
+                True,
+            )
+
+    command.downgrade(config, "20260316_0029")
+
+    with psycopg.connect(database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.calendar_account_credentials')")
+            assert cur.fetchone() == (None,)
+            cur.execute("SELECT to_regclass('public.calendar_accounts')")
+            assert cur.fetchone() == (None,)
+
+
 def test_migrations_upgrade_and_downgrade(database_urls):
     config = make_alembic_config(database_urls["admin"])
 

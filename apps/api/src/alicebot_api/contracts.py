@@ -142,6 +142,7 @@ APPROVAL_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_WORKSPACE_LIST_ORDER = ["created_at_asc", "id_asc"]
 GMAIL_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]
+CALENDAR_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_LIST_ORDER = ["sequence_no_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_EMBEDDING_LIST_ORDER = [
@@ -185,6 +186,10 @@ GMAIL_AUTH_KIND_OAUTH_ACCESS_TOKEN = "oauth_access_token"
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 GMAIL_PROTECTED_CREDENTIAL_KIND = "gmail_oauth_access_token_v1"
 GMAIL_REFRESHABLE_PROTECTED_CREDENTIAL_KIND = "gmail_oauth_refresh_token_v2"
+CALENDAR_PROVIDER = "google_calendar"
+CALENDAR_AUTH_KIND_OAUTH_ACCESS_TOKEN = "oauth_access_token"
+CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+CALENDAR_PROTECTED_CREDENTIAL_KIND = "calendar_oauth_access_token_v1"
 TASK_STEP_SEQUENCE_VERSION_V0 = "task_step_sequence_v0"
 TRACE_KIND_TASK_STEP_SEQUENCE = "task.step.sequence"
 TASK_STEP_CONTINUATION_VERSION_V0 = "task_step_continuation_v0"
@@ -1958,6 +1963,65 @@ class GmailMessageIngestionRecord(TypedDict):
 class GmailMessageIngestionResponse(TypedDict):
     account: GmailAccountRecord
     message: GmailMessageIngestionRecord
+    artifact: TaskArtifactRecord
+    summary: TaskArtifactChunkListSummary
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarAccountConnectInput:
+    provider_account_id: str
+    email_address: str
+    display_name: str | None
+    scope: str
+    access_token: str
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarEventIngestInput:
+    calendar_account_id: UUID
+    task_workspace_id: UUID
+    provider_event_id: str
+
+
+class CalendarAccountRecord(TypedDict):
+    id: str
+    provider: str
+    auth_kind: str
+    provider_account_id: str
+    email_address: str
+    display_name: str | None
+    scope: str
+    created_at: str
+    updated_at: str
+
+
+class CalendarAccountConnectResponse(TypedDict):
+    account: CalendarAccountRecord
+
+
+class CalendarAccountListSummary(TypedDict):
+    total_count: int
+    order: list[str]
+
+
+class CalendarAccountListResponse(TypedDict):
+    items: list[CalendarAccountRecord]
+    summary: CalendarAccountListSummary
+
+
+class CalendarAccountDetailResponse(TypedDict):
+    account: CalendarAccountRecord
+
+
+class CalendarEventIngestionRecord(TypedDict):
+    provider_event_id: str
+    artifact_relative_path: str
+    media_type: str
+
+
+class CalendarEventIngestionResponse(TypedDict):
+    account: CalendarAccountRecord
+    event: CalendarEventIngestionRecord
     artifact: TaskArtifactRecord
     summary: TaskArtifactChunkListSummary
 

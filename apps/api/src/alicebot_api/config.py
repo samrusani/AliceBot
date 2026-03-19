@@ -32,6 +32,7 @@ DEFAULT_MODEL_API_KEY = ""
 DEFAULT_MODEL_TIMEOUT_SECONDS = 30
 DEFAULT_TASK_WORKSPACE_ROOT = "/tmp/alicebot/task-workspaces"
 DEFAULT_GMAIL_SECRET_MANAGER_URL = ""
+DEFAULT_CALENDAR_SECRET_MANAGER_URL = ""
 
 Environment = Mapping[str, str]
 
@@ -71,6 +72,7 @@ class Settings:
     model_timeout_seconds: int = DEFAULT_MODEL_TIMEOUT_SECONDS
     task_workspace_root: str = DEFAULT_TASK_WORKSPACE_ROOT
     gmail_secret_manager_url: str = DEFAULT_GMAIL_SECRET_MANAGER_URL
+    calendar_secret_manager_url: str = DEFAULT_CALENDAR_SECRET_MANAGER_URL
 
     @classmethod
     def from_env(cls, env: Environment | None = None) -> "Settings":
@@ -117,6 +119,11 @@ class Settings:
                 current_env,
                 "GMAIL_SECRET_MANAGER_URL",
                 cls.gmail_secret_manager_url,
+            ),
+            calendar_secret_manager_url=_get_env_value(
+                current_env,
+                "CALENDAR_SECRET_MANAGER_URL",
+                cls.calendar_secret_manager_url,
             ),
         )
 
