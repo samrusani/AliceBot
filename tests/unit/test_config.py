@@ -25,6 +25,7 @@ def test_settings_defaults(monkeypatch):
         "MODEL_TIMEOUT_SECONDS",
         "TASK_WORKSPACE_ROOT",
         "GMAIL_SECRET_MANAGER_URL",
+        "CALENDAR_SECRET_MANAGER_URL",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -41,6 +42,7 @@ def test_settings_defaults(monkeypatch):
     assert settings.model_timeout_seconds == 30
     assert settings.task_workspace_root == "/tmp/alicebot/task-workspaces"
     assert settings.gmail_secret_manager_url == ""
+    assert settings.calendar_secret_manager_url == ""
 
 
 def test_settings_honor_environment_overrides(monkeypatch):
@@ -53,6 +55,7 @@ def test_settings_honor_environment_overrides(monkeypatch):
     monkeypatch.setenv("MODEL_TIMEOUT_SECONDS", "45")
     monkeypatch.setenv("TASK_WORKSPACE_ROOT", "/tmp/custom-workspaces")
     monkeypatch.setenv("GMAIL_SECRET_MANAGER_URL", "file:///tmp/custom-gmail-secrets")
+    monkeypatch.setenv("CALENDAR_SECRET_MANAGER_URL", "file:///tmp/custom-calendar-secrets")
 
     settings = Settings.from_env()
 
@@ -65,6 +68,7 @@ def test_settings_honor_environment_overrides(monkeypatch):
     assert settings.model_timeout_seconds == 45
     assert settings.task_workspace_root == "/tmp/custom-workspaces"
     assert settings.gmail_secret_manager_url == "file:///tmp/custom-gmail-secrets"
+    assert settings.calendar_secret_manager_url == "file:///tmp/custom-calendar-secrets"
 
 
 def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
@@ -77,6 +81,7 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
             "MODEL_NAME": "gpt-5-mini",
             "TASK_WORKSPACE_ROOT": "/tmp/mapped-workspaces",
             "GMAIL_SECRET_MANAGER_URL": "file:///tmp/mapped-gmail-secrets",
+            "CALENDAR_SECRET_MANAGER_URL": "file:///tmp/mapped-calendar-secrets",
         }
     )
 
@@ -87,6 +92,7 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
     assert settings.model_name == "gpt-5-mini"
     assert settings.task_workspace_root == "/tmp/mapped-workspaces"
     assert settings.gmail_secret_manager_url == "file:///tmp/mapped-gmail-secrets"
+    assert settings.calendar_secret_manager_url == "file:///tmp/mapped-calendar-secrets"
 
 
 def test_settings_raise_clear_error_for_invalid_integer_values() -> None:
