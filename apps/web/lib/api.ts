@@ -381,6 +381,56 @@ export type EntityEdgeListSummary = {
   order: string[];
 };
 
+export type GmailReadonlyScope = "https://www.googleapis.com/auth/gmail.readonly";
+
+export type GmailAccountRecord = {
+  id: string;
+  provider: string;
+  auth_kind: string;
+  provider_account_id: string;
+  email_address: string;
+  display_name: string | null;
+  scope: GmailReadonlyScope;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GmailAccountListSummary = {
+  total_count: number;
+  order: string[];
+};
+
+export type GmailAccountConnectPayload = {
+  user_id: string;
+  provider_account_id: string;
+  email_address: string;
+  display_name?: string | null;
+  scope: GmailReadonlyScope;
+  access_token: string;
+  refresh_token?: string | null;
+  client_id?: string | null;
+  client_secret?: string | null;
+  access_token_expires_at?: string | null;
+};
+
+export type GmailMessageIngestPayload = {
+  user_id: string;
+  task_workspace_id: string;
+};
+
+export type GmailMessageIngestionRecord = {
+  provider_message_id: string;
+  artifact_relative_path: string;
+  media_type: string;
+};
+
+export type GmailMessageIngestionResponse = {
+  account: GmailAccountRecord;
+  message: GmailMessageIngestionRecord;
+  artifact: TaskArtifactRecord;
+  summary: TaskArtifactChunkListSummary;
+};
+
 export type TaskWorkspaceStatus = "active";
 
 export type TaskWorkspaceRecord = {
@@ -920,6 +970,50 @@ export function getTraceEvents(apiBaseUrl: string, traceId: string, userId: stri
     `/v0/traces/${traceId}/events`,
     undefined,
     { user_id: userId },
+  );
+}
+
+export function connectGmailAccount(
+  apiBaseUrl: string,
+  payload: GmailAccountConnectPayload,
+) {
+  return requestJson<{ account: GmailAccountRecord }>(apiBaseUrl, "/v0/gmail-accounts", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listGmailAccounts(apiBaseUrl: string, userId: string) {
+  return requestJson<{ items: GmailAccountRecord[]; summary: GmailAccountListSummary }>(
+    apiBaseUrl,
+    "/v0/gmail-accounts",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getGmailAccountDetail(apiBaseUrl: string, gmailAccountId: string, userId: string) {
+  return requestJson<{ account: GmailAccountRecord }>(
+    apiBaseUrl,
+    `/v0/gmail-accounts/${gmailAccountId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function ingestGmailMessage(
+  apiBaseUrl: string,
+  gmailAccountId: string,
+  providerMessageId: string,
+  payload: GmailMessageIngestPayload,
+) {
+  return requestJson<GmailMessageIngestionResponse>(
+    apiBaseUrl,
+    `/v0/gmail-accounts/${gmailAccountId}/messages/${providerMessageId}/ingest`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
   );
 }
 
