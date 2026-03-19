@@ -568,6 +568,14 @@ export type MemoryReviewLabelPayload = {
   note?: string | null;
 };
 
+export type MemoryAdmitPayload = {
+  user_id: string;
+  memory_key: string;
+  value: unknown | null;
+  source_event_ids: string[];
+  delete_requested?: boolean;
+};
+
 export type ApprovalRequestPayload = {
   user_id: string;
   thread_id: string;
@@ -608,6 +616,39 @@ export type ApprovalResolutionResponse = {
     trace_id: string;
     trace_event_count: number;
   };
+};
+
+export type PersistedMemoryRecord = {
+  id: string;
+  user_id: string;
+  memory_key: string;
+  value: unknown;
+  status: "active" | "deleted";
+  source_event_ids: string[];
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+};
+
+export type PersistedMemoryRevisionRecord = {
+  id: string;
+  user_id: string;
+  memory_id: string;
+  sequence_no: number;
+  action: "NOOP" | "ADD" | "UPDATE" | "DELETE";
+  memory_key: string;
+  previous_value: unknown | null;
+  new_value: unknown | null;
+  source_event_ids: string[];
+  candidate: JsonObject;
+  created_at: string;
+};
+
+export type MemoryAdmissionResponse = {
+  decision: "NOOP" | "ADD" | "UPDATE" | "DELETE";
+  reason: string;
+  memory: PersistedMemoryRecord | null;
+  revision: PersistedMemoryRevisionRecord | null;
 };
 
 export type AssistantResponsePayload = {
@@ -1001,6 +1042,13 @@ export function executeApproval(apiBaseUrl: string, approvalId: string, userId: 
   return requestJson<ApprovalExecutionResponse>(apiBaseUrl, `/v0/approvals/${approvalId}/execute`, {
     method: "POST",
     body: JSON.stringify({ user_id: userId }),
+  });
+}
+
+export function admitMemory(apiBaseUrl: string, payload: MemoryAdmitPayload) {
+  return requestJson<MemoryAdmissionResponse>(apiBaseUrl, "/v0/memories/admit", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 

@@ -1,92 +1,104 @@
 # BUILD_REPORT.md
 
 ## sprint objective
-Adopt shipped Calendar event discovery in `/calendar` so operators select one discovered event (instead of typing a raw provider ID) and explicitly ingest it into one selected task workspace without backend scope expansion.
+Prove the canonical magnesium reorder ship-gate flow end-to-end in shipped operator surfaces and seams:
+request -> approval -> execution -> explicit memory write-back.
 
 ## completed work
-- Added Calendar discovery API typing and helper in `apps/web/lib/api.ts`:
-  - `listCalendarEvents(...)`
-  - `CalendarEventSummaryRecord`, `CalendarEventListSummary`, `CalendarEventListResponse`, `CalendarEventListQuery`
-- Added fixture-backed Calendar discovery data and bounded filtering helper in `apps/web/lib/fixtures.ts`:
-  - `calendarEventFixtures`
-  - `getFixtureCalendarEventList(...)`
-- Added new discovery UI component `apps/web/components/calendar-event-list.tsx`:
-  - bounded controls (`limit`, optional `time_min`, optional `time_max`)
-  - deterministic discovered-event list rendering
-  - explicit one-event selection via `/calendar` query state
-  - stable live/fixture/unavailable states
-- Updated `/calendar` route wiring in `apps/web/app/calendar/page.tsx`:
-  - consumes `GET /v0/calendar-accounts/{calendar_account_id}/events`
-  - enforces explicit selected discovered event from query (no implicit first-event fallback)
-  - falls back to fixture discovery when live read is unavailable
-  - renders discovery-failure messaging in one canonical location (event list component)
-  - preserves account list/detail/connect behavior
-  - keeps explicit ingestion action through existing seam
-- Refactored `apps/web/components/calendar-event-ingest-form.tsx`:
-  - removed raw provider event ID text input
-  - now ingests selected discovered event ID
-  - keeps explicit single-event ingestion action and status handling
-- Updated loading and summary copy:
-  - `apps/web/app/calendar/loading.tsx`
-  - `apps/web/components/calendar-ingestion-summary.tsx`
-- Added/updated tests:
-  - `apps/web/lib/api.test.ts`
-  - `apps/web/components/calendar-event-ingest-form.test.tsx`
-  - `apps/web/components/calendar-event-list.test.tsx` (new)
-  - `apps/web/app/calendar/page.test.tsx` (new)
+- Added explicit web memory-admit helper in [`apps/web/lib/api.ts`](apps/web/lib/api.ts):
+  - `MemoryAdmitPayload`
+  - `MemoryAdmissionResponse`
+  - `PersistedMemoryRecord`
+  - `PersistedMemoryRevisionRecord`
+  - `admitMemory(...)` for `POST /v0/memories/admit`
+- Added bounded post-execution write-back UI component [`apps/web/components/workflow-memory-writeback-form.tsx`](apps/web/components/workflow-memory-writeback-form.tsx):
+  - explicit operator submit button (no auto-write)
+  - bounded inputs (`memory_key`, JSON `value`, `delete_requested`)
+  - execution-evidence source IDs derived from execution-linked event IDs
+  - stable success/failure/validation/read-only messaging
+- Integrated write-back surface into approval review in [`apps/web/components/approval-detail.tsx`](apps/web/components/approval-detail.tsx), which covers:
+  - `/approvals` detail surface
+  - embedded `/chat` workflow panel approval detail
+- Extended execution evidence rendering in [`apps/web/components/execution-summary.tsx`](apps/web/components/execution-summary.tsx):
+  - request event ID and result event ID are now visible in execution review
+- Added styles for the new bounded write-back form in [`apps/web/app/globals.css`](apps/web/app/globals.css)
+- Added/updated web tests:
+  - [`apps/web/lib/api.test.ts`](apps/web/lib/api.test.ts) (memory admit helper + error handling)
+  - [`apps/web/components/approval-detail.test.tsx`](apps/web/components/approval-detail.test.tsx) (success, validation failure, fixture/read-only)
+  - [`apps/web/components/thread-workflow-panel.test.tsx`](apps/web/components/thread-workflow-panel.test.tsx) (embedded write-back affordance visibility)
+  - [`apps/web/components/execution-summary.test.tsx`](apps/web/components/execution-summary.test.tsx) (event evidence display)
+- Added canonical MVP ship-gate integration test:
+  - [`tests/integration/test_mvp_magnesium_reorder_flow.py`](tests/integration/test_mvp_magnesium_reorder_flow.py)
+  - Verifies approval creation, resolution, execute event evidence, memory admit/update, and persisted revision outcomes
+- Added operator runbook:
+  - [`docs/runbooks/mvp-ship-gate-magnesium-reorder.md`](docs/runbooks/mvp-ship-gate-magnesium-reorder.md)
 
 ## incomplete work
 - None within sprint scope.
 
+## exact approvals/workflow files/components updated
+- `approval-detail`:
+  - [`apps/web/components/approval-detail.tsx`](apps/web/components/approval-detail.tsx)
+  - [`apps/web/components/approval-detail.test.tsx`](apps/web/components/approval-detail.test.tsx)
+- `execution-summary`:
+  - [`apps/web/components/execution-summary.tsx`](apps/web/components/execution-summary.tsx)
+  - [`apps/web/components/execution-summary.test.tsx`](apps/web/components/execution-summary.test.tsx)
+- `thread-workflow-panel` tests (embedded coverage):
+  - [`apps/web/components/thread-workflow-panel.test.tsx`](apps/web/components/thread-workflow-panel.test.tsx)
+- New write-back component:
+  - [`apps/web/components/workflow-memory-writeback-form.tsx`](apps/web/components/workflow-memory-writeback-form.tsx)
+- Shared API client:
+  - [`apps/web/lib/api.ts`](apps/web/lib/api.ts)
+  - [`apps/web/lib/api.test.ts`](apps/web/lib/api.test.ts)
+
+## write-back surface mode
+- Live: enabled when approval workflow has live execution evidence and live API config.
+- Fixture: visible but read-only; submission disabled.
+- Mixed: handled naturally through approval/execution source inputs; submit only when evidence is live/preview-backed.
+
+## exact shipped endpoints consumed
+- `POST /v0/approvals/{approval_id}/execute`
+- `POST /v0/memories/admit`
+
 ## files changed
-- `apps/web/app/calendar/page.tsx`
-- `apps/web/app/calendar/loading.tsx`
-- `apps/web/components/calendar-event-ingest-form.tsx`
-- `apps/web/components/calendar-event-list.tsx` (new)
-- `apps/web/components/calendar-ingestion-summary.tsx`
-- `apps/web/lib/api.ts`
-- `apps/web/lib/fixtures.ts`
-- `apps/web/lib/api.test.ts`
-- `apps/web/components/calendar-event-ingest-form.test.tsx`
-- `apps/web/components/calendar-event-list.test.tsx` (new)
-- `apps/web/app/calendar/page.test.tsx` (new)
-- `BUILD_REPORT.md`
+- [`apps/web/app/globals.css`](apps/web/app/globals.css)
+- [`apps/web/components/approval-detail.tsx`](apps/web/components/approval-detail.tsx)
+- [`apps/web/components/approval-detail.test.tsx`](apps/web/components/approval-detail.test.tsx)
+- [`apps/web/components/execution-summary.tsx`](apps/web/components/execution-summary.tsx)
+- [`apps/web/components/execution-summary.test.tsx`](apps/web/components/execution-summary.test.tsx)
+- [`apps/web/components/thread-workflow-panel.test.tsx`](apps/web/components/thread-workflow-panel.test.tsx)
+- [`apps/web/components/workflow-memory-writeback-form.tsx`](apps/web/components/workflow-memory-writeback-form.tsx)
+- [`apps/web/lib/api.ts`](apps/web/lib/api.ts)
+- [`apps/web/lib/api.test.ts`](apps/web/lib/api.test.ts)
+- [`tests/integration/test_mvp_magnesium_reorder_flow.py`](tests/integration/test_mvp_magnesium_reorder_flow.py)
+- [`docs/runbooks/mvp-ship-gate-magnesium-reorder.md`](docs/runbooks/mvp-ship-gate-magnesium-reorder.md)
+- [`BUILD_REPORT.md`](BUILD_REPORT.md)
 
 ## tests run
-Commands run in `apps/web`:
-- `npm run lint`
-- `npm test`
-- `npm run build`
+Commands executed:
+- `cd apps/web && npm run lint`
+- `cd apps/web && npm test`
+- `cd apps/web && npm run build`
+- `cd /Users/redacted/Desktop/Codex/AliceBot && ./.venv/bin/python -m pytest tests/integration/test_proxy_execution_api.py tests/integration/test_memory_admission.py tests/integration/test_mvp_magnesium_reorder_flow.py`
 
 Results:
 - `npm run lint`: PASS
-- `npm test`: PASS (31 files, 95 tests)
-- `npm run build`: PASS (Next.js production build completed)
+- `npm test`: PASS (32 files, 100 tests)
+- `npm run build`: PASS
+- scoped backend integration pytest: PASS (19 passed)
+
+## concise desktop/mobile verification notes
+- Desktop/mobile manual browser walkthrough was not run in this build session.
+- Automated verification passed for web lint/test/build and scoped backend integration flow.
 
 ## blockers/issues
-- No blockers.
-
-## discovery and ingestion surface mode
-- Discovery surface (`GET /v0/calendar-accounts/{calendar_account_id}/events`):
-  - `live` when API config + selected live account + discovery read succeeds
-  - `fixture` when live config is absent or live discovery read fails and fixture fallback exists
-  - `unavailable` only when no selected account or no fallback exists
-- Ingestion surface (`POST /v0/calendar-accounts/{calendar_account_id}/events/{provider_event_id}/ingest`):
-  - explicit single-event ingestion remains unchanged
-  - enabled only when selected account/workspaces are live and one discovered event is selected
-
-## exact shipped calendar endpoints consumed
-- `GET /v0/calendar-accounts/{calendar_account_id}/events`
-- `POST /v0/calendar-accounts/{calendar_account_id}/events/{provider_event_id}/ingest`
-
-## desktop/mobile verification notes
-- Automated verification completed via lint/test/build.
-- Manual browser pass was not run in this execution; responsive behavior relies on existing shared grid/form patterns already used by `/calendar` and retained in this sprint.
+- No implementation blockers.
+- Initial sandbox run of integration pytest could not access localhost Postgres; rerun with elevated permissions passed.
 
 ## intentionally deferred after this sprint
-- No backend changes or new endpoints
-- No recurrence expansion, sync, backfill, or write-capable Calendar actions
-- No Gmail scope/auth redesign or unrelated route redesign
+- No backend endpoint additions.
+- No automation/daemon for memory auto-admission.
+- No connector, runner, auth, or broader route redesign scope.
 
 ## recommended next step
-Run a brief manual QA pass on `/calendar` (desktop + mobile viewport) focused on discovery controls (`limit`, `time_min`, `time_max`), selection persistence through query params, and ingestion success/failure messaging with live API configured.
+Perform a focused manual QA pass on `/approvals` and `/chat` (desktop + mobile viewport) to confirm final interaction polish of the new post-execution memory write-back form under live and fixture modes.
