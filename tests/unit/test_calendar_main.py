@@ -14,6 +14,7 @@ from alicebot_api.calendar import (
     CalendarCredentialPersistenceError,
     CalendarCredentialValidationError,
     CalendarEventFetchError,
+    CalendarEventListValidationError,
     CalendarEventNotFoundError,
     CalendarEventUnsupportedError,
 )
@@ -165,6 +166,158 @@ def test_get_calendar_account_endpoint_maps_not_found_to_404(monkeypatch) -> Non
     assert response.status_code == 404
     assert json.loads(response.body) == {
         "detail": f"calendar account {calendar_account_id} was not found"
+    }
+
+
+def test_list_calendar_events_endpoint_returns_payload(monkeypatch) -> None:
+    user_id = uuid4()
+    calendar_account_id = uuid4()
+    settings = _settings()
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "list_calendar_event_records",
+        lambda *_args, **_kwargs: {
+            "account": {
+                "id": str(calendar_account_id),
+                "provider": "google_calendar",
+                "auth_kind": "oauth_access_token",
+                "provider_account_id": "acct-001",
+                "email_address": "owner@example.com",
+                "display_name": "Owner",
+                "scope": "https://www.googleapis.com/auth/calendar.readonly",
+                "created_at": "2026-03-19T10:00:00+00:00",
+                "updated_at": "2026-03-19T10:00:00+00:00",
+            },
+            "items": [
+                {
+                    "provider_event_id": "evt-001",
+                    "status": "confirmed",
+                    "summary": "Sprint Planning",
+                    "start_time": "2026-03-20T09:00:00+00:00",
+                    "end_time": "2026-03-20T09:30:00+00:00",
+                    "html_link": "https://calendar.google.com/event?eid=evt-001",
+                    "updated_at": "2026-03-19T10:00:00+00:00",
+                }
+            ],
+            "summary": {
+                "total_count": 1,
+                "limit": 20,
+                "order": ["start_time_asc", "provider_event_id_asc"],
+                "time_min": None,
+                "time_max": None,
+            },
+        },
+    )
+
+    response = main_module.list_calendar_events(calendar_account_id, user_id)
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {
+        "account": {
+            "id": str(calendar_account_id),
+            "provider": "google_calendar",
+            "auth_kind": "oauth_access_token",
+            "provider_account_id": "acct-001",
+            "email_address": "owner@example.com",
+            "display_name": "Owner",
+            "scope": "https://www.googleapis.com/auth/calendar.readonly",
+            "created_at": "2026-03-19T10:00:00+00:00",
+            "updated_at": "2026-03-19T10:00:00+00:00",
+        },
+        "items": [
+            {
+                "provider_event_id": "evt-001",
+                "status": "confirmed",
+                "summary": "Sprint Planning",
+                "start_time": "2026-03-20T09:00:00+00:00",
+                "end_time": "2026-03-20T09:30:00+00:00",
+                "html_link": "https://calendar.google.com/event?eid=evt-001",
+                "updated_at": "2026-03-19T10:00:00+00:00",
+            }
+        ],
+        "summary": {
+            "total_count": 1,
+            "limit": 20,
+            "order": ["start_time_asc", "provider_event_id_asc"],
+            "time_min": None,
+            "time_max": None,
+        },
+    }
+
+
+def test_list_calendar_events_endpoint_maps_errors(monkeypatch) -> None:
+    user_id = uuid4()
+    calendar_account_id = uuid4()
+    settings = _settings()
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+
+    monkeypatch.setattr(
+        main_module,
+        "list_calendar_event_records",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CalendarAccountNotFoundError(f"calendar account {calendar_account_id} was not found")
+        ),
+    )
+    response = main_module.list_calendar_events(calendar_account_id, user_id)
+    assert response.status_code == 404
+    assert json.loads(response.body) == {
+        "detail": f"calendar account {calendar_account_id} was not found"
+    }
+
+    monkeypatch.setattr(
+        main_module,
+        "list_calendar_event_records",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CalendarCredentialNotFoundError(
+                f"calendar account {calendar_account_id} is missing protected credentials"
+            )
+        ),
+    )
+    response = main_module.list_calendar_events(calendar_account_id, user_id)
+    assert response.status_code == 409
+    assert json.loads(response.body) == {
+        "detail": f"calendar account {calendar_account_id} is missing protected credentials"
+    }
+
+    monkeypatch.setattr(
+        main_module,
+        "list_calendar_event_records",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CalendarEventListValidationError(
+                "calendar event time_min must be less than or equal to time_max"
+            )
+        ),
+    )
+    response = main_module.list_calendar_events(calendar_account_id, user_id)
+    assert response.status_code == 400
+    assert json.loads(response.body) == {
+        "detail": "calendar event time_min must be less than or equal to time_max"
+    }
+
+    monkeypatch.setattr(
+        main_module,
+        "list_calendar_event_records",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            CalendarEventFetchError("calendar events could not be fetched")
+        ),
+    )
+    response = main_module.list_calendar_events(calendar_account_id, user_id)
+    assert response.status_code == 502
+    assert json.loads(response.body) == {
+        "detail": "calendar events could not be fetched"
     }
 
 

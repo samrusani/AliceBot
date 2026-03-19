@@ -13,6 +13,7 @@ from alicebot_api.calendar import (
     CalendarAccountNotFoundError,
     CalendarCredentialInvalidError,
     CalendarCredentialNotFoundError,
+    CalendarEventListValidationError,
     CalendarEventUnsupportedError,
     build_calendar_event_artifact_relative_path,
     build_calendar_protected_credential_blob,
@@ -21,6 +22,7 @@ from alicebot_api.calendar import (
     get_calendar_account_record,
     ingest_calendar_event_record,
     list_calendar_account_records,
+    list_calendar_event_records,
     resolve_calendar_access_token,
 )
 from alicebot_api.calendar_secret_manager import (
@@ -28,7 +30,11 @@ from alicebot_api.calendar_secret_manager import (
     CalendarSecretManagerError,
 )
 from alicebot_api.contracts import CALENDAR_PROTECTED_CREDENTIAL_KIND, CALENDAR_READONLY_SCOPE
-from alicebot_api.contracts import CalendarAccountConnectInput, CalendarEventIngestInput
+from alicebot_api.contracts import (
+    CalendarAccountConnectInput,
+    CalendarEventIngestInput,
+    CalendarEventListInput,
+)
 from alicebot_api.workspaces import TaskWorkspaceNotFoundError
 
 
@@ -312,6 +318,183 @@ def test_get_calendar_account_record_raises_when_account_is_missing() -> None:
             CalendarStoreStub(),
             user_id=uuid4(),
             calendar_account_id=uuid4(),
+        )
+
+
+def test_list_calendar_event_records_enforces_deterministic_utc_order_and_shape(monkeypatch) -> None:
+    store = CalendarStoreStub()
+    secret_manager = CalendarSecretManagerStub()
+    user_id = uuid4()
+    account = create_calendar_account_record(
+        store,
+        secret_manager,
+        user_id=user_id,
+        request=CalendarAccountConnectInput(
+            provider_account_id="acct-001",
+            email_address="owner@example.com",
+            display_name="Owner",
+            scope=CALENDAR_READONLY_SCOPE,
+            access_token="token-1",
+        ),
+    )["account"]
+
+    monkeypatch.setattr(
+        "alicebot_api.calendar.fetch_calendar_event_list_payload",
+        lambda **_kwargs: [
+            {
+                "id": "evt-c",
+                "summary": "Third",
+                "start": {"dateTime": "2026-03-25T10:00:00+02:00"},
+                "end": {"dateTime": "2026-03-25T10:30:00+02:00"},
+                "status": "confirmed",
+                "htmlLink": "https://calendar.google.com/event?eid=evt-c",
+                "updated": "2026-03-24T10:00:00+00:00",
+            },
+            {
+                "id": "evt-a",
+                "summary": "First",
+                "start": {"date": "2026-03-20"},
+                "end": {"date": "2026-03-21"},
+                "status": "tentative",
+                "updated": "2026-03-19T10:00:00+00:00",
+            },
+            {
+                "id": "evt-b",
+                "summary": "Second",
+                "start": {"dateTime": "2026-03-25T08:30:00+00:00"},
+                "end": {"dateTime": "2026-03-25T09:30:00+00:00"},
+                "status": "confirmed",
+                "updated": "2026-03-24T11:00:00+00:00",
+            },
+            {"summary": "Missing id should be skipped"},
+        ],
+    )
+
+    response = list_calendar_event_records(
+        store,
+        secret_manager,
+        user_id=user_id,
+        request=CalendarEventListInput(
+            calendar_account_id=UUID(account["id"]),
+            limit=2,
+            time_min=datetime(2026, 3, 20, 0, 0, tzinfo=UTC),
+            time_max=datetime(2026, 3, 27, 0, 0, tzinfo=UTC),
+        ),
+    )
+
+    assert response["account"] == account
+    assert response["items"] == [
+        {
+            "provider_event_id": "evt-a",
+            "status": "tentative",
+            "summary": "First",
+            "start_time": "2026-03-20",
+            "end_time": "2026-03-21",
+            "html_link": None,
+            "updated_at": "2026-03-19T10:00:00+00:00",
+        },
+        {
+            "provider_event_id": "evt-c",
+            "status": "confirmed",
+            "summary": "Third",
+            "start_time": "2026-03-25T10:00:00+02:00",
+            "end_time": "2026-03-25T10:30:00+02:00",
+            "html_link": "https://calendar.google.com/event?eid=evt-c",
+            "updated_at": "2026-03-24T10:00:00+00:00",
+        },
+    ]
+    assert response["summary"] == {
+        "total_count": 2,
+        "limit": 2,
+        "order": ["start_time_asc", "provider_event_id_asc"],
+        "time_min": "2026-03-20T00:00:00+00:00",
+        "time_max": "2026-03-27T00:00:00+00:00",
+    }
+
+
+def test_list_calendar_event_records_enforces_hard_max_limit(monkeypatch) -> None:
+    store = CalendarStoreStub()
+    secret_manager = CalendarSecretManagerStub()
+    account = create_calendar_account_record(
+        store,
+        secret_manager,
+        user_id=uuid4(),
+        request=CalendarAccountConnectInput(
+            provider_account_id="acct-001",
+            email_address="owner@example.com",
+            display_name="Owner",
+            scope=CALENDAR_READONLY_SCOPE,
+            access_token="token-1",
+        ),
+    )["account"]
+    monkeypatch.setattr(
+        "alicebot_api.calendar.fetch_calendar_event_list_payload",
+        lambda **_kwargs: [
+            {
+                "id": f"evt-{index:03d}",
+                "start": {"dateTime": f"2026-03-20T09:{index % 60:02d}:00+00:00"},
+            }
+            for index in range(60)
+        ],
+    )
+
+    response = list_calendar_event_records(
+        store,
+        secret_manager,
+        user_id=uuid4(),
+        request=CalendarEventListInput(
+            calendar_account_id=UUID(account["id"]),
+            limit=999,
+        ),
+    )
+
+    assert response["summary"]["limit"] == 50
+    assert response["summary"]["total_count"] == 50
+    assert len(response["items"]) == 50
+
+
+def test_list_calendar_event_records_raises_for_not_found_account() -> None:
+    with pytest.raises(CalendarAccountNotFoundError, match="was not found"):
+        list_calendar_event_records(
+            CalendarStoreStub(),
+            CalendarSecretManagerStub(),
+            user_id=uuid4(),
+            request=CalendarEventListInput(
+                calendar_account_id=uuid4(),
+                limit=10,
+            ),
+        )
+
+
+def test_list_calendar_event_records_rejects_invalid_time_window() -> None:
+    store = CalendarStoreStub()
+    secret_manager = CalendarSecretManagerStub()
+    account = create_calendar_account_record(
+        store,
+        secret_manager,
+        user_id=uuid4(),
+        request=CalendarAccountConnectInput(
+            provider_account_id="acct-001",
+            email_address="owner@example.com",
+            display_name="Owner",
+            scope=CALENDAR_READONLY_SCOPE,
+            access_token="token-1",
+        ),
+    )["account"]
+
+    with pytest.raises(
+        CalendarEventListValidationError,
+        match="calendar event time_min must be less than or equal to time_max",
+    ):
+        list_calendar_event_records(
+            store,
+            secret_manager,
+            user_id=uuid4(),
+            request=CalendarEventListInput(
+                calendar_account_id=UUID(account["id"]),
+                time_min=datetime(2026, 3, 22, tzinfo=UTC),
+                time_max=datetime(2026, 3, 21, tzinfo=UTC),
+            ),
         )
 
 

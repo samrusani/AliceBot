@@ -273,6 +273,237 @@ def test_calendar_account_endpoints_connect_list_detail_and_isolate(
     }
 
 
+def test_calendar_event_list_endpoint_is_deterministic_and_limit_bounded(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
+    calendar_secret_root = tmp_path / "calendar-secrets"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            calendar_secret_manager_url=_build_calendar_secret_manager_url(calendar_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
+        calendar_module,
+        "fetch_calendar_event_list_payload",
+        lambda **_kwargs: [
+            {
+                "id": "evt-c",
+                "summary": "Third",
+                "status": "confirmed",
+                "start": {"dateTime": "2026-03-25T10:00:00+02:00"},
+                "end": {"dateTime": "2026-03-25T10:30:00+02:00"},
+                "htmlLink": "https://calendar.google.com/event?eid=evt-c",
+                "updated": "2026-03-24T09:00:00+00:00",
+            },
+            {
+                "id": "evt-a",
+                "summary": "First",
+                "status": "tentative",
+                "start": {"date": "2026-03-20"},
+                "end": {"date": "2026-03-21"},
+                "updated": "2026-03-19T09:00:00+00:00",
+            },
+            {
+                "id": "evt-b",
+                "summary": "Second",
+                "status": "confirmed",
+                "start": {"dateTime": "2026-03-25T08:30:00+00:00"},
+                "end": {"dateTime": "2026-03-25T09:15:00+00:00"},
+                "updated": "2026-03-24T08:30:00+00:00",
+            },
+        ],
+    )
+
+    _, account_payload = _connect_calendar_account(
+        user_id=owner["user_id"],
+        provider_account_id="acct-owner-001",
+        email_address="owner@gmail.example",
+    )
+    status, payload = invoke_request(
+        "GET",
+        f"/v0/calendar-accounts/{account_payload['account']['id']}/events",
+        query_params={
+            "user_id": str(owner["user_id"]),
+            "limit": "2",
+            "time_min": "2026-03-20T00:00:00+00:00",
+            "time_max": "2026-03-27T00:00:00+00:00",
+        },
+    )
+    tighter_status, tighter_payload = invoke_request(
+        "GET",
+        f"/v0/calendar-accounts/{account_payload['account']['id']}/events",
+        query_params={
+            "user_id": str(owner["user_id"]),
+            "limit": "1",
+        },
+    )
+
+    assert status == 200
+    assert payload == {
+        "account": account_payload["account"],
+        "items": [
+            {
+                "provider_event_id": "evt-a",
+                "status": "tentative",
+                "summary": "First",
+                "start_time": "2026-03-20",
+                "end_time": "2026-03-21",
+                "html_link": None,
+                "updated_at": "2026-03-19T09:00:00+00:00",
+            },
+            {
+                "provider_event_id": "evt-c",
+                "status": "confirmed",
+                "summary": "Third",
+                "start_time": "2026-03-25T10:00:00+02:00",
+                "end_time": "2026-03-25T10:30:00+02:00",
+                "html_link": "https://calendar.google.com/event?eid=evt-c",
+                "updated_at": "2026-03-24T09:00:00+00:00",
+            },
+        ],
+        "summary": {
+            "total_count": 2,
+            "limit": 2,
+            "order": ["start_time_asc", "provider_event_id_asc"],
+            "time_min": "2026-03-20T00:00:00+00:00",
+            "time_max": "2026-03-27T00:00:00+00:00",
+        },
+    }
+    assert tighter_status == 200
+    assert tighter_payload["summary"]["limit"] == 1
+    assert tighter_payload["summary"]["total_count"] == 1
+    assert len(tighter_payload["items"]) == 1
+
+
+def test_calendar_event_list_endpoint_isolates_users_and_handles_missing_accounts(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
+    intruder = seed_user(migrated_database_urls["app"], email="intruder@example.com")
+    calendar_secret_root = tmp_path / "calendar-secrets"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            calendar_secret_manager_url=_build_calendar_secret_manager_url(calendar_secret_root),
+        ),
+    )
+    monkeypatch.setattr(
+        calendar_module,
+        "fetch_calendar_event_list_payload",
+        lambda **_kwargs: [],
+    )
+
+    _, account_payload = _connect_calendar_account(
+        user_id=owner["user_id"],
+        provider_account_id="acct-owner-001",
+        email_address="owner@gmail.example",
+    )
+    isolated_status, isolated_payload = invoke_request(
+        "GET",
+        f"/v0/calendar-accounts/{account_payload['account']['id']}/events",
+        query_params={"user_id": str(intruder["user_id"])},
+    )
+    missing_status, missing_payload = invoke_request(
+        "GET",
+        f"/v0/calendar-accounts/{uuid4()}/events",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+
+    assert isolated_status == 404
+    assert isolated_payload == {
+        "detail": f"calendar account {account_payload['account']['id']} was not found"
+    }
+    assert missing_status == 404
+    assert missing_payload["detail"].endswith("was not found")
+
+
+def test_calendar_event_list_endpoint_maps_credential_fetch_and_validation_failures(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
+    calendar_secret_root = tmp_path / "calendar-secrets"
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            calendar_secret_manager_url=_build_calendar_secret_manager_url(calendar_secret_root),
+        ),
+    )
+
+    _, account_payload = _connect_calendar_account(
+        user_id=owner["user_id"],
+        provider_account_id="acct-owner-001",
+        email_address="owner@gmail.example",
+    )
+    account_id = account_payload["account"]["id"]
+
+    monkeypatch.setattr(
+        calendar_module,
+        "resolve_calendar_access_token",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            calendar_module.CalendarCredentialNotFoundError(
+                f"calendar account {account_id} is missing protected credentials"
+            )
+        ),
+    )
+    credential_status, credential_payload = invoke_request(
+        "GET",
+        f"/v0/calendar-accounts/{account_id}/events",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+    assert credential_status == 409
+    assert credential_payload == {
+        "detail": f"calendar account {account_id} is missing protected credentials"
+    }
+
+    monkeypatch.setattr(
+        calendar_module,
+        "resolve_calendar_access_token",
+        lambda *_args, **_kwargs: "token-for-acct-owner-001",
+    )
+    monkeypatch.setattr(
+        calendar_module,
+        "fetch_calendar_event_list_payload",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            calendar_module.CalendarEventFetchError("calendar events could not be fetched")
+        ),
+    )
+    fetch_status, fetch_payload = invoke_request(
+        "GET",
+        f"/v0/calendar-accounts/{account_id}/events",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+    assert fetch_status == 502
+    assert fetch_payload == {"detail": "calendar events could not be fetched"}
+
+    invalid_window_status, invalid_window_payload = invoke_request(
+        "GET",
+        f"/v0/calendar-accounts/{account_id}/events",
+        query_params={
+            "user_id": str(owner["user_id"]),
+            "time_min": "2026-03-27T00:00:00+00:00",
+            "time_max": "2026-03-20T00:00:00+00:00",
+        },
+    )
+    assert invalid_window_status == 400
+    assert invalid_window_payload == {
+        "detail": "calendar event time_min must be less than or equal to time_max"
+    }
+
+
 def test_calendar_event_ingestion_endpoint_persists_artifact_and_chunks(
     migrated_database_urls,
     monkeypatch,
