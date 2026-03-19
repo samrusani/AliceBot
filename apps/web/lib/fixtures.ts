@@ -5,6 +5,8 @@ import type {
   EntityEdgeRecord,
   EntityListSummary,
   EntityRecord,
+  GmailAccountListSummary,
+  GmailAccountRecord,
   MemoryEvaluationSummary,
   MemoryReviewLabelRecord,
   MemoryReviewLabelSummary,
@@ -527,6 +529,36 @@ const TASK_WORKSPACE_VITAMIN_D = "dddddddd-dddd-4ddd-8ddd-ddddddddddd2";
 const TASK_ARTIFACT_MAGNESIUM_NOTE = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1";
 const TASK_ARTIFACT_VITAMIN_EMAIL = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2";
 const TASK_ARTIFACT_PENDING_PDF = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee3";
+
+export const gmailAccountFixtures: GmailAccountRecord[] = [
+  {
+    id: "f1f1f1f1-f1f1-4f1f-8f1f-f1f1f1f1f1f1",
+    provider: "gmail",
+    auth_kind: "oauth_access_token",
+    provider_account_id: "acct-owner-001",
+    email_address: "owner@gmail.example",
+    display_name: "Owner",
+    scope: "https://www.googleapis.com/auth/gmail.readonly",
+    created_at: "2026-03-16T14:00:00Z",
+    updated_at: "2026-03-16T14:00:00Z",
+  },
+  {
+    id: "f2f2f2f2-f2f2-4f2f-8f2f-f2f2f2f2f2f2",
+    provider: "gmail",
+    auth_kind: "oauth_access_token",
+    provider_account_id: "acct-ops-002",
+    email_address: "ops@gmail.example",
+    display_name: "Ops",
+    scope: "https://www.googleapis.com/auth/gmail.readonly",
+    created_at: "2026-03-17T08:32:00Z",
+    updated_at: "2026-03-17T08:32:00Z",
+  },
+];
+
+export const gmailAccountListSummaryFixture: GmailAccountListSummary = {
+  total_count: gmailAccountFixtures.length,
+  order: ["created_at_asc", "id_asc"],
+};
 
 export const taskWorkspaceFixtures: TaskWorkspaceRecord[] = [
   {
@@ -1310,6 +1342,10 @@ export function getFixtureMemory(memoryId: string) {
 
 export function getFixtureEntity(entityId: string) {
   return entityFixtures.find((item) => item.id === entityId) ?? null;
+}
+
+export function getFixtureGmailAccount(gmailAccountId: string) {
+  return gmailAccountFixtures.find((item) => item.id === gmailAccountId) ?? null;
 }
 
 export function getFixtureTaskWorkspace(taskWorkspaceId: string) {
