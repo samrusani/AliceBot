@@ -8,7 +8,7 @@ export default function Loading() {
       <PageHeader
         eyebrow="Calendar"
         title="Calendar account review workspace"
-        description="Loading connected account list, selected account detail, connect controls, and single-event ingestion controls."
+        description="Loading connected account list, selected account detail, discovery controls, and single-event ingestion controls."
         meta={
           <div className="header-meta">
             <span className="subtle-chip">Loading route state</span>
@@ -60,19 +60,34 @@ export default function Loading() {
         </SectionCard>
 
         <SectionCard
-          eyebrow="Ingest event"
-          title="Loading ingestion controls"
-          description="Provider-event and task-workspace controls are loading."
+          eyebrow="Event discovery"
+          title="Loading discovery controls"
+          description="Bounded event list filters and selected-event rows are loading."
           className="loading-card"
         >
           <div className="detail-stack">
             <StatusBadge status="loading" label="Loading" />
             <div className="loading-placeholder loading-placeholder--line loading-placeholder--wide" />
             <div className="loading-placeholder loading-placeholder--line" />
-            <div className="loading-placeholder loading-placeholder--button" />
+            <div className="loading-placeholder loading-placeholder--card" />
+            <div className="loading-placeholder loading-placeholder--card" />
           </div>
         </SectionCard>
       </div>
+
+      <SectionCard
+        eyebrow="Ingest event"
+        title="Loading ingestion controls"
+        description="Selected-event and task-workspace ingestion controls are loading."
+        className="loading-card"
+      >
+        <div className="detail-stack">
+          <StatusBadge status="loading" label="Loading" />
+          <div className="loading-placeholder loading-placeholder--line loading-placeholder--wide" />
+          <div className="loading-placeholder loading-placeholder--line" />
+          <div className="loading-placeholder loading-placeholder--button" />
+        </div>
+      </SectionCard>
     </div>
   );
 }
