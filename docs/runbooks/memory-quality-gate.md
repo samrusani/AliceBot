@@ -15,20 +15,20 @@ Use `/memories` to read a deterministic ship-gate signal for memory quality befo
 ## Gate Math
 - `precision = correct / (correct + incorrect)` (undefined when denominator is `0`)
 - `adjudicated_sample = correct + incorrect`
-- `remaining_to_minimum_sample = max(0, 10 - adjudicated_sample)`
-- Precision target: `>= 0.80`
-- Minimum adjudicated sample: `>= 10`
+- `remaining_to_minimum_sample = max(0, 20 - adjudicated_sample)`
+- Precision target: `> 0.80` (strictly greater)
+- Minimum adjudicated sample: `>= 20`
 
 ## Gate States
-- `on_track`: precision `>= 0.80` and adjudicated sample `>= 10`
-- `needs_review`: precision `< 0.80` and adjudicated sample `>= 10`
-- `insufficient_evidence`: adjudicated sample `< 10`
+- `on_track`: precision `> 0.80` and adjudicated sample `>= 20`
+- `needs_review`: precision `<= 0.80` and adjudicated sample `>= 20`
+- `insufficient_evidence`: adjudicated sample `< 20`
 - `unavailable data`: evaluation summary not available for computation
 
 ## Posture Readouts
 - Sample posture:
-  - enough sample when adjudicated sample `>= 10`
-  - insufficient sample when adjudicated sample `< 10`
+  - enough sample when adjudicated sample `>= 20`
+  - insufficient sample when adjudicated sample `< 20`
 - Queue posture:
   - queue clear when `unlabeled_memory_count = 0`
   - backlog present when `unlabeled_memory_count > 0`
@@ -69,3 +69,5 @@ Use `/memories` to read a deterministic ship-gate signal for memory quality befo
   - `on_track` -> gate `PASS`
   - `needs_review` -> gate `FAIL`
   - `insufficient_evidence` or unavailable data -> gate `BLOCKED`
+- Boundary behavior:
+  - `precision == 0.80` is `needs_review` and does not pass.
