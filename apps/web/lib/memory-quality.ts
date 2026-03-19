@@ -16,6 +16,7 @@ export type MemoryQualityGate = {
   status: MemoryQualityGateStatus;
   precision: number | null;
   adjudicatedSampleCount: number | null;
+  remainingToMinimumSample: number | null;
   unlabeledQueueCount: number | null;
   samplePosture: MemoryQualitySamplePosture;
   queuePosture: MemoryQualityQueuePosture;
@@ -40,6 +41,7 @@ export function deriveMemoryQualityGate(
       status: "unavailable",
       precision: null,
       adjudicatedSampleCount: null,
+      remainingToMinimumSample: null,
       unlabeledQueueCount: null,
       samplePosture: "unavailable",
       queuePosture: "unavailable",
@@ -51,6 +53,10 @@ export function deriveMemoryQualityGate(
   const correctCount = summary.label_row_counts_by_value.correct;
   const incorrectCount = summary.label_row_counts_by_value.incorrect;
   const adjudicatedSampleCount = correctCount + incorrectCount;
+  const remainingToMinimumSample = Math.max(
+    0,
+    MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE - adjudicatedSampleCount,
+  );
   const precision = calculatePrecision(correctCount, incorrectCount);
   const hasMinimumSample = adjudicatedSampleCount >= MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE;
 
@@ -64,6 +70,7 @@ export function deriveMemoryQualityGate(
     status,
     precision,
     adjudicatedSampleCount,
+    remainingToMinimumSample,
     unlabeledQueueCount: summary.unlabeled_memory_count,
     samplePosture: hasMinimumSample ? "enough_sample" : "insufficient_sample",
     queuePosture: summary.unlabeled_memory_count === 0 ? "queue_clear" : "queue_backlog",

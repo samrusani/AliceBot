@@ -153,6 +153,12 @@ export default async function MemoriesPage({
   const selectedMemoryId = resolveSelectedMemoryId(requestedMemoryId, visibleMemories);
   const selectedFromVisibleList = visibleMemories.find((item) => item.id === selectedMemoryId) ?? null;
   const selectedListSource = activeFilter === "queue" ? reviewQueueSource : memoryListSource;
+  const selectedQueueIndex =
+    activeFilter === "queue" && selectedMemoryId
+      ? visibleMemories.findIndex((item) => item.id === selectedMemoryId)
+      : -1;
+  const nextQueueMemoryId =
+    selectedQueueIndex >= 0 ? visibleMemories[selectedQueueIndex + 1]?.id ?? null : null;
 
   let selectedMemory = selectedFromVisibleList;
   let selectedMemorySource: ApiSource | null = selectedMemory ? selectedListSource : null;
@@ -310,6 +316,8 @@ export default async function MemoriesPage({
             source={selectedMemorySource}
             apiBaseUrl={apiConfig.apiBaseUrl}
             userId={apiConfig.userId}
+            activeFilter={activeFilter}
+            nextQueueMemoryId={nextQueueMemoryId}
           />
         </div>
       </div>
