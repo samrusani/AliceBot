@@ -3,9 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   combinePageModes,
+  connectCalendarAccount,
   connectGmailAccount,
   createThread,
   deriveThreadWorkflowState,
+  getCalendarAccountDetail,
   getGmailAccountDetail,
   getTaskArtifactDetail,
   getTaskWorkspaceDetail,
@@ -18,7 +20,9 @@ import {
   getThreadEvents,
   getThreadSessions,
   executeApproval,
+  ingestCalendarEvent,
   ingestGmailMessage,
+  listCalendarAccounts,
   listEntities,
   listEntityEdges,
   listGmailAccounts,
@@ -1108,6 +1112,172 @@ describe("api helpers", () => {
       email_address: "owner@gmail.example",
       display_name: "Owner",
       scope: "https://www.googleapis.com/auth/gmail.readonly",
+      access_token: "access-token-1",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      task_workspace_id: "workspace-1",
+    });
+  });
+
+  it("reads and writes Calendar account and selected-event ingestion endpoints", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          account: {
+            id: "calendar-account-1",
+            provider: "google_calendar",
+            auth_kind: "oauth_access_token",
+            provider_account_id: "acct-owner-001",
+            email_address: "owner@gmail.example",
+            display_name: "Owner",
+            scope: "https://www.googleapis.com/auth/calendar.readonly",
+            created_at: "2026-03-18T00:00:00Z",
+            updated_at: "2026-03-18T00:00:00Z",
+          },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "calendar-account-1",
+              provider: "google_calendar",
+              auth_kind: "oauth_access_token",
+              provider_account_id: "acct-owner-001",
+              email_address: "owner@gmail.example",
+              display_name: "Owner",
+              scope: "https://www.googleapis.com/auth/calendar.readonly",
+              created_at: "2026-03-18T00:00:00Z",
+              updated_at: "2026-03-18T00:00:00Z",
+            },
+          ],
+          summary: {
+            total_count: 1,
+            order: ["created_at_asc", "id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          account: {
+            id: "calendar-account-1",
+            provider: "google_calendar",
+            auth_kind: "oauth_access_token",
+            provider_account_id: "acct-owner-001",
+            email_address: "owner@gmail.example",
+            display_name: "Owner",
+            scope: "https://www.googleapis.com/auth/calendar.readonly",
+            created_at: "2026-03-18T00:00:00Z",
+            updated_at: "2026-03-18T00:00:00Z",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          account: {
+            id: "calendar-account-1",
+            provider: "google_calendar",
+            auth_kind: "oauth_access_token",
+            provider_account_id: "acct-owner-001",
+            email_address: "owner@gmail.example",
+            display_name: "Owner",
+            scope: "https://www.googleapis.com/auth/calendar.readonly",
+            created_at: "2026-03-18T00:00:00Z",
+            updated_at: "2026-03-18T00:00:00Z",
+          },
+          event: {
+            provider_event_id: "evt-001",
+            artifact_relative_path: "calendar/acct-owner-001/evt-001.txt",
+            media_type: "text/plain",
+          },
+          artifact: {
+            id: "artifact-1",
+            task_id: "task-1",
+            task_workspace_id: "workspace-1",
+            status: "registered",
+            ingestion_status: "ingested",
+            relative_path: "calendar/acct-owner-001/evt-001.txt",
+            media_type_hint: "text/plain",
+            created_at: "2026-03-18T00:05:00Z",
+            updated_at: "2026-03-18T00:06:00Z",
+          },
+          summary: {
+            total_count: 1,
+            total_characters: 240,
+            media_type: "text/plain",
+            chunking_rule: "normalized_utf8_text_fixed_window_1000_chars_v1",
+            order: ["sequence_no_asc", "id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await connectCalendarAccount("https://api.example.com", {
+      user_id: "user-1",
+      provider_account_id: "acct-owner-001",
+      email_address: "owner@gmail.example",
+      display_name: "Owner",
+      scope: "https://www.googleapis.com/auth/calendar.readonly",
+      access_token: "access-token-1",
+    });
+    await listCalendarAccounts("https://api.example.com", "user-1");
+    await getCalendarAccountDetail("https://api.example.com", "calendar-account-1", "user-1");
+    await ingestCalendarEvent(
+      "https://api.example.com",
+      "calendar-account-1",
+      "evt-001",
+      {
+        user_id: "user-1",
+        task_workspace_id: "workspace-1",
+      },
+    );
+
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "https://api.example.com/v0/calendar-accounts",
+        expect.objectContaining({
+          method: "POST",
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/calendar-accounts?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/calendar-accounts/calendar-account-1?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/calendar-accounts/calendar-account-1/events/evt-001/ingest",
+        expect.objectContaining({
+          method: "POST",
+          cache: "no-store",
+        }),
+      ],
+    ]);
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      provider_account_id: "acct-owner-001",
+      email_address: "owner@gmail.example",
+      display_name: "Owner",
+      scope: "https://www.googleapis.com/auth/calendar.readonly",
       access_token: "access-token-1",
     });
     expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
