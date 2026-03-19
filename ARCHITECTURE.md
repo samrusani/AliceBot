@@ -2,16 +2,16 @@
 
 ## Current Implemented Slice
 
-AliceBot now implements the accepted repo slice through Sprint 6V.
+AliceBot now implements the accepted repo slice through Sprint 6X.
 
-- `apps/api` is the core shipped surface. It provides continuity storage and review over `users`, `threads`, `sessions`, and append-only `events`; deterministic context compilation; governed memory admission and review; embeddings and semantic retrieval; entities and entity edges; policy, tool, approval, and execution governance; the no-tools assistant-response seam at `POST /v0/responses`; explicit task and task-step lifecycle reads and mutations; rooted local task workspaces and artifact ingestion; artifact chunk retrieval and embeddings; and narrow read-only Gmail and Calendar seams with external-secret-backed credentials plus selected-item ingestion into the artifact pipeline.
+- `apps/api` is the core shipped surface. It provides continuity storage and review over `users`, `threads`, `sessions`, and append-only `events`; deterministic context compilation; governed memory admission and review; embeddings and semantic retrieval; entities and entity edges; policy, tool, approval, and execution governance; the no-tools assistant-response seam at `POST /v0/responses`; explicit task and task-step lifecycle reads and mutations; rooted local task workspaces and artifact ingestion; artifact chunk retrieval and embeddings; and narrow read-only Gmail and Calendar seams with external-secret-backed credentials plus bounded Calendar event discovery and selected-item ingestion into the artifact pipeline.
 - `apps/web` is a shipped operator shell over those backend seams, not a scaffold-only placeholder. The current routes are `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`. The shell can read live backend seams when configured and otherwise falls back to explicit fixture states instead of pretending the backend is connected.
 - `/chat` now carries both shipped operator modes: governed request composition and assistant-response mode. It uses visible thread selection instead of a raw typed thread id, supports compact thread creation through the continuity API, renders a selected-thread transcript from immutable continuity events, and keeps supporting session and operational review, thread-linked governed workflow review, ordered task-step timeline review, and bounded explain-why trace review in the right rail.
 - `/gmail` and `/calendar` are shipped bounded connector workspaces over existing backend seams: visible account list review, selected-account detail, explicit account connection, and explicit single-item ingestion into one chosen task workspace, with live/fixture/unavailable states kept explicit.
 - `/artifacts`, `/memories`, and `/entities` are now shipped bounded review workspaces that expose existing artifact, memory, and entity read seams with explicit live/fixture/unavailable modes.
 - `workers` remains scaffold-only. No background runner, automatic multi-step progression, or asynchronous job system is implemented.
 
-The repo is intentionally still narrow. Document ingestion remains local and deterministic. The only live execution handler is the no-external-I/O `proxy.echo` path. Gmail and Calendar remain read-only and selected-item-only. Rich parsing, mailbox sync, attachments, broader Calendar capabilities, broader proxying, and runner-style orchestration are still planned later.
+The repo is intentionally still narrow. Document ingestion remains local and deterministic. The only live execution handler is the no-external-I/O `proxy.echo` path. Gmail and Calendar remain read-only; Calendar includes bounded event discovery and selected-event ingestion only. Rich parsing, mailbox sync, attachments, broader Calendar capabilities, broader proxying, and runner-style orchestration are still planned later.
 
 ## Implemented Now
 
@@ -25,7 +25,7 @@ The repo is intentionally still narrow. Document ingestion remains local and det
   - policy, tool, approval, execution-budget, and proxy execution governance
   - task, task-step, task-workspace, task-artifact, artifact-chunk, and trace review reads and mutations
   - narrow Gmail account connect/read plus selected-message ingestion
-  - narrow Calendar account connect/read plus selected-event ingestion
+  - narrow Calendar account connect/read, bounded event discovery, plus selected-event ingestion
 - `apps/web` exposes the current operator shell:
   - `/`: bounded home view over the shipped shell surfaces
   - `/chat`: assistant mode, governed request mode, thread selection, thread creation, transcript-first continuity review, thread-linked governed workflow and task-step timeline review, bounded explain-why embedding, and bounded supporting operational review
@@ -71,7 +71,7 @@ The repo is intentionally still narrow. Document ingestion remains local and det
 2. Artifact ingestion supports the narrow current set only: plain text, markdown, narrow local PDF text extraction, narrow DOCX text extraction from `word/document.xml`, and narrow RFC822 email extraction.
 3. Artifact retrieval works over persisted chunk rows and persisted chunk embeddings, including deterministic lexical retrieval, direct semantic retrieval, and the current lexical-first hybrid compile merge.
 4. Gmail remains narrow: one read-only account seam, secret-free account reads, external-secret-backed primary credentials, refresh-token renewal and rotation handling, and one selected-message ingestion path that lands in the existing RFC822 artifact workflow.
-5. Calendar remains narrow: one read-only account seam, secret-free account reads, external-secret-backed credentials, and one selected-event ingestion path that lands in the existing text artifact/chunk workflow.
+5. Calendar remains narrow: one read-only account seam, secret-free account reads, external-secret-backed credentials, bounded event discovery (`GET /v0/calendar-accounts/{calendar_account_id}/events`) with deterministic ordering and bounded limits, and one selected-event ingestion path that lands in the existing text artifact/chunk workflow.
 
 ## Testing Coverage Implemented Now
 
@@ -88,7 +88,7 @@ The following remain planned later and must not be described as implemented:
 - runner-style orchestration and automatic multi-step progression
 - auth beyond the current database user-context model
 - richer document parsing, OCR, image extraction, or layout reconstruction
-- Gmail search, mailbox sync, attachment ingestion, write-capable Gmail actions, and broader Calendar capabilities such as event listing/search, recurrence expansion, sync, and write actions
+- Gmail search, mailbox sync, attachment ingestion, write-capable Gmail actions, and broader Calendar capabilities such as recurrence expansion, sync, and write actions
 - broader proxy execution breadth or real-world side effects beyond `proxy.echo`
 - retrieval reranking or weighted fusion beyond the current lexical-first hybrid compile merge
 
