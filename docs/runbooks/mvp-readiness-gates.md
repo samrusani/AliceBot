@@ -20,7 +20,7 @@ Expected behavior:
   - `acceptance_suite` (runs `python3 scripts/run_mvp_acceptance.py`)
   - `latency_p95` (`p95_seconds < 5.0`)
   - `cache_reuse` (`cache_reuse_ratio >= 0.70` when cached-token telemetry is present)
-  - `memory_quality` (`precision >= 0.80` and `adjudicated_sample >= 10`)
+  - `memory_quality` (`precision > 0.80` and `adjudicated_sample >= 20`)
 - Prints explicit `PASS`, `FAIL`, or `BLOCKED` per gate with measured values and thresholds.
 - Returns exit code `0` only when every gate is `PASS`.
 - Returns non-zero on any `FAIL` or `BLOCKED` gate.
@@ -45,7 +45,7 @@ Expected behavior:
   - `precision = correct / (correct + incorrect)` when denominator > 0.
   - `adjudicated_sample = correct + incorrect`.
   - `PASS` when precision and sample thresholds are met.
-  - `FAIL` when adjudicated sample is sufficient but precision is below target.
+  - `FAIL` when adjudicated sample is sufficient but precision is at-or-below target (`<= 0.80`).
   - `BLOCKED` when adjudicated sample is below minimum or summary data is unavailable/invalid.
 
 ## Optional Deterministic Negative Checks

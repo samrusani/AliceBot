@@ -48,7 +48,7 @@ MEMORY_GATE_NAME = "memory_quality"
 LATENCY_P95_THRESHOLD_SECONDS = 5.0
 CACHE_REUSE_THRESHOLD = 0.70
 MEMORY_PRECISION_THRESHOLD = 0.80
-MEMORY_MIN_ADJUDICATED_SAMPLE = 10
+MEMORY_MIN_ADJUDICATED_SAMPLE = 20
 PROBE_CALL_COUNT = 8
 
 GateStatus = Literal["PASS", "FAIL", "BLOCKED"]
@@ -189,17 +189,17 @@ def _seed_memory_quality_sample(
     profile: MemoryProfile,
 ) -> None:
     if profile == "on_track":
-        correct_count = 8
-        incorrect_count = 2
-        total_count = 10
+        correct_count = 17
+        incorrect_count = 3
+        total_count = 20
     elif profile == "needs_review":
-        correct_count = 6
+        correct_count = 16
         incorrect_count = 4
-        total_count = 10
+        total_count = 20
     else:
-        correct_count = 5
+        correct_count = 9
         incorrect_count = 1
-        total_count = 6
+        total_count = 10
 
     with user_connection(database_url, user_id) as conn:
         store = ContinuityStore(conn)
@@ -346,7 +346,7 @@ def _evaluate_memory_quality_gate(summary: dict[str, Any]) -> GateResult:
             status="BLOCKED",
             measured="precision=unavailable; adjudicated_sample=unavailable",
             threshold=(
-                f"precision >= {MEMORY_PRECISION_THRESHOLD:.2f} and "
+                f"precision > {MEMORY_PRECISION_THRESHOLD:.2f} and "
                 f"adjudicated_sample >= {MEMORY_MIN_ADJUDICATED_SAMPLE}"
             ),
             detail="evaluation summary payload was missing label counts",
@@ -361,7 +361,7 @@ def _evaluate_memory_quality_gate(summary: dict[str, Any]) -> GateResult:
             status="BLOCKED",
             measured="precision=unavailable; adjudicated_sample=unavailable",
             threshold=(
-                f"precision >= {MEMORY_PRECISION_THRESHOLD:.2f} and "
+                f"precision > {MEMORY_PRECISION_THRESHOLD:.2f} and "
                 f"adjudicated_sample >= {MEMORY_MIN_ADJUDICATED_SAMPLE}"
             ),
             detail="evaluation summary payload had invalid value types",
@@ -373,7 +373,7 @@ def _evaluate_memory_quality_gate(summary: dict[str, Any]) -> GateResult:
     if adjudicated_sample < MEMORY_MIN_ADJUDICATED_SAMPLE:
         status: GateStatus = "BLOCKED"
         posture = "insufficient_evidence"
-    elif precision is not None and precision >= MEMORY_PRECISION_THRESHOLD:
+    elif precision is not None and precision > MEMORY_PRECISION_THRESHOLD:
         status = "PASS"
         posture = "on_track"
     else:
@@ -389,7 +389,7 @@ def _evaluate_memory_quality_gate(summary: dict[str, Any]) -> GateResult:
             f"unlabeled_memory_count={unlabeled}; posture={posture}"
         ),
         threshold=(
-            f"precision >= {MEMORY_PRECISION_THRESHOLD:.2f} and "
+            f"precision > {MEMORY_PRECISION_THRESHOLD:.2f} and "
             f"adjudicated_sample >= {MEMORY_MIN_ADJUDICATED_SAMPLE}"
         ),
         detail=f"correct={correct}; incorrect={incorrect}",
@@ -601,7 +601,7 @@ def run_readiness_gates(*, induce_gate: InducedScenario | None = None) -> list[G
                     status="BLOCKED",
                     measured="precision=unavailable; adjudicated_sample=unavailable",
                     threshold=(
-                        f"precision >= {MEMORY_PRECISION_THRESHOLD:.2f} and "
+                        f"precision > {MEMORY_PRECISION_THRESHOLD:.2f} and "
                         f"adjudicated_sample >= {MEMORY_MIN_ADJUDICATED_SAMPLE}"
                     ),
                     detail=blocked_detail,

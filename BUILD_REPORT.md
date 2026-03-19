@@ -1,75 +1,78 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Synchronize canonical truth docs and MVP runbooks to the accepted Sprint 7G baseline, make the validation matrix command the explicit default MVP go/no-go gate, and keep all work within docs/control-artifact scope.
+Harden MVP memory-quality readiness from floor-threshold posture to ship-margin posture by enforcing strict gate semantics (`precision > 0.80`, `adjudicated_sample >= 20`) with deterministic evidence and no product-scope expansion.
 
 ## Completed Work
-- Updated canonical baseline language from Sprint 6X-era to accepted Sprint 7G in:
-  - `README.md`
-  - `ROADMAP.md`
-  - `ARCHITECTURE.md`
-  - `.ai/handoff/CURRENT_STATE.md`
-- Canonicalized MVP gate usage in docs:
-  - documented `python3 scripts/run_mvp_validation_matrix.py` as the default MVP release-candidate go/no-go command
-  - kept readiness gating as prerequisite context
-- Fixed portability issue in `docs/runbooks/mvp-validation-matrix.md`:
-  - replaced machine-specific web test command path with repo-relative command:
-    - from a machine-specific absolute-prefix command
-    - to `npm --prefix apps/web run test:mvp:validation-matrix`
-- Normalized shared canonical links in key docs away from local user-home absolute paths to portable repo-relative links.
-- Added concise durable rules in `RULES.md` to prevent recurrence:
-  - no machine-specific local absolute paths in shared runbooks/canonical docs
-  - canonical truth docs must be updated when sprint-level baseline changes
-- Updated sprint reports (`BUILD_REPORT.md`, `REVIEW_REPORT.md`) for Sprint 7H docs/control scope.
+- Updated memory-quality gate semantics in `scripts/run_mvp_readiness_gates.py`:
+  - precision pass criterion changed from `>= 0.80` to strict `> 0.80`
+  - minimum adjudicated sample changed from `>= 10` to `>= 20`
+  - threshold text in gate output updated accordingly
+- Updated deterministic readiness seed profile in `scripts/run_mvp_readiness_gates.py`:
+  - normal (`on_track`) profile now seeds `correct=17`, `incorrect=3` (`precision=0.85`, sample `20`)
+  - induced boundary profile (`memory_needs_review`) seeds `correct=16`, `incorrect=4` (`precision=0.80`, sample `20`)
+  - insufficient profile remains below required sample (`correct=9`, `incorrect=1`, sample `10`)
+- Updated readiness integration tests in `tests/integration/test_mvp_readiness_gates.py`:
+  - aligned posture test data to new sample threshold
+  - added explicit boundary test proving `precision == 0.80` returns `FAIL`
+  - added explicit insufficient-sample test proving sample `< 20` returns `BLOCKED` even with perfect precision
+- Updated runbooks for strict memory ship-margin semantics:
+  - `docs/runbooks/memory-quality-gate.md`
+  - `docs/runbooks/mvp-readiness-gates.md`
+  - `docs/runbooks/mvp-validation-matrix.md`
+- Updated sprint reports (`BUILD_REPORT.md`, `REVIEW_REPORT.md`) for Sprint 7I scope.
 
 ## Incomplete Work
-- None within Sprint 7H scope.
-
-## Exact Canonical Docs Updated
-- `README.md`
-- `ROADMAP.md`
-- `ARCHITECTURE.md`
-- `.ai/handoff/CURRENT_STATE.md`
-- `RULES.md`
-- `docs/runbooks/mvp-validation-matrix.md`
-
-## Portability Checks Executed And Results
-1. Sprint-baseline drift check (targeted canonical docs):
-   - Command:
-     - `rg -n "Sprint 6X" README.md ROADMAP.md ARCHITECTURE.md .ai/handoff/CURRENT_STATE.md`
-   - Result: no matches.
-
-2. Shared-doc portability check (targeted canonical docs + runbooks):
-   - Command:
-     - `rg -n -e 'file://' -e 'vscode://' -e '/[U]sers/' -e '/home/' -e 'C:\\Users\\' README.md ROADMAP.md ARCHITECTURE.md .ai/handoff/CURRENT_STATE.md RULES.md docs/runbooks/mvp-validation-matrix.md docs/runbooks/mvp-readiness-gates.md`
-   - Result: no matches.
-
-## Explicit Statement Of What Remains Deferred
-Sprint 7H intentionally does not change product behavior, API/runtime behavior, schema, or test behavior. It only synchronizes canonical docs/rules/runbooks and sprint reports.
-
-## Explicit Deferred Criteria Not Covered By This Sprint
-- No new endpoints, migrations, or schema changes.
-- No connector breadth expansion or write-capable connector behavior.
-- No auth, orchestration, or worker-runtime expansion.
-- No new web routes, UI redesign, or test-behavior changes.
-- No new MVP validation-runner features beyond documentation alignment.
+- None within Sprint 7I scope.
 
 ## Files Changed
-- `README.md`
-- `ROADMAP.md`
-- `ARCHITECTURE.md`
-- `.ai/handoff/CURRENT_STATE.md`
-- `RULES.md`
+- `scripts/run_mvp_readiness_gates.py`
+- `tests/integration/test_mvp_readiness_gates.py`
+- `docs/runbooks/memory-quality-gate.md`
+- `docs/runbooks/mvp-readiness-gates.md`
 - `docs/runbooks/mvp-validation-matrix.md`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## Tests Run
-- `rg -n "Sprint 6X" README.md ROADMAP.md ARCHITECTURE.md .ai/handoff/CURRENT_STATE.md`
-- `rg -n -e 'file://' -e 'vscode://' -e '/[U]sers/' -e '/home/' -e 'C:\\Users\\' README.md ROADMAP.md ARCHITECTURE.md .ai/handoff/CURRENT_STATE.md RULES.md docs/runbooks/mvp-validation-matrix.md docs/runbooks/mvp-readiness-gates.md`
+1. `python3 -m pytest -q tests/integration/test_mvp_readiness_gates.py`
+- Outcome: `8 passed`
+
+2. `python3 -m pytest -q tests/integration/test_mvp_validation_matrix.py`
+- Outcome: `3 passed`
+
+3. `python3 scripts/run_mvp_readiness_gates.py`
+- Outcome: `PASS`
+- Memory gate evidence: `precision=0.850000; adjudicated_sample=20; ... posture=on_track`
+- Memory threshold shown by runner: `precision > 0.80 and adjudicated_sample >= 20`
+
+4. `python3 scripts/run_mvp_readiness_gates.py --induce-gate memory_needs_review`
+- Outcome: `NO_GO` (exit code 1)
+- Boundary evidence: memory gate `FAIL` with `precision=0.800000; adjudicated_sample=20; posture=needs_review`
+- Confirms `precision == 0.80` is non-pass under strict ship-margin semantics
+
+5. `python3 scripts/run_mvp_validation_matrix.py`
+- Outcome: `PASS`
+- Step results: readiness `PASS`, backend integration matrix `PASS`, web validation matrix `PASS`
+- Final line: `MVP validation matrix result: PASS`
+
+6. `python3 scripts/run_mvp_validation_matrix.py --induce-step backend_integration_matrix`
+- Outcome: `NO_GO` (exit code 1)
+- Deterministic induced-failure evidence:
+  - induced step exited with `97`
+  - output included `Failing steps: backend_integration_matrix`
+  - final line: `MVP validation matrix result: NO_GO`
 
 ## Blockers/Issues
-- None.
+- No implementation blockers.
+- Note: local Postgres-backed commands required elevated execution in this environment due sandbox restrictions on `localhost:5432`.
+
+## Explicit Deferred Criteria Not Covered By This Sprint
+- No new endpoints, migrations, or schema changes.
+- No connector breadth expansion or write-capable connector behavior.
+- No auth, orchestration, or worker-runtime expansion.
+- No UI feature scope changes.
+- No new product behavior beyond readiness evidence hardening.
 
 ## Recommended Next Step
-Run `python3 scripts/run_mvp_validation_matrix.py` as the standard reviewer/CI MVP release-candidate gate and keep canonical truth docs synchronized in any sprint that changes operating baseline.
+Run `python3 scripts/run_mvp_validation_matrix.py` as the release-candidate gate in CI/reviewer flow and require memory gate evidence to remain above ship margin (`precision > 0.80`, sample `>= 20`).
