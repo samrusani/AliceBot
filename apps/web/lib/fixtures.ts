@@ -331,6 +331,38 @@ export const memoryEvaluationSummaryFixture: MemoryEvaluationSummary = {
   label_value_order: [...MEMORY_LABEL_VALUE_ORDER],
 };
 
+export const memoryEvaluationSummaryOnTrackFixture: MemoryEvaluationSummary = {
+  total_memory_count: 12,
+  active_memory_count: 10,
+  deleted_memory_count: 2,
+  labeled_memory_count: 12,
+  unlabeled_memory_count: 0,
+  total_label_row_count: 10,
+  label_row_counts_by_value: {
+    correct: 8,
+    incorrect: 2,
+    outdated: 1,
+    insufficient_evidence: 1,
+  },
+  label_value_order: [...MEMORY_LABEL_VALUE_ORDER],
+};
+
+export const memoryEvaluationSummaryNeedsReviewFixture: MemoryEvaluationSummary = {
+  total_memory_count: 12,
+  active_memory_count: 10,
+  deleted_memory_count: 2,
+  labeled_memory_count: 12,
+  unlabeled_memory_count: 3,
+  total_label_row_count: 10,
+  label_row_counts_by_value: {
+    correct: 6,
+    incorrect: 4,
+    outdated: 0,
+    insufficient_evidence: 0,
+  },
+  label_value_order: [...MEMORY_LABEL_VALUE_ORDER],
+};
+
 export const memoryRevisionFixtures: Record<string, MemoryRevisionReviewRecord[]> = {
   [MEMORY_MERCHANT]: [
     {
