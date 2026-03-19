@@ -62,6 +62,8 @@ export function ExecutionSummary({
   const result = execution?.result ?? preview?.result ?? null;
   const tool = execution?.tool ?? preview?.tool ?? null;
   const traceId = execution?.trace_id ?? preview?.trace.trace_id ?? null;
+  const requestEventId = execution?.request_event_id ?? preview?.events?.request_event_id ?? null;
+  const resultEventId = execution?.result_event_id ?? preview?.events?.result_event_id ?? null;
   const executedAt = execution?.executed_at ?? null;
   const reviewSource = execution ? (source === "live" ? "Live execution detail" : "Fixture execution detail") : "Latest execute response";
 
@@ -96,6 +98,18 @@ export function ExecutionSummary({
           <dt>Executed</dt>
           <dd>{executedAt ? formatDate(executedAt) : "Just returned from execute"}</dd>
         </div>
+        {requestEventId ? (
+          <div>
+            <dt>Request event</dt>
+            <dd className="mono">{requestEventId}</dd>
+          </div>
+        ) : null}
+        {resultEventId ? (
+          <div>
+            <dt>Result event</dt>
+            <dd className="mono">{resultEventId}</dd>
+          </div>
+        ) : null}
         {traceId ? (
           <div>
             <dt>Trace</dt>
