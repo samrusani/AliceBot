@@ -2,9 +2,10 @@
 
 ## Canonical Truth
 
-- The working repo state is current through Sprint 6X.
-- Use [PRODUCT_BRIEF.md](PRODUCT_BRIEF.md) for product scope, [ARCHITECTURE.md](ARCHITECTURE.md) for implemented boundaries, [ROADMAP.md](ROADMAP.md) for forward planning, and [RULES.md](RULES.md) for durable operating rules.
-- The live sprint reports are [BUILD_REPORT.md](BUILD_REPORT.md) and [REVIEW_REPORT.md](REVIEW_REPORT.md) at repo root; older accepted sprint history belongs in [docs/archive/sprints](docs/archive/sprints), not in this handoff.
+- The working repo state is current through Sprint 7G.
+- The accepted baseline includes deterministic MVP release-candidate validation tooling, with `python3 scripts/run_mvp_validation_matrix.py` as the default go/no-go command.
+- Use [PRODUCT_BRIEF.md](../../PRODUCT_BRIEF.md) for product scope, [ARCHITECTURE.md](../../ARCHITECTURE.md) for implemented boundaries, [ROADMAP.md](../../ROADMAP.md) for forward planning, and [RULES.md](../../RULES.md) for durable operating rules.
+- The live sprint reports are [BUILD_REPORT.md](../../BUILD_REPORT.md) and [REVIEW_REPORT.md](../../REVIEW_REPORT.md) at repo root; older accepted sprint history belongs in [docs/archive/sprints](../../docs/archive/sprints), not in this handoff.
 
 ## Implemented Surfaces
 
@@ -44,6 +45,6 @@
 
 ## Planning Guardrails
 
-- Plan from the implemented Sprint 6X repo state, not from older Sprint 5-era narratives.
+- Plan from the implemented Sprint 7G repo state, not from older Sprint 5-era narratives.
 - Do not describe broader Gmail scope, broader Calendar scope beyond bounded read-only event discovery plus selected-event ingestion, richer parsing, broader proxy execution, auth expansion, or runner orchestration as shipped.
 - The immediate next move should be chosen from the current shipped backend-plus-web-shell baseline, including `/gmail`, `/calendar`, `/memories`, `/entities`, and `/artifacts`, not assumed to be leftover connector cleanup by default.
