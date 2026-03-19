@@ -3,6 +3,8 @@
 ## Objective
 Run one deterministic command that produces quantitative MVP go/no-go evidence across acceptance, latency, cache reuse, and memory quality gates.
 
+This readiness runner is also the first prerequisite step in `python3 scripts/run_mvp_validation_matrix.py`.
+
 ## Prerequisites
 - Local dependencies installed (`python3 -m venv .venv` and `./.venv/bin/python -m pip install -e '.[dev]'`).
 - Local Postgres available at the configured admin/app URLs.
