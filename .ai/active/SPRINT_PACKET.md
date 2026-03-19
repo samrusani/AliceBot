@@ -2,156 +2,131 @@
 
 ## Sprint Title
 
-Sprint 6C: Web Workspace Verification Stabilization
+Sprint 7F: MVP Quantitative Gate Evidence
 
 ## Sprint Type
 
-repair
+qa
 
 ## Sprint Reason
 
-Sprint 6B successfully turned the shell into a governed workflow surface, but the accepted review still identified two recurring frontend quality issues: `npm run lint` is not a usable non-interactive check, and `next build` still rewrites `apps/web/tsconfig.json` plus `apps/web/next-env.d.ts` during verification. Before stacking more UI work on top of the shell, the web workspace needs one narrow stabilization sprint so future UI delivery is not slowed down by avoidable tooling churn.
+Sprint 7E proved qualitative MVP journeys with deterministic acceptance tests. The remaining ship risk is quantitative gate evidence: p95 response latency, prompt/cache reuse evidence, and memory quality gate posture in one auditable pass/fail package.
 
 ## Sprint Intent
 
-Stabilize the `apps/web` workspace so lint and build are clean, repeatable, non-interactive verification steps, while preserving the Sprint 6A and Sprint 6B operator shell behavior and avoiding any backend scope changes.
+Create one bounded MVP readiness gate runner (plus tests and runbook) that produces a deterministic go/no-go signal for quantitative MVP criteria without widening product or connector scope.
 
 ## Git Instructions
 
-- Branch Name: `codex/sprint-6c-web-workspace-verification-stabilization`
+- Branch Name: `codex/sprint-7f-mvp-quantitative-gate-evidence`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR, no stacked PRs unless Control Tower explicitly opens a follow-up sprint
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- Sprint 6A opened the first real web shell.
-- Sprint 6B made the shell workflow-bearing with governed request submission, approvals, and live task inspection.
-- The accepted review for Sprint 6B called out:
-  - `npm run lint` is still interactive because the web workspace lacks a committed lint setup
-  - `next build` still rewrites `apps/web/tsconfig.json` and `apps/web/next-env.d.ts`
-- Those are not merge blockers for 6B, but they will keep generating review friction and workspace churn if not fixed now.
-- The narrowest safe next step is to stabilize the web workspace itself, not to widen UI scope or reopen backend work.
+- The Product Brief ship criteria include quantitative thresholds not yet covered by one deterministic command.
+- Sprint 7E’s acceptance suite can now be treated as prerequisite evidence and reused directly.
+- Review and merge decisions need one scorecard artifact instead of separate ad hoc checks.
 
 ## Design Truth
 
-- `DESIGN_SYSTEM.md` remains the design source of truth.
-- This sprint is not a new visual redesign sprint.
-- UI behavior and styling should remain materially unchanged except where small markup or styling adjustments are needed to support stable lint/build verification.
+- This is a readiness-evidence sprint, not a new-feature sprint.
+- Reuse shipped seams only; do not introduce new business capabilities.
+- Prefer deterministic, reviewer-friendly output over broad benchmarking frameworks.
+
+## Exact Surfaces In Scope
+
+- Response usage telemetry normalization for cache-reuse evidence.
+- Deterministic MVP readiness runner for quantitative gates.
+- Runbook/report alignment for reproducible reviewer execution.
 
 ## Exact Files In Scope
 
-- `apps/web/package.json`
-- `apps/web/tsconfig.json`
-- `apps/web/next-env.d.ts`
-- `apps/web/next.config.mjs`
-- `apps/web/eslint.config.mjs`
-- `apps/web/app/layout.tsx`
-- `apps/web/app/page.tsx`
-- `apps/web/app/chat/page.tsx`
-- `apps/web/app/approvals/page.tsx`
-- `apps/web/app/tasks/page.tsx`
-- `apps/web/app/traces/page.tsx`
-- `apps/web/app/approvals/loading.tsx`
-- `apps/web/app/tasks/loading.tsx`
-- `apps/web/app/globals.css`
-- `apps/web/components/app-shell.tsx`
-- `apps/web/components/page-header.tsx`
-- `apps/web/components/section-card.tsx`
-- `apps/web/components/status-badge.tsx`
-- `apps/web/components/empty-state.tsx`
-- `apps/web/components/request-composer.tsx`
-- `apps/web/components/approval-list.tsx`
-- `apps/web/components/approval-actions.tsx`
-- `apps/web/components/approval-detail.tsx`
-- `apps/web/components/task-list.tsx`
-- `apps/web/components/task-summary.tsx`
-- `apps/web/components/task-step-list.tsx`
-- `apps/web/components/trace-list.tsx`
-- `apps/web/lib/api.ts`
-- `apps/web/lib/fixtures.ts`
-- `apps/web/lib/api.test.ts`
-- `apps/web/components/approval-actions.test.tsx`
-- `apps/web/test/setup.ts`
-- `apps/web/vitest.config.ts`
-- `BUILD_REPORT.md`
+- [contracts.py](apps/api/src/alicebot_api/contracts.py)
+- [response_generation.py](apps/api/src/alicebot_api/response_generation.py)
+- [test_response_generation.py](tests/unit/test_response_generation.py)
+- [test_responses_api.py](tests/integration/test_responses_api.py)
+- [test_mvp_acceptance_suite.py](tests/integration/test_mvp_acceptance_suite.py)
+- [test_mvp_readiness_gates.py](tests/integration/test_mvp_readiness_gates.py)
+- [run_mvp_acceptance.py](scripts/run_mvp_acceptance.py)
+- [run_mvp_readiness_gates.py](scripts/run_mvp_readiness_gates.py)
+- [memory-quality-gate.md](docs/runbooks/memory-quality-gate.md)
+- [mvp-readiness-gates.md](docs/runbooks/mvp-readiness-gates.md)
+- [BUILD_REPORT.md](BUILD_REPORT.md)
+- [REVIEW_REPORT.md](REVIEW_REPORT.md)
+- [.ai/active/SPRINT_PACKET.md](.ai/active/SPRINT_PACKET.md)
 
 ## In Scope
 
-- Commit a stable non-interactive lint configuration for `apps/web`.
-- Ensure `npm run lint` runs without prompting for ESLint initialization.
-- Ensure `npm run build` no longer creates uncommitted churn in `apps/web/tsconfig.json` or `apps/web/next-env.d.ts`.
-- Adopt or normalize any framework-generated TypeScript config changes deliberately so future builds stay clean.
-- Keep the Sprint 6A and 6B screens, routes, and workflow behavior intact.
-- Update or add narrow frontend tests only as needed to preserve current behavior while the workspace config is being stabilized.
+- Extend response-usage parsing to capture optional cache-reuse telemetry when provider payload includes cached input-token details, while remaining backward compatible.
+- Add deterministic tests for usage parsing and response-trace payload shape when cache telemetry is absent/present.
+- Add `scripts/run_mvp_readiness_gates.py` that runs a bounded gate sequence and prints explicit status per gate:
+  - acceptance suite gate (reusing `scripts/run_mvp_acceptance.py`)
+  - latency gate (`p95 < 5.0s`) on repeated retrieval-plus-response probe calls
+  - cache-reuse gate (`>= 0.70`) when cached-token telemetry is available; otherwise explicit blocked status
+  - memory-quality gate posture from shipped memory evaluation summary semantics
+- Add `tests/integration/test_mvp_readiness_gates.py` to validate runner determinism, threshold math, and exit-code behavior.
+- Add/align runbook documentation with prerequisites, command(s), interpretation, and blocked-state handling.
 
 ## Out of Scope
 
-- No new backend endpoints.
-- No backend schema changes.
-- No new product workflow features.
-- No Gmail breadth, Calendar UI, or connector expansion.
-- No auth redesign.
-- No new pages or routes beyond what already shipped in 6A/6B.
-- No visual redesign of the shell.
-- No runner-style orchestration UI.
+- No new endpoints, migrations, or schema changes.
+- No connector breadth expansion (Gmail/Calendar/search/write flows).
+- No auth, orchestration, or worker-runtime expansion.
+- No web UI redesign or new route work.
+- No changes to product scope or non-gate behavior.
 
 ## Required Deliverables
 
-- A committed non-interactive lint setup for `apps/web`.
-- A stable build setup that does not rewrite tracked web config files during routine verification.
-- Preserved Sprint 6A and 6B behavior across the shipped routes and workflow surfaces.
-- Updated `BUILD_REPORT.md` with exact verification results and explicit deferred scope.
+- `scripts/run_mvp_readiness_gates.py` committed and runnable.
+- Integration coverage for readiness-runner logic and gate math.
+- Usage parsing updates plus test coverage for optional cached-token telemetry.
+- `docs/runbooks/mvp-readiness-gates.md` committed and aligned to executable commands.
+- Updated `BUILD_REPORT.md` and `REVIEW_REPORT.md` reflecting Sprint 7F only.
 
 ## Acceptance Criteria
 
-- `npm run lint` in `apps/web` runs non-interactively and passes.
-- `npm run build` in `apps/web` passes.
-- Running `npm run build` after a clean checkout does not create uncommitted churn in `apps/web/tsconfig.json` or `apps/web/next-env.d.ts`.
-- The shipped routes remain intact:
-  - `/`
-  - `/chat`
-  - `/approvals`
-  - `/tasks`
-  - `/traces`
-- The governed request, approval, and task UI behavior from Sprint 6B remains intact.
-- No backend scope expansion enters the sprint.
+- `python3 scripts/run_mvp_readiness_gates.py` runs the bounded gates and exits non-zero on any failed/blocked gate.
+- Latency gate computes p95 deterministically from measured probe durations and enforces `< 5.0s`.
+- Cache-reuse gate computes ratio from captured token telemetry when available and enforces `>= 0.70`; missing telemetry is explicit and does not report false pass.
+- Memory-quality gate math aligns with shipped runbook semantics (`precision >= 0.80`, adjudicated sample >= 10).
+- `python3 scripts/run_mvp_acceptance.py` remains passing as a prerequisite gate.
+- Sprint stays within listed QA/telemetry/runbook surfaces.
 
 ## Implementation Constraints
 
-- Keep the sprint narrow and boring.
-- Treat this as workspace stabilization, not a feature sprint.
-- Prefer adopting framework-required config intentionally over repeatedly reverting generated files.
-- Do not hide UI redesign work inside lint/build cleanup.
-- If markup changes are needed to satisfy the committed lint rules, keep them minimal and behavior-preserving.
+- Keep usage contract changes additive/backward-compatible.
+- Keep runner deterministic with explicit scenario names and threshold constants.
+- Do not rely on flaky timing assertions inside unit tests; isolate gate math from environment jitter.
+- Reuse existing API seams and fixtures; avoid parallel bespoke evaluation pipelines.
 
 ## Suggested Work Breakdown
 
-1. Add a committed ESLint configuration for `apps/web`.
-2. Normalize package scripts so lint/test/build form a stable non-interactive verification set.
-3. Resolve the `next build` config churn by adopting or normalizing the generated TypeScript settings deliberately.
-4. Run lint, tests, and build to confirm a clean repeatable web workspace.
-5. Update `BUILD_REPORT.md` with exact verification and any intentionally adopted config changes.
+1. Add optional cached-token telemetry plumbing in response usage contracts/parsing with unit tests.
+2. Implement gate-math helpers for latency and cache-reuse decisions.
+3. Implement `scripts/run_mvp_readiness_gates.py` with explicit output and exit behavior.
+4. Add integration tests for runner pass/fail/blocked outcomes.
+5. Add `docs/runbooks/mvp-readiness-gates.md` and align memory-gate references.
+6. Execute commands, capture evidence, and update sprint reports.
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- the exact workspace/config files changed
-- the lint command and build command used
-- whether TypeScript or Next-generated config changes were intentionally adopted
-- exact verification results for lint, test, and build
-- confirmation that Sprint 6A/6B route behavior remained intact
-- what remains intentionally deferred after this repair sprint
+- exact readiness gates executed
+- exact command(s) and environment assumptions
+- per-gate outcome table with measured values and thresholds
+- blocked/insufficient-evidence handling summary (if any)
+- explicit deferred criteria not covered by this sprint
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- the sprint stayed a repair sprint and did not widen backend or product scope
-- `npm run lint` is now non-interactive and passes
-- `npm run build` is stable and no longer rewrites tracked config files during routine verification
-- Sprint 6A/6B route behavior remains intact
-- no hidden UI redesign, Gmail breadth, Calendar, auth, runner, or backend-scope expansion entered the sprint
+- sprint stayed within readiness-evidence scope
+- cache and latency gate math is correct and deterministic
+- runner output is actionable for merge/go-no-go decisions
+- no hidden product/backend scope entered
 
 ## Exit Condition
 
-This sprint is complete when the `apps/web` workspace has stable non-interactive lint/build verification, no longer creates routine config churn during `next build`, and preserves the shipped operator shell behavior from Sprints 6A and 6B.
+This sprint is complete when one documented command produces deterministic, reviewer-ready quantitative MVP gate evidence (acceptance prerequisite, latency, cache reuse, memory quality posture) with explicit pass/fail/blocked states and no product scope expansion.
