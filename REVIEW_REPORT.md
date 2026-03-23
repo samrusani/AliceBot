@@ -4,45 +4,48 @@
 PASS
 
 ## criteria met
-- Sprint stayed within the Sprint 4 scope: contracts/API/compiler/UI for deterministic resumption briefs only.
-- Shipped endpoint and contract seam are coherent and typed:
-  - `GET /v0/threads/{thread_id}/resumption-brief`
-  - payload includes `assembly_version`, `thread`, `conversation`, `open_loops`, `memory_highlights`, `workflow`, `sources`
-- Per-user isolation and deterministic not-found behavior are implemented:
-  - thread lookup is user-scoped
-  - cross-user and missing thread requests return deterministic `404`
-- Deterministic ordering and bounded sections are explicit in implementation and reflected in summaries:
-  - conversation order: `sequence_no_asc` with bounded latest window
-  - open-loop order: `opened_at_desc`, `created_at_desc`, `id_desc`
-  - memory order: `updated_at_asc`, `created_at_asc`, `id_asc` with bounded latest window
-  - workflow posture selection uses stable task/task-step ordering
-- `/chat` selected-thread panel now supports resumption brief live/fixture/unavailable states without removing existing chat workflow surfaces.
-- Verified tests:
-  - `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_compiler.py tests/unit/test_main.py` -> `53 passed`
-  - `cd apps/web && pnpm test -- app/chat/page.test.tsx components/thread-summary.test.tsx lib/api.test.ts` -> `28 passed`
-  - `PYTHONPATH=$PWD .venv/bin/pytest tests/integration/test_continuity_api.py` -> `3 passed` (required elevated local DB access in this environment)
+- Sprint stayed within explicit-commitment-capture scope (no automation/workers/Phase 3 routing changes).
+- Contracts and API seam are shipped and coherent:
+  - `POST /v0/open-loops/extract-explicit-commitments`
+  - request requires `user_id` and `source_event_id`
+  - response returns deterministic `candidates`, `admissions` (including open-loop outcomes), and `summary`.
+- Deterministic pattern extraction is implemented (no model calls) in `apps/api/src/alicebot_api/explicit_commitments.py` for:
+  - `remind me to ...`
+  - `i need to ...`
+  - `don't let me forget to ...`
+  - `remember to ...`
+- Invalid source event semantics are enforced with deterministic `400` for non-user/cross-user/missing event IDs.
+- Persistence uses governed seams:
+  - memory writes go through `admit_memory_candidate(...)`
+  - open loops are linked to admitted memory.
+- Duplicate active open loops are prevented on repeat extraction (`NOOP_ACTIVE_EXISTS`).
+- `/memories` parity is preserved through existing review surfaces (`/v0/memories`, `/v0/open-loops`).
+- Sprint-scoped tests for touched seams pass:
+  - `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_explicit_commitments.py tests/unit/test_main.py` -> `54 passed`
+  - `PYTHONPATH=$PWD .venv/bin/pytest tests/integration/test_explicit_commitments_api.py` -> `3 passed`
+  - `cd apps/web && pnpm test -- lib/api.test.ts app/memories/page.test.tsx` -> `26 passed`
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking quality issues found in sprint scope.
-- Minor non-blocking note: fixture-mode brief intentionally leaves open-loops and memory-highlights empty; this is acceptable for state-parity UI validation in this sprint.
+- No blocking implementation quality issues found.
+- Minor non-blocking note: active-open-loop dedupe currently scans `list_open_loops(status="open")` in user scope; acceptable for current bounded usage.
 
 ## regression risks
-- Low for touched seams due unit + integration + web test coverage on new surfaces.
-- Residual risk remains on unrelated app surfaces not exercised in this sprint review run.
+- Low on touched seams due unit + integration + frontend coverage.
+- Residual risk remains on unrelated surfaces not rerun in this review.
 
 ## docs issues
-- No blocking documentation gaps for sprint acceptance.
-- `BUILD_REPORT.md` includes required endpoint, fields, ordering rules, tests, and deferred scope.
+- No blocking docs issues for sprint acceptance.
+- `BUILD_REPORT.md` includes required endpoint, extraction patterns, payload fields, dedupe/no-side-effect behavior, tests, and deferred scope.
 
 ## should anything be added to RULES.md?
-- Optional improvement: add a rule that every new continuity-read endpoint must ship explicit ordering constants plus test assertions for ordering and bounds.
+- No required rule additions for this sprint.
 
 ## should anything update ARCHITECTURE.md?
-- Optional improvement: add a short “Resumption Brief Read Seam” subsection documenting source seams (`threads/events/open_loops/memories/tasks/task_steps`) and deterministic assembly constraints.
+- Optional follow-up only: add a short subsection documenting the explicit commitment extraction seam and dedupe behavior for future reminder/orchestration phases.
 
 ## recommended next action
-1. Mark Sprint 4 as reviewer `PASS` and move to Control Tower merge gate.
-2. Optionally capture the non-blocking RULES/ARCHITECTURE clarifications in a follow-up docs-only PR.
+- Mark sprint as reviewer `PASS` and move to Control Tower merge gate.
+- Optional follow-up hardening: add one integration assertion for a random/nonexistent `source_event_id` no-side-effect behavior.

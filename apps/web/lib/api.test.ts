@@ -48,6 +48,7 @@ import {
   shouldExpectThreadExecutionReview,
   submitAssistantResponse,
   submitApprovalRequest,
+  extractExplicitCommitments,
   submitMemoryLabel,
   updateOpenLoopStatus,
 } from "./api";
@@ -1906,6 +1907,93 @@ describe("api helpers", () => {
       },
       source_event_ids: ["event-2", "event-1"],
       delete_requested: false,
+    });
+  });
+
+  it("posts explicit commitment extraction requests to the shipped endpoint", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              memory_key: "user.commitment.submit_tax_forms",
+              value: {
+                kind: "explicit_commitment",
+                text: "submit tax forms",
+              },
+              source_event_ids: ["event-1"],
+              delete_requested: false,
+              pattern: "remind_me_to",
+              commitment_text: "submit tax forms",
+              open_loop_title: "Remember to submit tax forms",
+            },
+          ],
+          admissions: [
+            {
+              decision: "ADD",
+              reason: "source_backed_add",
+              memory: {
+                id: "memory-1",
+                user_id: "user-1",
+                memory_key: "user.commitment.submit_tax_forms",
+                value: {
+                  kind: "explicit_commitment",
+                  text: "submit tax forms",
+                },
+                status: "active",
+                source_event_ids: ["event-1"],
+                created_at: "2026-03-23T09:00:00Z",
+                updated_at: "2026-03-23T09:00:00Z",
+                deleted_at: null,
+              },
+              revision: null,
+              open_loop: {
+                decision: "CREATED",
+                reason: "created_open_loop_for_memory",
+                open_loop: {
+                  id: "loop-1",
+                  memory_id: "memory-1",
+                  title: "Remember to submit tax forms",
+                  status: "open",
+                  opened_at: "2026-03-23T09:00:00Z",
+                  due_at: null,
+                  resolved_at: null,
+                  resolution_note: null,
+                  created_at: "2026-03-23T09:00:00Z",
+                  updated_at: "2026-03-23T09:00:00Z",
+                },
+              },
+            },
+          ],
+          summary: {
+            source_event_id: "event-1",
+            source_event_kind: "message.user",
+            candidate_count: 1,
+            admission_count: 1,
+            persisted_change_count: 1,
+            noop_count: 0,
+            open_loop_created_count: 1,
+            open_loop_noop_count: 0,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await extractExplicitCommitments("https://api.example.com", {
+      user_id: "user-1",
+      source_event_id: "event-1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/open-loops/extract-explicit-commitments",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      source_event_id: "event-1",
     });
   });
 
