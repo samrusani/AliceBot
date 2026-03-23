@@ -667,6 +667,8 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
             events={continuity.events}
             source={continuity.continuitySource}
             unavailableReason={continuity.unavailableReason}
+            apiBaseUrl={liveModeReady ? apiConfig.apiBaseUrl : undefined}
+            userId={liveModeReady ? apiConfig.userId : undefined}
           />
 
           <ThreadCreate
