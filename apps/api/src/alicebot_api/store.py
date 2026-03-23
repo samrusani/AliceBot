@@ -89,6 +89,13 @@ class MemoryRow(TypedDict):
     value: JsonValue
     status: str
     source_event_ids: list[str]
+    memory_type: str
+    confidence: float | None
+    salience: float | None
+    confirmation_status: str
+    valid_from: datetime | None
+    valid_to: datetime | None
+    last_confirmed_at: datetime | None
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None
@@ -147,6 +154,13 @@ class SemanticMemoryRetrievalRow(TypedDict):
     value: JsonValue
     status: str
     source_event_ids: list[str]
+    memory_type: str
+    confidence: float | None
+    salience: float | None
+    confirmation_status: str
+    valid_from: datetime | None
+    valid_to: datetime | None
+    last_confirmed_at: datetime | None
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None
@@ -578,34 +592,136 @@ INSERT_MEMORY_SQL = """
                   value,
                   status,
                   source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
                   created_at,
                   updated_at
                 )
-                VALUES (app.current_user_id(), %s, %s, %s, %s, clock_timestamp(), clock_timestamp())
-                RETURNING id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 """
 
 GET_MEMORY_SQL = """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 WHERE id = %s
                 """
 
 LIST_MEMORIES_BY_IDS_SQL = """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 WHERE id = ANY(%s)
                 ORDER BY created_at ASC, id ASC
                 """
 
 GET_MEMORY_BY_KEY_SQL = """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 WHERE memory_key = %s
                 """
 
 LIST_MEMORIES_SQL = """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 ORDER BY created_at ASC, id ASC
                 """
@@ -633,14 +749,46 @@ COUNT_UNLABELED_REVIEW_MEMORIES_SQL = """
                 """
 
 LIST_REVIEW_MEMORIES_SQL = """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 ORDER BY updated_at DESC, created_at DESC, id DESC
                 LIMIT %s
                 """
 
 LIST_REVIEW_MEMORIES_BY_STATUS_SQL = """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 WHERE status = %s
                 ORDER BY updated_at DESC, created_at DESC, id DESC
@@ -648,7 +796,23 @@ LIST_REVIEW_MEMORIES_BY_STATUS_SQL = """
                 """
 
 LIST_UNLABELED_REVIEW_MEMORIES_SQL = """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 WHERE status = 'active'
                   AND NOT EXISTS (
@@ -661,7 +825,23 @@ LIST_UNLABELED_REVIEW_MEMORIES_SQL = """
                 """
 
 LIST_CONTEXT_MEMORIES_SQL = """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 ORDER BY updated_at ASC, created_at ASC, id ASC
                 """
@@ -671,13 +851,36 @@ UPDATE_MEMORY_SQL = """
                 SET value = %s,
                     status = %s,
                     source_event_ids = %s,
+                    memory_type = %s,
+                    confidence = %s,
+                    salience = %s,
+                    confirmation_status = %s,
+                    valid_from = %s,
+                    valid_to = %s,
+                    last_confirmed_at = %s,
                     updated_at = clock_timestamp(),
                     deleted_at = CASE
                       WHEN %s = 'deleted' THEN clock_timestamp()
                       ELSE NULL
                     END
                 WHERE id = %s
-                RETURNING id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                RETURNING
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 """
 
 LOCK_MEMORY_REVISIONS_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 1))"
@@ -924,6 +1127,13 @@ RETRIEVE_SEMANTIC_MEMORY_MATCHES_SQL = """
                   memories.value,
                   memories.status,
                   memories.source_event_ids,
+                  memories.memory_type,
+                  memories.confidence,
+                  memories.salience,
+                  memories.confirmation_status,
+                  memories.valid_from,
+                  memories.valid_to,
+                  memories.last_confirmed_at,
                   memories.created_at,
                   memories.updated_at,
                   memories.deleted_at,
@@ -2825,11 +3035,30 @@ class ContinuityStore:
         value: JsonValue,
         status: str,
         source_event_ids: list[str],
+        memory_type: str = "preference",
+        confidence: float | None = None,
+        salience: float | None = None,
+        confirmation_status: str = "unconfirmed",
+        valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
+        last_confirmed_at: datetime | None = None,
     ) -> MemoryRow:
         return self._fetch_one(
             "create_memory",
             INSERT_MEMORY_SQL,
-            (memory_key, Jsonb(value), status, Jsonb(source_event_ids)),
+            (
+                memory_key,
+                Jsonb(value),
+                status,
+                Jsonb(source_event_ids),
+                memory_type,
+                confidence,
+                salience,
+                confirmation_status,
+                valid_from,
+                valid_to,
+                last_confirmed_at,
+            ),
         )
 
     def get_memory(self, memory_id: UUID) -> MemoryRow:
@@ -2875,11 +3104,31 @@ class ContinuityStore:
         value: JsonValue,
         status: str,
         source_event_ids: list[str],
+        memory_type: str = "preference",
+        confidence: float | None = None,
+        salience: float | None = None,
+        confirmation_status: str = "unconfirmed",
+        valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
+        last_confirmed_at: datetime | None = None,
     ) -> MemoryRow:
         return self._fetch_one(
             "update_memory",
             UPDATE_MEMORY_SQL,
-            (Jsonb(value), status, Jsonb(source_event_ids), status, memory_id),
+            (
+                Jsonb(value),
+                status,
+                Jsonb(source_event_ids),
+                memory_type,
+                confidence,
+                salience,
+                confirmation_status,
+                valid_from,
+                valid_to,
+                last_confirmed_at,
+                status,
+                memory_id,
+            ),
         )
 
     def append_memory_revision(

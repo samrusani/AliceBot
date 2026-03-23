@@ -129,6 +129,13 @@ def test_memory_methods_use_expected_queries_and_payload_serialization() -> None
     assert create_params[2] == "active"
     assert isinstance(create_params[3], Jsonb)
     assert create_params[3].obj == [str(event_id)]
+    assert create_params[4] == "preference"
+    assert create_params[5] is None
+    assert create_params[6] is None
+    assert create_params[7] == "unconfirmed"
+    assert create_params[8] is None
+    assert create_params[9] is None
+    assert create_params[10] is None
 
     update_query, update_params = cursor.executed[1]
     assert "UPDATE memories" in update_query
@@ -140,8 +147,15 @@ def test_memory_methods_use_expected_queries_and_payload_serialization() -> None
     assert update_params[1] == "active"
     assert isinstance(update_params[2], Jsonb)
     assert update_params[2].obj == [str(event_id)]
-    assert update_params[3] == "active"
-    assert update_params[4] == memory_id
+    assert update_params[3] == "preference"
+    assert update_params[4] is None
+    assert update_params[5] is None
+    assert update_params[6] == "unconfirmed"
+    assert update_params[7] is None
+    assert update_params[8] is None
+    assert update_params[9] is None
+    assert update_params[10] == "active"
+    assert update_params[11] == memory_id
 
     assert cursor.executed[2] == (
         "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 1))",
@@ -166,7 +180,23 @@ def test_memory_methods_use_expected_queries_and_payload_serialization() -> None
     assert append_revision_params[7].obj == {"memory_key": "user.preference.coffee"}
     assert cursor.executed[6] == (
         """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 ORDER BY updated_at ASC, created_at ASC, id ASC
                 """,
@@ -237,7 +267,23 @@ def test_memory_review_read_methods_use_explicit_order_filter_and_limit() -> Non
     assert cursor.executed == [
         (
             """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 WHERE id = %s
                 """,
@@ -253,7 +299,23 @@ def test_memory_review_read_methods_use_explicit_order_filter_and_limit() -> Non
         ),
         (
             """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 WHERE status = %s
                 ORDER BY updated_at DESC, created_at DESC, id DESC

@@ -10,6 +10,18 @@ from alicebot_api.store import JsonObject, JsonValue
 DecisionKind = Literal["included", "excluded"]
 AdmissionAction = Literal["NOOP", "ADD", "UPDATE", "DELETE"]
 MemoryStatus = Literal["active", "deleted"]
+MemoryType = Literal[
+    "preference",
+    "identity_fact",
+    "relationship_fact",
+    "project_fact",
+    "decision",
+    "commitment",
+    "routine",
+    "constraint",
+    "working_style",
+]
+MemoryConfirmationStatus = Literal["unconfirmed", "confirmed", "contested"]
 MemoryReviewStatusFilter = Literal["active", "deleted", "all"]
 MemoryReviewLabelValue = Literal["correct", "incorrect", "outdated", "insufficient_evidence"]
 EntityType = Literal["person", "merchant", "product", "project", "routine"]
@@ -115,6 +127,24 @@ MEMORY_REVIEW_LABEL_VALUES = [
     "insufficient_evidence",
 ]
 MEMORY_REVIEW_LABEL_ORDER = ["created_at_asc", "id_asc"]
+MEMORY_TYPES = [
+    "preference",
+    "identity_fact",
+    "relationship_fact",
+    "project_fact",
+    "decision",
+    "commitment",
+    "routine",
+    "constraint",
+    "working_style",
+]
+MEMORY_CONFIRMATION_STATUSES = [
+    "unconfirmed",
+    "confirmed",
+    "contested",
+]
+DEFAULT_MEMORY_TYPE: MemoryType = "preference"
+DEFAULT_MEMORY_CONFIRMATION_STATUS: MemoryConfirmationStatus = "unconfirmed"
 ENTITY_TYPES = [
     "person",
     "merchant",
@@ -517,6 +547,13 @@ class ContextPackMemory(TypedDict):
     value: JsonValue
     status: MemoryStatus
     source_event_ids: list[str]
+    memory_type: NotRequired[MemoryType]
+    confidence: NotRequired[float | None]
+    salience: NotRequired[float | None]
+    confirmation_status: NotRequired[MemoryConfirmationStatus]
+    valid_from: NotRequired[str | None]
+    valid_to: NotRequired[str | None]
+    last_confirmed_at: NotRequired[str | None]
     created_at: str
     updated_at: str
     source_provenance: "ContextPackMemorySourceProvenance"
@@ -883,6 +920,13 @@ class MemoryCandidateInput:
     value: JsonValue | None
     source_event_ids: tuple[UUID, ...]
     delete_requested: bool = False
+    memory_type: str | None = None
+    confidence: float | None = None
+    salience: float | None = None
+    confirmation_status: str | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    last_confirmed_at: datetime | None = None
 
     def as_payload(self) -> JsonObject:
         payload: JsonObject = {
@@ -891,6 +935,20 @@ class MemoryCandidateInput:
             "delete_requested": self.delete_requested,
         }
         payload["value"] = self.value
+        if self.memory_type is not None:
+            payload["memory_type"] = self.memory_type
+        if self.confidence is not None:
+            payload["confidence"] = self.confidence
+        if self.salience is not None:
+            payload["salience"] = self.salience
+        if self.confirmation_status is not None:
+            payload["confirmation_status"] = self.confirmation_status
+        if self.valid_from is not None:
+            payload["valid_from"] = isoformat_or_none(self.valid_from)
+        if self.valid_to is not None:
+            payload["valid_to"] = isoformat_or_none(self.valid_to)
+        if self.last_confirmed_at is not None:
+            payload["last_confirmed_at"] = isoformat_or_none(self.last_confirmed_at)
         return payload
 
 
@@ -1247,6 +1305,13 @@ class PersistedMemoryRecord(TypedDict):
     value: JsonValue
     status: MemoryStatus
     source_event_ids: list[str]
+    memory_type: NotRequired[MemoryType]
+    confidence: NotRequired[float | None]
+    salience: NotRequired[float | None]
+    confirmation_status: NotRequired[MemoryConfirmationStatus]
+    valid_from: NotRequired[str | None]
+    valid_to: NotRequired[str | None]
+    last_confirmed_at: NotRequired[str | None]
     created_at: str
     updated_at: str
     deleted_at: str | None
@@ -1302,6 +1367,13 @@ class MemoryReviewRecord(TypedDict):
     value: JsonValue
     status: MemoryStatus
     source_event_ids: list[str]
+    memory_type: NotRequired[MemoryType]
+    confidence: NotRequired[float | None]
+    salience: NotRequired[float | None]
+    confirmation_status: NotRequired[MemoryConfirmationStatus]
+    valid_from: NotRequired[str | None]
+    valid_to: NotRequired[str | None]
+    last_confirmed_at: NotRequired[str | None]
     created_at: str
     updated_at: str
     deleted_at: str | None
@@ -1390,6 +1462,13 @@ class MemoryReviewQueueItem(TypedDict):
     value: JsonValue
     status: Literal["active"]
     source_event_ids: list[str]
+    memory_type: NotRequired[MemoryType]
+    confidence: NotRequired[float | None]
+    salience: NotRequired[float | None]
+    confirmation_status: NotRequired[MemoryConfirmationStatus]
+    valid_from: NotRequired[str | None]
+    valid_to: NotRequired[str | None]
+    last_confirmed_at: NotRequired[str | None]
     created_at: str
     updated_at: str
 
@@ -1529,6 +1608,13 @@ class SemanticMemoryRetrievalResultItem(TypedDict):
     memory_key: str
     value: JsonValue
     source_event_ids: list[str]
+    memory_type: NotRequired[MemoryType]
+    confidence: NotRequired[float | None]
+    salience: NotRequired[float | None]
+    confirmation_status: NotRequired[MemoryConfirmationStatus]
+    valid_from: NotRequired[str | None]
+    valid_to: NotRequired[str | None]
+    last_confirmed_at: NotRequired[str | None]
     created_at: str
     updated_at: str
     score: float

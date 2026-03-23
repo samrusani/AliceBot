@@ -91,7 +91,23 @@ def test_entity_methods_use_expected_queries_and_deterministic_order() -> None:
 
     assert cursor.executed[1] == (
         """
-                SELECT id, user_id, memory_key, value, status, source_event_ids, created_at, updated_at, deleted_at
+                SELECT
+                  id,
+                  user_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
                 FROM memories
                 WHERE id = ANY(%s)
                 ORDER BY created_at ASC, id ASC

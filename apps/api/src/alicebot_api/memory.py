@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from alicebot_api.contracts import (
     AdmissionDecisionOutput,
+    DEFAULT_MEMORY_CONFIRMATION_STATUS,
+    DEFAULT_MEMORY_TYPE,
     DEFAULT_MEMORY_REVIEW_LIMIT,
+    MEMORY_CONFIRMATION_STATUSES,
     MEMORY_REVIEW_LABEL_ORDER,
     MEMORY_REVIEW_LABEL_VALUES,
     MEMORY_REVIEW_QUEUE_ORDER,
     MEMORY_REVISION_REVIEW_ORDER,
     MEMORY_REVIEW_ORDER,
+    MEMORY_TYPES,
     MemoryCandidateInput,
     MemoryEvaluationSummary,
     MemoryEvaluationSummaryResponse,
@@ -45,8 +50,29 @@ class MemoryReviewNotFoundError(LookupError):
     """Raised when a requested memory is not visible inside the current user scope."""
 
 
+def _serialize_typed_memory_metadata(memory: MemoryRow) -> JsonObject:
+    payload: JsonObject = {}
+
+    if "memory_type" in memory:
+        payload["memory_type"] = memory["memory_type"]
+    if "confidence" in memory:
+        payload["confidence"] = memory["confidence"]
+    if "salience" in memory:
+        payload["salience"] = memory["salience"]
+    if "confirmation_status" in memory:
+        payload["confirmation_status"] = memory["confirmation_status"]
+    if "valid_from" in memory:
+        payload["valid_from"] = isoformat_or_none(memory["valid_from"])
+    if "valid_to" in memory:
+        payload["valid_to"] = isoformat_or_none(memory["valid_to"])
+    if "last_confirmed_at" in memory:
+        payload["last_confirmed_at"] = isoformat_or_none(memory["last_confirmed_at"])
+
+    return payload
+
+
 def _serialize_memory(memory: MemoryRow) -> PersistedMemoryRecord:
-    return {
+    payload: PersistedMemoryRecord = {
         "id": str(memory["id"]),
         "user_id": str(memory["user_id"]),
         "memory_key": memory["memory_key"],
@@ -57,6 +83,8 @@ def _serialize_memory(memory: MemoryRow) -> PersistedMemoryRecord:
         "updated_at": memory["updated_at"].isoformat(),
         "deleted_at": isoformat_or_none(memory["deleted_at"]),
     }
+    payload.update(_serialize_typed_memory_metadata(memory))
+    return payload
 
 
 def _serialize_memory_revision(revision: MemoryRevisionRow) -> PersistedMemoryRevisionRecord:
@@ -76,7 +104,7 @@ def _serialize_memory_revision(revision: MemoryRevisionRow) -> PersistedMemoryRe
 
 
 def _serialize_memory_review(memory: MemoryRow) -> MemoryReviewRecord:
-    return {
+    payload: MemoryReviewRecord = {
         "id": str(memory["id"]),
         "memory_key": memory["memory_key"],
         "value": memory["value"],
@@ -86,10 +114,12 @@ def _serialize_memory_review(memory: MemoryRow) -> MemoryReviewRecord:
         "updated_at": memory["updated_at"].isoformat(),
         "deleted_at": isoformat_or_none(memory["deleted_at"]),
     }
+    payload.update(_serialize_typed_memory_metadata(memory))
+    return payload
 
 
 def _serialize_memory_review_queue_item(memory: MemoryRow) -> MemoryReviewQueueItem:
-    return {
+    payload: MemoryReviewQueueItem = {
         "id": str(memory["id"]),
         "memory_key": memory["memory_key"],
         "value": memory["value"],
@@ -98,6 +128,8 @@ def _serialize_memory_review_queue_item(memory: MemoryRow) -> MemoryReviewQueueI
         "created_at": memory["created_at"].isoformat(),
         "updated_at": memory["updated_at"].isoformat(),
     }
+    payload.update(_serialize_typed_memory_metadata(memory))
+    return payload
 
 
 def _serialize_memory_revision_review(revision: MemoryRevisionRow) -> MemoryRevisionReviewRecord:
@@ -372,6 +404,81 @@ def _candidate_payload(candidate: MemoryCandidateInput) -> JsonObject:
     return candidate.as_payload()
 
 
+def _validate_memory_type(memory_type: str | None) -> str | None:
+    if memory_type is None:
+        return None
+    if memory_type not in MEMORY_TYPES:
+        allowed_values = ", ".join(MEMORY_TYPES)
+        raise MemoryAdmissionValidationError(f"memory_type must be one of: {allowed_values}")
+    return memory_type
+
+
+def _validate_confirmation_status(confirmation_status: str | None) -> str | None:
+    if confirmation_status is None:
+        return None
+    if confirmation_status not in MEMORY_CONFIRMATION_STATUSES:
+        allowed_values = ", ".join(MEMORY_CONFIRMATION_STATUSES)
+        raise MemoryAdmissionValidationError(
+            f"confirmation_status must be one of: {allowed_values}"
+        )
+    return confirmation_status
+
+
+def _validate_score(name: str, score: float | None) -> float | None:
+    if score is None:
+        return None
+    normalized = float(score)
+    if normalized < 0.0 or normalized > 1.0:
+        raise MemoryAdmissionValidationError(f"{name} must be between 0.0 and 1.0")
+    return normalized
+
+
+def _validate_temporal_range(valid_from: datetime | None, valid_to: datetime | None) -> None:
+    if valid_from is not None and valid_to is not None and valid_to < valid_from:
+        raise MemoryAdmissionValidationError("valid_to must be greater than or equal to valid_from")
+
+
+def _resolve_memory_typed_metadata(
+    *,
+    existing_memory: MemoryRow | None,
+    candidate: MemoryCandidateInput,
+) -> dict[str, object]:
+    memory_type = _validate_memory_type(candidate.memory_type)
+    confirmation_status = _validate_confirmation_status(candidate.confirmation_status)
+    confidence = _validate_score("confidence", candidate.confidence)
+    salience = _validate_score("salience", candidate.salience)
+    _validate_temporal_range(candidate.valid_from, candidate.valid_to)
+
+    if existing_memory is None:
+        return {
+            "memory_type": memory_type or DEFAULT_MEMORY_TYPE,
+            "confidence": confidence,
+            "salience": salience,
+            "confirmation_status": confirmation_status or DEFAULT_MEMORY_CONFIRMATION_STATUS,
+            "valid_from": candidate.valid_from,
+            "valid_to": candidate.valid_to,
+            "last_confirmed_at": candidate.last_confirmed_at,
+        }
+
+    return {
+        "memory_type": memory_type if memory_type is not None else existing_memory.get("memory_type", DEFAULT_MEMORY_TYPE),
+        "confidence": confidence if confidence is not None else existing_memory.get("confidence"),
+        "salience": salience if salience is not None else existing_memory.get("salience"),
+        "confirmation_status": (
+            confirmation_status
+            if confirmation_status is not None
+            else existing_memory.get("confirmation_status", DEFAULT_MEMORY_CONFIRMATION_STATUS)
+        ),
+        "valid_from": candidate.valid_from if candidate.valid_from is not None else existing_memory.get("valid_from"),
+        "valid_to": candidate.valid_to if candidate.valid_to is not None else existing_memory.get("valid_to"),
+        "last_confirmed_at": (
+            candidate.last_confirmed_at
+            if candidate.last_confirmed_at is not None
+            else existing_memory.get("last_confirmed_at")
+        ),
+    }
+
+
 def admit_memory_candidate(
     store: ContinuityStore,
     *,
@@ -382,6 +489,10 @@ def admit_memory_candidate(
 
     source_event_ids = _validate_source_events(store, candidate.source_event_ids)
     existing_memory = store.get_memory_by_key(candidate.memory_key)
+    resolved_metadata = _resolve_memory_typed_metadata(
+        existing_memory=existing_memory,
+        candidate=candidate,
+    )
 
     noop_decision = AdmissionDecisionOutput(
         action="NOOP",
@@ -404,6 +515,13 @@ def admit_memory_candidate(
             value=existing_memory["value"],
             status="deleted",
             source_event_ids=source_event_ids,
+            memory_type=resolved_metadata["memory_type"],
+            confidence=resolved_metadata["confidence"],
+            salience=resolved_metadata["salience"],
+            confirmation_status=resolved_metadata["confirmation_status"],
+            valid_from=resolved_metadata["valid_from"],
+            valid_to=resolved_metadata["valid_to"],
+            last_confirmed_at=resolved_metadata["last_confirmed_at"],
         )
         revision = store.append_memory_revision(
             memory_id=memory["id"],
@@ -435,6 +553,13 @@ def admit_memory_candidate(
             value=candidate.value,
             status="active",
             source_event_ids=source_event_ids,
+            memory_type=resolved_metadata["memory_type"],
+            confidence=resolved_metadata["confidence"],
+            salience=resolved_metadata["salience"],
+            confirmation_status=resolved_metadata["confirmation_status"],
+            valid_from=resolved_metadata["valid_from"],
+            valid_to=resolved_metadata["valid_to"],
+            last_confirmed_at=resolved_metadata["last_confirmed_at"],
         )
         revision = store.append_memory_revision(
             memory_id=memory["id"],
@@ -452,7 +577,20 @@ def admit_memory_candidate(
             revision=_serialize_memory_revision(revision),
         )
 
-    if existing_memory["status"] == "active" and existing_memory["value"] == candidate.value:
+    metadata_changed = any(
+        existing_memory.get(field_name) != resolved_metadata[field_name]
+        for field_name in (
+            "memory_type",
+            "confidence",
+            "salience",
+            "confirmation_status",
+            "valid_from",
+            "valid_to",
+            "last_confirmed_at",
+        )
+    )
+
+    if existing_memory["status"] == "active" and existing_memory["value"] == candidate.value and not metadata_changed:
         return AdmissionDecisionOutput(
             action=noop_decision.action,
             reason="memory_unchanged",
@@ -465,6 +603,13 @@ def admit_memory_candidate(
         value=candidate.value,
         status="active",
         source_event_ids=source_event_ids,
+        memory_type=resolved_metadata["memory_type"],
+        confidence=resolved_metadata["confidence"],
+        salience=resolved_metadata["salience"],
+        confirmation_status=resolved_metadata["confirmation_status"],
+        valid_from=resolved_metadata["valid_from"],
+        valid_to=resolved_metadata["valid_to"],
+        last_confirmed_at=resolved_metadata["last_confirmed_at"],
     )
     revision = store.append_memory_revision(
         memory_id=memory["id"],
