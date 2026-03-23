@@ -6,6 +6,7 @@ import ChatPage from "./page";
 
 const {
   getApiConfigMock,
+  getThreadResumptionBriefMock,
   getThreadDetailMock,
   getThreadEventsMock,
   getThreadSessionsMock,
@@ -13,6 +14,7 @@ const {
   listThreadsMock,
 } = vi.hoisted(() => ({
   getApiConfigMock: vi.fn(),
+  getThreadResumptionBriefMock: vi.fn(),
   getThreadDetailMock: vi.fn(),
   getThreadEventsMock: vi.fn(),
   getThreadSessionsMock: vi.fn(),
@@ -50,6 +52,7 @@ vi.mock("../../lib/api", async () => {
   return {
     ...actual,
     getApiConfig: getApiConfigMock,
+    getThreadResumptionBrief: getThreadResumptionBriefMock,
     getThreadDetail: getThreadDetailMock,
     getThreadEvents: getThreadEventsMock,
     getThreadSessions: getThreadSessionsMock,
@@ -58,9 +61,54 @@ vi.mock("../../lib/api", async () => {
   };
 });
 
+function buildResumptionBriefFixture() {
+  return {
+    brief: {
+      assembly_version: "resumption_brief_v0",
+      thread: {
+        id: "thread-1",
+        title: "Gamma thread",
+        created_at: "2026-03-17T10:00:00Z",
+        updated_at: "2026-03-17T10:00:00Z",
+      },
+      conversation: {
+        items: [],
+        summary: {
+          limit: 8,
+          returned_count: 0,
+          total_count: 0,
+          order: ["sequence_no_asc"],
+          kinds: ["message.user", "message.assistant"],
+        },
+      },
+      open_loops: {
+        items: [],
+        summary: {
+          limit: 5,
+          returned_count: 0,
+          total_count: 0,
+          order: ["opened_at_desc", "created_at_desc", "id_desc"],
+        },
+      },
+      memory_highlights: {
+        items: [],
+        summary: {
+          limit: 5,
+          returned_count: 0,
+          total_count: 0,
+          order: ["updated_at_asc", "created_at_asc", "id_asc"],
+        },
+      },
+      workflow: null,
+      sources: ["threads", "events", "open_loops", "memories"],
+    },
+  };
+}
+
 describe("ChatPage", () => {
   beforeEach(() => {
     getApiConfigMock.mockReset();
+    getThreadResumptionBriefMock.mockReset();
     getThreadDetailMock.mockReset();
     getThreadEventsMock.mockReset();
     getThreadSessionsMock.mockReset();
@@ -107,6 +155,7 @@ describe("ChatPage", () => {
       items: [],
       summary: { thread_id: "thread-1", total_count: 0, order: [] },
     });
+    getThreadResumptionBriefMock.mockResolvedValue(buildResumptionBriefFixture());
 
     render(await ChatPage({ searchParams: Promise.resolve({}) }));
 
@@ -152,6 +201,7 @@ describe("ChatPage", () => {
       items: [],
       summary: { thread_id: "thread-1", total_count: 0, order: [] },
     });
+    getThreadResumptionBriefMock.mockResolvedValue(buildResumptionBriefFixture());
 
     render(
       await ChatPage({
@@ -195,10 +245,55 @@ describe("ChatPage", () => {
       items: [],
       summary: { thread_id: "thread-1", total_count: 0, order: [] },
     });
+    getThreadResumptionBriefMock.mockRejectedValue(new Error("brief failed"));
 
     render(await ChatPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByText("Continuity unavailable")).toBeInTheDocument();
     expect(screen.getByText("Summary unavailable")).toBeInTheDocument();
+  });
+
+  it("shows resumption brief unavailable state when brief read fails but continuity is live", async () => {
+    getApiConfigMock.mockReturnValue({
+      apiBaseUrl: "https://api.example.com",
+      userId: "user-1",
+      defaultThreadId: "thread-1",
+      defaultToolId: "tool-1",
+    });
+    hasLiveApiConfigMock.mockReturnValue(true);
+    listThreadsMock.mockResolvedValue({
+      items: [
+        {
+          id: "thread-1",
+          title: "Gamma thread",
+          created_at: "2026-03-17T10:00:00Z",
+          updated_at: "2026-03-17T10:00:00Z",
+        },
+      ],
+      summary: { total_count: 1, order: ["created_at_desc", "id_desc"] },
+    });
+    getThreadDetailMock.mockResolvedValue({
+      thread: {
+        id: "thread-1",
+        title: "Gamma thread",
+        created_at: "2026-03-17T10:00:00Z",
+        updated_at: "2026-03-17T10:00:00Z",
+      },
+    });
+    getThreadSessionsMock.mockResolvedValue({
+      items: [],
+      summary: { thread_id: "thread-1", total_count: 0, order: [] },
+    });
+    getThreadEventsMock.mockResolvedValue({
+      items: [],
+      summary: { thread_id: "thread-1", total_count: 0, order: [] },
+    });
+    getThreadResumptionBriefMock.mockRejectedValue(new Error("resumption brief failed"));
+
+    render(await ChatPage({ searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByText("Live continuity enabled")).toBeInTheDocument();
+    expect(screen.getByText("Resumption brief unavailable")).toBeInTheDocument();
+    expect(screen.getByText("resumption brief failed")).toBeInTheDocument();
   });
 });

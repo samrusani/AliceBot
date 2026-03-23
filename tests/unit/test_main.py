@@ -143,6 +143,7 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v0/tasks/{task_id}" in route_paths
     assert "/v0/tasks/{task_id}/workspace" in route_paths
     assert "/v0/tasks/{task_id}/steps" in route_paths
+    assert "/v0/threads/{thread_id}/resumption-brief" in route_paths
     assert "/v0/task-workspaces" in route_paths
     assert "/v0/task-workspaces/{task_workspace_id}" in route_paths
     assert "/v0/task-workspaces/{task_workspace_id}/artifacts" in route_paths

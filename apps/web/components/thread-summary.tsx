@@ -1,4 +1,4 @@
-import type { ThreadEventItem, ThreadItem, ThreadSessionItem } from "../lib/api";
+import type { ResumptionBrief, ThreadEventItem, ThreadItem, ThreadSessionItem } from "../lib/api";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
@@ -9,6 +9,9 @@ type ThreadSummaryProps = {
   events: ThreadEventItem[];
   source: "live" | "fixture" | "unavailable";
   unavailableReason?: string;
+  resumptionBrief?: ResumptionBrief | null;
+  resumptionSource?: "live" | "fixture" | "unavailable" | null;
+  resumptionUnavailableReason?: string;
 };
 
 function formatDate(value: string) {
@@ -32,12 +35,23 @@ function isConversationEvent(event: ThreadEventItem) {
   return event.kind === "message.user" || event.kind === "message.assistant";
 }
 
+function summarizeEvent(event: ThreadEventItem) {
+  const payload = event.payload;
+  if (payload && typeof payload === "object" && "text" in payload && typeof payload.text === "string") {
+    return payload.text;
+  }
+  return event.kind;
+}
+
 export function ThreadSummary({
   thread,
   sessions,
   events,
   source,
   unavailableReason,
+  resumptionBrief = null,
+  resumptionSource = null,
+  resumptionUnavailableReason,
 }: ThreadSummaryProps) {
   if (source === "unavailable") {
     return (
@@ -120,6 +134,99 @@ export function ThreadSummary({
           events are attached to this thread.
         </p>
       </div>
+
+      {resumptionSource === "unavailable" ? (
+        <div className="detail-group">
+          <span className="history-entry__label">Resumption brief</span>
+          <EmptyState
+            title="Resumption brief unavailable"
+            description={
+              resumptionUnavailableReason ??
+              "The deterministic resumption brief could not be loaded for this thread."
+            }
+          />
+        </div>
+      ) : resumptionBrief ? (
+        <div className="detail-group">
+          <span className="history-entry__label">Resumption brief</span>
+          <p>
+            {resumptionSource === "live"
+              ? "Live deterministic brief"
+              : "Fixture deterministic brief"}{" "}
+            from durable continuity seams.
+          </p>
+          <dl className="key-value-grid key-value-grid--compact">
+            <div>
+              <dt>Conversation evidence</dt>
+              <dd>
+                {resumptionBrief.conversation.summary.returned_count}/
+                {resumptionBrief.conversation.summary.total_count}
+              </dd>
+            </div>
+            <div>
+              <dt>Active open loops</dt>
+              <dd>
+                {resumptionBrief.open_loops.summary.returned_count}/
+                {resumptionBrief.open_loops.summary.total_count}
+              </dd>
+            </div>
+            <div>
+              <dt>Memory highlights</dt>
+              <dd>
+                {resumptionBrief.memory_highlights.summary.returned_count}/
+                {resumptionBrief.memory_highlights.summary.total_count}
+              </dd>
+            </div>
+            <div>
+              <dt>Workflow posture</dt>
+              <dd>{resumptionBrief.workflow ? "Present" : "Not linked"}</dd>
+            </div>
+          </dl>
+
+          {resumptionBrief.conversation.items.length > 0 ? (
+            <div className="detail-group detail-group--muted">
+              <span className="history-entry__label">Latest conversation evidence</span>
+              <ul className="timeline-list">
+                {resumptionBrief.conversation.items.map((item) => (
+                  <li key={item.id} className="timeline-item">
+                    <p className="mono">#{item.sequence_no} {item.kind}</p>
+                    <p>{summarizeEvent(item)}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="muted-copy">No conversation evidence is currently available.</p>
+          )}
+
+          {resumptionBrief.open_loops.items.length > 0 ? (
+            <div className="detail-group detail-group--muted">
+              <span className="history-entry__label">Active open loops</span>
+              <ul className="timeline-list">
+                {resumptionBrief.open_loops.items.map((item) => (
+                  <li key={item.id} className="timeline-item">
+                    <p className="mono">{item.title}</p>
+                    <p>Status: {item.status}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {resumptionBrief.memory_highlights.items.length > 0 ? (
+            <div className="detail-group detail-group--muted">
+              <span className="history-entry__label">Memory highlights</span>
+              <ul className="timeline-list">
+                {resumptionBrief.memory_highlights.items.map((item) => (
+                  <li key={item.id} className="timeline-item">
+                    <p className="mono">{item.memory_key}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="detail-group">
         <span className="history-entry__label">Thread ID</span>
