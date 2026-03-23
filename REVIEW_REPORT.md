@@ -4,39 +4,45 @@
 PASS
 
 ## criteria met
-- Sprint remained scoped to open-loop backbone seams (schema/store/contracts/API/compiler/`/memories`) with no worker, automation, or Phase 3 runtime expansion.
-- Migration `20260323_0031` adds `open_loops` lifecycle fields, constraints, indexes, RLS, and app-role grants.
-- Store/contracts/API seams for list/detail/create/status are implemented and user-scoped.
-- Memory admission accepts optional `open_loop` payload and can emit created open-loop data in admit responses.
-- Compiler context pack includes deterministic open-loop ordering and summary when open loops exist.
-- `/memories` renders open-loop summary/list/detail with live/fixture fallback behavior.
-- Added explicit transition and adversarial isolation evidence:
-- Successful `open -> dismissed` transition with audit-field assertions (`resolved_at`, `resolution_note`) is now covered.
-- Cross-user denial coverage now asserts `404` for `GET /v0/open-loops/{id}` and `POST /v0/open-loops/{id}/status`.
-- `ARCHITECTURE.md` now includes the shipped open-loop domain/API/compiler/`/memories` slice.
-- Relevant tests executed and passing in this review:
-- `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_20260323_0031_open_loop_backbone.py tests/unit/test_memory_store.py tests/unit/test_memory.py tests/unit/test_compiler.py tests/unit/test_main.py` -> `79 passed`
-- `cd apps/web && pnpm test -- lib/api.test.ts app/memories/page.test.tsx` -> `24 passed`
-- `PYTHONPATH=$PWD .venv/bin/pytest tests/integration/test_open_loops_api.py tests/integration/test_migrations.py` -> `11 passed` (run outside sandbox networking for local Postgres access)
+- Sprint stayed within the Sprint 4 scope: contracts/API/compiler/UI for deterministic resumption briefs only.
+- Shipped endpoint and contract seam are coherent and typed:
+  - `GET /v0/threads/{thread_id}/resumption-brief`
+  - payload includes `assembly_version`, `thread`, `conversation`, `open_loops`, `memory_highlights`, `workflow`, `sources`
+- Per-user isolation and deterministic not-found behavior are implemented:
+  - thread lookup is user-scoped
+  - cross-user and missing thread requests return deterministic `404`
+- Deterministic ordering and bounded sections are explicit in implementation and reflected in summaries:
+  - conversation order: `sequence_no_asc` with bounded latest window
+  - open-loop order: `opened_at_desc`, `created_at_desc`, `id_desc`
+  - memory order: `updated_at_asc`, `created_at_asc`, `id_asc` with bounded latest window
+  - workflow posture selection uses stable task/task-step ordering
+- `/chat` selected-thread panel now supports resumption brief live/fixture/unavailable states without removing existing chat workflow surfaces.
+- Verified tests:
+  - `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_compiler.py tests/unit/test_main.py` -> `53 passed`
+  - `cd apps/web && pnpm test -- app/chat/page.test.tsx components/thread-summary.test.tsx lib/api.test.ts` -> `28 passed`
+  - `PYTHONPATH=$PWD .venv/bin/pytest tests/integration/test_continuity_api.py` -> `3 passed` (required elevated local DB access in this environment)
 
 ## criteria missed
 - None.
 
 ## quality issues
-- Open-loop compile limit is currently coupled to `max_memories` (`apps/api/src/alicebot_api/compiler.py`). This is acceptable for sprint scope but should be decoupled in a later sprint.
+- No blocking quality issues found in sprint scope.
+- Minor non-blocking note: fixture-mode brief intentionally leaves open-loops and memory-highlights empty; this is acceptable for state-parity UI validation in this sprint.
 
 ## regression risks
-- Low for touched seams based on unit/web/integration coverage.
-- Residual risk remains low for broader non-sprint integrations not re-run in this pass.
+- Low for touched seams due unit + integration + web test coverage on new surfaces.
+- Residual risk remains on unrelated app surfaces not exercised in this sprint review run.
 
 ## docs issues
-- None blocking for sprint acceptance.
+- No blocking documentation gaps for sprint acceptance.
+- `BUILD_REPORT.md` includes required endpoint, fields, ordering rules, tests, and deferred scope.
 
 ## should anything be added to RULES.md?
-- Optional: require lifecycle-domain acceptance tests to include every allowed transition and cross-user list/detail/mutation denial checks.
+- Optional improvement: add a rule that every new continuity-read endpoint must ship explicit ordering constants plus test assertions for ordering and bounds.
 
 ## should anything update ARCHITECTURE.md?
-- Already updated in this sprint to include open-loop seams.
+- Optional improvement: add a short “Resumption Brief Read Seam” subsection documenting source seams (`threads/events/open_loops/memories/tasks/task_steps`) and deterministic assembly constraints.
 
 ## recommended next action
-1. Proceed to Control Tower merge approval for Sprint 3 open-loop backbone.
+1. Mark Sprint 4 as reviewer `PASS` and move to Control Tower merge gate.
+2. Optionally capture the non-blocking RULES/ARCHITECTURE clarifications in a follow-up docs-only PR.

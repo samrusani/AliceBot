@@ -56,6 +56,54 @@ export type ThreadEventListSummary = {
   order: string[];
 };
 
+export type ResumptionBriefSectionSummary = {
+  limit: number;
+  returned_count: number;
+  total_count: number;
+  order: string[];
+};
+
+export type ResumptionBriefConversationSummary = ResumptionBriefSectionSummary & {
+  kinds: string[];
+};
+
+export type ResumptionBriefConversationSection = {
+  items: ThreadEventItem[];
+  summary: ResumptionBriefConversationSummary;
+};
+
+export type ResumptionBriefOpenLoopSection = {
+  items: OpenLoopRecord[];
+  summary: ResumptionBriefSectionSummary;
+};
+
+export type ResumptionBriefMemoryHighlightSection = {
+  items: MemoryReviewRecord[];
+  summary: ResumptionBriefSectionSummary;
+};
+
+export type ResumptionBriefWorkflowSummary = {
+  present: boolean;
+  task_order: string[];
+  task_step_order: string[];
+};
+
+export type ResumptionBriefWorkflowPosture = {
+  task: TaskItem;
+  latest_task_step: TaskStepItem | null;
+  summary: ResumptionBriefWorkflowSummary;
+};
+
+export type ResumptionBrief = {
+  assembly_version: string;
+  thread: ThreadItem;
+  conversation: ResumptionBriefConversationSection;
+  open_loops: ResumptionBriefOpenLoopSection;
+  memory_highlights: ResumptionBriefMemoryHighlightSection;
+  workflow: ResumptionBriefWorkflowPosture | null;
+  sources: string[];
+};
+
 export type ToolRoutingReason = {
   code: string;
   source: string;
@@ -1047,6 +1095,34 @@ export function getThreadEvents(apiBaseUrl: string, threadId: string, userId: st
     `/v0/threads/${threadId}/events`,
     undefined,
     { user_id: userId },
+  );
+}
+
+export function getThreadResumptionBrief(
+  apiBaseUrl: string,
+  threadId: string,
+  userId: string,
+  options?: {
+    maxEvents?: number;
+    maxOpenLoops?: number;
+    maxMemories?: number;
+  },
+) {
+  return requestJson<{ brief: ResumptionBrief }>(
+    apiBaseUrl,
+    `/v0/threads/${threadId}/resumption-brief`,
+    undefined,
+    {
+      user_id: userId,
+      max_events:
+        typeof options?.maxEvents === "number" ? String(Math.max(0, options.maxEvents)) : undefined,
+      max_open_loops:
+        typeof options?.maxOpenLoops === "number"
+          ? String(Math.max(0, options.maxOpenLoops))
+          : undefined,
+      max_memories:
+        typeof options?.maxMemories === "number" ? String(Math.max(0, options.maxMemories)) : undefined,
+    },
   );
 }
 
