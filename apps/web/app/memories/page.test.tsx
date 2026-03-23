@@ -9,18 +9,22 @@ const {
   getMemoryDetailMock,
   getMemoryEvaluationSummaryMock,
   getMemoryRevisionsMock,
+  getOpenLoopDetailMock,
   hasLiveApiConfigMock,
   listMemoriesMock,
   listMemoryLabelsMock,
+  listOpenLoopsMock,
   listMemoryReviewQueueMock,
 } = vi.hoisted(() => ({
   getApiConfigMock: vi.fn(),
   getMemoryDetailMock: vi.fn(),
   getMemoryEvaluationSummaryMock: vi.fn(),
   getMemoryRevisionsMock: vi.fn(),
+  getOpenLoopDetailMock: vi.fn(),
   hasLiveApiConfigMock: vi.fn(),
   listMemoriesMock: vi.fn(),
   listMemoryLabelsMock: vi.fn(),
+  listOpenLoopsMock: vi.fn(),
   listMemoryReviewQueueMock: vi.fn(),
 }));
 
@@ -56,9 +60,11 @@ vi.mock("../../lib/api", async () => {
     getMemoryDetail: getMemoryDetailMock,
     getMemoryEvaluationSummary: getMemoryEvaluationSummaryMock,
     getMemoryRevisions: getMemoryRevisionsMock,
+    getOpenLoopDetail: getOpenLoopDetailMock,
     hasLiveApiConfig: hasLiveApiConfigMock,
     listMemories: listMemoriesMock,
     listMemoryLabels: listMemoryLabelsMock,
+    listOpenLoops: listOpenLoopsMock,
     listMemoryReviewQueue: listMemoryReviewQueueMock,
   };
 });
@@ -69,9 +75,11 @@ describe("MemoriesPage", () => {
     getMemoryDetailMock.mockReset();
     getMemoryEvaluationSummaryMock.mockReset();
     getMemoryRevisionsMock.mockReset();
+    getOpenLoopDetailMock.mockReset();
     hasLiveApiConfigMock.mockReset();
     listMemoriesMock.mockReset();
     listMemoryLabelsMock.mockReset();
+    listOpenLoopsMock.mockReset();
     listMemoryReviewQueueMock.mockReset();
 
     getApiConfigMock.mockReturnValue({
@@ -163,6 +171,44 @@ describe("MemoriesPage", () => {
         label_value_order: ["correct", "incorrect", "outdated", "insufficient_evidence"],
       },
     });
+    listOpenLoopsMock.mockResolvedValue({
+      items: [
+        {
+          id: "loop-live-1",
+          memory_id: "memory-live-1",
+          title: "Confirm merchant details",
+          status: "open",
+          opened_at: "2026-03-23T09:00:00Z",
+          due_at: "2026-03-25T09:00:00Z",
+          resolved_at: null,
+          resolution_note: null,
+          created_at: "2026-03-23T09:00:00Z",
+          updated_at: "2026-03-23T09:00:00Z",
+        },
+      ],
+      summary: {
+        status: "open",
+        limit: 20,
+        returned_count: 1,
+        total_count: 1,
+        has_more: false,
+        order: ["opened_at_desc", "created_at_desc", "id_desc"],
+      },
+    });
+    getOpenLoopDetailMock.mockResolvedValue({
+      open_loop: {
+        id: "loop-live-1",
+        memory_id: "memory-live-1",
+        title: "Confirm merchant details",
+        status: "open",
+        opened_at: "2026-03-23T09:00:00Z",
+        due_at: "2026-03-25T09:00:00Z",
+        resolved_at: null,
+        resolution_note: null,
+        created_at: "2026-03-23T09:00:00Z",
+        updated_at: "2026-03-23T09:00:00Z",
+      },
+    });
     getMemoryDetailMock.mockResolvedValue({
       memory: {
         id: "memory-live-1",
@@ -246,6 +292,8 @@ describe("MemoriesPage", () => {
     expect(screen.getByText("Live revisions")).toBeInTheDocument();
     expect(screen.getByText("Live labels")).toBeInTheDocument();
     expect(screen.getByText("Typed metadata")).toBeInTheDocument();
+    expect(screen.getByText("Open-loop backbone")).toBeInTheDocument();
+    expect(screen.getByText("Confirm merchant details")).toBeInTheDocument();
     expect(screen.getByText("decision")).toBeInTheDocument();
     expect(screen.getByText("confirmed")).toBeInTheDocument();
     expect(screen.getByText("0.93")).toBeInTheDocument();
@@ -262,6 +310,10 @@ describe("MemoriesPage", () => {
       "memory-live-1",
       "user-1",
     );
+    expect(listOpenLoopsMock).toHaveBeenCalledWith("https://api.example.com", "user-1", {
+      status: "open",
+      limit: 20,
+    });
   });
 
   it("keeps fallback state explicit when live reads partially fail and shows unavailable revision/label panels", async () => {
@@ -296,6 +348,7 @@ describe("MemoriesPage", () => {
     });
     listMemoryReviewQueueMock.mockRejectedValue(new Error("queue down"));
     getMemoryEvaluationSummaryMock.mockRejectedValue(new Error("summary down"));
+    listOpenLoopsMock.mockRejectedValue(new Error("open loops down"));
     getMemoryDetailMock.mockRejectedValue(new Error("detail down"));
     getMemoryRevisionsMock.mockRejectedValue(new Error("revisions down"));
     listMemoryLabelsMock.mockRejectedValue(new Error("labels down"));
@@ -310,6 +363,7 @@ describe("MemoriesPage", () => {
 
     expect(screen.getByText("Summary: summary down")).toBeInTheDocument();
     expect(screen.getByText("Queue: queue down")).toBeInTheDocument();
+    expect(screen.getByText(/open loops down/)).toBeInTheDocument();
     expect(screen.getAllByText("Insufficient evidence").length).toBeGreaterThan(0);
     expect(screen.getByText("Detail read")).toBeInTheDocument();
     expect(screen.getByText("detail down")).toBeInTheDocument();

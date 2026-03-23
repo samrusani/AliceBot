@@ -248,6 +248,8 @@ export type TraceReviewEventListSummary = {
 
 export type MemoryReviewStatus = "active" | "deleted";
 export type MemoryReviewStatusFilter = MemoryReviewStatus | "all";
+export type OpenLoopStatus = "open" | "resolved" | "dismissed";
+export type OpenLoopStatusFilter = OpenLoopStatus | "all";
 export type MemoryReviewLabelValue =
   | "correct"
   | "incorrect"
@@ -374,6 +376,28 @@ export type MemoryEvaluationSummary = {
   total_label_row_count: number;
   label_row_counts_by_value: MemoryReviewLabelCounts;
   label_value_order: MemoryReviewLabelValue[];
+};
+
+export type OpenLoopRecord = {
+  id: string;
+  memory_id: string | null;
+  title: string;
+  status: OpenLoopStatus;
+  opened_at: string;
+  due_at: string | null;
+  resolved_at: string | null;
+  resolution_note: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OpenLoopListSummary = {
+  status: OpenLoopStatusFilter;
+  limit: number;
+  returned_count: number;
+  total_count: number;
+  has_more: boolean;
+  order: string[];
 };
 
 export type EntityType = "person" | "merchant" | "product" | "project" | "routine";
@@ -601,6 +625,23 @@ export type MemoryAdmitPayload = {
   value: unknown | null;
   source_event_ids: string[];
   delete_requested?: boolean;
+  open_loop?: {
+    title: string;
+    due_at?: string | null;
+  };
+};
+
+export type OpenLoopCreatePayload = {
+  user_id: string;
+  memory_id?: string | null;
+  title: string;
+  due_at?: string | null;
+};
+
+export type OpenLoopStatusUpdatePayload = {
+  user_id: string;
+  status: OpenLoopStatus;
+  resolution_note?: string | null;
 };
 
 export type ApprovalRequestPayload = {
@@ -676,6 +717,7 @@ export type MemoryAdmissionResponse = {
   reason: string;
   memory: PersistedMemoryRecord | null;
   revision: PersistedMemoryRevisionRecord | null;
+  open_loop?: OpenLoopRecord | null;
 };
 
 export type AssistantResponsePayload = {
@@ -1077,6 +1119,57 @@ export function admitMemory(apiBaseUrl: string, payload: MemoryAdmitPayload) {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function listOpenLoops(
+  apiBaseUrl: string,
+  userId: string,
+  options?: {
+    status?: OpenLoopStatusFilter;
+    limit?: number;
+  },
+) {
+  return requestJson<{ items: OpenLoopRecord[]; summary: OpenLoopListSummary }>(
+    apiBaseUrl,
+    "/v0/open-loops",
+    undefined,
+    {
+      user_id: userId,
+      status: options?.status,
+      limit: options?.limit ? String(options.limit) : undefined,
+    },
+  );
+}
+
+export function getOpenLoopDetail(apiBaseUrl: string, openLoopId: string, userId: string) {
+  return requestJson<{ open_loop: OpenLoopRecord }>(
+    apiBaseUrl,
+    `/v0/open-loops/${openLoopId}`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function createOpenLoop(apiBaseUrl: string, payload: OpenLoopCreatePayload) {
+  return requestJson<{ open_loop: OpenLoopRecord }>(apiBaseUrl, "/v0/open-loops", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateOpenLoopStatus(
+  apiBaseUrl: string,
+  openLoopId: string,
+  payload: OpenLoopStatusUpdatePayload,
+) {
+  return requestJson<{ open_loop: OpenLoopRecord }>(
+    apiBaseUrl,
+    `/v0/open-loops/${openLoopId}/status`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export function listToolExecutions(apiBaseUrl: string, userId: string) {
