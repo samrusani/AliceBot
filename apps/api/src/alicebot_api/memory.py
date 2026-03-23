@@ -8,7 +8,10 @@ from alicebot_api.contracts import (
     DEFAULT_MEMORY_CONFIRMATION_STATUS,
     DEFAULT_MEMORY_TYPE,
     DEFAULT_MEMORY_REVIEW_LIMIT,
+    DEFAULT_OPEN_LOOP_LIMIT,
     MEMORY_CONFIRMATION_STATUSES,
+    OPEN_LOOP_REVIEW_ORDER,
+    OPEN_LOOP_STATUSES,
     MEMORY_REVIEW_LABEL_ORDER,
     MEMORY_REVIEW_LABEL_VALUES,
     MEMORY_REVIEW_QUEUE_ORDER,
@@ -35,11 +38,28 @@ from alicebot_api.contracts import (
     MemoryReviewListSummary,
     MemoryReviewRecord,
     MemoryReviewStatusFilter,
+    OpenLoopCreateInput,
+    OpenLoopCreateResponse,
+    OpenLoopDetailResponse,
+    OpenLoopListResponse,
+    OpenLoopListSummary,
+    OpenLoopRecord,
+    OpenLoopStatusFilter,
+    OpenLoopStatusUpdateInput,
+    OpenLoopStatusUpdateResponse,
     PersistedMemoryRecord,
     PersistedMemoryRevisionRecord,
     isoformat_or_none,
 )
-from alicebot_api.store import ContinuityStore, JsonObject, LabelCountRow, MemoryReviewLabelRow, MemoryRevisionRow, MemoryRow
+from alicebot_api.store import (
+    ContinuityStore,
+    JsonObject,
+    LabelCountRow,
+    MemoryReviewLabelRow,
+    MemoryRevisionRow,
+    MemoryRow,
+    OpenLoopRow,
+)
 
 
 class MemoryAdmissionValidationError(ValueError):
@@ -48,6 +68,14 @@ class MemoryAdmissionValidationError(ValueError):
 
 class MemoryReviewNotFoundError(LookupError):
     """Raised when a requested memory is not visible inside the current user scope."""
+
+
+class OpenLoopValidationError(ValueError):
+    """Raised when an open-loop request fails explicit lifecycle validation."""
+
+
+class OpenLoopNotFoundError(LookupError):
+    """Raised when a requested open loop is not visible inside the current user scope."""
 
 
 def _serialize_typed_memory_metadata(memory: MemoryRow) -> JsonObject:
@@ -368,6 +396,168 @@ def get_memory_evaluation_summary(
     }
 
 
+def _serialize_open_loop(open_loop: OpenLoopRow) -> OpenLoopRecord:
+    return {
+        "id": str(open_loop["id"]),
+        "memory_id": None if open_loop["memory_id"] is None else str(open_loop["memory_id"]),
+        "title": open_loop["title"],
+        "status": open_loop["status"],
+        "opened_at": open_loop["opened_at"].isoformat(),
+        "due_at": isoformat_or_none(open_loop["due_at"]),
+        "resolved_at": isoformat_or_none(open_loop["resolved_at"]),
+        "resolution_note": open_loop["resolution_note"],
+        "created_at": open_loop["created_at"].isoformat(),
+        "updated_at": open_loop["updated_at"].isoformat(),
+    }
+
+
+def _normalize_open_loop_status_filter(status: OpenLoopStatusFilter) -> str | None:
+    if status == "all":
+        return None
+    return status
+
+
+def _normalize_open_loop_title(
+    title: str,
+    *,
+    error_prefix: str,
+    error_type: type[ValueError],
+) -> str:
+    normalized = title.strip()
+    if not normalized:
+        raise error_type(f"{error_prefix} must be a non-empty string")
+    if len(normalized) > 280:
+        raise error_type(f"{error_prefix} must be 280 characters or fewer")
+    return normalized
+
+
+def _normalize_open_loop_resolution_note(note: str | None) -> str | None:
+    if note is None:
+        return None
+    normalized = note.strip()
+    if not normalized:
+        raise OpenLoopValidationError("resolution_note must be a non-empty string when provided")
+    if len(normalized) > 2000:
+        raise OpenLoopValidationError("resolution_note must be 2000 characters or fewer")
+    return normalized
+
+
+def _validate_open_loop_status(status: str) -> str:
+    if status not in OPEN_LOOP_STATUSES:
+        allowed_values = ", ".join(OPEN_LOOP_STATUSES)
+        raise OpenLoopValidationError(f"status must be one of: {allowed_values}")
+    return status
+
+
+def list_open_loop_records(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    status: OpenLoopStatusFilter = "open",
+    limit: int = DEFAULT_OPEN_LOOP_LIMIT,
+) -> OpenLoopListResponse:
+    del user_id
+
+    normalized_status = _normalize_open_loop_status_filter(status)
+    total_count = store.count_open_loops(status=normalized_status)
+    open_loops = store.list_open_loops(status=normalized_status, limit=limit)
+    items = [_serialize_open_loop(open_loop) for open_loop in open_loops]
+    summary: OpenLoopListSummary = {
+        "status": status,
+        "limit": limit,
+        "returned_count": len(items),
+        "total_count": total_count,
+        "has_more": len(items) < total_count,
+        "order": list(OPEN_LOOP_REVIEW_ORDER),
+    }
+    return {
+        "items": items,
+        "summary": summary,
+    }
+
+
+def get_open_loop_record(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    open_loop_id: UUID,
+) -> OpenLoopDetailResponse:
+    del user_id
+
+    open_loop = store.get_open_loop_optional(open_loop_id)
+    if open_loop is None:
+        raise OpenLoopNotFoundError(f"open loop {open_loop_id} was not found")
+    return {
+        "open_loop": _serialize_open_loop(open_loop),
+    }
+
+
+def create_open_loop_record(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    open_loop: OpenLoopCreateInput,
+) -> OpenLoopCreateResponse:
+    del user_id
+
+    if open_loop.memory_id is not None:
+        memory = store.get_memory_optional(open_loop.memory_id)
+        if memory is None:
+            raise OpenLoopValidationError(
+                "memory_id must reference an existing memory owned by the user"
+            )
+
+    created = store.create_open_loop(
+        memory_id=open_loop.memory_id,
+        title=_normalize_open_loop_title(
+            open_loop.title,
+            error_prefix="title",
+            error_type=OpenLoopValidationError,
+        ),
+        status="open",
+        opened_at=None,
+        due_at=open_loop.due_at,
+        resolved_at=None,
+        resolution_note=None,
+    )
+    return {
+        "open_loop": _serialize_open_loop(created),
+    }
+
+
+def update_open_loop_status_record(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    open_loop_id: UUID,
+    request: OpenLoopStatusUpdateInput,
+) -> OpenLoopStatusUpdateResponse:
+    del user_id
+
+    existing = store.get_open_loop_optional(open_loop_id)
+    if existing is None:
+        raise OpenLoopNotFoundError(f"open loop {open_loop_id} was not found")
+
+    normalized_status = _validate_open_loop_status(request.status)
+    if normalized_status == "open":
+        raise OpenLoopValidationError("status transition must be resolved or dismissed")
+    if existing["status"] != "open":
+        raise OpenLoopValidationError("open loop status can only transition from open")
+
+    updated = store.update_open_loop_status_optional(
+        open_loop_id=open_loop_id,
+        status=normalized_status,
+        resolved_at=None,
+        resolution_note=_normalize_open_loop_resolution_note(request.resolution_note),
+    )
+    if updated is None:
+        raise OpenLoopNotFoundError(f"open loop {open_loop_id} was not found")
+
+    return {
+        "open_loop": _serialize_open_loop(updated),
+    }
+
+
 def _dedupe_source_event_ids(source_event_ids: tuple[UUID, ...]) -> tuple[UUID, ...]:
     deduped: list[UUID] = []
     seen: set[UUID] = set()
@@ -402,6 +592,31 @@ def _validate_source_events(store: ContinuityStore, source_event_ids: tuple[UUID
 
 def _candidate_payload(candidate: MemoryCandidateInput) -> JsonObject:
     return candidate.as_payload()
+
+
+def _create_open_loop_for_memory(
+    store: ContinuityStore,
+    *,
+    candidate: MemoryCandidateInput,
+    memory: MemoryRow,
+) -> OpenLoopRecord | None:
+    if candidate.open_loop is None:
+        return None
+
+    created = store.create_open_loop(
+        memory_id=memory["id"],
+        title=_normalize_open_loop_title(
+            candidate.open_loop.title,
+            error_prefix="open_loop.title",
+            error_type=MemoryAdmissionValidationError,
+        ),
+        status="open",
+        opened_at=None,
+        due_at=candidate.open_loop.due_at,
+        resolved_at=None,
+        resolution_note=None,
+    )
+    return _serialize_open_loop(created)
 
 
 def _validate_memory_type(memory_type: str | None) -> str | None:
@@ -575,6 +790,11 @@ def admit_memory_candidate(
             reason="source_backed_add",
             memory=_serialize_memory(memory),
             revision=_serialize_memory_revision(revision),
+            open_loop=_create_open_loop_for_memory(
+                store,
+                candidate=candidate,
+                memory=memory,
+            ),
         )
 
     metadata_changed = any(
@@ -596,6 +816,11 @@ def admit_memory_candidate(
             reason="memory_unchanged",
             memory=_serialize_memory(existing_memory),
             revision=None,
+            open_loop=_create_open_loop_for_memory(
+                store,
+                candidate=candidate,
+                memory=existing_memory,
+            ),
         )
 
     memory = store.update_memory(
@@ -625,4 +850,9 @@ def admit_memory_candidate(
         reason="source_backed_update",
         memory=_serialize_memory(memory),
         revision=_serialize_memory_revision(revision),
+        open_loop=_create_open_loop_for_memory(
+            store,
+            candidate=candidate,
+            memory=memory,
+        ),
     )

@@ -10,6 +10,8 @@ from alicebot_api.store import JsonObject, JsonValue
 DecisionKind = Literal["included", "excluded"]
 AdmissionAction = Literal["NOOP", "ADD", "UPDATE", "DELETE"]
 MemoryStatus = Literal["active", "deleted"]
+OpenLoopStatus = Literal["open", "resolved", "dismissed"]
+OpenLoopStatusFilter = Literal["open", "resolved", "dismissed", "all"]
 MemoryType = Literal[
     "preference",
     "identity_fact",
@@ -101,6 +103,8 @@ DEFAULT_MAX_ENTITIES = 5
 DEFAULT_MAX_ENTITY_EDGES = 10
 DEFAULT_MEMORY_REVIEW_LIMIT = 20
 MAX_MEMORY_REVIEW_LIMIT = 100
+DEFAULT_OPEN_LOOP_LIMIT = 20
+MAX_OPEN_LOOP_LIMIT = 100
 DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 5
 MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 50
 DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 5
@@ -127,6 +131,7 @@ MEMORY_REVIEW_LABEL_VALUES = [
     "insufficient_evidence",
 ]
 MEMORY_REVIEW_LABEL_ORDER = ["created_at_asc", "id_asc"]
+OPEN_LOOP_REVIEW_ORDER = ["opened_at_desc", "created_at_desc", "id_desc"]
 MEMORY_TYPES = [
     "preference",
     "identity_fact",
@@ -142,6 +147,11 @@ MEMORY_CONFIRMATION_STATUSES = [
     "unconfirmed",
     "confirmed",
     "contested",
+]
+OPEN_LOOP_STATUSES = [
+    "open",
+    "resolved",
+    "dismissed",
 ]
 DEFAULT_MEMORY_TYPE: MemoryType = "preference"
 DEFAULT_MEMORY_CONFIRMATION_STATUS: MemoryConfirmationStatus = "unconfirmed"
@@ -677,6 +687,26 @@ class ContextPackMemorySummary(TypedDict):
     hybrid_retrieval: ContextPackHybridMemorySummary
 
 
+class ContextPackOpenLoop(TypedDict):
+    id: str
+    memory_id: str | None
+    title: str
+    status: OpenLoopStatus
+    opened_at: str
+    due_at: str | None
+    resolved_at: str | None
+    resolution_note: str | None
+    created_at: str
+    updated_at: str
+
+
+class ContextPackOpenLoopSummary(TypedDict):
+    candidate_count: int
+    included_count: int
+    excluded_limit_count: int
+    order: list[str]
+
+
 class HybridMemoryDecisionTracePayload(TypedDict):
     embedding_config_id: str | None
     memory_key: str
@@ -752,6 +782,8 @@ class CompiledContextPack(TypedDict):
     events: list[ContextPackEvent]
     memories: list[ContextPackMemory]
     memory_summary: ContextPackMemorySummary
+    open_loops: NotRequired[list[ContextPackOpenLoop]]
+    open_loop_summary: NotRequired[ContextPackOpenLoopSummary]
     artifact_chunks: list[ContextPackArtifactChunk]
     artifact_chunk_summary: ContextPackArtifactChunkSummary
     entities: list[ContextPackEntity]
@@ -915,6 +947,19 @@ class GenerateResponseSuccess(TypedDict):
 
 
 @dataclass(frozen=True, slots=True)
+class OpenLoopCandidateInput:
+    title: str
+    due_at: datetime | None = None
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "title": self.title,
+        }
+        payload["due_at"] = isoformat_or_none(self.due_at)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryCandidateInput:
     memory_key: str
     value: JsonValue | None
@@ -927,6 +972,7 @@ class MemoryCandidateInput:
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     last_confirmed_at: datetime | None = None
+    open_loop: OpenLoopCandidateInput | None = None
 
     def as_payload(self) -> JsonObject:
         payload: JsonObject = {
@@ -949,6 +995,8 @@ class MemoryCandidateInput:
             payload["valid_to"] = isoformat_or_none(self.valid_to)
         if self.last_confirmed_at is not None:
             payload["last_confirmed_at"] = isoformat_or_none(self.last_confirmed_at)
+        if self.open_loop is not None:
+            payload["open_loop"] = self.open_loop.as_payload()
         return payload
 
 
@@ -960,6 +1008,34 @@ class ExplicitPreferenceExtractionRequestInput:
         return {
             "source_event_id": str(self.source_event_id),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class OpenLoopCreateInput:
+    title: str
+    memory_id: UUID | None = None
+    due_at: datetime | None = None
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "title": self.title,
+            "memory_id": None if self.memory_id is None else str(self.memory_id),
+        }
+        payload["due_at"] = isoformat_or_none(self.due_at)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class OpenLoopStatusUpdateInput:
+    status: OpenLoopStatus
+    resolution_note: str | None = None
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "status": self.status,
+        }
+        payload["resolution_note"] = self.resolution_note
+        return payload
 
 
 class ExtractedPreferenceCandidateRecord(TypedDict):
@@ -1337,6 +1413,7 @@ class AdmissionDecisionOutput:
     reason: str
     memory: PersistedMemoryRecord | None
     revision: PersistedMemoryRevisionRecord | None
+    open_loop: OpenLoopRecord | None = None
 
 
 class ExplicitPreferenceAdmissionRecord(TypedDict):
@@ -1395,6 +1472,45 @@ class MemoryReviewListResponse(TypedDict):
 
 class MemoryReviewDetailResponse(TypedDict):
     memory: MemoryReviewRecord
+
+
+class OpenLoopRecord(TypedDict):
+    id: str
+    memory_id: str | None
+    title: str
+    status: OpenLoopStatus
+    opened_at: str
+    due_at: str | None
+    resolved_at: str | None
+    resolution_note: str | None
+    created_at: str
+    updated_at: str
+
+
+class OpenLoopListSummary(TypedDict):
+    status: OpenLoopStatusFilter
+    limit: int
+    returned_count: int
+    total_count: int
+    has_more: bool
+    order: list[str]
+
+
+class OpenLoopListResponse(TypedDict):
+    items: list[OpenLoopRecord]
+    summary: OpenLoopListSummary
+
+
+class OpenLoopDetailResponse(TypedDict):
+    open_loop: OpenLoopRecord
+
+
+class OpenLoopCreateResponse(TypedDict):
+    open_loop: OpenLoopRecord
+
+
+class OpenLoopStatusUpdateResponse(TypedDict):
+    open_loop: OpenLoopRecord
 
 
 class MemoryRevisionReviewRecord(TypedDict):

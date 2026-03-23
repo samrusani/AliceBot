@@ -124,6 +124,20 @@ class MemoryReviewLabelRow(TypedDict):
     created_at: datetime
 
 
+class OpenLoopRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    memory_id: UUID | None
+    title: str
+    status: str
+    opened_at: datetime
+    due_at: datetime | None
+    resolved_at: datetime | None
+    resolution_note: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class EmbeddingConfigRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -984,6 +998,172 @@ LIST_ALL_MEMORY_REVIEW_LABEL_COUNTS_SQL = """
                 FROM memory_review_labels
                 GROUP BY label
                 ORDER BY label ASC
+                """
+
+INSERT_OPEN_LOOP_SQL = """
+                INSERT INTO open_loops (
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  COALESCE(%s, clock_timestamp()),
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                """
+
+GET_OPEN_LOOP_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                FROM open_loops
+                WHERE id = %s
+                """
+
+LIST_OPEN_LOOPS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                FROM open_loops
+                ORDER BY opened_at DESC, created_at DESC, id DESC
+                """
+
+LIST_OPEN_LOOPS_BY_STATUS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                FROM open_loops
+                WHERE status = %s
+                ORDER BY opened_at DESC, created_at DESC, id DESC
+                """
+
+LIST_LIMITED_OPEN_LOOPS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                FROM open_loops
+                ORDER BY opened_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """
+
+LIST_LIMITED_OPEN_LOOPS_BY_STATUS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                FROM open_loops
+                WHERE status = %s
+                ORDER BY opened_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """
+
+COUNT_OPEN_LOOPS_SQL = """
+                SELECT COUNT(*) AS count
+                FROM open_loops
+                """
+
+COUNT_OPEN_LOOPS_BY_STATUS_SQL = """
+                SELECT COUNT(*) AS count
+                FROM open_loops
+                WHERE status = %s
+                """
+
+UPDATE_OPEN_LOOP_STATUS_SQL = """
+                UPDATE open_loops
+                SET status = %s,
+                    resolved_at = CASE
+                      WHEN %s = 'open' THEN NULL
+                      ELSE COALESCE(%s, clock_timestamp())
+                    END,
+                    resolution_note = CASE
+                      WHEN %s = 'open' THEN NULL
+                      ELSE %s
+                    END,
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                RETURNING
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
                 """
 
 INSERT_EMBEDDING_CONFIG_SQL = """
@@ -3206,6 +3386,76 @@ class ContinuityStore:
 
     def list_all_memory_review_label_counts(self) -> list[LabelCountRow]:
         return self._fetch_all(LIST_ALL_MEMORY_REVIEW_LABEL_COUNTS_SQL)
+
+    def create_open_loop(
+        self,
+        *,
+        memory_id: UUID | None,
+        title: str,
+        status: str,
+        opened_at: datetime | None,
+        due_at: datetime | None,
+        resolved_at: datetime | None,
+        resolution_note: str | None,
+    ) -> OpenLoopRow:
+        return self._fetch_one(
+            "create_open_loop",
+            INSERT_OPEN_LOOP_SQL,
+            (
+                memory_id,
+                title,
+                status,
+                opened_at,
+                due_at,
+                resolved_at,
+                resolution_note,
+            ),
+        )
+
+    def get_open_loop(self, open_loop_id: UUID) -> OpenLoopRow:
+        return self._fetch_one("get_open_loop", GET_OPEN_LOOP_SQL, (open_loop_id,))
+
+    def get_open_loop_optional(self, open_loop_id: UUID) -> OpenLoopRow | None:
+        return self._fetch_optional_one(GET_OPEN_LOOP_SQL, (open_loop_id,))
+
+    def list_open_loops(
+        self,
+        *,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> list[OpenLoopRow]:
+        if status is None and limit is None:
+            return self._fetch_all(LIST_OPEN_LOOPS_SQL)
+        if status is None:
+            return self._fetch_all(LIST_LIMITED_OPEN_LOOPS_SQL, (limit,))
+        if limit is None:
+            return self._fetch_all(LIST_OPEN_LOOPS_BY_STATUS_SQL, (status,))
+        return self._fetch_all(LIST_LIMITED_OPEN_LOOPS_BY_STATUS_SQL, (status, limit))
+
+    def count_open_loops(self, *, status: str | None = None) -> int:
+        if status is None:
+            return self._fetch_count(COUNT_OPEN_LOOPS_SQL)
+        return self._fetch_count(COUNT_OPEN_LOOPS_BY_STATUS_SQL, (status,))
+
+    def update_open_loop_status_optional(
+        self,
+        *,
+        open_loop_id: UUID,
+        status: str,
+        resolved_at: datetime | None,
+        resolution_note: str | None,
+    ) -> OpenLoopRow | None:
+        return self._fetch_optional_one(
+            UPDATE_OPEN_LOOP_STATUS_SQL,
+            (
+                status,
+                status,
+                resolved_at,
+                status,
+                resolution_note,
+                open_loop_id,
+            ),
+        )
 
     def create_embedding_config(
         self,
