@@ -4,23 +4,24 @@
 PASS
 
 ## criteria met
-- Sprint remained closeout-truth-sync scoped: canonical docs, sprint artifacts, and three new Phase 2 gate entrypoint scripts.
-- Canonical docs no longer claim Sprint 7G as current state (`rg -n "Sprint 7G" README.md ROADMAP.md ARCHITECTURE.md .ai/handoff/CURRENT_STATE.md` returned no matches).
-- `README.md`, `ROADMAP.md`, `ARCHITECTURE.md`, and `.ai/handoff/CURRENT_STATE.md` are mutually aligned on shipped seams (typed memory + open loops, resumption brief, manual explicit-signal capture controls, and Phase 2 gate commands).
-- `scripts/run_phase2_acceptance.py`, `scripts/run_phase2_readiness_gates.py`, and `scripts/run_phase2_validation_matrix.py` exist and parse (`python3 -m py_compile ...` passed).
-- Phase 2 validation entrypoint is documented and executable (`python3 scripts/run_phase2_validation_matrix.py --help` passed; same for acceptance/readiness wrappers).
-- No product runtime behavior changes were introduced; wrappers delegate to existing MVP scripts.
-- No out-of-scope work (workers/orchestration/Phase 3 runtime changes/backend contract changes) was introduced.
+- Sprint remained wrapper-parity scoped; no product/runtime API, UI, orchestration, or Phase 3 scope expansion detected.
+- Automated parity tests were added for all three wrappers in `tests/unit/test_phase2_gate_wrappers.py`.
+- Tests assert deterministic CLI arg passthrough to mapped MVP targets.
+- Tests assert subprocess exit-code passthrough behavior.
+- Tests assert repo-root `cwd` usage for wrapper subprocess execution.
+- Tests assert stable wrapper-to-target mappings for all three wrappers.
+- Tests assert executable resolution behavior: prefer `.venv/bin/python`, fallback to `sys.executable`.
+- Verification evidence is reproducible and valid: `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_phase2_gate_wrappers.py` passed (`12 passed`, exit code `0`).
+- No gate semantics changes were introduced in wrapper scripts during this sprint.
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking quality issues in sprint scope.
-- Non-blocking: wrapper behavior is verified via compile/`--help` checks, but there is no direct automated assertion for argument/exit-code passthrough semantics.
+- No blocking quality issues found within sprint scope.
 
 ## regression risks
-- Low. Main residual risk is future doc drift or alias-wrapper drift if MVP script names/locations change without updating wrappers.
+- Low. Main residual risk is future wrapper/target drift if MVP script names or locations change; current parity tests should catch this quickly.
 
 ## docs issues
 - None blocking.
@@ -29,8 +30,8 @@ PASS
 - No.
 
 ## should anything update ARCHITECTURE.md?
-- No further update required for this sprint.
+- No.
 
 ## recommended next action
-1. Proceed to Control Tower closeout and open the sprint PR.
-2. Optional follow-up: add a tiny automated test that validates Phase 2 wrapper arg passthrough and return-code passthrough.
+1. Proceed with Control Tower integration review and squash-merge approval flow.
+2. Ensure the new test file is included in the sprint commit/PR diff before merge.
