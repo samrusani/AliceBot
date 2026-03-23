@@ -4,47 +4,41 @@
 PASS
 
 ## criteria met
-- Unified endpoint is implemented at `POST /v0/memories/capture-explicit-signals` with required request fields (`user_id`, `source_event_id`).
-- Response shape includes required sections and coherent aggregate fields:
-  - `preferences` (candidates/admissions/summary)
-  - `commitments` (candidates/admissions/summary)
-  - top-level `summary` with aggregate + per-pipeline counts.
-- Deterministic orchestration order is explicit and stable in implementation (`preferences` first, `commitments` second).
-- Deterministic validation behavior is preserved: invalid/missing/non-user/cross-user `source_event_id` returns `400`.
-- Repeat-call idempotence behavior is preserved for commitment-derived open loops (`NOOP_ACTIVE_EXISTS` on repeat).
-- Legacy endpoints remain operational and behavior-compatible, covered by existing integration tests:
-  - `POST /v0/memories/extract-explicit-preferences`
-  - `POST /v0/open-loops/extract-explicit-commitments`
-- Web API client adoption is present (`captureExplicitSignals(...)`) with request wiring test coverage.
-- No automation/worker/Phase 3 routing scope expansion detected.
+- Sprint scope remained bounded to `/chat` manual explicit-signal capture controls, deterministic rail rendering, and targeted web/API-client tests.
+- Manual-trigger requirement is preserved:
+  - no automatic capture on render/thread change/mode switch
+  - capture runs only on explicit button click
+- Eligibility remains constrained to `message.user` events only.
+- Request payload wiring remains deterministic and correct (`user_id`, `source_event_id`).
+- Live success and error rendering are deterministic and non-destructive.
+- Fixture and unavailable states remain explicit and safely disabled.
+- Added regression coverage for pre-existing `ThreadEventList` continuity-review rendering paths.
+- Added explicit live-mode negative-state coverage for blocked capture reasons:
+  - missing API config
+  - no eligible `message.user` events
+- Documentation is machine-independent in `BUILD_REPORT.md` (repo-relative commands/paths).
+- `ARCHITECTURE.md` now reflects the shipped `/chat` manual capture-control seam.
+- Reviewer verification rerun passed:
+  - `cd apps/web && pnpm test -- lib/api.test.ts components/thread-event-list.test.tsx app/chat/page.test.tsx` -> `3` files passed, `35` tests passed.
+  - `cd apps/web && pnpm lint -- app/chat/page.tsx components/thread-event-list.tsx components/thread-event-list.test.tsx lib/api.test.ts` -> pass, `0` warnings/errors.
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking quality or safety issues found in touched seams.
+- No blocking functional or quality issues found in touched seams.
 
 ## regression risks
-- Low risk on touched surfaces; coverage includes:
-  - orchestration unit tests
-  - API route unit tests
-  - DB-backed integration tests for legacy + unified endpoints
-  - web client request wiring tests.
-- Residual risk: broader unrelated app surfaces were not rerun as part of this sprint review.
+- Low. Touched seams now include both new capture behavior assertions and retained continuity-rendering regression assertions.
 
 ## docs issues
-- `BUILD_REPORT.md` includes required sprint evidence:
-  - unified endpoint payload schema
-  - orchestration sequence and legacy compatibility notes
-  - dedupe/no-side-effect guarantees
-  - exact test commands and outcomes
-  - explicitly deferred scope.
+- None blocking.
 
 ## should anything be added to RULES.md?
 - No.
 
 ## should anything update ARCHITECTURE.md?
-- Optional: add one short API surface note documenting `POST /v0/memories/capture-explicit-signals` and its aggregate summary contract for discoverability.
+- Already updated in this fix pass.
 
 ## recommended next action
-- Proceed to Control Tower merge gate for sprint closeout.
+- Proceed with final Control Tower closeout and sprint PR.

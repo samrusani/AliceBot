@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 2 Sprint 6: Unified Explicit Signal Capture
+Phase 2 Sprint 7: Chat Capture Controls
 
 ## Sprint Type
 
@@ -10,76 +10,69 @@ feature
 
 ## Sprint Reason
 
-Phase 2 Sprint 5 explicit commitment capture is merged. Explicit extraction is now split across two separate endpoints, which creates operator overhead and inconsistent capture flow. The next seam is one deterministic capture endpoint that runs both explicit preference and explicit commitment extraction for a single user message.
+Phase 2 Sprint 6 unified explicit signal capture is merged. The endpoint exists but is not yet available in an operator workflow. The next seam is bounded `/chat` adoption so capture can be triggered deliberately from visible thread events.
 
 ## Sprint Intent
 
-Implement a bounded, deterministic unified capture endpoint that orchestrates existing explicit preference and explicit commitment extraction pipelines for one `message.user` source event, without introducing automation or background workers.
+Implement bounded `/chat` controls to manually trigger the shipped unified explicit-signal capture endpoint for selected `message.user` events, and render deterministic capture results in the operator rail without introducing automatic capture behavior.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase2-sprint6-unified-explicit-signal-capture`
+- Branch Name: `codex/phase2-sprint7-chat-capture-controls`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- Typed memory, open-loop lifecycle, resumption briefs, and explicit commitment extraction are shipped.
-- Capture still requires separate calls (`extract-explicit-preferences` and `extract-explicit-commitments`) for one message event.
-- A unified deterministic capture seam is the lowest-risk step before any optional UI-triggered capture workflow.
+- Unified capture API is shipped and stable.
+- Operators still need manual API invocation outside the product surface.
+- This is the narrowest product-facing seam before any optional capture automation.
 
 ## Design Truth
 
-- Reuse existing extraction modules; do not duplicate extraction logic.
-- Keep capture deterministic and pattern-based with zero model calls.
-- Preserve per-user isolation, append-only revision guarantees, and open-loop dedupe behavior.
+- Reuse shipped `POST /v0/memories/capture-explicit-signals`; do not duplicate backend logic.
+- Keep capture manually initiated from explicit user action in UI.
+- Preserve clear source visibility (`source_event_id`) and deterministic result rendering.
 
 ## Exact Surfaces In Scope
 
-- unified capture contracts + API behavior
-- deterministic orchestration over existing extraction pipelines
-- web API client adoption for the unified endpoint
-- sprint-scoped backend and frontend tests
+- `/chat` operator controls for explicit-signal capture
+- deterministic capture result rendering in rail context
+- web API client integration (existing endpoint)
+- sprint-scoped frontend and targeted API-client tests
 
 ## Exact Files In Scope
 
-- [explicit_signal_capture.py](apps/api/src/alicebot_api/explicit_signal_capture.py)
-- [contracts.py](apps/api/src/alicebot_api/contracts.py)
-- [main.py](apps/api/src/alicebot_api/main.py)
-- [explicit_preferences.py](apps/api/src/alicebot_api/explicit_preferences.py)
-- [explicit_commitments.py](apps/api/src/alicebot_api/explicit_commitments.py)
 - [api.ts](apps/web/lib/api.ts)
 - [api.test.ts](apps/web/lib/api.test.ts)
+- [page.tsx](apps/web/app/chat/page.tsx)
+- [thread-event-list.tsx](apps/web/components/thread-event-list.tsx)
+- [thread-event-list.test.tsx](apps/web/components/thread-event-list.test.tsx)
+- [page.test.tsx](apps/web/app/chat/page.test.tsx)
 - [BUILD_REPORT.md](BUILD_REPORT.md)
 - [REVIEW_REPORT.md](REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](.ai/active/SPRINT_PACKET.md)
 - relevant tests under:
-  - `tests/unit/`
-  - `tests/integration/`
   - `apps/web/**/*.test.tsx`
 
 ## In Scope
 
-- Add typed contracts for unified capture request/response.
-- Add API endpoint:
-  - `POST /v0/memories/capture-explicit-signals`
-- Endpoint input:
-  - `user_id` (required)
-  - `source_event_id` (required; must reference a user-owned `message.user` event)
-- Deterministically orchestrate both pipelines for the same source event:
-  - explicit preference extraction/admission
-  - explicit commitment extraction/admission/open-loop outcomes
-- Preserve current deterministic validation semantics for invalid/non-user/missing/cross-user source event requests.
-- Return unified response with per-pipeline sections and aggregate summary:
-  - `preferences`: candidates/admissions/summary
-  - `commitments`: candidates/admissions/summary
-  - `summary`: aggregate counts and source event metadata
-- Keep existing endpoints fully backward compatible:
-  - `POST /v0/memories/extract-explicit-preferences`
-  - `POST /v0/open-loops/extract-explicit-commitments`
-- Add web API client function for unified endpoint and tests for request wiring.
-- Add/update unit and integration tests for orchestration correctness, deterministic ordering of section execution, and repeat-call idempotence behavior.
+- Add a bounded UI control in `/chat` rail that allows operator-triggered capture for selected `message.user` events only.
+- Use shipped API client (`captureExplicitSignals(...)`) against `POST /v0/memories/capture-explicit-signals`.
+- Render deterministic result summary in UI:
+  - candidate/admission counts
+  - open-loop created/noop counts
+  - source event confirmation
+- Keep explicit live/fixture/unavailable handling:
+  - live mode: controls enabled when API config + eligible event exists
+  - fixture mode: clear non-destructive fixture messaging
+  - unavailable mode: deterministic disabled state + reason
+- Ensure no automatic capture trigger on page load, mode switch, or thread selection.
+- Add/update frontend tests for:
+  - eligible event selection behavior
+  - request payload correctness (`user_id`, `source_event_id`)
+  - success/error rendering and disabled states
 
 ## Out of Scope
 
@@ -87,81 +80,68 @@ Implement a bounded, deterministic unified capture endpoint that orchestrates ex
 - background workers or scheduler integration
 - connector expansion
 - multi-agent runtime/profile routing (Phase 3)
-- free-form model-based extraction or classification
-- broad UI redesign or automatic capture triggers in `/chat`/`/memories`
+- backend extraction/orchestration contract changes
+- broad UI redesign outside scoped `/chat` rail controls
 
 ## Required Deliverables
 
-- backend contracts/API for unified explicit signal capture
-- deterministic orchestration module with tests
-- web API client support for unified capture endpoint
+- `/chat` rail control for manual explicit-signal capture
+- deterministic capture outcome rendering in UI
+- updated API-client wiring/tests for UI behavior
 - updated sprint reports for this sprint only
 
 ## Acceptance Criteria
 
-- unified endpoint returns deterministic payload with strict per-user isolation
-- invalid/missing/non-user-message `source_event_id` returns deterministic `400`
-- unified payload contains preference section, commitment section, and aggregate summary with coherent counts
-- repeat calls for the same source event preserve no-duplicate-active-open-loop behavior
-- legacy explicit extraction endpoints remain operational and unchanged in behavior
-- backend + frontend tests pass for touched seams
+- capture can be triggered from `/chat` for an eligible `message.user` event in live mode
+- emitted request payload is deterministic and correct (`user_id`, `source_event_id`)
+- success UI shows coherent aggregate results from endpoint response
+- error UI is deterministic and non-destructive
+- fixture/unavailable states are explicit and safe
+- no automatic capture side effects occur
+- touched frontend + API-client tests pass
 - no out-of-scope automation, worker, or Phase 3 routing work enters sprint
 
 ## Implementation Constraints
 
-- preserve RLS and per-user isolation
-- keep extraction deterministic and pattern-based (no model calls)
-- keep orchestration sequence explicit and stable (preferences first, commitments second)
-- keep memory/open-loop evidence source-attributed to the original event
+- preserve manual user initiation requirement
+- preserve deterministic and transparent source-event mapping in UI
+- avoid introducing stateful background polling or hidden retries
 - co-deliver tests with each seam change
 
 ## Control Tower Task Cards
 
-### Task 1: Contracts + API
-Owner: backend operative A  
-Write scope:
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/main.py`
-- API/integration tests
-
-### Task 2: Orchestration Module
-Owner: backend operative B  
-Write scope:
-- `apps/api/src/alicebot_api/explicit_signal_capture.py`
-- `apps/api/src/alicebot_api/explicit_preferences.py`
-- `apps/api/src/alicebot_api/explicit_commitments.py`
-- unit tests
-
-### Task 3: Web API Client
+### Task 1: Chat UI Adoption
 Owner: frontend operative  
 Write scope:
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
+- `apps/web/app/chat/page.tsx`
+- `apps/web/components/thread-event-list.tsx`
+- related chat component tests
 
-### Task 4: Integration Review
+### Task 2: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify contracts/API/orchestration/client coherence
+- verify chat-control/API-client coherence
 - verify strict sprint scope
 - verify acceptance + evidence completeness
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact unified endpoint payload schema
-- orchestration sequence and legacy-endpoint compatibility notes
-- dedupe/no-side-effect guarantees
+- exact `/chat` control behavior and trigger rules
+- capture result rendering behavior for live/fixture/unavailable states
 - exact commands/tests run with outcomes
 - explicit deferred scope (automation/workers/Phase 3 runtime orchestration)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint remained unified-explicit-signal-capture scoped
-- contracts/API/orchestration/client consistency
+- sprint remained chat-capture-controls scoped
+- chat-control/API-client consistency
 - sufficient tests for all touched seams
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when unified explicit-signal capture is available through one user-scoped deterministic endpoint, correctly orchestrates preference and commitment extraction without regressions to legacy endpoints, and passes sprint-scoped tests without automation/worker/Phase 3 scope expansion.
+This sprint is complete when `/chat` exposes safe manual controls for unified explicit-signal capture with deterministic result rendering and test-backed behavior, without backend contract drift or automation/worker/Phase 3 scope expansion.

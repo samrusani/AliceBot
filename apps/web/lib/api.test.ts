@@ -2077,6 +2077,29 @@ describe("api helpers", () => {
     });
   });
 
+  it("throws ApiError when unified explicit signal capture returns a backend error envelope", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: "source_event_id must reference an existing message.user event",
+        }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await expect(
+      captureExplicitSignals("https://api.example.com", {
+        user_id: "user-1",
+        source_event_id: "missing-event",
+      }),
+    ).rejects.toEqual(
+      expect.objectContaining<ApiError>({
+        message: "source_event_id must reference an existing message.user event",
+        status: 400,
+      }),
+    );
+  });
+
   it("throws ApiError when memory admission returns a backend error envelope", async () => {
     fetchMock.mockResolvedValue(
       new Response(
