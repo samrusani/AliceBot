@@ -13,11 +13,13 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 INDUCED_FAILURE_ENV = "MVP_ACCEPTANCE_INDUCED_FAILURE_SCENARIO"
 ACCEPTANCE_SCENARIOS = (
     "response_memory",
+    "capture_resumption",
     "approval_execution",
     "magnesium_reorder",
 )
 ACCEPTANCE_TEST_NODE_IDS = (
     "tests/integration/test_mvp_acceptance_suite.py::test_acceptance_response_path_uses_admitted_memory_and_preference_correction",
+    "tests/integration/test_mvp_acceptance_suite.py::test_acceptance_explicit_signal_capture_flows_into_resumption_brief",
     "tests/integration/test_mvp_acceptance_suite.py::test_acceptance_approval_lifecycle_resolution_execution_and_trace_availability",
     "tests/integration/test_mvp_acceptance_suite.py::test_acceptance_canonical_magnesium_reorder_flow_with_memory_write_back_evidence",
 )
