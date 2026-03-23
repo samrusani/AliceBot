@@ -2,7 +2,7 @@
 
 ## Current Implemented Slice
 
-AliceBot now implements the accepted repo slice through Sprint 7G.
+AliceBot now implements the accepted repo slice through Phase 2 Sprint 7.
 
 - `apps/api` is the core shipped surface. It provides continuity storage and review over `users`, `threads`, `sessions`, and append-only `events`; deterministic context compilation; governed memory admission and review plus open-loop lifecycle capture/review; embeddings and semantic retrieval; entities and entity edges; policy, tool, approval, and execution governance; the no-tools assistant-response seam at `POST /v0/responses`; explicit task and task-step lifecycle reads and mutations; rooted local task workspaces and artifact ingestion; artifact chunk retrieval and embeddings; and narrow read-only Gmail and Calendar seams with external-secret-backed credentials plus bounded Calendar event discovery and selected-item ingestion into the artifact pipeline.
 - `apps/web` is a shipped operator shell over those backend seams, not a scaffold-only placeholder. The current routes are `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`. The shell can read live backend seams when configured and otherwise falls back to explicit fixture states instead of pretending the backend is connected.
@@ -19,10 +19,10 @@ The repo is intentionally still narrow. Document ingestion remains local and det
 
 - `docker-compose.yml` starts local Postgres with `pgvector`, Redis, and MinIO.
 - `scripts/dev_up.sh`, `scripts/migrate.sh`, and `scripts/api_dev.sh` provide the local startup path.
-- `scripts/run_mvp_readiness_gates.py` and `scripts/run_mvp_validation_matrix.py` provide deterministic MVP release-candidate gate evidence, with the validation matrix command as the default go/no-go gate.
+- `scripts/run_phase2_acceptance.py`, `scripts/run_phase2_readiness_gates.py`, and `scripts/run_phase2_validation_matrix.py` provide deterministic Phase 2 gate entrypoints; the validation matrix command is the default go/no-go gate, and MVP script names remain compatible aliases with identical semantics.
 - `apps/api` exposes FastAPI endpoints for:
-  - continuity and response generation: `/healthz`, `POST /v0/threads`, `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, `GET /v0/threads/{thread_id}/events`, `POST /v0/context/compile`, `POST /v0/responses`
-  - memory and open-loop seams, including `POST /v0/memories/admit`, `GET /v0/open-loops`, `GET /v0/open-loops/{open_loop_id}`, `POST /v0/open-loops`, and `POST /v0/open-loops/{open_loop_id}/status`
+  - continuity and response generation: `/healthz`, `POST /v0/threads`, `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, `GET /v0/threads/{thread_id}/events`, `GET /v0/threads/{thread_id}/resumption-brief`, `POST /v0/context/compile`, `POST /v0/responses`
+  - memory and open-loop seams, including `POST /v0/memories/admit`, `POST /v0/memories/capture-explicit-signals`, `GET /v0/open-loops`, `GET /v0/open-loops/{open_loop_id}`, `POST /v0/open-loops`, `POST /v0/open-loops/{open_loop_id}/status`, and `POST /v0/open-loops/extract-explicit-commitments`
   - embeddings and graph seams
   - policy, tool, approval, execution-budget, and proxy execution governance
   - task, task-step, task-workspace, task-artifact, artifact-chunk, and trace review reads and mutations
@@ -30,7 +30,7 @@ The repo is intentionally still narrow. Document ingestion remains local and det
   - narrow Calendar account connect/read, bounded event discovery, plus selected-event ingestion
 - `apps/web` exposes the current operator shell:
   - `/`: bounded home view over the shipped shell surfaces
-  - `/chat`: assistant mode, governed request mode, thread selection, thread creation, transcript-first continuity review, manual explicit-signal capture control for selected `message.user` events, thread-linked governed workflow and task-step timeline review, bounded explain-why embedding, and bounded supporting operational review
+  - `/chat`: assistant mode, governed request mode, thread selection, thread creation, transcript-first continuity review, deterministic resumption brief review, manual explicit-signal capture control for selected `message.user` events, thread-linked governed workflow and task-step timeline review, bounded explain-why embedding, and bounded supporting operational review
   - `/approvals`: approval inbox and execution review
   - `/tasks`: task summary and ordered task-step review
   - `/artifacts`: artifact list and selected detail, linked workspace summary, and ordered chunk review
@@ -57,9 +57,10 @@ The repo is intentionally still narrow. Document ingestion remains local and det
 
 1. `POST /v0/threads` creates one visible thread.
 2. `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, and `GET /v0/threads/{thread_id}/events` expose bounded continuity review over persisted records.
-3. `POST /v0/responses` compiles context deterministically, persists the submitted user message plus the assistant reply as immutable events, and returns linked compile and response trace metadata.
-4. `/chat` consumes those shipped seams directly. Selected-thread identity stays explicit across assistant and governed-request modes, immutable thread events drive the primary transcript surface, and non-conversation continuity stays in bounded supporting review instead of polluting the main conversation record.
-5. `/chat` explicit-signal capture is bounded and manual: the right rail surfaces eligible `message.user` events, capture runs only on button click through `POST /v0/memories/capture-explicit-signals`, and fixture/unavailable states remain explicitly non-destructive/disabled.
+3. `GET /v0/threads/{thread_id}/resumption-brief` assembles a deterministic bounded resumption snapshot for the selected thread.
+4. `POST /v0/responses` compiles context deterministically, persists the submitted user message plus the assistant reply as immutable events, and returns linked compile and response trace metadata.
+5. `/chat` consumes those shipped seams directly. Selected-thread identity stays explicit across assistant and governed-request modes, immutable thread events drive the primary transcript surface, and non-conversation continuity stays in bounded supporting review instead of polluting the main conversation record.
+6. `/chat` explicit-signal capture is bounded and manual: the right rail surfaces eligible `message.user` events, capture runs only on button click through `POST /v0/memories/capture-explicit-signals`, and fixture/unavailable states remain explicitly non-destructive/disabled.
 
 ### Memory And Open-Loop Review
 
