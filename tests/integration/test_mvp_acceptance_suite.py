@@ -3,14 +3,16 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import apps.api.src.alicebot_api.main as main_module
 import alicebot_api.response_generation as response_generation_module
 from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
+import tests.integration.test_continuity_api as continuity_api
 import tests.integration.test_context_compile as context_compile_api
+import tests.integration.test_explicit_signal_capture_api as explicit_signal_capture_api
 import tests.integration.test_memory_admission as memory_admission_api
 import tests.integration.test_mvp_magnesium_reorder_flow as magnesium_flow_api
 import tests.integration.test_proxy_execution_api as proxy_execution_api
@@ -38,6 +40,207 @@ def _assert_not_induced_failure(scenario: str) -> None:
         raise AssertionError(
             f"induced failure requested for scenario '{scenario}' via {INDUCED_FAILURE_ENV}"
         )
+
+
+def _seed_capture_to_resumption_acceptance(database_url: str) -> dict[str, UUID]:
+    user_id = uuid4()
+
+    with user_connection(database_url, user_id) as conn:
+        store = ContinuityStore(conn)
+        store.create_user(user_id, "owner@example.com", "Owner")
+        thread = store.create_thread("Capture to resumption acceptance")
+        session = store.create_session(thread["id"], status="active")
+        preference_event = store.append_event(
+            thread["id"],
+            session["id"],
+            "message.user",
+            {"text": "I like black coffee."},
+        )["id"]
+        commitment_event = store.append_event(
+            thread["id"],
+            session["id"],
+            "message.user",
+            {"text": "Remind me to submit tax forms."},
+        )["id"]
+        store.append_event(
+            thread["id"],
+            session["id"],
+            "message.assistant",
+            {"text": "Noted."},
+        )
+
+    return {
+        "user_id": user_id,
+        "thread_id": thread["id"],
+        "preference_event_id": preference_event,
+        "commitment_event_id": commitment_event,
+    }
+
+
+def test_acceptance_explicit_signal_capture_flows_into_resumption_brief(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = _seed_capture_to_resumption_acceptance(migrated_database_urls["app"])
+    preference_memory_key = explicit_signal_capture_api.build_preference_memory_key("black coffee")
+    commitment_memory_key = explicit_signal_capture_api.build_commitment_memory_key("submit tax forms")
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    preference_capture_status, preference_capture_payload = explicit_signal_capture_api.invoke_request(
+        "POST",
+        "/v0/memories/capture-explicit-signals",
+        payload={
+            "user_id": str(seeded["user_id"]),
+            "source_event_id": str(seeded["preference_event_id"]),
+        },
+    )
+    commitment_capture_status, commitment_capture_payload = explicit_signal_capture_api.invoke_request(
+        "POST",
+        "/v0/memories/capture-explicit-signals",
+        payload={
+            "user_id": str(seeded["user_id"]),
+            "source_event_id": str(seeded["commitment_event_id"]),
+        },
+    )
+
+    assert preference_capture_status == 200
+    assert preference_capture_payload["preferences"]["candidates"] == [
+        {
+            "memory_key": preference_memory_key,
+            "value": {
+                "kind": "explicit_preference",
+                "preference": "like",
+                "text": "black coffee",
+            },
+            "source_event_ids": [str(seeded["preference_event_id"])],
+            "delete_requested": False,
+            "pattern": "i_like",
+            "subject_text": "black coffee",
+        }
+    ]
+    assert preference_capture_payload["preferences"]["admissions"][0]["decision"] == "ADD"
+    assert preference_capture_payload["summary"] == {
+        "source_event_id": str(seeded["preference_event_id"]),
+        "source_event_kind": "message.user",
+        "candidate_count": 1,
+        "admission_count": 1,
+        "persisted_change_count": 1,
+        "noop_count": 0,
+        "open_loop_created_count": 0,
+        "open_loop_noop_count": 0,
+        "preference_candidate_count": 1,
+        "preference_admission_count": 1,
+        "commitment_candidate_count": 0,
+        "commitment_admission_count": 0,
+    }
+
+    assert commitment_capture_status == 200
+    assert commitment_capture_payload["commitments"]["candidates"] == [
+        {
+            "memory_key": commitment_memory_key,
+            "value": {
+                "kind": "explicit_commitment",
+                "text": "submit tax forms",
+            },
+            "source_event_ids": [str(seeded["commitment_event_id"])],
+            "delete_requested": False,
+            "pattern": "remind_me_to",
+            "commitment_text": "submit tax forms",
+            "open_loop_title": "Remember to submit tax forms",
+        }
+    ]
+    assert commitment_capture_payload["commitments"]["admissions"][0]["decision"] == "ADD"
+    assert commitment_capture_payload["commitments"]["admissions"][0]["open_loop"]["decision"] == "CREATED"
+    assert commitment_capture_payload["summary"] == {
+        "source_event_id": str(seeded["commitment_event_id"]),
+        "source_event_kind": "message.user",
+        "candidate_count": 1,
+        "admission_count": 1,
+        "persisted_change_count": 1,
+        "noop_count": 0,
+        "open_loop_created_count": 1,
+        "open_loop_noop_count": 0,
+        "preference_candidate_count": 0,
+        "preference_admission_count": 0,
+        "commitment_candidate_count": 1,
+        "commitment_admission_count": 1,
+    }
+
+    created_open_loop = commitment_capture_payload["commitments"]["admissions"][0]["open_loop"]["open_loop"]
+    commitment_memory = commitment_capture_payload["commitments"]["admissions"][0]["memory"]
+    assert created_open_loop is not None
+    assert commitment_memory is not None
+
+    brief_status, brief_payload = continuity_api.invoke_request(
+        "GET",
+        f"/v0/threads/{seeded['thread_id']}/resumption-brief",
+        query_params={
+            "user_id": str(seeded["user_id"]),
+            "max_events": "10",
+            "max_open_loops": "5",
+            "max_memories": "5",
+        },
+    )
+
+    assert brief_status == 200
+    brief = brief_payload["brief"]
+    assert brief["thread"]["id"] == str(seeded["thread_id"])
+    assert brief["open_loops"]["summary"] == {
+        "limit": 5,
+        "returned_count": 1,
+        "total_count": 1,
+        "order": ["opened_at_desc", "created_at_desc", "id_desc"],
+    }
+    assert brief["open_loops"]["items"] == [
+        {
+            "id": created_open_loop["id"],
+            "memory_id": commitment_memory["id"],
+            "title": "Remember to submit tax forms",
+            "status": "open",
+            "opened_at": created_open_loop["opened_at"],
+            "due_at": None,
+            "resolved_at": None,
+            "resolution_note": None,
+            "created_at": created_open_loop["created_at"],
+            "updated_at": created_open_loop["updated_at"],
+        }
+    ]
+
+    assert brief["memory_highlights"]["summary"] == {
+        "limit": 5,
+        "returned_count": 2,
+        "total_count": 2,
+        "order": ["updated_at_asc", "created_at_asc", "id_asc"],
+    }
+    assert [item["memory_key"] for item in brief["memory_highlights"]["items"]] == [
+        preference_memory_key,
+        commitment_memory_key,
+    ]
+    memory_highlights_by_key = {
+        item["memory_key"]: item for item in brief["memory_highlights"]["items"]
+    }
+    assert memory_highlights_by_key[preference_memory_key]["value"] == {
+        "kind": "explicit_preference",
+        "preference": "like",
+        "text": "black coffee",
+    }
+    assert memory_highlights_by_key[preference_memory_key]["source_event_ids"] == [
+        str(seeded["preference_event_id"])
+    ]
+    assert memory_highlights_by_key[commitment_memory_key]["value"] == {
+        "kind": "explicit_commitment",
+        "text": "submit tax forms",
+    }
+    assert memory_highlights_by_key[commitment_memory_key]["source_event_ids"] == [
+        str(seeded["commitment_event_id"])
+    ]
+
+    _assert_not_induced_failure("capture_resumption")
 
 
 def test_acceptance_response_path_uses_admitted_memory_and_preference_correction(
