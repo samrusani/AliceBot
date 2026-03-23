@@ -42,6 +42,13 @@ class MemoryStoreStub:
         value,
         status: str,
         source_event_ids: list[str],
+        memory_type: str = "preference",
+        confidence: float | None = None,
+        salience: float | None = None,
+        confirmation_status: str = "unconfirmed",
+        valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
+        last_confirmed_at: datetime | None = None,
     ) -> dict[str, object]:
         self.memory = {
             "id": uuid4(),
@@ -50,6 +57,13 @@ class MemoryStoreStub:
             "value": value,
             "status": status,
             "source_event_ids": source_event_ids,
+            "memory_type": memory_type,
+            "confidence": confidence,
+            "salience": salience,
+            "confirmation_status": confirmation_status,
+            "valid_from": valid_from,
+            "valid_to": valid_to,
+            "last_confirmed_at": last_confirmed_at,
             "created_at": self.base_time,
             "updated_at": self.base_time,
             "deleted_at": None,
@@ -63,6 +77,13 @@ class MemoryStoreStub:
         value,
         status: str,
         source_event_ids: list[str],
+        memory_type: str = "preference",
+        confidence: float | None = None,
+        salience: float | None = None,
+        confirmation_status: str = "unconfirmed",
+        valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
+        last_confirmed_at: datetime | None = None,
     ) -> dict[str, object]:
         assert self.memory is not None
         assert self.memory["id"] == memory_id
@@ -72,6 +93,13 @@ class MemoryStoreStub:
             "value": value,
             "status": status,
             "source_event_ids": source_event_ids,
+            "memory_type": memory_type,
+            "confidence": confidence,
+            "salience": salience,
+            "confirmation_status": confirmation_status,
+            "valid_from": valid_from,
+            "valid_to": valid_to,
+            "last_confirmed_at": last_confirmed_at,
             "updated_at": updated_at,
             "deleted_at": updated_at if status == "deleted" else None,
         }
@@ -169,6 +197,26 @@ def test_admit_memory_candidate_rejects_empty_source_event_ids() -> None:
                 memory_key="user.preference.tea",
                 value={"likes": True},
                 source_event_ids=(),
+            ),
+        )
+
+
+def test_admit_memory_candidate_rejects_invalid_memory_type() -> None:
+    store = MemoryStoreStub()
+    event_id = seed_event(store)
+
+    with pytest.raises(
+        MemoryAdmissionValidationError,
+        match="memory_type must be one of:",
+    ):
+        admit_memory_candidate(
+            store,  # type: ignore[arg-type]
+            user_id=uuid4(),
+            candidate=MemoryCandidateInput(
+                memory_key="user.preference.tea",
+                value={"likes": True},
+                source_event_ids=(event_id,),
+                memory_type="not_a_valid_type",
             ),
         )
 

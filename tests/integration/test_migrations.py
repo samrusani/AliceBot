@@ -690,6 +690,33 @@ def test_migrations_upgrade_and_downgrade(database_urls):
             assert cur.fetchone()[0] == "events"
             cur.execute("SELECT to_regclass('public.memories')")
             assert cur.fetchone()[0] == "memories"
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'memories'
+                  AND column_name IN (
+                    'memory_type',
+                    'confidence',
+                    'salience',
+                    'confirmation_status',
+                    'valid_from',
+                    'valid_to',
+                    'last_confirmed_at'
+                  )
+                ORDER BY column_name
+                """
+            )
+            assert cur.fetchall() == [
+                ("confidence",),
+                ("confirmation_status",),
+                ("last_confirmed_at",),
+                ("memory_type",),
+                ("salience",),
+                ("valid_from",),
+                ("valid_to",),
+            ]
             cur.execute("SELECT to_regclass('public.memory_revisions')")
             assert cur.fetchone()[0] == "memory_revisions"
             cur.execute("SELECT to_regclass('public.memory_review_labels')")
@@ -1192,6 +1219,25 @@ def test_migrations_upgrade_and_downgrade(database_urls):
             assert cur.fetchone()[0] is None
             cur.execute("SELECT to_regclass('public.memories')")
             assert cur.fetchone()[0] == "memories"
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'memories'
+                  AND column_name IN (
+                    'memory_type',
+                    'confidence',
+                    'salience',
+                    'confirmation_status',
+                    'valid_from',
+                    'valid_to',
+                    'last_confirmed_at'
+                  )
+                ORDER BY column_name
+                """
+            )
+            assert cur.fetchall() == []
             cur.execute("SELECT to_regclass('public.entity_edges')")
             assert cur.fetchone()[0] == "entity_edges"
 
