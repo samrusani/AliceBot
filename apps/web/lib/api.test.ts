@@ -21,6 +21,7 @@ import {
   getTaskSteps,
   getThreadDetail,
   getThreadEvents,
+  getThreadResumptionBrief,
   getThreadSessions,
   executeApproval,
   ingestCalendarEvent,
@@ -772,6 +773,69 @@ describe("api helpers", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/tasks/task-1/steps?user_id=user-1",
+      expect.objectContaining({
+        cache: "no-store",
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+      }),
+    );
+  });
+
+  it("reads resumption briefs from the shipped thread endpoint with bounded query params", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          brief: {
+            assembly_version: "resumption_brief_v0",
+            thread: {
+              id: "thread-1",
+              title: "Gamma thread",
+              created_at: "2026-03-17T10:00:00Z",
+              updated_at: "2026-03-17T10:05:00Z",
+            },
+            conversation: {
+              items: [],
+              summary: {
+                limit: 1,
+                returned_count: 0,
+                total_count: 0,
+                order: ["sequence_no_asc"],
+                kinds: ["message.user", "message.assistant"],
+              },
+            },
+            open_loops: {
+              items: [],
+              summary: {
+                limit: 1,
+                returned_count: 0,
+                total_count: 0,
+                order: ["opened_at_desc", "created_at_desc", "id_desc"],
+              },
+            },
+            memory_highlights: {
+              items: [],
+              summary: {
+                limit: 1,
+                returned_count: 0,
+                total_count: 0,
+                order: ["updated_at_asc", "created_at_asc", "id_asc"],
+              },
+            },
+            workflow: null,
+            sources: ["threads", "events", "open_loops", "memories"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await getThreadResumptionBrief("https://api.example.com", "thread-1", "user-1", {
+      maxEvents: 1,
+      maxOpenLoops: 1,
+      maxMemories: 1,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/threads/thread-1/resumption-brief?user_id=user-1&max_events=1&max_open_loops=1&max_memories=1",
       expect.objectContaining({
         cache: "no-store",
         headers: expect.objectContaining({ "Content-Type": "application/json" }),

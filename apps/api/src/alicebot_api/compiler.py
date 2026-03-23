@@ -5,6 +5,9 @@ from uuid import UUID
 
 from alicebot_api.contracts import (
     COMPILER_VERSION_V0,
+    DEFAULT_RESUMPTION_BRIEF_EVENT_LIMIT,
+    DEFAULT_RESUMPTION_BRIEF_MEMORY_LIMIT,
+    DEFAULT_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT,
     ArtifactSelectionSource,
     CompileContextArtifactScopedSemanticArtifactRetrievalInput,
     CompilerDecision,
@@ -28,7 +31,19 @@ from alicebot_api.contracts import (
     HybridArtifactRetrievalDecisionTracePayload,
     MemorySelectionSource,
     OPEN_LOOP_REVIEW_ORDER,
+    RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0,
+    RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS,
+    RESUMPTION_BRIEF_CONVERSATION_ORDER,
+    RESUMPTION_BRIEF_MEMORY_ORDER,
+    ResumptionBriefConversationSection,
+    ResumptionBriefMemoryHighlightSection,
+    ResumptionBriefRecord,
+    ResumptionBriefSectionSummary,
+    ResumptionBriefWorkflowPosture,
+    ResumptionBriefWorkflowSummary,
     SEMANTIC_MEMORY_RETRIEVAL_ORDER,
+    TASK_LIST_ORDER,
+    TASK_STEP_LIST_ORDER,
     TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER,
     TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER,
     SemanticMemoryRetrievalRequestInput,
@@ -58,10 +73,12 @@ from alicebot_api.store import (
     OpenLoopRow,
     SemanticMemoryRetrievalRow,
     SessionRow,
+    TaskRow,
+    TaskStepRow,
     ThreadRow,
     UserRow,
 )
-from alicebot_api.tasks import TaskNotFoundError
+from alicebot_api.tasks import TaskNotFoundError, serialize_task_row, serialize_task_step_row
 
 SUMMARY_TRACE_EVENT_KIND = "context.summary"
 _UNBOUNDED_SEMANTIC_RETRIEVAL_LIMIT = 2_147_483_647
@@ -1214,6 +1231,143 @@ def _compile_artifact_chunk_section(
         },
         decisions=decisions,
     )
+
+
+def _task_sort_key(task: TaskRow) -> tuple[str, str]:
+    return (task["created_at"].isoformat(), str(task["id"]))
+
+
+def _task_step_sort_key(task_step: TaskStepRow) -> tuple[int, str, str]:
+    return (
+        task_step["sequence_no"],
+        task_step["created_at"].isoformat(),
+        str(task_step["id"]),
+    )
+
+
+def _build_resumption_section_summary(
+    *,
+    limit: int,
+    returned_count: int,
+    total_count: int,
+    order: list[str],
+) -> ResumptionBriefSectionSummary:
+    return {
+        "limit": limit,
+        "returned_count": returned_count,
+        "total_count": total_count,
+        "order": order,
+    }
+
+
+def _build_resumption_workflow_posture(
+    *,
+    store: ContinuityStore,
+    thread_id: UUID,
+) -> ResumptionBriefWorkflowPosture | None:
+    ordered_tasks = sorted(
+        [task for task in store.list_tasks() if task["thread_id"] == thread_id],
+        key=_task_sort_key,
+    )
+    latest_task = ordered_tasks[-1] if ordered_tasks else None
+    if latest_task is None:
+        return None
+
+    ordered_task_steps = sorted(
+        store.list_task_steps_for_task(latest_task["id"]),
+        key=_task_step_sort_key,
+    )
+    latest_task_step = ordered_task_steps[-1] if ordered_task_steps else None
+    summary: ResumptionBriefWorkflowSummary = {
+        "present": True,
+        "task_order": list(TASK_LIST_ORDER),
+        "task_step_order": list(TASK_STEP_LIST_ORDER),
+    }
+    return {
+        "task": serialize_task_row(latest_task),
+        "latest_task_step": None if latest_task_step is None else serialize_task_step_row(latest_task_step),
+        "summary": summary,
+    }
+
+
+def compile_resumption_brief(
+    store: ContinuityStore,
+    *,
+    thread: ThreadRow,
+    event_limit: int = DEFAULT_RESUMPTION_BRIEF_EVENT_LIMIT,
+    open_loop_limit: int = DEFAULT_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT,
+    memory_limit: int = DEFAULT_RESUMPTION_BRIEF_MEMORY_LIMIT,
+) -> ResumptionBriefRecord:
+    bounded_event_limit = max(0, event_limit)
+    bounded_open_loop_limit = max(0, open_loop_limit)
+    bounded_memory_limit = max(0, memory_limit)
+
+    conversation_kinds = frozenset(RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS)
+    ordered_conversation_events = [
+        event for event in store.list_thread_events(thread["id"]) if event["kind"] in conversation_kinds
+    ]
+    included_events = (
+        ordered_conversation_events[-bounded_event_limit:] if bounded_event_limit > 0 else []
+    )
+    conversation_section: ResumptionBriefConversationSection = {
+        "items": [_serialize_event(event) for event in included_events],
+        "summary": {
+            **_build_resumption_section_summary(
+                limit=bounded_event_limit,
+                returned_count=len(included_events),
+                total_count=len(ordered_conversation_events),
+                order=list(RESUMPTION_BRIEF_CONVERSATION_ORDER),
+            ),
+            "kinds": list(RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS),
+        },
+    }
+
+    ordered_open_loops = store.list_open_loops(status="open")
+    included_open_loops = (
+        ordered_open_loops[:bounded_open_loop_limit] if bounded_open_loop_limit > 0 else []
+    )
+    open_loop_section = {
+        "items": [_serialize_open_loop(open_loop) for open_loop in included_open_loops],
+        "summary": _build_resumption_section_summary(
+            limit=bounded_open_loop_limit,
+            returned_count=len(included_open_loops),
+            total_count=len(ordered_open_loops),
+            order=list(OPEN_LOOP_REVIEW_ORDER),
+        ),
+    }
+
+    ordered_memories = sorted(
+        [memory for memory in store.list_context_memories() if memory["status"] == "active"],
+        key=_memory_sort_key,
+    )
+    included_memories = ordered_memories[-bounded_memory_limit:] if bounded_memory_limit > 0 else []
+    memory_highlight_section: ResumptionBriefMemoryHighlightSection = {
+        "items": [_serialize_memory(memory) for memory in included_memories],
+        "summary": _build_resumption_section_summary(
+            limit=bounded_memory_limit,
+            returned_count=len(included_memories),
+            total_count=len(ordered_memories),
+            order=list(RESUMPTION_BRIEF_MEMORY_ORDER),
+        ),
+    }
+
+    workflow_posture = _build_resumption_workflow_posture(
+        store=store,
+        thread_id=thread["id"],
+    )
+    sources = ["threads", "events", "open_loops", "memories"]
+    if workflow_posture is not None:
+        sources.extend(["tasks", "task_steps"])
+
+    return {
+        "assembly_version": RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0,
+        "thread": _serialize_thread(thread),
+        "conversation": conversation_section,
+        "open_loops": open_loop_section,
+        "memory_highlights": memory_highlight_section,
+        "workflow": workflow_posture,
+        "sources": sources,
+    }
 
 
 def compile_continuity_context(

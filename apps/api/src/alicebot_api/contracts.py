@@ -105,6 +105,12 @@ DEFAULT_MEMORY_REVIEW_LIMIT = 20
 MAX_MEMORY_REVIEW_LIMIT = 100
 DEFAULT_OPEN_LOOP_LIMIT = 20
 MAX_OPEN_LOOP_LIMIT = 100
+DEFAULT_RESUMPTION_BRIEF_EVENT_LIMIT = 8
+MAX_RESUMPTION_BRIEF_EVENT_LIMIT = 50
+DEFAULT_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT = 5
+MAX_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT = 20
+DEFAULT_RESUMPTION_BRIEF_MEMORY_LIMIT = 5
+MAX_RESUMPTION_BRIEF_MEMORY_LIMIT = 20
 DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 5
 MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 50
 DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 5
@@ -121,6 +127,10 @@ TRACE_REVIEW_EVENT_LIST_ORDER = ["sequence_no_asc", "id_asc"]
 THREAD_LIST_ORDER = ["created_at_desc", "id_desc"]
 THREAD_SESSION_LIST_ORDER = ["started_at_asc", "created_at_asc", "id_asc"]
 THREAD_EVENT_LIST_ORDER = ["sequence_no_asc"]
+RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "resumption_brief_v0"
+RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS = ["message.user", "message.assistant"]
+RESUMPTION_BRIEF_CONVERSATION_ORDER = ["sequence_no_asc"]
+RESUMPTION_BRIEF_MEMORY_ORDER = ["updated_at_asc", "created_at_asc", "id_asc"]
 MEMORY_REVIEW_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
 MEMORY_REVIEW_QUEUE_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
 MEMORY_REVISION_REVIEW_ORDER = ["sequence_no_asc"]
@@ -436,6 +446,14 @@ class ThreadEventListSummary(TypedDict):
 class ThreadEventListResponse(TypedDict):
     items: list[ThreadEventRecord]
     summary: ThreadEventListSummary
+
+
+@dataclass(frozen=True, slots=True)
+class ResumptionBriefRequestInput:
+    thread_id: UUID
+    max_events: int = DEFAULT_RESUMPTION_BRIEF_EVENT_LIMIT
+    max_open_loops: int = DEFAULT_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT
+    max_memories: int = DEFAULT_RESUMPTION_BRIEF_MEMORY_LIMIT
 
 
 class TraceReviewSummaryRecord(TypedDict):
@@ -2597,6 +2615,58 @@ class TaskStepTransitionResponse(TypedDict):
     task_step: TaskStepRecord
     sequencing: TaskStepSequencingSummary
     trace: TaskStepMutationTraceSummary
+
+
+class ResumptionBriefSectionSummary(TypedDict):
+    limit: int
+    returned_count: int
+    total_count: int
+    order: list[str]
+
+
+class ResumptionBriefConversationSummary(ResumptionBriefSectionSummary):
+    kinds: list[str]
+
+
+class ResumptionBriefConversationSection(TypedDict):
+    items: list[ThreadEventRecord]
+    summary: ResumptionBriefConversationSummary
+
+
+class ResumptionBriefOpenLoopSection(TypedDict):
+    items: list[OpenLoopRecord]
+    summary: ResumptionBriefSectionSummary
+
+
+class ResumptionBriefMemoryHighlightSection(TypedDict):
+    items: list[ContextPackMemory]
+    summary: ResumptionBriefSectionSummary
+
+
+class ResumptionBriefWorkflowSummary(TypedDict):
+    present: bool
+    task_order: list[str]
+    task_step_order: list[str]
+
+
+class ResumptionBriefWorkflowPosture(TypedDict):
+    task: TaskRecord
+    latest_task_step: TaskStepRecord | None
+    summary: ResumptionBriefWorkflowSummary
+
+
+class ResumptionBriefRecord(TypedDict):
+    assembly_version: str
+    thread: ThreadRecord
+    conversation: ResumptionBriefConversationSection
+    open_loops: ResumptionBriefOpenLoopSection
+    memory_highlights: ResumptionBriefMemoryHighlightSection
+    workflow: ResumptionBriefWorkflowPosture | None
+    sources: list[str]
+
+
+class ResumptionBriefResponse(TypedDict):
+    brief: ResumptionBriefRecord
 
 
 class TaskLifecycleStateTracePayload(TypedDict):
