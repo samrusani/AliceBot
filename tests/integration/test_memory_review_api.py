@@ -223,6 +223,13 @@ def test_list_memories_endpoint_returns_filtered_memories_with_deterministic_ord
     assert payload["items"][0]["status"] == "active"
     assert payload["items"][0]["value"] == {"likes": "oat milk"}
     assert payload["items"][0]["source_event_ids"] == [seeded["coffee_update_event_id"]]
+    assert payload["items"][0]["memory_type"] == "preference"
+    assert payload["items"][0]["confirmation_status"] == "unconfirmed"
+    assert payload["items"][0]["confidence"] is None
+    assert payload["items"][0]["salience"] is None
+    assert payload["items"][0]["valid_from"] is None
+    assert payload["items"][0]["valid_to"] is None
+    assert payload["items"][0]["last_confirmed_at"] is None
     assert payload["summary"] == {
         "status": "active",
         "limit": 2,
@@ -250,6 +257,13 @@ def test_list_memories_endpoint_returns_filtered_memories_with_deterministic_ord
             "value": {"likes": "chips"},
             "status": "deleted",
             "source_event_ids": [seeded["snack_delete_event_id"]],
+            "memory_type": "preference",
+            "confidence": None,
+            "salience": None,
+            "confirmation_status": "unconfirmed",
+            "valid_from": None,
+            "valid_to": None,
+            "last_confirmed_at": None,
             "created_at": deleted_payload["items"][0]["created_at"],
             "updated_at": deleted_payload["items"][0]["updated_at"],
             "deleted_at": deleted_payload["items"][0]["deleted_at"],
@@ -293,6 +307,13 @@ def test_memory_review_endpoints_return_current_memory_and_revision_history(
     assert memory_payload["memory"]["status"] == "active"
     assert memory_payload["memory"]["value"] == {"likes": "oat milk"}
     assert memory_payload["memory"]["source_event_ids"] == [seeded["coffee_update_event_id"]]
+    assert memory_payload["memory"]["memory_type"] == "preference"
+    assert memory_payload["memory"]["confidence"] is None
+    assert memory_payload["memory"]["salience"] is None
+    assert memory_payload["memory"]["confirmation_status"] == "unconfirmed"
+    assert memory_payload["memory"]["valid_from"] is None
+    assert memory_payload["memory"]["valid_to"] is None
+    assert memory_payload["memory"]["last_confirmed_at"] is None
 
     assert revisions_status == 200
     assert [item["sequence_no"] for item in revisions_payload["items"]] == [1, 2]
@@ -310,6 +331,77 @@ def test_memory_review_endpoints_return_current_memory_and_revision_history(
         "has_more": False,
         "order": ["sequence_no_asc"],
     }
+
+
+def test_memory_review_endpoints_roundtrip_non_default_typed_metadata(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = uuid4()
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        store.create_user(user_id, "typed@example.com", "Typed Reviewer")
+        thread = store.create_thread("Typed metadata thread")
+        session = store.create_session(thread["id"], status="active")
+        source_event_id = store.append_event(
+            thread["id"],
+            session["id"],
+            "message.user",
+            {"text": "Morning standup prep is my preferred daily routine."},
+        )["id"]
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    admit_status, admit_payload = invoke_request(
+        "POST",
+        "/v0/memories/admit",
+        payload={
+            "user_id": str(user_id),
+            "memory_key": "user.routine.morning_prep",
+            "value": {"window": "07:30", "activity": "standup prep"},
+            "source_event_ids": [str(source_event_id)],
+            "memory_type": "routine",
+            "confidence": 0.92,
+            "salience": 0.73,
+            "confirmation_status": "confirmed",
+            "valid_from": "2026-03-01T07:30:00Z",
+            "valid_to": "2026-12-31T07:30:00Z",
+            "last_confirmed_at": "2026-03-20T09:00:00Z",
+        },
+    )
+
+    assert admit_status == 200
+    assert admit_payload["decision"] == "ADD"
+    admitted_memory_id = admit_payload["memory"]["id"]
+
+    list_status, list_payload = invoke_request(
+        "GET",
+        "/v0/memories",
+        query_params={"user_id": str(user_id), "status": "active", "limit": "10"},
+    )
+    detail_status, detail_payload = invoke_request(
+        "GET",
+        f"/v0/memories/{admitted_memory_id}",
+        query_params={"user_id": str(user_id)},
+    )
+
+    assert list_status == 200
+    assert detail_status == 200
+    listed_memory = next(item for item in list_payload["items"] if item["id"] == admitted_memory_id)
+    detailed_memory = detail_payload["memory"]
+
+    for payload in (listed_memory, detailed_memory):
+        assert payload["memory_type"] == "routine"
+        assert payload["confidence"] == 0.92
+        assert payload["salience"] == 0.73
+        assert payload["confirmation_status"] == "confirmed"
+        assert payload["valid_from"].startswith("2026-03-01T07:30:00")
+        assert payload["valid_to"].startswith("2026-12-31T07:30:00")
+        assert payload["last_confirmed_at"].startswith("2026-03-20T09:00:00")
 
 
 def test_memory_review_endpoints_enforce_per_user_isolation_and_not_found_behavior(
@@ -394,6 +486,13 @@ def test_memory_review_queue_endpoint_returns_only_active_unlabeled_memories_in_
                 "value": {"likes": "oat milk"},
                 "status": "active",
                 "source_event_ids": [seeded["coffee_update_event_id"]],
+                "memory_type": "preference",
+                "confidence": None,
+                "salience": None,
+                "confirmation_status": "unconfirmed",
+                "valid_from": None,
+                "valid_to": None,
+                "last_confirmed_at": None,
                 "created_at": payload["items"][0]["created_at"],
                 "updated_at": payload["items"][0]["updated_at"],
             },
@@ -403,6 +502,13 @@ def test_memory_review_queue_endpoint_returns_only_active_unlabeled_memories_in_
                 "value": {"genre": "science fiction"},
                 "status": "active",
                 "source_event_ids": [seeded["book_add_event_id"]],
+                "memory_type": "preference",
+                "confidence": None,
+                "salience": None,
+                "confirmation_status": "unconfirmed",
+                "valid_from": None,
+                "valid_to": None,
+                "last_confirmed_at": None,
                 "created_at": payload["items"][1]["created_at"],
                 "updated_at": payload["items"][1]["updated_at"],
             },

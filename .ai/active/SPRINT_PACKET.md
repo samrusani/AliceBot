@@ -2,122 +2,169 @@
 
 ## Sprint Title
 
-Sprint 7I: Memory Quality Ship-Margin Hardening
+Phase 2 Sprint 2: Typed Memory Backbone
 
 ## Sprint Type
 
-qa
+feature
 
 ## Sprint Reason
 
-Sprint 7H aligned canonical docs and gate usage. The remaining MVP release risk is memory-quality confidence margin: current readiness evidence sits at the floor (`precision=0.800000`, sample `10`), while the product brief requires memory extraction precision to exceed 80% at ship.
+Phase 2 planning reset is complete and merged. The next required build seam is typed memory infrastructure so continuity-first capture, open loops, resumption, and later multi-agent vertical profiles can reuse one durable substrate.
 
 ## Sprint Intent
 
-Tighten memory-quality readiness gating from minimum-threshold posture to ship-margin posture, with deterministic evidence and no product-scope expansion.
+Implement typed memory metadata end-to-end (schema, store, contracts/API, compiler serialization, memory UI, tests) without widening into open-loop workflows, resumption generation, or worker orchestration.
 
 ## Git Instructions
 
-- Branch Name: `codex/sprint-7i-memory-quality-ship-margin`
+- Branch Name: `codex/phase2-sprint2-typed-memory-backbone`
 - Base Branch: `main`
-- PR Strategy: one sprint branch, one PR, no stacked PRs unless Control Tower explicitly opens a follow-up sprint
+- PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- MVP validation matrix now runs end-to-end and passes.
-- Memory quality is currently just at the pass floor rather than above it.
-- We need stronger deterministic evidence before calling MVP truly ship-ready.
+- Phase 2 now defines continuity-first outcomes; current memory model is too flat.
+- Sprint 2 typed memory backbone is the critical dependency for Sprint 3 capture/open-loop domain.
+- This is the narrowest high-leverage seam that advances Phase 2 without scope creep.
 
 ## Design Truth
 
-- This is a QA/readiness sprint, not a feature sprint.
-- Keep scope on gate math, deterministic seed/evidence, and runbook/report alignment.
-- Do not widen connectors, auth, orchestration, or UI feature scope.
+- Extend existing memory architecture; do not create parallel memory stacks.
+- Keep behavior deterministic, test-backed, and audit-friendly.
+- Preserve current review and explainability guarantees.
 
 ## Exact Surfaces In Scope
 
-- Memory-quality gate thresholds and posture logic in readiness tooling.
-- Deterministic readiness seed profile used by gate probes.
-- Readiness/validation runbooks and sprint reports.
+- memory schema + persistence
+- memory contracts + API behavior
+- compiler context-pack memory serialization
+- `/memories` UI typed metadata adoption
+- sprint-scoped backend and frontend tests
 
 ## Exact Files In Scope
 
-- [run_mvp_readiness_gates.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_mvp_readiness_gates.py)
-- [run_mvp_validation_matrix.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_mvp_validation_matrix.py)
-- [test_mvp_readiness_gates.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_mvp_readiness_gates.py)
-- [test_mvp_validation_matrix.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_mvp_validation_matrix.py)
-- [memory-quality-gate.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/runbooks/memory-quality-gate.md)
-- [mvp-readiness-gates.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/runbooks/mvp-readiness-gates.md)
-- [mvp-validation-matrix.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/runbooks/mvp-validation-matrix.md)
+- [store.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/store.py)
+- [contracts.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/contracts.py)
+- [memory.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/memory.py)
+- [main.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/main.py)
+- [compiler.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/compiler.py)
+- [api.ts](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/lib/api.ts)
+- [page.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/app/memories/page.tsx)
 - [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md)
 - [REVIEW_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/active/SPRINT_PACKET.md)
+- relevant migration + tests under:
+  - `apps/api/alembic/versions/`
+  - `tests/unit/`
+  - `tests/integration/`
+  - `apps/web/**/*.test.tsx`
 
 ## In Scope
 
-- Update memory gate criterion to ship-margin semantics:
-  - `precision > 0.80` (strictly greater, not equal)
-  - `adjudicated_sample >= 20`
-- Update deterministic readiness seed profile so normal gate run can pass only with new margin.
-- Update readiness gate tests to cover boundary behavior explicitly:
-  - `precision == 0.80` must not pass
-  - insufficient sample remains `BLOCKED`
-- Ensure validation matrix behavior stays deterministic with the updated readiness gate.
-- Align runbooks with the stricter memory-quality semantics and interpretation.
+- Add typed memory fields:
+  - `memory_type`
+  - `confidence`
+  - `salience`
+  - `confirmation_status`
+  - `valid_from`
+  - `valid_to`
+  - `last_confirmed_at`
+- Persist/retrieve typed metadata through store + API.
+- Keep revisions append-only and metadata-auditable.
+- Include typed metadata in compiler memory serialization.
+- Render typed metadata in `/memories` list/detail with safe fallbacks.
+- Add/update tests across migration, API, compiler, and UI seams.
 
 ## Out of Scope
 
-- No new endpoints, migrations, or schema changes.
-- No connector breadth expansion or write-capable connector behavior.
-- No auth, orchestration, or worker-runtime expansion.
-- No UI feature scope changes.
-- No new product behavior beyond readiness evidence hardening.
+- open-loop records/workflows
+- capture classification pipeline
+- resumption brief generation
+- focus dashboard
+- worker activation
+- connector expansion
+- Phase 3 agent runtime/profile implementation
 
 ## Required Deliverables
 
-- Updated readiness gate implementation and tests with strict memory-margin criteria.
-- Updated runbooks reflecting strict threshold and larger minimum sample.
-- Updated `BUILD_REPORT.md` and `REVIEW_REPORT.md` for Sprint 7I only.
+- migration-backed typed memory metadata support
+- backend store/contracts/API support for typed memory fields
+- compiler serialization of typed memory metadata
+- `/memories` typed metadata visibility + filtering
+- updated sprint reports for this sprint only
 
 ## Acceptance Criteria
 
-- `python3 scripts/run_mvp_readiness_gates.py` returns `PASS` only when `precision > 0.80` and `adjudicated_sample >= 20`.
-- A boundary case with `precision == 0.80` is verified as non-pass (`FAIL` or `NO_GO` path).
-- `python3 scripts/run_mvp_validation_matrix.py` remains deterministic with explicit `PASS/NO_GO`.
-- Sprint remains within QA/readiness + docs/report scope only.
+- typed memory metadata persists and returns from list/detail APIs
+- invalid `memory_type` values are rejected deterministically
+- revision guarantees remain append-only and correct
+- compiled context includes typed memory metadata
+- `/memories` reflects typed metadata without regression
+- backend + frontend tests pass for touched seams
+- no out-of-scope feature work enters sprint
 
 ## Implementation Constraints
 
-- Keep threshold/math changes explicit, deterministic, and test-backed.
-- Do not weaken existing gate semantics for latency/cache/acceptance.
-- Keep changes narrow to listed files.
+- preserve RLS and per-user isolation
+- preserve deterministic ordering in compiler/review outputs
+- keep defaults backward-safe when typed metadata is absent
+- co-deliver tests with each seam change
 
-## Suggested Work Breakdown
+## Control Tower Task Cards
 
-1. Update memory gate constants and posture logic in `scripts/run_mvp_readiness_gates.py`.
-2. Update deterministic seed profile to satisfy strict ship-margin target on normal run.
-3. Add/adjust integration tests for new boundary and sample semantics.
-4. Validate readiness runner and matrix runner behavior with normal + induced-failure runs.
-5. Update runbooks and sprint reports.
+### Task 1: Schema + Store
+Owner: backend operative A  
+Write scope:
+- migration file(s)
+- `apps/api/src/alicebot_api/store.py`
+- store/migration tests
+
+### Task 2: Contracts + API
+Owner: backend operative B  
+Write scope:
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/memory.py`
+- `apps/api/src/alicebot_api/main.py`
+- API/integration tests
+
+### Task 3: Compiler Integration
+Owner: backend operative C  
+Write scope:
+- `apps/api/src/alicebot_api/compiler.py`
+- compiler tests
+
+### Task 4: Memory UI Adoption
+Owner: frontend operative  
+Write scope:
+- `apps/web/lib/api.ts`
+- `apps/web/app/memories/page.tsx`
+- related memory components/tests
+
+### Task 5: Integration Review
+Owner: control tower  
+Responsibilities:
+- verify schema/store/contracts/compiler/UI coherence
+- verify strict sprint scope
+- verify acceptance + evidence completeness
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact updated threshold semantics (`>0.80`, sample `>=20`)
-- exact commands run and pass/fail outcomes
-- boundary-test evidence for `precision == 0.80`
-- induced-failure evidence remains deterministic
-- explicit deferred criteria not covered by this sprint
+- exact typed fields shipped
+- migration id(s) and API surface deltas
+- exact commands/tests run with outcomes
+- explicit deferred scope (open loops/resumption/workers/Phase 3 runtime)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint stayed within readiness-hardening scope
-- gate math matches Product Brief ship semantics
-- deterministic behavior remains intact in readiness + matrix runners
-- no hidden product/backend scope entered
+- sprint remained typed-memory-backbone scoped
+- schema/store/contracts/compiler/UI consistency
+- sufficient tests for all touched seams
+- no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when memory-quality gating has ship-margin strictness (`precision > 0.80`, sample `>=20`) with deterministic evidence and unchanged product scope.
+This sprint is complete when typed memory metadata is fully wired through persistence, API, compiler, and `/memories` UI with deterministic, test-backed behavior and no open-loop or Phase 3 runtime scope expansion.
