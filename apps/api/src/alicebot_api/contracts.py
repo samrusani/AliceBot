@@ -1050,6 +1050,16 @@ class ExplicitCommitmentExtractionRequestInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ExplicitSignalCaptureRequestInput:
+    source_event_id: UUID
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "source_event_id": str(self.source_event_id),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class OpenLoopCreateInput:
     title: str
     memory_id: UUID | None = None
@@ -1516,6 +1526,27 @@ class ExplicitCommitmentExtractionResponse(TypedDict):
     candidates: list[ExtractedCommitmentCandidateRecord]
     admissions: list[ExplicitCommitmentAdmissionRecord]
     summary: ExplicitCommitmentExtractionSummary
+
+
+class ExplicitSignalCaptureSummary(TypedDict):
+    source_event_id: str
+    source_event_kind: str
+    candidate_count: int
+    admission_count: int
+    persisted_change_count: int
+    noop_count: int
+    open_loop_created_count: int
+    open_loop_noop_count: int
+    preference_candidate_count: int
+    preference_admission_count: int
+    commitment_candidate_count: int
+    commitment_admission_count: int
+
+
+class ExplicitSignalCaptureResponse(TypedDict):
+    preferences: ExplicitPreferenceExtractionResponse
+    commitments: ExplicitCommitmentExtractionResponse
+    summary: ExplicitSignalCaptureSummary
 
 
 class MemoryReviewRecord(TypedDict):

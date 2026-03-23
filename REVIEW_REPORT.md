@@ -4,48 +4,47 @@
 PASS
 
 ## criteria met
-- Sprint stayed within explicit-commitment-capture scope (no automation/workers/Phase 3 routing changes).
-- Contracts and API seam are shipped and coherent:
+- Unified endpoint is implemented at `POST /v0/memories/capture-explicit-signals` with required request fields (`user_id`, `source_event_id`).
+- Response shape includes required sections and coherent aggregate fields:
+  - `preferences` (candidates/admissions/summary)
+  - `commitments` (candidates/admissions/summary)
+  - top-level `summary` with aggregate + per-pipeline counts.
+- Deterministic orchestration order is explicit and stable in implementation (`preferences` first, `commitments` second).
+- Deterministic validation behavior is preserved: invalid/missing/non-user/cross-user `source_event_id` returns `400`.
+- Repeat-call idempotence behavior is preserved for commitment-derived open loops (`NOOP_ACTIVE_EXISTS` on repeat).
+- Legacy endpoints remain operational and behavior-compatible, covered by existing integration tests:
+  - `POST /v0/memories/extract-explicit-preferences`
   - `POST /v0/open-loops/extract-explicit-commitments`
-  - request requires `user_id` and `source_event_id`
-  - response returns deterministic `candidates`, `admissions` (including open-loop outcomes), and `summary`.
-- Deterministic pattern extraction is implemented (no model calls) in `apps/api/src/alicebot_api/explicit_commitments.py` for:
-  - `remind me to ...`
-  - `i need to ...`
-  - `don't let me forget to ...`
-  - `remember to ...`
-- Invalid source event semantics are enforced with deterministic `400` for non-user/cross-user/missing event IDs.
-- Persistence uses governed seams:
-  - memory writes go through `admit_memory_candidate(...)`
-  - open loops are linked to admitted memory.
-- Duplicate active open loops are prevented on repeat extraction (`NOOP_ACTIVE_EXISTS`).
-- `/memories` parity is preserved through existing review surfaces (`/v0/memories`, `/v0/open-loops`).
-- Sprint-scoped tests for touched seams pass:
-  - `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_explicit_commitments.py tests/unit/test_main.py` -> `54 passed`
-  - `PYTHONPATH=$PWD .venv/bin/pytest tests/integration/test_explicit_commitments_api.py` -> `3 passed`
-  - `cd apps/web && pnpm test -- lib/api.test.ts app/memories/page.test.tsx` -> `26 passed`
+- Web API client adoption is present (`captureExplicitSignals(...)`) with request wiring test coverage.
+- No automation/worker/Phase 3 routing scope expansion detected.
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking implementation quality issues found.
-- Minor non-blocking note: active-open-loop dedupe currently scans `list_open_loops(status="open")` in user scope; acceptable for current bounded usage.
+- No blocking quality or safety issues found in touched seams.
 
 ## regression risks
-- Low on touched seams due unit + integration + frontend coverage.
-- Residual risk remains on unrelated surfaces not rerun in this review.
+- Low risk on touched surfaces; coverage includes:
+  - orchestration unit tests
+  - API route unit tests
+  - DB-backed integration tests for legacy + unified endpoints
+  - web client request wiring tests.
+- Residual risk: broader unrelated app surfaces were not rerun as part of this sprint review.
 
 ## docs issues
-- No blocking docs issues for sprint acceptance.
-- `BUILD_REPORT.md` includes required endpoint, extraction patterns, payload fields, dedupe/no-side-effect behavior, tests, and deferred scope.
+- `BUILD_REPORT.md` includes required sprint evidence:
+  - unified endpoint payload schema
+  - orchestration sequence and legacy compatibility notes
+  - dedupe/no-side-effect guarantees
+  - exact test commands and outcomes
+  - explicitly deferred scope.
 
 ## should anything be added to RULES.md?
-- No required rule additions for this sprint.
+- No.
 
 ## should anything update ARCHITECTURE.md?
-- Optional follow-up only: add a short subsection documenting the explicit commitment extraction seam and dedupe behavior for future reminder/orchestration phases.
+- Optional: add one short API surface note documenting `POST /v0/memories/capture-explicit-signals` and its aggregate summary contract for discoverability.
 
 ## recommended next action
-- Mark sprint as reviewer `PASS` and move to Control Tower merge gate.
-- Optional follow-up hardening: add one integration assertion for a random/nonexistent `source_event_id` no-side-effect behavior.
+- Proceed to Control Tower merge gate for sprint closeout.

@@ -56,6 +56,7 @@ from alicebot_api.contracts import (
     EntityType,
     ExplicitCommitmentExtractionRequestInput,
     ExplicitPreferenceExtractionRequestInput,
+    ExplicitSignalCaptureRequestInput,
     CALENDAR_READONLY_SCOPE,
     GMAIL_READONLY_SCOPE,
     CalendarAccountConnectInput,
@@ -244,6 +245,10 @@ from alicebot_api.explicit_preferences import (
 from alicebot_api.explicit_commitments import (
     ExplicitCommitmentExtractionValidationError,
     extract_and_admit_explicit_commitments,
+)
+from alicebot_api.explicit_signal_capture import (
+    ExplicitSignalCaptureValidationError,
+    extract_and_admit_explicit_signals,
 )
 from alicebot_api.memory import (
     MemoryAdmissionValidationError,
@@ -489,6 +494,11 @@ class ExtractExplicitPreferencesRequest(BaseModel):
 
 
 class ExtractExplicitCommitmentsRequest(BaseModel):
+    user_id: UUID
+    source_event_id: UUID
+
+
+class CaptureExplicitSignalsRequest(BaseModel):
     user_id: UUID
     source_event_id: UUID
 
@@ -2699,6 +2709,30 @@ def extract_explicit_commitments(request: ExtractExplicitCommitmentsRequest) -> 
                 ),
             )
     except ExplicitCommitmentExtractionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except MemoryAdmissionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/memories/capture-explicit-signals")
+def capture_explicit_signals(request: CaptureExplicitSignalsRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = extract_and_admit_explicit_signals(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ExplicitSignalCaptureRequestInput(
+                    source_event_id=request.source_event_id,
+                ),
+            )
+    except ExplicitSignalCaptureValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except MemoryAdmissionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
