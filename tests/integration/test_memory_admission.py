@@ -133,6 +133,33 @@ def test_admit_memory_endpoint_rejects_unknown_source_events(migrated_database_u
     )
 
 
+def test_admit_memory_endpoint_rejects_invalid_memory_type(migrated_database_urls, monkeypatch) -> None:
+    user_id, event_ids = seed_memory_evidence(migrated_database_urls["app"])
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status_code, payload = invoke_admit_memory(
+        {
+            "user_id": str(user_id),
+            "memory_key": "user.preference.coffee",
+            "value": {"likes": "black"},
+            "source_event_ids": [str(event_ids[0])],
+            "memory_type": "unknown_type",
+        }
+    )
+
+    assert status_code == 400
+    assert payload == {
+        "detail": (
+            "memory_type must be one of: preference, identity_fact, relationship_fact, project_fact, "
+            "decision, commitment, routine, constraint, working_style"
+        )
+    }
+
+
 def test_admit_memory_endpoint_persists_add_update_and_delete_revisions(
     migrated_database_urls,
     monkeypatch,
@@ -186,6 +213,13 @@ def test_admit_memory_endpoint_persists_add_update_and_delete_revisions(
     assert len(memories) == 1
     assert memories[0]["id"] == memory_id
     assert memories[0]["status"] == "deleted"
+    assert memories[0]["memory_type"] == "preference"
+    assert memories[0]["confirmation_status"] == "unconfirmed"
+    assert memories[0]["confidence"] is None
+    assert memories[0]["salience"] is None
+    assert memories[0]["valid_from"] is None
+    assert memories[0]["valid_to"] is None
+    assert memories[0]["last_confirmed_at"] is None
     assert memories[0]["source_event_ids"] == [str(event_ids[2])]
     assert [revision["sequence_no"] for revision in revisions] == [1, 2, 3]
     assert [revision["action"] for revision in revisions] == ["ADD", "UPDATE", "DELETE"]

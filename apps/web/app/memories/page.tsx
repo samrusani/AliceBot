@@ -71,6 +71,13 @@ function queueItemAsMemory(item: {
   value: unknown;
   status: "active";
   source_event_ids: string[];
+  memory_type: MemoryReviewRecord["memory_type"];
+  confidence: MemoryReviewRecord["confidence"];
+  salience: MemoryReviewRecord["salience"];
+  confirmation_status: MemoryReviewRecord["confirmation_status"];
+  valid_from: MemoryReviewRecord["valid_from"];
+  valid_to: MemoryReviewRecord["valid_to"];
+  last_confirmed_at: MemoryReviewRecord["last_confirmed_at"];
   created_at: string;
   updated_at: string;
 }): MemoryReviewRecord {
@@ -78,6 +85,24 @@ function queueItemAsMemory(item: {
     ...item,
     deleted_at: null,
   };
+}
+
+function formatTypedValue(value: string | null | undefined) {
+  if (value == null) {
+    return "Not set";
+  }
+  return value;
+}
+
+function formatTypedScore(value: number | null | undefined) {
+  if (value == null) {
+    return "Not set";
+  }
+  return value.toFixed(2);
+}
+
+function formatTypedTimestamp(value: string | null | undefined) {
+  return value ?? "Not set";
 }
 
 export default async function MemoriesPage({
@@ -292,6 +317,52 @@ export default async function MemoriesPage({
           source={selectedMemorySource}
           unavailableReason={selectedMemoryUnavailableReason}
         />
+      </div>
+
+      <div className="section-card">
+        <header className="section-card__header">
+          <div>
+            <p className="section-card__eyebrow">Typed metadata</p>
+            <h2 className="section-card__title">Memory classification and confidence</h2>
+          </div>
+          <p className="section-card__description">
+            Typed metadata remains visible in the review workspace with explicit safe fallbacks.
+          </p>
+        </header>
+        {selectedMemory ? (
+          <dl className="key-value-grid key-value-grid--compact">
+            <div>
+              <dt>Type</dt>
+              <dd>{formatTypedValue(selectedMemory.memory_type)}</dd>
+            </div>
+            <div>
+              <dt>Confirmation</dt>
+              <dd>{formatTypedValue(selectedMemory.confirmation_status)}</dd>
+            </div>
+            <div>
+              <dt>Confidence</dt>
+              <dd>{formatTypedScore(selectedMemory.confidence)}</dd>
+            </div>
+            <div>
+              <dt>Salience</dt>
+              <dd>{formatTypedScore(selectedMemory.salience)}</dd>
+            </div>
+            <div>
+              <dt>Valid from</dt>
+              <dd className="mono">{formatTypedTimestamp(selectedMemory.valid_from)}</dd>
+            </div>
+            <div>
+              <dt>Valid to</dt>
+              <dd className="mono">{formatTypedTimestamp(selectedMemory.valid_to)}</dd>
+            </div>
+            <div>
+              <dt>Last confirmed</dt>
+              <dd className="mono">{formatTypedTimestamp(selectedMemory.last_confirmed_at)}</dd>
+            </div>
+          </dl>
+        ) : (
+          <p className="muted-copy">Select a memory to inspect typed metadata fields.</p>
+        )}
       </div>
 
       <div className="memory-followup-grid">

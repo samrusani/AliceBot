@@ -170,6 +170,13 @@ describe("MemoriesPage", () => {
         value: { merchant: "Live Merchant", note: "Verified" },
         status: "active",
         source_event_ids: ["event-live-1"],
+        memory_type: "decision",
+        confidence: 0.93,
+        salience: 0.81,
+        confirmation_status: "confirmed",
+        valid_from: "2026-03-01T00:00:00Z",
+        valid_to: "2026-12-31T00:00:00Z",
+        last_confirmed_at: "2026-03-20T00:00:00Z",
         created_at: "2026-03-18T10:00:00Z",
         updated_at: "2026-03-18T10:05:00Z",
         deleted_at: null,
@@ -238,6 +245,14 @@ describe("MemoriesPage", () => {
     expect(screen.getByText("Live detail")).toBeInTheDocument();
     expect(screen.getByText("Live revisions")).toBeInTheDocument();
     expect(screen.getByText("Live labels")).toBeInTheDocument();
+    expect(screen.getByText("Typed metadata")).toBeInTheDocument();
+    expect(screen.getByText("decision")).toBeInTheDocument();
+    expect(screen.getByText("confirmed")).toBeInTheDocument();
+    expect(screen.getByText("0.93")).toBeInTheDocument();
+    expect(screen.getByText("0.81")).toBeInTheDocument();
+    expect(screen.getByText("2026-03-01T00:00:00Z")).toBeInTheDocument();
+    expect(screen.getByText("2026-12-31T00:00:00Z")).toBeInTheDocument();
+    expect(screen.getByText("2026-03-20T00:00:00Z")).toBeInTheDocument();
 
     expect(listMemoriesMock).toHaveBeenCalledWith("https://api.example.com", "user-1", {
       status: "active",

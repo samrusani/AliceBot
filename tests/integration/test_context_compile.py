@@ -457,6 +457,13 @@ def test_compile_context_endpoint_persists_trace_and_trace_events(migrated_datab
             "value": {"likes": "oat milk"},
             "status": "active",
             "source_event_ids": [str(event_ids[1])],
+            "memory_type": "preference",
+            "confidence": None,
+            "salience": None,
+            "confirmation_status": "unconfirmed",
+            "valid_from": None,
+            "valid_to": None,
+            "last_confirmed_at": None,
             "created_at": payload["context_pack"]["memories"][0]["created_at"],
             "updated_at": payload["context_pack"]["memories"][0]["updated_at"],
             "source_provenance": {"sources": ["symbolic"], "semantic_score": None},
@@ -694,6 +701,13 @@ def test_compile_context_prefers_updated_active_memory_within_same_transaction(
             "value": {"likes": "oat milk"},
             "status": "active",
             "source_event_ids": [str(event_ids[1])],
+            "memory_type": "preference",
+            "confidence": None,
+            "salience": None,
+            "confirmation_status": "unconfirmed",
+            "valid_from": None,
+            "valid_to": None,
+            "last_confirmed_at": None,
             "created_at": payload["context_pack"]["memories"][0]["created_at"],
             "updated_at": payload["context_pack"]["memories"][0]["updated_at"],
             "source_provenance": {"sources": ["symbolic"], "semantic_score": None},
@@ -879,6 +893,25 @@ def test_compile_context_endpoint_merges_hybrid_memory_provenance_and_trace_even
             "value": {"likes": "oat milk"},
             "status": "active",
             "source_event_ids": memories["coffee"]["source_event_ids"],
+            "memory_type": memories["coffee"]["memory_type"],
+            "confidence": memories["coffee"]["confidence"],
+            "salience": memories["coffee"]["salience"],
+            "confirmation_status": memories["coffee"]["confirmation_status"],
+            "valid_from": (
+                None
+                if memories["coffee"]["valid_from"] is None
+                else memories["coffee"]["valid_from"].isoformat()
+            ),
+            "valid_to": (
+                None
+                if memories["coffee"]["valid_to"] is None
+                else memories["coffee"]["valid_to"].isoformat()
+            ),
+            "last_confirmed_at": (
+                None
+                if memories["coffee"]["last_confirmed_at"] is None
+                else memories["coffee"]["last_confirmed_at"].isoformat()
+            ),
             "created_at": memories["coffee"]["created_at"].isoformat(),
             "updated_at": memories["coffee"]["updated_at"].isoformat(),
             "source_provenance": {
