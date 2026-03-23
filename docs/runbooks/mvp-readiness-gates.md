@@ -2,8 +2,9 @@
 
 ## Objective
 Run one deterministic command that produces quantitative MVP go/no-go evidence across acceptance, latency, cache reuse, and memory quality gates.
+Canonical implementation is Phase 2 (`run_phase2_readiness_gates.py`); `run_mvp_readiness_gates.py` is a compatibility alias.
 
-This readiness runner is also the first prerequisite step in `python3 scripts/run_mvp_validation_matrix.py`.
+This readiness runner is also the first prerequisite step in `python3 scripts/run_phase2_validation_matrix.py`.
 
 ## Prerequisites
 - Local dependencies installed (`python3 -m venv .venv` and `./.venv/bin/python -m pip install -e '.[dev]'`).
@@ -12,12 +13,12 @@ This readiness runner is also the first prerequisite step in `python3 scripts/ru
 
 ## Exact Command
 ```bash
-python3 scripts/run_mvp_readiness_gates.py
+python3 scripts/run_phase2_readiness_gates.py
 ```
 
 Expected behavior:
 - Executes bounded gates in this order:
-  - `acceptance_suite` (runs `python3 scripts/run_mvp_acceptance.py`)
+  - `acceptance_suite` (runs `python3 scripts/run_phase2_acceptance.py`)
   - `latency_p95` (`p95_seconds < 5.0`)
   - `cache_reuse` (`cache_reuse_ratio >= 0.70` when cached-token telemetry is present)
   - `memory_quality` (`precision > 0.80` and `adjudicated_sample >= 20`)
@@ -50,12 +51,12 @@ Expected behavior:
 
 ## Optional Deterministic Negative Checks
 ```bash
-python3 scripts/run_mvp_readiness_gates.py --induce-gate acceptance_fail
-python3 scripts/run_mvp_readiness_gates.py --induce-gate latency_fail
-python3 scripts/run_mvp_readiness_gates.py --induce-gate cache_fail
-python3 scripts/run_mvp_readiness_gates.py --induce-gate cache_blocked
-python3 scripts/run_mvp_readiness_gates.py --induce-gate memory_needs_review
-python3 scripts/run_mvp_readiness_gates.py --induce-gate memory_insufficient
+python3 scripts/run_phase2_readiness_gates.py --induce-gate acceptance_fail
+python3 scripts/run_phase2_readiness_gates.py --induce-gate latency_fail
+python3 scripts/run_phase2_readiness_gates.py --induce-gate cache_fail
+python3 scripts/run_phase2_readiness_gates.py --induce-gate cache_blocked
+python3 scripts/run_phase2_readiness_gates.py --induce-gate memory_needs_review
+python3 scripts/run_phase2_readiness_gates.py --induce-gate memory_insufficient
 ```
 
 These options intentionally force deterministic gate outcomes to validate reviewer signaling.
@@ -64,3 +65,12 @@ These options intentionally force deterministic gate outcomes to validate review
 - Treat any `BLOCKED` gate as no-go until evidence gaps are resolved.
 - Do not treat blocked cache/memory gates as implicit pass.
 - Re-run the full command after resolving the blocked condition.
+
+## Compatibility Alias Command
+```bash
+python3 scripts/run_mvp_readiness_gates.py
+```
+
+Expected behavior:
+- Prints explicit alias messaging and delegates to `scripts/run_phase2_readiness_gates.py`.
+- Preserves the same arguments, thresholds, and gate pass/fail/blocked semantics.
