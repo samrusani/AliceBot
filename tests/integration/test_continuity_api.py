@@ -348,6 +348,236 @@ def test_thread_continuity_endpoints_create_list_detail_sessions_and_events(
     }
 
 
+def test_thread_resumption_brief_endpoint_returns_bounded_sections_and_workflow_posture(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = seed_user_with_continuity(migrated_database_urls["app"], email="owner@example.com")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        store.create_memory(
+            memory_key="user.preference.tea",
+            value={"likes": "green"},
+            status="active",
+            source_event_ids=[],
+            memory_type="preference",
+        )
+        store.create_memory(
+            memory_key="user.preference.coffee",
+            value={"likes": "oat milk"},
+            status="active",
+            source_event_ids=[],
+            memory_type="preference",
+        )
+        store.create_memory(
+            memory_key="user.preference.deleted",
+            value={"likes": "espresso"},
+            status="deleted",
+            source_event_ids=[],
+            memory_type="preference",
+        )
+        store.create_open_loop(
+            memory_id=None,
+            title="Older open loop",
+            status="open",
+            opened_at=datetime(2026, 3, 18, 9, 0, tzinfo=UTC),
+            due_at=None,
+            resolved_at=None,
+            resolution_note=None,
+        )
+        store.create_open_loop(
+            memory_id=None,
+            title="Latest open loop",
+            status="open",
+            opened_at=datetime(2026, 3, 18, 10, 0, tzinfo=UTC),
+            due_at=None,
+            resolved_at=None,
+            resolution_note=None,
+        )
+        store.create_open_loop(
+            memory_id=None,
+            title="Resolved open loop",
+            status="resolved",
+            opened_at=datetime(2026, 3, 18, 11, 0, tzinfo=UTC),
+            due_at=None,
+            resolved_at=datetime(2026, 3, 18, 11, 5, tzinfo=UTC),
+            resolution_note="resolved",
+        )
+        tool = store.create_tool(
+            tool_key="proxy.echo",
+            name="Proxy Echo",
+            description="Deterministic proxy handler.",
+            version="1.0.0",
+            metadata_version="tool_metadata_v0",
+            active=True,
+            tags=["proxy"],
+            action_hints=["tool.run"],
+            scope_hints=["workspace"],
+            domain_hints=[],
+            risk_hints=[],
+            metadata={"transport": "proxy"},
+        )
+        task = store.create_task(
+            thread_id=seeded["second_thread"]["id"],
+            tool_id=tool["id"],
+            status="approved",
+            request={
+                "thread_id": str(seeded["second_thread"]["id"]),
+                "tool_id": str(tool["id"]),
+                "action": "tool.run",
+                "scope": "workspace",
+                "domain_hint": None,
+                "risk_hint": None,
+                "attributes": {"mode": "resumption"},
+            },
+            tool={
+                "id": str(tool["id"]),
+                "tool_key": "proxy.echo",
+                "name": "Proxy Echo",
+                "description": "Deterministic proxy handler.",
+                "version": "1.0.0",
+                "metadata_version": "tool_metadata_v0",
+                "active": True,
+                "tags": ["proxy"],
+                "action_hints": ["tool.run"],
+                "scope_hints": ["workspace"],
+                "domain_hints": [],
+                "risk_hints": [],
+                "metadata": {"transport": "proxy"},
+                "created_at": tool["created_at"].isoformat(),
+            },
+            latest_approval_id=None,
+            latest_execution_id=None,
+        )
+        first_step_trace = store.create_trace(
+            user_id=seeded["user_id"],
+            thread_id=seeded["second_thread"]["id"],
+            kind="task.step.sequence",
+            compiler_version="task_step_sequence_v0",
+            status="completed",
+            limits={"max_steps": 1},
+        )
+        second_step_trace = store.create_trace(
+            user_id=seeded["user_id"],
+            thread_id=seeded["second_thread"]["id"],
+            kind="task.step.transition",
+            compiler_version="task_step_transition_v0",
+            status="completed",
+            limits={"max_steps": 1},
+        )
+        store.create_task_step(
+            task_id=task["id"],
+            sequence_no=1,
+            kind="governed_request",
+            status="approved",
+            request={
+                "thread_id": str(seeded["second_thread"]["id"]),
+                "tool_id": str(tool["id"]),
+                "action": "tool.run",
+                "scope": "workspace",
+                "domain_hint": None,
+                "risk_hint": None,
+                "attributes": {"step": 1},
+            },
+            outcome={
+                "routing_decision": "ready",
+                "approval_id": None,
+                "approval_status": None,
+                "execution_id": None,
+                "execution_status": None,
+                "blocked_reason": None,
+            },
+            trace_id=first_step_trace["id"],
+            trace_kind="task.step.sequence",
+        )
+        latest_step = store.create_task_step(
+            task_id=task["id"],
+            sequence_no=2,
+            kind="governed_request",
+            status="executed",
+            request={
+                "thread_id": str(seeded["second_thread"]["id"]),
+                "tool_id": str(tool["id"]),
+                "action": "tool.run",
+                "scope": "workspace",
+                "domain_hint": None,
+                "risk_hint": None,
+                "attributes": {"step": 2},
+            },
+            outcome={
+                "routing_decision": "ready",
+                "approval_id": None,
+                "approval_status": None,
+                "execution_id": "execution-1",
+                "execution_status": "completed",
+                "blocked_reason": None,
+            },
+            trace_id=second_step_trace["id"],
+            trace_kind="task.step.transition",
+        )
+
+    status, payload = invoke_request(
+        "GET",
+        f"/v0/threads/{seeded['second_thread']['id']}/resumption-brief",
+        query_params={
+            "user_id": str(seeded["user_id"]),
+            "max_events": "1",
+            "max_open_loops": "1",
+            "max_memories": "1",
+        },
+    )
+
+    assert status == 200
+    assert payload["brief"]["assembly_version"] == "resumption_brief_v0"
+    assert payload["brief"]["thread"]["id"] == str(seeded["second_thread"]["id"])
+    assert payload["brief"]["conversation"]["summary"] == {
+        "limit": 1,
+        "returned_count": 1,
+        "total_count": 2,
+        "order": ["sequence_no_asc"],
+        "kinds": ["message.user", "message.assistant"],
+    }
+    assert [item["sequence_no"] for item in payload["brief"]["conversation"]["items"]] == [2]
+    assert payload["brief"]["open_loops"]["summary"] == {
+        "limit": 1,
+        "returned_count": 1,
+        "total_count": 2,
+        "order": ["opened_at_desc", "created_at_desc", "id_desc"],
+    }
+    assert [item["title"] for item in payload["brief"]["open_loops"]["items"]] == ["Latest open loop"]
+    assert payload["brief"]["memory_highlights"]["summary"] == {
+        "limit": 1,
+        "returned_count": 1,
+        "total_count": 2,
+        "order": ["updated_at_asc", "created_at_asc", "id_asc"],
+    }
+    assert [item["memory_key"] for item in payload["brief"]["memory_highlights"]["items"]] == [
+        "user.preference.coffee"
+    ]
+    assert payload["brief"]["workflow"]["task"]["id"] == str(task["id"])
+    assert payload["brief"]["workflow"]["latest_task_step"]["id"] == str(latest_step["id"])
+    assert payload["brief"]["workflow"]["latest_task_step"]["sequence_no"] == 2
+    assert payload["brief"]["workflow"]["summary"] == {
+        "present": True,
+        "task_order": ["created_at_asc", "id_asc"],
+        "task_step_order": ["sequence_no_asc", "created_at_asc", "id_asc"],
+    }
+    assert payload["brief"]["sources"] == [
+        "threads",
+        "events",
+        "open_loops",
+        "memories",
+        "tasks",
+        "task_steps",
+    ]
+
+
 def test_thread_continuity_endpoints_enforce_user_isolation_and_not_found(
     migrated_database_urls,
     monkeypatch,
@@ -380,6 +610,17 @@ def test_thread_continuity_endpoints_enforce_user_isolation_and_not_found(
         f"/v0/threads/{owner['second_thread']['id']}/events",
         query_params={"user_id": str(intruder_id)},
     )
+    brief_status, brief_payload = invoke_request(
+        "GET",
+        f"/v0/threads/{owner['second_thread']['id']}/resumption-brief",
+        query_params={"user_id": str(intruder_id)},
+    )
+    missing_thread_id = uuid4()
+    missing_brief_status, missing_brief_payload = invoke_request(
+        "GET",
+        f"/v0/threads/{missing_thread_id}/resumption-brief",
+        query_params={"user_id": str(owner['user_id'])},
+    )
 
     assert list_status == 200
     assert list_payload == {
@@ -395,3 +636,7 @@ def test_thread_continuity_endpoints_enforce_user_isolation_and_not_found(
     assert sessions_payload == {"detail": f"thread {owner['second_thread']['id']} was not found"}
     assert events_status == 404
     assert events_payload == {"detail": f"thread {owner['second_thread']['id']} was not found"}
+    assert brief_status == 404
+    assert brief_payload == {"detail": f"thread {owner['second_thread']['id']} was not found"}
+    assert missing_brief_status == 404
+    assert missing_brief_payload == {"detail": f"thread {missing_thread_id} was not found"}
