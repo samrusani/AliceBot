@@ -690,9 +690,51 @@ export type ExplicitCommitmentOpenLoopDecision =
   | "NOOP_ACTIVE_EXISTS"
   | "NOOP_MEMORY_NOT_PERSISTED";
 
+export type ExplicitPreferencePattern =
+  | "i_like"
+  | "i_dont_like"
+  | "i_prefer"
+  | "remember_that_i_like"
+  | "remember_that_i_dont_like"
+  | "remember_that_i_prefer";
+
+export type ExtractExplicitSignalsPayload = {
+  user_id: string;
+  source_event_id: string;
+};
+
 export type ExtractExplicitCommitmentsPayload = {
   user_id: string;
   source_event_id: string;
+};
+
+export type ExtractedPreferenceCandidateRecord = {
+  memory_key: string;
+  value: unknown;
+  source_event_ids: string[];
+  delete_requested: boolean;
+  pattern: ExplicitPreferencePattern;
+  subject_text: string;
+};
+
+export type ExplicitPreferenceAdmissionRecord = {
+  decision: "NOOP" | "ADD" | "UPDATE" | "DELETE";
+  reason: string;
+  memory: PersistedMemoryRecord | null;
+  revision: PersistedMemoryRevisionRecord | null;
+};
+
+export type ExplicitPreferenceExtractionResponse = {
+  candidates: ExtractedPreferenceCandidateRecord[];
+  admissions: ExplicitPreferenceAdmissionRecord[];
+  summary: {
+    source_event_id: string;
+    source_event_kind: string;
+    candidate_count: number;
+    admission_count: number;
+    persisted_change_count: number;
+    noop_count: number;
+  };
 };
 
 export type ExtractedCommitmentCandidateRecord = {
@@ -729,6 +771,25 @@ export type ExplicitCommitmentExtractionResponse = {
     noop_count: number;
     open_loop_created_count: number;
     open_loop_noop_count: number;
+  };
+};
+
+export type ExplicitSignalCaptureResponse = {
+  preferences: ExplicitPreferenceExtractionResponse;
+  commitments: ExplicitCommitmentExtractionResponse;
+  summary: {
+    source_event_id: string;
+    source_event_kind: string;
+    candidate_count: number;
+    admission_count: number;
+    persisted_change_count: number;
+    noop_count: number;
+    open_loop_created_count: number;
+    open_loop_noop_count: number;
+    preference_candidate_count: number;
+    preference_admission_count: number;
+    commitment_candidate_count: number;
+    commitment_admission_count: number;
   };
 };
 
@@ -1257,6 +1318,20 @@ export function extractExplicitCommitments(
   return requestJson<ExplicitCommitmentExtractionResponse>(
     apiBaseUrl,
     "/v0/open-loops/extract-explicit-commitments",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function captureExplicitSignals(
+  apiBaseUrl: string,
+  payload: ExtractExplicitSignalsPayload,
+) {
+  return requestJson<ExplicitSignalCaptureResponse>(
+    apiBaseUrl,
+    "/v0/memories/capture-explicit-signals",
     {
       method: "POST",
       body: JSON.stringify(payload),
