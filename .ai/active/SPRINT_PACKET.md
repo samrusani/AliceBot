@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 2 Sprint 5: Explicit Commitment Capture
+Phase 2 Sprint 6: Unified Explicit Signal Capture
 
 ## Sprint Type
 
@@ -10,47 +10,47 @@ feature
 
 ## Sprint Reason
 
-Phase 2 Sprint 4 deterministic resumption briefs are merged. The next missing continuity seam is explicit commitment capture so user-stated follow-ups can become governed open-loop records without manual data entry.
+Phase 2 Sprint 5 explicit commitment capture is merged. Explicit extraction is now split across two separate endpoints, which creates operator overhead and inconsistent capture flow. The next seam is one deterministic capture endpoint that runs both explicit preference and explicit commitment extraction for a single user message.
 
 ## Sprint Intent
 
-Implement a bounded explicit-commitment extraction seam that reads one `message.user` event and creates a deterministic open-loop record (plus linked memory evidence) through existing governed admission pathways, without automation or worker orchestration.
+Implement a bounded, deterministic unified capture endpoint that orchestrates existing explicit preference and explicit commitment extraction pipelines for one `message.user` source event, without introducing automation or background workers.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase2-sprint5-explicit-commitment-capture`
+- Branch Name: `codex/phase2-sprint6-unified-explicit-signal-capture`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- Typed memory, open-loop lifecycle, and resumption brief seams are now shipped.
-- Commitment capture is still manual and creates operator friction.
-- A deterministic extraction seam is required before safe future reminder/orchestration work.
+- Typed memory, open-loop lifecycle, resumption briefs, and explicit commitment extraction are shipped.
+- Capture still requires separate calls (`extract-explicit-preferences` and `extract-explicit-commitments`) for one message event.
+- A unified deterministic capture seam is the lowest-risk step before any optional UI-triggered capture workflow.
 
 ## Design Truth
 
-- Reuse existing continuity events, memory admission, and open-loop seams; do not add parallel storage.
-- Keep extraction pattern-driven and deterministic; no model-based interpretation.
-- Preserve per-user isolation, append-only memory revision guarantees, and auditable source linkage.
+- Reuse existing extraction modules; do not duplicate extraction logic.
+- Keep capture deterministic and pattern-based with zero model calls.
+- Preserve per-user isolation, append-only revision guarantees, and open-loop dedupe behavior.
 
 ## Exact Surfaces In Scope
 
-- commitment extraction contracts + API behavior
-- deterministic pattern extraction and admission orchestration
-- `/memories` review parity (captured open-loop + linked memory evidence visible through existing surfaces)
+- unified capture contracts + API behavior
+- deterministic orchestration over existing extraction pipelines
+- web API client adoption for the unified endpoint
 - sprint-scoped backend and frontend tests
 
 ## Exact Files In Scope
 
-- [explicit_commitments.py](apps/api/src/alicebot_api/explicit_commitments.py)
+- [explicit_signal_capture.py](apps/api/src/alicebot_api/explicit_signal_capture.py)
 - [contracts.py](apps/api/src/alicebot_api/contracts.py)
 - [main.py](apps/api/src/alicebot_api/main.py)
-- [memory.py](apps/api/src/alicebot_api/memory.py)
-- [store.py](apps/api/src/alicebot_api/store.py)
+- [explicit_preferences.py](apps/api/src/alicebot_api/explicit_preferences.py)
+- [explicit_commitments.py](apps/api/src/alicebot_api/explicit_commitments.py)
 - [api.ts](apps/web/lib/api.ts)
-- [page.tsx](apps/web/app/memories/page.tsx)
+- [api.test.ts](apps/web/lib/api.test.ts)
 - [BUILD_REPORT.md](BUILD_REPORT.md)
 - [REVIEW_REPORT.md](REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](.ai/active/SPRINT_PACKET.md)
@@ -61,23 +61,25 @@ Implement a bounded explicit-commitment extraction seam that reads one `message.
 
 ## In Scope
 
-- Add typed contracts for explicit commitment extraction request/response.
+- Add typed contracts for unified capture request/response.
 - Add API endpoint:
-  - `POST /v0/open-loops/extract-explicit-commitments`
+  - `POST /v0/memories/capture-explicit-signals`
 - Endpoint input:
   - `user_id` (required)
   - `source_event_id` (required; must reference a user-owned `message.user` event)
-- Deterministically extract commitment candidates from explicit patterns (for example: `remind me to ...`, `i need to ...`, `don't let me forget to ...`, `remember to ...`), with bounded normalization and clause rejection rules.
-- Persist extracted commitments through existing governed seams:
-  - admit/update a linked memory evidence record
-  - create an open-loop record linked to that memory when no active open loop already exists for the same memory
-- Return deterministic extraction summary including:
-  - candidate count
-  - admitted-memory decisions
-  - open-loop create/noop outcomes
-  - source event identity/kind
-- Add/update `/memories` API wiring/tests if needed so newly captured commitment loops and linked memory evidence remain visible with existing live/fixture/unavailable behavior.
-- Add/update tests across extraction logic, endpoint behavior, user isolation, and deterministic idempotence-on-repeat for the same source event.
+- Deterministically orchestrate both pipelines for the same source event:
+  - explicit preference extraction/admission
+  - explicit commitment extraction/admission/open-loop outcomes
+- Preserve current deterministic validation semantics for invalid/non-user/missing/cross-user source event requests.
+- Return unified response with per-pipeline sections and aggregate summary:
+  - `preferences`: candidates/admissions/summary
+  - `commitments`: candidates/admissions/summary
+  - `summary`: aggregate counts and source event metadata
+- Keep existing endpoints fully backward compatible:
+  - `POST /v0/memories/extract-explicit-preferences`
+  - `POST /v0/open-loops/extract-explicit-commitments`
+- Add web API client function for unified endpoint and tests for request wiring.
+- Add/update unit and integration tests for orchestration correctness, deterministic ordering of section execution, and repeat-call idempotence behavior.
 
 ## Out of Scope
 
@@ -86,23 +88,22 @@ Implement a bounded explicit-commitment extraction seam that reads one `message.
 - connector expansion
 - multi-agent runtime/profile routing (Phase 3)
 - free-form model-based extraction or classification
-- broad UI redesign outside `/memories`
+- broad UI redesign or automatic capture triggers in `/chat`/`/memories`
 
 ## Required Deliverables
 
-- backend contracts/API for explicit commitment extraction
-- deterministic extraction module with tests
-- governed admission + open-loop creation orchestration with duplicate-open-loop guard for repeated source events
+- backend contracts/API for unified explicit signal capture
+- deterministic orchestration module with tests
+- web API client support for unified capture endpoint
 - updated sprint reports for this sprint only
 
 ## Acceptance Criteria
 
-- endpoint returns deterministic extraction payload with strict per-user isolation
+- unified endpoint returns deterministic payload with strict per-user isolation
 - invalid/missing/non-user-message `source_event_id` returns deterministic `400`
-- cross-user or missing event access is rejected deterministically without side effects
-- supported explicit commitment statements produce candidate(s), memory admission(s), and open-loop outcome(s)
-- repeated extraction for the same source event does not create duplicate active open loops for the same derived commitment memory
-- `/memories` existing review surfaces continue to show resulting open-loop and memory evidence without regression
+- unified payload contains preference section, commitment section, and aggregate summary with coherent counts
+- repeat calls for the same source event preserve no-duplicate-active-open-loop behavior
+- legacy explicit extraction endpoints remain operational and unchanged in behavior
 - backend + frontend tests pass for touched seams
 - no out-of-scope automation, worker, or Phase 3 routing work enters sprint
 
@@ -110,6 +111,7 @@ Implement a bounded explicit-commitment extraction seam that reads one `message.
 
 - preserve RLS and per-user isolation
 - keep extraction deterministic and pattern-based (no model calls)
+- keep orchestration sequence explicit and stable (preferences first, commitments second)
 - keep memory/open-loop evidence source-attributed to the original event
 - co-deliver tests with each seam change
 
@@ -122,44 +124,44 @@ Write scope:
 - `apps/api/src/alicebot_api/main.py`
 - API/integration tests
 
-### Task 2: Extraction + Admission Orchestration
+### Task 2: Orchestration Module
 Owner: backend operative B  
 Write scope:
+- `apps/api/src/alicebot_api/explicit_signal_capture.py`
+- `apps/api/src/alicebot_api/explicit_preferences.py`
 - `apps/api/src/alicebot_api/explicit_commitments.py`
-- `apps/api/src/alicebot_api/memory.py`
-- `apps/api/src/alicebot_api/store.py`
 - unit tests
 
-### Task 3: Web Surface Compatibility
+### Task 3: Web API Client
 Owner: frontend operative  
 Write scope:
 - `apps/web/lib/api.ts`
-- `apps/web/app/memories/page.tsx`
-- related memory components/tests
+- `apps/web/lib/api.test.ts`
 
 ### Task 4: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify contracts/API/extraction/admission/UI coherence
+- verify contracts/API/orchestration/client coherence
 - verify strict sprint scope
 - verify acceptance + evidence completeness
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact extraction patterns, endpoint, and payload fields shipped
-- API surface deltas and dedupe/no-side-effect rules
+- exact unified endpoint payload schema
+- orchestration sequence and legacy-endpoint compatibility notes
+- dedupe/no-side-effect guarantees
 - exact commands/tests run with outcomes
 - explicit deferred scope (automation/workers/Phase 3 runtime orchestration)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint remained explicit-commitment-capture scoped
-- contracts/API/extraction/admission/UI consistency
+- sprint remained unified-explicit-signal-capture scoped
+- contracts/API/orchestration/client consistency
 - sufficient tests for all touched seams
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when explicit commitment extraction is available through a user-scoped deterministic API seam, persists through governed memory/open-loop pathways with repeat-call duplicate protection, and passes sprint-scoped tests without automation/worker/Phase 3 scope expansion.
+This sprint is complete when unified explicit-signal capture is available through one user-scoped deterministic endpoint, correctly orchestrates preference and commitment extraction without regressions to legacy endpoints, and passes sprint-scoped tests without automation/worker/Phase 3 scope expansion.

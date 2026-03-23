@@ -1,61 +1,135 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 2 Sprint 5 explicit commitment capture as a deterministic, user-scoped seam that reads one `message.user` event and persists commitment memory evidence plus an open loop through existing governed admission pathways, without automation, workers, or Phase 3 routing.
+Implement Phase 2 Sprint 6 unified explicit signal capture as one deterministic, user-scoped endpoint that orchestrates explicit preference extraction and explicit commitment extraction for the same `message.user` source event, without automation/workers/Phase 3 routing.
+
+## Exact Unified Endpoint Payload Schema
+Endpoint: `POST /v0/memories/capture-explicit-signals`
+
+Request payload:
+```json
+{
+  "user_id": "uuid",
+  "source_event_id": "uuid"
+}
+```
+
+Response payload:
+```json
+{
+  "preferences": {
+    "candidates": [
+      {
+        "memory_key": "string",
+        "value": "json",
+        "source_event_ids": ["uuid"],
+        "delete_requested": false,
+        "pattern": "i_like|i_dont_like|i_prefer|remember_that_i_like|remember_that_i_dont_like|remember_that_i_prefer",
+        "subject_text": "string"
+      }
+    ],
+    "admissions": [
+      {
+        "decision": "NOOP|ADD|UPDATE|DELETE",
+        "reason": "string",
+        "memory": "PersistedMemoryRecord|null",
+        "revision": "PersistedMemoryRevisionRecord|null"
+      }
+    ],
+    "summary": {
+      "source_event_id": "uuid",
+      "source_event_kind": "message.user",
+      "candidate_count": 0,
+      "admission_count": 0,
+      "persisted_change_count": 0,
+      "noop_count": 0
+    }
+  },
+  "commitments": {
+    "candidates": [
+      {
+        "memory_key": "string",
+        "value": "json",
+        "source_event_ids": ["uuid"],
+        "delete_requested": false,
+        "pattern": "remind_me_to|i_need_to|dont_let_me_forget_to|remember_to",
+        "commitment_text": "string",
+        "open_loop_title": "string"
+      }
+    ],
+    "admissions": [
+      {
+        "decision": "NOOP|ADD|UPDATE|DELETE",
+        "reason": "string",
+        "memory": "PersistedMemoryRecord|null",
+        "revision": "PersistedMemoryRevisionRecord|null",
+        "open_loop": {
+          "decision": "CREATED|NOOP_ACTIVE_EXISTS|NOOP_MEMORY_NOT_PERSISTED",
+          "reason": "string",
+          "open_loop": "OpenLoopRecord|null"
+        }
+      }
+    ],
+    "summary": {
+      "source_event_id": "uuid",
+      "source_event_kind": "message.user",
+      "candidate_count": 0,
+      "admission_count": 0,
+      "persisted_change_count": 0,
+      "noop_count": 0,
+      "open_loop_created_count": 0,
+      "open_loop_noop_count": 0
+    }
+  },
+  "summary": {
+    "source_event_id": "uuid",
+    "source_event_kind": "message.user",
+    "candidate_count": 0,
+    "admission_count": 0,
+    "persisted_change_count": 0,
+    "noop_count": 0,
+    "open_loop_created_count": 0,
+    "open_loop_noop_count": 0,
+    "preference_candidate_count": 0,
+    "preference_admission_count": 0,
+    "commitment_candidate_count": 0,
+    "commitment_admission_count": 0
+  }
+}
+```
+
+## Orchestration Sequence And Legacy Compatibility
+- Deterministic sequence is explicit and stable: preferences first, commitments second.
+- Orchestration reuses existing pipelines (`extract_and_admit_explicit_preferences`, `extract_and_admit_explicit_commitments`) without duplicating extraction logic.
+- Existing endpoints remain unchanged and operational:
+  - `POST /v0/memories/extract-explicit-preferences`
+  - `POST /v0/open-loops/extract-explicit-commitments`
+
+## Dedupe / No-Side-Effect Guarantees
+- Existing commitment open-loop dedupe behavior is preserved through orchestration:
+  - repeat calls do not create duplicate active open loops (`NOOP_ACTIVE_EXISTS`).
+- Invalid/non-user/missing/cross-user `source_event_id` requests return deterministic `400`.
+- Invalid requests perform no cross-user writes due existing user-scoped store access and pipeline validation.
 
 ## Completed Work
-- Added explicit commitment contracts in `apps/api/src/alicebot_api/contracts.py`:
-  - `ExplicitCommitmentPattern`
-  - `ExplicitCommitmentExtractionRequestInput`
-  - candidate/admission/open-loop outcome/summary/response typed records.
-- Added deterministic extractor/orchestrator module `apps/api/src/alicebot_api/explicit_commitments.py`.
-- Added API endpoint in `apps/api/src/alicebot_api/main.py`:
-  - `POST /v0/open-loops/extract-explicit-commitments`
-  - input: `user_id` (required), `source_event_id` (required)
-  - deterministic `400` for invalid/missing/non-user/cross-user source event.
-- Added web API typing/client support in `apps/web/lib/api.ts`:
-  - `extractExplicitCommitments(...)`
-  - explicit commitment response types.
-- Added sprint-scoped tests:
-  - `tests/unit/test_explicit_commitments.py`
-  - `tests/integration/test_explicit_commitments_api.py`
-  - `tests/unit/test_main.py` route + endpoint handler coverage
-  - `apps/web/lib/api.test.ts` request wiring coverage
-- Verified `/memories` review parity via integration checks against existing `/v0/memories` and `/v0/open-loops` surfaces and frontend memories page tests.
-
-## Exact Extraction Patterns, Endpoint, And Payload Fields Shipped
-- Endpoint shipped:
-  - `POST /v0/open-loops/extract-explicit-commitments`
-- Deterministic explicit patterns:
-  - `remind me to ...`
-  - `i need to ...`
-  - `don't let me forget to ...` (also supports `dont`)
-  - `remember to ...`
-- Bounded normalization and clause rejection rules:
-  - whitespace normalization
-  - trailing punctuation trim (`.`, `!`, `?`)
-  - bounded token/character limits
-  - deterministic token-shape validation
-  - clause-style tail rejection via deterministic prefix/token guards.
-- Response fields shipped:
-  - `candidates[]`:
-    - `memory_key`, `value`, `source_event_ids`, `delete_requested`, `pattern`, `commitment_text`, `open_loop_title`
-  - `admissions[]`:
-    - memory admission `decision`, `reason`, `memory`, `revision`
-    - open-loop outcome `open_loop.decision`, `open_loop.reason`, `open_loop.open_loop`
-  - `summary`:
-    - `source_event_id`, `source_event_kind`, `candidate_count`, `admission_count`, `persisted_change_count`, `noop_count`, `open_loop_created_count`, `open_loop_noop_count`
-
-## API Surface Deltas And Dedupe/No-Side-Effect Rules
-- New backend surface:
-  - `POST /v0/open-loops/extract-explicit-commitments`
-- New web client surface:
-  - `extractExplicitCommitments(apiBaseUrl, { user_id, source_event_id })`
-- Dedupe rule implemented:
-  - after memory admission, create open loop only when no active (`status="open"`) open loop already exists for the derived memory.
-  - repeat extraction for same source event yields open-loop outcome `NOOP_ACTIVE_EXISTS` and does not create duplicate active loops.
-- No-side-effect rule implemented:
-  - if `source_event_id` is missing, cross-user, or not `message.user`, endpoint returns deterministic `400` and performs no memory/open-loop writes.
+- Added unified contracts in `apps/api/src/alicebot_api/contracts.py`:
+  - `ExplicitSignalCaptureRequestInput`
+  - `ExplicitSignalCaptureSummary`
+  - `ExplicitSignalCaptureResponse`
+- Added deterministic orchestration module:
+  - `apps/api/src/alicebot_api/explicit_signal_capture.py`
+- Added backend API route and request model in `apps/api/src/alicebot_api/main.py`:
+  - `CaptureExplicitSignalsRequest`
+  - `POST /v0/memories/capture-explicit-signals`
+- Added web API client typing + request wiring in `apps/web/lib/api.ts`:
+  - `ExtractExplicitSignalsPayload`
+  - `ExplicitSignalCaptureResponse`
+  - `captureExplicitSignals(...)`
+- Added/updated tests:
+  - `tests/unit/test_explicit_signal_capture.py`
+  - `tests/integration/test_explicit_signal_capture_api.py`
+  - `tests/unit/test_main.py` (route + handler coverage)
+  - `apps/web/lib/api.test.ts` (new client wiring test)
 
 ## Incomplete Work
 - None within sprint scope.
@@ -63,36 +137,36 @@ Implement Phase 2 Sprint 5 explicit commitment capture as a deterministic, user-
 ## Files Changed
 - `apps/api/src/alicebot_api/contracts.py`
 - `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/explicit_commitments.py`
-- `tests/unit/test_explicit_commitments.py`
-- `tests/integration/test_explicit_commitments_api.py`
-- `tests/unit/test_main.py`
+- `apps/api/src/alicebot_api/explicit_signal_capture.py`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
+- `tests/unit/test_explicit_signal_capture.py`
+- `tests/unit/test_main.py`
+- `tests/integration/test_explicit_signal_capture_api.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## Tests Run
-1. `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_explicit_commitments.py tests/unit/test_main.py`
-- Outcome: `54 passed`
+1. `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_explicit_signal_capture.py tests/unit/test_main.py tests/unit/test_explicit_preferences.py tests/unit/test_explicit_commitments.py`
+- Outcome: `66 passed`
 
-2. `PYTHONPATH=$PWD .venv/bin/pytest tests/integration/test_explicit_commitments_api.py`
-- Initial sandbox run: failed due local Postgres access restriction.
-- Escalated run outcome: `3 passed`
+2. `PYTHONPATH=$PWD .venv/bin/pytest tests/integration/test_explicit_preferences_api.py tests/integration/test_explicit_commitments_api.py tests/integration/test_explicit_signal_capture_api.py`
+- First run in sandbox: failed (`localhost:5432` access denied by sandbox).
+- Escalated run outcome: `11 passed`
 
-3. `cd apps/web && pnpm test -- lib/api.test.ts app/memories/page.test.tsx`
-- Outcome: `26 passed`
+3. `cd apps/web && pnpm test -- lib/api.test.ts`
+- Outcome: `22 passed`
 
 ## Blockers/Issues
-- No unresolved functional blockers.
-- Environment constraint: DB-backed integration tests require local Postgres access outside default sandbox network restrictions.
+- No functional blockers.
+- Environment limitation: DB-backed integration tests require localhost Postgres access outside default sandbox restrictions.
 
 ## Explicit Deferred Scope
-- autonomous reminders/follow-up execution
-- background workers/scheduler orchestration
+- autonomous follow-up/reminder execution
+- background workers or scheduler integration
 - connector expansion
 - Phase 3 multi-agent runtime/profile routing
-- model-based/free-form extraction
+- model-based/free-form extraction or classification
 
 ## Recommended Next Step
-Submit for Control Tower integration review focusing on endpoint contract stability, deterministic open-loop dedupe behavior, and cross-user no-side-effect guarantees before squash merge.
+Run Control Tower integration review for contract coherence and merge readiness, then proceed with the sprint branch PR under squash-merge policy.

@@ -48,6 +48,7 @@ import {
   shouldExpectThreadExecutionReview,
   submitAssistantResponse,
   submitApprovalRequest,
+  captureExplicitSignals,
   extractExplicitCommitments,
   submitMemoryLabel,
   updateOpenLoopStatus,
@@ -1987,6 +1988,85 @@ describe("api helpers", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/open-loops/extract-explicit-commitments",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      source_event_id: "event-1",
+    });
+  });
+
+  it("posts unified explicit signal capture requests to the shipped endpoint", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          preferences: {
+            candidates: [],
+            admissions: [],
+            summary: {
+              source_event_id: "event-1",
+              source_event_kind: "message.user",
+              candidate_count: 0,
+              admission_count: 0,
+              persisted_change_count: 0,
+              noop_count: 0,
+            },
+          },
+          commitments: {
+            candidates: [
+              {
+                memory_key: "user.commitment.submit_tax_forms",
+                value: {
+                  kind: "explicit_commitment",
+                  text: "submit tax forms",
+                },
+                source_event_ids: ["event-1"],
+                delete_requested: false,
+                pattern: "remind_me_to",
+                commitment_text: "submit tax forms",
+                open_loop_title: "Remember to submit tax forms",
+              },
+            ],
+            admissions: [],
+            summary: {
+              source_event_id: "event-1",
+              source_event_kind: "message.user",
+              candidate_count: 1,
+              admission_count: 0,
+              persisted_change_count: 0,
+              noop_count: 0,
+              open_loop_created_count: 0,
+              open_loop_noop_count: 0,
+            },
+          },
+          summary: {
+            source_event_id: "event-1",
+            source_event_kind: "message.user",
+            candidate_count: 1,
+            admission_count: 0,
+            persisted_change_count: 0,
+            noop_count: 0,
+            open_loop_created_count: 0,
+            open_loop_noop_count: 0,
+            preference_candidate_count: 0,
+            preference_admission_count: 0,
+            commitment_candidate_count: 1,
+            commitment_admission_count: 0,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await captureExplicitSignals("https://api.example.com", {
+      user_id: "user-1",
+      source_event_id: "event-1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/memories/capture-explicit-signals",
       expect.objectContaining({
         method: "POST",
       }),
