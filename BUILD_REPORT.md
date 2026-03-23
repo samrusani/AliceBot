@@ -1,37 +1,61 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Add deterministic automated parity coverage for Phase 2 gate wrappers so arg passthrough, exit-code passthrough, target mappings, and Python executable resolution are verified without changing gate semantics.
+Add deterministic acceptance evidence that explicit-signal capture writes flow into resumption-brief context and remain included in the Phase 2 acceptance gate chain.
 
 ## Completed Work
-- Added `tests/unit/test_phase2_gate_wrappers.py` with deterministic, parameterized coverage for all three Phase 2 wrappers.
-- Added assertions that each wrapper forwards CLI args unchanged and in order to its mapped MVP target script.
-- Added assertions that each wrapper executes subprocesses with repo-root `cwd`.
-- Added assertions that each wrapper returns subprocess exit codes unchanged.
-- Added assertions that target-script mappings are stable for:
-  - `run_phase2_acceptance.py -> run_mvp_acceptance.py`
-  - `run_phase2_readiness_gates.py -> run_mvp_readiness_gates.py`
-  - `run_phase2_validation_matrix.py -> run_mvp_validation_matrix.py`
-- Added deterministic fallback-path assertions for executable resolution:
-  - prefer `.venv/bin/python` when present
-  - fall back to `sys.executable` when `.venv/bin/python` is absent
+- Added new deterministic acceptance scenario:
+  - `tests/integration/test_mvp_acceptance_suite.py::test_acceptance_explicit_signal_capture_flows_into_resumption_brief`
+- Scenario setup seeds one thread with two `message.user` explicit-signal events (preference + commitment) and one assistant event.
+- Scenario validates `POST /v0/memories/capture-explicit-signals` outcomes for both signals:
+  - preference capture: candidate payload shape, `ADD` admission, and aggregate summary counts.
+  - commitment capture: candidate payload shape, `ADD` admission, `open_loop.decision == "CREATED"`, and aggregate summary counts.
+- Scenario validates continuity into `GET /v0/threads/{thread_id}/resumption-brief`:
+  - open-loop section summary (`limit/returned_count/total_count/order`) and exact item continuity with created open-loop id/memory id/title.
+  - memory-highlights section summary (`limit/returned_count/total_count/order`) and deterministic keys/values/source_event_ids for both captured memories.
+- Updated `scripts/run_mvp_acceptance.py` to include the new scenario in gate execution.
+- Confirmed `scripts/run_phase2_acceptance.py` executes the updated acceptance chain unchanged (no code changes required in alias script).
+
+## Exact Runner Command List Delta
+- Added scenario key in `ACCEPTANCE_SCENARIOS`:
+  - `capture_resumption`
+- Added acceptance node id in `ACCEPTANCE_TEST_NODE_IDS`:
+  - `tests/integration/test_mvp_acceptance_suite.py::test_acceptance_explicit_signal_capture_flows_into_resumption_brief`
+
+## Explicit Assertions Proving Capture-To-Resumption Continuity
+- Capture endpoint assertions prove persistence/admission outcomes:
+  - preference candidate key/value/source metadata + summary counts.
+  - commitment candidate key/value/open-loop title + `ADD` admission + `open_loop CREATED` summary counts.
+- Resumption-brief assertions prove downstream continuity:
+  - open-loop item equals created loop identity and title from capture output.
+  - memory-highlights include both captured memory keys in deterministic order with expected values and source event ids.
 
 ## Incomplete Work
 - None within sprint scope.
 
 ## Files Changed
-- `tests/unit/test_phase2_gate_wrappers.py`
+- `tests/integration/test_mvp_acceptance_suite.py`
+- `scripts/run_mvp_acceptance.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## Tests Run
-1. `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_phase2_gate_wrappers.py`
-- Outcome: pass (`12 passed`, exit code `0`).
+1. `PYTHONPATH=$PWD .venv/bin/pytest tests/integration/test_mvp_acceptance_suite.py::test_acceptance_explicit_signal_capture_flows_into_resumption_brief`
+- Outcome: PASS (`1 passed`, exit code `0`).
+
+2. `python3 scripts/run_phase2_acceptance.py`
+- Outcome: PASS (`4 passed`, exit code `0`).
+- Includes updated acceptance chain containing the new scenario node id.
 
 ## Blockers/Issues
-- No blockers encountered.
-- No wrapper semantic changes were required; existing wrappers already satisfied sprint behavior and were validated by the new tests.
-- Explicit deferred scope (not implemented in this sprint): automation/workers implementation and Phase 3 runtime/profile orchestration.
+- Integration tests require local Postgres connectivity; sandboxed execution initially failed with connection permission errors.
+- Verification completed successfully after running the required commands with escalated permissions.
+- No API/contract changes were required.
+
+## Deferred Scope (Explicit)
+- Automation implementation: deferred (out of scope).
+- Workers/orchestration implementation: deferred (out of scope).
+- Phase 3 runtime/profile routing or orchestration: deferred (out of scope).
 
 ## Recommended Next Step
-Proceed to Control Tower integration review for sprint-scope confirmation and parity-evidence validation, then open/advance the sprint PR.
+Proceed to Control Tower integration review to confirm sprint-scope adherence and acceptance-hardening evidence, then advance the sprint PR.

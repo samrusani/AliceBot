@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 2 Sprint 9: Phase-2 Gate Wrapper Parity
+Phase 2 Sprint 10: Capture-To-Resumption Acceptance Evidence
 
 ## Sprint Type
 
@@ -10,84 +10,81 @@ hardening
 
 ## Sprint Reason
 
-Phase 2 gate entrypoint scripts now exist and are used, but wrapper behavior (arg passthrough and exit-code passthrough) is only manually verified. The remaining risk is silent drift between wrapper behavior and underlying MVP runners.
+Phase 2 core seams are shipped (explicit-signal capture, manual chat capture controls, deterministic resumption briefs), but the acceptance suite does not yet prove this full chain as one governed scenario. Remaining risk is claiming Phase 2 readiness without end-to-end acceptance evidence for this path.
 
 ## Sprint Intent
 
-Add deterministic automated tests for Phase 2 wrapper parity and tighten wrapper robustness without changing gate semantics.
+Add deterministic acceptance evidence that explicit-signal capture writes flow through to resumption-brief context and remains stable under Phase 2 gate execution.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase2-sprint9-gate-wrapper-parity`
+- Branch Name: `codex/phase2-sprint10-capture-resumption-acceptance`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- Phase 2 validation now runs through wrapper scripts in control flow.
-- Current checks prove executability, but not full passthrough guarantees.
-- This is the narrowest remaining seam before declaring Phase 2 gate tooling stable.
+- Phase 2 validation is green, but acceptance coverage is still centered on legacy MVP scenarios.
+- The highest-value missing proof is capture -> memory/open-loop persistence -> resumption brief inclusion.
+- This is the narrowest high-signal seam before Phase 2 completion call.
 
 ## Design Truth
 
-- Preserve existing gate semantics and target-script mappings.
-- Keep wrappers deterministic, non-interactive, and shell-compatible.
-- Validate behavior via automated tests, not manual inspection only.
+- Reuse shipped endpoints/contracts; do not invent parallel test-only behavior.
+- Keep acceptance scenario deterministic and database-backed.
+- Treat acceptance evidence as release artifact, not ad hoc test output.
 
 ## Exact Surfaces In Scope
 
-- phase2 gate wrapper scripts
-- wrapper parity unit tests
-- sprint-scoped script/test verification
+- integration acceptance scenario for capture-to-resumption chain
+- phase2/mvp acceptance runner inclusion
+- sprint-scoped gate verification
 
 ## Exact Files In Scope
 
+- [test_mvp_acceptance_suite.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_mvp_acceptance_suite.py)
+- [run_mvp_acceptance.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_mvp_acceptance.py)
 - [run_phase2_acceptance.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_phase2_acceptance.py)
-- [run_phase2_readiness_gates.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_phase2_readiness_gates.py)
-- [run_phase2_validation_matrix.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_phase2_validation_matrix.py)
-- [test_phase2_gate_wrappers.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_phase2_gate_wrappers.py)
 - [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md)
 - [REVIEW_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/active/SPRINT_PACKET.md)
 - relevant verification under:
-  - `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_phase2_gate_wrappers.py`
+  - `PYTHONPATH=$PWD .venv/bin/pytest tests/integration/test_mvp_acceptance_suite.py::test_acceptance_explicit_signal_capture_flows_into_resumption_brief`
+  - `python3 scripts/run_phase2_acceptance.py`
 
 ## In Scope
 
-- Add automated tests that assert for each phase2 wrapper:
-  - forwards all CLI args unchanged to target MVP script
-  - executes with repo-root cwd
-  - returns subprocess exit code unchanged
-  - keeps expected target script mapping
-- Add deterministic fallback-path coverage:
-  - venv python selected when present
-  - `sys.executable` selected when venv missing
-- Optional small wrapper hardening if needed for testability:
-  - extract shared wrapper-run helper, preserving existing behavior
-  - avoid changing user-facing CLI surface
+- Add one new deterministic acceptance scenario that proves:
+  - a user `message.user` event containing explicit preference + commitment signals
+  - `POST /v0/memories/capture-explicit-signals` yields expected candidate/admission/open-loop outcomes
+  - `GET /v0/threads/{thread_id}/resumption-brief` includes resulting open loop + memory highlight evidence
+- Include this scenario in acceptance runner command list (`scripts/run_mvp_acceptance.py`) so it is part of gate evidence.
+- Ensure Phase 2 acceptance alias (`scripts/run_phase2_acceptance.py`) executes updated acceptance chain unchanged.
+- Keep scenario deterministic (stable ordering assertions, explicit expected fields, no timing-sensitive heuristics).
 
 ## Out of Scope
 
 - any product/runtime API change
-- docs truth-sync edits outside direct wrapper references
-- UI changes
+- UI feature changes
+- docs truth-sync edits outside sprint reports
 - workers/automation/orchestration implementation
 - Phase 3 runtime/profile routing implementation
 
 ## Required Deliverables
 
-- wrapper parity test suite committed and passing
-- phase2 wrappers verified to preserve arg/exit-code passthrough semantics
+- acceptance scenario committed and passing
+- acceptance runner updated to include scenario
+- phase2 acceptance alias verified with updated chain
 - updated sprint reports for this sprint only
 
 ## Acceptance Criteria
 
-- tests cover all three wrappers and pass
-- tests assert deterministic arg passthrough behavior
-- tests assert deterministic exit-code passthrough behavior
-- tests assert wrapper target-script mapping and Python executable resolution behavior
-- no gate semantics changed versus current alias behavior
+- new acceptance test passes and is deterministic
+- `run_mvp_acceptance.py` includes and executes the new scenario
+- `run_phase2_acceptance.py` runs the updated acceptance chain successfully
+- evidence demonstrates capture-to-resumption path without regressions to existing acceptance scenarios
+- no endpoint contract changes are required to satisfy this sprint
 - no out-of-scope implementation work enters sprint
 
 ## Implementation Constraints
@@ -99,38 +96,38 @@ Add deterministic automated tests for Phase 2 wrapper parity and tighten wrapper
 
 ## Control Tower Task Cards
 
-### Task 1: Wrapper Test Coverage
+### Task 1: Acceptance Scenario
 Owner: tooling operative  
 Write scope:
+- `tests/integration/test_mvp_acceptance_suite.py`
+- `scripts/run_mvp_acceptance.py`
 - `scripts/run_phase2_acceptance.py`
-- `scripts/run_phase2_readiness_gates.py`
-- `scripts/run_phase2_validation_matrix.py`
-- `tests/unit/test_phase2_gate_wrappers.py`
 
 ### Task 2: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify wrapper parity evidence completeness
-- verify no behavior drift in gate aliases
+- verify capture-to-resumption evidence completeness
+- verify acceptance chain integrity
 - verify strict sprint scope
 - verify acceptance + evidence completeness
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact wrapper/test files changed
-- exact parity guarantees asserted by tests
+- exact acceptance scenario added
+- exact runner command list delta
+- explicit assertions proving capture-to-resumption continuity
 - exact verification commands run with outcomes
 - explicit deferred scope (automation/workers/Phase 3 runtime orchestration)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint remained wrapper-parity scoped
-- wrapper/test consistency and completeness
-- verification evidence is sufficient for script-hardening sprint
+- sprint remained capture-resumption-acceptance scoped
+- acceptance/test-runner consistency and completeness
+- verification evidence is sufficient for acceptance-hardening sprint
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when automated tests prove Phase 2 gate wrappers preserve arg/exit-code passthrough semantics for all three wrappers, with no product/runtime behavior change.
+This sprint is complete when deterministic acceptance evidence exists for explicit-signal capture flowing into resumption brief context, is included in phase2 acceptance runner execution, and no product/runtime behavior changed outside test/gate orchestration.
