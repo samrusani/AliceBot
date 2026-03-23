@@ -1369,3 +1369,91 @@ def test_compile_memory_section_orders_limits_and_excludes_deleted() -> None:
         "hybrid_memory_deleted",
     ]
     assert memory_section.decisions[-1].metadata["selected_sources"] == ["symbolic"]
+
+
+def test_compile_continuity_context_includes_open_loops_when_present() -> None:
+    user_id = uuid4()
+    thread_id = uuid4()
+    base_time = datetime(2026, 3, 23, 9, 0, tzinfo=UTC)
+    newer_open_loop_id = uuid4()
+    older_open_loop_id = uuid4()
+
+    compiler_run = compile_continuity_context(
+        user={
+            "id": user_id,
+            "email": "owner@example.com",
+            "display_name": "Owner",
+            "created_at": base_time,
+        },
+        thread={
+            "id": thread_id,
+            "user_id": user_id,
+            "title": "Open-loop context",
+            "created_at": base_time,
+            "updated_at": base_time,
+        },
+        sessions=[],
+        events=[],
+        memories=[],
+        entities=[],
+        entity_edges=[],
+        limits=ContextCompilerLimits(
+            max_sessions=1,
+            max_events=1,
+            max_memories=1,
+            max_entities=1,
+            max_entity_edges=1,
+        ),
+        open_loops=[
+            {
+                "id": older_open_loop_id,
+                "user_id": user_id,
+                "memory_id": None,
+                "title": "Older open loop",
+                "status": "open",
+                "opened_at": base_time,
+                "due_at": None,
+                "resolved_at": None,
+                "resolution_note": None,
+                "created_at": base_time,
+                "updated_at": base_time,
+            },
+            {
+                "id": newer_open_loop_id,
+                "user_id": user_id,
+                "memory_id": None,
+                "title": "Newer open loop",
+                "status": "open",
+                "opened_at": base_time + timedelta(minutes=2),
+                "due_at": None,
+                "resolved_at": None,
+                "resolution_note": None,
+                "created_at": base_time + timedelta(minutes=2),
+                "updated_at": base_time + timedelta(minutes=2),
+            },
+        ],
+    )
+
+    assert compiler_run.context_pack["open_loops"] == [
+        {
+            "id": str(newer_open_loop_id),
+            "memory_id": None,
+            "title": "Newer open loop",
+            "status": "open",
+            "opened_at": (base_time + timedelta(minutes=2)).isoformat(),
+            "due_at": None,
+            "resolved_at": None,
+            "resolution_note": None,
+            "created_at": (base_time + timedelta(minutes=2)).isoformat(),
+            "updated_at": (base_time + timedelta(minutes=2)).isoformat(),
+        }
+    ]
+    assert compiler_run.context_pack["open_loop_summary"] == {
+        "candidate_count": 2,
+        "included_count": 1,
+        "excluded_limit_count": 1,
+        "order": ["opened_at_desc", "created_at_desc", "id_desc"],
+    }
+    reasons = [event.payload["reason"] for event in compiler_run.trace_events if "reason" in event.payload]
+    assert "within_open_loop_limit" in reasons
+    assert "open_loop_limit_exceeded" in reasons

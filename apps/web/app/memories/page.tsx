@@ -10,14 +10,18 @@ import type {
   MemoryReviewLabelSummary,
   MemoryReviewRecord,
   MemoryRevisionReviewListSummary,
+  OpenLoopListSummary,
+  OpenLoopRecord,
 } from "../../lib/api";
 import {
   combinePageModes,
+  getOpenLoopDetail,
   getApiConfig,
   getMemoryDetail,
   getMemoryEvaluationSummary,
   getMemoryRevisions,
   hasLiveApiConfig,
+  listOpenLoops,
   listMemories,
   listMemoryLabels,
   listMemoryReviewQueue,
@@ -105,6 +109,55 @@ function formatTypedTimestamp(value: string | null | undefined) {
   return value ?? "Not set";
 }
 
+const openLoopFixtures: OpenLoopRecord[] = [
+  {
+    id: "loop-fixture-1",
+    memory_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+    title: "Confirm magnesium package size before reorder",
+    status: "open",
+    opened_at: "2026-03-20T09:00:00Z",
+    due_at: "2026-03-24T09:00:00Z",
+    resolved_at: null,
+    resolution_note: null,
+    created_at: "2026-03-20T09:00:00Z",
+    updated_at: "2026-03-20T09:00:00Z",
+  },
+  {
+    id: "loop-fixture-2",
+    memory_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+    title: "Verify merchant preference after next approval",
+    status: "open",
+    opened_at: "2026-03-19T09:00:00Z",
+    due_at: null,
+    resolved_at: null,
+    resolution_note: null,
+    created_at: "2026-03-19T09:00:00Z",
+    updated_at: "2026-03-19T09:00:00Z",
+  },
+];
+
+const openLoopSummaryFixture: OpenLoopListSummary = {
+  status: "open",
+  limit: 20,
+  returned_count: openLoopFixtures.length,
+  total_count: openLoopFixtures.length,
+  has_more: false,
+  order: ["opened_at_desc", "created_at_desc", "id_desc"],
+};
+
+function resolveSelectedOpenLoopId(requestedOpenLoopId: string, items: OpenLoopRecord[]) {
+  if (!items.length) {
+    return "";
+  }
+
+  const availableIds = new Set(items.map((item) => item.id));
+  if (requestedOpenLoopId && availableIds.has(requestedOpenLoopId)) {
+    return requestedOpenLoopId;
+  }
+
+  return items[0]?.id ?? "";
+}
+
 export default async function MemoriesPage({
   searchParams,
 }: {
@@ -115,6 +168,7 @@ export default async function MemoriesPage({
     string | string[] | undefined
   >;
   const requestedMemoryId = normalizeParam(params.memory);
+  const requestedOpenLoopId = normalizeParam(params.open_loop);
   const activeFilter = normalizeFilter(params.filter);
   const apiConfig = getApiConfig();
   const liveModeReady = hasLiveApiConfig(apiConfig);
@@ -133,11 +187,17 @@ export default async function MemoriesPage({
   let evaluationSummarySource: ApiSource = "fixture";
   let evaluationSummaryUnavailableReason: string | undefined;
 
+  let openLoops = openLoopFixtures;
+  let openLoopSummary = openLoopSummaryFixture;
+  let openLoopSource: ApiSource = "fixture";
+  let openLoopUnavailableReason: string | undefined;
+
   if (liveModeReady) {
-    const [memoryResult, queueResult, summaryResult] = await Promise.allSettled([
+    const [memoryResult, queueResult, summaryResult, openLoopResult] = await Promise.allSettled([
       listMemories(apiConfig.apiBaseUrl, apiConfig.userId, { status: "active" }),
       listMemoryReviewQueue(apiConfig.apiBaseUrl, apiConfig.userId),
       getMemoryEvaluationSummary(apiConfig.apiBaseUrl, apiConfig.userId),
+      listOpenLoops(apiConfig.apiBaseUrl, apiConfig.userId, { status: "open", limit: 20 }),
     ]);
 
     if (memoryResult.status === "fulfilled") {
@@ -170,6 +230,17 @@ export default async function MemoriesPage({
         summaryResult.reason instanceof Error
           ? summaryResult.reason.message
           : "Memory evaluation summary could not be loaded.";
+    }
+
+    if (openLoopResult.status === "fulfilled") {
+      openLoops = openLoopResult.value.items;
+      openLoopSummary = openLoopResult.value.summary;
+      openLoopSource = "live";
+    } else {
+      openLoopUnavailableReason =
+        openLoopResult.reason instanceof Error
+          ? openLoopResult.reason.message
+          : "Open-loop list could not be loaded.";
     }
   }
 
@@ -206,6 +277,35 @@ export default async function MemoriesPage({
       }
       selectedMemoryUnavailableReason =
         error instanceof Error ? error.message : "Selected memory detail could not be loaded.";
+    }
+  }
+
+  const selectedOpenLoopId = resolveSelectedOpenLoopId(requestedOpenLoopId, openLoops);
+  const selectedOpenLoopFromList = openLoops.find((item) => item.id === selectedOpenLoopId) ?? null;
+  let selectedOpenLoop = selectedOpenLoopFromList;
+  let selectedOpenLoopSource: ApiSource | null = selectedOpenLoop ? openLoopSource : null;
+  let selectedOpenLoopUnavailableReason: string | undefined;
+
+  if (selectedOpenLoopFromList && liveModeReady && openLoopSource === "live") {
+    try {
+      const payload = await getOpenLoopDetail(
+        apiConfig.apiBaseUrl,
+        selectedOpenLoopFromList.id,
+        apiConfig.userId,
+      );
+      selectedOpenLoop = payload.open_loop;
+      selectedOpenLoopSource = "live";
+    } catch (error) {
+      const fixtureOpenLoop = openLoopFixtures.find((item) => item.id === selectedOpenLoopFromList.id);
+      if (fixtureOpenLoop) {
+        selectedOpenLoop = fixtureOpenLoop;
+        selectedOpenLoopSource = "fixture";
+      } else {
+        selectedOpenLoop = null;
+        selectedOpenLoopSource = null;
+      }
+      selectedOpenLoopUnavailableReason =
+        error instanceof Error ? error.message : "Selected open loop could not be loaded.";
     }
   }
 
@@ -271,7 +371,9 @@ export default async function MemoriesPage({
     memoryListSource,
     reviewQueueSource,
     evaluationSummarySource,
+    openLoopSource,
     selectedMemorySource,
+    selectedOpenLoopSource,
     revisionSource === "unavailable" ? null : revisionSource,
     labelSource === "unavailable" ? null : labelSource,
   );
@@ -289,6 +391,7 @@ export default async function MemoriesPage({
               {activeFilter === "queue" ? "Queue filter active" : "Active list filter"}
             </span>
             <span className="subtle-chip">{visibleMemories.length} visible memories</span>
+            <span className="subtle-chip">{openLoops.length} open loops</span>
           </div>
         }
       />
@@ -302,6 +405,85 @@ export default async function MemoriesPage({
         queueUnavailableReason={reviewQueueUnavailableReason}
         activeFilter={activeFilter}
       />
+
+      <div className="section-card">
+        <header className="section-card__header">
+          <div>
+            <p className="section-card__eyebrow">Open-loop backbone</p>
+            <h2 className="section-card__title">Unresolved commitment review</h2>
+          </div>
+          <p className="section-card__description">
+            Review unresolved loops with deterministic ordering and inspect one selected loop in detail.
+          </p>
+        </header>
+
+        <div className="stack">
+          <p className="muted-copy">
+            Source: {openLoopSource === "live" ? "Live list" : "Fixture list"}
+            {openLoopUnavailableReason ? ` · ${openLoopUnavailableReason}` : ""}
+          </p>
+          <p className="muted-copy">
+            {openLoopSummary.returned_count} open loops shown of {openLoopSummary.total_count} total
+          </p>
+          {openLoops.length ? (
+            <ul className="stack">
+              {openLoops.map((openLoop) => {
+                const selected = selectedOpenLoop?.id === openLoop.id;
+                const hrefParts = [
+                  `/memories?open_loop=${encodeURIComponent(openLoop.id)}`,
+                  selectedMemory?.id
+                    ? `memory=${encodeURIComponent(selectedMemory.id)}`
+                    : null,
+                  activeFilter === "queue" ? "filter=queue" : null,
+                ].filter(Boolean);
+                const href = hrefParts.length > 1 ? `${hrefParts[0]}&${hrefParts.slice(1).join("&")}` : hrefParts[0];
+                return (
+                  <li key={openLoop.id}>
+                    <a href={href} aria-current={selected ? "page" : undefined}>
+                      {openLoop.title}
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="muted-copy">No open loops are currently available.</p>
+          )}
+
+          {selectedOpenLoop ? (
+            <dl className="key-value-grid key-value-grid--compact">
+              <div>
+                <dt>Status</dt>
+                <dd>{selectedOpenLoop.status}</dd>
+              </div>
+              <div>
+                <dt>Memory link</dt>
+                <dd className="mono">{selectedOpenLoop.memory_id ?? "Not linked"}</dd>
+              </div>
+              <div>
+                <dt>Opened at</dt>
+                <dd className="mono">{formatTypedTimestamp(selectedOpenLoop.opened_at)}</dd>
+              </div>
+              <div>
+                <dt>Due at</dt>
+                <dd className="mono">{formatTypedTimestamp(selectedOpenLoop.due_at)}</dd>
+              </div>
+              <div>
+                <dt>Resolved at</dt>
+                <dd className="mono">{formatTypedTimestamp(selectedOpenLoop.resolved_at)}</dd>
+              </div>
+              <div>
+                <dt>Resolution note</dt>
+                <dd>{selectedOpenLoop.resolution_note ?? "Not set"}</dd>
+              </div>
+            </dl>
+          ) : (
+            <p className="muted-copy">
+              {selectedOpenLoopUnavailableReason ?? "Select an open loop to inspect its detail fields."}
+            </p>
+          )}
+        </div>
+      </div>
 
       <div className="memory-layout">
         <MemoryList

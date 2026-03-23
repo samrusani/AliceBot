@@ -31,9 +31,11 @@ from alicebot_api.contracts import (
     DEFAULT_MAX_ENTITIES,
     DEFAULT_MAX_MEMORIES,
     DEFAULT_MEMORY_REVIEW_LIMIT,
+    DEFAULT_OPEN_LOOP_LIMIT,
     DEFAULT_MAX_SESSIONS,
     DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     MAX_MEMORY_REVIEW_LIMIT,
+    MAX_OPEN_LOOP_LIMIT,
     MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
     MAX_CALENDAR_EVENT_LIST_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
@@ -55,12 +57,16 @@ from alicebot_api.contracts import (
     GmailAccountConnectInput,
     GmailMessageIngestInput,
     MemoryCandidateInput,
+    OpenLoopCandidateInput,
     MemoryEmbeddingUpsertInput,
     THREAD_EVENT_LIST_ORDER,
     THREAD_LIST_ORDER,
     THREAD_SESSION_LIST_ORDER,
     MemoryReviewLabelValue,
     MemoryReviewStatusFilter,
+    OpenLoopStatusFilter,
+    OpenLoopCreateInput,
+    OpenLoopStatusUpdateInput,
     PolicyCreateInput,
     PolicyEffect,
     PolicyEvaluationRequestInput,
@@ -229,14 +235,20 @@ from alicebot_api.explicit_preferences import (
 from alicebot_api.memory import (
     MemoryAdmissionValidationError,
     MemoryReviewNotFoundError,
+    OpenLoopNotFoundError,
+    OpenLoopValidationError,
     admit_memory_candidate,
+    create_open_loop_record,
     create_memory_review_label_record,
+    get_open_loop_record,
     get_memory_evaluation_summary,
     get_memory_review_record,
+    list_open_loop_records,
     list_memory_review_queue_records,
     list_memory_review_label_records,
     list_memory_review_records,
     list_memory_revision_review_records,
+    update_open_loop_status_record,
 )
 from alicebot_api.policy import (
     PolicyEvaluationValidationError,
@@ -429,6 +441,13 @@ class CreateThreadRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
 
 
+class AdmitMemoryOpenLoopRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=280)
+    due_at: datetime | None = None
+
+
 class AdmitMemoryRequest(BaseModel):
     user_id: UUID
     memory_key: str = Field(min_length=1, max_length=200)
@@ -442,6 +461,7 @@ class AdmitMemoryRequest(BaseModel):
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     last_confirmed_at: datetime | None = None
+    open_loop: AdmitMemoryOpenLoopRequest | None = None
 
     @model_validator(mode="after")
     def validate_temporal_range(self) -> "AdmitMemoryRequest":
@@ -459,6 +479,19 @@ class CreateMemoryReviewLabelRequest(BaseModel):
     user_id: UUID
     label: MemoryReviewLabelValue
     note: str | None = Field(default=None, min_length=1, max_length=280)
+
+
+class CreateOpenLoopRequest(BaseModel):
+    user_id: UUID
+    memory_id: UUID | None = None
+    title: str = Field(min_length=1, max_length=280)
+    due_at: datetime | None = None
+
+
+class UpdateOpenLoopStatusRequest(BaseModel):
+    user_id: UUID
+    status: str = Field(min_length=1, max_length=100)
+    resolution_note: str | None = Field(default=None, min_length=1, max_length=2000)
 
 
 class CreateEntityRequest(BaseModel):
@@ -1134,21 +1167,129 @@ def admit_memory(request: AdmitMemoryRequest) -> JSONResponse:
                     valid_from=request.valid_from,
                     valid_to=request.valid_to,
                     last_confirmed_at=request.last_confirmed_at,
+                    open_loop=(
+                        None
+                        if request.open_loop is None
+                        else OpenLoopCandidateInput(
+                            title=request.open_loop.title,
+                            due_at=request.open_loop.due_at,
+                        )
+                    ),
                 ),
             )
     except MemoryAdmissionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    payload = {
+        "decision": decision.action,
+        "reason": decision.reason,
+        "memory": decision.memory,
+        "revision": decision.revision,
+    }
+    if decision.open_loop is not None:
+        payload["open_loop"] = decision.open_loop
+
     return JSONResponse(
         status_code=200,
-        content=jsonable_encoder(
-            {
-                "decision": decision.action,
-                "reason": decision.reason,
-                "memory": decision.memory,
-                "revision": decision.revision,
-            }
-        ),
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/open-loops")
+def list_open_loops(
+    user_id: UUID,
+    status: OpenLoopStatusFilter = Query(default="open"),
+    limit: int = Query(default=DEFAULT_OPEN_LOOP_LIMIT, ge=1, le=MAX_OPEN_LOOP_LIMIT),
+) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_open_loop_records(
+            ContinuityStore(conn),
+            user_id=user_id,
+            status=status,
+            limit=limit,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/open-loops/{open_loop_id}")
+def get_open_loop(
+    open_loop_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_open_loop_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                open_loop_id=open_loop_id,
+            )
+    except OpenLoopNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/open-loops")
+def create_open_loop(request: CreateOpenLoopRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_open_loop_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                open_loop=OpenLoopCreateInput(
+                    memory_id=request.memory_id,
+                    title=request.title,
+                    due_at=request.due_at,
+                ),
+            )
+    except OpenLoopValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/open-loops/{open_loop_id}/status")
+def update_open_loop_status(
+    open_loop_id: UUID,
+    request: UpdateOpenLoopStatusRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = update_open_loop_status_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                open_loop_id=open_loop_id,
+                request=OpenLoopStatusUpdateInput(
+                    status=request.status,  # type: ignore[arg-type]
+                    resolution_note=request.resolution_note,
+                ),
+            )
+    except OpenLoopValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except OpenLoopNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
     )
 
 
