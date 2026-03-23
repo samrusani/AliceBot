@@ -116,6 +116,7 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v0/policies/evaluate" in route_paths
     assert "/v0/memories/extract-explicit-preferences" in route_paths
     assert "/v0/open-loops/extract-explicit-commitments" in route_paths
+    assert "/v0/memories/capture-explicit-signals" in route_paths
     assert "/v0/memories" in route_paths
     assert "/v0/memories/review-queue" in route_paths
     assert "/v0/memories/evaluation-summary" in route_paths
@@ -1585,6 +1586,146 @@ def test_extract_explicit_commitments_returns_bad_request_when_source_event_is_i
 
     response = main_module.extract_explicit_commitments(
         main_module.ExtractExplicitCommitmentsRequest(
+            user_id=uuid4(),
+            source_event_id=uuid4(),
+        )
+    )
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {
+        "detail": "source_event_id must reference an existing message.user event owned by the user",
+    }
+
+
+def test_capture_explicit_signals_returns_payload(monkeypatch) -> None:
+    user_id = uuid4()
+    source_event_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_user_connection(database_url: str, current_user_id):
+        captured["database_url"] = database_url
+        captured["current_user_id"] = current_user_id
+        yield object()
+
+    def fake_extract_and_admit_explicit_signals(store, *, user_id, request):
+        captured["store_type"] = type(store).__name__
+        captured["user_id"] = user_id
+        captured["request"] = request
+        return {
+            "preferences": {
+                "candidates": [],
+                "admissions": [],
+                "summary": {
+                    "source_event_id": str(source_event_id),
+                    "source_event_kind": "message.user",
+                    "candidate_count": 0,
+                    "admission_count": 0,
+                    "persisted_change_count": 0,
+                    "noop_count": 0,
+                },
+            },
+            "commitments": {
+                "candidates": [
+                    {
+                        "memory_key": "user.commitment.submit_tax_forms",
+                        "value": {
+                            "kind": "explicit_commitment",
+                            "text": "submit tax forms",
+                        },
+                        "source_event_ids": [str(source_event_id)],
+                        "delete_requested": False,
+                        "pattern": "remind_me_to",
+                        "commitment_text": "submit tax forms",
+                        "open_loop_title": "Remember to submit tax forms",
+                    }
+                ],
+                "admissions": [],
+                "summary": {
+                    "source_event_id": str(source_event_id),
+                    "source_event_kind": "message.user",
+                    "candidate_count": 1,
+                    "admission_count": 0,
+                    "persisted_change_count": 0,
+                    "noop_count": 0,
+                    "open_loop_created_count": 0,
+                    "open_loop_noop_count": 0,
+                },
+            },
+            "summary": {
+                "source_event_id": str(source_event_id),
+                "source_event_kind": "message.user",
+                "candidate_count": 1,
+                "admission_count": 0,
+                "persisted_change_count": 0,
+                "noop_count": 0,
+                "open_loop_created_count": 0,
+                "open_loop_noop_count": 0,
+                "preference_candidate_count": 0,
+                "preference_admission_count": 0,
+                "commitment_candidate_count": 1,
+                "commitment_admission_count": 0,
+            },
+        }
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "extract_and_admit_explicit_signals",
+        fake_extract_and_admit_explicit_signals,
+    )
+
+    response = main_module.capture_explicit_signals(
+        main_module.CaptureExplicitSignalsRequest(
+            user_id=user_id,
+            source_event_id=source_event_id,
+        )
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["summary"] == {
+        "source_event_id": str(source_event_id),
+        "source_event_kind": "message.user",
+        "candidate_count": 1,
+        "admission_count": 0,
+        "persisted_change_count": 0,
+        "noop_count": 0,
+        "open_loop_created_count": 0,
+        "open_loop_noop_count": 0,
+        "preference_candidate_count": 0,
+        "preference_admission_count": 0,
+        "commitment_candidate_count": 1,
+        "commitment_admission_count": 0,
+    }
+    assert captured["database_url"] == "postgresql://app"
+    assert captured["current_user_id"] == user_id
+    assert captured["user_id"] == user_id
+    assert captured["request"].source_event_id == source_event_id
+
+
+def test_capture_explicit_signals_returns_bad_request_when_source_event_is_invalid(
+    monkeypatch,
+) -> None:
+    @contextmanager
+    def fake_user_connection(_database_url: str, _current_user_id):
+        yield object()
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "extract_and_admit_explicit_signals",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            main_module.ExplicitSignalCaptureValidationError(
+                "source_event_id must reference an existing message.user event owned by the user"
+            )
+        ),
+    )
+
+    response = main_module.capture_explicit_signals(
+        main_module.CaptureExplicitSignalsRequest(
             user_id=uuid4(),
             source_event_id=uuid4(),
         )
