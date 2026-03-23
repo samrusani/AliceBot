@@ -22,9 +22,12 @@ from alicebot_api.contracts import (
     ContextPackHybridMemorySummary,
     ContextPackMemory,
     ContextPackMemorySummary,
+    ContextPackOpenLoop,
+    ContextPackOpenLoopSummary,
     HybridMemoryDecisionTracePayload,
     HybridArtifactRetrievalDecisionTracePayload,
     MemorySelectionSource,
+    OPEN_LOOP_REVIEW_ORDER,
     SEMANTIC_MEMORY_RETRIEVAL_ORDER,
     TASK_ARTIFACT_CHUNK_RETRIEVAL_ORDER,
     TASK_ARTIFACT_CHUNK_SEMANTIC_RETRIEVAL_ORDER,
@@ -52,6 +55,7 @@ from alicebot_api.store import (
     EntityRow,
     EventRow,
     MemoryRow,
+    OpenLoopRow,
     SemanticMemoryRetrievalRow,
     SessionRow,
     ThreadRow,
@@ -86,6 +90,13 @@ class CompiledTraceRun:
 class CompiledMemorySection:
     items: list[ContextPackMemory]
     summary: ContextPackMemorySummary
+    decisions: list[CompilerDecision]
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledOpenLoopSection:
+    items: list[ContextPackOpenLoop]
+    summary: ContextPackOpenLoopSummary
     decisions: list[CompilerDecision]
 
 
@@ -184,6 +195,29 @@ def _serialize_memory(memory: MemoryRow) -> dict[str, object]:
     }
     payload.update(_serialize_typed_memory_metadata(memory))
     return payload
+
+
+def _open_loop_sort_key(open_loop: OpenLoopRow) -> tuple[str, str, str]:
+    return (
+        open_loop["opened_at"].isoformat(),
+        open_loop["created_at"].isoformat(),
+        str(open_loop["id"]),
+    )
+
+
+def _serialize_open_loop(open_loop: OpenLoopRow) -> ContextPackOpenLoop:
+    return {
+        "id": str(open_loop["id"]),
+        "memory_id": None if open_loop["memory_id"] is None else str(open_loop["memory_id"]),
+        "title": open_loop["title"],
+        "status": open_loop["status"],  # type: ignore[typeddict-item]
+        "opened_at": open_loop["opened_at"].isoformat(),
+        "due_at": isoformat_or_none(open_loop["due_at"]),
+        "resolved_at": isoformat_or_none(open_loop["resolved_at"]),
+        "resolution_note": open_loop["resolution_note"],
+        "created_at": open_loop["created_at"].isoformat(),
+        "updated_at": open_loop["updated_at"].isoformat(),
+    }
 
 
 def _entity_sort_key(entity: EntityRow) -> tuple[str, str]:
@@ -750,6 +784,70 @@ def _compile_memory_section(
     )
 
 
+def _compile_open_loop_section(
+    *,
+    open_loops: list[OpenLoopRow],
+    limits: ContextCompilerLimits,
+) -> CompiledOpenLoopSection:
+    ordered_open_loops = sorted(open_loops, key=_open_loop_sort_key, reverse=True)
+    included_open_loops = (
+        ordered_open_loops[: limits.max_memories] if limits.max_memories > 0 else []
+    )
+    excluded_open_loops = (
+        ordered_open_loops[limits.max_memories :] if limits.max_memories > 0 else ordered_open_loops
+    )
+
+    decisions: list[CompilerDecision] = []
+    for position, open_loop in enumerate(included_open_loops, start=1):
+        decisions.append(
+            CompilerDecision(
+                "included",
+                "open_loop",
+                open_loop["id"],
+                "within_open_loop_limit",
+                position,
+                metadata={
+                    "title": open_loop["title"],
+                    "status": open_loop["status"],
+                    "memory_id": (
+                        None if open_loop["memory_id"] is None else str(open_loop["memory_id"])
+                    ),
+                    "due_at": isoformat_or_none(open_loop["due_at"]),
+                },
+            )
+        )
+
+    for position, open_loop in enumerate(excluded_open_loops, start=1):
+        decisions.append(
+            CompilerDecision(
+                "excluded",
+                "open_loop",
+                open_loop["id"],
+                "open_loop_limit_exceeded",
+                position,
+                metadata={
+                    "title": open_loop["title"],
+                    "status": open_loop["status"],
+                    "memory_id": (
+                        None if open_loop["memory_id"] is None else str(open_loop["memory_id"])
+                    ),
+                    "due_at": isoformat_or_none(open_loop["due_at"]),
+                },
+            )
+        )
+
+    return CompiledOpenLoopSection(
+        items=[_serialize_open_loop(open_loop) for open_loop in included_open_loops],
+        summary={
+            "candidate_count": len(ordered_open_loops),
+            "included_count": len(included_open_loops),
+            "excluded_limit_count": len(excluded_open_loops),
+            "order": list(OPEN_LOOP_REVIEW_ORDER),
+        },
+        decisions=decisions,
+    )
+
+
 def _compile_artifact_chunk_section(
     store: ContinuityStore,
     *,
@@ -1128,7 +1226,9 @@ def compile_continuity_context(
     entities: list[EntityRow],
     entity_edges: list[EntityEdgeRow],
     limits: ContextCompilerLimits,
+    open_loops: list[OpenLoopRow] | None = None,
     memory_section: CompiledMemorySection | None = None,
+    open_loop_section: CompiledOpenLoopSection | None = None,
     artifact_chunk_section: CompiledArtifactChunkSection | None = None,
 ) -> CompilerRunResult:
     latest_session_sequence: dict[UUID, int] = {}
@@ -1222,6 +1322,11 @@ def compile_continuity_context(
         limits=limits,
     )
     decisions.extend(resolved_memory_section.decisions)
+    resolved_open_loop_section = open_loop_section or _compile_open_loop_section(
+        open_loops=[] if open_loops is None else open_loops,
+        limits=limits,
+    )
+    decisions.extend(resolved_open_loop_section.decisions)
     resolved_artifact_chunk_section = artifact_chunk_section or CompiledArtifactChunkSection(
         items=[],
         summary=_empty_artifact_chunk_summary(),
@@ -1358,6 +1463,10 @@ def compile_continuity_context(
                 "included_dual_source_memory_count": resolved_memory_section.summary[
                     "hybrid_retrieval"
                 ]["included_dual_source_count"],
+                "included_open_loop_count": resolved_open_loop_section.summary["included_count"],
+                "excluded_open_loop_limit_count": resolved_open_loop_section.summary[
+                    "excluded_limit_count"
+                ],
                 "artifact_retrieval_requested": resolved_artifact_chunk_section.summary["requested"],
                 "artifact_retrieval_scope_kind": (
                     None
@@ -1405,8 +1514,7 @@ def compile_continuity_context(
         )
     )
 
-    return CompilerRunResult(
-        context_pack={
+    context_pack: CompiledContextPack = {
             "compiler_version": COMPILER_VERSION_V0,
             "scope": {
                 "user_id": str(user["id"]),
@@ -1440,7 +1548,13 @@ def compile_continuity_context(
                 "included_count": len(included_entity_edges),
                 "excluded_limit_count": excluded_entity_edge_limit_count,
             },
-        },
+        }
+    if resolved_open_loop_section.summary["candidate_count"] > 0:
+        context_pack["open_loops"] = list(resolved_open_loop_section.items)
+        context_pack["open_loop_summary"] = resolved_open_loop_section.summary
+
+    return CompilerRunResult(
+        context_pack=context_pack,
         trace_events=trace_events,
     )
 
@@ -1460,11 +1574,16 @@ def compile_and_persist_trace(
     sessions = store.list_thread_sessions(thread_id)
     events = store.list_thread_events(thread_id)
     memories = store.list_context_memories()
+    open_loops = store.list_open_loops(status="open")
     memory_section = _compile_memory_section(
         store,
         memories=memories,
         limits=limits,
         semantic_retrieval=semantic_retrieval,
+    )
+    open_loop_section = _compile_open_loop_section(
+        open_loops=open_loops,
+        limits=limits,
     )
     artifact_chunk_section = _compile_artifact_chunk_section(
         store,
@@ -1481,10 +1600,12 @@ def compile_and_persist_trace(
         sessions=sessions,
         events=events,
         memories=memories,
+        open_loops=open_loops,
         entities=entities,
         entity_edges=entity_edges,
         limits=limits,
         memory_section=memory_section,
+        open_loop_section=open_loop_section,
         artifact_chunk_section=artifact_chunk_section,
     )
     trace = store.create_trace(

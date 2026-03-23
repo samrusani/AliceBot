@@ -8,8 +8,10 @@ import {
   connectGmailAccount,
   createThread,
   deriveThreadWorkflowState,
+  createOpenLoop,
   getCalendarAccountDetail,
   getGmailAccountDetail,
+  getOpenLoopDetail,
   getTaskArtifactDetail,
   getTaskWorkspaceDetail,
   getEntityDetail,
@@ -28,6 +30,7 @@ import {
   listEntities,
   listEntityEdges,
   listGmailAccounts,
+  listOpenLoops,
   listTaskArtifactChunks,
   listTaskArtifacts,
   listTaskWorkspaces,
@@ -45,6 +48,7 @@ import {
   submitAssistantResponse,
   submitApprovalRequest,
   submitMemoryLabel,
+  updateOpenLoopStatus,
 } from "./api";
 
 describe("api helpers", () => {
@@ -1635,6 +1639,137 @@ describe("api helpers", () => {
         }),
       ],
     ]);
+  });
+
+  it("reads and mutates open-loop endpoints with user-scoped routing", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "loop-1",
+              memory_id: "memory-1",
+              title: "Confirm reorder details",
+              status: "open",
+              opened_at: "2026-03-23T09:00:00Z",
+              due_at: "2026-03-25T09:00:00Z",
+              resolved_at: null,
+              resolution_note: null,
+              created_at: "2026-03-23T09:00:00Z",
+              updated_at: "2026-03-23T09:00:00Z",
+            },
+          ],
+          summary: {
+            status: "open",
+            limit: 5,
+            returned_count: 1,
+            total_count: 1,
+            has_more: false,
+            order: ["opened_at_desc", "created_at_desc", "id_desc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          open_loop: {
+            id: "loop-1",
+            memory_id: "memory-1",
+            title: "Confirm reorder details",
+            status: "open",
+            opened_at: "2026-03-23T09:00:00Z",
+            due_at: "2026-03-25T09:00:00Z",
+            resolved_at: null,
+            resolution_note: null,
+            created_at: "2026-03-23T09:00:00Z",
+            updated_at: "2026-03-23T09:00:00Z",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          open_loop: {
+            id: "loop-2",
+            memory_id: "memory-1",
+            title: "Follow up on confidence",
+            status: "open",
+            opened_at: "2026-03-24T09:00:00Z",
+            due_at: null,
+            resolved_at: null,
+            resolution_note: null,
+            created_at: "2026-03-24T09:00:00Z",
+            updated_at: "2026-03-24T09:00:00Z",
+          },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          open_loop: {
+            id: "loop-1",
+            memory_id: "memory-1",
+            title: "Confirm reorder details",
+            status: "resolved",
+            opened_at: "2026-03-23T09:00:00Z",
+            due_at: "2026-03-25T09:00:00Z",
+            resolved_at: "2026-03-24T10:00:00Z",
+            resolution_note: "Resolved",
+            created_at: "2026-03-23T09:00:00Z",
+            updated_at: "2026-03-24T10:00:00Z",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await listOpenLoops("https://api.example.com", "user-1", { status: "open", limit: 5 });
+    await getOpenLoopDetail("https://api.example.com", "loop-1", "user-1");
+    await createOpenLoop("https://api.example.com", {
+      user_id: "user-1",
+      memory_id: "memory-1",
+      title: "Follow up on confidence",
+    });
+    await updateOpenLoopStatus("https://api.example.com", "loop-1", {
+      user_id: "user-1",
+      status: "resolved",
+      resolution_note: "Resolved",
+    });
+
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "https://api.example.com/v0/open-loops?user_id=user-1&status=open&limit=5",
+        expect.objectContaining({ cache: "no-store" }),
+      ],
+      [
+        "https://api.example.com/v0/open-loops/loop-1?user_id=user-1",
+        expect.objectContaining({ cache: "no-store" }),
+      ],
+      [
+        "https://api.example.com/v0/open-loops",
+        expect.objectContaining({ method: "POST" }),
+      ],
+      [
+        "https://api.example.com/v0/open-loops/loop-1/status",
+        expect.objectContaining({ method: "POST" }),
+      ],
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      memory_id: "memory-1",
+      title: "Follow up on confidence",
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      status: "resolved",
+      resolution_note: "Resolved",
+    });
   });
 
   it("posts explicit memory admissions to the shipped endpoint", async () => {
