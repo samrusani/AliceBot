@@ -4,11 +4,11 @@
 
 AliceBot now implements the accepted repo slice through Sprint 7G.
 
-- `apps/api` is the core shipped surface. It provides continuity storage and review over `users`, `threads`, `sessions`, and append-only `events`; deterministic context compilation; governed memory admission and review; embeddings and semantic retrieval; entities and entity edges; policy, tool, approval, and execution governance; the no-tools assistant-response seam at `POST /v0/responses`; explicit task and task-step lifecycle reads and mutations; rooted local task workspaces and artifact ingestion; artifact chunk retrieval and embeddings; and narrow read-only Gmail and Calendar seams with external-secret-backed credentials plus bounded Calendar event discovery and selected-item ingestion into the artifact pipeline.
+- `apps/api` is the core shipped surface. It provides continuity storage and review over `users`, `threads`, `sessions`, and append-only `events`; deterministic context compilation; governed memory admission and review plus open-loop lifecycle capture/review; embeddings and semantic retrieval; entities and entity edges; policy, tool, approval, and execution governance; the no-tools assistant-response seam at `POST /v0/responses`; explicit task and task-step lifecycle reads and mutations; rooted local task workspaces and artifact ingestion; artifact chunk retrieval and embeddings; and narrow read-only Gmail and Calendar seams with external-secret-backed credentials plus bounded Calendar event discovery and selected-item ingestion into the artifact pipeline.
 - `apps/web` is a shipped operator shell over those backend seams, not a scaffold-only placeholder. The current routes are `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`. The shell can read live backend seams when configured and otherwise falls back to explicit fixture states instead of pretending the backend is connected.
 - `/chat` now carries both shipped operator modes: governed request composition and assistant-response mode. It uses visible thread selection instead of a raw typed thread id, supports compact thread creation through the continuity API, renders a selected-thread transcript from immutable continuity events, and keeps supporting session and operational review, thread-linked governed workflow review, ordered task-step timeline review, and bounded explain-why trace review in the right rail.
 - `/gmail` and `/calendar` are shipped bounded connector workspaces over existing backend seams: visible account list review, selected-account detail, explicit account connection, and explicit single-item ingestion into one chosen task workspace, with live/fixture/unavailable states kept explicit.
-- `/artifacts`, `/memories`, and `/entities` are now shipped bounded review workspaces that expose existing artifact, memory, and entity read seams with explicit live/fixture/unavailable modes.
+- `/artifacts`, `/memories`, and `/entities` are now shipped bounded review workspaces that expose existing artifact, memory (including open-loop review), and entity read seams with explicit live/fixture/unavailable modes.
 - `workers` remains scaffold-only. No background runner, automatic multi-step progression, or asynchronous job system is implemented.
 
 The repo is intentionally still narrow. Document ingestion remains local and deterministic. The only live execution handler is the no-external-I/O `proxy.echo` path. Gmail and Calendar remain read-only; Calendar includes bounded event discovery and selected-event ingestion only. Rich parsing, mailbox sync, attachments, broader Calendar capabilities, broader proxying, and runner-style orchestration are still planned later.
@@ -22,7 +22,8 @@ The repo is intentionally still narrow. Document ingestion remains local and det
 - `scripts/run_mvp_readiness_gates.py` and `scripts/run_mvp_validation_matrix.py` provide deterministic MVP release-candidate gate evidence, with the validation matrix command as the default go/no-go gate.
 - `apps/api` exposes FastAPI endpoints for:
   - continuity and response generation: `/healthz`, `POST /v0/threads`, `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, `GET /v0/threads/{thread_id}/events`, `POST /v0/context/compile`, `POST /v0/responses`
-  - memory, embeddings, and graph seams
+  - memory and open-loop seams, including `POST /v0/memories/admit`, `GET /v0/open-loops`, `GET /v0/open-loops/{open_loop_id}`, `POST /v0/open-loops`, and `POST /v0/open-loops/{open_loop_id}/status`
+  - embeddings and graph seams
   - policy, tool, approval, execution-budget, and proxy execution governance
   - task, task-step, task-workspace, task-artifact, artifact-chunk, and trace review reads and mutations
   - narrow Gmail account connect/read plus selected-message ingestion
@@ -35,7 +36,7 @@ The repo is intentionally still narrow. Document ingestion remains local and det
   - `/artifacts`: artifact list and selected detail, linked workspace summary, and ordered chunk review
   - `/gmail`: connected-account review, selected-account detail, explicit connect, and selected-message ingestion into one chosen task workspace
   - `/calendar`: connected-account review, selected-account detail, explicit connect, and selected-event ingestion into one chosen task workspace
-  - `/memories`: memory summary and queue posture, selected detail, revision review, and label review
+  - `/memories`: memory summary and queue posture, selected detail, revision review, label review, plus open-loop summary/list/detail review
   - `/entities`: entity list and selected detail with related edge review
   - `/traces`: trace summary, detail, and ordered event review
 - `tests` cover both the backend seams and the web shell. Durable repo evidence includes integration coverage for continuity and responses plus Vitest coverage for `/chat`, thread selection, bounded continuity review, and assistant-response submission.
@@ -58,6 +59,13 @@ The repo is intentionally still narrow. Document ingestion remains local and det
 2. `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, and `GET /v0/threads/{thread_id}/events` expose bounded continuity review over persisted records.
 3. `POST /v0/responses` compiles context deterministically, persists the submitted user message plus the assistant reply as immutable events, and returns linked compile and response trace metadata.
 4. `/chat` consumes those shipped seams directly. Selected-thread identity stays explicit across assistant and governed-request modes, immutable thread events drive the primary transcript surface, and non-conversation continuity stays in bounded supporting review instead of polluting the main conversation record.
+
+### Memory And Open-Loop Review
+
+1. `POST /v0/memories/admit` supports the typed memory admission seam and optional open-loop creation in the same admission request.
+2. Open loops persist as a first-class lifecycle seam with deterministic status transitions (`open`, `resolved`, `dismissed`) and strict user scoping on list/detail/mutation reads.
+3. `POST /v0/context/compile` includes a bounded, deterministically ordered open-loop slice and summary when open loops are present.
+4. `/memories` exposes open-loop review alongside memory review so operators can inspect unresolved commitments and selected lifecycle details in one surface.
 
 ### Governance, Tasks, And Explainability
 

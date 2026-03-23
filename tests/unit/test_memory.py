@@ -5,18 +5,29 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from alicebot_api.contracts import MemoryCandidateInput
+from alicebot_api.contracts import (
+    MemoryCandidateInput,
+    OpenLoopCandidateInput,
+    OpenLoopCreateInput,
+    OpenLoopStatusUpdateInput,
+)
 from alicebot_api.memory import (
     MemoryAdmissionValidationError,
     MemoryReviewNotFoundError,
+    OpenLoopNotFoundError,
+    OpenLoopValidationError,
     admit_memory_candidate,
+    create_open_loop_record,
     create_memory_review_label_record,
+    get_open_loop_record,
     get_memory_evaluation_summary,
     get_memory_review_record,
+    list_open_loop_records,
     list_memory_review_queue_records,
     list_memory_review_label_records,
     list_memory_review_records,
     list_memory_revision_review_records,
+    update_open_loop_status_record,
 )
 
 
@@ -26,6 +37,7 @@ class MemoryStoreStub:
         self.events: dict[UUID, dict[str, object]] = {}
         self.memory: dict[str, object] | None = None
         self.revisions: list[dict[str, object]] = []
+        self.open_loops: list[dict[str, object]] = []
 
     def list_events_by_ids(self, event_ids: list[UUID]) -> list[dict[str, object]]:
         return [self.events[event_id] for event_id in event_ids if event_id in self.events]
@@ -131,6 +143,33 @@ class MemoryStoreStub:
         }
         self.revisions.append(revision)
         return revision
+
+    def create_open_loop(
+        self,
+        *,
+        memory_id: UUID | None,
+        title: str,
+        status: str,
+        opened_at: datetime | None,
+        due_at: datetime | None,
+        resolved_at: datetime | None,
+        resolution_note: str | None,
+    ) -> dict[str, object]:
+        created = {
+            "id": uuid4(),
+            "user_id": self.memory["user_id"] if self.memory is not None else uuid4(),
+            "memory_id": memory_id,
+            "title": title,
+            "status": status,
+            "opened_at": self.base_time if opened_at is None else opened_at,
+            "due_at": due_at,
+            "resolved_at": resolved_at,
+            "resolution_note": resolution_note,
+            "created_at": self.base_time,
+            "updated_at": self.base_time,
+        }
+        self.open_loops.append(created)
+        return created
 
 
 def seed_event(store: MemoryStoreStub) -> UUID:
@@ -244,6 +283,32 @@ def test_admit_memory_candidate_adds_new_memory_with_first_revision() -> None:
     assert decision.revision["sequence_no"] == 1
     assert decision.revision["action"] == "ADD"
     assert decision.revision["new_value"] == {"likes": "oat milk"}
+
+
+def test_admit_memory_candidate_creates_open_loop_when_requested() -> None:
+    store = MemoryStoreStub()
+    event_id = seed_event(store)
+
+    decision = admit_memory_candidate(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        candidate=MemoryCandidateInput(
+            memory_key="user.preference.coffee",
+            value={"likes": "oat milk"},
+            source_event_ids=(event_id,),
+            open_loop=OpenLoopCandidateInput(
+                title="Confirm this preference before next reorder",
+                due_at=datetime(2026, 3, 20, 9, 0, tzinfo=UTC),
+            ),
+        ),
+    )
+
+    assert decision.action == "ADD"
+    assert decision.open_loop is not None
+    assert decision.open_loop["memory_id"] == decision.memory["id"]
+    assert decision.open_loop["title"] == "Confirm this preference before next reorder"
+    assert decision.open_loop["status"] == "open"
+    assert decision.open_loop["due_at"] == "2026-03-20T09:00:00+00:00"
 
 
 def test_admit_memory_candidate_updates_existing_memory_and_appends_revision() -> None:
@@ -416,6 +481,201 @@ class MemoryReviewStoreStub:
             memories,
             key=lambda memory: (memory["updated_at"], memory["created_at"], memory["id"]),
             reverse=True,
+        )
+
+
+class OpenLoopStoreStub:
+    def __init__(self) -> None:
+        self.base_time = datetime(2026, 3, 23, 12, 0, tzinfo=UTC)
+        self.memories: dict[UUID, dict[str, object]] = {}
+        self.open_loops: dict[UUID, dict[str, object]] = {}
+
+    def get_memory_optional(self, memory_id: UUID) -> dict[str, object] | None:
+        return self.memories.get(memory_id)
+
+    def count_open_loops(self, *, status: str | None = None) -> int:
+        if status is None:
+            return len(self.open_loops)
+        return len([item for item in self.open_loops.values() if item["status"] == status])
+
+    def list_open_loops(self, *, status: str | None = None, limit: int | None = None) -> list[dict[str, object]]:
+        items = list(self.open_loops.values())
+        if status is not None:
+            items = [item for item in items if item["status"] == status]
+        ordered = sorted(
+            items,
+            key=lambda item: (item["opened_at"], item["created_at"], item["id"]),
+            reverse=True,
+        )
+        if limit is None:
+            return ordered
+        return ordered[:limit]
+
+    def create_open_loop(
+        self,
+        *,
+        memory_id: UUID | None,
+        title: str,
+        status: str,
+        opened_at: datetime | None,
+        due_at: datetime | None,
+        resolved_at: datetime | None,
+        resolution_note: str | None,
+    ) -> dict[str, object]:
+        open_loop_id = uuid4()
+        loop = {
+            "id": open_loop_id,
+            "user_id": uuid4(),
+            "memory_id": memory_id,
+            "title": title,
+            "status": status,
+            "opened_at": self.base_time if opened_at is None else opened_at,
+            "due_at": due_at,
+            "resolved_at": resolved_at,
+            "resolution_note": resolution_note,
+            "created_at": self.base_time,
+            "updated_at": self.base_time,
+        }
+        self.open_loops[open_loop_id] = loop
+        return loop
+
+    def get_open_loop_optional(self, open_loop_id: UUID) -> dict[str, object] | None:
+        return self.open_loops.get(open_loop_id)
+
+    def update_open_loop_status_optional(
+        self,
+        *,
+        open_loop_id: UUID,
+        status: str,
+        resolved_at: datetime | None,
+        resolution_note: str | None,
+    ) -> dict[str, object] | None:
+        existing = self.open_loops.get(open_loop_id)
+        if existing is None:
+            return None
+        updated = {
+            **existing,
+            "status": status,
+            "resolved_at": self.base_time + timedelta(minutes=5) if resolved_at is None else resolved_at,
+            "resolution_note": resolution_note,
+            "updated_at": self.base_time + timedelta(minutes=5),
+        }
+        self.open_loops[open_loop_id] = updated
+        return updated
+
+
+def test_open_loop_records_support_create_list_get_and_status_transition() -> None:
+    store = OpenLoopStoreStub()
+    memory_id = uuid4()
+    store.memories[memory_id] = {"id": memory_id}
+
+    created = create_open_loop_record(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        open_loop=OpenLoopCreateInput(
+            memory_id=memory_id,
+            title="Follow up with merchant confirmation",
+            due_at=datetime(2026, 3, 27, 10, 0, tzinfo=UTC),
+        ),
+    )
+    open_loop_id = UUID(created["open_loop"]["id"])
+
+    listed = list_open_loop_records(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        status="open",
+        limit=10,
+    )
+    detail = get_open_loop_record(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        open_loop_id=open_loop_id,
+    )
+    updated = update_open_loop_status_record(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        open_loop_id=open_loop_id,
+        request=OpenLoopStatusUpdateInput(
+            status="resolved",
+            resolution_note="Resolved in latest review pass.",
+        ),
+    )
+
+    assert created["open_loop"]["status"] == "open"
+    assert listed["summary"] == {
+        "status": "open",
+        "limit": 10,
+        "returned_count": 1,
+        "total_count": 1,
+        "has_more": False,
+        "order": ["opened_at_desc", "created_at_desc", "id_desc"],
+    }
+    assert detail["open_loop"]["id"] == str(open_loop_id)
+    assert updated["open_loop"]["status"] == "resolved"
+    assert updated["open_loop"]["resolution_note"] == "Resolved in latest review pass."
+    assert updated["open_loop"]["resolved_at"] is not None
+
+
+def test_open_loop_records_support_dismissed_transition_with_audit_fields() -> None:
+    store = OpenLoopStoreStub()
+    memory_id = uuid4()
+    store.memories[memory_id] = {"id": memory_id}
+
+    created = create_open_loop_record(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        open_loop=OpenLoopCreateInput(
+            memory_id=memory_id,
+            title="Dismiss after confirming no further action is needed",
+            due_at=None,
+        ),
+    )
+
+    dismissed = update_open_loop_status_record(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        open_loop_id=UUID(created["open_loop"]["id"]),
+        request=OpenLoopStatusUpdateInput(
+            status="dismissed",
+            resolution_note="No action required after review.",
+        ),
+    )
+
+    assert dismissed["open_loop"]["status"] == "dismissed"
+    assert dismissed["open_loop"]["resolved_at"] is not None
+    assert dismissed["open_loop"]["resolution_note"] == "No action required after review."
+
+
+def test_open_loop_status_update_rejects_invalid_status_and_missing_records() -> None:
+    store = OpenLoopStoreStub()
+    loop_id = uuid4()
+    store.open_loops[loop_id] = {
+        "id": loop_id,
+        "user_id": uuid4(),
+        "memory_id": None,
+        "title": "Investigate",
+        "status": "open",
+        "opened_at": store.base_time,
+        "due_at": None,
+        "resolved_at": None,
+        "resolution_note": None,
+        "created_at": store.base_time,
+        "updated_at": store.base_time,
+    }
+
+    with pytest.raises(OpenLoopValidationError, match="status must be one of"):
+        update_open_loop_status_record(
+            store,  # type: ignore[arg-type]
+            user_id=uuid4(),
+            open_loop_id=loop_id,
+            request=OpenLoopStatusUpdateInput(status="invalid"),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(OpenLoopNotFoundError, match="was not found"):
+        get_open_loop_record(
+            store,  # type: ignore[arg-type]
+            user_id=uuid4(),
+            open_loop_id=uuid4(),
         )
 
 

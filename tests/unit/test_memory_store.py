@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -417,3 +418,260 @@ def test_memory_review_label_methods_use_append_only_queries_and_deterministic_o
             (memory_id,),
         ),
     ]
+
+
+def test_open_loop_methods_use_expected_queries_and_lifecycle_serialization() -> None:
+    memory_id = uuid4()
+    open_loop_id = uuid4()
+    opened_at = datetime(2026, 3, 23, 11, 0, tzinfo=UTC)
+    due_at = datetime(2026, 3, 25, 9, 0, tzinfo=UTC)
+    resolved_at = datetime(2026, 3, 24, 9, 0, tzinfo=UTC)
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {
+                "id": open_loop_id,
+                "user_id": uuid4(),
+                "memory_id": memory_id,
+                "title": "Confirm magnesium reorder",
+                "status": "open",
+                "opened_at": opened_at,
+                "due_at": due_at,
+                "resolved_at": None,
+                "resolution_note": None,
+                "created_at": opened_at,
+                "updated_at": opened_at,
+            },
+            {
+                "id": open_loop_id,
+                "user_id": uuid4(),
+                "memory_id": memory_id,
+                "title": "Confirm magnesium reorder",
+                "status": "open",
+                "opened_at": opened_at,
+                "due_at": due_at,
+                "resolved_at": None,
+                "resolution_note": None,
+                "created_at": opened_at,
+                "updated_at": opened_at,
+            },
+            {"count": 1},
+            {"count": 1},
+            {
+                "id": open_loop_id,
+                "user_id": uuid4(),
+                "memory_id": memory_id,
+                "title": "Confirm magnesium reorder",
+                "status": "resolved",
+                "opened_at": opened_at,
+                "due_at": due_at,
+                "resolved_at": resolved_at,
+                "resolution_note": "Resolved after order confirmation.",
+                "created_at": opened_at,
+                "updated_at": resolved_at,
+            },
+        ],
+        fetchall_results=[
+            [
+                {
+                    "id": open_loop_id,
+                    "memory_id": memory_id,
+                    "status": "open",
+                    "opened_at": opened_at,
+                }
+            ],
+            [
+                {
+                    "id": open_loop_id,
+                    "memory_id": memory_id,
+                    "status": "open",
+                    "opened_at": opened_at,
+                }
+            ],
+        ],
+    )
+    store = ContinuityStore(RecordingConnection(cursor))
+
+    created = store.create_open_loop(
+        memory_id=memory_id,
+        title="Confirm magnesium reorder",
+        status="open",
+        opened_at=None,
+        due_at=due_at,
+        resolved_at=None,
+        resolution_note=None,
+    )
+    detail = store.get_open_loop_optional(open_loop_id)
+    listed_all = store.list_open_loops(limit=5)
+    listed_open = store.list_open_loops(status="open", limit=3)
+    count_all = store.count_open_loops()
+    count_open = store.count_open_loops(status="open")
+    updated = store.update_open_loop_status_optional(
+        open_loop_id=open_loop_id,
+        status="resolved",
+        resolved_at=None,
+        resolution_note="Resolved after order confirmation.",
+    )
+
+    assert created["id"] == open_loop_id
+    assert detail is not None
+    assert detail["status"] == "open"
+    assert listed_all[0]["id"] == open_loop_id
+    assert listed_open[0]["status"] == "open"
+    assert count_all == 1
+    assert count_open == 1
+    assert updated is not None
+    assert updated["status"] == "resolved"
+    assert updated["resolved_at"] == resolved_at
+
+    assert cursor.executed[0] == (
+        """
+                INSERT INTO open_loops (
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  COALESCE(%s, clock_timestamp()),
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                """,
+        (memory_id, "Confirm magnesium reorder", "open", None, due_at, None, None),
+    )
+    assert cursor.executed[1] == (
+        """
+                SELECT
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                FROM open_loops
+                WHERE id = %s
+                """,
+        (open_loop_id,),
+    )
+    assert cursor.executed[2] == (
+        """
+                SELECT
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                FROM open_loops
+                ORDER BY opened_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+        (5,),
+    )
+    assert cursor.executed[3] == (
+        """
+                SELECT
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                FROM open_loops
+                WHERE status = %s
+                ORDER BY opened_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+        ("open", 3),
+    )
+    assert cursor.executed[4] == (
+        """
+                SELECT COUNT(*) AS count
+                FROM open_loops
+                """,
+        None,
+    )
+    assert cursor.executed[5] == (
+        """
+                SELECT COUNT(*) AS count
+                FROM open_loops
+                WHERE status = %s
+                """,
+        ("open",),
+    )
+    assert cursor.executed[6] == (
+        """
+                UPDATE open_loops
+                SET status = %s,
+                    resolved_at = CASE
+                      WHEN %s = 'open' THEN NULL
+                      ELSE COALESCE(%s, clock_timestamp())
+                    END,
+                    resolution_note = CASE
+                      WHEN %s = 'open' THEN NULL
+                      ELSE %s
+                    END,
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                RETURNING
+                  id,
+                  user_id,
+                  memory_id,
+                  title,
+                  status,
+                  opened_at,
+                  due_at,
+                  resolved_at,
+                  resolution_note,
+                  created_at,
+                  updated_at
+                """,
+        (
+            "resolved",
+            "resolved",
+            None,
+            "resolved",
+            "Resolved after order confirmation.",
+            open_loop_id,
+        ),
+    )

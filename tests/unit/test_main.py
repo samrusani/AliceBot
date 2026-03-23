@@ -19,7 +19,12 @@ from alicebot_api.embedding import (
 )
 from alicebot_api.entity import EntityNotFoundError, EntityValidationError
 from alicebot_api.entity_edge import EntityEdgeValidationError
-from alicebot_api.memory import MemoryAdmissionValidationError, MemoryReviewNotFoundError
+from alicebot_api.memory import (
+    MemoryAdmissionValidationError,
+    MemoryReviewNotFoundError,
+    OpenLoopNotFoundError,
+    OpenLoopValidationError,
+)
 from alicebot_api.response_generation import ResponseFailure
 from alicebot_api.semantic_retrieval import (
     SemanticArtifactChunkRetrievalValidationError,
@@ -102,6 +107,9 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v0/context/compile" in route_paths
     assert "/v0/responses" in route_paths
     assert "/v0/memories/admit" in route_paths
+    assert "/v0/open-loops" in route_paths
+    assert "/v0/open-loops/{open_loop_id}" in route_paths
+    assert "/v0/open-loops/{open_loop_id}/status" in route_paths
     assert "/v0/consents" in route_paths
     assert "/v0/policies" in route_paths
     assert "/v0/policies/{policy_id}" in route_paths
@@ -1109,6 +1117,71 @@ def test_admit_memory_returns_decision_payload(monkeypatch) -> None:
     assert captured["candidate"].memory_key == "user.preference.coffee"
 
 
+def test_admit_memory_includes_open_loop_payload_when_created(monkeypatch) -> None:
+    user_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_user_connection(_database_url: str, _current_user_id):
+        yield object()
+
+    def fake_admit_memory_candidate(_store, *, user_id, candidate):
+        captured["user_id"] = user_id
+        captured["candidate"] = candidate
+        return AdmissionDecisionOutput(
+            action="NOOP",
+            reason="memory_unchanged",
+            memory=None,
+            revision=None,
+            open_loop={
+                "id": "loop-123",
+                "memory_id": "memory-123",
+                "title": "Confirm before reorder",
+                "status": "open",
+                "opened_at": "2026-03-23T10:00:00+00:00",
+                "due_at": "2026-03-25T10:00:00+00:00",
+                "resolved_at": None,
+                "resolution_note": None,
+                "created_at": "2026-03-23T10:00:00+00:00",
+                "updated_at": "2026-03-23T10:00:00+00:00",
+            },
+        )
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(main_module, "admit_memory_candidate", fake_admit_memory_candidate)
+
+    response = main_module.admit_memory(
+        main_module.AdmitMemoryRequest(
+            user_id=user_id,
+            memory_key="user.preference.coffee",
+            value={"likes": "oat milk"},
+            source_event_ids=[uuid4()],
+            open_loop=main_module.AdmitMemoryOpenLoopRequest(
+                title="Confirm before reorder",
+                due_at="2026-03-25T10:00:00+00:00",
+            ),
+        )
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["open_loop"] == {
+        "id": "loop-123",
+        "memory_id": "memory-123",
+        "title": "Confirm before reorder",
+        "status": "open",
+        "opened_at": "2026-03-23T10:00:00+00:00",
+        "due_at": "2026-03-25T10:00:00+00:00",
+        "resolved_at": None,
+        "resolution_note": None,
+        "created_at": "2026-03-23T10:00:00+00:00",
+        "updated_at": "2026-03-23T10:00:00+00:00",
+    }
+    assert captured["candidate"].open_loop is not None
+    assert captured["candidate"].open_loop.title == "Confirm before reorder"
+
+
 def test_admit_memory_returns_bad_request_when_source_validation_fails(monkeypatch) -> None:
     @contextmanager
     def fake_user_connection(_database_url: str, _current_user_id):
@@ -1425,6 +1498,181 @@ def test_list_memories_returns_review_payload(monkeypatch) -> None:
     assert captured["user_id"] == user_id
     assert captured["status"] == "active"
     assert captured["limit"] == 10
+
+
+def test_open_loop_routes_return_payload_and_errors(monkeypatch) -> None:
+    user_id = uuid4()
+    open_loop_id = uuid4()
+    memory_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_user_connection(database_url: str, current_user_id):
+        captured["database_url"] = database_url
+        captured["current_user_id"] = current_user_id
+        yield object()
+
+    def fake_list_open_loop_records(store, *, user_id, status, limit):
+        captured["list_store_type"] = type(store).__name__
+        captured["list_user_id"] = user_id
+        captured["list_status"] = status
+        captured["list_limit"] = limit
+        return {
+            "items": [
+                {
+                    "id": str(open_loop_id),
+                    "memory_id": str(memory_id),
+                    "title": "Follow up",
+                    "status": "open",
+                    "opened_at": "2026-03-23T09:00:00+00:00",
+                    "due_at": None,
+                    "resolved_at": None,
+                    "resolution_note": None,
+                    "created_at": "2026-03-23T09:00:00+00:00",
+                    "updated_at": "2026-03-23T09:00:00+00:00",
+                }
+            ],
+            "summary": {
+                "status": "open",
+                "limit": 10,
+                "returned_count": 1,
+                "total_count": 1,
+                "has_more": False,
+                "order": ["opened_at_desc", "created_at_desc", "id_desc"],
+            },
+        }
+
+    def fake_get_open_loop_record(_store, *, user_id, open_loop_id):
+        captured["detail_user_id"] = user_id
+        captured["detail_open_loop_id"] = open_loop_id
+        return {
+            "open_loop": {
+                "id": str(open_loop_id),
+                "memory_id": str(memory_id),
+                "title": "Follow up",
+                "status": "open",
+                "opened_at": "2026-03-23T09:00:00+00:00",
+                "due_at": None,
+                "resolved_at": None,
+                "resolution_note": None,
+                "created_at": "2026-03-23T09:00:00+00:00",
+                "updated_at": "2026-03-23T09:00:00+00:00",
+            }
+        }
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(main_module, "list_open_loop_records", fake_list_open_loop_records)
+    monkeypatch.setattr(main_module, "get_open_loop_record", fake_get_open_loop_record)
+
+    list_response = main_module.list_open_loops(user_id=user_id, status="open", limit=10)
+    detail_response = main_module.get_open_loop(open_loop_id=open_loop_id, user_id=user_id)
+
+    assert list_response.status_code == 200
+    assert json.loads(list_response.body)["summary"]["status"] == "open"
+    assert detail_response.status_code == 200
+    assert json.loads(detail_response.body)["open_loop"]["id"] == str(open_loop_id)
+    assert captured["list_status"] == "open"
+    assert captured["list_limit"] == 10
+    assert captured["detail_open_loop_id"] == open_loop_id
+
+    monkeypatch.setattr(
+        main_module,
+        "get_open_loop_record",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OpenLoopNotFoundError("open loop hidden")),
+    )
+    not_found_response = main_module.get_open_loop(open_loop_id=open_loop_id, user_id=user_id)
+    assert not_found_response.status_code == 404
+    assert json.loads(not_found_response.body) == {"detail": "open loop hidden"}
+
+
+def test_open_loop_mutation_routes_handle_create_and_status_validation(monkeypatch) -> None:
+    user_id = uuid4()
+    open_loop_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_user_connection(database_url: str, current_user_id):
+        captured["database_url"] = database_url
+        captured["current_user_id"] = current_user_id
+        yield object()
+
+    def fake_create_open_loop_record(_store, *, user_id, open_loop):
+        captured["create_user_id"] = user_id
+        captured["create_open_loop"] = open_loop
+        return {
+            "open_loop": {
+                "id": str(open_loop_id),
+                "memory_id": None,
+                "title": open_loop.title,
+                "status": "open",
+                "opened_at": "2026-03-23T09:00:00+00:00",
+                "due_at": None,
+                "resolved_at": None,
+                "resolution_note": None,
+                "created_at": "2026-03-23T09:00:00+00:00",
+                "updated_at": "2026-03-23T09:00:00+00:00",
+            }
+        }
+
+    def fake_update_open_loop_status_record(_store, *, user_id, open_loop_id, request):
+        captured["status_user_id"] = user_id
+        captured["status_open_loop_id"] = open_loop_id
+        captured["status_request"] = request
+        return {
+            "open_loop": {
+                "id": str(open_loop_id),
+                "memory_id": None,
+                "title": "Follow up",
+                "status": "resolved",
+                "opened_at": "2026-03-23T09:00:00+00:00",
+                "due_at": None,
+                "resolved_at": "2026-03-24T09:00:00+00:00",
+                "resolution_note": "Resolved",
+                "created_at": "2026-03-23T09:00:00+00:00",
+                "updated_at": "2026-03-24T09:00:00+00:00",
+            }
+        }
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(main_module, "create_open_loop_record", fake_create_open_loop_record)
+    monkeypatch.setattr(main_module, "update_open_loop_status_record", fake_update_open_loop_status_record)
+
+    create_response = main_module.create_open_loop(
+        main_module.CreateOpenLoopRequest(
+            user_id=user_id,
+            title="Follow up",
+        )
+    )
+    status_response = main_module.update_open_loop_status(
+        open_loop_id=open_loop_id,
+        request=main_module.UpdateOpenLoopStatusRequest(
+            user_id=user_id,
+            status="resolved",
+            resolution_note="Resolved",
+        ),
+    )
+
+    assert create_response.status_code == 201
+    assert json.loads(create_response.body)["open_loop"]["title"] == "Follow up"
+    assert status_response.status_code == 200
+    assert json.loads(status_response.body)["open_loop"]["status"] == "resolved"
+    assert captured["status_request"].status == "resolved"
+
+    monkeypatch.setattr(
+        main_module,
+        "update_open_loop_status_record",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OpenLoopValidationError("status invalid")),
+    )
+    bad_status_response = main_module.update_open_loop_status(
+        open_loop_id=open_loop_id,
+        request=main_module.UpdateOpenLoopStatusRequest(user_id=user_id, status="invalid"),
+    )
+    assert bad_status_response.status_code == 400
+    assert json.loads(bad_status_response.body) == {"detail": "status invalid"}
 
 
 def test_get_memory_returns_not_found_when_memory_is_inaccessible(monkeypatch) -> None:
