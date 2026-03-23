@@ -2,16 +2,16 @@
 
 ## Canonical Truth
 
-- The working repo state is current through Sprint 7G.
-- The accepted baseline includes deterministic MVP release-candidate validation tooling, with `python3 scripts/run_mvp_validation_matrix.py` as the default go/no-go command.
+- The working repo state is current through Phase 2 Sprint 7.
+- The accepted baseline includes deterministic Phase 2 gate tooling: `python3 scripts/run_phase2_acceptance.py`, `python3 scripts/run_phase2_readiness_gates.py`, and `python3 scripts/run_phase2_validation_matrix.py` (default go/no-go command). MVP script names remain supported aliases with identical semantics.
 - Use [PRODUCT_BRIEF.md](../../PRODUCT_BRIEF.md) for product scope, [ARCHITECTURE.md](../../ARCHITECTURE.md) for implemented boundaries, [ROADMAP.md](../../ROADMAP.md) for forward planning, and [RULES.md](../../RULES.md) for durable operating rules.
 - The live sprint reports are [BUILD_REPORT.md](../../BUILD_REPORT.md) and [REVIEW_REPORT.md](../../REVIEW_REPORT.md) at repo root; older accepted sprint history belongs in [docs/archive/sprints](../../docs/archive/sprints), not in this handoff.
 
 ## Implemented Surfaces
 
-- `apps/api` is the core shipped product surface. It implements continuity, context compilation, assistant responses, governed memory and retrieval, policy/tool/approval governance, execution budgets, tasks and task steps, rooted local workspaces and artifacts, artifact chunk retrieval and embeddings, traces, and narrow read-only Gmail and Calendar seams with selected-item ingestion plus bounded Calendar event discovery.
+- `apps/api` is the core shipped product surface. It implements continuity, context compilation, assistant responses, typed memory and open-loop seams, deterministic thread resumption brief reads, unified explicit-signal capture seams, policy/tool/approval governance, execution budgets, tasks and task steps, rooted local workspaces and artifacts, artifact chunk retrieval and embeddings, traces, and narrow read-only Gmail and Calendar seams with selected-item ingestion plus bounded Calendar event discovery.
 - `apps/web` is also a shipped surface now. The operator shell includes `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live reads when API config is present and explicit fixture fallback when it is not.
-- `/chat` now ships assistant-response mode, governed-request mode, visible thread selection, compact thread creation, selected-thread transcript continuity, thread-linked governed workflow review, ordered task-step timeline review, bounded explain-why trace embedding, and bounded supporting continuity review over thread sessions and events.
+- `/chat` now ships assistant-response mode, governed-request mode, visible thread selection, compact thread creation, selected-thread transcript continuity, deterministic resumption brief review, thread-linked governed workflow review, ordered task-step timeline review, bounded explain-why trace embedding, manual explicit-signal capture controls for selected `message.user` events, and bounded supporting continuity review over thread sessions and events.
 - `/gmail` ships a bounded Gmail operator workspace: account list review, selected-account detail, explicit account connection, and explicit single-message ingestion into one selected task workspace.
 - `/calendar` ships a bounded Calendar operator workspace: account list review, selected-account detail, explicit account connection, and explicit single-event ingestion into one selected task workspace. The shipped API baseline now also includes bounded read-only event discovery for one selected account (`GET /v0/calendar-accounts/{calendar_account_id}/events`) with deterministic ordering metadata and bounded limits.
 - `/memories` ships a bounded memory review workspace: active/queue list posture, selected memory detail, revision review, and memory-label review/submit seams with explicit live/fixture/unavailable states.
@@ -21,7 +21,7 @@
 
 ## Current Boundaries
 
-- Continuity stays explicit and thread-scoped: thread create/list/detail plus session and event review are live; thread rename, archive, search, pagination, and event mutation are not.
+- Continuity stays explicit and thread-scoped: thread create/list/detail plus session/event review and deterministic thread resumption-brief reads are live; thread rename, archive, search, pagination, and event mutation are not.
 - Assistant replies go only through `POST /v0/responses`, persist immutable continuity events, and return linked compile and response traces.
 - Explain-why in `/chat` is selected-thread scoped and bounded: it reuses shipped trace list/detail/event reads, shows linked trace shortcuts from transcript/workflow/timeline context, and keeps full trace workspace in `/traces`.
 - Governed actions still route through policy, allowlist, approval, and approved-only proxy execution; `proxy.echo` is still the only live execution handler.
@@ -45,6 +45,6 @@
 
 ## Planning Guardrails
 
-- Plan from the implemented Sprint 7G repo state, not from older Sprint 5-era narratives.
+- Plan from the implemented Phase 2 Sprint 7 repo state, not from older Sprint 5-era narratives.
 - Do not describe broader Gmail scope, broader Calendar scope beyond bounded read-only event discovery plus selected-event ingestion, richer parsing, broader proxy execution, auth expansion, or runner orchestration as shipped.
 - The immediate next move should be chosen from the current shipped backend-plus-web-shell baseline, including `/gmail`, `/calendar`, `/memories`, `/entities`, and `/artifacts`, not assumed to be leftover connector cleanup by default.

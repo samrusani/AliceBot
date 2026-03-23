@@ -4,32 +4,23 @@
 PASS
 
 ## criteria met
-- Sprint scope remained bounded to `/chat` manual explicit-signal capture controls, deterministic rail rendering, and targeted web/API-client tests.
-- Manual-trigger requirement is preserved:
-  - no automatic capture on render/thread change/mode switch
-  - capture runs only on explicit button click
-- Eligibility remains constrained to `message.user` events only.
-- Request payload wiring remains deterministic and correct (`user_id`, `source_event_id`).
-- Live success and error rendering are deterministic and non-destructive.
-- Fixture and unavailable states remain explicit and safely disabled.
-- Added regression coverage for pre-existing `ThreadEventList` continuity-review rendering paths.
-- Added explicit live-mode negative-state coverage for blocked capture reasons:
-  - missing API config
-  - no eligible `message.user` events
-- Documentation is machine-independent in `BUILD_REPORT.md` (repo-relative commands/paths).
-- `ARCHITECTURE.md` now reflects the shipped `/chat` manual capture-control seam.
-- Reviewer verification rerun passed:
-  - `cd apps/web && pnpm test -- lib/api.test.ts components/thread-event-list.test.tsx app/chat/page.test.tsx` -> `3` files passed, `35` tests passed.
-  - `cd apps/web && pnpm lint -- app/chat/page.tsx components/thread-event-list.tsx components/thread-event-list.test.tsx lib/api.test.ts` -> pass, `0` warnings/errors.
+- Sprint remained closeout-truth-sync scoped: canonical docs, sprint artifacts, and three new Phase 2 gate entrypoint scripts.
+- Canonical docs no longer claim Sprint 7G as current state (`rg -n "Sprint 7G" README.md ROADMAP.md ARCHITECTURE.md .ai/handoff/CURRENT_STATE.md` returned no matches).
+- `README.md`, `ROADMAP.md`, `ARCHITECTURE.md`, and `.ai/handoff/CURRENT_STATE.md` are mutually aligned on shipped seams (typed memory + open loops, resumption brief, manual explicit-signal capture controls, and Phase 2 gate commands).
+- `scripts/run_phase2_acceptance.py`, `scripts/run_phase2_readiness_gates.py`, and `scripts/run_phase2_validation_matrix.py` exist and parse (`python3 -m py_compile ...` passed).
+- Phase 2 validation entrypoint is documented and executable (`python3 scripts/run_phase2_validation_matrix.py --help` passed; same for acceptance/readiness wrappers).
+- No product runtime behavior changes were introduced; wrappers delegate to existing MVP scripts.
+- No out-of-scope work (workers/orchestration/Phase 3 runtime changes/backend contract changes) was introduced.
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking functional or quality issues found in touched seams.
+- No blocking quality issues in sprint scope.
+- Non-blocking: wrapper behavior is verified via compile/`--help` checks, but there is no direct automated assertion for argument/exit-code passthrough semantics.
 
 ## regression risks
-- Low. Touched seams now include both new capture behavior assertions and retained continuity-rendering regression assertions.
+- Low. Main residual risk is future doc drift or alias-wrapper drift if MVP script names/locations change without updating wrappers.
 
 ## docs issues
 - None blocking.
@@ -38,7 +29,8 @@ PASS
 - No.
 
 ## should anything update ARCHITECTURE.md?
-- Already updated in this fix pass.
+- No further update required for this sprint.
 
 ## recommended next action
-- Proceed with final Control Tower closeout and sprint PR.
+1. Proceed to Control Tower closeout and open the sprint PR.
+2. Optional follow-up: add a tiny automated test that validates Phase 2 wrapper arg passthrough and return-code passthrough.

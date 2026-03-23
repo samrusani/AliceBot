@@ -1,12 +1,12 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Sprint 7G: a FastAPI backend plus a bounded Next.js operator shell with deterministic MVP readiness and validation matrix gating.
+AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Phase 2 Sprint 7: a FastAPI backend plus a bounded Next.js operator shell with deterministic readiness and validation matrix gating.
 
 ## Current Implemented Slice
 
-- `apps/api` is the core shipped surface. It includes continuity, context compilation, assistant responses, governed memory and retrieval, policy/tool/approval governance, execution budgets, tasks and task steps, rooted local workspaces and artifacts, artifact retrieval, traces, and narrow read-only Gmail and Calendar seams with bounded event discovery plus selected-item ingestion.
+- `apps/api` is the core shipped surface. It includes continuity, context compilation, assistant responses, typed memory admission/review and open-loop lifecycle seams, deterministic thread resumption brief reads, explicit-signal capture, policy/tool/approval governance, execution budgets, tasks and task steps, rooted local workspaces and artifacts, artifact retrieval, traces, and narrow read-only Gmail and Calendar seams with bounded event discovery plus selected-item ingestion.
 - `apps/web` is shipped operator UI, not scaffold-only. The shell includes `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live-backend reads when configured and explicit fixture fallback otherwise.
-- `/chat` supports both assistant and governed-request modes, selected-thread continuity, compact thread creation, thread-linked governed workflow review, ordered task-step timeline review, bounded explain-why trace embedding, and bounded supporting continuity review.
+- `/chat` supports both assistant and governed-request modes, selected-thread continuity, compact thread creation, deterministic resumption brief review, thread-linked governed workflow review, ordered task-step timeline review, bounded explain-why trace embedding, manual explicit-signal capture controls for selected `message.user` events, and bounded supporting continuity review.
 - `/gmail` and `/calendar` are shipped bounded connector workspaces for account review, selected-account detail, explicit account connection, and explicit single-item ingestion into one selected task workspace.
 - `/artifacts`, `/memories`, and `/entities` are shipped bounded operator review workspaces for artifact, memory, and entity evidence.
 - `workers` remains scaffold-only.
@@ -22,8 +22,10 @@ AliceBot is a private, permissioned personal AI operating system. The current re
 Useful checks:
 
 - API health: [http://127.0.0.1:8000/healthz](http://127.0.0.1:8000/healthz)
-- MVP readiness gates: `python3 scripts/run_mvp_readiness_gates.py`
-- MVP default go/no-go validation gate: `python3 scripts/run_mvp_validation_matrix.py`
+- Phase 2 acceptance gate: `python3 scripts/run_phase2_acceptance.py`
+- Phase 2 readiness gates: `python3 scripts/run_phase2_readiness_gates.py`
+- Phase 2 default go/no-go validation gate: `python3 scripts/run_phase2_validation_matrix.py`
+- MVP alias gates (identical semantics): `python3 scripts/run_mvp_acceptance.py`, `python3 scripts/run_mvp_readiness_gates.py`, `python3 scripts/run_mvp_validation_matrix.py`
 - Backend tests: `./.venv/bin/python -m pytest tests/unit tests/integration`
 - Web tests: `pnpm --dir apps/web test`
 - Web shell: `pnpm --dir apps/web dev`
