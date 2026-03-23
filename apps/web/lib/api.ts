@@ -679,6 +679,59 @@ export type MemoryAdmitPayload = {
   };
 };
 
+export type ExplicitCommitmentPattern =
+  | "remind_me_to"
+  | "i_need_to"
+  | "dont_let_me_forget_to"
+  | "remember_to";
+
+export type ExplicitCommitmentOpenLoopDecision =
+  | "CREATED"
+  | "NOOP_ACTIVE_EXISTS"
+  | "NOOP_MEMORY_NOT_PERSISTED";
+
+export type ExtractExplicitCommitmentsPayload = {
+  user_id: string;
+  source_event_id: string;
+};
+
+export type ExtractedCommitmentCandidateRecord = {
+  memory_key: string;
+  value: unknown;
+  source_event_ids: string[];
+  delete_requested: boolean;
+  pattern: ExplicitCommitmentPattern;
+  commitment_text: string;
+  open_loop_title: string;
+};
+
+export type ExplicitCommitmentAdmissionRecord = {
+  decision: "NOOP" | "ADD" | "UPDATE" | "DELETE";
+  reason: string;
+  memory: PersistedMemoryRecord | null;
+  revision: PersistedMemoryRevisionRecord | null;
+  open_loop: {
+    decision: ExplicitCommitmentOpenLoopDecision;
+    reason: string;
+    open_loop: OpenLoopRecord | null;
+  };
+};
+
+export type ExplicitCommitmentExtractionResponse = {
+  candidates: ExtractedCommitmentCandidateRecord[];
+  admissions: ExplicitCommitmentAdmissionRecord[];
+  summary: {
+    source_event_id: string;
+    source_event_kind: string;
+    candidate_count: number;
+    admission_count: number;
+    persisted_change_count: number;
+    noop_count: number;
+    open_loop_created_count: number;
+    open_loop_noop_count: number;
+  };
+};
+
 export type OpenLoopCreatePayload = {
   user_id: string;
   memory_id?: string | null;
@@ -1195,6 +1248,20 @@ export function admitMemory(apiBaseUrl: string, payload: MemoryAdmitPayload) {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function extractExplicitCommitments(
+  apiBaseUrl: string,
+  payload: ExtractExplicitCommitmentsPayload,
+) {
+  return requestJson<ExplicitCommitmentExtractionResponse>(
+    apiBaseUrl,
+    "/v0/open-loops/extract-explicit-commitments",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export function listOpenLoops(
