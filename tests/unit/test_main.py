@@ -115,6 +115,7 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v0/policies/{policy_id}" in route_paths
     assert "/v0/policies/evaluate" in route_paths
     assert "/v0/memories/extract-explicit-preferences" in route_paths
+    assert "/v0/open-loops/extract-explicit-commitments" in route_paths
     assert "/v0/memories" in route_paths
     assert "/v0/memories/review-queue" in route_paths
     assert "/v0/memories/evaluation-summary" in route_paths
@@ -1415,6 +1416,175 @@ def test_extract_explicit_preferences_returns_bad_request_when_source_event_is_i
 
     response = main_module.extract_explicit_preferences(
         main_module.ExtractExplicitPreferencesRequest(
+            user_id=uuid4(),
+            source_event_id=uuid4(),
+        )
+    )
+
+    assert response.status_code == 400
+    assert json.loads(response.body) == {
+        "detail": "source_event_id must reference an existing message.user event owned by the user",
+    }
+
+
+def test_extract_explicit_commitments_returns_payload(monkeypatch) -> None:
+    user_id = uuid4()
+    source_event_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_user_connection(database_url: str, current_user_id):
+        captured["database_url"] = database_url
+        captured["current_user_id"] = current_user_id
+        yield object()
+
+    def fake_extract_and_admit_explicit_commitments(store, *, user_id, request):
+        captured["store_type"] = type(store).__name__
+        captured["user_id"] = user_id
+        captured["request"] = request
+        return {
+            "candidates": [
+                {
+                    "memory_key": "user.commitment.submit_tax_forms",
+                    "value": {
+                        "kind": "explicit_commitment",
+                        "text": "submit tax forms",
+                    },
+                    "source_event_ids": [str(source_event_id)],
+                    "delete_requested": False,
+                    "pattern": "remind_me_to",
+                    "commitment_text": "submit tax forms",
+                    "open_loop_title": "Remember to submit tax forms",
+                }
+            ],
+            "admissions": [
+                {
+                    "decision": "ADD",
+                    "reason": "source_backed_add",
+                    "memory": {
+                        "id": "memory-123",
+                        "user_id": str(user_id),
+                        "memory_key": "user.commitment.submit_tax_forms",
+                        "value": {
+                            "kind": "explicit_commitment",
+                            "text": "submit tax forms",
+                        },
+                        "status": "active",
+                        "source_event_ids": [str(source_event_id)],
+                        "memory_type": "commitment",
+                        "created_at": "2026-03-23T09:00:00+00:00",
+                        "updated_at": "2026-03-23T09:00:00+00:00",
+                        "deleted_at": None,
+                    },
+                    "revision": {
+                        "id": "revision-123",
+                        "user_id": str(user_id),
+                        "memory_id": "memory-123",
+                        "sequence_no": 1,
+                        "action": "ADD",
+                        "memory_key": "user.commitment.submit_tax_forms",
+                        "previous_value": None,
+                        "new_value": {
+                            "kind": "explicit_commitment",
+                            "text": "submit tax forms",
+                        },
+                        "source_event_ids": [str(source_event_id)],
+                        "candidate": {
+                            "memory_key": "user.commitment.submit_tax_forms",
+                            "value": {
+                                "kind": "explicit_commitment",
+                                "text": "submit tax forms",
+                            },
+                            "source_event_ids": [str(source_event_id)],
+                            "delete_requested": False,
+                            "memory_type": "commitment",
+                        },
+                        "created_at": "2026-03-23T09:00:00+00:00",
+                    },
+                    "open_loop": {
+                        "decision": "CREATED",
+                        "reason": "created_open_loop_for_memory",
+                        "open_loop": {
+                            "id": "loop-123",
+                            "memory_id": "memory-123",
+                            "title": "Remember to submit tax forms",
+                            "status": "open",
+                            "opened_at": "2026-03-23T09:00:00+00:00",
+                            "due_at": None,
+                            "resolved_at": None,
+                            "resolution_note": None,
+                            "created_at": "2026-03-23T09:00:00+00:00",
+                            "updated_at": "2026-03-23T09:00:00+00:00",
+                        },
+                    },
+                }
+            ],
+            "summary": {
+                "source_event_id": str(source_event_id),
+                "source_event_kind": "message.user",
+                "candidate_count": 1,
+                "admission_count": 1,
+                "persisted_change_count": 1,
+                "noop_count": 0,
+                "open_loop_created_count": 1,
+                "open_loop_noop_count": 0,
+            },
+        }
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "extract_and_admit_explicit_commitments",
+        fake_extract_and_admit_explicit_commitments,
+    )
+
+    response = main_module.extract_explicit_commitments(
+        main_module.ExtractExplicitCommitmentsRequest(
+            user_id=user_id,
+            source_event_id=source_event_id,
+        )
+    )
+
+    assert response.status_code == 200
+    assert json.loads(response.body)["summary"] == {
+        "source_event_id": str(source_event_id),
+        "source_event_kind": "message.user",
+        "candidate_count": 1,
+        "admission_count": 1,
+        "persisted_change_count": 1,
+        "noop_count": 0,
+        "open_loop_created_count": 1,
+        "open_loop_noop_count": 0,
+    }
+    assert captured["database_url"] == "postgresql://app"
+    assert captured["current_user_id"] == user_id
+    assert captured["user_id"] == user_id
+    assert captured["request"].source_event_id == source_event_id
+
+
+def test_extract_explicit_commitments_returns_bad_request_when_source_event_is_invalid(
+    monkeypatch,
+) -> None:
+    @contextmanager
+    def fake_user_connection(_database_url: str, _current_user_id):
+        yield object()
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "extract_and_admit_explicit_commitments",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            main_module.ExplicitCommitmentExtractionValidationError(
+                "source_event_id must reference an existing message.user event owned by the user"
+            )
+        ),
+    )
+
+    response = main_module.extract_explicit_commitments(
+        main_module.ExtractExplicitCommitmentsRequest(
             user_id=uuid4(),
             source_event_id=uuid4(),
         )
