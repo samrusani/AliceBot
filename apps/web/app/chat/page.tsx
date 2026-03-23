@@ -12,6 +12,7 @@ import { ThreadSummary } from "../../components/thread-summary";
 import type {
   ApiSource,
   ApprovalItem,
+  ResumptionBrief,
   TaskItem,
   TaskStepItem,
   TaskStepListSummary,
@@ -26,6 +27,7 @@ import {
   getTaskSteps,
   getThreadDetail,
   getThreadEvents,
+  getThreadResumptionBrief,
   getThreadSessions,
   hasLiveApiConfig,
   listApprovals,
@@ -81,6 +83,14 @@ type WorkflowViewModel = {
   taskStepSummary: TaskStepListSummary | null;
   taskStepSource: WorkflowSource | null;
   taskStepUnavailableReason?: string;
+};
+
+type ResumptionBriefSource = ApiSource | "unavailable" | null;
+
+type ResumptionBriefViewModel = {
+  brief: ResumptionBrief | null;
+  source: ResumptionBriefSource;
+  unavailableReason?: string;
 };
 
 function normalizeMode(value: string | string[] | undefined): ChatMode {
@@ -318,6 +328,109 @@ async function loadLiveWorkflow(
   };
 }
 
+function buildFixtureResumptionBrief(
+  continuity: ContinuityViewModel,
+  workflow: WorkflowViewModel,
+): ResumptionBrief {
+  const conversationItems = continuity.events
+    .filter((event) => event.kind === "message.user" || event.kind === "message.assistant")
+    .slice(-8);
+  const latestTaskStep = workflow.taskSteps[workflow.taskSteps.length - 1] ?? null;
+
+  return {
+    assembly_version: "resumption_brief_v0",
+    thread: continuity.selectedThread as NonNullable<ContinuityViewModel["selectedThread"]>,
+    conversation: {
+      items: conversationItems,
+      summary: {
+        limit: 8,
+        returned_count: conversationItems.length,
+        total_count: continuity.events.filter(
+          (event) => event.kind === "message.user" || event.kind === "message.assistant",
+        ).length,
+        order: ["sequence_no_asc"],
+        kinds: ["message.user", "message.assistant"],
+      },
+    },
+    open_loops: {
+      items: [],
+      summary: {
+        limit: 5,
+        returned_count: 0,
+        total_count: 0,
+        order: ["opened_at_desc", "created_at_desc", "id_desc"],
+      },
+    },
+    memory_highlights: {
+      items: [],
+      summary: {
+        limit: 5,
+        returned_count: 0,
+        total_count: 0,
+        order: ["updated_at_asc", "created_at_asc", "id_asc"],
+      },
+    },
+    workflow: workflow.task
+      ? {
+          task: workflow.task,
+          latest_task_step: latestTaskStep,
+          summary: {
+            present: true,
+            task_order: ["created_at_asc", "id_asc"],
+            task_step_order: ["sequence_no_asc", "created_at_asc", "id_asc"],
+          },
+        }
+      : null,
+    sources: workflow.task
+      ? ["threads", "events", "open_loops", "memories", "tasks", "task_steps"]
+      : ["threads", "events", "open_loops", "memories"],
+  };
+}
+
+async function loadFixtureResumptionBrief(
+  continuity: ContinuityViewModel,
+  workflow: WorkflowViewModel,
+): Promise<ResumptionBriefViewModel> {
+  if (!continuity.selectedThread) {
+    return {
+      brief: null,
+      source: "fixture",
+    };
+  }
+
+  return {
+    brief: buildFixtureResumptionBrief(continuity, workflow),
+    source: "fixture",
+  };
+}
+
+async function loadLiveResumptionBrief(
+  apiBaseUrl: string,
+  userId: string,
+  selectedThreadId: string,
+): Promise<ResumptionBriefViewModel> {
+  if (!selectedThreadId) {
+    return {
+      brief: null,
+      source: "live",
+    };
+  }
+
+  try {
+    const payload = await getThreadResumptionBrief(apiBaseUrl, selectedThreadId, userId);
+    return {
+      brief: payload.brief,
+      source: "live",
+    };
+  } catch (error) {
+    return {
+      brief: null,
+      source: "unavailable",
+      unavailableReason: error instanceof Error ? error.message : "Resumption brief could not be loaded.",
+    };
+  }
+}
+
 async function loadFixtureContinuity(
   requestedThreadId: string,
   defaultThreadId: string,
@@ -424,6 +537,13 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
   const workflow = liveModeReady
     ? await loadLiveWorkflow(apiConfig.apiBaseUrl, apiConfig.userId, continuity.selectedThreadId)
     : await loadFixtureWorkflow(continuity.selectedThreadId);
+  const resumptionBrief = liveModeReady
+    ? await loadLiveResumptionBrief(
+        apiConfig.apiBaseUrl,
+        apiConfig.userId,
+        continuity.selectedThreadId,
+      )
+    : await loadFixtureResumptionBrief(continuity, workflow);
   const traceTargets = buildThreadTraceTargets(continuity.selectedThreadId, workflow, liveModeReady);
   const traceHrefPrefix = buildChatTraceHrefPrefix(mode, continuity.selectedThreadId);
   const threadTracePanel = await ThreadTracePanel({
@@ -528,6 +648,9 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
             events={continuity.events}
             source={continuity.continuitySource}
             unavailableReason={continuity.unavailableReason}
+            resumptionBrief={resumptionBrief.brief}
+            resumptionSource={resumptionBrief.source}
+            resumptionUnavailableReason={resumptionBrief.unavailableReason}
           />
 
           <ThreadList

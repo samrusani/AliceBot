@@ -1,97 +1,99 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 2 Sprint 3 open-loop backbone end-to-end (schema, store, contracts/API, compiler serialization, and `/memories` review adoption) without adding automation, worker orchestration, resumption synthesis, or Phase 3 runtime behavior.
+Implement Phase 2 Sprint 4 deterministic resumption briefs (typed contracts, user-scoped API, compiler-backed deterministic assembly, and `/chat` selected-thread display adoption) without adding automation, worker orchestration, or Phase 3 runtime/profile routing.
 
 ## Completed Work
-- Shipped migration-backed `open_loops` domain with deterministic lifecycle fields:
-  - `id`
-  - `user_id`
-  - `memory_id`
-  - `title`
-  - `status`
-  - `opened_at`
-  - `due_at`
-  - `resolved_at`
-  - `resolution_note`
-  - `created_at`
-  - `updated_at`
-- Added open-loop status validation for `open`, `resolved`, and `dismissed`.
-- Added store methods for open-loop create/list/detail/count/update-status with strict `user_id` scoping.
-- Added API surface:
-  - `GET /v0/open-loops`
-  - `GET /v0/open-loops/{open_loop_id}`
-  - `POST /v0/open-loops`
-  - `POST /v0/open-loops/{open_loop_id}/status`
-- Extended memory admission to accept optional `open_loop` payload and create an open loop during admission without regressing existing admission paths.
-- Extended compiled context payload to include bounded, deterministic open-loop slice and open-loop summary when open loops exist.
-- Updated `/memories` to show open-loop summary/list and selected detail with live + fixture-safe fallback behavior.
-- Added/updated sprint-scoped migration, unit, integration, and web tests for the touched seams.
-- Added explicit test coverage for:
-  - successful `open -> dismissed` transition audit fields
-  - cross-user `404` denial on open-loop detail/status mutation
-- Updated `ARCHITECTURE.md` to document the shipped open-loop domain/API/compiler and `/memories` adoption.
-- Fixed route model typing bug in open-loop status filter (`OpenLoopStatusFilter`) so FastAPI route registration remains valid.
+- Shipped typed resumption-brief contracts and bounds in `apps/api/src/alicebot_api/contracts.py`.
+- Shipped `GET /v0/threads/{thread_id}/resumption-brief` in `apps/api/src/alicebot_api/main.py`.
+- Added bounded query inputs:
+  - `user_id` (required)
+  - `max_events` (default `8`, max `50`)
+  - `max_open_loops` (default `5`, max `20`)
+  - `max_memories` (default `5`, max `20`)
+- Added compiler-backed deterministic brief assembly in `apps/api/src/alicebot_api/compiler.py` via `compile_resumption_brief(...)`.
+- Brief assembly is sourced from existing durable seams only:
+  - selected thread metadata
+  - latest conversation events (`message.user`, `message.assistant`)
+  - active open loops (`status="open"`)
+  - active memory highlights
+  - latest task + latest task-step posture for the selected thread when present
+- Added `/chat` adoption:
+  - `apps/web/lib/api.ts`: typed client + `getThreadResumptionBrief(...)`
+  - `apps/web/app/chat/page.tsx`: live/fixture/unavailable brief loading
+  - `apps/web/components/thread-summary.tsx`: brief section rendering in selected-thread panel
+- Added/updated sprint-scoped backend/frontend tests for contracts/API/assembly/UI seams.
+
+## Exact Resumption-Brief Fields Shipped
+- Top-level `brief` payload:
+  - `assembly_version`
+  - `thread`
+  - `conversation`
+    - `items`
+    - `summary`: `limit`, `returned_count`, `total_count`, `order`, `kinds`
+  - `open_loops`
+    - `items`
+    - `summary`: `limit`, `returned_count`, `total_count`, `order`
+  - `memory_highlights`
+    - `items`
+    - `summary`: `limit`, `returned_count`, `total_count`, `order`
+  - `workflow` (`null` when absent)
+    - `task`
+    - `latest_task_step`
+    - `summary`: `present`, `task_order`, `task_step_order`
+  - `sources`
+
+## API Surface Deltas And Deterministic Ordering Rules
+- New endpoint:
+  - `GET /v0/threads/{thread_id}/resumption-brief`
+- Deterministic not-found behavior:
+  - missing thread and cross-user thread both return `404` with thread-specific detail.
+- Deterministic ordering and bounded windows:
+  - conversation candidates ordered by `sequence_no_asc`, then bounded to latest window (`max_events`).
+  - open loops ordered by `opened_at_desc`, `created_at_desc`, `id_desc`, then bounded by `max_open_loops`.
+  - memory highlights ordered by `updated_at_asc`, `created_at_asc`, `id_asc`, then bounded to latest window (`max_memories`).
+  - workflow posture uses latest task by `created_at_asc`, `id_asc` and latest task-step by `sequence_no_asc`, `created_at_asc`, `id_asc`.
 
 ## Incomplete Work
 - None within sprint scope.
 
-## Migration IDs And API Surface Deltas
-- Migration added:
-  - `20260323_0031_open_loop_backbone`
-- Schema delta:
-  - New `open_loops` table and indexes:
-    - `open_loops_user_status_opened_idx`
-    - `open_loops_user_memory_idx`
-  - Enforced status domain + lifecycle consistency checks.
-  - RLS enabled/forced with owner policy.
-  - Granted `SELECT, INSERT, UPDATE` on `open_loops` to `alicebot_app`.
-- API deltas:
-  - New open-loop list/detail/create/status-update endpoints listed above.
-  - `POST /v0/memories/admit` now accepts optional `open_loop` payload and may return created open-loop details.
-  - `POST /v0/context/compile` context pack may include `open_loops` and `open_loop_summary` when candidate open loops exist.
-
 ## Files Changed
-- `apps/api/alembic/versions/20260323_0031_open_loop_backbone.py`
-- `apps/api/src/alicebot_api/store.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/memory.py`
 - `apps/api/src/alicebot_api/main.py`
 - `apps/api/src/alicebot_api/compiler.py`
-- `ARCHITECTURE.md`
 - `apps/web/lib/api.ts`
-- `apps/web/lib/api.test.ts`
-- `apps/web/app/memories/page.tsx`
-- `apps/web/app/memories/page.test.tsx`
-- `tests/unit/test_20260323_0031_open_loop_backbone.py`
-- `tests/unit/test_memory_store.py`
-- `tests/unit/test_memory.py`
+- `apps/web/app/chat/page.tsx`
+- `apps/web/components/thread-summary.tsx`
 - `tests/unit/test_compiler.py`
 - `tests/unit/test_main.py`
-- `tests/integration/test_open_loops_api.py`
+- `tests/integration/test_continuity_api.py`
+- `apps/web/lib/api.test.ts`
+- `apps/web/components/thread-summary.test.tsx`
+- `apps/web/app/chat/page.test.tsx`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## Tests Run
-1. `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_20260323_0031_open_loop_backbone.py tests/unit/test_memory_store.py tests/unit/test_memory.py tests/unit/test_compiler.py tests/unit/test_main.py`
-- Outcome: `79 passed`
+1. `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_compiler.py tests/unit/test_main.py`
+- Outcome: `53 passed`
 
-2. `cd apps/web && pnpm test -- lib/api.test.ts app/memories/page.test.tsx`
-- Outcome: `24 passed`
+2. `cd apps/web && pnpm test -- app/chat/page.test.tsx components/thread-summary.test.tsx lib/api.test.ts`
+- Outcome: `28 passed`
 
-3. `PYTHONPATH=$PWD .venv/bin/pytest tests/integration/test_open_loops_api.py tests/integration/test_migrations.py`
-- Outcome: `11 passed`
-- Note: executed with escalated permissions to allow local Postgres connectivity from this environment.
+3. `PYTHONPATH=$PWD .venv/bin/pytest tests/integration/test_continuity_api.py`
+- Outcome: `3 passed`
+- Note: executed with escalated permissions to allow local Postgres access from this environment.
 
 ## Blockers/Issues
 - No unresolved blockers.
-- Environment-specific constraint encountered: DB-backed integration tests required running outside sandbox network restrictions.
+- Environment constraint: DB-backed integration tests require execution outside default sandbox network restrictions.
 
 ## Explicit Deferred Scope
-- Resumption brief synthesis
-- Background workers/scheduler automation
-- Autonomous follow-up execution/reminder orchestration
+- autonomous follow-up behavior/reminders
+- background worker or scheduler integration
+- automation orchestration
 - Phase 3 multi-agent runtime/profile routing
+- database migrations/new tables outside sprint scope
 
 ## Recommended Next Step
-Proceed to sprint review with this open-loop backbone diff and test evidence, then merge once Control Tower approves scope and acceptance criteria.
+Proceed to Control Tower integration review for Sprint 4, focusing on deterministic brief payload coherence across contracts/API/compiler/UI and merge after reviewer `PASS` + explicit merge approval.

@@ -7,6 +7,7 @@ from alicebot_api.compiler import (
     SUMMARY_TRACE_EVENT_KIND,
     _compile_artifact_chunk_section,
     _compile_memory_section,
+    compile_resumption_brief,
     compile_continuity_context,
 )
 from alicebot_api.contracts import (
@@ -1457,3 +1458,371 @@ def test_compile_continuity_context_includes_open_loops_when_present() -> None:
     reasons = [event.payload["reason"] for event in compiler_run.trace_events if "reason" in event.payload]
     assert "within_open_loop_limit" in reasons
     assert "open_loop_limit_exceeded" in reasons
+
+
+class ResumptionBriefStoreStub:
+    def __init__(self) -> None:
+        self.base_time = datetime(2026, 3, 23, 10, 0, tzinfo=UTC)
+        self.thread_id = uuid4()
+        self.other_thread_id = uuid4()
+        self.latest_task_id = uuid4()
+        self.latest_step_trace_id = uuid4()
+
+    def list_thread_events(self, thread_id):
+        if thread_id != self.thread_id:
+            return []
+        return [
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "thread_id": self.thread_id,
+                "session_id": uuid4(),
+                "sequence_no": 1,
+                "kind": "message.user",
+                "payload": {"text": "first"},
+                "created_at": self.base_time,
+            },
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "thread_id": self.thread_id,
+                "session_id": uuid4(),
+                "sequence_no": 2,
+                "kind": "approval.request",
+                "payload": {"approval_id": "approval-1"},
+                "created_at": self.base_time + timedelta(minutes=1),
+            },
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "thread_id": self.thread_id,
+                "session_id": uuid4(),
+                "sequence_no": 3,
+                "kind": "message.assistant",
+                "payload": {"text": "second"},
+                "created_at": self.base_time + timedelta(minutes=2),
+            },
+        ]
+
+    def list_open_loops(self, *, status=None, limit=None):
+        assert status == "open"
+        assert limit is None
+        return [
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "memory_id": None,
+                "title": "Latest open loop",
+                "status": "open",
+                "opened_at": self.base_time + timedelta(minutes=3),
+                "due_at": None,
+                "resolved_at": None,
+                "resolution_note": None,
+                "created_at": self.base_time + timedelta(minutes=3),
+                "updated_at": self.base_time + timedelta(minutes=3),
+            },
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "memory_id": None,
+                "title": "Older open loop",
+                "status": "open",
+                "opened_at": self.base_time + timedelta(minutes=1),
+                "due_at": None,
+                "resolved_at": None,
+                "resolution_note": None,
+                "created_at": self.base_time + timedelta(minutes=1),
+                "updated_at": self.base_time + timedelta(minutes=1),
+            },
+        ]
+
+    def list_context_memories(self):
+        return [
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "memory_key": "user.preference.older",
+                "value": {"likes": "tea"},
+                "status": "active",
+                "source_event_ids": [],
+                "memory_type": "preference",
+                "confidence": None,
+                "salience": None,
+                "confirmation_status": "unconfirmed",
+                "valid_from": None,
+                "valid_to": None,
+                "last_confirmed_at": None,
+                "created_at": self.base_time,
+                "updated_at": self.base_time,
+                "deleted_at": None,
+            },
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "memory_key": "user.preference.deleted",
+                "value": {"likes": "espresso"},
+                "status": "deleted",
+                "source_event_ids": [],
+                "memory_type": "preference",
+                "confidence": None,
+                "salience": None,
+                "confirmation_status": "unconfirmed",
+                "valid_from": None,
+                "valid_to": None,
+                "last_confirmed_at": None,
+                "created_at": self.base_time + timedelta(minutes=1),
+                "updated_at": self.base_time + timedelta(minutes=1),
+                "deleted_at": self.base_time + timedelta(minutes=1),
+            },
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "memory_key": "user.preference.latest",
+                "value": {"likes": "oat milk"},
+                "status": "active",
+                "source_event_ids": [],
+                "memory_type": "preference",
+                "confidence": None,
+                "salience": None,
+                "confirmation_status": "unconfirmed",
+                "valid_from": None,
+                "valid_to": None,
+                "last_confirmed_at": None,
+                "created_at": self.base_time + timedelta(minutes=2),
+                "updated_at": self.base_time + timedelta(minutes=2),
+                "deleted_at": None,
+            },
+        ]
+
+    def list_tasks(self):
+        return [
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "thread_id": self.other_thread_id,
+                "tool_id": uuid4(),
+                "status": "approved",
+                "request": {
+                    "thread_id": str(self.other_thread_id),
+                    "tool_id": "tool-1",
+                    "action": "tool.run",
+                    "scope": "workspace",
+                    "domain_hint": None,
+                    "risk_hint": None,
+                    "attributes": {},
+                },
+                "tool": {
+                    "id": "tool-1",
+                    "tool_key": "proxy.echo",
+                    "name": "Proxy Echo",
+                    "description": "Deterministic proxy handler.",
+                    "version": "1.0.0",
+                    "metadata_version": "tool_metadata_v0",
+                    "active": True,
+                    "tags": [],
+                    "action_hints": [],
+                    "scope_hints": [],
+                    "domain_hints": [],
+                    "risk_hints": [],
+                    "metadata": {},
+                    "created_at": self.base_time.isoformat(),
+                },
+                "latest_approval_id": None,
+                "latest_execution_id": None,
+                "created_at": self.base_time,
+                "updated_at": self.base_time,
+            },
+            {
+                "id": self.latest_task_id,
+                "user_id": uuid4(),
+                "thread_id": self.thread_id,
+                "tool_id": uuid4(),
+                "status": "approved",
+                "request": {
+                    "thread_id": str(self.thread_id),
+                    "tool_id": "tool-2",
+                    "action": "tool.run",
+                    "scope": "workspace",
+                    "domain_hint": None,
+                    "risk_hint": None,
+                    "attributes": {"task": "current"},
+                },
+                "tool": {
+                    "id": "tool-2",
+                    "tool_key": "proxy.echo",
+                    "name": "Proxy Echo",
+                    "description": "Deterministic proxy handler.",
+                    "version": "1.0.0",
+                    "metadata_version": "tool_metadata_v0",
+                    "active": True,
+                    "tags": [],
+                    "action_hints": [],
+                    "scope_hints": [],
+                    "domain_hints": [],
+                    "risk_hints": [],
+                    "metadata": {},
+                    "created_at": self.base_time.isoformat(),
+                },
+                "latest_approval_id": None,
+                "latest_execution_id": None,
+                "created_at": self.base_time + timedelta(minutes=2),
+                "updated_at": self.base_time + timedelta(minutes=2),
+            },
+        ]
+
+    def list_task_steps_for_task(self, task_id):
+        if task_id != self.latest_task_id:
+            return []
+        return [
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "task_id": self.latest_task_id,
+                "sequence_no": 1,
+                "parent_step_id": None,
+                "source_approval_id": None,
+                "source_execution_id": None,
+                "kind": "governed_request",
+                "status": "approved",
+                "request": {
+                    "thread_id": str(self.thread_id),
+                    "tool_id": "tool-2",
+                    "action": "tool.run",
+                    "scope": "workspace",
+                    "domain_hint": None,
+                    "risk_hint": None,
+                    "attributes": {"task": "current"},
+                },
+                "outcome": {
+                    "routing_decision": "ready",
+                    "approval_id": None,
+                    "approval_status": None,
+                    "execution_id": None,
+                    "execution_status": None,
+                    "blocked_reason": None,
+                },
+                "trace_id": uuid4(),
+                "trace_kind": "task.step.sequence",
+                "created_at": self.base_time + timedelta(minutes=2),
+                "updated_at": self.base_time + timedelta(minutes=2),
+            },
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "task_id": self.latest_task_id,
+                "sequence_no": 2,
+                "parent_step_id": None,
+                "source_approval_id": None,
+                "source_execution_id": None,
+                "kind": "governed_request",
+                "status": "executed",
+                "request": {
+                    "thread_id": str(self.thread_id),
+                    "tool_id": "tool-2",
+                    "action": "tool.run",
+                    "scope": "workspace",
+                    "domain_hint": None,
+                    "risk_hint": None,
+                    "attributes": {"task": "current"},
+                },
+                "outcome": {
+                    "routing_decision": "ready",
+                    "approval_id": None,
+                    "approval_status": None,
+                    "execution_id": "execution-1",
+                    "execution_status": "completed",
+                    "blocked_reason": None,
+                },
+                "trace_id": self.latest_step_trace_id,
+                "trace_kind": "task.step.transition",
+                "created_at": self.base_time + timedelta(minutes=3),
+                "updated_at": self.base_time + timedelta(minutes=3),
+            },
+        ]
+
+
+def test_compile_resumption_brief_builds_deterministic_bounded_sections() -> None:
+    store = ResumptionBriefStoreStub()
+    thread = {
+        "id": store.thread_id,
+        "user_id": uuid4(),
+        "title": "Resumption thread",
+        "created_at": store.base_time,
+        "updated_at": store.base_time + timedelta(minutes=3),
+    }
+
+    brief = compile_resumption_brief(
+        store,
+        thread=thread,
+        event_limit=1,
+        open_loop_limit=1,
+        memory_limit=1,
+    )
+
+    assert brief["assembly_version"] == "resumption_brief_v0"
+    assert brief["conversation"]["summary"] == {
+        "limit": 1,
+        "returned_count": 1,
+        "total_count": 2,
+        "order": ["sequence_no_asc"],
+        "kinds": ["message.user", "message.assistant"],
+    }
+    assert [event["sequence_no"] for event in brief["conversation"]["items"]] == [3]
+    assert brief["open_loops"]["summary"] == {
+        "limit": 1,
+        "returned_count": 1,
+        "total_count": 2,
+        "order": ["opened_at_desc", "created_at_desc", "id_desc"],
+    }
+    assert [item["title"] for item in brief["open_loops"]["items"]] == ["Latest open loop"]
+    assert brief["memory_highlights"]["summary"] == {
+        "limit": 1,
+        "returned_count": 1,
+        "total_count": 2,
+        "order": ["updated_at_asc", "created_at_asc", "id_asc"],
+    }
+    assert [item["memory_key"] for item in brief["memory_highlights"]["items"]] == [
+        "user.preference.latest"
+    ]
+    assert brief["workflow"] is not None
+    assert brief["workflow"]["task"]["id"] == str(store.latest_task_id)
+    assert brief["workflow"]["latest_task_step"] is not None
+    assert brief["workflow"]["latest_task_step"]["sequence_no"] == 2
+    assert brief["workflow"]["latest_task_step"]["trace"]["trace_id"] == str(
+        store.latest_step_trace_id
+    )
+    assert brief["workflow"]["summary"] == {
+        "present": True,
+        "task_order": ["created_at_asc", "id_asc"],
+        "task_step_order": ["sequence_no_asc", "created_at_asc", "id_asc"],
+    }
+    assert brief["sources"] == ["threads", "events", "open_loops", "memories", "tasks", "task_steps"]
+
+
+def test_compile_resumption_brief_supports_zero_limits_and_missing_workflow() -> None:
+    store = ResumptionBriefStoreStub()
+    store.list_tasks = lambda: []  # type: ignore[method-assign]
+    thread = {
+        "id": store.thread_id,
+        "user_id": uuid4(),
+        "title": "Resumption thread",
+        "created_at": store.base_time,
+        "updated_at": store.base_time + timedelta(minutes=3),
+    }
+
+    brief = compile_resumption_brief(
+        store,
+        thread=thread,
+        event_limit=0,
+        open_loop_limit=0,
+        memory_limit=0,
+    )
+
+    assert brief["conversation"]["items"] == []
+    assert brief["open_loops"]["items"] == []
+    assert brief["memory_highlights"]["items"] == []
+    assert brief["conversation"]["summary"]["limit"] == 0
+    assert brief["open_loops"]["summary"]["limit"] == 0
+    assert brief["memory_highlights"]["summary"]["limit"] == 0
+    assert brief["workflow"] is None
+    assert brief["sources"] == ["threads", "events", "open_loops", "memories"]

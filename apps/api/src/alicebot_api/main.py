@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fastapi.responses import JSONResponse
 from urllib.parse import urlsplit, urlunsplit
 
-from alicebot_api.compiler import compile_and_persist_trace
+from alicebot_api.compiler import compile_and_persist_trace, compile_resumption_brief
 from alicebot_api.config import Settings, get_settings
 from alicebot_api.contracts import (
     ApprovalApproveInput,
@@ -32,10 +32,16 @@ from alicebot_api.contracts import (
     DEFAULT_MAX_MEMORIES,
     DEFAULT_MEMORY_REVIEW_LIMIT,
     DEFAULT_OPEN_LOOP_LIMIT,
+    DEFAULT_RESUMPTION_BRIEF_EVENT_LIMIT,
+    DEFAULT_RESUMPTION_BRIEF_MEMORY_LIMIT,
+    DEFAULT_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT,
     DEFAULT_MAX_SESSIONS,
     DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     MAX_MEMORY_REVIEW_LIMIT,
     MAX_OPEN_LOOP_LIMIT,
+    MAX_RESUMPTION_BRIEF_EVENT_LIMIT,
+    MAX_RESUMPTION_BRIEF_MEMORY_LIMIT,
+    MAX_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT,
     MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
     MAX_CALENDAR_EVENT_LIST_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
@@ -100,6 +106,8 @@ from alicebot_api.contracts import (
     ThreadListResponse,
     ThreadListSummary,
     ThreadRecord,
+    ResumptionBriefRequestInput,
+    ResumptionBriefResponse,
     ThreadSessionListResponse,
     ThreadSessionListSummary,
     ThreadSessionRecord,
@@ -1084,6 +1092,54 @@ def list_thread_events(thread_id: UUID, user_id: UUID) -> JSONResponse:
         "items": items,
         "summary": summary,
     }
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/threads/{thread_id}/resumption-brief")
+def get_thread_resumption_brief(
+    thread_id: UUID,
+    user_id: UUID,
+    max_events: Annotated[
+        int,
+        Query(ge=0, le=MAX_RESUMPTION_BRIEF_EVENT_LIMIT),
+    ] = DEFAULT_RESUMPTION_BRIEF_EVENT_LIMIT,
+    max_open_loops: Annotated[
+        int,
+        Query(
+            ge=0,
+            le=MAX_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT,
+        ),
+    ] = DEFAULT_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT,
+    max_memories: Annotated[
+        int,
+        Query(ge=0, le=MAX_RESUMPTION_BRIEF_MEMORY_LIMIT),
+    ] = DEFAULT_RESUMPTION_BRIEF_MEMORY_LIMIT,
+) -> JSONResponse:
+    settings = get_settings()
+    request = ResumptionBriefRequestInput(
+        thread_id=thread_id,
+        max_events=max_events,
+        max_open_loops=max_open_loops,
+        max_memories=max_memories,
+    )
+
+    with user_connection(settings.database_url, user_id) as conn:
+        store = ContinuityStore(conn)
+        thread = store.get_thread_optional(thread_id)
+        if thread is None:
+            return JSONResponse(status_code=404, content={"detail": f"thread {thread_id} was not found"})
+        brief = compile_resumption_brief(
+            store,
+            thread=thread,
+            event_limit=request.max_events,
+            open_loop_limit=request.max_open_loops,
+            memory_limit=request.max_memories,
+        )
+
+    payload: ResumptionBriefResponse = {"brief": brief}
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder(payload),
