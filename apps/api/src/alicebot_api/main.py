@@ -435,6 +435,19 @@ class AdmitMemoryRequest(BaseModel):
     value: object | None = None
     source_event_ids: list[UUID] = Field(min_length=1)
     delete_requested: bool = False
+    memory_type: str | None = Field(default=None, min_length=1, max_length=100)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    salience: float | None = Field(default=None, ge=0.0, le=1.0)
+    confirmation_status: str | None = Field(default=None, min_length=1, max_length=100)
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    last_confirmed_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_temporal_range(self) -> "AdmitMemoryRequest":
+        if self.valid_from is not None and self.valid_to is not None and self.valid_to < self.valid_from:
+            raise ValueError("valid_to must be greater than or equal to valid_from")
+        return self
 
 
 class ExtractExplicitPreferencesRequest(BaseModel):
@@ -1114,6 +1127,13 @@ def admit_memory(request: AdmitMemoryRequest) -> JSONResponse:
                     value=request.value,
                     source_event_ids=tuple(request.source_event_ids),
                     delete_requested=request.delete_requested,
+                    memory_type=request.memory_type,
+                    confidence=request.confidence,
+                    salience=request.salience,
+                    confirmation_status=request.confirmation_status,
+                    valid_from=request.valid_from,
+                    valid_to=request.valid_to,
+                    last_confirmed_at=request.last_confirmed_at,
                 ),
             )
     except MemoryAdmissionValidationError as exc:

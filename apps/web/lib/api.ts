@@ -254,12 +254,32 @@ export type MemoryReviewLabelValue =
   | "outdated"
   | "insufficient_evidence";
 
+export type MemoryType =
+  | "preference"
+  | "identity_fact"
+  | "relationship_fact"
+  | "project_fact"
+  | "decision"
+  | "commitment"
+  | "routine"
+  | "constraint"
+  | "working_style";
+
+export type MemoryConfirmationStatus = "unconfirmed" | "confirmed" | "contested";
+
 export type MemoryReviewRecord = {
   id: string;
   memory_key: string;
   value: unknown;
   status: MemoryReviewStatus;
   source_event_ids: string[];
+  memory_type?: MemoryType;
+  confidence?: number | null;
+  salience?: number | null;
+  confirmation_status?: MemoryConfirmationStatus;
+  valid_from?: string | null;
+  valid_to?: string | null;
+  last_confirmed_at?: string | null;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
@@ -324,6 +344,13 @@ export type MemoryReviewQueueItem = {
   value: unknown;
   status: "active";
   source_event_ids: string[];
+  memory_type?: MemoryType;
+  confidence?: number | null;
+  salience?: number | null;
+  confirmation_status?: MemoryConfirmationStatus;
+  valid_from?: string | null;
+  valid_to?: string | null;
+  last_confirmed_at?: string | null;
   created_at: string;
   updated_at: string;
 };

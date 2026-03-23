@@ -169,7 +169,7 @@ def _memory_sort_key(memory: MemoryRow) -> tuple[str, str, str]:
 
 
 def _serialize_memory(memory: MemoryRow) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "id": str(memory["id"]),
         "memory_key": memory["memory_key"],
         "value": memory["value"],
@@ -182,6 +182,8 @@ def _serialize_memory(memory: MemoryRow) -> dict[str, object]:
             "semantic_score": None,
         },
     }
+    payload.update(_serialize_typed_memory_metadata(memory))
+    return payload
 
 
 def _entity_sort_key(entity: EntityRow) -> tuple[str, str]:
@@ -225,6 +227,27 @@ def _semantic_deleted_memory_sort_key(memory: MemoryRow) -> tuple[str, str, str]
         memory["created_at"].isoformat(),
         str(memory["id"]),
     )
+
+
+def _serialize_typed_memory_metadata(memory: MemoryRow) -> dict[str, object]:
+    payload: dict[str, object] = {}
+
+    if "memory_type" in memory:
+        payload["memory_type"] = memory["memory_type"]
+    if "confidence" in memory:
+        payload["confidence"] = memory["confidence"]
+    if "salience" in memory:
+        payload["salience"] = memory["salience"]
+    if "confirmation_status" in memory:
+        payload["confirmation_status"] = memory["confirmation_status"]
+    if "valid_from" in memory:
+        payload["valid_from"] = isoformat_or_none(memory["valid_from"])
+    if "valid_to" in memory:
+        payload["valid_to"] = isoformat_or_none(memory["valid_to"])
+    if "last_confirmed_at" in memory:
+        payload["last_confirmed_at"] = isoformat_or_none(memory["last_confirmed_at"])
+
+    return payload
 
 
 def _empty_hybrid_memory_summary() -> ContextPackHybridMemorySummary:
@@ -347,7 +370,7 @@ def _hybrid_memory_decision_metadata(
 
 def _serialize_hybrid_memory(candidate: HybridMemoryCandidate) -> ContextPackMemory:
     memory = candidate.memory
-    return {
+    payload: ContextPackMemory = {
         "id": str(memory["id"]),
         "memory_key": memory["memory_key"],
         "value": memory["value"],
@@ -360,6 +383,8 @@ def _serialize_hybrid_memory(candidate: HybridMemoryCandidate) -> ContextPackMem
             "semantic_score": candidate.semantic_score,
         },
     }
+    payload.update(_serialize_typed_memory_metadata(memory))
+    return payload
 
 
 def _serialize_hybrid_artifact_chunk(candidate: HybridArtifactChunkCandidate) -> ContextPackArtifactChunk:
