@@ -1,58 +1,37 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Synchronize canonical project truth to the merged Phase 2 Sprint 7 state and add deterministic Phase 2 gate entrypoints without changing product runtime behavior.
+Add deterministic automated parity coverage for Phase 2 gate wrappers so arg passthrough, exit-code passthrough, target mappings, and Python executable resolution are verified without changing gate semantics.
 
 ## Completed Work
-- Removed stale canonical claims that the repo is only current through Sprint 7G.
-- Updated canonical docs (`README.md`, `ROADMAP.md`, `ARCHITECTURE.md`, `.ai/handoff/CURRENT_STATE.md`) to align on the merged Phase 2 Sprint 7 baseline.
-- Synced canonical seam descriptions across docs for:
-  - typed memory + open-loop seams
-  - deterministic resumption brief seam (`GET /v0/threads/{thread_id}/resumption-brief`)
-  - unified explicit-signal capture seam and `/chat` manual capture controls
-  - canonical Phase 2 gate commands
-- Added deterministic Phase 2 gate entrypoint scripts as thin wrappers with identical semantics to existing MVP runners:
-  - `scripts/run_phase2_acceptance.py`
-  - `scripts/run_phase2_readiness_gates.py`
-  - `scripts/run_phase2_validation_matrix.py`
-- Updated canonical gate guidance so Phase 2 validation is documented as the default go/no-go entrypoint.
-- Updated sprint reports for this sprint closeout (`BUILD_REPORT.md`, `REVIEW_REPORT.md`).
+- Added `tests/unit/test_phase2_gate_wrappers.py` with deterministic, parameterized coverage for all three Phase 2 wrappers.
+- Added assertions that each wrapper forwards CLI args unchanged and in order to its mapped MVP target script.
+- Added assertions that each wrapper executes subprocesses with repo-root `cwd`.
+- Added assertions that each wrapper returns subprocess exit codes unchanged.
+- Added assertions that target-script mappings are stable for:
+  - `run_phase2_acceptance.py -> run_mvp_acceptance.py`
+  - `run_phase2_readiness_gates.py -> run_mvp_readiness_gates.py`
+  - `run_phase2_validation_matrix.py -> run_mvp_validation_matrix.py`
+- Added deterministic fallback-path assertions for executable resolution:
+  - prefer `.venv/bin/python` when present
+  - fall back to `sys.executable` when `.venv/bin/python` is absent
 
 ## Incomplete Work
 - None within sprint scope.
 
 ## Files Changed
-- `.ai/active/SPRINT_PACKET.md`
-- `README.md`
-- `ROADMAP.md`
-- `ARCHITECTURE.md`
-- `.ai/handoff/CURRENT_STATE.md`
-- `scripts/run_phase2_acceptance.py`
-- `scripts/run_phase2_readiness_gates.py`
-- `scripts/run_phase2_validation_matrix.py`
+- `tests/unit/test_phase2_gate_wrappers.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## Tests Run
-1. `rg -n "Sprint 7G" README.md ROADMAP.md ARCHITECTURE.md .ai/handoff/CURRENT_STATE.md`
-- Outcome: no matches (exit code `1`), confirming stale Sprint 7G current-state claims were removed from canonical docs.
-
-2. `python3 -m py_compile scripts/run_phase2_acceptance.py scripts/run_phase2_readiness_gates.py scripts/run_phase2_validation_matrix.py`
-- Outcome: pass (exit code `0`), all three Phase 2 entrypoint scripts parse and compile.
-
-3. `python3 scripts/run_phase2_acceptance.py --help`
-- Outcome: pass (exit code `0`), wrapper executes and forwards to deterministic acceptance runner.
-
-4. `python3 scripts/run_phase2_readiness_gates.py --help`
-- Outcome: pass (exit code `0`), wrapper executes and forwards to deterministic readiness gates runner.
-
-5. `python3 scripts/run_phase2_validation_matrix.py --help`
-- Outcome: pass (exit code `0`), wrapper executes and forwards to deterministic validation matrix runner.
+1. `PYTHONPATH=$PWD .venv/bin/pytest tests/unit/test_phase2_gate_wrappers.py`
+- Outcome: pass (`12 passed`, exit code `0`).
 
 ## Blockers/Issues
-- No implementation blockers.
-- Full gate execution (`run_phase2_validation_matrix.py` end-to-end) was not run in this sprint pass to avoid out-of-scope heavy runtime execution; entrypoint parseability and executability were verified.
-- Explicit deferred scope boundaries (not shipped in this sprint): workers/automation/orchestration implementation, Phase 3 runtime/profile routing, and backend/API/UI contract changes outside docs + gate-entrypoint closeout.
+- No blockers encountered.
+- No wrapper semantic changes were required; existing wrappers already satisfied sprint behavior and were validated by the new tests.
+- Explicit deferred scope (not implemented in this sprint): automation/workers implementation and Phase 3 runtime/profile orchestration.
 
 ## Recommended Next Step
-Proceed with Control Tower integration review for docs/script coherence and scope compliance, then open the sprint PR from `codex/phase2-sprint8-closeout-gate-truth-sync`.
+Proceed to Control Tower integration review for sprint-scope confirmation and parity-evidence validation, then open/advance the sprint PR.
