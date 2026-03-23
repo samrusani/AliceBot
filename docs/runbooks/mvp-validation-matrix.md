@@ -3,6 +3,7 @@
 ## Objective
 Run one deterministic command that executes MVP readiness prerequisites plus bounded backend and web verification matrices, then emits a clear `PASS` or `NO_GO`.
 Use this as the default MVP release-candidate go/no-go gate.
+Canonical implementation is Phase 2 (`run_phase2_validation_matrix.py`); `run_mvp_validation_matrix.py` is a compatibility alias.
 
 ## Prerequisites
 - Python dependencies installed for backend integration tests (`python3 -m venv .venv` and `./.venv/bin/python -m pip install -e '.[dev]'`).
@@ -11,12 +12,12 @@ Use this as the default MVP release-candidate go/no-go gate.
 
 ## Exact Command
 ```bash
-python3 scripts/run_mvp_validation_matrix.py
+python3 scripts/run_phase2_validation_matrix.py
 ```
 
 The runner executes this deterministic step order:
 1. `readiness_gates`
-   - `python3 scripts/run_mvp_readiness_gates.py`
+   - `python3 scripts/run_phase2_readiness_gates.py`
    - includes strict memory-quality ship margin (`precision > 0.80`, `adjudicated_sample >= 20`)
 2. `backend_integration_matrix`
    - `python3 -m pytest -q tests/integration/test_continuity_api.py tests/integration/test_responses_api.py tests/integration/test_approval_api.py tests/integration/test_proxy_execution_api.py tests/integration/test_tasks_api.py tests/integration/test_traces_api.py tests/integration/test_memory_review_api.py tests/integration/test_entities_api.py tests/integration/test_task_artifacts_api.py tests/integration/test_gmail_accounts_api.py tests/integration/test_calendar_accounts_api.py`
@@ -27,7 +28,7 @@ Expected behavior:
 - Prints per-step status with command, duration, exit code, and coverage.
 - Prints explicit `Failing steps: ...` when any step fails.
 - Returns exit code `0` only when all steps pass.
-- Returns non-zero and final `MVP validation matrix result: NO_GO` when any step fails.
+- Returns non-zero and final `Phase 2 validation matrix result: NO_GO` when any step fails.
 
 ## Runtime Class
 - Typical: medium-to-long local run (roughly 5-20 minutes, machine-dependent).
@@ -35,7 +36,7 @@ Expected behavior:
 
 ## Optional Deterministic Negative Check
 ```bash
-python3 scripts/run_mvp_validation_matrix.py --induce-step backend_integration_matrix
+python3 scripts/run_phase2_validation_matrix.py --induce-step backend_integration_matrix
 ```
 
 `--induce-step` choices:
@@ -49,4 +50,13 @@ This intentionally forces one chosen step to fail and verifies deterministic no-
 1. Check `Failing steps` in output.
 2. Re-run only the failing command shown in that step to inspect detailed test output.
 3. Resolve the failing seam/surface.
-4. Re-run `python3 scripts/run_mvp_validation_matrix.py` to regenerate full matrix evidence.
+4. Re-run `python3 scripts/run_phase2_validation_matrix.py` to regenerate full matrix evidence.
+
+## Compatibility Alias Command
+```bash
+python3 scripts/run_mvp_validation_matrix.py
+```
+
+Expected behavior:
+- Prints explicit alias messaging and delegates to `scripts/run_phase2_validation_matrix.py`.
+- Preserves the same step ordering, command wiring, and pass/no-go semantics.

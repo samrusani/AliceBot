@@ -21,6 +21,7 @@ AliceBot is a private, permissioned personal AI operating system. The current re
 
 Useful checks:
 
+- Canonical gate ownership: `scripts/run_phase2_*.py` are implementation source; `scripts/run_mvp_*.py` are compatibility aliases.
 - API health: [http://127.0.0.1:8000/healthz](http://127.0.0.1:8000/healthz)
 - Phase 2 acceptance gate: `python3 scripts/run_phase2_acceptance.py`
 - Phase 2 readiness gates: `python3 scripts/run_phase2_readiness_gates.py`
