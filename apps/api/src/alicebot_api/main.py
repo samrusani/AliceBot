@@ -54,6 +54,7 @@ from alicebot_api.contracts import (
     EntityEdgeCreateInput,
     EntityCreateInput,
     EntityType,
+    ExplicitCommitmentExtractionRequestInput,
     ExplicitPreferenceExtractionRequestInput,
     CALENDAR_READONLY_SCOPE,
     GMAIL_READONLY_SCOPE,
@@ -239,6 +240,10 @@ from alicebot_api.entity_edge import (
 from alicebot_api.explicit_preferences import (
     ExplicitPreferenceExtractionValidationError,
     extract_and_admit_explicit_preferences,
+)
+from alicebot_api.explicit_commitments import (
+    ExplicitCommitmentExtractionValidationError,
+    extract_and_admit_explicit_commitments,
 )
 from alicebot_api.memory import (
     MemoryAdmissionValidationError,
@@ -479,6 +484,11 @@ class AdmitMemoryRequest(BaseModel):
 
 
 class ExtractExplicitPreferencesRequest(BaseModel):
+    user_id: UUID
+    source_event_id: UUID
+
+
+class ExtractExplicitCommitmentsRequest(BaseModel):
     user_id: UUID
     source_event_id: UUID
 
@@ -2665,6 +2675,30 @@ def extract_explicit_preferences(request: ExtractExplicitPreferencesRequest) -> 
                 ),
             )
     except ExplicitPreferenceExtractionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except MemoryAdmissionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/open-loops/extract-explicit-commitments")
+def extract_explicit_commitments(request: ExtractExplicitCommitmentsRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = extract_and_admit_explicit_commitments(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ExplicitCommitmentExtractionRequestInput(
+                    source_event_id=request.source_event_id,
+                ),
+            )
+    except ExplicitCommitmentExtractionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except MemoryAdmissionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
