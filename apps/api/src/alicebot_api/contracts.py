@@ -93,6 +93,17 @@ ExplicitPreferencePattern = Literal[
     "remember_that_i_dont_like",
     "remember_that_i_prefer",
 ]
+ExplicitCommitmentPattern = Literal[
+    "remind_me_to",
+    "i_need_to",
+    "dont_let_me_forget_to",
+    "remember_to",
+]
+ExplicitCommitmentOpenLoopDecision = Literal[
+    "CREATED",
+    "NOOP_ACTIVE_EXISTS",
+    "NOOP_MEMORY_NOT_PERSISTED",
+]
 MemorySelectionSource = Literal["symbolic", "semantic"]
 ArtifactSelectionSource = Literal["lexical", "semantic"]
 
@@ -1029,6 +1040,16 @@ class ExplicitPreferenceExtractionRequestInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ExplicitCommitmentExtractionRequestInput:
+    source_event_id: UUID
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "source_event_id": str(self.source_event_id),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class OpenLoopCreateInput:
     title: str
     memory_id: UUID | None = None
@@ -1063,6 +1084,16 @@ class ExtractedPreferenceCandidateRecord(TypedDict):
     delete_requested: bool
     pattern: ExplicitPreferencePattern
     subject_text: str
+
+
+class ExtractedCommitmentCandidateRecord(TypedDict):
+    memory_key: str
+    value: JsonValue
+    source_event_ids: list[str]
+    delete_requested: bool
+    pattern: ExplicitCommitmentPattern
+    commitment_text: str
+    open_loop_title: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1454,6 +1485,37 @@ class ExplicitPreferenceExtractionResponse(TypedDict):
     candidates: list[ExtractedPreferenceCandidateRecord]
     admissions: list[ExplicitPreferenceAdmissionRecord]
     summary: ExplicitPreferenceExtractionSummary
+
+
+class ExplicitCommitmentOpenLoopOutcome(TypedDict):
+    decision: ExplicitCommitmentOpenLoopDecision
+    reason: str
+    open_loop: OpenLoopRecord | None
+
+
+class ExplicitCommitmentAdmissionRecord(TypedDict):
+    decision: AdmissionAction
+    reason: str
+    memory: PersistedMemoryRecord | None
+    revision: PersistedMemoryRevisionRecord | None
+    open_loop: ExplicitCommitmentOpenLoopOutcome
+
+
+class ExplicitCommitmentExtractionSummary(TypedDict):
+    source_event_id: str
+    source_event_kind: str
+    candidate_count: int
+    admission_count: int
+    persisted_change_count: int
+    noop_count: int
+    open_loop_created_count: int
+    open_loop_noop_count: int
+
+
+class ExplicitCommitmentExtractionResponse(TypedDict):
+    candidates: list[ExtractedCommitmentCandidateRecord]
+    admissions: list[ExplicitCommitmentAdmissionRecord]
+    summary: ExplicitCommitmentExtractionSummary
 
 
 class MemoryReviewRecord(TypedDict):
