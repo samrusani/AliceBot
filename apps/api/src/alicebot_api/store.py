@@ -24,6 +24,7 @@ class ThreadRow(TypedDict):
     id: UUID
     user_id: UUID
     title: str
+    agent_profile_id: str
     created_at: datetime
     updated_at: datetime
 
@@ -458,19 +459,19 @@ GET_USER_SQL = """
                 """
 
 INSERT_THREAD_SQL = """
-                INSERT INTO threads (user_id, title)
-                VALUES (app.current_user_id(), %s)
-                RETURNING id, user_id, title, created_at, updated_at
+                INSERT INTO threads (user_id, title, agent_profile_id)
+                VALUES (app.current_user_id(), %s, %s)
+                RETURNING id, user_id, title, agent_profile_id, created_at, updated_at
                 """
 
 GET_THREAD_SQL = """
-                SELECT id, user_id, title, created_at, updated_at
+                SELECT id, user_id, title, agent_profile_id, created_at, updated_at
                 FROM threads
                 WHERE id = %s
                 """
 
 LIST_THREADS_SQL = """
-                SELECT id, user_id, title, created_at, updated_at
+                SELECT id, user_id, title, agent_profile_id, created_at, updated_at
                 FROM threads
                 ORDER BY created_at DESC, id DESC
                 """
@@ -3118,8 +3119,8 @@ class ContinuityStore:
     def get_user(self, user_id: UUID) -> UserRow:
         return self._fetch_one("get_user", GET_USER_SQL, (user_id,))
 
-    def create_thread(self, title: str) -> ThreadRow:
-        return self._fetch_one("create_thread", INSERT_THREAD_SQL, (title,))
+    def create_thread(self, title: str, agent_profile_id: str = "assistant_default") -> ThreadRow:
+        return self._fetch_one("create_thread", INSERT_THREAD_SQL, (title, agent_profile_id))
 
     def get_thread(self, thread_id: UUID) -> ThreadRow:
         return self._fetch_one("get_thread", GET_THREAD_SQL, (thread_id,))

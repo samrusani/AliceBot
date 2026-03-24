@@ -12,9 +12,12 @@ from urllib.parse import urlsplit, urlunsplit
 from alicebot_api.compiler import compile_and_persist_trace, compile_resumption_brief
 from alicebot_api.config import Settings, get_settings
 from alicebot_api.contracts import (
+    AGENT_PROFILE_LIST_ORDER,
     ApprovalApproveInput,
     ApprovalRejectInput,
     ApprovalRequestCreateInput,
+    AgentProfileListResponse,
+    AgentProfileListSummary,
     ArtifactScopedSemanticArtifactChunkRetrievalInput,
     CompileContextArtifactScopedSemanticArtifactRetrievalInput,
     CompileContextArtifactScopedArtifactRetrievalInput,
@@ -25,6 +28,7 @@ from alicebot_api.contracts import (
     ConsentUpsertInput,
     CompileContextSemanticRetrievalInput,
     DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
+    DEFAULT_AGENT_PROFILE_ID,
     DEFAULT_CALENDAR_EVENT_LIST_LIMIT,
     DEFAULT_MAX_EVENTS,
     DEFAULT_MAX_ENTITY_EDGES,
@@ -113,6 +117,11 @@ from alicebot_api.contracts import (
     ThreadSessionListResponse,
     ThreadSessionListSummary,
     ThreadSessionRecord,
+)
+from alicebot_api.phase3_profiles import (
+    get_agent_profile as get_registered_agent_profile,
+    list_agent_profile_ids as list_registered_agent_profile_ids,
+    list_agent_profiles as list_registered_agent_profiles,
 )
 from alicebot_api.artifacts import (
     TaskArtifactAlreadyExistsError,
@@ -457,6 +466,7 @@ class GenerateResponseRequest(BaseModel):
 class CreateThreadRequest(BaseModel):
     user_id: UUID
     title: str = Field(min_length=1, max_length=200)
+    agent_profile_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class AdmitMemoryOpenLoopRequest(BaseModel):
@@ -796,12 +806,18 @@ class SupersedeExecutionBudgetRequest(BaseModel):
 
 
 def _serialize_thread(thread: ThreadRow) -> ThreadRecord:
+    agent_profile_id = _thread_agent_profile_id(thread)
     return {
         "id": str(thread["id"]),
         "title": thread["title"],
+        "agent_profile_id": agent_profile_id,
         "created_at": thread["created_at"].isoformat(),
         "updated_at": thread["updated_at"].isoformat(),
     }
+
+
+def _thread_agent_profile_id(thread: ThreadRow) -> str:
+    return str(thread.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID))
 
 
 def _serialize_thread_session(session: SessionRow) -> ThreadSessionRecord:
@@ -882,6 +898,23 @@ def healthcheck() -> JSONResponse:
     )
 
 
+@app.get("/v0/agent-profiles")
+def list_agent_profiles() -> JSONResponse:
+    items = list_registered_agent_profiles()
+    summary: AgentProfileListSummary = {
+        "total_count": len(items),
+        "order": list(AGENT_PROFILE_LIST_ORDER),
+    }
+    payload: AgentProfileListResponse = {
+        "items": items,
+        "summary": summary,
+    }
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
 @app.post("/v0/context/compile")
 def compile_context(request: CompileContextRequest) -> JSONResponse:
     settings = get_settings()
@@ -927,8 +960,10 @@ def compile_context(request: CompileContextRequest) -> JSONResponse:
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
+            store = ContinuityStore(conn)
+            thread = store.get_thread(request.thread_id)
             result = compile_and_persist_trace(
-                ContinuityStore(conn),
+                store,
                 user_id=request.user_id,
                 thread_id=request.thread_id,
                 limits=ContextCompilerLimits(
@@ -968,6 +1003,7 @@ def compile_context(request: CompileContextRequest) -> JSONResponse:
                 "trace_id": result.trace_id,
                 "trace_event_count": result.trace_event_count,
                 "context_pack": result.context_pack,
+                "metadata": {"agent_profile_id": _thread_agent_profile_id(thread)},
             }
         ),
     )
@@ -979,8 +1015,10 @@ def generate_assistant_response(request: GenerateResponseRequest) -> JSONRespons
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
+            store = ContinuityStore(conn)
+            thread = store.get_thread(request.thread_id)
             result = generate_response(
-                store=ContinuityStore(conn),
+                store=store,
                 settings=settings,
                 user_id=request.user_id,
                 thread_id=request.thread_id,
@@ -1003,23 +1041,52 @@ def generate_assistant_response(request: GenerateResponseRequest) -> JSONRespons
                 {
                     "detail": result.detail,
                     "trace": result.trace,
+                    "metadata": {"agent_profile_id": _thread_agent_profile_id(thread)},
                 }
             ),
         )
 
+    response_payload = dict(result)
+    response_payload["metadata"] = {"agent_profile_id": _thread_agent_profile_id(thread)}
     return JSONResponse(
         status_code=200,
-        content=jsonable_encoder(result),
+        content=jsonable_encoder(response_payload),
     )
 
 
 @app.post("/v0/threads")
 def create_thread(request: CreateThreadRequest) -> JSONResponse:
     settings = get_settings()
-    thread_input = ThreadCreateInput(title=request.title)
+    agent_profile_id = (
+        request.agent_profile_id
+        if request.agent_profile_id is not None
+        else DEFAULT_AGENT_PROFILE_ID
+    )
+    if get_registered_agent_profile(agent_profile_id) is None:
+        allowed_agent_profile_ids = list_registered_agent_profile_ids()
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": {
+                    "code": "invalid_agent_profile_id",
+                    "message": (
+                        "agent_profile_id must be one of: "
+                        + ", ".join(allowed_agent_profile_ids)
+                    ),
+                    "allowed_agent_profile_ids": allowed_agent_profile_ids,
+                }
+            },
+        )
+    thread_input = ThreadCreateInput(
+        title=request.title,
+        agent_profile_id=agent_profile_id,
+    )
 
     with user_connection(settings.database_url, request.user_id) as conn:
-        created = ContinuityStore(conn).create_thread(thread_input.title)
+        created = ContinuityStore(conn).create_thread(
+            thread_input.title,
+            thread_input.agent_profile_id,
+        )
 
     payload: ThreadCreateResponse = {"thread": _serialize_thread(created)}
     return JSONResponse(
