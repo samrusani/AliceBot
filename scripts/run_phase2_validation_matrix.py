@@ -31,6 +31,11 @@ BACKEND_INTEGRATION_TEST_FILES: tuple[str, ...] = (
     "tests/integration/test_calendar_accounts_api.py",
 )
 
+GATE_CONTRACT_TEST_FILES: tuple[str, ...] = (
+    "tests/integration/test_mvp_readiness_gates.py",
+    "tests/integration/test_mvp_validation_matrix.py",
+)
+
 WEB_OPERATOR_SURFACES: tuple[str, ...] = (
     "/chat",
     "/approvals",
@@ -44,11 +49,13 @@ WEB_OPERATOR_SURFACES: tuple[str, ...] = (
 )
 
 STEP_READINESS_GATES = "readiness_gates"
+STEP_GATE_CONTRACT_TESTS = "gate_contract_tests"
 STEP_BACKEND_MATRIX = "backend_integration_matrix"
 STEP_WEB_MATRIX = "web_validation_matrix"
 STEP_CONTROL_DOC_TRUTH = "control_doc_truth"
 STEP_IDS: tuple[str, ...] = (
     STEP_CONTROL_DOC_TRUTH,
+    STEP_GATE_CONTRACT_TESTS,
     STEP_READINESS_GATES,
     STEP_BACKEND_MATRIX,
     STEP_WEB_MATRIX,
@@ -88,6 +95,10 @@ def _build_backend_matrix_command(python_executable: str) -> tuple[str, ...]:
     return (python_executable, "-m", "pytest", "-q", *BACKEND_INTEGRATION_TEST_FILES)
 
 
+def _build_gate_contract_tests_command(python_executable: str) -> tuple[str, ...]:
+    return (python_executable, "-m", "pytest", "-q", *GATE_CONTRACT_TEST_FILES)
+
+
 def _build_control_doc_truth_command(python_executable: str) -> tuple[str, ...]:
     return (python_executable, "scripts/check_control_doc_truth.py")
 
@@ -106,6 +117,18 @@ def build_validation_matrix_steps(*, python_executable: str | None = None) -> li
             coverage=(
                 "ARCHITECTURE.md, ROADMAP.md, README.md, PRODUCT_BRIEF.md, RULES.md, "
                 ".ai/handoff/CURRENT_STATE.md baseline/ownership truth markers"
+            ),
+        ),
+        MatrixStep(
+            step=STEP_GATE_CONTRACT_TESTS,
+            description=(
+                "Run canonical gate-runner contract tests for readiness/validation matrix ownership "
+                "and MVP alias compatibility behavior."
+            ),
+            command=_build_gate_contract_tests_command(resolved_python),
+            coverage=(
+                "tests/integration/test_mvp_readiness_gates.py, "
+                "tests/integration/test_mvp_validation_matrix.py"
             ),
         ),
         MatrixStep(

@@ -1,72 +1,59 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Sync canonical control docs to the merged baseline through Phase 2 Sprint 11 and add deterministic control-doc truth guardrails integrated as the first Phase 2 validation-matrix step.
+Implement Phase 2 Sprint 13 gate-contract hardening by canonicalizing stale gate-script tests to Phase 2 ownership and adding deterministic `gate_contract_tests` wiring to the default Phase 2 validation matrix.
 
 ## Completed Work
-- Canonical doc baseline sync completed:
-- `ARCHITECTURE.md`: updated baseline claim from `through Phase 2 Sprint 7` to `through Phase 2 Sprint 11`.
-- `ROADMAP.md`: updated baseline and planning anchors to Sprint 11 and updated gate-tooling line to explicitly include canonical Phase 2 gate ownership.
-- `README.md`: updated top-level baseline claim to Sprint 11 and replaced `ship gates` wording with `release-readiness anchors` in repo map.
-- `PRODUCT_BRIEF.md`: replaced legacy `ship gate` phrase with `canonical v1 release-readiness validation scenario`.
-- `RULES.md`: replaced legacy `ship-gate` phrase with `v1 release-readiness validation scenario`.
-- `.ai/handoff/CURRENT_STATE.md`: updated canonical baseline and planning guardrail references from Sprint 7 to Sprint 11.
-- Deterministic guardrail implemented in `scripts/check_control_doc_truth.py`.
-- Guardrail rules enforced:
-- Required markers:
-- `ARCHITECTURE.md`: `through Phase 2 Sprint 11`
-- `ROADMAP.md`: `through Phase 2 Sprint 11` and `canonical Phase 2 gate ownership`
-- `README.md`: `through Phase 2 Sprint 11` and canonical gate ownership statement for `scripts/run_phase2_*.py`
-- `PRODUCT_BRIEF.md`: `canonical v1 release-readiness validation scenario`
-- `RULES.md`: `v1 release-readiness validation scenario`
-- `.ai/handoff/CURRENT_STATE.md`: `through Phase 2 Sprint 11` and canonical Phase 2 gate ownership statement
-- Rejected markers:
-- `Phase 2 Sprint 7`
-- `v1 ship gate`
-- `v1 ship-gate`
-- `ship gates`
-- Unit tests added in `tests/unit/test_control_doc_truth.py` for pass and fail paths.
-- Validation-matrix integration completed in `scripts/run_phase2_validation_matrix.py`:
-- Added named first step `control_doc_truth`.
-- Added deterministic command wiring to `scripts/check_control_doc_truth.py`.
-- Included `control_doc_truth` in `--induce-step` choices for deterministic induced no-go behavior.
+- Exact stale-test root cause before changes:
+- `tests/integration/test_mvp_readiness_gates.py` imported `scripts.run_mvp_readiness_gates` and asserted internal functions/types (`calculate_p95_seconds`, `_evaluate_*`, `GateResult`) that no longer exist in the MVP alias wrapper, causing `AttributeError`.
+- `tests/integration/test_mvp_validation_matrix.py` imported `scripts.run_mvp_validation_matrix` and asserted canonical internals (`build_validation_matrix_steps`, `MatrixStepResult`, `run_validation_matrix`) that no longer exist in the MVP alias wrapper, causing `AttributeError`.
+- Exact test-contract changes for canonical ownership:
+- `tests/integration/test_mvp_readiness_gates.py` now validates canonical internals via `scripts.run_phase2_readiness_gates`.
+- Added explicit MVP alias compatibility contract test in `tests/integration/test_mvp_readiness_gates.py` to verify `run_mvp_readiness_gates.py` forwards args/exit code/output banner to `run_phase2_readiness_gates.py`.
+- `tests/integration/test_mvp_validation_matrix.py` now validates canonical internals via `scripts.run_phase2_validation_matrix`.
+- Added explicit MVP alias compatibility contract test in `tests/integration/test_mvp_validation_matrix.py` to verify `run_mvp_validation_matrix.py` forwards args/exit code/output banner to `run_phase2_validation_matrix.py`.
+- Exact validation-matrix step delta:
+- Updated `scripts/run_phase2_validation_matrix.py` with new constant `STEP_GATE_CONTRACT_TESTS = "gate_contract_tests"`.
+- Added `GATE_CONTRACT_TEST_FILES` pointing to:
+- `tests/integration/test_mvp_readiness_gates.py`
+- `tests/integration/test_mvp_validation_matrix.py`
+- Added `_build_gate_contract_tests_command(...)` using `python -m pytest -q` over the gate-contract subset.
+- Inserted `gate_contract_tests` into deterministic step order immediately after `control_doc_truth`.
+- Added `gate_contract_tests` to `STEP_IDS`, enabling deterministic `--induce-step gate_contract_tests`.
 
 ## Incomplete Work
-- None in implementation scope.
-- Full end-to-end readiness/backend matrix pass is blocked in this environment by unavailable local Postgres.
+- None in sprint implementation scope.
 
 ## Files Changed
-- `.ai/handoff/CURRENT_STATE.md`
-- `ARCHITECTURE.md`
-- `ROADMAP.md`
-- `README.md`
-- `PRODUCT_BRIEF.md`
-- `RULES.md`
-- `scripts/check_control_doc_truth.py`
 - `scripts/run_phase2_validation_matrix.py`
-- `tests/unit/test_control_doc_truth.py`
+- `tests/integration/test_mvp_readiness_gates.py`
+- `tests/integration/test_mvp_validation_matrix.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## Tests Run
-1. `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py`
-- Outcome: PASS (`3 passed`, exit code `0`).
+1. `./.venv/bin/python -m pytest tests/integration/test_mvp_readiness_gates.py tests/integration/test_mvp_validation_matrix.py -q`
+- Outcome: PASS (`13 passed`, exit code `0`).
 
-2. `python3 scripts/check_control_doc_truth.py`
-- Outcome: PASS (all six canonical docs verified, exit code `0`).
+2. `python3 scripts/run_phase2_validation_matrix.py --induce-step gate_contract_tests`
+- Outcome: NO_GO (`exit code 1`) as expected for induced failure.
+- Evidence: `gate_contract_tests` reported as `FAIL` with `induced_failure: true` and `exit_code 97`.
+- Additional evidence: non-induced steps remained healthy in the same run (`control_doc_truth`, `readiness_gates`, `backend_integration_matrix`, `web_validation_matrix` all `PASS`).
 
-3. `python3 scripts/run_phase2_validation_matrix.py --induce-step control_doc_truth`
-- Outcome: NO_GO (exit code `1`) as expected for induced step.
-- Evidence of integration: named step `control_doc_truth` executed and reported as induced failure (`exit_code 97`).
-- Additional environment outcome: readiness and backend integration steps also failed because local Postgres was unavailable (`connection refused`); web validation step passed (`13 files, 64 tests`).
+3. `python3 scripts/run_phase2_validation_matrix.py`
+- Outcome: PASS (`exit code 0`).
+- Evidence: all named steps reported `PASS`, including `gate_contract_tests`.
 
 ## Blockers/Issues
-- Local Postgres was not available during matrix verification, causing readiness/backend DB-dependent failures unrelated to this sprint’s control-doc guardrail code changes.
+- None in sprint scope after running matrix verification outside sandbox networking restrictions.
 
 ## Explicit Deferred Scope
-- Workers/automation/orchestration implementation remains deferred.
+- Automation/workers/orchestration implementation remains deferred.
 - Phase 3 runtime/profile routing remains deferred.
-- No product/runtime/API endpoint changes were introduced.
+- No product/runtime endpoint behavior changes were introduced.
 
 ## Recommended Next Step
-1. Start local Postgres (`docker compose up -d`) and rerun `python3 scripts/run_phase2_validation_matrix.py --induce-step control_doc_truth` to verify only the induced `control_doc_truth` no-go remains.
+1. Submit for review/merge with this verification bundle:
+- gate-contract subset pytest PASS
+- induced `gate_contract_tests` deterministic NO_GO
+- full Phase 2 validation matrix PASS.
