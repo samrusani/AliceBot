@@ -17,19 +17,19 @@ class ControlDocTruthRule:
 CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="ARCHITECTURE.md",
-        required_markers=("through Phase 2 Sprint 11",),
+        required_markers=("through Phase 2 Sprint 14",),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "through Phase 2 Sprint 11",
+            "through Phase 2 Sprint 14",
             "canonical Phase 2 gate ownership",
         ),
     ),
     ControlDocTruthRule(
         relative_path="README.md",
         required_markers=(
-            "through Phase 2 Sprint 11",
+            "through Phase 2 Sprint 14",
             "Canonical gate ownership: `scripts/run_phase2_*.py` are implementation source",
         ),
     ),
@@ -44,13 +44,24 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "through Phase 2 Sprint 11",
+            "through Phase 2 Sprint 14",
             "Gate ownership is canonicalized to Phase 2 runner scripts",
+        ),
+    ),
+    ControlDocTruthRule(
+        relative_path="docs/runbooks/phase2-closeout-packet.md",
+        required_markers=(
+            "accepted Phase 2 Sprint 14 baseline",
+            "Required Phase 2 Go/No-Go Commands",
+            "Required PASS Evidence Bundle",
+            "Explicit Deferred Scope Entering Next Phase",
         ),
     ),
 )
 
 DISALLOWED_MARKERS: tuple[str, ...] = (
+    "through Phase 2 Sprint 11",
+    "current through Phase 2 Sprint 11",
     "Phase 2 Sprint 7",
     "v1 ship gate",
     "v1 ship-gate",
