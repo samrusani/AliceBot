@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 3 Sprint 1: Multi-Agent Profile Backbone
+Phase 3 Sprint 2: Web Agent Profile Adoption
 
 ## Sprint Type
 
@@ -10,152 +10,160 @@ feature
 
 ## Sprint Reason
 
-Phase 2 closeout is complete and validation is green. The next non-redundant step is to open Phase 3 by introducing explicit agent profile identity so separate agents can be deployed without sharing one implicit runtime persona.
+Phase 3 Sprint 1 shipped and merged the backend profile backbone (`agent_profile_id` persistence, `/v0/agent-profiles`, profile metadata propagation). The operator shell still does not consume this surface, which creates a planning and usability gap for multi-agent deployment.
 
 ## Sprint Intent
 
-Add a minimal, deterministic backend backbone for agent profiles and thread-level profile binding, without changing existing tool orchestration breadth or connector scope.
+Adopt shipped profile identity in the web shell so profile choice and visibility are explicit during thread creation and thread review, while keeping backend scope unchanged.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase3-sprint1-agent-profile-backbone`
+- Branch Name: `codex/phase3-sprint2-web-agent-profile-adoption`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- This is the first implementation seam required for “multiple separate agents.”
-- It is orthogonal to completed Phase 2 hardening (gate/doc/closeout work), so it is not redundant.
-- It creates a durable identity boundary before opening broader routing/orchestration work.
+- It directly consumes the backend capability that just shipped in Phase 3 Sprint 1.
+- It is non-redundant: current web code does not call `GET /v0/agent-profiles` and does not use `agent_profile_id` on thread create/list/detail.
+- It closes a concrete operator-facing gap before any model routing or orchestration expansion.
+
+## Redundancy Guard
+
+- Already shipped in Sprint 1 (do not re-implement): profile registry, migration, thread persistence, API validation, compile/response metadata propagation.
+- Missing and required now: web client typing, profile fetch/read path, profile selection at thread create, and visible thread profile identity in chat surfaces.
 
 ## Design Truth
 
-- Keep existing default behavior for callers that do not provide a profile.
-- Persist explicit profile identity on thread records.
-- Keep the initial profile surface bounded: registry read + thread binding + response/compile propagation.
-- Do not widen tool execution, connector actions, or worker orchestration in this sprint.
+- Reuse shipped API seams as-is; no backend contract changes.
+- Preserve current fixture/live fallback behavior across `/chat`.
+- Keep deterministic default profile behavior explicit (`assistant_default`) when profile selection is unavailable.
+- Keep UX bounded and calm: one selector on create, lightweight profile visibility in thread review surfaces.
 
 ## Exact Surfaces In Scope
 
-- agent profile contracts and deterministic in-process registry
-- thread creation/list/detail profile binding
-- context compile / response output includes active profile identity
-- migration and tests for new thread profile column and behavior
+- web API client contract adoption for `agent_profile_id` and `/v0/agent-profiles`
+- chat-page live/fixture profile loading and fallback behavior
+- thread create UI profile selection
+- thread list/summary profile visibility
+- targeted tests for all above seams
 
 ## Exact Files In Scope
 
-- [contracts.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/contracts.py)
-- [main.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/main.py)
-- [store.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/store.py)
-- [phase3_profiles.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/phase3_profiles.py)
-- [20260324_0032_thread_agent_profiles.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/alembic/versions/20260324_0032_thread_agent_profiles.py)
-- [test_continuity_api.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_continuity_api.py)
-- [test_responses_api.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_responses_api.py)
-- [test_20260324_0032_thread_agent_profiles.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_20260324_0032_thread_agent_profiles.py)
+- [api.ts](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/lib/api.ts)
+- [api.test.ts](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/lib/api.test.ts)
+- [fixtures.ts](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/lib/fixtures.ts)
+- [page.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/app/chat/page.tsx)
+- [page.test.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/app/chat/page.test.tsx)
+- [thread-create.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/thread-create.tsx)
+- [thread-create.test.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/thread-create.test.tsx)
+- [thread-list.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/thread-list.tsx)
+- [thread-list.test.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/thread-list.test.tsx)
+- [thread-summary.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/thread-summary.tsx)
+- [thread-summary.test.tsx](/Users/samirusani/Desktop/Codex/AliceBot/apps/web/components/thread-summary.test.tsx)
 - [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md)
 - [REVIEW_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/active/SPRINT_PACKET.md)
-- relevant verification under:
-  - `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py -q`
-  - `./.venv/bin/python -m pytest tests/unit/test_20260324_0032_thread_agent_profiles.py -q`
-  - `python3 scripts/run_phase2_validation_matrix.py`
 
 ## In Scope
 
-- Add deterministic Phase 3 profile registry module with at least:
-  - `assistant_default` profile
-  - one additional profile (for example `coach_default`) with distinct id/name/description
-- Add `agent_profile_id` thread column with migration:
-  - non-null with deterministic default `assistant_default`
-  - user-scoped reads preserved
-- Extend thread create request to optionally accept `agent_profile_id`:
-  - invalid profile id returns deterministic 422
-  - omitted profile id uses default
-- Expose profile identity in thread list/detail responses.
-- Include active `agent_profile_id` in context compile and `/v0/responses` response metadata.
-- Add a bounded read endpoint for available profiles:
-  - `GET /v0/agent-profiles`
+- Extend `ThreadItem` and `ThreadCreatePayload` in web API client with `agent_profile_id`.
+- Add deterministic web API client types/helpers for profile registry:
+  - `AgentProfileItem`
+  - `AgentProfileListSummary`
+  - `listAgentProfiles(apiBaseUrl)`
+- Update `/chat` loading path to fetch profile registry in live mode and preserve fixture behavior when unavailable.
+- Update thread create flow to allow profile selection and submit selected `agent_profile_id`.
+- Show selected thread profile identity in thread review surfaces (`ThreadList` and `ThreadSummary`) without noisy UI expansion.
+- Add/update tests covering:
+  - request payloads include selected profile id
+  - list/detail typing includes profile id
+  - live profile fetch success/fallback behavior
+  - profile identity rendering in list/summary
 
 ## Out of Scope
 
-- per-profile model-provider switching
-- external LLM provider integration changes
+- backend schema/migration changes
+- backend API contract changes for profile registry or thread create
+- per-profile model-provider routing/switching
+- profile CRUD endpoints
+- external LLM provider integration
 - auth model changes
-- runner/worker orchestration
-- connector scope expansion
-- web UI profile selector
+- runner/worker orchestration changes
 
 ## Required Deliverables
 
-- migration for thread profile binding
-- profile registry and API read surface
-- thread + compile + response profile propagation
-- integration and migration tests passing
-- updated sprint reports for this sprint only
+- web API client + chat UI consume shipped profile seams end-to-end
+- deterministic fallback behavior if profile registry is unavailable
+- updated web tests for the profile adoption seam
+- sprint build/review reports scoped to this sprint only
 
 ## Acceptance Criteria
 
-- Threads persist and return `agent_profile_id`.
-- Creating a thread with a valid non-default profile succeeds and remains isolated per user.
-- Creating a thread with invalid profile id fails deterministically.
-- `/v0/agent-profiles` returns deterministic profile registry payload.
-- `/v0/context/compile` and `/v0/responses` include active profile id metadata.
+- Thread create in live mode submits `agent_profile_id` along with `user_id` and `title`.
+- Web thread data types and reads retain `agent_profile_id` from API responses.
+- `/chat` reads `GET /v0/agent-profiles` in live mode and remains usable if that read fails.
+- Thread list and selected-thread summary visibly show active profile identity.
+- Fixture mode remains stable and deterministic with no regression to existing fallback paths.
+- `npm --prefix apps/web run test:mvp:validation-matrix` passes.
 - `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
-- No out-of-scope behavior changes enter sprint.
+- No backend/API/migration scope enters this sprint.
 
 ## Implementation Constraints
 
-- keep deterministic outputs and stable ordering
-- do not introduce external dependencies
-- preserve existing endpoint behavior when `agent_profile_id` is omitted
-- keep migration reversible
+- do not introduce new dependencies
+- do not modify `apps/api` or migration files
+- keep profile default deterministic (`assistant_default`) when selection data is unavailable
+- preserve existing copy tone and visual containment in chat rail components
 
 ## Control Tower Task Cards
 
-### Task 1: Profile Registry + Contracts
+### Task 1: API Client + Fixture Contract Adoption
 Owner: tooling operative  
 Write scope:
-- `apps/api/src/alicebot_api/phase3_profiles.py`
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/main.py`
+- `apps/web/lib/api.ts`
+- `apps/web/lib/api.test.ts`
+- `apps/web/lib/fixtures.ts`
 
-### Task 2: Persistence + Migration
+### Task 2: Chat Data Loading + Fallback
 Owner: tooling operative  
 Write scope:
-- `apps/api/alembic/versions/20260324_0032_thread_agent_profiles.py`
-- `apps/api/src/alicebot_api/store.py`
+- `apps/web/app/chat/page.tsx`
+- `apps/web/app/chat/page.test.tsx`
 
-### Task 3: Verification
+### Task 3: Thread UI Adoption
 Owner: tooling operative  
 Write scope:
-- `tests/integration/test_continuity_api.py`
-- `tests/integration/test_responses_api.py`
-- `tests/unit/test_20260324_0032_thread_agent_profiles.py`
+- `apps/web/components/thread-create.tsx`
+- `apps/web/components/thread-create.test.tsx`
+- `apps/web/components/thread-list.tsx`
+- `apps/web/components/thread-list.test.tsx`
+- `apps/web/components/thread-summary.tsx`
+- `apps/web/components/thread-summary.test.tsx`
 
 ### Task 4: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify profile identity seam is complete and bounded
-- verify no hidden Phase 3 scope expansion
-- verify phase2 matrix remains green
+- verify sprint stays web-adoption scoped
+- verify no backend rework or profile-registry duplication
+- verify validation matrix remains green
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact migration behavior and defaults
-- exact API/contract deltas
+- exact web contract/UI deltas for profile adoption
 - exact verification command outcomes
-- explicit deferred scope (routing/orchestration/model-provider switching)
+- explicit deferred scope (routing, provider switching, orchestration)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint remained profile-backbone scoped
-- thread/profile propagation and validation behavior correctness
-- migration safety and user isolation
+- sprint stayed bounded to web profile adoption
+- profile selection and visibility are correct and deterministic
+- fallback behavior is explicit and non-breaking
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when the repo can persist and expose explicit thread-level agent profile identity with deterministic validation and tests, while keeping all prior Phase 2 gates green.
+This sprint is complete when the shipped Phase 3 profile backbone is fully adopted in the web chat operator surface (selection + visibility + tests) with deterministic fallback behavior and all required validation gates green.

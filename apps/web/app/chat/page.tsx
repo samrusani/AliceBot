@@ -10,6 +10,7 @@ import { ThreadEventList } from "../../components/thread-event-list";
 import { ThreadList } from "../../components/thread-list";
 import { ThreadSummary } from "../../components/thread-summary";
 import type {
+  AgentProfileItem,
   ApiSource,
   ApprovalItem,
   ResumptionBrief,
@@ -23,6 +24,7 @@ import type {
 } from "../../lib/api";
 import {
   deriveThreadWorkflowState,
+  DEFAULT_AGENT_PROFILE_ID,
   getApiConfig,
   getTaskSteps,
   getThreadDetail,
@@ -30,6 +32,7 @@ import {
   getThreadResumptionBrief,
   getThreadSessions,
   hasLiveApiConfig,
+  listAgentProfiles,
   listApprovals,
   listThreads,
   listTasks,
@@ -38,8 +41,8 @@ import {
 } from "../../lib/api";
 import {
   approvalFixtures,
+  agentProfileFixtures,
   executionFixtures,
-  getFixtureThread,
   getFixtureThreadEvents,
   getFixtureThreadSessions,
   getFixtureTaskStepSummary,
@@ -65,6 +68,14 @@ type ContinuityViewModel = {
   selectedThread: ThreadItem | null;
   sessions: ThreadSessionItem[];
   events: ThreadEventItem[];
+};
+
+type ProfileRegistrySource = ApiSource | "unavailable";
+
+type ProfileRegistryViewModel = {
+  profiles: AgentProfileItem[];
+  source: ProfileRegistrySource;
+  unavailableReason?: string;
 };
 
 type WorkflowSource = ApiSource | "unavailable";
@@ -115,6 +126,22 @@ function normalizeTraceId(value: string | string[] | undefined) {
   }
 
   return value?.trim() ?? "";
+}
+
+function normalizeAgentProfileId(value: string | null | undefined) {
+  const profileId = value?.trim();
+  return profileId && profileId.length > 0 ? profileId : DEFAULT_AGENT_PROFILE_ID;
+}
+
+function normalizeThreadItem(thread: ThreadItem): ThreadItem {
+  return {
+    ...thread,
+    agent_profile_id: normalizeAgentProfileId(thread.agent_profile_id),
+  };
+}
+
+function normalizeThreadItems(items: ThreadItem[]) {
+  return items.map((item) => normalizeThreadItem(item));
 }
 
 function buildChatTraceHrefPrefix(mode: ChatMode, threadId: string) {
@@ -435,14 +462,18 @@ async function loadFixtureContinuity(
   requestedThreadId: string,
   defaultThreadId: string,
 ): Promise<ContinuityViewModel> {
-  const selectedThreadId = resolveSelectedThreadId(requestedThreadId, defaultThreadId, threadFixtures);
+  const threads = normalizeThreadItems(threadFixtures);
+  const selectedThreadId = resolveSelectedThreadId(requestedThreadId, defaultThreadId, threads);
+  const selectedThread = selectedThreadId
+    ? threads.find((item) => item.id === selectedThreadId) ?? null
+    : null;
 
   return {
     threadListSource: "fixture",
     continuitySource: "fixture",
-    threads: threadFixtures,
+    threads,
     selectedThreadId,
-    selectedThread: selectedThreadId ? getFixtureThread(selectedThreadId) : null,
+    selectedThread,
     sessions: selectedThreadId ? getFixtureThreadSessions(selectedThreadId) : [],
     events: selectedThreadId ? getFixtureThreadEvents(selectedThreadId) : [],
   };
@@ -456,7 +487,7 @@ async function loadLiveContinuity(
 ): Promise<ContinuityViewModel> {
   try {
     const threadResponse = await listThreads(apiBaseUrl, userId);
-    const threads = threadResponse.items;
+    const threads = normalizeThreadItems(threadResponse.items);
     const selectedThreadId = resolveSelectedThreadId(requestedThreadId, defaultThreadId, threads);
 
     if (!selectedThreadId) {
@@ -500,7 +531,7 @@ async function loadLiveContinuity(
       selectedThreadId,
       selectedThread:
         threadResult.status === "fulfilled"
-          ? threadResult.value.thread
+          ? normalizeThreadItem(threadResult.value.thread)
           : threads.find((thread) => thread.id === selectedThreadId) ?? null,
       sessions: sessionsResult.status === "fulfilled" ? sessionsResult.value.items : [],
       events: eventsResult.status === "fulfilled" ? eventsResult.value.items : [],
@@ -519,6 +550,30 @@ async function loadLiveContinuity(
   }
 }
 
+async function loadFixtureProfileRegistry(): Promise<ProfileRegistryViewModel> {
+  return {
+    profiles: agentProfileFixtures,
+    source: "fixture",
+  };
+}
+
+async function loadLiveProfileRegistry(apiBaseUrl: string): Promise<ProfileRegistryViewModel> {
+  try {
+    const response = await listAgentProfiles(apiBaseUrl);
+    return {
+      profiles: response.items,
+      source: "live",
+    };
+  } catch (error) {
+    return {
+      profiles: agentProfileFixtures,
+      source: "fixture",
+      unavailableReason:
+        error instanceof Error ? error.message : "Agent profile registry could not be loaded.",
+    };
+  }
+}
+
 export default async function ChatPage({ searchParams }: ChatPageProps) {
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const mode = normalizeMode(resolvedSearchParams?.mode);
@@ -526,14 +581,20 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
   const requestedTraceId = normalizeTraceId(resolvedSearchParams?.trace);
   const apiConfig = getApiConfig();
   const liveModeReady = hasLiveApiConfig(apiConfig);
-  const continuity = liveModeReady
-    ? await loadLiveContinuity(
-        apiConfig.apiBaseUrl,
-        apiConfig.userId,
-        requestedThreadId,
-        apiConfig.defaultThreadId,
-      )
-    : await loadFixtureContinuity(requestedThreadId, apiConfig.defaultThreadId);
+  const [continuity, profileRegistry] = liveModeReady
+    ? await Promise.all([
+        loadLiveContinuity(
+          apiConfig.apiBaseUrl,
+          apiConfig.userId,
+          requestedThreadId,
+          apiConfig.defaultThreadId,
+        ),
+        loadLiveProfileRegistry(apiConfig.apiBaseUrl),
+      ])
+    : await Promise.all([
+        loadFixtureContinuity(requestedThreadId, apiConfig.defaultThreadId),
+        loadFixtureProfileRegistry(),
+      ]);
   const workflow = liveModeReady
     ? await loadLiveWorkflow(apiConfig.apiBaseUrl, apiConfig.userId, continuity.selectedThreadId)
     : await loadFixtureWorkflow(continuity.selectedThreadId);
@@ -646,6 +707,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
             thread={continuity.selectedThread}
             sessions={continuity.sessions}
             events={continuity.events}
+            agentProfiles={profileRegistry.profiles}
             source={continuity.continuitySource}
             unavailableReason={continuity.unavailableReason}
             resumptionBrief={resumptionBrief.brief}
@@ -657,6 +719,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
             threads={continuity.threads}
             selectedThreadId={continuity.selectedThreadId}
             currentMode={mode}
+            agentProfiles={profileRegistry.profiles}
             source={continuity.threadListSource}
             unavailableReason={continuity.unavailableReason}
           />
@@ -675,6 +738,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
             apiBaseUrl={liveModeReady ? apiConfig.apiBaseUrl : undefined}
             userId={liveModeReady ? apiConfig.userId : undefined}
             currentMode={mode}
+            agentProfiles={profileRegistry.profiles}
           />
         </div>
       </div>
