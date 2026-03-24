@@ -14,6 +14,7 @@ describe("ThreadSummary", () => {
         thread={{
           id: "thread-1",
           title: "Gamma thread",
+          agent_profile_id: "coach_default",
           created_at: "2026-03-17T10:00:00Z",
           updated_at: "2026-03-17T10:05:00Z",
         }}
@@ -38,6 +39,18 @@ describe("ThreadSummary", () => {
             created_at: "2026-03-17T10:01:00Z",
           },
         ]}
+        agentProfiles={[
+          {
+            id: "assistant_default",
+            name: "Assistant Default",
+            description: "General-purpose assistant profile for baseline conversations.",
+          },
+          {
+            id: "coach_default",
+            name: "Coach Default",
+            description: "Coaching-oriented profile focused on guidance and accountability.",
+          },
+        ]}
         source="live"
       />,
     );
@@ -48,6 +61,8 @@ describe("ThreadSummary", () => {
     expect(screen.getByText("Sessions")).toBeInTheDocument();
     expect(screen.getByText("Events")).toBeInTheDocument();
     expect(screen.getByText("active")).toBeInTheDocument();
+    expect(screen.getByText("Profile Coach Default")).toBeInTheDocument();
+    expect(screen.getByText("Agent profile")).toBeInTheDocument();
   });
 
   it("shows the explicit no-thread state when nothing is selected", () => {
@@ -70,6 +85,7 @@ describe("ThreadSummary", () => {
         thread={{
           id: "thread-1",
           title: "Gamma thread",
+          agent_profile_id: "assistant_default",
           created_at: "2026-03-17T10:00:00Z",
           updated_at: "2026-03-17T10:05:00Z",
         }}
@@ -82,6 +98,7 @@ describe("ThreadSummary", () => {
           thread: {
             id: "thread-1",
             title: "Gamma thread",
+            agent_profile_id: "assistant_default",
             created_at: "2026-03-17T10:00:00Z",
             updated_at: "2026-03-17T10:05:00Z",
           },
@@ -166,6 +183,7 @@ describe("ThreadSummary", () => {
         thread={{
           id: "thread-1",
           title: "Gamma thread",
+          agent_profile_id: "assistant_default",
           created_at: "2026-03-17T10:00:00Z",
           updated_at: "2026-03-17T10:05:00Z",
         }}

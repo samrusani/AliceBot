@@ -1,4 +1,11 @@
-import type { ResumptionBrief, ThreadEventItem, ThreadItem, ThreadSessionItem } from "../lib/api";
+import {
+  DEFAULT_AGENT_PROFILE_ID,
+  type AgentProfileItem,
+  type ResumptionBrief,
+  type ThreadEventItem,
+  type ThreadItem,
+  type ThreadSessionItem,
+} from "../lib/api";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
@@ -7,6 +14,7 @@ type ThreadSummaryProps = {
   thread: ThreadItem | null;
   sessions: ThreadSessionItem[];
   events: ThreadEventItem[];
+  agentProfiles?: AgentProfileItem[];
   source: "live" | "fixture" | "unavailable";
   unavailableReason?: string;
   resumptionBrief?: ResumptionBrief | null;
@@ -43,10 +51,15 @@ function summarizeEvent(event: ThreadEventItem) {
   return event.kind;
 }
 
+function resolveAgentProfileName(agentProfileId: string, profiles: AgentProfileItem[]) {
+  return profiles.find((profile) => profile.id === agentProfileId)?.name ?? agentProfileId;
+}
+
 export function ThreadSummary({
   thread,
   sessions,
   events,
+  agentProfiles = [],
   source,
   unavailableReason,
   resumptionBrief = null,
@@ -86,6 +99,8 @@ export function ThreadSummary({
   const latestSession = sessions[sessions.length - 1];
   const conversationCount = events.filter(isConversationEvent).length;
   const operationalCount = events.length - conversationCount;
+  const agentProfileId = thread.agent_profile_id || DEFAULT_AGENT_PROFILE_ID;
+  const agentProfileName = resolveAgentProfileName(agentProfileId, agentProfiles);
 
   return (
     <SectionCard
@@ -103,6 +118,7 @@ export function ThreadSummary({
           label={formatStatus(latestSession?.status)}
         />
         <div className="attribute-list">
+          <span className="meta-pill">Profile {agentProfileName}</span>
           <span className="meta-pill">Created {formatDate(thread.created_at)}</span>
           <span className="meta-pill">Updated {formatDate(thread.updated_at)}</span>
         </div>
@@ -124,6 +140,10 @@ export function ThreadSummary({
         <div>
           <dt>Review mode</dt>
           <dd>{source === "live" ? "Live continuity API" : "Fixture preview"}</dd>
+        </div>
+        <div>
+          <dt>Agent profile</dt>
+          <dd>{agentProfileName}</dd>
         </div>
       </dl>
 

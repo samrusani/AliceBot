@@ -1,4 +1,6 @@
 import type {
+  AgentProfileItem,
+  AgentProfileListSummary,
   ApprovalItem,
   ApprovalRequestPayload,
   CalendarAccountListSummary,
@@ -37,6 +39,7 @@ import type {
   ToolExecutionItem,
   ToolRecord,
 } from "./api";
+import { DEFAULT_AGENT_PROFILE_ID } from "./api";
 import type { TraceItem } from "../components/trace-list";
 
 const PURCHASE_TOOL: ToolRecord = {
@@ -64,22 +67,43 @@ export const threadFixtures: ThreadItem[] = [
   {
     id: THREAD_MAGNESIUM,
     title: "Magnesium continuity review",
+    agent_profile_id: "assistant_default",
     created_at: "2026-03-17T06:40:00Z",
     updated_at: "2026-03-17T08:45:00Z",
   },
   {
     id: THREAD_VITAMIN_D,
     title: "Vitamin D reorder follow-up",
+    agent_profile_id: "coach_default",
     created_at: "2026-03-16T13:58:00Z",
     updated_at: "2026-03-16T14:32:00Z",
   },
   {
     id: THREAD_CLEANUP,
     title: "Quarterly routine cleanup",
+    agent_profile_id: "assistant_default",
     created_at: "2026-03-15T09:20:00Z",
     updated_at: "2026-03-15T09:20:00Z",
   },
 ];
+
+export const agentProfileFixtures: AgentProfileItem[] = [
+  {
+    id: "assistant_default",
+    name: "Assistant Default",
+    description: "General-purpose assistant profile for baseline conversations.",
+  },
+  {
+    id: "coach_default",
+    name: "Coach Default",
+    description: "Coaching-oriented profile focused on guidance and accountability.",
+  },
+];
+
+export const agentProfileFixtureSummary: AgentProfileListSummary = {
+  total_count: agentProfileFixtures.length,
+  order: ["id_asc"],
+};
 
 export const threadSessionFixtures: Record<string, ThreadSessionItem[]> = {
   [THREAD_MAGNESIUM]: [
@@ -1723,6 +1747,7 @@ export function buildFixtureThread(title: string): ThreadItem {
   return {
     id: `fixture-thread-${nonce}`,
     title,
+    agent_profile_id: DEFAULT_AGENT_PROFILE_ID,
     created_at: timestamp,
     updated_at: timestamp,
   };

@@ -1,10 +1,10 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { createThread } from "../lib/api";
+import { createThread, DEFAULT_AGENT_PROFILE_ID, type AgentProfileItem } from "../lib/api";
 import type { ChatMode } from "./mode-toggle";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
@@ -13,6 +13,7 @@ type ThreadCreateProps = {
   apiBaseUrl?: string;
   userId?: string;
   currentMode: ChatMode;
+  agentProfiles?: AgentProfileItem[];
 };
 
 function buildThreadHref(mode: ChatMode, threadId: string) {
@@ -26,9 +27,15 @@ function buildThreadHref(mode: ChatMode, threadId: string) {
   return `/chat?${params.toString()}`;
 }
 
-export function ThreadCreate({ apiBaseUrl, userId, currentMode }: ThreadCreateProps) {
+export function ThreadCreate({
+  apiBaseUrl,
+  userId,
+  currentMode,
+  agentProfiles,
+}: ThreadCreateProps) {
   const router = useRouter();
   const [title, setTitle] = useState("");
+  const [selectedProfileId, setSelectedProfileId] = useState(DEFAULT_AGENT_PROFILE_ID);
   const [statusText, setStatusText] = useState(
     apiBaseUrl && userId
       ? "Create a new visible thread when the current conversation needs a fresh continuity boundary."
@@ -38,6 +45,25 @@ export function ThreadCreate({ apiBaseUrl, userId, currentMode }: ThreadCreatePr
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const liveModeReady = Boolean(apiBaseUrl && userId);
+  const profileOptions = agentProfiles && agentProfiles.length > 0
+    ? agentProfiles
+    : [
+        {
+          id: DEFAULT_AGENT_PROFILE_ID,
+          name: "Assistant Default",
+          description: "General-purpose assistant profile for baseline conversations.",
+        },
+      ];
+
+  useEffect(() => {
+    if (profileOptions.some((profile) => profile.id === selectedProfileId)) {
+      return;
+    }
+
+    const fallbackProfile =
+      profileOptions.find((profile) => profile.id === DEFAULT_AGENT_PROFILE_ID) ?? profileOptions[0];
+    setSelectedProfileId(fallbackProfile.id);
+  }, [profileOptions, selectedProfileId]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -66,6 +92,7 @@ export function ThreadCreate({ apiBaseUrl, userId, currentMode }: ThreadCreatePr
       const response = await createThread(apiBaseUrl!, {
         user_id: userId!,
         title: nextTitle,
+        agent_profile_id: selectedProfileId || DEFAULT_AGENT_PROFILE_ID,
       });
 
       setStatusTone("success");
@@ -89,6 +116,23 @@ export function ThreadCreate({ apiBaseUrl, userId, currentMode }: ThreadCreatePr
       description="Keep thread identity explicit instead of recycling one conversation container for unrelated work."
     >
       <form className="detail-stack" onSubmit={handleSubmit}>
+        <div className="form-field">
+          <label htmlFor="thread-agent-profile">Agent profile</label>
+          <select
+            id="thread-agent-profile"
+            name="thread-agent-profile"
+            value={selectedProfileId}
+            onChange={(event) => setSelectedProfileId(event.target.value)}
+            disabled={!liveModeReady || isSubmitting}
+          >
+            {profileOptions.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="form-field">
           <label htmlFor="thread-title">Thread title</label>
           <input
