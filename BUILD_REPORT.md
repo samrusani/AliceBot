@@ -1,71 +1,82 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 2 Sprint 15 closeout hardening by publishing an explicit Phase 2 exit packet, syncing canonical truth docs to the accepted Sprint 14 baseline, and enforcing that closeout state via deterministic control-doc truth checks.
+Implement Phase 3 Sprint 1 (Multi-Agent Profile Backbone) by adding deterministic agent profile identity, persisting thread-level `agent_profile_id`, exposing profile registry read APIs, and propagating active profile metadata through context compile and response generation surfaces without expanding orchestration scope.
 
 ## Completed Work
-- Synced canonical baseline markers from Sprint 11 to Sprint 14 in in-scope truth docs.
-  - `ARCHITECTURE.md`: `through Phase 2 Sprint 11` -> `through Phase 2 Sprint 14`
-  - `ROADMAP.md`:
-    - `current through Phase 2 Sprint 11` -> `current through Phase 2 Sprint 14`
-    - `Phase 2 Sprint 11 confirms ...` -> `Phase 2 Sprint 14 confirms ...`
-    - `implemented Phase 2 Sprint 11 backend-plus-web baseline` -> `implemented Phase 2 Sprint 14 backend-plus-web baseline`
-  - `README.md`: `accepted slice through Phase 2 Sprint 11` -> `accepted slice through Phase 2 Sprint 14`
-  - `.ai/handoff/CURRENT_STATE.md`:
-    - `current through Phase 2 Sprint 11` -> `current through Phase 2 Sprint 14`
-    - `implemented Phase 2 Sprint 11 repo state` -> `implemented Phase 2 Sprint 14 repo state`
-- Added explicit closeout packet source-of-truth:
-  - New file `docs/runbooks/phase2-closeout-packet.md`
-  - Includes required sections:
-    - required Phase 2 go/no-go commands
-    - required PASS evidence bundle
-    - explicit deferred scope entering next phase
-    - closeout checklist
-- Updated deterministic control-doc truth guardrails in `scripts/check_control_doc_truth.py`:
-  - Required baseline marker updated to Sprint 14 for:
-    - `ARCHITECTURE.md`
-    - `ROADMAP.md`
-    - `README.md`
-    - `.ai/handoff/CURRENT_STATE.md`
-  - Added required closeout packet rule for `docs/runbooks/phase2-closeout-packet.md` with required markers:
-    - `accepted Phase 2 Sprint 14 baseline`
-    - `Required Phase 2 Go/No-Go Commands`
-    - `Required PASS Evidence Bundle`
-    - `Explicit Deferred Scope Entering Next Phase`
-  - Added stale-marker rejection for prior baseline text:
-    - `through Phase 2 Sprint 11`
-    - `current through Phase 2 Sprint 11`
-- Updated truth guardrail tests in `tests/unit/test_control_doc_truth.py`:
-  - existing required-marker pass/fail coverage retained
-  - existing disallowed-marker coverage retained
-  - added missing closeout packet file failure coverage
-  - added stale Sprint 11 baseline marker rejection coverage
+- Added deterministic in-process Phase 3 profile registry:
+  - New module: `apps/api/src/alicebot_api/phase3_profiles.py`
+  - Profiles shipped:
+    - `assistant_default`
+    - `coach_default`
+  - Deterministic list/read helpers for profile ids and records.
+
+- Added thread profile persistence and binding:
+  - New Alembic migration: `apps/api/alembic/versions/20260324_0032_thread_agent_profiles.py`
+  - `threads.agent_profile_id` added as `text NOT NULL DEFAULT 'assistant_default'`
+  - Added DB constraint for deterministic current profile domain:
+    - `threads_agent_profile_id_check` in (`assistant_default`, `coach_default`)
+  - Added index:
+    - `threads_user_agent_profile_created_idx (user_id, agent_profile_id, created_at DESC, id DESC)`
+  - Store layer updated to read/write `agent_profile_id` on thread create/get/list.
+
+- Extended contracts and thread payloads:
+  - `ThreadCreateInput` now carries `agent_profile_id` (default `assistant_default`).
+  - `ThreadRecord` now includes `agent_profile_id`.
+  - Added deterministic contracts for `/v0/agent-profiles` list payload (`items` + `summary`).
+
+- Extended API surfaces in-scope:
+  - New endpoint: `GET /v0/agent-profiles` (deterministic registry payload + stable ordering summary).
+  - `POST /v0/threads` now accepts optional `agent_profile_id`.
+    - Omitted profile id defaults to `assistant_default`.
+    - Invalid profile id returns deterministic `422` payload:
+      - `code: invalid_agent_profile_id`
+      - stable message
+      - stable `allowed_agent_profile_ids` list.
+  - Thread list/detail/create payloads now expose persisted `agent_profile_id`.
+  - `POST /v0/context/compile` now includes metadata:
+    - `metadata.agent_profile_id` for the active thread profile.
+  - `POST /v0/responses` now includes metadata in both success and model-failure payloads:
+    - `metadata.agent_profile_id`.
+
+- Verification tests added/updated in sprint scope:
+  - Added migration unit test:
+    - `tests/unit/test_20260324_0032_thread_agent_profiles.py`
+  - Updated continuity integration coverage for:
+    - non-default thread profile create/read/list
+    - omitted `agent_profile_id` defaults to `assistant_default`
+    - invalid profile 422 behavior
+    - deterministic `/v0/agent-profiles` payload
+    - compile metadata propagation
+  - Updated responses integration coverage for response metadata propagation.
 
 ## Incomplete Work
 - None in sprint scope.
 
 ## Files Changed
-- `.ai/handoff/CURRENT_STATE.md`
-- `ARCHITECTURE.md`
-- `ROADMAP.md`
-- `README.md`
-- `docs/runbooks/phase2-closeout-packet.md`
-- `scripts/check_control_doc_truth.py`
-- `tests/unit/test_control_doc_truth.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/phase3_profiles.py`
+- `apps/api/alembic/versions/20260324_0032_thread_agent_profiles.py`
+- `tests/integration/test_continuity_api.py`
+- `tests/integration/test_responses_api.py`
+- `tests/unit/test_20260324_0032_thread_agent_profiles.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## Tests Run
-1. `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-- Outcome: PASS (`5 passed in 0.02s`, exit code `0`).
+1. `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py -q`
+- Initial sandbox run: blocked by local Postgres access policy (`localhost:5432 Operation not permitted`).
+- Elevated rerun outcome after adding omitted-profile coverage: PASS (`11 passed in 3.21s`).
 
-2. `python3 scripts/check_control_doc_truth.py`
-- Outcome: PASS (`Control-doc truth check: PASS`, all configured control-doc rules verified including `docs/runbooks/phase2-closeout-packet.md`).
+2. `./.venv/bin/python -m pytest tests/unit/test_20260324_0032_thread_agent_profiles.py -q`
+- Outcome: PASS (`3 passed in 0.13s`).
 
 3. `python3 scripts/run_phase2_validation_matrix.py`
-- First run in sandbox: NO_GO due localhost Postgres access restriction (`Operation not permitted`), not due sprint logic.
-- Rerun with elevated local access: PASS (`Phase 2 validation matrix result: PASS`).
-- PASS step summary on elevated run:
+- Initial sandbox run: NO_GO due sandbox DB access restrictions (not logic regressions).
+- Elevated rerun outcome: PASS.
+- PASS step summary:
   - `control_doc_truth: PASS`
   - `gate_contract_tests: PASS`
   - `readiness_gates: PASS`
@@ -73,15 +84,15 @@ Implement Phase 2 Sprint 15 closeout hardening by publishing an explicit Phase 2
   - `web_validation_matrix: PASS`
 
 ## Blockers/Issues
-- Local sandbox network policy blocked Postgres TCP access on initial matrix execution (`localhost:5432`), causing a false NO_GO environment failure.
-- Resolved by rerunning the same matrix command with elevated local access.
+- Sandbox network restrictions prevented direct local Postgres access for integration/matrix runs.
+- Resolved by rerunning required verification commands with elevated local access.
 
-## Explicit Deferred Scope Into Next Phase
-- API/runtime feature changes
-- connector capability expansion beyond current bounded Gmail/Calendar seams
-- orchestration/worker implementation
-- Phase 3 routing implementation
-- UI redesign
+## Explicit Deferred Scope
+- Per-profile model/provider switching
+- Runner/worker orchestration changes
+- Connector capability expansion
+- Auth model changes
+- UI profile selector and web routing behavior changes
 
 ## Recommended Next Step
-1. Send this sprint for Control Tower review focused on closeout packet completeness and guardrail enforcement, then proceed to merge approval if review remains PASS.
+1. Proceed to Control Tower integration review focused on profile-boundary correctness and sprint-scope containment, then open PR from `codex/phase3-sprint1-agent-profile-backbone`.
