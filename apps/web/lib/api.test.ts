@@ -38,6 +38,7 @@ import {
   listMemories,
   listMemoryLabels,
   listMemoryReviewQueue,
+  listAgentProfiles,
   getToolExecution,
   getTraceDetail,
   getTraceEvents,
@@ -427,6 +428,7 @@ describe("api helpers", () => {
             thread: {
               id: "thread-1",
               title: "Gamma thread",
+              agent_profile_id: "coach_default",
               created_at: "2026-03-17T10:00:00Z",
               updated_at: "2026-03-17T10:00:00Z",
             },
@@ -441,6 +443,7 @@ describe("api helpers", () => {
               {
                 id: "thread-1",
                 title: "Gamma thread",
+                agent_profile_id: "coach_default",
                 created_at: "2026-03-17T10:00:00Z",
                 updated_at: "2026-03-17T10:00:00Z",
               },
@@ -459,6 +462,7 @@ describe("api helpers", () => {
             thread: {
               id: "thread-1",
               title: "Gamma thread",
+              agent_profile_id: "coach_default",
               created_at: "2026-03-17T10:00:00Z",
               updated_at: "2026-03-17T10:00:00Z",
             },
@@ -510,16 +514,41 @@ describe("api helpers", () => {
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [
+              {
+                id: "assistant_default",
+                name: "Assistant Default",
+                description: "General-purpose assistant profile for baseline conversations.",
+              },
+              {
+                id: "coach_default",
+                name: "Coach Default",
+                description: "Coaching-oriented profile focused on guidance and accountability.",
+              },
+            ],
+            summary: {
+              total_count: 2,
+              order: ["id_asc"],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
       );
 
-    await createThread("https://api.example.com", {
+    const createPayload = await createThread("https://api.example.com", {
       user_id: "user-1",
       title: "Gamma thread",
+      agent_profile_id: "coach_default",
     });
-    await listThreads("https://api.example.com", "user-1");
-    await getThreadDetail("https://api.example.com", "thread-1", "user-1");
+    const threadListPayload = await listThreads("https://api.example.com", "user-1");
+    const threadDetailPayload = await getThreadDetail("https://api.example.com", "thread-1", "user-1");
     await getThreadSessions("https://api.example.com", "thread-1", "user-1");
     await getThreadEvents("https://api.example.com", "thread-1", "user-1");
+    const profileRegistryPayload = await listAgentProfiles("https://api.example.com");
 
     expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
       "https://api.example.com/v0/threads",
@@ -527,11 +556,20 @@ describe("api helpers", () => {
       "https://api.example.com/v0/threads/thread-1?user_id=user-1",
       "https://api.example.com/v0/threads/thread-1/sessions?user_id=user-1",
       "https://api.example.com/v0/threads/thread-1/events?user_id=user-1",
+      "https://api.example.com/v0/agent-profiles",
     ]);
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
       user_id: "user-1",
       title: "Gamma thread",
+      agent_profile_id: "coach_default",
     });
+    expect(createPayload.thread.agent_profile_id).toBe("coach_default");
+    expect(threadListPayload.items[0]?.agent_profile_id).toBe("coach_default");
+    expect(threadDetailPayload.thread.agent_profile_id).toBe("coach_default");
+    expect(profileRegistryPayload.items.map((item) => item.id)).toEqual([
+      "assistant_default",
+      "coach_default",
+    ]);
   });
 
   it("throws ApiError when approval resolution returns a backend error envelope", async () => {
