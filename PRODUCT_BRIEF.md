@@ -74,4 +74,4 @@ General-purpose assistants forget preferences, prior decisions, and relationship
 - Durable context must come from governed storage, not raw transcript stuffing.
 - Explainability is a product requirement, not a debugging feature.
 - Preference contradictions must be reflected immediately.
-- The repeat magnesium reorder scenario is the canonical v1 ship gate.
+- The repeat magnesium reorder scenario is the canonical v1 release-readiness validation scenario.
