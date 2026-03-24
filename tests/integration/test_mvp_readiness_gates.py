@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+from types import SimpleNamespace
 
-import scripts.run_mvp_readiness_gates as readiness_gates
+import scripts.run_mvp_readiness_gates as mvp_readiness_alias
+import scripts.run_phase2_readiness_gates as readiness_gates
 
 
 def test_latency_p95_calculation_is_deterministic() -> None:
@@ -181,3 +183,34 @@ def test_run_readiness_gates_returns_blocked_when_probe_setup_fails(monkeypatch)
     assert gates[2].status == "BLOCKED"
     assert gates[3].status == "BLOCKED"
     assert "probe setup unavailable" in gates[1].detail
+
+
+def test_mvp_readiness_alias_forwards_to_phase2_entrypoint(monkeypatch, capsys) -> None:
+    forwarded_args = ["--induce-gate", "cache_fail"]
+    captured: dict[str, object] = {}
+
+    def fake_run(command, *, cwd, check):  # noqa: ANN001
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["check"] = check
+        return SimpleNamespace(returncode=19)
+
+    monkeypatch.setattr(mvp_readiness_alias, "_resolve_python_executable", lambda: "/usr/bin/python3")
+    monkeypatch.setattr(
+        mvp_readiness_alias.sys,
+        "argv",
+        ["scripts/run_mvp_readiness_gates.py", *forwarded_args],
+    )
+    monkeypatch.setattr(mvp_readiness_alias.subprocess, "run", fake_run)
+
+    exit_code = mvp_readiness_alias.main()
+    output = capsys.readouterr().out
+
+    assert exit_code == 19
+    assert (
+        captured["command"]
+        == ["/usr/bin/python3", str(mvp_readiness_alias.TARGET_SCRIPT), *forwarded_args]
+    )
+    assert captured["cwd"] == mvp_readiness_alias.ROOT_DIR
+    assert captured["check"] is False
+    assert "MVP readiness compatibility alias -> scripts/run_phase2_readiness_gates.py" in output
