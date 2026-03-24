@@ -2,7 +2,7 @@
 
 ## Canonical Truth
 
-- The working repo state is current through Phase 2 Sprint 11.
+- The working repo state is current through Phase 2 Sprint 14.
 - The accepted baseline includes deterministic Phase 2 gate tooling: `python3 scripts/run_phase2_acceptance.py`, `python3 scripts/run_phase2_readiness_gates.py`, and `python3 scripts/run_phase2_validation_matrix.py` (default go/no-go command).
 - Gate ownership is canonicalized to Phase 2 runner scripts; `run_mvp_acceptance.py`, `run_mvp_readiness_gates.py`, and `run_mvp_validation_matrix.py` remain supported compatibility aliases with identical semantics.
 - Use [PRODUCT_BRIEF.md](../../PRODUCT_BRIEF.md) for product scope, [ARCHITECTURE.md](../../ARCHITECTURE.md) for implemented boundaries, [ROADMAP.md](../../ROADMAP.md) for forward planning, and [RULES.md](../../RULES.md) for durable operating rules.
@@ -46,6 +46,6 @@
 
 ## Planning Guardrails
 
-- Plan from the implemented Phase 2 Sprint 11 repo state, not from older Sprint 5-era narratives.
+- Plan from the implemented Phase 2 Sprint 14 repo state, not from older Sprint 5-era narratives.
 - Do not describe broader Gmail scope, broader Calendar scope beyond bounded read-only event discovery plus selected-event ingestion, richer parsing, broader proxy execution, auth expansion, or runner orchestration as shipped.
 - The immediate next move should be chosen from the current shipped backend-plus-web-shell baseline, including `/gmail`, `/calendar`, `/memories`, `/entities`, and `/artifacts`, not assumed to be leftover connector cleanup by default.

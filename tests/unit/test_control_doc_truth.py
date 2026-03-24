@@ -49,3 +49,34 @@ def test_control_doc_truth_fails_when_disallowed_marker_is_present(tmp_path: Pat
         issue == f"{target_rule.relative_path}: contains disallowed marker 'Phase 2 Sprint 7'"
         for issue in issues
     )
+
+
+def test_control_doc_truth_fails_when_closeout_packet_is_missing(tmp_path: Path) -> None:
+    _seed_truth_docs(tmp_path)
+    closeout_rule = next(
+        rule
+        for rule in control_doc_truth.CONTROL_DOC_TRUTH_RULES
+        if rule.relative_path == "docs/runbooks/phase2-closeout-packet.md"
+    )
+    (tmp_path / closeout_rule.relative_path).unlink()
+
+    issues = control_doc_truth.run_control_doc_truth_check(root_dir=tmp_path)
+
+    assert any(issue == f"{closeout_rule.relative_path}: missing file" for issue in issues)
+
+
+def test_control_doc_truth_fails_when_stale_sprint11_baseline_marker_is_present(tmp_path: Path) -> None:
+    _seed_truth_docs(tmp_path)
+    target_rule = control_doc_truth.CONTROL_DOC_TRUTH_RULES[0]
+    target_path = tmp_path / target_rule.relative_path
+    target_path.write_text(
+        target_path.read_text(encoding="utf-8") + "\nThe accepted repo state is current through Phase 2 Sprint 11.\n",
+        encoding="utf-8",
+    )
+
+    issues = control_doc_truth.run_control_doc_truth_check(root_dir=tmp_path)
+
+    assert any(
+        issue == f"{target_rule.relative_path}: contains disallowed marker 'through Phase 2 Sprint 11'"
+        for issue in issues
+    )
