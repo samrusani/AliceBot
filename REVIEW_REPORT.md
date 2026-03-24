@@ -4,32 +4,27 @@
 PASS
 
 ## criteria met
-- `scripts/run_phase2_acceptance.py`, `scripts/run_phase2_readiness_gates.py`, and `scripts/run_phase2_validation_matrix.py` are now canonical implementations and no longer delegate to `run_mvp_*` scripts.
-- `scripts/run_mvp_acceptance.py`, `scripts/run_mvp_readiness_gates.py`, and `scripts/run_mvp_validation_matrix.py` are explicit compatibility aliases that forward args and exit codes to the Phase 2 scripts.
-- Deterministic gate semantics were preserved during migration:
-  - acceptance node list is unchanged (moved from MVP runner to Phase 2 runner)
-  - readiness thresholds are unchanged (`latency_p95 < 5.0`, `cache_reuse >= 0.70`, `memory precision > 0.80`, `adjudicated_sample >= 20`)
-  - validation-matrix step ordering and no-go behavior remain unchanged
-- `tests/unit/test_phase2_gate_wrappers.py` was updated for canonical direction and passed in reviewer execution:
-  - command run: `./.venv/bin/python -m pytest tests/unit/test_phase2_gate_wrappers.py -q`
-  - result: `17 passed`
-- Runbooks and entry docs were aligned to “Phase 2 canonical, MVP compatibility alias” across:
-  - `docs/runbooks/mvp-acceptance-suite.md`
-  - `docs/runbooks/mvp-readiness-gates.md`
-  - `docs/runbooks/mvp-validation-matrix.md`
-  - `README.md`
-  - `.ai/handoff/CURRENT_STATE.md`
-- No product endpoint/API surface changes were introduced in this sprint diff.
+- Sprint stayed in scope: doc-truth sync, one deterministic guardrail script, one unit-test file, and validation-matrix wiring only.
+- Canonical baseline references were updated from Sprint 7 to Sprint 11 in `ARCHITECTURE.md`, `ROADMAP.md`, `README.md`, and `.ai/handoff/CURRENT_STATE.md`.
+- Legacy ship-gate phrasing was removed from canonical docs (`PRODUCT_BRIEF.md`, `RULES.md`, `README.md` repo-map wording).
+- `scripts/check_control_doc_truth.py` is implemented, deterministic, and enforces both required markers and disallowed stale markers.
+- `scripts/run_phase2_validation_matrix.py` includes `control_doc_truth` as the first named matrix step and supports deterministic induced failure via `--induce-step control_doc_truth`.
+- Verification evidence confirmed:
+- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py` -> `3 passed`.
+- `python3 scripts/check_control_doc_truth.py` -> `PASS` with all six canonical docs verified.
+- `python3 scripts/run_phase2_validation_matrix.py --induce-step control_doc_truth` -> induced step failed with `exit_code 97`; matrix reported `NO_GO` deterministically.
+- No product/runtime/API endpoint behavior changes were introduced.
 
 ## criteria missed
-- None.
+- None in implementation scope.
 
 ## quality issues
-- None blocking.
+- No blocking quality issues found.
+- No hidden scope expansion detected.
 
 ## regression risks
 - Low.
-- Residual risk: if future changes update only canonical script messaging or only alias messaging, operator-facing output may drift even if execution semantics stay stable.
+- Residual risk: guardrail is exact-string based, so intentional future wording edits in canonical docs require synchronized rule updates.
 
 ## docs issues
 - None blocking within sprint scope.
@@ -38,8 +33,8 @@ PASS
 - No.
 
 ## should anything update ARCHITECTURE.md?
-- No.
+- No additional changes required beyond the Sprint 11 baseline sync completed here.
 
 ## recommended next action
-1. Approve sprint as complete and proceed with Control Tower integration sign-off.
-2. In future gate changes, update Phase 2 scripts first and keep MVP alias scripts thin and argument-transparent.
+1. Start local Postgres (`docker compose up -d`) and rerun `python3 scripts/run_phase2_validation_matrix.py --induce-step control_doc_truth` to isolate the induced failure from environment-related DB failures.
+2. Run `python3 scripts/run_phase2_validation_matrix.py` (no induced step) in the same environment to capture a clean baseline pass/fail snapshot for this branch.

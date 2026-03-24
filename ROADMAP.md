@@ -2,20 +2,20 @@
 
 ## Current Position
 
-- The accepted repo state is current through Phase 2 Sprint 7.
+- The accepted repo state is current through Phase 2 Sprint 11.
 - The backend baseline now includes continuity APIs, deterministic context compilation, governed request routing, approvals and execution review, typed memory and open-loop seams, deterministic thread resumption brief reads, unified explicit-signal capture seams, explicit task and task-step lifecycle seams, rooted local workspaces and artifact ingestion, artifact retrieval and embeddings, narrow read-only Gmail and Calendar seams with selected-item ingestion, bounded read-only Calendar event discovery for one connected account, and the no-tools assistant-response seam.
 - The frontend baseline is now real product surface, not scaffolding: the Next.js operator shell ships `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live-backend reads when configured and explicit fixture fallback when they are not.
 - `/chat` now uses selected-thread continuity instead of a raw thread-id-first flow, keeps bounded thread review and deterministic resumption brief review visible beside both assistant and governed-request composition, ships thread-linked governed workflow, ordered task-step timeline review, and bounded explain-why trace embedding, and includes manual explicit-signal capture controls for selected `message.user` events.
 - `/gmail` and `/calendar` are shipped bounded connector workspaces in the shell: account review, selected-account detail, explicit connect, and one selected-item ingestion path into one chosen task workspace. The API baseline also includes bounded Calendar event discovery for one connected account with deterministic ordering and bounded limits.
 - `/memories`, `/entities`, and `/artifacts` are shipped bounded review workspaces in the shell, not planned surface.
-- Phase 2 Sprint 7 established deterministic release-candidate validation tooling; `python3 scripts/run_phase2_validation_matrix.py` is the default go/no-go command.
+- Phase 2 Sprint 11 confirms deterministic release-candidate validation tooling and canonical Phase 2 gate ownership; `python3 scripts/run_phase2_validation_matrix.py` is the default go/no-go command.
 - Historical sprint detail belongs in build and review artifacts, not in this roadmap.
 
 ## Next Delivery Focus
 
 ### Build From The Shipped API Plus Web-Shell Baseline
 
-- Plan the next sprint from the implemented Phase 2 Sprint 7 backend-plus-web baseline, not from older pre-Phase-2 narratives.
+- Plan the next sprint from the implemented Phase 2 Sprint 11 backend-plus-web baseline, not from older pre-Phase-2 narratives.
 - Treat transcript continuity, thread-linked workflow review, task-step timeline review, bounded explain-why embedding in `/chat`, deterministic resumption brief review, manual explicit-signal capture controls, the shipped review workspaces (`/memories`, `/entities`, `/artifacts`), the shipped connector workspaces (`/gmail`, `/calendar`), and bounded Calendar event discovery as baseline, not pending work.
 - Treat the deterministic validation matrix command (`python3 scripts/run_phase2_validation_matrix.py`) as the default release-candidate gate.
 - Favor one narrow seam that deepens operator use of already shipped contracts before widening connector breadth or orchestration scope.
