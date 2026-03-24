@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 2 Sprint 11: Canonicalize Phase 2 Gates (Remove Wrapper Drift)
+Phase 2 Sprint 12: Control-Doc Truth Guardrails And Baseline Sync
 
 ## Sprint Type
 
@@ -10,153 +10,145 @@ hardening
 
 ## Sprint Reason
 
-Sprint 10 closed acceptance evidence for capture-to-resumption continuity. The remaining control risk is runner drift: `run_phase2_*` scripts are still thin wrappers over `run_mvp_*`, so Phase 2 is named as canonical in docs while MVP scripts remain the implementation source. This causes planning churn and redundant sprint pressure.
+Sprint 11 removed gate-runner ownership drift, but canonical docs still carry stale baseline claims (for example "through Phase 2 Sprint 7") and legacy ship-gate language that causes repeated planning confusion and redundant truth-sync churn. We need one narrow sprint that both updates canonical docs and adds a deterministic guardrail so this drift cannot silently recur.
 
 ## Sprint Intent
 
-Make Phase 2 gate scripts the canonical implementation source and downgrade MVP runners to explicit compatibility aliases, while preserving the exact current gate behavior and thresholds.
+Sync canonical control docs to the actual merged baseline (through Phase 2 Sprint 11) and add an automated control-doc truth check wired into the Phase 2 validation chain to prevent stale/planning-drift regressions.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase2-sprint11-gate-canonicalization`
+- Branch Name: `codex/phase2-sprint12-control-doc-truth-guardrails`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- We are on track, but control artifacts still carry dual-source gate semantics (Phase 2 labels, MVP implementations).
-- Canonicalizing one runner source removes duplicate maintenance and prevents repeated "wrapper parity" sprints.
-- This is the narrowest high-value hardening seam before broader Phase 2 completion work.
+- Current implementation is advancing, but planning artifacts are behind merged reality.
+- Repeated doc drift creates redundant "truth-sync-only" sprint loops and merge-review friction.
+- A lightweight automated check is the smallest durable fix that prevents recurrence.
 
 ## Design Truth
 
-- Do not change product/API behavior or gate thresholds.
-- Keep deterministic gate coverage and scenario list behavior stable.
-- One canonical source for gate orchestration must exist after this sprint.
+- No product/runtime/API feature changes.
+- No gate threshold or scenario behavior changes.
+- Guardrails should validate documented truth signals, not attempt semantic NLP inference.
 
 ## Exact Surfaces In Scope
 
-- gate runner canonicalization (Phase 2 scripts become source of truth)
-- MVP compatibility aliasing (MVP scripts call Phase 2 scripts)
-- runbook naming/ownership alignment
-- sprint-scoped verification of deterministic parity
+- canonical control-doc baseline sync
+- deterministic control-doc truth guardrail script + tests
+- validation-matrix integration of truth guardrail step
+- sprint-scoped report updates
 
 ## Exact Files In Scope
 
-- [run_phase2_acceptance.py](scripts/run_phase2_acceptance.py)
-- [run_phase2_readiness_gates.py](scripts/run_phase2_readiness_gates.py)
-- [run_phase2_validation_matrix.py](scripts/run_phase2_validation_matrix.py)
-- [run_mvp_acceptance.py](scripts/run_mvp_acceptance.py)
-- [run_mvp_readiness_gates.py](scripts/run_mvp_readiness_gates.py)
-- [run_mvp_validation_matrix.py](scripts/run_mvp_validation_matrix.py)
-- [test_phase2_gate_wrappers.py](tests/unit/test_phase2_gate_wrappers.py)
-- [mvp-acceptance-suite.md](docs/runbooks/mvp-acceptance-suite.md)
-- [mvp-readiness-gates.md](docs/runbooks/mvp-readiness-gates.md)
-- [mvp-validation-matrix.md](docs/runbooks/mvp-validation-matrix.md)
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [ROADMAP.md](ROADMAP.md)
 - [README.md](README.md)
+- [PRODUCT_BRIEF.md](PRODUCT_BRIEF.md)
+- [RULES.md](RULES.md)
 - [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURRENT_STATE.md)
+- [run_phase2_validation_matrix.py](scripts/run_phase2_validation_matrix.py)
+- [check_control_doc_truth.py](scripts/check_control_doc_truth.py)
+- [test_control_doc_truth.py](tests/unit/test_control_doc_truth.py)
 - [BUILD_REPORT.md](BUILD_REPORT.md)
 - [REVIEW_REPORT.md](REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](.ai/active/SPRINT_PACKET.md)
 - relevant verification under:
-  - `./.venv/bin/python -m pytest tests/unit/test_phase2_gate_wrappers.py`
-  - `python3 scripts/run_phase2_acceptance.py`
-  - `python3 scripts/run_phase2_readiness_gates.py --induce-gate acceptance_fail`
-  - `python3 scripts/run_phase2_validation_matrix.py --induce-step readiness_gates`
+  - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py`
+  - `python3 scripts/check_control_doc_truth.py`
+  - `python3 scripts/run_phase2_validation_matrix.py --induce-step control_doc_truth`
 
 ## In Scope
 
-- Move canonical gate orchestration and messaging into:
-  - `scripts/run_phase2_acceptance.py`
-  - `scripts/run_phase2_readiness_gates.py`
-  - `scripts/run_phase2_validation_matrix.py`
-- Convert MVP scripts into compatibility aliases that delegate to Phase 2 scripts with explicit alias messaging.
-- Preserve existing deterministic scenario coverage, gate thresholds, and no-go behavior (no semantic widening).
-- Update unit tests to verify canonical direction (MVP -> Phase 2 aliasing) and deterministic command wiring.
-- Update runbooks and entry docs so "Phase 2 canonical / MVP alias" is explicit and internally consistent.
+- Update canonical docs to reflect merged baseline through Sprint 11 and canonical Phase 2 gate ownership.
+- Remove/replace stale statements that anchor planning to Sprint 7-era baseline.
+- Add a deterministic script that validates required truth markers and rejects disallowed stale markers in canonical docs.
+- Add unit tests covering pass/fail cases for the truth-check script.
+- Add `control_doc_truth` as a deterministic first step in `run_phase2_validation_matrix.py`.
+- Keep induced-failure behavior in validation matrix deterministic and reviewer-visible.
 
 ## Out of Scope
 
-- API endpoint changes or schema/migration work
-- feature-scope changes in chat/memory/connectors/tasks
-- threshold tuning or acceptance scenario rewrites beyond naming/wiring parity
+- any endpoint, schema, or runtime behavior change
+- connector capability expansion or orchestrator implementation
+- memory extraction/retrieval algorithm changes
+- UI feature changes
 - workers/automation/orchestration implementation
 - Phase 3 runtime/profile routing implementation
 
 ## Required Deliverables
 
-- Phase 2 scripts become canonical runner implementations (no longer wrappers to MVP scripts).
-- MVP scripts remain available as compatibility aliases to Phase 2 scripts.
-- Unit tests prove alias behavior and deterministic wiring.
-- Runbooks/docs clearly declare canonical ownership and compatibility aliases.
+- Canonical docs aligned to Sprint 11 merged reality.
+- `scripts/check_control_doc_truth.py` implemented and deterministic.
+- `tests/unit/test_control_doc_truth.py` passing.
+- `scripts/run_phase2_validation_matrix.py` includes `control_doc_truth` step.
 - Updated sprint reports for this sprint only.
 
 ## Acceptance Criteria
 
-- `run_phase2_acceptance.py`, `run_phase2_readiness_gates.py`, and `run_phase2_validation_matrix.py` do not invoke `run_mvp_*` scripts.
-- `run_mvp_*` scripts invoke `run_phase2_*` scripts and preserve backward-compatible invocation UX.
-- Existing deterministic gate semantics remain intact (same scenario coverage and pass/fail/no-go logic).
-- `tests/unit/test_phase2_gate_wrappers.py` passes with updated canonical direction.
-- Runbooks and top-level docs are consistent with "Phase 2 canonical, MVP alias."
+- Canonical docs no longer claim Sprint 7 as current baseline.
+- Canonical docs reflect Phase 2 gate ownership as implemented after Sprint 11.
+- `python3 scripts/check_control_doc_truth.py` returns exit code `0` on synced docs and non-zero on intentional stale-marker injection.
+- `run_phase2_validation_matrix.py` executes `control_doc_truth` as a named step and reports deterministic pass/fail/no-go.
+- `tests/unit/test_control_doc_truth.py` passes.
 - No product/runtime endpoint behavior changes are introduced.
 
 ## Implementation Constraints
 
 - keep script behavior deterministic and non-interactive
-- preserve existing thresholds and scenario-node coverage
+- keep checks machine-independent and path-stable
 - use machine-independent assertions in tests
 - do not introduce external dependencies
 - co-deliver verification commands with outcomes in reports
 
 ## Control Tower Task Cards
 
-### Task 1: Canonical Gate Scripts
+### Task 1: Canonical Doc Sync
 Owner: tooling operative  
 Write scope:
-- `scripts/run_phase2_acceptance.py`
-- `scripts/run_phase2_readiness_gates.py`
-- `scripts/run_phase2_validation_matrix.py`
-- `scripts/run_mvp_acceptance.py`
-- `scripts/run_mvp_readiness_gates.py`
-- `scripts/run_mvp_validation_matrix.py`
-- `tests/unit/test_phase2_gate_wrappers.py`
-
-### Task 2: Runbook And Entry-Doc Alignment
-Owner: tooling operative  
-Write scope:
-- `docs/runbooks/mvp-acceptance-suite.md`
-- `docs/runbooks/mvp-readiness-gates.md`
-- `docs/runbooks/mvp-validation-matrix.md`
+- `ARCHITECTURE.md`
+- `ROADMAP.md`
 - `README.md`
+- `PRODUCT_BRIEF.md`
+- `RULES.md`
 - `.ai/handoff/CURRENT_STATE.md`
+
+### Task 2: Truth Guardrail
+Owner: tooling operative  
+Write scope:
+- `scripts/check_control_doc_truth.py`
+- `tests/unit/test_control_doc_truth.py`
+- `scripts/run_phase2_validation_matrix.py`
 
 ### Task 3: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify canonical direction (Phase 2 source, MVP alias)
-- verify deterministic parity and gate semantics continuity
+- verify doc truth aligns with merged baseline
+- verify guardrail determinism and validation-matrix integration
 - verify strict no-product-scope expansion
-- verify docs and runner consistency
+- verify reports and packet consistency
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact script ownership migration (Phase 2 canonical, MVP alias)
-- exact parity-preservation notes (what remained unchanged semantically)
-- test updates and outcomes for alias/wiring verification
+- exact canonical-doc deltas
+- truth-guardrail rules enforced (required and rejected markers)
+- validation-matrix step integration details
 - exact verification commands run with outcomes
 - explicit deferred scope (automation/workers/Phase 3 runtime orchestration)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint remained gate-canonicalization scoped
-- no hidden gate-semantics drift
-- docs and script ownership consistency
+- sprint remained doc-truth-and-guardrail scoped
+- no hidden runtime/product-scope drift
+- guardrail catches stale baseline markers deterministically
 - verification evidence is sufficient for hardening sprint
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when Phase 2 gates are the single canonical implementation source, MVP commands are explicit compatibility aliases, deterministic gate behavior remains unchanged, and control docs no longer imply dual ownership.
+This sprint is complete when canonical control docs reflect the merged Sprint 11 baseline, deterministic truth guardrails are enforced in CI/local validation flow, and future stale-baseline drift is mechanically blocked.
