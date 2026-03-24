@@ -1013,6 +1013,7 @@ class MemoryCandidateInput:
     memory_key: str
     value: JsonValue | None
     source_event_ids: tuple[UUID, ...]
+    agent_profile_id: str | None = None
     delete_requested: bool = False
     memory_type: str | None = None
     confidence: float | None = None
@@ -1029,6 +1030,8 @@ class MemoryCandidateInput:
             "source_event_ids": [str(source_event_id) for source_event_id in self.source_event_ids],
             "delete_requested": self.delete_requested,
         }
+        if self.agent_profile_id is not None:
+            payload["agent_profile_id"] = self.agent_profile_id
         payload["value"] = self.value
         if self.memory_type is not None:
             payload["memory_type"] = self.memory_type

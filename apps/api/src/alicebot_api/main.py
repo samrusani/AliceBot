@@ -7,6 +7,8 @@ from fastapi import FastAPI, Query
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fastapi.responses import JSONResponse
+import psycopg
+from psycopg.rows import dict_row
 from urllib.parse import urlsplit, urlunsplit
 
 from alicebot_api.compiler import compile_and_persist_trace, compile_resumption_brief
@@ -481,6 +483,7 @@ class AdmitMemoryRequest(BaseModel):
     memory_key: str = Field(min_length=1, max_length=200)
     value: object | None = None
     source_event_ids: list[UUID] = Field(min_length=1)
+    agent_profile_id: str | None = Field(default=None, min_length=1, max_length=100)
     delete_requested: bool = False
     memory_type: str | None = Field(default=None, min_length=1, max_length=100)
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -900,7 +903,9 @@ def healthcheck() -> JSONResponse:
 
 @app.get("/v0/agent-profiles")
 def list_agent_profiles() -> JSONResponse:
-    items = list_registered_agent_profiles()
+    settings = get_settings()
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+        items = list_registered_agent_profiles(ContinuityStore(conn))
     summary: AgentProfileListSummary = {
         "total_count": len(items),
         "order": list(AGENT_PROFILE_LIST_ORDER),
@@ -1062,28 +1067,30 @@ def create_thread(request: CreateThreadRequest) -> JSONResponse:
         if request.agent_profile_id is not None
         else DEFAULT_AGENT_PROFILE_ID
     )
-    if get_registered_agent_profile(agent_profile_id) is None:
-        allowed_agent_profile_ids = list_registered_agent_profile_ids()
-        return JSONResponse(
-            status_code=422,
-            content={
-                "detail": {
-                    "code": "invalid_agent_profile_id",
-                    "message": (
-                        "agent_profile_id must be one of: "
-                        + ", ".join(allowed_agent_profile_ids)
-                    ),
-                    "allowed_agent_profile_ids": allowed_agent_profile_ids,
-                }
-            },
-        )
     thread_input = ThreadCreateInput(
         title=request.title,
         agent_profile_id=agent_profile_id,
     )
 
     with user_connection(settings.database_url, request.user_id) as conn:
-        created = ContinuityStore(conn).create_thread(
+        store = ContinuityStore(conn)
+        if get_registered_agent_profile(store, agent_profile_id) is None:
+            allowed_agent_profile_ids = list_registered_agent_profile_ids(store)
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "invalid_agent_profile_id",
+                        "message": (
+                            "agent_profile_id must be one of: "
+                            + ", ".join(allowed_agent_profile_ids)
+                        ),
+                        "allowed_agent_profile_ids": allowed_agent_profile_ids,
+                    }
+                },
+            )
+
+        created = store.create_thread(
             thread_input.title,
             thread_input.agent_profile_id,
         )
@@ -1302,6 +1309,7 @@ def admit_memory(request: AdmitMemoryRequest) -> JSONResponse:
                     memory_key=request.memory_key,
                     value=request.value,
                     source_event_ids=tuple(request.source_event_ids),
+                    agent_profile_id=request.agent_profile_id,
                     delete_requested=request.delete_requested,
                     memory_type=request.memory_type,
                     confidence=request.confidence,

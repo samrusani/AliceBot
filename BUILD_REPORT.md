@@ -1,92 +1,111 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Adopt Phase 3 Sprint 1 profile seams in the web operator shell by wiring `agent_profile_id` and `/v0/agent-profiles` into chat loading, thread creation, and thread review visibility while keeping backend scope unchanged.
+Phase 3 Sprint 5: Profile-Scoped Memory and Context Isolation.
+
+Implement durable profile attribution on memory rows and enforce profile-scoped memory behavior across compile/response and admission paths, while preserving deterministic `assistant_default` fallback when attribution is omitted.
 
 ## Completed Work
-- Web API contract adoption (`apps/web/lib/api.ts`):
-  - Extended `ThreadItem` with `agent_profile_id`.
-  - Extended `ThreadCreatePayload` with `agent_profile_id`.
-  - Added `DEFAULT_AGENT_PROFILE_ID` constant (`assistant_default`).
-  - Added profile registry types:
-    - `AgentProfileItem`
-    - `AgentProfileListSummary`
-  - Added `listAgentProfiles(apiBaseUrl)` for `GET /v0/agent-profiles`.
-- API/contract tests (`apps/web/lib/api.test.ts`):
-  - Verified thread create payload now includes `agent_profile_id`.
-  - Verified list/detail reads retain `agent_profile_id`.
-  - Verified profile registry read path hits `/v0/agent-profiles` and returns deterministic ids.
-- Fixture contract adoption (`apps/web/lib/fixtures.ts`):
-  - Added `agent_profile_id` to thread fixtures.
-  - Added deterministic profile fixtures (`assistant_default`, `coach_default`).
-  - Ensured fixture thread creation defaults to `assistant_default`.
-- Chat loading + fallback (`apps/web/app/chat/page.tsx`):
-  - Added live profile registry load via `listAgentProfiles`.
-  - Added deterministic fallback to fixture profile registry when live read fails.
-  - Normalized thread profile ids to explicit default (`assistant_default`) when missing.
-  - Passed profile registry into thread create/list/summary surfaces.
-- Chat page tests (`apps/web/app/chat/page.test.tsx`):
-  - Added profile registry mock coverage.
-  - Added explicit test for live profile read failure fallback while `/chat` remains usable.
-- Thread create UI adoption (`apps/web/components/thread-create.tsx`):
-  - Added profile selector to thread creation form.
-  - Submitted selected `agent_profile_id` with `user_id` and `title`.
-  - Preserved deterministic `assistant_default` fallback when profile list is unavailable.
-- Thread create tests (`apps/web/components/thread-create.test.tsx`):
-  - Verified selected profile id is sent in create payload.
-  - Verified deterministic default payload uses `assistant_default` without profile data.
-- Thread list visibility (`apps/web/components/thread-list.tsx`):
-  - Added visible profile badge per thread row.
-- Thread list tests (`apps/web/components/thread-list.test.tsx`):
-  - Verified profile identity rendering in thread rows.
-- Thread summary visibility (`apps/web/components/thread-summary.tsx`):
-  - Added visible selected-thread profile identity (badge + summary field).
-- Thread summary tests (`apps/web/components/thread-summary.test.tsx`):
-  - Verified profile identity rendering in selected-thread summary.
+- Carried forward required Sprint 4 registry baseline not yet present on `main`:
+- migration `20260324_0033_agent_profile_registry`
+- DB-backed profile registry runtime wiring in `phase3_profiles.py`
+- continuity integration coverage updates that match DB-backed registry behavior
+- Added migration `20260324_0034_memory_agent_profile_scope`:
+- Added `memories.agent_profile_id text NOT NULL DEFAULT 'assistant_default'`.
+- Added FK `memories_agent_profile_id_fkey` -> `agent_profiles(id)`.
+- Replaced global memory-key uniqueness with profile-scoped uniqueness:
+- dropped `memories_user_id_memory_key_key`
+- added `memories_user_profile_memory_key_key` on `(user_id, agent_profile_id, memory_key)`
+- Added deterministic retrieval index `memories_user_profile_updated_created_id_idx` on `(user_id, agent_profile_id, updated_at, created_at, id)`.
+- Hardened downgrade safety:
+- before restoring `UNIQUE (user_id, memory_key)`, downgrade deterministically rewrites only duplicate cross-profile keys (ranked suffix strategy) so rollback does not fail on post-upgrade cross-profile duplicates.
+- Updated store wiring:
+- `create_memory(..., agent_profile_id='assistant_default')`
+- `get_memory_by_key_and_profile(memory_key, agent_profile_id)`
+- `list_context_memories_for_profile(agent_profile_id=...)`
+- `retrieve_semantic_memory_matches_for_profile(..., agent_profile_id=...)`
+- Updated memory admission write path (`memory.py`):
+- derives profile domain from `source_event_ids` -> source event threads -> thread `agent_profile_id`
+- validates optional explicit `agent_profile_id` (when provided) and enforces consistency with derived source profile
+- rejects mixed-profile `source_event_ids` deterministically
+- scopes upsert lookup by profile (`memory_key + agent_profile_id`)
+- persists new rows with resolved profile attribution
+- includes resolved profile in revision candidate payload
+- Updated API contract/request plumbing:
+- `MemoryCandidateInput` supports optional `agent_profile_id`
+- `/v0/memories/admit` request supports optional `agent_profile_id` and passes through
+- Kept compile/response profile-scoped read behavior in place and verified:
+- compile memory retrieval remains bounded to active thread profile
+- semantic retrieval in compile remains bounded to active thread profile
+- Added/updated tests:
+- `tests/unit/test_20260324_0034_memory_agent_profile_scope.py` (migration invariants including profile-scoped uniqueness)
+- `tests/unit/test_memory.py` (admission profile-scoped upsert + mixed-profile rejection)
+- `tests/unit/test_memory_store.py` (store SQL/params expectations after profile column exposure)
+- `tests/integration/test_memory_review_api.py`:
+- same `memory_key` admitted from assistant/coach threads persists separately by profile
+- mixed-profile source event set is rejected
+- explicit `agent_profile_id` mismatch is rejected
+- unknown `agent_profile_id` is rejected
+- Existing compile/response isolation tests continue passing
 
 ## Incomplete Work
-- None within sprint scope.
+- None within sprint objective.
 
 ## Files Changed
-- `.ai/active/SPRINT_PACKET.md` (pre-existing sprint packet update in workspace; not modified for implementation logic)
-- `apps/web/lib/api.ts`
-- `apps/web/lib/api.test.ts`
-- `apps/web/lib/fixtures.ts`
-- `apps/web/app/chat/page.tsx`
-- `apps/web/app/chat/page.test.tsx`
-- `apps/web/components/thread-create.tsx`
-- `apps/web/components/thread-create.test.tsx`
-- `apps/web/components/thread-list.tsx`
-- `apps/web/components/thread-list.test.tsx`
-- `apps/web/components/thread-summary.tsx`
-- `apps/web/components/thread-summary.test.tsx`
+- `apps/api/alembic/versions/20260324_0033_agent_profile_registry.py`
+- `apps/api/alembic/versions/20260324_0034_memory_agent_profile_scope.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/compiler.py`
+- `apps/api/src/alicebot_api/memory.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/phase3_profiles.py`
+- `tests/unit/test_20260324_0033_agent_profile_registry.py`
+- `tests/unit/test_20260324_0034_memory_agent_profile_scope.py`
+- `tests/unit/test_memory.py`
+- `tests/unit/test_memory_store.py`
+- `tests/integration/test_context_compile.py`
+- `tests/integration/test_continuity_api.py`
+- `tests/integration/test_memory_review_api.py`
+- `tests/integration/test_responses_api.py`
+- `.ai/active/SPRINT_PACKET.md`
 - `BUILD_REPORT.md`
+- `REVIEW_REPORT.md`
+
+## Scope Hygiene
+- Sprint branch includes Sprint 5 memory-scope work plus the minimal Sprint 4 registry baseline required for migration/runtime coherence on a `main` base that does not yet contain Sprint 4.
+- No additional scope expansion entered beyond that prerequisite baseline and Sprint 5 targets.
 
 ## Tests Run
-1. `npm --prefix apps/web run test -- lib/api.test.ts app/chat/page.test.tsx components/thread-create.test.tsx components/thread-list.test.tsx components/thread-summary.test.tsx`
-- Outcome: PASS (`5` files, `36` tests).
+1. `./.venv/bin/python -m pytest tests/unit/test_20260324_0033_agent_profile_registry.py -q`
+- PASS (`3 passed`)
 
-2. `npm --prefix apps/web run test:mvp:validation-matrix`
-- Outcome: PASS (`13` files, `65` tests).
+2. `./.venv/bin/python -m pytest tests/unit/test_20260324_0034_memory_agent_profile_scope.py -q`
+- PASS (`4 passed`)
 
-3. `python3 scripts/run_phase2_validation_matrix.py`
-- Initial sandbox run: blocked on local Postgres access (`localhost:5432 Operation not permitted`).
-- Elevated rerun outcome: PASS.
-- Gate summary:
-  - `control_doc_truth: PASS`
-  - `gate_contract_tests: PASS`
-  - `readiness_gates: PASS`
-  - `backend_integration_matrix: PASS`
-  - `web_validation_matrix: PASS`
+3. `./.venv/bin/python -m pytest tests/unit/test_memory.py -q`
+- PASS (`23 passed`)
+
+4. `./.venv/bin/python -m pytest tests/unit/test_memory_store.py tests/unit/test_20260324_0034_memory_agent_profile_scope.py -q`
+- PASS (`10 passed`)
+
+5. `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py -q`
+- PASS (`7 passed`)
+
+6. `./.venv/bin/python -m pytest tests/integration/test_context_compile.py tests/integration/test_responses_api.py tests/integration/test_memory_review_api.py -q`
+- PASS (`30 passed`)
+
+7. `python3 scripts/run_phase2_validation_matrix.py`
+- PASS
+- `control_doc_truth: PASS`
+- `gate_contract_tests: PASS`
+- `readiness_gates: PASS`
+- `backend_integration_matrix: PASS`
+- `web_validation_matrix: PASS`
 
 ## Blockers/Issues
-- Sandbox permissions blocked DB-backed validation matrix execution on first run.
-- Resolved by rerunning with elevated local access; no code blocker remained.
-
-## Explicit Deferred Scope
-- Per-profile model routing or provider switching.
-- Worker/runner orchestration changes.
-- Backend profile CRUD expansion.
+- Sandbox networking blocked localhost Postgres access for DB-backed tests.
+- Resolved by running required DB-backed commands with elevated permissions.
 
 ## Recommended Next Step
-1. Hand off to Control Tower review focused on: profile selection correctness, thread profile visibility, and fallback determinism under live profile registry failure.
+1. Control Tower final review and merge for Phase 3 Sprint 5 with emphasis on migration rollout sequencing and profile-domain admission semantics.

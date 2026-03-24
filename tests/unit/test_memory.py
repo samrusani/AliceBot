@@ -35,17 +35,51 @@ class MemoryStoreStub:
     def __init__(self) -> None:
         self.base_time = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
         self.events: dict[UUID, dict[str, object]] = {}
-        self.memory: dict[str, object] | None = None
+        self.threads: dict[UUID, dict[str, object]] = {}
+        self.memories: dict[tuple[str, str], dict[str, object]] = {}
         self.revisions: list[dict[str, object]] = []
         self.open_loops: list[dict[str, object]] = []
+        self.allowed_profiles: dict[str, dict[str, str]] = {
+            "assistant_default": {
+                "id": "assistant_default",
+                "name": "Assistant Default",
+                "description": "Default profile",
+            },
+            "coach_default": {
+                "id": "coach_default",
+                "name": "Coach Default",
+                "description": "Coach profile",
+            },
+        }
 
     def list_events_by_ids(self, event_ids: list[UUID]) -> list[dict[str, object]]:
         return [self.events[event_id] for event_id in event_ids if event_id in self.events]
 
+    def get_thread_optional(self, thread_id: UUID) -> dict[str, object] | None:
+        return self.threads.get(thread_id)
+
+    def get_agent_profile_optional(self, profile_id: str) -> dict[str, str] | None:
+        return self.allowed_profiles.get(profile_id)
+
+    def _find_memory_by_id(self, memory_id: UUID) -> dict[str, object] | None:
+        for memory in self.memories.values():
+            if memory["id"] == memory_id:
+                return memory
+        return None
+
     def get_memory_by_key(self, memory_key: str) -> dict[str, object] | None:
-        if self.memory is None or self.memory["memory_key"] != memory_key:
-            return None
-        return self.memory
+        for memory in self.memories.values():
+            if memory["memory_key"] == memory_key:
+                return memory
+        return None
+
+    def get_memory_by_key_and_profile(
+        self,
+        *,
+        memory_key: str,
+        agent_profile_id: str,
+    ) -> dict[str, object] | None:
+        return self.memories.get((memory_key, agent_profile_id))
 
     def create_memory(
         self,
@@ -61,10 +95,12 @@ class MemoryStoreStub:
         valid_from: datetime | None = None,
         valid_to: datetime | None = None,
         last_confirmed_at: datetime | None = None,
+        agent_profile_id: str = "assistant_default",
     ) -> dict[str, object]:
-        self.memory = {
+        memory = {
             "id": uuid4(),
             "user_id": uuid4(),
+            "agent_profile_id": agent_profile_id,
             "memory_key": memory_key,
             "value": value,
             "status": status,
@@ -80,7 +116,8 @@ class MemoryStoreStub:
             "updated_at": self.base_time,
             "deleted_at": None,
         }
-        return self.memory
+        self.memories[(memory_key, agent_profile_id)] = memory
+        return memory
 
     def update_memory(
         self,
@@ -97,11 +134,11 @@ class MemoryStoreStub:
         valid_to: datetime | None = None,
         last_confirmed_at: datetime | None = None,
     ) -> dict[str, object]:
-        assert self.memory is not None
-        assert self.memory["id"] == memory_id
+        existing_memory = self._find_memory_by_id(memory_id)
+        assert existing_memory is not None
         updated_at = self.base_time + timedelta(minutes=len(self.revisions) + 1)
-        self.memory = {
-            **self.memory,
+        updated_memory = {
+            **existing_memory,
             "value": value,
             "status": status,
             "source_event_ids": source_event_ids,
@@ -115,7 +152,8 @@ class MemoryStoreStub:
             "updated_at": updated_at,
             "deleted_at": updated_at if status == "deleted" else None,
         }
-        return self.memory
+        self.memories[(updated_memory["memory_key"], updated_memory["agent_profile_id"])] = updated_memory
+        return updated_memory
 
     def append_memory_revision(
         self,
@@ -128,9 +166,10 @@ class MemoryStoreStub:
         source_event_ids: list[str],
         candidate: dict[str, object],
     ) -> dict[str, object]:
+        existing_memory = self._find_memory_by_id(memory_id)
         revision = {
             "id": uuid4(),
-            "user_id": self.memory["user_id"] if self.memory is not None else uuid4(),
+            "user_id": existing_memory["user_id"] if existing_memory is not None else uuid4(),
             "memory_id": memory_id,
             "sequence_no": len(self.revisions) + 1,
             "action": action,
@@ -155,9 +194,10 @@ class MemoryStoreStub:
         resolved_at: datetime | None,
         resolution_note: str | None,
     ) -> dict[str, object]:
+        memory = None if memory_id is None else self._find_memory_by_id(memory_id)
         created = {
             "id": uuid4(),
-            "user_id": self.memory["user_id"] if self.memory is not None else uuid4(),
+            "user_id": memory["user_id"] if memory is not None else uuid4(),
             "memory_id": memory_id,
             "title": title,
             "status": status,
@@ -172,10 +212,16 @@ class MemoryStoreStub:
         return created
 
 
-def seed_event(store: MemoryStoreStub) -> UUID:
+def seed_event(store: MemoryStoreStub, *, agent_profile_id: str = "assistant_default") -> UUID:
     event_id = uuid4()
+    thread_id = uuid4()
+    store.threads[thread_id] = {
+        "id": thread_id,
+        "agent_profile_id": agent_profile_id,
+    }
     store.events[event_id] = {
         "id": event_id,
+        "thread_id": thread_id,
         "sequence_no": 1,
         "kind": "message.user",
         "payload": {"text": "evidence"},
@@ -385,6 +431,111 @@ def test_admit_memory_candidate_marks_memory_deleted_and_appends_revision() -> N
     assert decision.revision["sequence_no"] == 1
     assert decision.revision["action"] == "DELETE"
     assert decision.revision["new_value"] is None
+
+
+def test_admit_memory_candidate_scopes_upserts_by_derived_agent_profile() -> None:
+    store = MemoryStoreStub()
+    assistant_event_id = seed_event(store, agent_profile_id="assistant_default")
+    coach_event_id = seed_event(store, agent_profile_id="coach_default")
+
+    assistant_decision = admit_memory_candidate(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        candidate=MemoryCandidateInput(
+            memory_key="user.preference.coffee",
+            value={"likes": "black"},
+            source_event_ids=(assistant_event_id,),
+        ),
+    )
+    coach_add_decision = admit_memory_candidate(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        candidate=MemoryCandidateInput(
+            memory_key="user.preference.coffee",
+            value={"likes": "oat milk"},
+            source_event_ids=(coach_event_id,),
+        ),
+    )
+    coach_update_decision = admit_memory_candidate(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        candidate=MemoryCandidateInput(
+            memory_key="user.preference.coffee",
+            value={"likes": "macchiato"},
+            source_event_ids=(coach_event_id,),
+        ),
+    )
+
+    assert assistant_decision.action == "ADD"
+    assert coach_add_decision.action == "ADD"
+    assert coach_update_decision.action == "UPDATE"
+    assert assistant_decision.memory is not None
+    assert coach_add_decision.memory is not None
+    assert coach_update_decision.memory is not None
+    assert assistant_decision.memory["id"] != coach_add_decision.memory["id"]
+    assert coach_update_decision.memory["id"] == coach_add_decision.memory["id"]
+    assert assistant_decision.memory["value"] == {"likes": "black"}
+    assert coach_update_decision.memory["value"] == {"likes": "macchiato"}
+
+
+def test_admit_memory_candidate_rejects_mixed_profile_source_events() -> None:
+    store = MemoryStoreStub()
+    assistant_event_id = seed_event(store, agent_profile_id="assistant_default")
+    coach_event_id = seed_event(store, agent_profile_id="coach_default")
+
+    with pytest.raises(
+        MemoryAdmissionValidationError,
+        match="source_event_ids must all belong to threads with the same agent_profile_id",
+    ):
+        admit_memory_candidate(
+            store,  # type: ignore[arg-type]
+            user_id=uuid4(),
+            candidate=MemoryCandidateInput(
+                memory_key="user.preference.coffee",
+                value={"likes": "black"},
+                source_event_ids=(assistant_event_id, coach_event_id),
+            ),
+        )
+
+
+def test_admit_memory_candidate_rejects_explicit_agent_profile_mismatch() -> None:
+    store = MemoryStoreStub()
+    assistant_event_id = seed_event(store, agent_profile_id="assistant_default")
+
+    with pytest.raises(
+        MemoryAdmissionValidationError,
+        match="agent_profile_id must match the profile resolved from source_event_ids",
+    ):
+        admit_memory_candidate(
+            store,  # type: ignore[arg-type]
+            user_id=uuid4(),
+            candidate=MemoryCandidateInput(
+                memory_key="user.preference.coffee",
+                value={"likes": "black"},
+                source_event_ids=(assistant_event_id,),
+                agent_profile_id="coach_default",
+            ),
+        )
+
+
+def test_admit_memory_candidate_rejects_unknown_agent_profile_id() -> None:
+    store = MemoryStoreStub()
+    assistant_event_id = seed_event(store, agent_profile_id="assistant_default")
+
+    with pytest.raises(
+        MemoryAdmissionValidationError,
+        match="agent_profile_id must reference an existing profile: unknown_profile",
+    ):
+        admit_memory_candidate(
+            store,  # type: ignore[arg-type]
+            user_id=uuid4(),
+            candidate=MemoryCandidateInput(
+                memory_key="user.preference.coffee",
+                value={"likes": "black"},
+                source_event_ids=(assistant_event_id,),
+                agent_profile_id="unknown_profile",
+            ),
+        )
 
 
 class MemoryReviewStoreStub:
