@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 2 Sprint 13: Gate Contract Test Canonicalization
+Phase 2 Sprint 14: Memory-Quality Gate Realism Hardening
 
 ## Sprint Type
 
@@ -10,128 +10,128 @@ hardening
 
 ## Sprint Reason
 
-Sprint 11 made `run_phase2_*` canonical and reduced `run_mvp_*` to compatibility aliases. Two gate-script test files still target the old MVP-owned module internals and now fail (`tests/integration/test_mvp_readiness_gates.py`, `tests/integration/test_mvp_validation_matrix.py`). Because these tests are not in the default Phase 2 validation matrix, this drift can recur silently.
+Current readiness `memory_quality` evidence is still generated from synthetic seeded memory labels in `scripts/run_phase2_readiness_gates.py`. That can pass while explicit-signal capture quality regresses. This is now the highest remaining MVP-testing risk and is distinct from prior gate/doc canonicalization sprints.
 
 ## Sprint Intent
 
-Restore deterministic gate-contract coverage by updating stale gate-script tests to the Phase 2 canonical ownership model and include that coverage in the default Phase 2 validation matrix.
+Make readiness `memory_quality` evidence derive from deterministic explicit-signal capture outcomes and deterministic adjudication logic, while preserving existing gate thresholds and deterministic no-go behavior.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase2-sprint13-gate-contract-tests`
+- Branch Name: `codex/phase2-sprint14-memory-quality-realism`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- Current `main` is functionally on track (`python3 scripts/run_phase2_validation_matrix.py` passes), but hidden stale tests reduce confidence in gate-runner refactors.
-- The failure mode is concrete and reproducible: stale imports from MVP alias scripts now missing canonical internals.
-- This is a narrow hardening seam that improves MVP extensive-testing confidence without expanding product scope.
+- `python3 scripts/run_phase2_validation_matrix.py` is green, but memory-quality gating still uses synthetic seeded labels.
+- A green memory gate should mean capture/extraction behavior is healthy, not only seeded bookkeeping is healthy.
+- This closes a true testing-evidence gap without expanding product feature scope.
 
 ## Design Truth
 
-- `run_phase2_*` scripts are canonical implementation sources.
-- `run_mvp_*` scripts remain compatibility entrypoints only.
-- Gate-contract tests must validate canonical behavior directly and alias compatibility behavior explicitly.
+- Keep thresholds unchanged:
+  - precision `> 0.80`
+  - adjudicated sample `>= 20`
+- Keep deterministic gate behavior and induced-gate controls.
+- Do not change API contracts or user-facing product behavior.
 
 ## Exact Surfaces In Scope
 
-- gate-runner contract tests for readiness and validation matrix scripts
-- phase2 validation-matrix wiring to include gate-contract tests
-- sprint-scoped build/review reporting
+- readiness gate memory-quality evidence generation path
+- readiness gate test coverage for memory-quality evidence source and posture transitions
+- sprint-scoped reports
 
 ## Exact Files In Scope
 
-- [run_phase2_validation_matrix.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_phase2_validation_matrix.py)
+- [run_phase2_readiness_gates.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_phase2_readiness_gates.py)
 - [test_mvp_readiness_gates.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_mvp_readiness_gates.py)
-- [test_mvp_validation_matrix.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_mvp_validation_matrix.py)
 - [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md)
 - [REVIEW_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/active/SPRINT_PACKET.md)
 - relevant verification under:
-  - `./.venv/bin/python -m pytest tests/integration/test_mvp_readiness_gates.py tests/integration/test_mvp_validation_matrix.py -q`
-  - `python3 scripts/run_phase2_validation_matrix.py --induce-step gate_contract_tests`
+  - `./.venv/bin/python -m pytest tests/integration/test_mvp_readiness_gates.py -q`
+  - `python3 scripts/run_phase2_readiness_gates.py --induce-gate memory_needs_review`
+  - `python3 scripts/run_phase2_readiness_gates.py --induce-gate memory_insufficient`
   - `python3 scripts/run_phase2_validation_matrix.py`
 
 ## In Scope
 
-- Update stale test expectations so gate-contract tests validate Phase 2 canonical modules (`scripts.run_phase2_readiness_gates`, `scripts.run_phase2_validation_matrix`) instead of relying on removed MVP-owned internals.
-- Keep explicit coverage for MVP compatibility aliases where appropriate (entrypoint forwarding and output contract), without treating aliases as canonical implementation modules.
-- Add one deterministic `gate_contract_tests` step to `scripts/run_phase2_validation_matrix.py` that executes the gate-contract test subset.
-- Preserve deterministic induced-failure behavior and failing-step reporting for the new step.
+- Replace synthetic memory-label seeding as the default `memory_quality` evidence source with deterministic capture-derived evaluation inputs.
+- Implement deterministic adjudication mapping from capture-derived outputs to memory review labels used by evaluation-summary.
+- Preserve current gate posture semantics:
+  - `PASS` when thresholds are exceeded
+  - `FAIL` when sample is sufficient but precision is at/below threshold
+  - `BLOCKED` when sample is insufficient or evidence unavailable
+- Keep `--induce-gate memory_needs_review` and `--induce-gate memory_insufficient` deterministic and explicit.
 
 ## Out of Scope
 
-- product/runtime endpoint changes
-- schema/migration work
-- memory/retrieval algorithm changes
-- connector scope expansion
+- endpoint/schema changes
+- acceptance scenario expansion beyond readiness-memory evidence source
+- connector/orchestration/worker scope
 - UI feature changes
-- workers/orchestration implementation
-- Phase 3 runtime/profile routing implementation
+- Phase 3 runtime/profile routing
 
 ## Required Deliverables
 
-- stale gate-script tests updated and passing under the canonical ownership model
-- validation matrix includes `gate_contract_tests` in deterministic step order
-- induced-step behavior supports `--induce-step gate_contract_tests`
+- readiness `memory_quality` path no longer depends on synthetic bulk memory seeding as primary evidence
+- deterministic tests proving capture-derived memory-quality evidence behavior
+- unchanged thresholds and deterministic induced-gate behavior
 - updated sprint reports for this sprint only
 
 ## Acceptance Criteria
 
-- `./.venv/bin/python -m pytest tests/integration/test_mvp_readiness_gates.py tests/integration/test_mvp_validation_matrix.py -q` passes.
-- `scripts/run_phase2_validation_matrix.py` includes `gate_contract_tests` as a named step and reports it in results output.
-- `python3 scripts/run_phase2_validation_matrix.py --induce-step gate_contract_tests` fails deterministically with explicit failing-step output.
-- Full `python3 scripts/run_phase2_validation_matrix.py` remains PASS with the new step included.
-- No product/runtime endpoint behavior changes are introduced.
+- `tests/integration/test_mvp_readiness_gates.py` passes with updated canonical memory-quality evidence logic.
+- Default readiness run computes `memory_quality` from capture-derived deterministic evidence path.
+- `--induce-gate memory_needs_review` and `--induce-gate memory_insufficient` still force expected deterministic outcomes.
+- Full `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
+- No API contract or runtime endpoint behavior changes are introduced.
 
 ## Implementation Constraints
 
-- keep script behavior deterministic and non-interactive
-- preserve existing readiness thresholds and matrix semantics
-- keep test assertions machine-independent
-- do not introduce external dependencies
-- co-deliver verification commands with outcomes in reports
+- keep scripts deterministic and non-interactive
+- preserve existing threshold constants and gate naming
+- avoid external dependencies
+- keep assertions machine-independent
 
 ## Control Tower Task Cards
 
-### Task 1: Gate Contract Tests
+### Task 1: Memory-Quality Evidence Source
+Owner: tooling operative  
+Write scope:
+- `scripts/run_phase2_readiness_gates.py`
+
+### Task 2: Gate Test Alignment
 Owner: tooling operative  
 Write scope:
 - `tests/integration/test_mvp_readiness_gates.py`
-- `tests/integration/test_mvp_validation_matrix.py`
-
-### Task 2: Matrix Integration
-Owner: tooling operative  
-Write scope:
-- `scripts/run_phase2_validation_matrix.py`
 
 ### Task 3: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify canonical-vs-alias test boundaries are correct
-- verify `gate_contract_tests` step determinism and reporting
-- verify strict no-product-scope expansion
+- verify evidence source changed from synthetic seed to capture-derived logic
+- verify threshold and posture semantics unchanged
+- verify no hidden scope expansion
 - verify reports and packet consistency
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact failing stale-test root cause before changes
-- exact test-contract changes made for canonical ownership
-- exact validation-matrix step delta
-- exact verification commands run with outcomes
-- explicit deferred scope (automation/workers/Phase 3 runtime orchestration)
+- exact previous synthetic evidence path and exact replacement path
+- deterministic adjudication rules used
+- verification command outputs and outcomes
+- explicit deferred scope
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint remained gate-contract-hardening scoped
-- stale gate tests are restored and meaningful
-- validation-matrix integration is deterministic and reviewer-clear
-- no hidden scope expansion
+- sprint stayed memory-quality-readiness scoped
+- capture-derived evidence is deterministic and credible
+- threshold/posture behavior is preserved
+- no hidden runtime/product scope changes
 
 ## Exit Condition
 
-This sprint is complete when gate-contract tests are aligned to the Phase 2 canonical runner model, included in default matrix execution, and deterministic failure signaling for that step is verified.
+This sprint is complete when readiness `memory_quality` gate evidence is capture-derived and deterministic, thresholds/postures remain unchanged, and full Phase 2 validation remains green.

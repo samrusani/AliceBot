@@ -82,6 +82,7 @@ InducedScenario = Literal[
 ]
 CacheTelemetryMode = Literal["present", "low_reuse", "missing"]
 MemoryProfile = Literal["on_track", "needs_review", "insufficient_evidence"]
+MemoryReviewAdjudicationLabel = Literal["correct", "incorrect"]
 INDUCED_SCENARIOS: tuple[InducedScenario, ...] = (
     "acceptance_fail",
     "latency_fail",
@@ -105,6 +106,13 @@ class GateResult:
 class ProbeRun:
     durations_seconds: list[float]
     usages: list[ModelUsagePayload]
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryCaptureAdjudication:
+    memory_id: UUID
+    label: MemoryReviewAdjudicationLabel
+    note: str
 
 
 @contextlib.contextmanager
@@ -197,51 +205,175 @@ def _seed_probe_state(database_url: str) -> dict[str, UUID]:
     return {
         "user_id": user_id,
         "thread_id": thread["id"],
+        "session_id": session["id"],
         "source_event_id": source_event["id"],
     }
 
 
-def _seed_memory_quality_sample(
+def _build_memory_capture_messages(*, profile: MemoryProfile) -> list[str]:
+    if profile == "on_track":
+        unique_capture_count = 20
+        duplicate_capture_count = 0
+    elif profile == "needs_review":
+        unique_capture_count = 16
+        duplicate_capture_count = 4
+    else:
+        unique_capture_count = 9
+        duplicate_capture_count = 1
+
+    unique_messages = [f"I like readiness-topic-{index:02d}" for index in range(1, unique_capture_count + 1)]
+    return [*unique_messages, *unique_messages[:duplicate_capture_count]]
+
+
+def _append_user_message_event(
     *,
     database_url: str,
     user_id: UUID,
-    source_event_id: UUID,
-    profile: MemoryProfile,
-) -> None:
-    if profile == "on_track":
-        correct_count = 17
-        incorrect_count = 3
-        total_count = 20
-    elif profile == "needs_review":
-        correct_count = 16
-        incorrect_count = 4
-        total_count = 20
-    else:
-        correct_count = 9
-        incorrect_count = 1
-        total_count = 10
-
+    thread_id: UUID,
+    session_id: UUID,
+    message_text: str,
+) -> UUID:
     with user_connection(database_url, user_id) as conn:
         store = ContinuityStore(conn)
-        for index in range(total_count):
-            memory = store.create_memory(
-                memory_key=f"user.readiness.sample.{index}",
-                value={"value": index},
-                status="active",
-                source_event_ids=[str(source_event_id)],
+        event = store.append_event(
+            thread_id,
+            session_id,
+            "message.user",
+            {"text": message_text},
+        )
+    return event["id"]
+
+
+def _capture_explicit_signals(
+    *,
+    settings: Settings,
+    user_id: UUID,
+    source_event_id: UUID,
+) -> dict[str, Any]:
+    def unused_invoke_model(*, settings: Settings, request: Any) -> ModelInvocationResponse:
+        del settings
+        del request
+        raise AssertionError("invoke_model should not be called for explicit signal capture")
+
+    with _patched_api_runtime(settings=settings, invoke_model=unused_invoke_model):
+        status_code, payload = _invoke_request(
+            "POST",
+            "/v0/memories/capture-explicit-signals",
+            payload={
+                "user_id": str(user_id),
+                "source_event_id": str(source_event_id),
+            },
+        )
+    if status_code != 200:
+        raise RuntimeError(
+            "explicit signal capture request failed: "
+            f"status={status_code} payload={json.dumps(payload, sort_keys=True)}"
+        )
+    if not isinstance(payload, dict):
+        raise RuntimeError("explicit signal capture response was not an object")
+    return payload
+
+
+def _extract_capture_admissions(capture_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    admissions: list[dict[str, Any]] = []
+    for section_name in ("preferences", "commitments"):
+        section = capture_payload.get(section_name)
+        if not isinstance(section, dict):
+            raise RuntimeError(f"explicit signal capture payload was missing '{section_name}' section")
+        section_admissions = section.get("admissions")
+        if not isinstance(section_admissions, list):
+            raise RuntimeError(
+                f"explicit signal capture payload had invalid '{section_name}.admissions' value"
             )
-            if index < correct_count:
-                store.create_memory_review_label(
-                    memory_id=memory["id"],
-                    label="correct",
-                    note="Readiness seed: correct",
+        for admission in section_admissions:
+            if not isinstance(admission, dict):
+                raise RuntimeError(
+                    f"explicit signal capture payload had non-object admission in '{section_name}'"
                 )
-            elif index < correct_count + incorrect_count:
-                store.create_memory_review_label(
-                    memory_id=memory["id"],
-                    label="incorrect",
-                    note="Readiness seed: incorrect",
-                )
+            admissions.append(admission)
+    return admissions
+
+
+def _adjudicate_capture_admissions(
+    admissions: list[dict[str, Any]],
+) -> list[MemoryCaptureAdjudication]:
+    adjudications: list[MemoryCaptureAdjudication] = []
+    for admission in admissions:
+        decision = admission.get("decision")
+        memory = admission.get("memory")
+        if not isinstance(decision, str):
+            raise RuntimeError("explicit signal capture admission was missing a string decision")
+        if not isinstance(memory, dict):
+            raise RuntimeError("explicit signal capture admission was missing a memory payload")
+        memory_id = memory.get("id")
+        if not isinstance(memory_id, str):
+            raise RuntimeError("explicit signal capture admission memory payload was missing id")
+
+        label: MemoryReviewAdjudicationLabel = (
+            "correct" if decision in ("ADD", "UPDATE") else "incorrect"
+        )
+        adjudications.append(
+            MemoryCaptureAdjudication(
+                memory_id=UUID(memory_id),
+                label=label,
+                note=f"Readiness capture adjudication: decision={decision}",
+            )
+        )
+    return adjudications
+
+
+def _persist_memory_adjudications(
+    *,
+    database_url: str,
+    user_id: UUID,
+    adjudications: list[MemoryCaptureAdjudication],
+) -> None:
+    with user_connection(database_url, user_id) as conn:
+        store = ContinuityStore(conn)
+        for adjudication in adjudications:
+            store.create_memory_review_label(
+                memory_id=adjudication.memory_id,
+                label=adjudication.label,
+                note=adjudication.note,
+            )
+
+
+def _capture_and_adjudicate_memory_quality_sample(
+    *,
+    database_url: str,
+    settings: Settings,
+    user_id: UUID,
+    thread_id: UUID,
+    session_id: UUID,
+    profile: MemoryProfile,
+) -> None:
+    capture_messages = _build_memory_capture_messages(profile=profile)
+    all_adjudications: list[MemoryCaptureAdjudication] = []
+    for message_text in capture_messages:
+        source_event_id = _append_user_message_event(
+            database_url=database_url,
+            user_id=user_id,
+            thread_id=thread_id,
+            session_id=session_id,
+            message_text=message_text,
+        )
+        capture_payload = _capture_explicit_signals(
+            settings=settings,
+            user_id=user_id,
+            source_event_id=source_event_id,
+        )
+        admissions = _extract_capture_admissions(capture_payload)
+        if not admissions:
+            raise RuntimeError("explicit signal capture produced no admissions for adjudication")
+        all_adjudications.extend(_adjudicate_capture_admissions(admissions))
+
+    if not all_adjudications:
+        raise RuntimeError("no capture-derived adjudications were produced")
+    _persist_memory_adjudications(
+        database_url=database_url,
+        user_id=user_id,
+        adjudications=all_adjudications,
+    )
 
 
 def _invoke_request(
@@ -566,18 +698,19 @@ def run_readiness_gates(*, induce_gate: InducedScenario | None = None) -> list[G
             command.upgrade(config, "head")
 
             seeded = _seed_probe_state(database_urls["app"])
-            _seed_memory_quality_sample(
-                database_url=database_urls["app"],
-                user_id=seeded["user_id"],
-                source_event_id=seeded["source_event_id"],
-                profile=memory_profile,
-            )
-
             settings = Settings(
                 database_url=database_urls["app"],
                 model_provider="openai_responses",
                 model_name="gpt-5-mini",
                 model_api_key="test-key",
+            )
+            _capture_and_adjudicate_memory_quality_sample(
+                database_url=database_urls["app"],
+                settings=settings,
+                user_id=seeded["user_id"],
+                thread_id=seeded["thread_id"],
+                session_id=seeded["session_id"],
+                profile=memory_profile,
             )
             probe_run = _run_response_probes(
                 settings=settings,
