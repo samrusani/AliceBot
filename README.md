@@ -1,6 +1,6 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Phase 2 Sprint 11: a FastAPI backend plus a bounded Next.js operator shell with deterministic readiness and validation matrix gating.
+AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Phase 2 Sprint 14: a FastAPI backend plus a bounded Next.js operator shell with deterministic readiness and validation matrix gating.
 
 ## Current Implemented Slice
 

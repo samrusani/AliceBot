@@ -1,80 +1,87 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 2 Sprint 14 by replacing synthetic memory-label seeding in readiness `memory_quality` with deterministic explicit-signal-capture-derived evidence and deterministic adjudication, while preserving thresholds/posture semantics and induced-gate determinism.
+Implement Phase 2 Sprint 15 closeout hardening by publishing an explicit Phase 2 exit packet, syncing canonical truth docs to the accepted Sprint 14 baseline, and enforcing that closeout state via deterministic control-doc truth checks.
 
 ## Completed Work
-- Replaced previous synthetic memory evidence path:
-  - Previous path: `run_readiness_gates()` called `_seed_memory_quality_sample(...)`, which directly created synthetic memories (`user.readiness.sample.{index}`) and directly wrote `memory_review_labels` (`correct`/`incorrect`) before evaluating `/v0/memories/evaluation-summary`.
-  - Replacement path: `run_readiness_gates()` now calls `_capture_and_adjudicate_memory_quality_sample(...)`, which:
-    - appends deterministic `message.user` events,
-    - calls `/v0/memories/capture-explicit-signals` per event,
-    - extracts capture admissions from `preferences` + `commitments`,
-    - deterministically maps admissions to review labels,
-    - persists those labels, then evaluates `/v0/memories/evaluation-summary`.
-- Implemented deterministic capture input plans by profile:
-  - `on_track`: 20 unique explicit preference messages (`I like readiness-topic-XX`).
-  - `needs_review`: 16 unique + 4 deterministic duplicates (duplicate captures yield deterministic `NOOP` admissions).
-  - `insufficient_evidence`: 9 unique + 1 deterministic duplicate.
-- Implemented deterministic adjudication rules used for evaluation-label generation:
-  - admission decision `ADD` or `UPDATE` => `correct`
-  - any other admission decision (for example `NOOP`) => `incorrect`
-  - evidence unavailable/invalid capture payload structure => runtime error, resulting in deterministic `BLOCKED` fallback behavior already present in gate runner.
-- Preserved gate thresholds and posture semantics unchanged:
-  - threshold remains `precision > 0.80 and adjudicated_sample >= 20`
-  - posture outcomes remain `PASS`/`FAIL`/`BLOCKED` with `on_track`/`needs_review`/`insufficient_evidence`.
-- Updated readiness-gate integration tests in-scope:
-  - added deterministic tests for capture message profile generation,
-  - added deterministic test for adjudication mapping,
-  - added routing test ensuring induced memory scenarios flow through capture-derived profile selection and produce expected posture/status.
+- Synced canonical baseline markers from Sprint 11 to Sprint 14 in in-scope truth docs.
+  - `ARCHITECTURE.md`: `through Phase 2 Sprint 11` -> `through Phase 2 Sprint 14`
+  - `ROADMAP.md`:
+    - `current through Phase 2 Sprint 11` -> `current through Phase 2 Sprint 14`
+    - `Phase 2 Sprint 11 confirms ...` -> `Phase 2 Sprint 14 confirms ...`
+    - `implemented Phase 2 Sprint 11 backend-plus-web baseline` -> `implemented Phase 2 Sprint 14 backend-plus-web baseline`
+  - `README.md`: `accepted slice through Phase 2 Sprint 11` -> `accepted slice through Phase 2 Sprint 14`
+  - `.ai/handoff/CURRENT_STATE.md`:
+    - `current through Phase 2 Sprint 11` -> `current through Phase 2 Sprint 14`
+    - `implemented Phase 2 Sprint 11 repo state` -> `implemented Phase 2 Sprint 14 repo state`
+- Added explicit closeout packet source-of-truth:
+  - New file `docs/runbooks/phase2-closeout-packet.md`
+  - Includes required sections:
+    - required Phase 2 go/no-go commands
+    - required PASS evidence bundle
+    - explicit deferred scope entering next phase
+    - closeout checklist
+- Updated deterministic control-doc truth guardrails in `scripts/check_control_doc_truth.py`:
+  - Required baseline marker updated to Sprint 14 for:
+    - `ARCHITECTURE.md`
+    - `ROADMAP.md`
+    - `README.md`
+    - `.ai/handoff/CURRENT_STATE.md`
+  - Added required closeout packet rule for `docs/runbooks/phase2-closeout-packet.md` with required markers:
+    - `accepted Phase 2 Sprint 14 baseline`
+    - `Required Phase 2 Go/No-Go Commands`
+    - `Required PASS Evidence Bundle`
+    - `Explicit Deferred Scope Entering Next Phase`
+  - Added stale-marker rejection for prior baseline text:
+    - `through Phase 2 Sprint 11`
+    - `current through Phase 2 Sprint 11`
+- Updated truth guardrail tests in `tests/unit/test_control_doc_truth.py`:
+  - existing required-marker pass/fail coverage retained
+  - existing disallowed-marker coverage retained
+  - added missing closeout packet file failure coverage
+  - added stale Sprint 11 baseline marker rejection coverage
 
 ## Incomplete Work
 - None in sprint scope.
 
 ## Files Changed
-- `scripts/run_phase2_readiness_gates.py`
-- `tests/integration/test_mvp_readiness_gates.py`
+- `.ai/handoff/CURRENT_STATE.md`
+- `ARCHITECTURE.md`
+- `ROADMAP.md`
+- `README.md`
+- `docs/runbooks/phase2-closeout-packet.md`
+- `scripts/check_control_doc_truth.py`
+- `tests/unit/test_control_doc_truth.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## Tests Run
-1. `./.venv/bin/python -m pytest tests/integration/test_mvp_readiness_gates.py -q`
-- Outcome: PASS (`12 passed in 0.23s`, exit code `0`).
+1. `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
+- Outcome: PASS (`5 passed in 0.02s`, exit code `0`).
 
-2. `python3 scripts/run_phase2_readiness_gates.py --induce-gate memory_needs_review`
-- Outcome: deterministic NO_GO (`exit code 1`) as expected for induced scenario.
-- Key gate evidence:
-  - `memory_quality: FAIL`
-  - `precision=0.800000; adjudicated_sample=20; posture=needs_review`
-  - `correct=16; incorrect=4`
+2. `python3 scripts/check_control_doc_truth.py`
+- Outcome: PASS (`Control-doc truth check: PASS`, all configured control-doc rules verified including `docs/runbooks/phase2-closeout-packet.md`).
 
-3. `python3 scripts/run_phase2_readiness_gates.py --induce-gate memory_insufficient`
-- Outcome: deterministic NO_GO (`exit code 1`) as expected for induced scenario.
-- Key gate evidence:
-  - `memory_quality: BLOCKED`
-  - `precision=0.900000; adjudicated_sample=10; posture=insufficient_evidence`
-  - `correct=9; incorrect=1`
-
-4. `python3 scripts/run_phase2_validation_matrix.py`
-- Outcome: PASS (`exit code 0`).
-- Matrix summary:
+3. `python3 scripts/run_phase2_validation_matrix.py`
+- First run in sandbox: NO_GO due localhost Postgres access restriction (`Operation not permitted`), not due sprint logic.
+- Rerun with elevated local access: PASS (`Phase 2 validation matrix result: PASS`).
+- PASS step summary on elevated run:
   - `control_doc_truth: PASS`
   - `gate_contract_tests: PASS`
   - `readiness_gates: PASS`
   - `backend_integration_matrix: PASS`
   - `web_validation_matrix: PASS`
-- Readiness default memory evidence confirms capture-derived behavior:
-  - `memory_quality: PASS`
-  - `precision=1.000000; adjudicated_sample=20; posture=on_track`
 
 ## Blockers/Issues
-- Local DB access is required for readiness/matrix verification; initial non-escalated run was sandbox-blocked from connecting to local Postgres (`localhost:5432`).
-- Verification completed successfully after rerunning with elevated local access.
+- Local sandbox network policy blocked Postgres TCP access on initial matrix execution (`localhost:5432`), causing a false NO_GO environment failure.
+- Resolved by rerunning the same matrix command with elevated local access.
 
-## Explicit Deferred Scope
-- No endpoint/schema contract changes.
-- No connector/orchestration/worker/UI changes.
-- No Phase 3 runtime/profile routing work.
+## Explicit Deferred Scope Into Next Phase
+- API/runtime feature changes
+- connector capability expansion beyond current bounded Gmail/Calendar seams
+- orchestration/worker implementation
+- Phase 3 routing implementation
+- UI redesign
 
 ## Recommended Next Step
-1. Send sprint for reviewer PASS with this evidence bundle (targeted readiness test PASS, both induced memory scenarios deterministic NO_GO with expected posture, full Phase 2 validation matrix PASS).
+1. Send this sprint for Control Tower review focused on closeout packet completeness and guardrail enforcement, then proceed to merge approval if review remains PASS.

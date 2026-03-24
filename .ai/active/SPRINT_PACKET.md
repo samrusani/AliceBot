@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 2 Sprint 14: Memory-Quality Gate Realism Hardening
+Phase 2 Sprint 15: Phase-Closeout Packet And Exit Guardrail
 
 ## Sprint Type
 
@@ -10,128 +10,137 @@ hardening
 
 ## Sprint Reason
 
-Current readiness `memory_quality` evidence is still generated from synthetic seeded memory labels in `scripts/run_phase2_readiness_gates.py`. That can pass while explicit-signal capture quality regresses. This is now the highest remaining MVP-testing risk and is distinct from prior gate/doc canonicalization sprints.
+Phase 2 gate execution is currently green through Sprint 14, but canonical docs still describe the repo as current through Sprint 11 and there is no explicit, enforced Phase 2 exit packet/checklist. We need one closeout sprint that finalizes phase truth and makes exit-state drift mechanically detectable.
 
 ## Sprint Intent
 
-Make readiness `memory_quality` evidence derive from deterministic explicit-signal capture outcomes and deterministic adjudication logic, while preserving existing gate thresholds and deterministic no-go behavior.
+Create an explicit Phase 2 closeout packet, sync canonical truth docs to Sprint 14, and update truth guardrails so the closeout state is enforced deterministically.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase2-sprint14-memory-quality-realism`
+- Branch Name: `codex/phase2-sprint15-closeout-packet`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- `python3 scripts/run_phase2_validation_matrix.py` is green, but memory-quality gating still uses synthetic seeded labels.
-- A green memory gate should mean capture/extraction behavior is healthy, not only seeded bookkeeping is healthy.
-- This closes a true testing-evidence gap without expanding product feature scope.
+- We are on track technically (`python3 scripts/run_phase2_validation_matrix.py` is PASS), but closeout governance artifacts lag.
+- Repeated “what phase are we in” friction comes from missing enforced exit packet, not missing core functionality.
+- This is a non-redundant closeout sprint: it converts current state into an explicit, enforceable phase-complete baseline.
 
 ## Design Truth
 
-- Keep thresholds unchanged:
-  - precision `> 0.80`
-  - adjudicated sample `>= 20`
-- Keep deterministic gate behavior and induced-gate controls.
-- Do not change API contracts or user-facing product behavior.
+- No endpoint/schema/runtime feature changes.
+- Keep existing gate thresholds and matrix behavior unchanged.
+- Closeout should be encoded as deterministic file+marker truth, not ad hoc interpretation.
 
 ## Exact Surfaces In Scope
 
-- readiness gate memory-quality evidence generation path
-- readiness gate test coverage for memory-quality evidence source and posture transitions
-- sprint-scoped reports
+- canonical truth doc sync to Sprint 14 baseline
+- explicit Phase 2 exit packet documentation
+- deterministic control-doc truth guardrail update for closeout state
 
 ## Exact Files In Scope
 
-- [run_phase2_readiness_gates.py](scripts/run_phase2_readiness_gates.py)
-- [test_mvp_readiness_gates.py](tests/integration/test_mvp_readiness_gates.py)
+- [ARCHITECTURE.md](ARCHITECTURE.md)
+- [ROADMAP.md](ROADMAP.md)
+- [README.md](README.md)
+- [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURRENT_STATE.md)
+- [check_control_doc_truth.py](scripts/check_control_doc_truth.py)
+- [test_control_doc_truth.py](tests/unit/test_control_doc_truth.py)
+- [phase2-closeout-packet.md](docs/runbooks/phase2-closeout-packet.md)
 - [BUILD_REPORT.md](BUILD_REPORT.md)
 - [REVIEW_REPORT.md](REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](.ai/active/SPRINT_PACKET.md)
 - relevant verification under:
-  - `./.venv/bin/python -m pytest tests/integration/test_mvp_readiness_gates.py -q`
-  - `python3 scripts/run_phase2_readiness_gates.py --induce-gate memory_needs_review`
-  - `python3 scripts/run_phase2_readiness_gates.py --induce-gate memory_insufficient`
+  - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
+  - `python3 scripts/check_control_doc_truth.py`
   - `python3 scripts/run_phase2_validation_matrix.py`
 
 ## In Scope
 
-- Replace synthetic memory-label seeding as the default `memory_quality` evidence source with deterministic capture-derived evaluation inputs.
-- Implement deterministic adjudication mapping from capture-derived outputs to memory review labels used by evaluation-summary.
-- Preserve current gate posture semantics:
-  - `PASS` when thresholds are exceeded
-  - `FAIL` when sample is sufficient but precision is at/below threshold
-  - `BLOCKED` when sample is insufficient or evidence unavailable
-- Keep `--induce-gate memory_needs_review` and `--induce-gate memory_insufficient` deterministic and explicit.
+- Update canonical docs to reflect accepted state through Phase 2 Sprint 14.
+- Add a dedicated closeout runbook packet documenting:
+  - required Phase 2 go/no-go commands
+  - required PASS evidence bundle
+  - explicit deferred scope entering next phase
+- Update control-doc truth rules to require closeout packet presence and Sprint 14 baseline markers.
+- Update unit tests for truth guardrails to cover new required markers and stale-marker rejection behavior.
 
 ## Out of Scope
 
-- endpoint/schema changes
-- acceptance scenario expansion beyond readiness-memory evidence source
-- connector/orchestration/worker scope
-- UI feature changes
-- Phase 3 runtime/profile routing
+- API/runtime feature work
+- connector capability expansion
+- orchestration/worker implementation
+- UI redesign
+- Phase 3 routing implementation
 
 ## Required Deliverables
 
-- readiness `memory_quality` path no longer depends on synthetic bulk memory seeding as primary evidence
-- deterministic tests proving capture-derived memory-quality evidence behavior
-- unchanged thresholds and deterministic induced-gate behavior
-- updated sprint reports for this sprint only
+- canonical docs synced to Sprint 14 baseline
+- `docs/runbooks/phase2-closeout-packet.md` committed as closeout source-of-truth
+- truth guardrail rules and tests updated and passing
+- sprint reports updated for this sprint only
 
 ## Acceptance Criteria
 
-- `tests/integration/test_mvp_readiness_gates.py` passes with updated canonical memory-quality evidence logic.
-- Default readiness run computes `memory_quality` from capture-derived deterministic evidence path.
-- `--induce-gate memory_needs_review` and `--induce-gate memory_insufficient` still force expected deterministic outcomes.
-- Full `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
-- No API contract or runtime endpoint behavior changes are introduced.
+- Canonical docs no longer claim Sprint 11 as current baseline.
+- `python3 scripts/check_control_doc_truth.py` passes with updated closeout markers.
+- `tests/unit/test_control_doc_truth.py` passes with updated rule assertions.
+- `docs/runbooks/phase2-closeout-packet.md` clearly defines the Phase 2 exit evidence bundle and deferred scope boundary.
+- `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
+- No product/runtime endpoint behavior changes are introduced.
 
 ## Implementation Constraints
 
-- keep scripts deterministic and non-interactive
-- preserve existing threshold constants and gate naming
-- avoid external dependencies
-- keep assertions machine-independent
+- keep checks deterministic and machine-independent
+- avoid adding dependencies
+- preserve existing gate command semantics
+- do not broaden scope beyond closeout docs/guardrails
 
 ## Control Tower Task Cards
 
-### Task 1: Memory-Quality Evidence Source
+### Task 1: Canonical Truth Sync
 Owner: tooling operative  
 Write scope:
-- `scripts/run_phase2_readiness_gates.py`
+- `ARCHITECTURE.md`
+- `ROADMAP.md`
+- `README.md`
+- `.ai/handoff/CURRENT_STATE.md`
 
-### Task 2: Gate Test Alignment
+### Task 2: Closeout Guardrail
 Owner: tooling operative  
 Write scope:
-- `tests/integration/test_mvp_readiness_gates.py`
+- `docs/runbooks/phase2-closeout-packet.md`
+- `scripts/check_control_doc_truth.py`
+- `tests/unit/test_control_doc_truth.py`
 
 ### Task 3: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify evidence source changed from synthetic seed to capture-derived logic
-- verify threshold and posture semantics unchanged
-- verify no hidden scope expansion
-- verify reports and packet consistency
+- verify closeout packet completeness
+- verify canonical truth sync to Sprint 14
+- verify guardrail coverage for closeout markers
+- verify strict no hidden scope expansion
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact previous synthetic evidence path and exact replacement path
-- deterministic adjudication rules used
-- verification command outputs and outcomes
-- explicit deferred scope
+- exact canonical-doc baseline marker changes
+- exact closeout packet contents added
+- exact truth-guardrail rule/test changes
+- exact verification command outcomes
+- explicit deferred scope into next phase
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint stayed memory-quality-readiness scoped
-- capture-derived evidence is deterministic and credible
-- threshold/posture behavior is preserved
+- sprint remained closeout-doc-and-guardrail scoped
+- closeout packet is operationally sufficient for phase handoff
+- truth guardrails enforce updated baseline and packet presence
 - no hidden runtime/product scope changes
 
 ## Exit Condition
 
-This sprint is complete when readiness `memory_quality` gate evidence is capture-derived and deterministic, thresholds/postures remain unchanged, and full Phase 2 validation remains green.
+This sprint is complete when Phase 2 closeout documentation is explicit and enforceable, canonical docs align to Sprint 14, and truth guardrails pass with the updated closeout baseline.
