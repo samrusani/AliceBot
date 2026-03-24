@@ -46,7 +46,9 @@ WEB_OPERATOR_SURFACES: tuple[str, ...] = (
 STEP_READINESS_GATES = "readiness_gates"
 STEP_BACKEND_MATRIX = "backend_integration_matrix"
 STEP_WEB_MATRIX = "web_validation_matrix"
+STEP_CONTROL_DOC_TRUTH = "control_doc_truth"
 STEP_IDS: tuple[str, ...] = (
+    STEP_CONTROL_DOC_TRUTH,
     STEP_READINESS_GATES,
     STEP_BACKEND_MATRIX,
     STEP_WEB_MATRIX,
@@ -86,6 +88,10 @@ def _build_backend_matrix_command(python_executable: str) -> tuple[str, ...]:
     return (python_executable, "-m", "pytest", "-q", *BACKEND_INTEGRATION_TEST_FILES)
 
 
+def _build_control_doc_truth_command(python_executable: str) -> tuple[str, ...]:
+    return (python_executable, "scripts/check_control_doc_truth.py")
+
+
 def _build_web_matrix_command() -> tuple[str, ...]:
     return ("npm", "--prefix", str(WEB_DIR), "run", "test:mvp:validation-matrix")
 
@@ -93,6 +99,15 @@ def _build_web_matrix_command() -> tuple[str, ...]:
 def build_validation_matrix_steps(*, python_executable: str | None = None) -> list[MatrixStep]:
     resolved_python = python_executable or _resolve_python_executable()
     return [
+        MatrixStep(
+            step=STEP_CONTROL_DOC_TRUTH,
+            description="Validate canonical control-doc truth markers and stale-marker exclusions.",
+            command=_build_control_doc_truth_command(resolved_python),
+            coverage=(
+                "ARCHITECTURE.md, ROADMAP.md, README.md, PRODUCT_BRIEF.md, RULES.md, "
+                ".ai/handoff/CURRENT_STATE.md baseline/ownership truth markers"
+            ),
+        ),
         MatrixStep(
             step=STEP_READINESS_GATES,
             description="Run deterministic readiness gates prerequisite chain.",
@@ -197,8 +212,8 @@ def _print_step_results(step_results: list[MatrixStepResult]) -> None:
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run deterministic Phase 2 validation matrix over readiness prerequisite, "
-            "backend seams, and web operator shell suites."
+            "Run deterministic Phase 2 validation matrix over control-doc truth, readiness "
+            "prerequisite, backend seams, and web operator shell suites."
         ),
     )
     parser.add_argument(

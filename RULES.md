@@ -15,7 +15,7 @@
 
 - Never execute a consequential external action without explicit user approval.
 - Treat explainability as a product feature, not an internal debugging aid.
-- Treat the repeat magnesium reorder as the v1 ship-gate scenario.
+- Treat the repeat magnesium reorder as the v1 release-readiness validation scenario.
 - Do not add proactive automation, write-capable connectors, voice, or browser automation without an explicit roadmap change.
 
 ## Architecture And Data
