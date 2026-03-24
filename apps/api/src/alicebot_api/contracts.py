@@ -136,8 +136,10 @@ TRACE_KIND_RESPONSE_GENERATE = "response.generate"
 TRACE_REVIEW_LIST_ORDER = ["created_at_desc", "id_desc"]
 TRACE_REVIEW_EVENT_LIST_ORDER = ["sequence_no_asc", "id_asc"]
 THREAD_LIST_ORDER = ["created_at_desc", "id_desc"]
+AGENT_PROFILE_LIST_ORDER = ["id_asc"]
 THREAD_SESSION_LIST_ORDER = ["started_at_asc", "created_at_asc", "id_asc"]
 THREAD_EVENT_LIST_ORDER = ["sequence_no_asc"]
+DEFAULT_AGENT_PROFILE_ID = "assistant_default"
 RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "resumption_brief_v0"
 RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS = ["message.user", "message.assistant"]
 RESUMPTION_BRIEF_CONVERSATION_ORDER = ["sequence_no_asc"]
@@ -388,14 +390,32 @@ class TraceEventRecord:
     payload: JsonObject
 
 
+class AgentProfileRecord(TypedDict):
+    id: str
+    name: str
+    description: str
+
+
+class AgentProfileListSummary(TypedDict):
+    total_count: int
+    order: list[str]
+
+
+class AgentProfileListResponse(TypedDict):
+    items: list[AgentProfileRecord]
+    summary: AgentProfileListSummary
+
+
 @dataclass(frozen=True, slots=True)
 class ThreadCreateInput:
     title: str
+    agent_profile_id: str = DEFAULT_AGENT_PROFILE_ID
 
 
 class ThreadRecord(TypedDict):
     id: str
     title: str
+    agent_profile_id: str
     created_at: str
     updated_at: str
 
