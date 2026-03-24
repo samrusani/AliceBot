@@ -2,145 +2,160 @@
 
 ## Sprint Title
 
-Phase 2 Sprint 15: Phase-Closeout Packet And Exit Guardrail
+Phase 3 Sprint 1: Multi-Agent Profile Backbone
 
 ## Sprint Type
 
-hardening
+feature
 
 ## Sprint Reason
 
-Phase 2 gate execution is currently green through Sprint 14, but canonical docs still describe the repo as current through Sprint 11 and there is no explicit, enforced Phase 2 exit packet/checklist. We need one closeout sprint that finalizes phase truth and makes exit-state drift mechanically detectable.
+Phase 2 closeout is complete and validation is green. The next non-redundant step is to open Phase 3 by introducing explicit agent profile identity so separate agents can be deployed without sharing one implicit runtime persona.
 
 ## Sprint Intent
 
-Create an explicit Phase 2 closeout packet, sync canonical truth docs to Sprint 14, and update truth guardrails so the closeout state is enforced deterministically.
+Add a minimal, deterministic backend backbone for agent profiles and thread-level profile binding, without changing existing tool orchestration breadth or connector scope.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase2-sprint15-closeout-packet`
+- Branch Name: `codex/phase3-sprint1-agent-profile-backbone`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- We are on track technically (`python3 scripts/run_phase2_validation_matrix.py` is PASS), but closeout governance artifacts lag.
-- Repeated “what phase are we in” friction comes from missing enforced exit packet, not missing core functionality.
-- This is a non-redundant closeout sprint: it converts current state into an explicit, enforceable phase-complete baseline.
+- This is the first implementation seam required for “multiple separate agents.”
+- It is orthogonal to completed Phase 2 hardening (gate/doc/closeout work), so it is not redundant.
+- It creates a durable identity boundary before opening broader routing/orchestration work.
 
 ## Design Truth
 
-- No endpoint/schema/runtime feature changes.
-- Keep existing gate thresholds and matrix behavior unchanged.
-- Closeout should be encoded as deterministic file+marker truth, not ad hoc interpretation.
+- Keep existing default behavior for callers that do not provide a profile.
+- Persist explicit profile identity on thread records.
+- Keep the initial profile surface bounded: registry read + thread binding + response/compile propagation.
+- Do not widen tool execution, connector actions, or worker orchestration in this sprint.
 
 ## Exact Surfaces In Scope
 
-- canonical truth doc sync to Sprint 14 baseline
-- explicit Phase 2 exit packet documentation
-- deterministic control-doc truth guardrail update for closeout state
+- agent profile contracts and deterministic in-process registry
+- thread creation/list/detail profile binding
+- context compile / response output includes active profile identity
+- migration and tests for new thread profile column and behavior
 
 ## Exact Files In Scope
 
-- [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md)
-- [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md)
-- [README.md](/Users/samirusani/Desktop/Codex/AliceBot/README.md)
-- [.ai/handoff/CURRENT_STATE.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/handoff/CURRENT_STATE.md)
-- [check_control_doc_truth.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/check_control_doc_truth.py)
-- [test_control_doc_truth.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_control_doc_truth.py)
-- [phase2-closeout-packet.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/runbooks/phase2-closeout-packet.md)
+- [contracts.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/contracts.py)
+- [main.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/main.py)
+- [store.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/store.py)
+- [phase3_profiles.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/phase3_profiles.py)
+- [20260324_0032_thread_agent_profiles.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/alembic/versions/20260324_0032_thread_agent_profiles.py)
+- [test_continuity_api.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_continuity_api.py)
+- [test_responses_api.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_responses_api.py)
+- [test_20260324_0032_thread_agent_profiles.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_20260324_0032_thread_agent_profiles.py)
 - [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md)
 - [REVIEW_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/active/SPRINT_PACKET.md)
 - relevant verification under:
-  - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-  - `python3 scripts/check_control_doc_truth.py`
+  - `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py -q`
+  - `./.venv/bin/python -m pytest tests/unit/test_20260324_0032_thread_agent_profiles.py -q`
   - `python3 scripts/run_phase2_validation_matrix.py`
 
 ## In Scope
 
-- Update canonical docs to reflect accepted state through Phase 2 Sprint 14.
-- Add a dedicated closeout runbook packet documenting:
-  - required Phase 2 go/no-go commands
-  - required PASS evidence bundle
-  - explicit deferred scope entering next phase
-- Update control-doc truth rules to require closeout packet presence and Sprint 14 baseline markers.
-- Update unit tests for truth guardrails to cover new required markers and stale-marker rejection behavior.
+- Add deterministic Phase 3 profile registry module with at least:
+  - `assistant_default` profile
+  - one additional profile (for example `coach_default`) with distinct id/name/description
+- Add `agent_profile_id` thread column with migration:
+  - non-null with deterministic default `assistant_default`
+  - user-scoped reads preserved
+- Extend thread create request to optionally accept `agent_profile_id`:
+  - invalid profile id returns deterministic 422
+  - omitted profile id uses default
+- Expose profile identity in thread list/detail responses.
+- Include active `agent_profile_id` in context compile and `/v0/responses` response metadata.
+- Add a bounded read endpoint for available profiles:
+  - `GET /v0/agent-profiles`
 
 ## Out of Scope
 
-- API/runtime feature work
-- connector capability expansion
-- orchestration/worker implementation
-- UI redesign
-- Phase 3 routing implementation
+- per-profile model-provider switching
+- external LLM provider integration changes
+- auth model changes
+- runner/worker orchestration
+- connector scope expansion
+- web UI profile selector
 
 ## Required Deliverables
 
-- canonical docs synced to Sprint 14 baseline
-- `docs/runbooks/phase2-closeout-packet.md` committed as closeout source-of-truth
-- truth guardrail rules and tests updated and passing
-- sprint reports updated for this sprint only
+- migration for thread profile binding
+- profile registry and API read surface
+- thread + compile + response profile propagation
+- integration and migration tests passing
+- updated sprint reports for this sprint only
 
 ## Acceptance Criteria
 
-- Canonical docs no longer claim Sprint 11 as current baseline.
-- `python3 scripts/check_control_doc_truth.py` passes with updated closeout markers.
-- `tests/unit/test_control_doc_truth.py` passes with updated rule assertions.
-- `docs/runbooks/phase2-closeout-packet.md` clearly defines the Phase 2 exit evidence bundle and deferred scope boundary.
+- Threads persist and return `agent_profile_id`.
+- Creating a thread with a valid non-default profile succeeds and remains isolated per user.
+- Creating a thread with invalid profile id fails deterministically.
+- `/v0/agent-profiles` returns deterministic profile registry payload.
+- `/v0/context/compile` and `/v0/responses` include active profile id metadata.
 - `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
-- No product/runtime endpoint behavior changes are introduced.
+- No out-of-scope behavior changes enter sprint.
 
 ## Implementation Constraints
 
-- keep checks deterministic and machine-independent
-- avoid adding dependencies
-- preserve existing gate command semantics
-- do not broaden scope beyond closeout docs/guardrails
+- keep deterministic outputs and stable ordering
+- do not introduce external dependencies
+- preserve existing endpoint behavior when `agent_profile_id` is omitted
+- keep migration reversible
 
 ## Control Tower Task Cards
 
-### Task 1: Canonical Truth Sync
+### Task 1: Profile Registry + Contracts
 Owner: tooling operative  
 Write scope:
-- `ARCHITECTURE.md`
-- `ROADMAP.md`
-- `README.md`
-- `.ai/handoff/CURRENT_STATE.md`
+- `apps/api/src/alicebot_api/phase3_profiles.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/main.py`
 
-### Task 2: Closeout Guardrail
+### Task 2: Persistence + Migration
 Owner: tooling operative  
 Write scope:
-- `docs/runbooks/phase2-closeout-packet.md`
-- `scripts/check_control_doc_truth.py`
-- `tests/unit/test_control_doc_truth.py`
+- `apps/api/alembic/versions/20260324_0032_thread_agent_profiles.py`
+- `apps/api/src/alicebot_api/store.py`
 
-### Task 3: Integration Review
+### Task 3: Verification
+Owner: tooling operative  
+Write scope:
+- `tests/integration/test_continuity_api.py`
+- `tests/integration/test_responses_api.py`
+- `tests/unit/test_20260324_0032_thread_agent_profiles.py`
+
+### Task 4: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify closeout packet completeness
-- verify canonical truth sync to Sprint 14
-- verify guardrail coverage for closeout markers
-- verify strict no hidden scope expansion
+- verify profile identity seam is complete and bounded
+- verify no hidden Phase 3 scope expansion
+- verify phase2 matrix remains green
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact canonical-doc baseline marker changes
-- exact closeout packet contents added
-- exact truth-guardrail rule/test changes
+- exact migration behavior and defaults
+- exact API/contract deltas
 - exact verification command outcomes
-- explicit deferred scope into next phase
+- explicit deferred scope (routing/orchestration/model-provider switching)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint remained closeout-doc-and-guardrail scoped
-- closeout packet is operationally sufficient for phase handoff
-- truth guardrails enforce updated baseline and packet presence
-- no hidden runtime/product scope changes
+- sprint remained profile-backbone scoped
+- thread/profile propagation and validation behavior correctness
+- migration safety and user isolation
+- no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when Phase 2 closeout documentation is explicit and enforceable, canonical docs align to Sprint 14, and truth guardrails pass with the updated closeout baseline.
+This sprint is complete when the repo can persist and expose explicit thread-level agent profile identity with deterministic validation and tests, while keeping all prior Phase 2 gates green.

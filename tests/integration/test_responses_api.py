@@ -61,13 +61,14 @@ def seed_response_thread(
     *,
     email: str = "owner@example.com",
     display_name: str = "Owner",
+    agent_profile_id: str = "assistant_default",
 ) -> dict[str, object]:
     user_id = uuid4()
 
     with user_connection(database_url, user_id) as conn:
         store = ContinuityStore(conn)
         store.create_user(user_id, email, display_name)
-        thread = store.create_thread("Response thread")
+        thread = store.create_thread("Response thread", agent_profile_id=agent_profile_id)
         session = store.create_session(thread["id"], status="active")
         prior_event = store.append_event(
             thread["id"],
@@ -95,7 +96,10 @@ def test_generate_response_persists_user_and_assistant_events_and_trace_metadata
     migrated_database_urls,
     monkeypatch,
 ) -> None:
-    seeded = seed_response_thread(migrated_database_urls["app"])
+    seeded = seed_response_thread(
+        migrated_database_urls["app"],
+        agent_profile_id="coach_default",
+    )
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(
@@ -132,6 +136,7 @@ def test_generate_response_persists_user_and_assistant_events_and_trace_metadata
     )
 
     assert status_code == 200
+    assert payload["metadata"] == {"agent_profile_id": "coach_default"}
     assert payload["assistant"] == {
         "event_id": payload["assistant"]["event_id"],
         "sequence_no": 3,
@@ -254,6 +259,7 @@ def test_generate_response_persists_optional_cached_token_telemetry_in_event_and
     )
 
     assert status_code == 200
+    assert payload["metadata"] == {"agent_profile_id": "assistant_default"}
 
     with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
         store = ContinuityStore(conn)
@@ -308,6 +314,7 @@ def test_generate_response_returns_clean_failure_without_persisting_assistant_ev
 
     assert status_code == 502
     assert payload["detail"] == "upstream timeout"
+    assert payload["metadata"] == {"agent_profile_id": "assistant_default"}
     assert payload["trace"]["compile_trace_event_count"] > 0
     assert payload["trace"]["response_trace_event_count"] == 2
 

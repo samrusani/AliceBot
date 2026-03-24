@@ -135,10 +135,18 @@ def set_session_timestamps(
             )
 
 
-def serialize_thread(*, thread_id: UUID, title: str, created_at: datetime, updated_at: datetime) -> dict[str, Any]:
+def serialize_thread(
+    *,
+    thread_id: UUID,
+    title: str,
+    created_at: datetime,
+    updated_at: datetime,
+    agent_profile_id: str,
+) -> dict[str, Any]:
     return {
         "id": str(thread_id),
         "title": title,
+        "agent_profile_id": agent_profile_id,
         "created_at": created_at.isoformat(),
         "updated_at": updated_at.isoformat(),
     }
@@ -192,11 +200,13 @@ def test_thread_continuity_endpoints_create_list_detail_sessions_and_events(
         payload={
             "user_id": str(seeded["user_id"]),
             "title": "Gamma thread",
+            "agent_profile_id": "coach_default",
         },
     )
 
     assert create_status == 201
     assert create_payload["thread"]["title"] == "Gamma thread"
+    assert create_payload["thread"]["agent_profile_id"] == "coach_default"
 
     api_thread_id = UUID(create_payload["thread"]["id"])
     shared_created_at = datetime(2026, 3, 17, 9, 0, tzinfo=UTC)
@@ -277,18 +287,21 @@ def test_thread_continuity_endpoints_create_list_detail_sessions_and_events(
                 title="Gamma thread",
                 created_at=newer_created_at,
                 updated_at=newer_created_at,
+                agent_profile_id="coach_default",
             ),
             serialize_thread(
                 thread_id=tied_threads[0]["id"],
                 title=tied_threads[0]["title"],
                 created_at=shared_created_at,
                 updated_at=shared_created_at,
+                agent_profile_id="assistant_default",
             ),
             serialize_thread(
                 thread_id=tied_threads[1]["id"],
                 title=tied_threads[1]["title"],
                 created_at=shared_created_at,
                 updated_at=shared_created_at,
+                agent_profile_id="assistant_default",
             ),
         ],
         "summary": {
@@ -304,6 +317,7 @@ def test_thread_continuity_endpoints_create_list_detail_sessions_and_events(
             title="Beta thread",
             created_at=shared_created_at,
             updated_at=shared_created_at,
+            agent_profile_id="assistant_default",
         )
     }
 
@@ -346,6 +360,36 @@ def test_thread_continuity_endpoints_create_list_detail_sessions_and_events(
             "order": ["sequence_no_asc"],
         },
     }
+
+
+def test_thread_creation_defaults_agent_profile_id_when_omitted(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = create_user(migrated_database_urls["app"], email="owner@example.com")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status, payload = invoke_request(
+        "POST",
+        "/v0/threads",
+        payload={
+            "user_id": str(user_id),
+            "title": "Default profile thread",
+        },
+    )
+
+    assert status == 201
+    assert payload["thread"]["agent_profile_id"] == "assistant_default"
+
+    thread_id = UUID(payload["thread"]["id"])
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        stored_thread = ContinuityStore(conn).get_thread(thread_id)
+
+    assert stored_thread["agent_profile_id"] == "assistant_default"
 
 
 def test_thread_resumption_brief_endpoint_returns_bounded_sections_and_workflow_posture(
@@ -640,3 +684,96 @@ def test_thread_continuity_endpoints_enforce_user_isolation_and_not_found(
     assert brief_payload == {"detail": f"thread {owner['second_thread']['id']} was not found"}
     assert missing_brief_status == 404
     assert missing_brief_payload == {"detail": f"thread {missing_thread_id} was not found"}
+
+
+def test_thread_creation_rejects_invalid_agent_profile_id_with_deterministic_422(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = create_user(migrated_database_urls["app"], email="owner@example.com")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status, payload = invoke_request(
+        "POST",
+        "/v0/threads",
+        payload={
+            "user_id": str(user_id),
+            "title": "Invalid profile thread",
+            "agent_profile_id": "not_a_profile",
+        },
+    )
+
+    assert status == 422
+    assert payload == {
+        "detail": {
+            "code": "invalid_agent_profile_id",
+            "message": "agent_profile_id must be one of: assistant_default, coach_default",
+            "allowed_agent_profile_ids": ["assistant_default", "coach_default"],
+        }
+    }
+
+
+def test_agent_profiles_endpoint_returns_deterministic_registry_payload(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url="postgresql://unused"),
+    )
+
+    status, payload = invoke_request("GET", "/v0/agent-profiles")
+
+    assert status == 200
+    assert payload == {
+        "items": [
+            {
+                "id": "assistant_default",
+                "name": "Assistant Default",
+                "description": "General-purpose assistant profile for baseline conversations.",
+            },
+            {
+                "id": "coach_default",
+                "name": "Coach Default",
+                "description": "Coaching-oriented profile focused on guidance and accountability.",
+            },
+        ],
+        "summary": {"total_count": 2, "order": ["id_asc"]},
+    }
+
+
+def test_context_compile_includes_active_agent_profile_metadata(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = create_user(migrated_database_urls["app"], email="owner@example.com")
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        thread = store.create_thread("Profile metadata thread", agent_profile_id="coach_default")
+        session = store.create_session(thread["id"], status="active")
+        store.append_event(
+            thread["id"],
+            session["id"],
+            "message.user",
+            {"text": "Compile metadata check"},
+        )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status, payload = invoke_request(
+        "POST",
+        "/v0/context/compile",
+        payload={
+            "user_id": str(user_id),
+            "thread_id": str(thread["id"]),
+        },
+    )
+
+    assert status == 200
+    assert payload["metadata"] == {"agent_profile_id": "coach_default"}
