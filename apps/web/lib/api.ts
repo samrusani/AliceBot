@@ -8,9 +8,12 @@ export type ApiConfig = {
   defaultToolId: string;
 };
 
+export const DEFAULT_AGENT_PROFILE_ID = "assistant_default";
+
 export type ThreadItem = {
   id: string;
   title: string;
+  agent_profile_id: string;
   created_at: string;
   updated_at: string;
 };
@@ -37,9 +40,21 @@ export type ThreadEventItem = {
 export type ThreadCreatePayload = {
   user_id: string;
   title: string;
+  agent_profile_id: string;
 };
 
 export type ThreadListSummary = {
+  total_count: number;
+  order: string[];
+};
+
+export type AgentProfileItem = {
+  id: string;
+  name: string;
+  description: string;
+};
+
+export type AgentProfileListSummary = {
   total_count: number;
   order: string[];
 };
@@ -1182,6 +1197,13 @@ export function listThreads(apiBaseUrl: string, userId: string) {
     "/v0/threads",
     undefined,
     { user_id: userId },
+  );
+}
+
+export function listAgentProfiles(apiBaseUrl: string) {
+  return requestJson<{ items: AgentProfileItem[]; summary: AgentProfileListSummary }>(
+    apiBaseUrl,
+    "/v0/agent-profiles",
   );
 }
 

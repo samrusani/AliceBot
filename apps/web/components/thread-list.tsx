@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import type { ThreadItem } from "../lib/api";
+import { DEFAULT_AGENT_PROFILE_ID, type AgentProfileItem, type ThreadItem } from "../lib/api";
 import type { ChatMode } from "./mode-toggle";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
@@ -9,6 +9,7 @@ type ThreadListProps = {
   threads: ThreadItem[];
   selectedThreadId?: string;
   currentMode: ChatMode;
+  agentProfiles?: AgentProfileItem[];
   source: "live" | "fixture" | "unavailable";
   unavailableReason?: string;
 };
@@ -33,10 +34,18 @@ function buildThreadHref(mode: ChatMode, threadId: string) {
   return `/chat?${params.toString()}`;
 }
 
+function resolveAgentProfileName(
+  agentProfileId: string,
+  profiles: AgentProfileItem[],
+) {
+  return profiles.find((profile) => profile.id === agentProfileId)?.name ?? agentProfileId;
+}
+
 export function ThreadList({
   threads,
   selectedThreadId,
   currentMode,
+  agentProfiles = [],
   source,
   unavailableReason,
 }: ThreadListProps) {
@@ -67,6 +76,8 @@ export function ThreadList({
         <div className="history-list history-list--scrollable">
           {threads.map((thread) => {
             const isSelected = thread.id === selectedThreadId;
+            const agentProfileId = thread.agent_profile_id || DEFAULT_AGENT_PROFILE_ID;
+            const agentProfileName = resolveAgentProfileName(agentProfileId, agentProfiles);
 
             return (
               <Link
@@ -85,6 +96,7 @@ export function ThreadList({
 
                 <div className="list-row__meta">
                   <span className="meta-pill">Updated {formatDate(thread.updated_at)}</span>
+                  <span className="meta-pill">Profile {agentProfileName}</span>
                   <span className="meta-pill mono">{thread.id}</span>
                 </div>
               </Link>
