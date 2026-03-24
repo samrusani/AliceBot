@@ -1,82 +1,78 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 3 Sprint 1 (Multi-Agent Profile Backbone) by adding deterministic agent profile identity, persisting thread-level `agent_profile_id`, exposing profile registry read APIs, and propagating active profile metadata through context compile and response generation surfaces without expanding orchestration scope.
+Adopt Phase 3 Sprint 1 profile seams in the web operator shell by wiring `agent_profile_id` and `/v0/agent-profiles` into chat loading, thread creation, and thread review visibility while keeping backend scope unchanged.
 
 ## Completed Work
-- Added deterministic in-process Phase 3 profile registry:
-  - New module: `apps/api/src/alicebot_api/phase3_profiles.py`
-  - Profiles shipped:
-    - `assistant_default`
-    - `coach_default`
-  - Deterministic list/read helpers for profile ids and records.
-
-- Added thread profile persistence and binding:
-  - New Alembic migration: `apps/api/alembic/versions/20260324_0032_thread_agent_profiles.py`
-  - `threads.agent_profile_id` added as `text NOT NULL DEFAULT 'assistant_default'`
-  - Added DB constraint for deterministic current profile domain:
-    - `threads_agent_profile_id_check` in (`assistant_default`, `coach_default`)
-  - Added index:
-    - `threads_user_agent_profile_created_idx (user_id, agent_profile_id, created_at DESC, id DESC)`
-  - Store layer updated to read/write `agent_profile_id` on thread create/get/list.
-
-- Extended contracts and thread payloads:
-  - `ThreadCreateInput` now carries `agent_profile_id` (default `assistant_default`).
-  - `ThreadRecord` now includes `agent_profile_id`.
-  - Added deterministic contracts for `/v0/agent-profiles` list payload (`items` + `summary`).
-
-- Extended API surfaces in-scope:
-  - New endpoint: `GET /v0/agent-profiles` (deterministic registry payload + stable ordering summary).
-  - `POST /v0/threads` now accepts optional `agent_profile_id`.
-    - Omitted profile id defaults to `assistant_default`.
-    - Invalid profile id returns deterministic `422` payload:
-      - `code: invalid_agent_profile_id`
-      - stable message
-      - stable `allowed_agent_profile_ids` list.
-  - Thread list/detail/create payloads now expose persisted `agent_profile_id`.
-  - `POST /v0/context/compile` now includes metadata:
-    - `metadata.agent_profile_id` for the active thread profile.
-  - `POST /v0/responses` now includes metadata in both success and model-failure payloads:
-    - `metadata.agent_profile_id`.
-
-- Verification tests added/updated in sprint scope:
-  - Added migration unit test:
-    - `tests/unit/test_20260324_0032_thread_agent_profiles.py`
-  - Updated continuity integration coverage for:
-    - non-default thread profile create/read/list
-    - omitted `agent_profile_id` defaults to `assistant_default`
-    - invalid profile 422 behavior
-    - deterministic `/v0/agent-profiles` payload
-    - compile metadata propagation
-  - Updated responses integration coverage for response metadata propagation.
+- Web API contract adoption (`apps/web/lib/api.ts`):
+  - Extended `ThreadItem` with `agent_profile_id`.
+  - Extended `ThreadCreatePayload` with `agent_profile_id`.
+  - Added `DEFAULT_AGENT_PROFILE_ID` constant (`assistant_default`).
+  - Added profile registry types:
+    - `AgentProfileItem`
+    - `AgentProfileListSummary`
+  - Added `listAgentProfiles(apiBaseUrl)` for `GET /v0/agent-profiles`.
+- API/contract tests (`apps/web/lib/api.test.ts`):
+  - Verified thread create payload now includes `agent_profile_id`.
+  - Verified list/detail reads retain `agent_profile_id`.
+  - Verified profile registry read path hits `/v0/agent-profiles` and returns deterministic ids.
+- Fixture contract adoption (`apps/web/lib/fixtures.ts`):
+  - Added `agent_profile_id` to thread fixtures.
+  - Added deterministic profile fixtures (`assistant_default`, `coach_default`).
+  - Ensured fixture thread creation defaults to `assistant_default`.
+- Chat loading + fallback (`apps/web/app/chat/page.tsx`):
+  - Added live profile registry load via `listAgentProfiles`.
+  - Added deterministic fallback to fixture profile registry when live read fails.
+  - Normalized thread profile ids to explicit default (`assistant_default`) when missing.
+  - Passed profile registry into thread create/list/summary surfaces.
+- Chat page tests (`apps/web/app/chat/page.test.tsx`):
+  - Added profile registry mock coverage.
+  - Added explicit test for live profile read failure fallback while `/chat` remains usable.
+- Thread create UI adoption (`apps/web/components/thread-create.tsx`):
+  - Added profile selector to thread creation form.
+  - Submitted selected `agent_profile_id` with `user_id` and `title`.
+  - Preserved deterministic `assistant_default` fallback when profile list is unavailable.
+- Thread create tests (`apps/web/components/thread-create.test.tsx`):
+  - Verified selected profile id is sent in create payload.
+  - Verified deterministic default payload uses `assistant_default` without profile data.
+- Thread list visibility (`apps/web/components/thread-list.tsx`):
+  - Added visible profile badge per thread row.
+- Thread list tests (`apps/web/components/thread-list.test.tsx`):
+  - Verified profile identity rendering in thread rows.
+- Thread summary visibility (`apps/web/components/thread-summary.tsx`):
+  - Added visible selected-thread profile identity (badge + summary field).
+- Thread summary tests (`apps/web/components/thread-summary.test.tsx`):
+  - Verified profile identity rendering in selected-thread summary.
 
 ## Incomplete Work
-- None in sprint scope.
+- None within sprint scope.
 
 ## Files Changed
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/store.py`
-- `apps/api/src/alicebot_api/phase3_profiles.py`
-- `apps/api/alembic/versions/20260324_0032_thread_agent_profiles.py`
-- `tests/integration/test_continuity_api.py`
-- `tests/integration/test_responses_api.py`
-- `tests/unit/test_20260324_0032_thread_agent_profiles.py`
+- `.ai/active/SPRINT_PACKET.md` (pre-existing sprint packet update in workspace; not modified for implementation logic)
+- `apps/web/lib/api.ts`
+- `apps/web/lib/api.test.ts`
+- `apps/web/lib/fixtures.ts`
+- `apps/web/app/chat/page.tsx`
+- `apps/web/app/chat/page.test.tsx`
+- `apps/web/components/thread-create.tsx`
+- `apps/web/components/thread-create.test.tsx`
+- `apps/web/components/thread-list.tsx`
+- `apps/web/components/thread-list.test.tsx`
+- `apps/web/components/thread-summary.tsx`
+- `apps/web/components/thread-summary.test.tsx`
 - `BUILD_REPORT.md`
-- `REVIEW_REPORT.md`
 
 ## Tests Run
-1. `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py -q`
-- Initial sandbox run: blocked by local Postgres access policy (`localhost:5432 Operation not permitted`).
-- Elevated rerun outcome after adding omitted-profile coverage: PASS (`11 passed in 3.21s`).
+1. `npm --prefix apps/web run test -- lib/api.test.ts app/chat/page.test.tsx components/thread-create.test.tsx components/thread-list.test.tsx components/thread-summary.test.tsx`
+- Outcome: PASS (`5` files, `36` tests).
 
-2. `./.venv/bin/python -m pytest tests/unit/test_20260324_0032_thread_agent_profiles.py -q`
-- Outcome: PASS (`3 passed in 0.13s`).
+2. `npm --prefix apps/web run test:mvp:validation-matrix`
+- Outcome: PASS (`13` files, `65` tests).
 
 3. `python3 scripts/run_phase2_validation_matrix.py`
-- Initial sandbox run: NO_GO due sandbox DB access restrictions (not logic regressions).
+- Initial sandbox run: blocked on local Postgres access (`localhost:5432 Operation not permitted`).
 - Elevated rerun outcome: PASS.
-- PASS step summary:
+- Gate summary:
   - `control_doc_truth: PASS`
   - `gate_contract_tests: PASS`
   - `readiness_gates: PASS`
@@ -84,15 +80,13 @@ Implement Phase 3 Sprint 1 (Multi-Agent Profile Backbone) by adding deterministi
   - `web_validation_matrix: PASS`
 
 ## Blockers/Issues
-- Sandbox network restrictions prevented direct local Postgres access for integration/matrix runs.
-- Resolved by rerunning required verification commands with elevated local access.
+- Sandbox permissions blocked DB-backed validation matrix execution on first run.
+- Resolved by rerunning with elevated local access; no code blocker remained.
 
 ## Explicit Deferred Scope
-- Per-profile model/provider switching
-- Runner/worker orchestration changes
-- Connector capability expansion
-- Auth model changes
-- UI profile selector and web routing behavior changes
+- Per-profile model routing or provider switching.
+- Worker/runner orchestration changes.
+- Backend profile CRUD expansion.
 
 ## Recommended Next Step
-1. Proceed to Control Tower integration review focused on profile-boundary correctness and sprint-scope containment, then open PR from `codex/phase3-sprint1-agent-profile-backbone`.
+1. Hand off to Control Tower review focused on: profile selection correctness, thread profile visibility, and fallback determinism under live profile registry failure.

@@ -11,6 +11,7 @@ const {
   getThreadEventsMock,
   getThreadSessionsMock,
   hasLiveApiConfigMock,
+  listAgentProfilesMock,
   listThreadsMock,
 } = vi.hoisted(() => ({
   getApiConfigMock: vi.fn(),
@@ -19,6 +20,7 @@ const {
   getThreadEventsMock: vi.fn(),
   getThreadSessionsMock: vi.fn(),
   hasLiveApiConfigMock: vi.fn(),
+  listAgentProfilesMock: vi.fn(),
   listThreadsMock: vi.fn(),
 }));
 
@@ -57,6 +59,7 @@ vi.mock("../../lib/api", async () => {
     getThreadEvents: getThreadEventsMock,
     getThreadSessions: getThreadSessionsMock,
     hasLiveApiConfig: hasLiveApiConfigMock,
+    listAgentProfiles: listAgentProfilesMock,
     listThreads: listThreadsMock,
   };
 });
@@ -68,6 +71,7 @@ function buildResumptionBriefFixture() {
       thread: {
         id: "thread-1",
         title: "Gamma thread",
+        agent_profile_id: "assistant_default",
         created_at: "2026-03-17T10:00:00Z",
         updated_at: "2026-03-17T10:00:00Z",
       },
@@ -113,6 +117,7 @@ describe("ChatPage", () => {
     getThreadEventsMock.mockReset();
     getThreadSessionsMock.mockReset();
     hasLiveApiConfigMock.mockReset();
+    listAgentProfilesMock.mockReset();
     listThreadsMock.mockReset();
   });
 
@@ -128,11 +133,27 @@ describe("ChatPage", () => {
       defaultToolId: "tool-1",
     });
     hasLiveApiConfigMock.mockReturnValue(true);
+    listAgentProfilesMock.mockResolvedValue({
+      items: [
+        {
+          id: "assistant_default",
+          name: "Assistant Default",
+          description: "General-purpose assistant profile for baseline conversations.",
+        },
+        {
+          id: "coach_default",
+          name: "Coach Default",
+          description: "Coaching-oriented profile focused on guidance and accountability.",
+        },
+      ],
+      summary: { total_count: 2, order: ["id_asc"] },
+    });
     listThreadsMock.mockResolvedValue({
       items: [
         {
           id: "thread-1",
           title: "Gamma thread",
+          agent_profile_id: "assistant_default",
           created_at: "2026-03-17T10:00:00Z",
           updated_at: "2026-03-17T10:00:00Z",
         },
@@ -143,6 +164,7 @@ describe("ChatPage", () => {
       thread: {
         id: "thread-1",
         title: "Gamma thread",
+        agent_profile_id: "assistant_default",
         created_at: "2026-03-17T10:00:00Z",
         updated_at: "2026-03-17T10:00:00Z",
       },
@@ -161,9 +183,11 @@ describe("ChatPage", () => {
 
     expect(screen.getByText("Live continuity enabled")).toBeInTheDocument();
     expect(screen.getByText("Selected: Gamma thread")).toBeInTheDocument();
+    expect(screen.getAllByText("Profile Assistant Default").length).toBeGreaterThan(0);
     expect(screen.getByText("No assistant replies yet")).toBeInTheDocument();
     expect(screen.queryByText("Fixture response preview")).not.toBeInTheDocument();
     expect(screen.queryByText(/What do I need to know about the last Vitamin D request/i)).not.toBeInTheDocument();
+    expect(listAgentProfilesMock).toHaveBeenCalledWith("https://api.example.com");
   });
 
   it("does not seed fixture governed-request history when live API configuration is present", async () => {
@@ -174,11 +198,22 @@ describe("ChatPage", () => {
       defaultToolId: "tool-1",
     });
     hasLiveApiConfigMock.mockReturnValue(true);
+    listAgentProfilesMock.mockResolvedValue({
+      items: [
+        {
+          id: "assistant_default",
+          name: "Assistant Default",
+          description: "General-purpose assistant profile for baseline conversations.",
+        },
+      ],
+      summary: { total_count: 1, order: ["id_asc"] },
+    });
     listThreadsMock.mockResolvedValue({
       items: [
         {
           id: "thread-1",
           title: "Gamma thread",
+          agent_profile_id: "assistant_default",
           created_at: "2026-03-17T10:00:00Z",
           updated_at: "2026-03-17T10:00:00Z",
         },
@@ -189,6 +224,7 @@ describe("ChatPage", () => {
       thread: {
         id: "thread-1",
         title: "Gamma thread",
+        agent_profile_id: "assistant_default",
         created_at: "2026-03-17T10:00:00Z",
         updated_at: "2026-03-17T10:00:00Z",
       },
@@ -225,11 +261,22 @@ describe("ChatPage", () => {
       defaultToolId: "tool-1",
     });
     hasLiveApiConfigMock.mockReturnValue(true);
+    listAgentProfilesMock.mockResolvedValue({
+      items: [
+        {
+          id: "assistant_default",
+          name: "Assistant Default",
+          description: "General-purpose assistant profile for baseline conversations.",
+        },
+      ],
+      summary: { total_count: 1, order: ["id_asc"] },
+    });
     listThreadsMock.mockResolvedValue({
       items: [
         {
           id: "thread-1",
           title: "Gamma thread",
+          agent_profile_id: "assistant_default",
           created_at: "2026-03-17T10:00:00Z",
           updated_at: "2026-03-17T10:00:00Z",
         },
@@ -261,11 +308,22 @@ describe("ChatPage", () => {
       defaultToolId: "tool-1",
     });
     hasLiveApiConfigMock.mockReturnValue(true);
+    listAgentProfilesMock.mockResolvedValue({
+      items: [
+        {
+          id: "assistant_default",
+          name: "Assistant Default",
+          description: "General-purpose assistant profile for baseline conversations.",
+        },
+      ],
+      summary: { total_count: 1, order: ["id_asc"] },
+    });
     listThreadsMock.mockResolvedValue({
       items: [
         {
           id: "thread-1",
           title: "Gamma thread",
+          agent_profile_id: "assistant_default",
           created_at: "2026-03-17T10:00:00Z",
           updated_at: "2026-03-17T10:00:00Z",
         },
@@ -276,6 +334,7 @@ describe("ChatPage", () => {
       thread: {
         id: "thread-1",
         title: "Gamma thread",
+        agent_profile_id: "assistant_default",
         created_at: "2026-03-17T10:00:00Z",
         updated_at: "2026-03-17T10:00:00Z",
       },
@@ -295,5 +354,51 @@ describe("ChatPage", () => {
     expect(screen.getByText("Live continuity enabled")).toBeInTheDocument();
     expect(screen.getByText("Resumption brief unavailable")).toBeInTheDocument();
     expect(screen.getByText("resumption brief failed")).toBeInTheDocument();
+  });
+
+  it("falls back to fixture profiles when live profile registry read fails", async () => {
+    getApiConfigMock.mockReturnValue({
+      apiBaseUrl: "https://api.example.com",
+      userId: "user-1",
+      defaultThreadId: "thread-1",
+      defaultToolId: "tool-1",
+    });
+    hasLiveApiConfigMock.mockReturnValue(true);
+    listAgentProfilesMock.mockRejectedValue(new Error("profile registry failed"));
+    listThreadsMock.mockResolvedValue({
+      items: [
+        {
+          id: "thread-1",
+          title: "Gamma thread",
+          agent_profile_id: "coach_default",
+          created_at: "2026-03-17T10:00:00Z",
+          updated_at: "2026-03-17T10:00:00Z",
+        },
+      ],
+      summary: { total_count: 1, order: ["created_at_desc", "id_desc"] },
+    });
+    getThreadDetailMock.mockResolvedValue({
+      thread: {
+        id: "thread-1",
+        title: "Gamma thread",
+        agent_profile_id: "coach_default",
+        created_at: "2026-03-17T10:00:00Z",
+        updated_at: "2026-03-17T10:00:00Z",
+      },
+    });
+    getThreadSessionsMock.mockResolvedValue({
+      items: [],
+      summary: { thread_id: "thread-1", total_count: 0, order: [] },
+    });
+    getThreadEventsMock.mockResolvedValue({
+      items: [],
+      summary: { thread_id: "thread-1", total_count: 0, order: [] },
+    });
+    getThreadResumptionBriefMock.mockResolvedValue(buildResumptionBriefFixture());
+
+    render(await ChatPage({ searchParams: Promise.resolve({}) }));
+
+    expect(screen.getByText("Live continuity enabled")).toBeInTheDocument();
+    expect(screen.getAllByText("Profile Coach Default").length).toBeGreaterThan(0);
   });
 });
