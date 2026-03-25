@@ -29,6 +29,12 @@ class ThreadRow(TypedDict):
     updated_at: datetime
 
 
+class AgentProfileRow(TypedDict):
+    id: str
+    name: str
+    description: str
+
+
 class SessionRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -86,6 +92,7 @@ class TraceReviewRow(TypedDict):
 class MemoryRow(TypedDict):
     id: UUID
     user_id: UUID
+    agent_profile_id: str
     memory_key: str
     value: JsonValue
     status: str
@@ -165,6 +172,7 @@ class MemoryEmbeddingRow(TypedDict):
 class SemanticMemoryRetrievalRow(TypedDict):
     id: UUID
     user_id: UUID
+    agent_profile_id: str
     memory_key: str
     value: JsonValue
     status: str
@@ -476,6 +484,18 @@ LIST_THREADS_SQL = """
                 ORDER BY created_at DESC, id DESC
                 """
 
+LIST_AGENT_PROFILES_SQL = """
+                SELECT id, name, description
+                FROM agent_profiles
+                ORDER BY id ASC
+                """
+
+GET_AGENT_PROFILE_SQL = """
+                SELECT id, name, description
+                FROM agent_profiles
+                WHERE id = %s
+                """
+
 INSERT_SESSION_SQL = """
                 INSERT INTO sessions (user_id, thread_id, status)
                 VALUES (app.current_user_id(), %s, %s)
@@ -614,11 +634,13 @@ INSERT_MEMORY_SQL = """
                   valid_from,
                   valid_to,
                   last_confirmed_at,
+                  agent_profile_id,
                   created_at,
                   updated_at
                 )
                 VALUES (
                   app.current_user_id(),
+                  %s,
                   %s,
                   %s,
                   %s,
@@ -636,6 +658,7 @@ INSERT_MEMORY_SQL = """
                 RETURNING
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -656,6 +679,7 @@ GET_MEMORY_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -678,6 +702,7 @@ LIST_MEMORIES_BY_IDS_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -701,6 +726,7 @@ GET_MEMORY_BY_KEY_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -719,10 +745,35 @@ GET_MEMORY_BY_KEY_SQL = """
                 WHERE memory_key = %s
                 """
 
+GET_MEMORY_BY_KEY_AND_PROFILE_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  agent_profile_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
+                FROM memories
+                WHERE memory_key = %s
+                  AND agent_profile_id = %s
+                """
+
 LIST_MEMORIES_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -767,6 +818,7 @@ LIST_REVIEW_MEMORIES_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -790,6 +842,7 @@ LIST_REVIEW_MEMORIES_BY_STATUS_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -814,6 +867,7 @@ LIST_UNLABELED_REVIEW_MEMORIES_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -843,6 +897,7 @@ LIST_CONTEXT_MEMORIES_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -858,6 +913,30 @@ LIST_CONTEXT_MEMORIES_SQL = """
                   updated_at,
                   deleted_at
                 FROM memories
+                ORDER BY updated_at ASC, created_at ASC, id ASC
+                """
+
+LIST_CONTEXT_MEMORIES_FOR_PROFILE_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  agent_profile_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
+                FROM memories
+                WHERE agent_profile_id = %s
                 ORDER BY updated_at ASC, created_at ASC, id ASC
                 """
 
@@ -882,6 +961,7 @@ UPDATE_MEMORY_SQL = """
                 RETURNING
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -1304,6 +1384,7 @@ RETRIEVE_SEMANTIC_MEMORY_MATCHES_SQL = """
                 SELECT
                   memories.id,
                   memories.user_id,
+                  memories.agent_profile_id,
                   memories.memory_key,
                   memories.value,
                   memories.status,
@@ -1328,6 +1409,40 @@ RETRIEVE_SEMANTIC_MEMORY_MATCHES_SQL = """
                 WHERE memory_embeddings.embedding_config_id = %s
                   AND memory_embeddings.dimensions = %s
                   AND memories.status = 'active'
+                ORDER BY score DESC, memories.created_at ASC, memories.id ASC
+                LIMIT %s
+                """
+
+RETRIEVE_SEMANTIC_MEMORY_MATCHES_FOR_PROFILE_SQL = """
+                SELECT
+                  memories.id,
+                  memories.user_id,
+                  memories.agent_profile_id,
+                  memories.memory_key,
+                  memories.value,
+                  memories.status,
+                  memories.source_event_ids,
+                  memories.memory_type,
+                  memories.confidence,
+                  memories.salience,
+                  memories.confirmation_status,
+                  memories.valid_from,
+                  memories.valid_to,
+                  memories.last_confirmed_at,
+                  memories.created_at,
+                  memories.updated_at,
+                  memories.deleted_at,
+                  1 - (
+                    replace(memory_embeddings.vector::text, ' ', '')::vector <=> %s::vector
+                  ) AS score
+                FROM memory_embeddings
+                JOIN memories
+                  ON memories.id = memory_embeddings.memory_id
+                 AND memories.user_id = memory_embeddings.user_id
+                WHERE memory_embeddings.embedding_config_id = %s
+                  AND memory_embeddings.dimensions = %s
+                  AND memories.status = 'active'
+                  AND memories.agent_profile_id = %s
                 ORDER BY score DESC, memories.created_at ASC, memories.id ASC
                 LIMIT %s
                 """
@@ -3131,6 +3246,12 @@ class ContinuityStore:
     def list_threads(self) -> list[ThreadRow]:
         return self._fetch_all(LIST_THREADS_SQL)
 
+    def list_agent_profiles(self) -> list[AgentProfileRow]:
+        return self._fetch_all(LIST_AGENT_PROFILES_SQL)
+
+    def get_agent_profile_optional(self, profile_id: str) -> AgentProfileRow | None:
+        return self._fetch_optional_one(GET_AGENT_PROFILE_SQL, (profile_id,))
+
     def create_session(self, thread_id: UUID, status: str = "active") -> SessionRow:
         return self._fetch_one("create_session", INSERT_SESSION_SQL, (thread_id, status))
 
@@ -3223,6 +3344,7 @@ class ContinuityStore:
         valid_from: datetime | None = None,
         valid_to: datetime | None = None,
         last_confirmed_at: datetime | None = None,
+        agent_profile_id: str = "assistant_default",
     ) -> MemoryRow:
         return self._fetch_one(
             "create_memory",
@@ -3239,6 +3361,7 @@ class ContinuityStore:
                 valid_from,
                 valid_to,
                 last_confirmed_at,
+                agent_profile_id,
             ),
         )
 
@@ -3255,6 +3378,17 @@ class ContinuityStore:
 
     def get_memory_by_key(self, memory_key: str) -> MemoryRow | None:
         return self._fetch_optional_one(GET_MEMORY_BY_KEY_SQL, (memory_key,))
+
+    def get_memory_by_key_and_profile(
+        self,
+        *,
+        memory_key: str,
+        agent_profile_id: str,
+    ) -> MemoryRow | None:
+        return self._fetch_optional_one(
+            GET_MEMORY_BY_KEY_AND_PROFILE_SQL,
+            (memory_key, agent_profile_id),
+        )
 
     def list_memories(self) -> list[MemoryRow]:
         return self._fetch_all(LIST_MEMORIES_SQL)
@@ -3277,6 +3411,9 @@ class ContinuityStore:
 
     def list_context_memories(self) -> list[MemoryRow]:
         return self._fetch_all(LIST_CONTEXT_MEMORIES_SQL)
+
+    def list_context_memories_for_profile(self, *, agent_profile_id: str) -> list[MemoryRow]:
+        return self._fetch_all(LIST_CONTEXT_MEMORIES_FOR_PROFILE_SQL, (agent_profile_id,))
 
     def update_memory(
         self,
@@ -3555,6 +3692,25 @@ class ContinuityStore:
                 self._vector_literal(query_vector),
                 embedding_config_id,
                 len(query_vector),
+                limit,
+            ),
+        )
+
+    def retrieve_semantic_memory_matches_for_profile(
+        self,
+        *,
+        embedding_config_id: UUID,
+        query_vector: list[float],
+        limit: int,
+        agent_profile_id: str,
+    ) -> list[SemanticMemoryRetrievalRow]:
+        return self._fetch_all(
+            RETRIEVE_SEMANTIC_MEMORY_MATCHES_FOR_PROFILE_SQL,
+            (
+                self._vector_literal(query_vector),
+                embedding_config_id,
+                len(query_vector),
+                agent_profile_id,
                 limit,
             ),
         )
