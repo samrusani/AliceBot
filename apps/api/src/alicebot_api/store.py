@@ -33,6 +33,8 @@ class AgentProfileRow(TypedDict):
     id: str
     name: str
     description: str
+    model_provider: str | None
+    model_name: str | None
 
 
 class SessionRow(TypedDict):
@@ -486,13 +488,13 @@ LIST_THREADS_SQL = """
                 """
 
 LIST_AGENT_PROFILES_SQL = """
-                SELECT id, name, description
+                SELECT id, name, description, model_provider, model_name
                 FROM agent_profiles
                 ORDER BY id ASC
                 """
 
 GET_AGENT_PROFILE_SQL = """
-                SELECT id, name, description
+                SELECT id, name, description, model_provider, model_name
                 FROM agent_profiles
                 WHERE id = %s
                 """

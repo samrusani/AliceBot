@@ -117,8 +117,8 @@ def test_generate_response_persists_user_and_assistant_events_and_trace_metadata
         captured["settings"] = settings
         captured["request_payload"] = request.as_payload()
         return response_generation_module.ModelInvocationResponse(
-            provider="openai_responses",
-            model="gpt-5-mini",
+            provider=request.provider,
+            model=request.model,
             response_id="resp_123",
             finish_reason="completed",
             output_text="You prefer oat milk.",
@@ -142,13 +142,15 @@ def test_generate_response_persists_user_and_assistant_events_and_trace_metadata
         "sequence_no": 3,
         "text": "You prefer oat milk.",
         "model_provider": "openai_responses",
-        "model": "gpt-5-mini",
+        "model": "gpt-5",
     }
     assert payload["trace"]["compile_trace_event_count"] > 0
     assert payload["trace"]["response_trace_event_count"] == 2
     assert captured["request_payload"]["tool_choice"] == "none"
     assert captured["request_payload"]["tools"] == []
     assert captured["request_payload"]["store"] is False
+    assert captured["request_payload"]["provider"] == "openai_responses"
+    assert captured["request_payload"]["model"] == "gpt-5"
     assert captured["request_payload"]["sections"] == [
         "system",
         "developer",
@@ -174,7 +176,7 @@ def test_generate_response_persists_user_and_assistant_events_and_trace_metadata
         "text": "You prefer oat milk.",
         "model": {
             "provider": "openai_responses",
-            "model": "gpt-5-mini",
+            "model": "gpt-5",
             "response_id": "resp_123",
             "finish_reason": "completed",
             "usage": {"input_tokens": 20, "output_tokens": 6, "total_tokens": 26},
@@ -195,7 +197,7 @@ def test_generate_response_persists_user_and_assistant_events_and_trace_metadata
     assert response_trace_events[0]["payload"]["compile_trace_id"] == payload["trace"]["compile_trace_id"]
     assert response_trace_events[1]["payload"] == {
         "provider": "openai_responses",
-        "model": "gpt-5-mini",
+        "model": "gpt-5",
         "tool_choice": "none",
         "tools_enabled": False,
         "response_id": "resp_123",
@@ -278,6 +280,68 @@ def test_generate_response_persists_optional_cached_token_telemetry_in_event_and
         "total_tokens": 26,
         "cached_input_tokens": 16,
     }
+
+
+def test_generate_response_falls_back_to_global_runtime_when_profile_runtime_is_unset(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = seed_response_thread(
+        migrated_database_urls["app"],
+        agent_profile_id="coach_default",
+    )
+    captured: dict[str, object] = {}
+
+    with psycopg.connect(migrated_database_urls["admin"], autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE agent_profiles
+                SET model_provider = NULL,
+                    model_name = NULL
+                WHERE id = 'coach_default'
+                """
+            )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            model_provider="openai_responses",
+            model_name="gpt-5-nano",
+            model_api_key="test-key",
+        ),
+    )
+
+    def fake_invoke_model(*, settings, request):
+        captured["settings"] = settings
+        captured["request_payload"] = request.as_payload()
+        return response_generation_module.ModelInvocationResponse(
+            provider=request.provider,
+            model=request.model,
+            response_id="resp_fallback",
+            finish_reason="completed",
+            output_text="Fallback response.",
+            usage={"input_tokens": 12, "output_tokens": 4, "total_tokens": 16},
+        )
+
+    monkeypatch.setattr(response_generation_module, "invoke_model", fake_invoke_model)
+
+    status_code, payload = invoke_generate_response(
+        {
+            "user_id": str(seeded["user_id"]),
+            "thread_id": str(seeded["thread_id"]),
+            "message": "Use fallback runtime config.",
+        }
+    )
+
+    assert status_code == 200
+    assert payload["metadata"] == {"agent_profile_id": "coach_default"}
+    assert payload["assistant"]["model_provider"] == "openai_responses"
+    assert payload["assistant"]["model"] == "gpt-5-nano"
+    assert captured["request_payload"]["provider"] == "openai_responses"
+    assert captured["request_payload"]["model"] == "gpt-5-nano"
 
 
 def test_generate_response_returns_clean_failure_without_persisting_assistant_event(
