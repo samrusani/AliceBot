@@ -62,13 +62,18 @@ def invoke_request(
     return start_message["status"], json.loads(body)
 
 
-def seed_user(database_url: str, *, email: str) -> dict[str, UUID]:
+def seed_user(
+    database_url: str,
+    *,
+    email: str,
+    agent_profile_id: str = "assistant_default",
+) -> dict[str, UUID]:
     user_id = uuid4()
 
     with user_connection(database_url, user_id) as conn:
         store = ContinuityStore(conn)
         store.create_user(user_id, email, email.split("@", 1)[0].title())
-        thread = store.create_thread("Policy thread")
+        thread = store.create_thread("Policy thread", agent_profile_id=agent_profile_id)
 
     return {
         "user_id": user_id,
@@ -161,6 +166,7 @@ def test_policy_endpoints_create_list_and_get_in_priority_order(migrated_databas
             "active": True,
             "conditions": {"channel": "email"},
             "required_consents": ["email_marketing", "email_marketing"],
+            "agent_profile_id": "coach_default",
         },
     )
     high_priority_status, high_priority_payload = invoke_request(
@@ -191,6 +197,8 @@ def test_policy_endpoints_create_list_and_get_in_priority_order(migrated_databas
 
     assert low_priority_status == 201
     assert high_priority_status == 201
+    assert low_priority_payload["policy"]["agent_profile_id"] == "coach_default"
+    assert high_priority_payload["policy"]["agent_profile_id"] is None
     assert low_priority_payload["policy"]["required_consents"] == ["email_marketing"]
     assert list_status == 200
     assert [item["id"] for item in list_payload["items"]] == [
@@ -274,6 +282,82 @@ def test_policy_evaluation_allow_records_trace_events(migrated_database_urls, mo
     ]
     assert trace_events[2]["payload"]["decision"] == "allow"
     assert trace_events[2]["payload"]["matched_policy_id"] == str(created_policy["id"])
+
+
+def test_policy_evaluation_scopes_to_global_and_thread_profile_policies(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = seed_user(
+        migrated_database_urls["app"],
+        email="owner@example.com",
+        agent_profile_id="coach_default",
+    )
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+
+    with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        mismatched = store.create_policy(
+            agent_profile_id="assistant_default",
+            name="Mismatched deny",
+            action="memory.export",
+            scope="profile",
+            effect="deny",
+            priority=1,
+            active=True,
+            conditions={},
+            required_consents=[],
+        )
+        global_policy = store.create_policy(
+            agent_profile_id=None,
+            name="Global approval",
+            action="memory.export",
+            scope="profile",
+            effect="require_approval",
+            priority=5,
+            active=True,
+            conditions={},
+            required_consents=[],
+        )
+        matched = store.create_policy(
+            agent_profile_id="coach_default",
+            name="Matched allow",
+            action="memory.export",
+            scope="profile",
+            effect="allow",
+            priority=10,
+            active=True,
+            conditions={},
+            required_consents=[],
+        )
+
+    status_code, payload = invoke_request(
+        "POST",
+        "/v0/policies/evaluate",
+        payload={
+            "user_id": str(seeded["user_id"]),
+            "thread_id": str(seeded["thread_id"]),
+            "action": "memory.export",
+            "scope": "profile",
+            "attributes": {},
+        },
+    )
+
+    assert status_code == 200
+    assert payload["decision"] == "require_approval"
+    assert payload["matched_policy"]["id"] == str(global_policy["id"])
+    assert payload["evaluation"]["evaluated_policy_count"] == 2
+
+    with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        trace_events = store.list_trace_events(UUID(payload["trace"]["trace_id"]))
+
+    assert trace_events[1]["kind"] == "policy.evaluate.order"
+    assert trace_events[1]["payload"]["policy_ids"] == [
+        str(global_policy["id"]),
+        str(matched["id"]),
+    ]
+    assert str(mismatched["id"]) not in trace_events[1]["payload"]["policy_ids"]
 
 
 def test_policy_evaluation_denies_when_required_consent_is_missing(migrated_database_urls, monkeypatch) -> None:

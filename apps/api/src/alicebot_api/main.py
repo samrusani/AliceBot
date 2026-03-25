@@ -615,6 +615,7 @@ class CreatePolicyRequest(BaseModel):
     active: bool = True
     conditions: dict[str, object] = Field(default_factory=dict)
     required_consents: list[str] = Field(default_factory=list)
+    agent_profile_id: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class EvaluatePolicyRequest(BaseModel):
@@ -1491,8 +1492,28 @@ def create_policy(request: CreatePolicyRequest) -> JSONResponse:
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
+            store = ContinuityStore(conn)
+            if (
+                request.agent_profile_id is not None
+                and get_registered_agent_profile(store, request.agent_profile_id) is None
+            ):
+                allowed_agent_profile_ids = list_registered_agent_profile_ids(store)
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "detail": {
+                            "code": "invalid_agent_profile_id",
+                            "message": (
+                                "agent_profile_id must be one of: "
+                                + ", ".join(allowed_agent_profile_ids)
+                            ),
+                            "allowed_agent_profile_ids": allowed_agent_profile_ids,
+                        }
+                    },
+                )
+
             payload = create_policy_record(
-                ContinuityStore(conn),
+                store,
                 user_id=request.user_id,
                 policy=PolicyCreateInput(
                     name=request.name,
@@ -1503,6 +1524,7 @@ def create_policy(request: CreatePolicyRequest) -> JSONResponse:
                     active=request.active,
                     conditions=request.conditions,
                     required_consents=tuple(request.required_consents),
+                    agent_profile_id=request.agent_profile_id,
                 ),
             )
     except PolicyValidationError as exc:
