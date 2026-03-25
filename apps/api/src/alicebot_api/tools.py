@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from alicebot_api.contracts import (
+    DEFAULT_AGENT_PROFILE_ID,
     TOOL_ALLOWLIST_EVALUATION_VERSION_V0,
     TOOL_ROUTING_VERSION_V0,
     TOOL_LIST_ORDER,
@@ -351,7 +352,10 @@ def evaluate_tool_allowlist(
         )
 
     active_tools = store.list_active_tools()
-    policy_context = load_policy_evaluation_context(store)
+    policy_context = load_policy_evaluation_context(
+        store,
+        thread_agent_profile_id=thread.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID),
+    )
 
     allowed: list[ToolAllowlistDecisionRecord] = []
     denied: list[ToolAllowlistDecisionRecord] = []
@@ -475,7 +479,10 @@ def route_tool_invocation(
             "tool_id must reference an existing active tool owned by the user"
         )
 
-    policy_context = load_policy_evaluation_context(store)
+    policy_context = load_policy_evaluation_context(
+        store,
+        thread_agent_profile_id=thread.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID),
+    )
     classification = _classify_tool_request(
         tool=tool,
         request=_allowlist_request_from_routing(request),

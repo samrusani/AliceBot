@@ -4,34 +4,37 @@
 PASS
 
 ## criteria met
-- Admission profile scope is enforced end-to-end:
-- derives profile from `source_event_ids` thread context ([memory.py](apps/api/src/alicebot_api/memory.py:574)).
-- rejects mixed-profile source events deterministically ([memory.py](apps/api/src/alicebot_api/memory.py:592)).
-- validates explicit `agent_profile_id` for existence + source-profile consistency ([memory.py](apps/api/src/alicebot_api/memory.py:599)).
-- Admission upsert is profile-scoped by `(memory_key, agent_profile_id)` ([memory.py](apps/api/src/alicebot_api/memory.py:775), [store.py](apps/api/src/alicebot_api/store.py:748)).
-- Schema isolation is in place (`UNIQUE (user_id, agent_profile_id, memory_key)`) and downgrade now handles cross-profile duplicates before restoring legacy uniqueness ([20260324_0034_memory_agent_profile_scope.py](apps/api/alembic/versions/20260324_0034_memory_agent_profile_scope.py:28), [20260324_0034_memory_agent_profile_scope.py](apps/api/alembic/versions/20260324_0034_memory_agent_profile_scope.py:39)).
-- Branch diff is Sprint 5 scoped plus required Sprint 4 registry prerequisite files needed because `main` does not yet include Sprint 4.
-- Added direct admission-path negative coverage for explicit profile mismatch and unknown profile:
-- unit: [test_memory.py](tests/unit/test_memory.py:501)
-- integration: [test_memory_review_api.py](tests/integration/test_memory_review_api.py:537)
+- Sprint stayed bounded to profile-scoped policy evaluation/routing.
+- `policies.agent_profile_id` migration is implemented with nullable global semantics and FK protection.
+- Policy evaluation/routing loads global + thread-profile policies only, with deterministic ordering (`priority ASC, created_at ASC, id ASC`).
+- Policy create/read contracts are additive (`agent_profile_id` support) and preserve backward-compatible global behavior.
+- Required sprint verifications pass:
+- `./.venv/bin/python -m pytest tests/unit/test_20260325_0035_policy_agent_profile_scope.py tests/unit/test_policy.py tests/unit/test_policy_store.py -q` -> `15 passed`
+- `./.venv/bin/python -m pytest tests/integration/test_policy_api.py tests/integration/test_approval_api.py -q` -> `14 passed`
+- `python3 scripts/run_phase2_validation_matrix.py` -> `PASS`
+- Scope-adjacent regression previously identified is resolved:
+- `./.venv/bin/python -m pytest tests/unit/test_tools.py tests/unit/test_approvals.py -q` -> `17 passed`
 
 ## criteria missed
 - None.
 
 ## quality issues
-- None blocking for sprint scope.
+- No blocking quality issues for sprint scope.
+- Backward-compatibility guards added in `tools.py`/`policy.py` are pragmatic and scoped to legacy test-double compatibility.
 
 ## regression risks
-- Low. Profile-scoped admission/read behavior and rollback guards are covered by unit, integration, and matrix gates.
+- Low.
+- Residual non-sprint unit-suite failures remain in unrelated legacy tests in this workspace; they are pre-existing/out of this sprint’s changed surfaces and not affecting sprint acceptance gates.
 
 ## docs issues
-- None. `BUILD_REPORT.md` documents Sprint 5 scope and required Sprint 4 prerequisite carry-forward.
+- None blocking.
+- `BUILD_REPORT.md` now includes blocker detection, fix, and verification reruns.
 
 ## should anything be added to RULES.md?
-- Optional: keep a standing rule that profile-scope admission changes must include explicit negative-path tests for profile mismatch/invalid profile IDs.
+- Optional: require running immediately adjacent stub-based unit suites when shared row-shape/signature expectations change.
 
 ## should anything update ARCHITECTURE.md?
-- Optional: codify downgrade duplicate-key rewrite behavior for profile-domain memory keys during rollback.
+- Optional: add an explicit policy-governance note documenting domain composition as global (`NULL`) + active thread profile.
 
 ## recommended next action
-1. Proceed to Control Tower final merge review for Phase 3 Sprint 5.
+1. Proceed to Control Tower merge review for Phase 3 Sprint 6.

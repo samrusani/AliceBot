@@ -62,13 +62,18 @@ def invoke_request(
     return start_message["status"], json.loads(body)
 
 
-def seed_user(database_url: str, *, email: str) -> dict[str, UUID]:
+def seed_user(
+    database_url: str,
+    *,
+    email: str,
+    agent_profile_id: str = "assistant_default",
+) -> dict[str, UUID]:
     user_id = uuid4()
 
     with user_connection(database_url, user_id) as conn:
         store = ContinuityStore(conn)
         store.create_user(user_id, email, email.split("@", 1)[0].title())
-        thread = store.create_thread("Approval thread")
+        thread = store.create_thread("Approval thread", agent_profile_id=agent_profile_id)
 
     return {
         "user_id": user_id,
@@ -226,6 +231,94 @@ def test_approval_request_persists_record_for_approval_required_route(
             "trace_kind": "approval.request",
         },
     }
+
+
+def test_approval_request_routing_excludes_profile_mismatched_policies(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = seed_user(
+        migrated_database_urls["app"],
+        email="owner@example.com",
+        agent_profile_id="coach_default",
+    )
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+
+    with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        tool = store.create_tool(
+            tool_key="shell.exec",
+            name="Shell Exec",
+            description="Run shell commands.",
+            version="1.0.0",
+            metadata_version="tool_metadata_v0",
+            active=True,
+            tags=["shell"],
+            action_hints=["tool.run"],
+            scope_hints=["workspace"],
+            domain_hints=[],
+            risk_hints=[],
+            metadata={"transport": "local"},
+        )
+        mismatched = store.create_policy(
+            agent_profile_id="assistant_default",
+            name="Mismatched deny shell",
+            action="tool.run",
+            scope="workspace",
+            effect="deny",
+            priority=1,
+            active=True,
+            conditions={"tool_key": "shell.exec"},
+            required_consents=[],
+        )
+        global_allow = store.create_policy(
+            agent_profile_id=None,
+            name="Global allow shell",
+            action="tool.run",
+            scope="workspace",
+            effect="allow",
+            priority=10,
+            active=True,
+            conditions={"tool_key": "shell.exec"},
+            required_consents=[],
+        )
+
+    status, payload = invoke_request(
+        "POST",
+        "/v0/approvals/requests",
+        payload={
+            "user_id": str(seeded["user_id"]),
+            "thread_id": str(seeded["thread_id"]),
+            "tool_id": str(tool["id"]),
+            "action": "tool.run",
+            "scope": "workspace",
+            "attributes": {"command": "ls"},
+        },
+    )
+
+    assert status == 200
+    assert payload["decision"] == "ready"
+    assert payload["task"]["status"] == "approved"
+    assert payload["approval"] is None
+    assert payload["reasons"][-1] == {
+        "code": "policy_effect_allow",
+        "source": "policy",
+        "message": "Policy effect resolved the decision to 'allow'.",
+        "tool_id": str(tool["id"]),
+        "policy_id": str(global_allow["id"]),
+        "consent_key": None,
+    }
+
+    with user_connection(migrated_database_urls["app"], seeded["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        approvals = store.list_approvals()
+        routing_trace = store.get_trace(UUID(payload["routing_trace"]["trace_id"]))
+        routing_events = store.list_trace_events(UUID(payload["routing_trace"]["trace_id"]))
+
+    assert approvals == []
+    assert routing_trace["limits"]["active_policy_count"] == 1
+    assert routing_events[1]["payload"]["matched_policy_id"] == str(global_allow["id"])
+    assert routing_events[1]["payload"]["matched_policy_id"] != str(mismatched["id"])
 
 
 def test_approval_request_does_not_create_records_for_ready_or_denied_routes(
