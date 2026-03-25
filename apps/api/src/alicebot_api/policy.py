@@ -5,6 +5,7 @@ from uuid import UUID
 
 from alicebot_api.contracts import (
     CONSENT_LIST_ORDER,
+    DEFAULT_AGENT_PROFILE_ID,
     POLICY_EVALUATION_VERSION_V0,
     POLICY_LIST_ORDER,
     TRACE_KIND_POLICY_EVALUATE,
@@ -68,6 +69,7 @@ def _serialize_consent(consent: ConsentRow) -> ConsentRecord:
 def _serialize_policy(policy: PolicyRow) -> PolicyRecord:
     return {
         "id": str(policy["id"]),
+        "agent_profile_id": policy["agent_profile_id"],
         "name": policy["name"],
         "action": policy["action"],
         "scope": policy["scope"],
@@ -182,6 +184,7 @@ def create_policy_record(
 
     required_consents = _dedupe_required_consents(policy.required_consents)
     created = store.create_policy(
+        agent_profile_id=policy.agent_profile_id,
         name=policy.name,
         action=policy.action,
         scope=policy.scope,
@@ -227,9 +230,21 @@ def get_policy_record(
     return {"policy": _serialize_policy(policy)}
 
 
-def load_policy_evaluation_context(store: ContinuityStore) -> PolicyEvaluationContext:
+def load_policy_evaluation_context(
+    store: ContinuityStore,
+    *,
+    thread_agent_profile_id: str,
+) -> PolicyEvaluationContext:
+    try:
+        active_policies = store.list_active_policies(agent_profile_id=thread_agent_profile_id)
+    except TypeError as exc:
+        if "agent_profile_id" not in str(exc):
+            raise
+        # Backward-compatible fallback for unit stubs that haven't adopted the scoped signature yet.
+        active_policies = store.list_active_policies()
+
     return PolicyEvaluationContext(
-        active_policies=tuple(store.list_active_policies()),
+        active_policies=tuple(active_policies),
         consents_by_key={consent["consent_key"]: consent for consent in store.list_consents()},
     )
 
@@ -334,7 +349,10 @@ def evaluate_policy_request(
             "thread_id must reference an existing thread owned by the user"
         )
 
-    context = load_policy_evaluation_context(store)
+    context = load_policy_evaluation_context(
+        store,
+        thread_agent_profile_id=thread.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID),
+    )
     core_decision = evaluate_policy_against_context(
         context,
         request=request,

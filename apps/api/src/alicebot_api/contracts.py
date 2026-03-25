@@ -1250,9 +1250,10 @@ class PolicyCreateInput:
     active: bool
     conditions: JsonObject
     required_consents: tuple[str, ...]
+    agent_profile_id: str | None = None
 
     def as_payload(self) -> JsonObject:
-        return {
+        payload: JsonObject = {
             "name": self.name,
             "action": self.action,
             "scope": self.scope,
@@ -1262,6 +1263,9 @@ class PolicyCreateInput:
             "conditions": self.conditions,
             "required_consents": list(self.required_consents),
         }
+        if self.agent_profile_id is not None:
+            payload["agent_profile_id"] = self.agent_profile_id
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -1909,6 +1913,7 @@ class ConsentListResponse(TypedDict):
 
 class PolicyRecord(TypedDict):
     id: str
+    agent_profile_id: str | None
     name: str
     action: str
     scope: str

@@ -23,6 +23,7 @@ class PolicyStoreStub:
         self.base_time = datetime(2026, 3, 12, 9, 0, tzinfo=UTC)
         self.user_id = uuid4()
         self.thread_id = uuid4()
+        self.thread_agent_profile_id = "assistant_default"
         self.consents: dict[str, dict[str, object]] = {}
         self.policies: list[dict[str, object]] = []
         self.traces: list[dict[str, object]] = []
@@ -63,6 +64,7 @@ class PolicyStoreStub:
     def create_policy(
         self,
         *,
+        agent_profile_id: str | None = None,
         name: str,
         action: str,
         scope: str,
@@ -75,6 +77,7 @@ class PolicyStoreStub:
         policy = {
             "id": uuid4(),
             "user_id": self.user_id,
+            "agent_profile_id": agent_profile_id,
             "name": name,
             "action": action,
             "scope": scope,
@@ -98,8 +101,15 @@ class PolicyStoreStub:
     def get_policy_optional(self, policy_id: UUID) -> dict[str, object] | None:
         return next((policy for policy in self.policies if policy["id"] == policy_id), None)
 
-    def list_active_policies(self) -> list[dict[str, object]]:
-        return [policy for policy in self.list_policies() if policy["active"] is True]
+    def list_active_policies(self, *, agent_profile_id: str | None = None) -> list[dict[str, object]]:
+        active = [policy for policy in self.list_policies() if policy["active"] is True]
+        if agent_profile_id is None:
+            return active
+        return [
+            policy
+            for policy in active
+            if policy["agent_profile_id"] is None or policy["agent_profile_id"] == agent_profile_id
+        ]
 
     def get_thread_optional(self, thread_id: UUID) -> dict[str, object] | None:
         if thread_id != self.thread_id:
@@ -108,6 +118,7 @@ class PolicyStoreStub:
             "id": self.thread_id,
             "user_id": self.user_id,
             "title": "Policy thread",
+            "agent_profile_id": self.thread_agent_profile_id,
             "created_at": self.base_time,
             "updated_at": self.base_time,
         }
@@ -234,6 +245,7 @@ def test_create_and_list_policy_records_preserve_priority_order_and_shape() -> N
             active=True,
             conditions={"channel": "email"},
             required_consents=("email_marketing", "email_marketing"),
+            agent_profile_id="assistant_default",
         ),
     )
     second_policy = store.create_policy(
@@ -258,6 +270,7 @@ def test_create_and_list_policy_records_preserve_priority_order_and_shape() -> N
     )
 
     assert first["policy"]["required_consents"] == ["email_marketing"]
+    assert first["policy"]["agent_profile_id"] == "assistant_default"
     assert [item["id"] for item in list_payload["items"]] == [
         str(second_policy["id"]),
         first["policy"]["id"],
@@ -445,3 +458,62 @@ def test_evaluate_policy_request_returns_require_approval_and_validates_thread_s
                 attributes={},
             ),
         )
+
+
+def test_evaluate_policy_request_filters_to_global_and_thread_profile_policies() -> None:
+    store = PolicyStoreStub()
+    store.thread_agent_profile_id = "coach_default"
+    mismatched = store.create_policy(
+        agent_profile_id="assistant_default",
+        name="Mismatched deny",
+        action="memory.export",
+        scope="profile",
+        effect="deny",
+        priority=1,
+        active=True,
+        conditions={},
+        required_consents=[],
+    )
+    global_policy = store.create_policy(
+        agent_profile_id=None,
+        name="Global approval",
+        action="memory.export",
+        scope="profile",
+        effect="require_approval",
+        priority=5,
+        active=True,
+        conditions={},
+        required_consents=[],
+    )
+    matched = store.create_policy(
+        agent_profile_id="coach_default",
+        name="Matched allow",
+        action="memory.export",
+        scope="profile",
+        effect="allow",
+        priority=10,
+        active=True,
+        conditions={},
+        required_consents=[],
+    )
+
+    payload = evaluate_policy_request(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=PolicyEvaluationRequestInput(
+            thread_id=store.thread_id,
+            action="memory.export",
+            scope="profile",
+            attributes={},
+        ),
+    )
+
+    assert payload["decision"] == "require_approval"
+    assert payload["matched_policy"] is not None
+    assert payload["matched_policy"]["id"] == str(global_policy["id"])
+    assert payload["evaluation"]["evaluated_policy_count"] == 2
+
+    order_event = store.trace_events[1]
+    assert order_event["kind"] == "policy.evaluate.order"
+    assert order_event["payload"]["policy_ids"] == [str(global_policy["id"]), str(matched["id"])]
+    assert str(mismatched["id"]) not in order_event["payload"]["policy_ids"]
