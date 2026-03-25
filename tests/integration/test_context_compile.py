@@ -2144,3 +2144,176 @@ def test_traces_and_trace_events_respect_per_user_isolation(migrated_database_ur
         assert trace_count["count"] == 0
         assert trace_event_count["count"] == 0
         assert store.list_trace_events(trace_id) == []
+
+
+def test_compile_context_scopes_memories_to_active_thread_profile(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = uuid4()
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        store.create_user(user_id, "scoped@example.com", "Scoped User")
+        assistant_thread = store.create_thread("Assistant thread")
+        coach_thread = store.create_thread("Coach thread", agent_profile_id="coach_default")
+        assistant_session = store.create_session(assistant_thread["id"], status="active")
+        coach_session = store.create_session(coach_thread["id"], status="active")
+        assistant_event = store.append_event(
+            assistant_thread["id"],
+            assistant_session["id"],
+            "message.user",
+            {"text": "remember assistant preference"},
+        )
+        coach_event = store.append_event(
+            coach_thread["id"],
+            coach_session["id"],
+            "message.user",
+            {"text": "remember coaching preference"},
+        )
+        # Omitted profile attribution must default deterministically to assistant_default.
+        store.create_memory(
+            memory_key="user.preference.assistant.profile_scope",
+            value={"likes": "espresso"},
+            status="active",
+            source_event_ids=[str(assistant_event["id"])],
+        )
+        store.create_memory(
+            memory_key="user.preference.coach.profile_scope",
+            value={"likes": "pour over"},
+            status="active",
+            source_event_ids=[str(coach_event["id"])],
+            agent_profile_id="coach_default",
+        )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    assistant_status, assistant_payload = invoke_compile_context(
+        {
+            "user_id": str(user_id),
+            "thread_id": str(assistant_thread["id"]),
+            "max_memories": 10,
+        }
+    )
+    coach_status, coach_payload = invoke_compile_context(
+        {
+            "user_id": str(user_id),
+            "thread_id": str(coach_thread["id"]),
+            "max_memories": 10,
+        }
+    )
+
+    assert assistant_status == 200
+    assert assistant_payload["metadata"] == {"agent_profile_id": "assistant_default"}
+    assert [memory["memory_key"] for memory in assistant_payload["context_pack"]["memories"]] == [
+        "user.preference.assistant.profile_scope"
+    ]
+
+    assert coach_status == 200
+    assert coach_payload["metadata"] == {"agent_profile_id": "coach_default"}
+    assert [memory["memory_key"] for memory in coach_payload["context_pack"]["memories"]] == [
+        "user.preference.coach.profile_scope"
+    ]
+
+
+def test_compile_context_scopes_semantic_memory_retrieval_to_active_thread_profile(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = uuid4()
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        store.create_user(user_id, "semantic-scope@example.com", "Semantic Scope")
+        assistant_thread = store.create_thread("Assistant semantic thread")
+        coach_thread = store.create_thread("Coach semantic thread", agent_profile_id="coach_default")
+        assistant_session = store.create_session(assistant_thread["id"], status="active")
+        coach_session = store.create_session(coach_thread["id"], status="active")
+        assistant_event = store.append_event(
+            assistant_thread["id"],
+            assistant_session["id"],
+            "message.user",
+            {"text": "assistant memory evidence"},
+        )
+        coach_event = store.append_event(
+            coach_thread["id"],
+            coach_session["id"],
+            "message.user",
+            {"text": "coach memory evidence"},
+        )
+        assistant_memory = store.create_memory(
+            memory_key="user.preference.semantic.assistant_scope",
+            value={"likes": "latte"},
+            status="active",
+            source_event_ids=[str(assistant_event["id"])],
+        )
+        coach_memory = store.create_memory(
+            memory_key="user.preference.semantic.coach_scope",
+            value={"likes": "flat white"},
+            status="active",
+            source_event_ids=[str(coach_event["id"])],
+            agent_profile_id="coach_default",
+        )
+        embedding_config = store.create_embedding_config(
+            provider="openai",
+            model="text-embedding-3-large",
+            version="2026-03-24",
+            dimensions=3,
+            status="active",
+            metadata={"task": "semantic_scope_validation"},
+        )
+        store.create_memory_embedding(
+            memory_id=assistant_memory["id"],
+            embedding_config_id=embedding_config["id"],
+            dimensions=3,
+            vector=[1.0, 0.0, 0.0],
+        )
+        store.create_memory_embedding(
+            memory_id=coach_memory["id"],
+            embedding_config_id=embedding_config["id"],
+            dimensions=3,
+            vector=[1.0, 0.0, 0.0],
+        )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    assistant_status, assistant_payload = invoke_compile_context(
+        {
+            "user_id": str(user_id),
+            "thread_id": str(assistant_thread["id"]),
+            "max_memories": 10,
+            "semantic": {
+                "embedding_config_id": str(embedding_config["id"]),
+                "query_vector": [1.0, 0.0, 0.0],
+                "limit": 10,
+            },
+        }
+    )
+    coach_status, coach_payload = invoke_compile_context(
+        {
+            "user_id": str(user_id),
+            "thread_id": str(coach_thread["id"]),
+            "max_memories": 10,
+            "semantic": {
+                "embedding_config_id": str(embedding_config["id"]),
+                "query_vector": [1.0, 0.0, 0.0],
+                "limit": 10,
+            },
+        }
+    )
+
+    assert assistant_status == 200
+    assert [memory["memory_key"] for memory in assistant_payload["context_pack"]["memories"]] == [
+        "user.preference.semantic.assistant_scope"
+    ]
+
+    assert coach_status == 200
+    assert [memory["memory_key"] for memory in coach_payload["context_pack"]["memories"]] == [
+        "user.preference.semantic.coach_scope"
+    ]

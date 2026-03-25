@@ -5,6 +5,7 @@ from uuid import UUID
 
 from alicebot_api.contracts import (
     AdmissionDecisionOutput,
+    DEFAULT_AGENT_PROFILE_ID,
     DEFAULT_MEMORY_CONFIRMATION_STATUS,
     DEFAULT_MEMORY_TYPE,
     DEFAULT_MEMORY_REVIEW_LIMIT,
@@ -53,6 +54,7 @@ from alicebot_api.contracts import (
 )
 from alicebot_api.store import (
     ContinuityStore,
+    EventRow,
     JsonObject,
     LabelCountRow,
     MemoryReviewLabelRow,
@@ -569,7 +571,56 @@ def _dedupe_source_event_ids(source_event_ids: tuple[UUID, ...]) -> tuple[UUID, 
     return tuple(deduped)
 
 
-def _validate_source_events(store: ContinuityStore, source_event_ids: tuple[UUID, ...]) -> list[str]:
+def _resolve_agent_profile_id_from_source_events(
+    store: ContinuityStore,
+    *,
+    source_events: list[EventRow],
+) -> str:
+    thread_ids = sorted({event["thread_id"] for event in source_events}, key=str)
+    if not thread_ids:
+        return DEFAULT_AGENT_PROFILE_ID
+
+    resolved_profile_ids: set[str] = set()
+    for thread_id in thread_ids:
+        thread = store.get_thread_optional(thread_id)
+        if thread is None:
+            raise MemoryAdmissionValidationError(
+                f"source_event thread {thread_id} was not found"
+            )
+        resolved_profile_ids.add(str(thread.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID)))
+
+    if len(resolved_profile_ids) > 1:
+        raise MemoryAdmissionValidationError(
+            "source_event_ids must all belong to threads with the same agent_profile_id"
+        )
+    return next(iter(resolved_profile_ids))
+
+
+def _resolve_memory_agent_profile_id(
+    store: ContinuityStore,
+    *,
+    candidate: MemoryCandidateInput,
+    derived_agent_profile_id: str,
+) -> str:
+    candidate_profile_id = candidate.agent_profile_id
+    resolved_profile_id = (
+        derived_agent_profile_id if candidate_profile_id is None else candidate_profile_id
+    )
+    if store.get_agent_profile_optional(resolved_profile_id) is None:
+        raise MemoryAdmissionValidationError(
+            f"agent_profile_id must reference an existing profile: {resolved_profile_id}"
+        )
+    if candidate_profile_id is not None and candidate_profile_id != derived_agent_profile_id:
+        raise MemoryAdmissionValidationError(
+            "agent_profile_id must match the profile resolved from source_event_ids"
+        )
+    return resolved_profile_id
+
+
+def _validate_source_events(
+    store: ContinuityStore,
+    source_event_ids: tuple[UUID, ...],
+) -> tuple[list[str], str]:
     normalized_event_ids = _dedupe_source_event_ids(source_event_ids)
     if not normalized_event_ids:
         raise MemoryAdmissionValidationError(
@@ -587,11 +638,21 @@ def _validate_source_events(store: ContinuityStore, source_event_ids: tuple[UUID
             "source_event_ids must all reference existing events owned by the user: "
             + ", ".join(missing_event_ids)
         )
-    return [str(source_event_id) for source_event_id in normalized_event_ids]
+    derived_profile_id = _resolve_agent_profile_id_from_source_events(
+        store,
+        source_events=source_events,
+    )
+    return [str(source_event_id) for source_event_id in normalized_event_ids], derived_profile_id
 
 
-def _candidate_payload(candidate: MemoryCandidateInput) -> JsonObject:
-    return candidate.as_payload()
+def _candidate_payload(
+    candidate: MemoryCandidateInput,
+    *,
+    resolved_agent_profile_id: str,
+) -> JsonObject:
+    payload = candidate.as_payload()
+    payload["agent_profile_id"] = resolved_agent_profile_id
+    return payload
 
 
 def _create_open_loop_for_memory(
@@ -702,8 +763,19 @@ def admit_memory_candidate(
 ) -> AdmissionDecisionOutput:
     del user_id
 
-    source_event_ids = _validate_source_events(store, candidate.source_event_ids)
-    existing_memory = store.get_memory_by_key(candidate.memory_key)
+    source_event_ids, derived_agent_profile_id = _validate_source_events(
+        store,
+        candidate.source_event_ids,
+    )
+    agent_profile_id = _resolve_memory_agent_profile_id(
+        store,
+        candidate=candidate,
+        derived_agent_profile_id=derived_agent_profile_id,
+    )
+    existing_memory = store.get_memory_by_key_and_profile(
+        memory_key=candidate.memory_key,
+        agent_profile_id=agent_profile_id,
+    )
     resolved_metadata = _resolve_memory_typed_metadata(
         existing_memory=existing_memory,
         candidate=candidate,
@@ -745,7 +817,10 @@ def admit_memory_candidate(
             previous_value=existing_memory["value"],
             new_value=None,
             source_event_ids=source_event_ids,
-            candidate=_candidate_payload(candidate),
+            candidate=_candidate_payload(
+                candidate,
+                resolved_agent_profile_id=agent_profile_id,
+            ),
         )
         return AdmissionDecisionOutput(
             action="DELETE",
@@ -775,6 +850,7 @@ def admit_memory_candidate(
             valid_from=resolved_metadata["valid_from"],
             valid_to=resolved_metadata["valid_to"],
             last_confirmed_at=resolved_metadata["last_confirmed_at"],
+            agent_profile_id=agent_profile_id,
         )
         revision = store.append_memory_revision(
             memory_id=memory["id"],
@@ -783,7 +859,10 @@ def admit_memory_candidate(
             previous_value=None,
             new_value=candidate.value,
             source_event_ids=source_event_ids,
-            candidate=_candidate_payload(candidate),
+            candidate=_candidate_payload(
+                candidate,
+                resolved_agent_profile_id=agent_profile_id,
+            ),
         )
         return AdmissionDecisionOutput(
             action="ADD",
@@ -843,7 +922,10 @@ def admit_memory_candidate(
         previous_value=existing_memory["value"],
         new_value=candidate.value,
         source_event_ids=source_event_ids,
-        candidate=_candidate_payload(candidate),
+        candidate=_candidate_payload(
+            candidate,
+            resolved_agent_profile_id=agent_profile_id,
+        ),
     )
     return AdmissionDecisionOutput(
         action="UPDATE",

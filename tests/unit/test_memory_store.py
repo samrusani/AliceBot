@@ -137,6 +137,7 @@ def test_memory_methods_use_expected_queries_and_payload_serialization() -> None
     assert create_params[8] is None
     assert create_params[9] is None
     assert create_params[10] is None
+    assert create_params[11] == "assistant_default"
 
     update_query, update_params = cursor.executed[1]
     assert "UPDATE memories" in update_query
@@ -184,6 +185,7 @@ def test_memory_methods_use_expected_queries_and_payload_serialization() -> None
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -271,6 +273,7 @@ def test_memory_review_read_methods_use_explicit_order_filter_and_limit() -> Non
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
@@ -303,6 +306,7 @@ def test_memory_review_read_methods_use_explicit_order_filter_and_limit() -> Non
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,
