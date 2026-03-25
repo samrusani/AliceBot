@@ -1,78 +1,75 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Phase 3 Sprint 7: Profile-Scoped Model Routing.
-
-Route `/v0/responses` model selection by active thread profile runtime config (`model_provider`, `model_name`) with deterministic fallback to global `Settings.model_provider` / `Settings.model_name` when profile runtime config is absent.
+Implement Phase 3 Sprint 8 execution-budget profile scope isolation by adding optional `agent_profile_id` scope to budgets, updating create/list/get contracts, and enforcing profile-aware budget matching/counting with deterministic global fallback.
 
 ## Completed Work
-- Added migration `20260325_0036_agent_profile_model_runtime`:
-- added nullable `agent_profiles.model_provider` and `agent_profiles.model_name`.
-- added bounded-provider/runtime-pairing constraints:
-- `agent_profiles_model_provider_check`
-- `agent_profiles_model_runtime_pairing_check`
-- seeded deterministic runtime config for shipped profiles:
-- `assistant_default` -> `openai_responses` / `gpt-5-mini`
-- `coach_default` -> `openai_responses` / `gpt-5`
-- Updated profile registry/store contract wiring:
-- `AgentProfileRow` now includes `model_provider`, `model_name`.
-- agent profile list/get SQL now selects runtime config columns.
-- `AgentProfileRecord` now includes additive runtime config fields.
-- profile registry serialization now exposes runtime fields in `/v0/agent-profiles` responses.
-- Implemented response model routing:
-- added `resolve_thread_model_runtime(...)` in `response_generation.py`.
-- `/v0/responses` now resolves active thread profile, uses profile runtime model/provider when both are present.
-- deterministic fallback to global settings when profile runtime is missing/incomplete or profile lookup is absent.
-- preserved existing response envelope/trace structure and failure semantics.
-- Added/updated sprint verification tests:
-- new migration unit test `test_20260325_0036_agent_profile_model_runtime.py`.
-- added runtime routing/fallback unit tests in `test_response_generation.py`.
-- updated continuity integration expectations for additive agent profile runtime fields.
-- updated responses integration to verify profile-specific model routing and deterministic fallback behavior.
+- Added migration `20260325_0037_execution_budget_agent_profile_scope`:
+  - Added nullable `execution_budgets.agent_profile_id`.
+  - Added FK `execution_budgets_agent_profile_id_fkey -> agent_profiles(id)`.
+  - Replaced selector/match indexing with profile-aware index `execution_budgets_user_profile_match_idx`.
+  - Replaced active uniqueness index to include profile scope via `COALESCE(agent_profile_id, '')` while preserving existing index name `execution_budgets_one_active_scope_idx`.
+  - Added reversible downgrade restoring pre-sprint index/column shape.
+- Wired store schema/query surface:
+  - `ExecutionBudgetRow` now includes `agent_profile_id`.
+  - Execution-budget INSERT/GET/LIST/DEACTIVATE/SUPERSEDE SQL now reads/writes `agent_profile_id`.
+  - `ContinuityStore.create_execution_budget(...)` now accepts `agent_profile_id`.
+- Updated API/contracts:
+  - `ExecutionBudgetCreateInput` now accepts/serializes `agent_profile_id`.
+  - `ExecutionBudgetRecord` now includes additive `agent_profile_id`.
+  - `/v0/execution-budgets` request model now accepts optional `agent_profile_id`.
+- Added create-time validation:
+  - Budget create validates provided `agent_profile_id` exists in profile registry (`store.get_agent_profile_optional`).
+- Implemented profile-aware budget evaluation behavior:
+  - Resolves active thread profile from `request.thread_id`.
+  - Matching precedence: profile-scoped active budgets first, then global (`agent_profile_id IS NULL`).
+  - Preserved selector ordering within each scope: `specificity_desc`, `created_at_asc`, `id_asc`.
+  - Completed-execution counting isolated to active thread profile scope (including global-fallback decisions) while preserving rolling-window behavior and history order.
+- Updated lifecycle/supersede scope handling:
+  - Supersede active-scope checks and duplicate scope messages now include profile scope.
+  - Replacement budget preserves source `agent_profile_id`.
+- Added/updated sprint-scoped tests:
+  - New migration test file for `0037` upgrade/downgrade/index/FK contracts.
+  - Updated unit store/main/execution-budget tests for additive `agent_profile_id` contract and profile-aware behavior.
+  - Updated integration execution-budget API tests for profile scope uniqueness/validation.
+  - Added integration proxy execution test for profile-first matching and global fallback isolation.
 
 ## Incomplete Work
 - None within sprint scope.
 
 ## Files Changed
-- `apps/api/alembic/versions/20260325_0036_agent_profile_model_runtime.py`
 - `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/main.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/phase3_profiles.py`
-- `apps/api/src/alicebot_api/response_generation.py`
-- `tests/unit/test_20260325_0036_agent_profile_model_runtime.py`
-- `tests/unit/test_response_generation.py`
-- `tests/integration/test_continuity_api.py`
-- `tests/integration/test_responses_api.py`
+- `apps/api/src/alicebot_api/execution_budgets.py`
+- `apps/api/alembic/versions/20260325_0037_execution_budget_agent_profile_scope.py`
+- `tests/unit/test_20260325_0037_execution_budget_agent_profile_scope.py`
+- `tests/unit/test_execution_budgets.py`
+- `tests/unit/test_execution_budgets_main.py`
+- `tests/unit/test_execution_budget_store.py`
+- `tests/integration/test_execution_budgets_api.py`
+- `tests/integration/test_proxy_execution_api.py`
 - `BUILD_REPORT.md`
-- `REVIEW_REPORT.md`
 
 ## Tests Run
-1. `./.venv/bin/python -m pytest tests/unit/test_20260325_0036_agent_profile_model_runtime.py -q`
-- PASS (`4 passed in 0.22s`)
+- `./.venv/bin/python -m pytest tests/unit/test_20260325_0037_execution_budget_agent_profile_scope.py -q`
+  - PASS (`4 passed`)
+- `./.venv/bin/python -m pytest tests/unit/test_execution_budgets.py tests/unit/test_execution_budgets_main.py tests/unit/test_execution_budget_store.py -q`
+  - PASS (`26 passed`)
+- `./.venv/bin/python -m pytest tests/integration/test_execution_budgets_api.py tests/integration/test_proxy_execution_api.py -q`
+  - PASS (`24 passed`)
+- `python3 scripts/run_phase2_validation_matrix.py`
+  - PASS (`Phase 2 validation matrix result: PASS`)
+  - Note: one intermediate run had a transient web-test failure; immediate rerun passed with no code changes.
 
-2. `./.venv/bin/python -m pytest tests/unit/test_response_generation.py -q`
-- PASS (`6 passed in 0.24s`)
+## Blockers / Issues
+- No implementation blockers.
+- Environment note: integration and validation commands required local DB access outside sandbox constraints; commands were rerun with escalated permissions to complete verification.
 
-3. `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py -q`
-- PASS (`13 passed in 4.64s`)
-
-4. `python3 scripts/run_phase2_validation_matrix.py`
-- PASS
-- `control_doc_truth: PASS`
-- `gate_contract_tests: PASS`
-- `readiness_gates: PASS`
-- `backend_integration_matrix: PASS`
-- `web_validation_matrix: PASS`
-
-## Blockers/Issues
-- Sandbox denied localhost PostgreSQL access for DB-backed integration and matrix commands.
-- Resolved by rerunning required DB-backed commands with elevated permissions.
-
-## Explicit Deferred Scope
-- No profile CRUD endpoint work.
-- No new provider integrations or credential/orchestration expansion.
-- No policy/tooling redesign beyond routing to existing provider surface.
-- No web UI changes.
+## Deferred Scope (Explicit)
+- No provider/connector surface expansion.
+- No orchestration/worker runtime redesign.
+- No profile CRUD endpoint expansion.
 
 ## Recommended Next Step
-1. Control Tower review focused on deterministic profile runtime routing/fallback behavior and merge readiness.
+Open integration review (Control Tower Task 3) focused on deterministic profile-scope matching/counting and contract backward compatibility.

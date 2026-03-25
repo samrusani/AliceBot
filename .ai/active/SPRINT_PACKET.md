@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 3 Sprint 7: Profile-Scoped Model Routing
+Phase 3 Sprint 8: Profile-Scoped Execution Budget Isolation
 
 ## Sprint Type
 
@@ -10,24 +10,24 @@ feature
 
 ## Sprint Reason
 
-Sprint 6 established profile-scoped policy evaluation and routing. The next non-redundant gap is runtime model selection: response generation still uses one global model configuration from environment settings instead of active profile-specific routing.
+Sprint 7 completed profile-scoped response model routing. The next non-redundant gap is governed execution budget isolation: execution budgets are still user-global, so one profile can exhaust limits that should be isolated to another profile.
 
 ## Sprint Intent
 
-Route `/v0/responses` model selection by active thread profile using deterministic profile runtime configuration, while preserving safe fallback to current global settings.
+Scope execution-budget matching and counting to the active thread profile, with deterministic fallback to global budgets when no profile-specific budget matches.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase3-sprint7-profile-model-routing`
+- Branch Name: `codex/phase3-sprint8-profile-budget-scope`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It is the next non-redundant seam after identity, memory isolation, and policy isolation.
-- It closes the remaining shared-runtime gap where all profiles currently invoke the same model config.
-- It enables true separate-agent runtime posture without introducing orchestration breadth.
+- It is the next non-redundant seam after identity, memory isolation, policy isolation, and model isolation.
+- It closes a remaining shared-governance gap where execution budgets can still cross-contaminate profiles.
+- It advances separate-agent runtime behavior without widening orchestration or connector scope.
 
 ## Redundancy Guard
 
@@ -37,136 +37,145 @@ Route `/v0/responses` model selection by active thread profile using determinist
 - Already shipped in Sprint 4: durable profile registry + thread FK.
 - Already shipped in Sprint 5: profile-scoped memory/context isolation.
 - Already shipped in Sprint 6: profile-scoped policy evaluation/routing.
-- Missing and required now: profile-scoped model/provider selection at response invocation.
+- Already shipped in Sprint 7: profile-scoped model/provider routing for `/v0/responses`.
+- Missing and required now: profile-scoped execution budget matching + counted execution history isolation.
 
 ## Design Truth
 
-- Profile records can carry runtime model config (`model_provider`, `model_name`).
-- Response generation resolves runtime model config from active thread profile.
-- Fallback remains deterministic:
-  - if profile runtime config is absent, use existing global settings.
-- Keep provider surface bounded; no new external connector/provider wiring in this sprint.
+- Execution budgets can optionally target one `agent_profile_id` while preserving global budget support via nullable scope.
+- Budget match precedence remains deterministic:
+  - first match active budgets scoped to the thread profile
+  - then match active global budgets (`agent_profile_id IS NULL`)
+  - within each scope, preserve existing selector specificity and stable ordering
+- Completed-execution counting for budget decisions must only include executions attributable to the same profile scope as the matched budget.
+- Keep tool/provider/orchestration surface bounded; this sprint is budget-scope isolation only.
 
 ## Exact Surfaces In Scope
 
-- profile runtime config schema + registry read wiring
-- response generation model selection by active profile
-- additive API/profile contracts exposing runtime config where needed
-- unit/integration tests for routing + fallback determinism
+- execution-budget schema/profile scope wiring
+- execution-budget API contracts and lifecycle responses with additive profile scope field
+- budget evaluation matching + counting with thread-profile-aware isolation and global fallback
+- unit/integration tests proving profile isolation and deterministic fallback behavior
 
 ## Exact Files In Scope
 
 - [store.py](apps/api/src/alicebot_api/store.py)
 - [main.py](apps/api/src/alicebot_api/main.py)
 - [contracts.py](apps/api/src/alicebot_api/contracts.py)
-- [phase3_profiles.py](apps/api/src/alicebot_api/phase3_profiles.py)
-- [response_generation.py](apps/api/src/alicebot_api/response_generation.py)
-- [20260325_0036_agent_profile_model_runtime.py](apps/api/alembic/versions/20260325_0036_agent_profile_model_runtime.py)
-- [test_20260325_0036_agent_profile_model_runtime.py](tests/unit/test_20260325_0036_agent_profile_model_runtime.py)
-- [test_response_generation.py](tests/unit/test_response_generation.py)
-- [test_continuity_api.py](tests/integration/test_continuity_api.py)
-- [test_responses_api.py](tests/integration/test_responses_api.py)
+- [execution_budgets.py](apps/api/src/alicebot_api/execution_budgets.py)
+- [proxy_execution.py](apps/api/src/alicebot_api/proxy_execution.py)
+- [20260325_0037_execution_budget_agent_profile_scope.py](apps/api/alembic/versions/20260325_0037_execution_budget_agent_profile_scope.py)
+- [test_20260325_0037_execution_budget_agent_profile_scope.py](tests/unit/test_20260325_0037_execution_budget_agent_profile_scope.py)
+- [test_execution_budgets.py](tests/unit/test_execution_budgets.py)
+- [test_execution_budgets_main.py](tests/unit/test_execution_budgets_main.py)
+- [test_execution_budget_store.py](tests/unit/test_execution_budget_store.py)
+- [test_execution_budgets_api.py](tests/integration/test_execution_budgets_api.py)
+- [test_proxy_execution_api.py](tests/integration/test_proxy_execution_api.py)
 - [BUILD_REPORT.md](BUILD_REPORT.md)
 - [REVIEW_REPORT.md](REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](.ai/active/SPRINT_PACKET.md)
 
 ## In Scope
 
-- Add runtime model columns to `agent_profiles` (nullable for backward compatibility):
-  - `model_provider`
-  - `model_name`
-- Seed deterministic runtime config for shipped profiles:
-  - `assistant_default`
-  - `coach_default`
-- Update profile registry read contracts to expose runtime config fields.
-- Update `/v0/responses` path to:
-  - resolve active thread profile
-  - select provider/model from profile runtime config when present
-  - fallback to `Settings.model_provider` / `Settings.model_name` when absent
-- Preserve existing error behavior, event shape, and trace contracts.
-- Add migration tests for schema + seed/runtime invariants.
-- Add unit tests for runtime selection/fallback logic.
-- Add integration tests proving:
-  - profile-specific model selection is used in response invocation
-  - fallback to global settings works deterministically when profile runtime is unset
-  - profile metadata and backward-compatible response envelope remain stable
+- Add nullable `agent_profile_id` to `execution_budgets` with FK to `agent_profiles`.
+- Update active-scope uniqueness/index strategy to include profile scope:
+  - one active budget per `(user_id, agent_profile_id, tool_key, domain_hint)` selector scope
+  - preserve deterministic ordering/index contracts
+- Update execution-budget create/list/get/lifecycle contracts to expose additive `agent_profile_id`.
+- Validate `agent_profile_id` on create when provided (must exist in registry).
+- Update budget evaluation to:
+  - resolve active thread profile from request thread
+  - match profile-scoped budgets first, then global budgets
+  - keep existing selector specificity ordering within each scope
+  - count only completed executions attributable to the matched profile scope
+- Preserve existing proxy execution event and trace contract shapes (additive fields only where necessary).
+- Add migration tests for schema/index invariants and rollback.
+- Add unit/integration coverage for profile-scoped budget matching, fallback, and blocked/allow decisions.
 
 ## Out of Scope
 
 - profile CRUD endpoints
-- introducing new provider integrations or secret handling changes
-- policy/tooling redesign
+- policy engine redesign beyond budget profile scope filtering
+- introducing new providers, connectors, or secret handling changes
+- orchestration/worker runtime changes
 - web UI changes
-- connector/auth/orchestration expansion
+- connector/auth expansion
 
 ## Required Deliverables
 
-- profile runtime model migration and registry wiring
-- response-generation profile model routing with deterministic fallback
-- passing unit/integration evidence for profile-scoped model selection
+- execution-budget profile-scope migration and store wiring
+- budget create/list/get serialization with additive profile scope fields
+- profile-aware budget evaluation and deterministic global fallback
+- passing unit/integration evidence for profile-scoped budget decisions
 - sprint build/review reports scoped to this sprint only
 
 ## Acceptance Criteria
 
-- Agent profiles persist deterministic runtime model config fields.
-- `/v0/responses` uses profile runtime model config for the active thread profile.
-- If profile runtime model config is absent, fallback to global settings remains deterministic.
-- Existing `/v0/responses` response envelope remains backward-compatible.
-- `./.venv/bin/python -m pytest tests/unit/test_20260325_0036_agent_profile_model_runtime.py -q` passes.
-- `./.venv/bin/python -m pytest tests/unit/test_response_generation.py -q` passes.
-- `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py -q` passes.
+- `execution_budgets` persist optional `agent_profile_id` with FK integrity.
+- Budget create/list/get payloads include additive `agent_profile_id` and remain backward-compatible.
+- Budget evaluation for proxy execution is profile-isolated:
+  - profile-scoped budgets apply to matching thread profiles
+  - profile-scoped budgets do not throttle non-matching profiles
+  - deterministic fallback to global budgets works when no profile-scoped match exists
+- Existing proxy execution result/event/trace contracts remain backward-compatible.
+- `./.venv/bin/python -m pytest tests/unit/test_20260325_0037_execution_budget_agent_profile_scope.py -q` passes.
+- `./.venv/bin/python -m pytest tests/unit/test_execution_budgets.py tests/unit/test_execution_budgets_main.py tests/unit/test_execution_budget_store.py -q` passes.
+- `./.venv/bin/python -m pytest tests/integration/test_execution_budgets_api.py tests/integration/test_proxy_execution_api.py -q` passes.
 - `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
-- No new-provider/orchestration scope expansion enters this sprint.
+- No provider/connector/orchestration scope expansion enters this sprint.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
-- preserve existing response/trace payload contracts (additive fields only where necessary)
+- preserve existing response/event/trace payload contracts (additive fields only where necessary)
 - keep migration reversible and forward-safe
-- keep profile list ordering deterministic (`id_asc`)
+- keep deterministic ordering contracts (`created_at_asc`, `id_asc`, `specificity_desc`)
 
 ## Control Tower Task Cards
 
-### Task 1: Profile Runtime Migration + Store Wiring
+### Task 1: Budget Profile-Scope Migration + Store Wiring
 Owner: tooling operative  
 Write scope:
-- `apps/api/alembic/versions/20260325_0036_agent_profile_model_runtime.py`
+- `apps/api/alembic/versions/20260325_0037_execution_budget_agent_profile_scope.py`
 - `apps/api/src/alicebot_api/store.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/phase3_profiles.py`
 - `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/response_generation.py`
+- `apps/api/src/alicebot_api/execution_budgets.py`
+- `apps/api/src/alicebot_api/proxy_execution.py`
 
 ### Task 2: Verification
 Owner: tooling operative  
 Write scope:
-- `tests/unit/test_20260325_0036_agent_profile_model_runtime.py`
-- `tests/unit/test_response_generation.py`
-- `tests/integration/test_continuity_api.py`
-- `tests/integration/test_responses_api.py`
+- `tests/unit/test_20260325_0037_execution_budget_agent_profile_scope.py`
+- `tests/unit/test_execution_budgets.py`
+- `tests/unit/test_execution_budgets_main.py`
+- `tests/unit/test_execution_budget_store.py`
+- `tests/integration/test_execution_budgets_api.py`
+- `tests/integration/test_proxy_execution_api.py`
 
 ### Task 3: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify sprint stays profile-model-routing scoped
-- verify no new-provider/orchestration expansion
+- verify sprint stays execution-budget-profile-scope scoped
+- verify profile isolation and global fallback are deterministic
+- verify no provider/connector/orchestration expansion
 - verify validation matrix remains green
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact profile-runtime migration and response-model-routing deltas
+- exact execution-budget profile-scope migration and routing/evaluation deltas
 - exact verification command outcomes
-- explicit deferred scope (new providers, orchestration, profile CRUD)
+- explicit deferred scope (providers/connectors, orchestration, profile CRUD)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint stayed bounded to profile model routing
-- profile runtime model selection and fallback behavior are deterministic and correct
-- API behavior remains backward-compatible
+- sprint stayed bounded to execution-budget profile scope
+- profile-scoped budget matching/counting and global fallback are deterministic and correct
+- API and proxy-execution behavior remain backward-compatible
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when response model selection is profile-scoped and deterministic for the active thread profile, with migration/test evidence and all validation gates green.
+This sprint is complete when execution-budget decisions are profile-scoped and deterministic for the active thread profile, with migration/test evidence and all validation gates green.

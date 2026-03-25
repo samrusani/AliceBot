@@ -1423,6 +1423,7 @@ class ExecutionBudgetCreateInput:
     tool_key: str | None = None
     domain_hint: str | None = None
     rolling_window_seconds: int | None = None
+    agent_profile_id: str | None = None
 
     def as_payload(self) -> JsonObject:
         payload: JsonObject = {
@@ -1431,6 +1432,7 @@ class ExecutionBudgetCreateInput:
         payload["tool_key"] = self.tool_key
         payload["domain_hint"] = self.domain_hint
         payload["rolling_window_seconds"] = self.rolling_window_seconds
+        payload["agent_profile_id"] = self.agent_profile_id
         return payload
 
 
@@ -2946,6 +2948,7 @@ class ApprovalResolutionResponse(TypedDict):
 
 class ExecutionBudgetRecord(TypedDict):
     id: str
+    agent_profile_id: str | None
     tool_key: str | None
     domain_hint: str | None
     max_completed_executions: int
