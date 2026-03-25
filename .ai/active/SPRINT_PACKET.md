@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 3 Sprint 6: Profile-Scoped Policy Evaluation and Routing
+Phase 3 Sprint 7: Profile-Scoped Model Routing
 
 ## Sprint Type
 
@@ -10,24 +10,24 @@ feature
 
 ## Sprint Reason
 
-Sprint 5 establishes profile-scoped memory and context isolation. The next non-redundant gap is governance: policy evaluation and routing still operate on user-wide active policy sets without profile boundaries.
+Sprint 6 established profile-scoped policy evaluation and routing. The next non-redundant gap is runtime model selection: response generation still uses one global model configuration from environment settings instead of active profile-specific routing.
 
 ## Sprint Intent
 
-Scope policy evaluation to the active thread profile so governed routing decisions are isolated per agent profile while preserving backward-compatible global-policy behavior.
+Route `/v0/responses` model selection by active thread profile using deterministic profile runtime configuration, while preserving safe fallback to current global settings.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase3-sprint6-profile-policy-routing-scope`
+- Branch Name: `codex/phase3-sprint7-profile-model-routing`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It is the next non-redundant seam after profile identity, prompting, registry, and memory isolation.
-- It prevents cross-profile policy bleed in approval/routing decisions.
-- It creates a clean foundation for later per-profile provider/tool routing.
+- It is the next non-redundant seam after identity, memory isolation, and policy isolation.
+- It closes the remaining shared-runtime gap where all profiles currently invoke the same model config.
+- It enables true separate-agent runtime posture without introducing orchestration breadth.
 
 ## Redundancy Guard
 
@@ -36,37 +36,35 @@ Scope policy evaluation to the active thread profile so governed routing decisio
 - Already shipped in Sprint 3: profile-aware response prompting.
 - Already shipped in Sprint 4: durable profile registry + thread FK.
 - Already shipped in Sprint 5: profile-scoped memory/context isolation.
-- Missing and required now: profile-scoped policy evaluation inputs and deterministic matching.
+- Already shipped in Sprint 6: profile-scoped policy evaluation/routing.
+- Missing and required now: profile-scoped model/provider selection at response invocation.
 
 ## Design Truth
 
-- Policies may be either profile-scoped or global.
-- Global policy behavior remains backward-compatible via `agent_profile_id = NULL`.
-- Policy evaluation for a thread must load only:
-  - global active policies
-  - active policies matching that thread’s `agent_profile_id`
-- Ordering remains deterministic and explicit.
+- Profile records can carry runtime model config (`model_provider`, `model_name`).
+- Response generation resolves runtime model config from active thread profile.
+- Fallback remains deterministic:
+  - if profile runtime config is absent, use existing global settings.
+- Keep provider surface bounded; no new external connector/provider wiring in this sprint.
 
 ## Exact Surfaces In Scope
 
-- policy schema/profile attribution migration
-- store-layer policy create/list/evaluate reads with profile scope
-- policy evaluation/routing context filtered by thread profile
-- unit/integration tests for scoped matching and backward-compatible global policies
+- profile runtime config schema + registry read wiring
+- response generation model selection by active profile
+- additive API/profile contracts exposing runtime config where needed
+- unit/integration tests for routing + fallback determinism
 
 ## Exact Files In Scope
 
 - [store.py](apps/api/src/alicebot_api/store.py)
 - [main.py](apps/api/src/alicebot_api/main.py)
 - [contracts.py](apps/api/src/alicebot_api/contracts.py)
-- [policy.py](apps/api/src/alicebot_api/policy.py)
-- [tools.py](apps/api/src/alicebot_api/tools.py)
-- [20260325_0035_policy_agent_profile_scope.py](apps/api/alembic/versions/20260325_0035_policy_agent_profile_scope.py)
-- [test_20260325_0035_policy_agent_profile_scope.py](tests/unit/test_20260325_0035_policy_agent_profile_scope.py)
-- [test_policy.py](tests/unit/test_policy.py)
-- [test_policy_store.py](tests/unit/test_policy_store.py)
-- [test_policy_api.py](tests/integration/test_policy_api.py)
-- [test_approval_api.py](tests/integration/test_approval_api.py)
+- [phase3_profiles.py](apps/api/src/alicebot_api/phase3_profiles.py)
+- [response_generation.py](apps/api/src/alicebot_api/response_generation.py)
+- [20260325_0036_agent_profile_model_runtime.py](apps/api/alembic/versions/20260325_0036_agent_profile_model_runtime.py)
+- [test_20260325_0036_agent_profile_model_runtime.py](tests/unit/test_20260325_0036_agent_profile_model_runtime.py)
+- [test_response_generation.py](tests/unit/test_response_generation.py)
+- [test_continuity_api.py](tests/integration/test_continuity_api.py)
 - [test_responses_api.py](tests/integration/test_responses_api.py)
 - [BUILD_REPORT.md](BUILD_REPORT.md)
 - [REVIEW_REPORT.md](REVIEW_REPORT.md)
@@ -74,101 +72,101 @@ Scope policy evaluation to the active thread profile so governed routing decisio
 
 ## In Scope
 
-- Add `agent_profile_id` to `policies`:
-  - nullable (NULL means global policy)
-  - FK to `agent_profiles(id)` when non-null
-  - deterministic evaluation index including priority/order fields
-- Update policy create path to accept optional `agent_profile_id`.
-- Update policy serialization/read paths to include `agent_profile_id`.
-- Update policy evaluation context loading to filter by active thread profile domain:
-  - include global policies
-  - include policies scoped to thread profile
-  - exclude policies scoped to other profiles
-- Keep decision/effect semantics unchanged once a policy is selected.
-- Add migration tests for FK/nullability/order invariants.
+- Add runtime model columns to `agent_profiles` (nullable for backward compatibility):
+  - `model_provider`
+  - `model_name`
+- Seed deterministic runtime config for shipped profiles:
+  - `assistant_default`
+  - `coach_default`
+- Update profile registry read contracts to expose runtime config fields.
+- Update `/v0/responses` path to:
+  - resolve active thread profile
+  - select provider/model from profile runtime config when present
+  - fallback to `Settings.model_provider` / `Settings.model_name` when absent
+- Preserve existing error behavior, event shape, and trace contracts.
+- Add migration tests for schema + seed/runtime invariants.
+- Add unit tests for runtime selection/fallback logic.
 - Add integration tests proving:
-  - profile-mismatched policy rows are excluded from evaluation
-  - profile-matched and global policies are considered deterministically
-  - approval/routing outcomes follow scoped policy sets
+  - profile-specific model selection is used in response invocation
+  - fallback to global settings works deterministically when profile runtime is unset
+  - profile metadata and backward-compatible response envelope remain stable
 
 ## Out of Scope
 
 - profile CRUD endpoints
-- per-profile provider/model routing
-- tool allowlist profile scoping beyond policy layer
+- introducing new provider integrations or secret handling changes
+- policy/tooling redesign
 - web UI changes
 - connector/auth/orchestration expansion
 
 ## Required Deliverables
 
-- policy profile-scope migration and runtime wiring
-- scoped policy evaluation evidence for approval/routing flows
-- passing unit/integration evidence for profile-scoped governance behavior
+- profile runtime model migration and registry wiring
+- response-generation profile model routing with deterministic fallback
+- passing unit/integration evidence for profile-scoped model selection
 - sprint build/review reports scoped to this sprint only
 
 ## Acceptance Criteria
 
-- Policies can be created as global (`agent_profile_id = NULL`) or profile-scoped.
-- Policy evaluation for a thread excludes policies bound to other profiles.
-- Profile-matched policies and global policies evaluate deterministically with stable order.
-- Existing policy effect semantics and response envelopes remain backward-compatible.
-- `./.venv/bin/python -m pytest tests/unit/test_20260325_0035_policy_agent_profile_scope.py -q` passes.
-- `./.venv/bin/python -m pytest tests/unit/test_policy.py tests/unit/test_policy_store.py -q` passes.
-- `./.venv/bin/python -m pytest tests/integration/test_policy_api.py tests/integration/test_approval_api.py -q` passes.
+- Agent profiles persist deterministic runtime model config fields.
+- `/v0/responses` uses profile runtime model config for the active thread profile.
+- If profile runtime model config is absent, fallback to global settings remains deterministic.
+- Existing `/v0/responses` response envelope remains backward-compatible.
+- `./.venv/bin/python -m pytest tests/unit/test_20260325_0036_agent_profile_model_runtime.py -q` passes.
+- `./.venv/bin/python -m pytest tests/unit/test_response_generation.py -q` passes.
+- `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py -q` passes.
 - `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
-- No provider/tool-orchestration scope expansion enters this sprint.
+- No new-provider/orchestration scope expansion enters this sprint.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
-- preserve existing policy/approval API payload contracts (additive fields only)
+- preserve existing response/trace payload contracts (additive fields only where necessary)
 - keep migration reversible and forward-safe
-- keep policy ordering deterministic with current priority/order rules
+- keep profile list ordering deterministic (`id_asc`)
 
 ## Control Tower Task Cards
 
-### Task 1: Policy Scope Migration + Store Wiring
+### Task 1: Profile Runtime Migration + Store Wiring
 Owner: tooling operative  
 Write scope:
-- `apps/api/alembic/versions/20260325_0035_policy_agent_profile_scope.py`
+- `apps/api/alembic/versions/20260325_0036_agent_profile_model_runtime.py`
 - `apps/api/src/alicebot_api/store.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/policy.py`
+- `apps/api/src/alicebot_api/phase3_profiles.py`
 - `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/tools.py`
+- `apps/api/src/alicebot_api/response_generation.py`
 
 ### Task 2: Verification
 Owner: tooling operative  
 Write scope:
-- `tests/unit/test_20260325_0035_policy_agent_profile_scope.py`
-- `tests/unit/test_policy.py`
-- `tests/unit/test_policy_store.py`
-- `tests/integration/test_policy_api.py`
-- `tests/integration/test_approval_api.py`
+- `tests/unit/test_20260325_0036_agent_profile_model_runtime.py`
+- `tests/unit/test_response_generation.py`
+- `tests/integration/test_continuity_api.py`
 - `tests/integration/test_responses_api.py`
 
 ### Task 3: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify sprint stays policy-scope evaluation scoped
-- verify no provider/tool-orchestration expansion
+- verify sprint stays profile-model-routing scoped
+- verify no new-provider/orchestration expansion
 - verify validation matrix remains green
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact policy-profile-scope migration and evaluation deltas
+- exact profile-runtime migration and response-model-routing deltas
 - exact verification command outcomes
-- explicit deferred scope (provider/tool routing/orchestration/profile CRUD)
+- explicit deferred scope (new providers, orchestration, profile CRUD)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint stayed bounded to policy evaluation profile isolation
-- policy scope filtering and deterministic ordering are correct
+- sprint stayed bounded to profile model routing
+- profile runtime model selection and fallback behavior are deterministic and correct
 - API behavior remains backward-compatible
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when policy evaluation and routing decisions are profile-scoped and deterministic for the active thread profile, with migration/test evidence and all validation gates green.
+This sprint is complete when response model selection is profile-scoped and deterministic for the active thread profile, with migration/test evidence and all validation gates green.
