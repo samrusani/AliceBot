@@ -792,6 +792,7 @@ class TransitionTaskStepRequest(BaseModel):
 
 class CreateExecutionBudgetRequest(BaseModel):
     user_id: UUID
+    agent_profile_id: str | None = Field(default=None, min_length=1, max_length=100)
     tool_key: str | None = Field(default=None, min_length=1, max_length=200)
     domain_hint: str | None = Field(default=None, min_length=1, max_length=200)
     max_completed_executions: int = Field(ge=1, le=1000000)
@@ -2588,6 +2589,7 @@ def create_execution_budget(request: CreateExecutionBudgetRequest) -> JSONRespon
                 ContinuityStore(conn),
                 user_id=request.user_id,
                 request=ExecutionBudgetCreateInput(
+                    agent_profile_id=request.agent_profile_id,
                     tool_key=request.tool_key,
                     domain_hint=request.domain_hint,
                     max_completed_executions=request.max_completed_executions,

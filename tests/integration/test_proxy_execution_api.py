@@ -77,6 +77,19 @@ def seed_user(database_url: str, *, email: str) -> dict[str, UUID]:
     }
 
 
+def create_thread(
+    database_url: str,
+    *,
+    user_id: UUID,
+    title: str,
+    agent_profile_id: str,
+) -> UUID:
+    with user_connection(database_url, user_id) as conn:
+        store = ContinuityStore(conn)
+        thread = store.create_thread(title, agent_profile_id)
+    return thread["id"]
+
+
 def create_tool_and_policy(
     database_url: str,
     *,
@@ -136,6 +149,7 @@ def create_execution_budget(
     database_url: str,
     *,
     user_id: UUID,
+    agent_profile_id: str | None = None,
     tool_key: str | None,
     domain_hint: str | None,
     max_completed_executions: int,
@@ -144,6 +158,7 @@ def create_execution_budget(
     with user_connection(database_url, user_id) as conn:
         store = ContinuityStore(conn)
         budget = store.create_execution_budget(
+            agent_profile_id=agent_profile_id,
             tool_key=tool_key,
             domain_hint=domain_hint,
             max_completed_executions=max_completed_executions,
@@ -1300,6 +1315,144 @@ def test_execute_approved_proxy_endpoint_uses_replacement_budget_after_supersess
         "order": ["specificity_desc", "created_at_asc", "id_asc"],
         "history_order": ["executed_at_asc", "id_asc"],
     }
+
+
+def test_execute_approved_proxy_endpoint_applies_profile_scope_before_global_fallback(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
+    coach_thread_id = create_thread(
+        migrated_database_urls["app"],
+        user_id=owner["user_id"],
+        title="Coach profile thread",
+        agent_profile_id="coach_default",
+    )
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    tool_id = create_tool_and_policy(
+        migrated_database_urls["app"],
+        user_id=owner["user_id"],
+        tool_key="proxy.echo",
+    )
+    assistant_budget_id = create_execution_budget(
+        migrated_database_urls["app"],
+        user_id=owner["user_id"],
+        agent_profile_id="assistant_default",
+        tool_key="proxy.echo",
+        domain_hint=None,
+        max_completed_executions=1,
+    )
+    global_budget_id = create_execution_budget(
+        migrated_database_urls["app"],
+        user_id=owner["user_id"],
+        agent_profile_id=None,
+        tool_key="proxy.echo",
+        domain_hint=None,
+        max_completed_executions=1,
+    )
+
+    assistant_first_status, assistant_first_payload = create_pending_approval(
+        user_id=owner["user_id"],
+        thread_id=owner["thread_id"],
+        tool_id=tool_id,
+    )
+    assistant_second_status, assistant_second_payload = create_pending_approval(
+        user_id=owner["user_id"],
+        thread_id=owner["thread_id"],
+        tool_id=tool_id,
+    )
+    coach_first_status, coach_first_payload = create_pending_approval(
+        user_id=owner["user_id"],
+        thread_id=coach_thread_id,
+        tool_id=tool_id,
+    )
+    coach_second_status, coach_second_payload = create_pending_approval(
+        user_id=owner["user_id"],
+        thread_id=coach_thread_id,
+        tool_id=tool_id,
+    )
+    assert assistant_first_status == 200
+    assert assistant_second_status == 200
+    assert coach_first_status == 200
+    assert coach_second_status == 200
+
+    for approval_payload in (
+        assistant_first_payload,
+        assistant_second_payload,
+        coach_first_payload,
+        coach_second_payload,
+    ):
+        approve_status, _ = invoke_request(
+            "POST",
+            f"/v0/approvals/{approval_payload['approval']['id']}/approve",
+            payload={"user_id": str(owner["user_id"])},
+        )
+        assert approve_status == 200
+
+    assistant_first_execute_status, assistant_first_execute_payload = invoke_request(
+        "POST",
+        f"/v0/approvals/{assistant_first_payload['approval']['id']}/execute",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    coach_first_execute_status, coach_first_execute_payload = invoke_request(
+        "POST",
+        f"/v0/approvals/{coach_first_payload['approval']['id']}/execute",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    coach_second_execute_status, coach_second_execute_payload = invoke_request(
+        "POST",
+        f"/v0/approvals/{coach_second_payload['approval']['id']}/execute",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assistant_second_execute_status, assistant_second_execute_payload = invoke_request(
+        "POST",
+        f"/v0/approvals/{assistant_second_payload['approval']['id']}/execute",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    assert assistant_first_execute_status == 200
+    assert coach_first_execute_status == 200
+    assert coach_second_execute_status == 200
+    assert assistant_second_execute_status == 200
+    assert assistant_first_execute_payload["result"]["status"] == "completed"
+    assert coach_first_execute_payload["result"]["status"] == "completed"
+    assert coach_second_execute_payload["result"]["status"] == "blocked"
+    assert assistant_second_execute_payload["result"]["status"] == "blocked"
+
+    with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        assistant_first_trace_events = store.list_trace_events(
+            UUID(assistant_first_execute_payload["trace"]["trace_id"])
+        )
+        coach_first_trace_events = store.list_trace_events(
+            UUID(coach_first_execute_payload["trace"]["trace_id"])
+        )
+        coach_second_trace_events = store.list_trace_events(
+            UUID(coach_second_execute_payload["trace"]["trace_id"])
+        )
+        assistant_second_trace_events = store.list_trace_events(
+            UUID(assistant_second_execute_payload["trace"]["trace_id"])
+        )
+
+    assert assistant_first_trace_events[2]["payload"]["matched_budget_id"] == str(assistant_budget_id)
+    assert assistant_first_trace_events[2]["payload"]["completed_execution_count"] == 0
+    assert assistant_first_trace_events[2]["payload"]["projected_completed_execution_count"] == 1
+    assert assistant_first_trace_events[2]["payload"]["reason"] == "within_budget"
+
+    assert coach_first_trace_events[2]["payload"]["matched_budget_id"] == str(global_budget_id)
+    assert coach_first_trace_events[2]["payload"]["completed_execution_count"] == 0
+    assert coach_first_trace_events[2]["payload"]["projected_completed_execution_count"] == 1
+    assert coach_first_trace_events[2]["payload"]["reason"] == "within_budget"
+
+    assert coach_second_trace_events[2]["payload"]["matched_budget_id"] == str(global_budget_id)
+    assert coach_second_trace_events[2]["payload"]["completed_execution_count"] == 1
+    assert coach_second_trace_events[2]["payload"]["projected_completed_execution_count"] == 2
+    assert coach_second_trace_events[2]["payload"]["reason"] == "budget_exceeded"
+
+    assert assistant_second_trace_events[2]["payload"]["matched_budget_id"] == str(assistant_budget_id)
+    assert assistant_second_trace_events[2]["payload"]["completed_execution_count"] == 1
+    assert assistant_second_trace_events[2]["payload"]["projected_completed_execution_count"] == 2
+    assert assistant_second_trace_events[2]["payload"]["reason"] == "budget_exceeded"
 
 
 def test_execute_approved_proxy_execution_budget_is_user_scoped(
