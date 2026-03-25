@@ -224,6 +224,7 @@ class ConsentRow(TypedDict):
 class PolicyRow(TypedDict):
     id: UUID
     user_id: UUID
+    agent_profile_id: str | None
     name: str
     action: str
     scope: str
@@ -1624,6 +1625,7 @@ UPDATE_CONSENT_SQL = """
 INSERT_POLICY_SQL = """
                 INSERT INTO policies (
                   user_id,
+                  agent_profile_id,
                   name,
                   action,
                   scope,
@@ -1635,10 +1637,11 @@ INSERT_POLICY_SQL = """
                   created_at,
                   updated_at
                 )
-                VALUES (app.current_user_id(), %s, %s, %s, %s, %s, %s, %s, %s, clock_timestamp(), clock_timestamp())
+                VALUES (app.current_user_id(), %s, %s, %s, %s, %s, %s, %s, %s, %s, clock_timestamp(), clock_timestamp())
                 RETURNING
                   id,
                   user_id,
+                  agent_profile_id,
                   name,
                   action,
                   scope,
@@ -1655,6 +1658,7 @@ GET_POLICY_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   name,
                   action,
                   scope,
@@ -1673,6 +1677,7 @@ LIST_POLICIES_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   name,
                   action,
                   scope,
@@ -1691,6 +1696,7 @@ LIST_ACTIVE_POLICIES_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   name,
                   action,
                   scope,
@@ -1703,6 +1709,27 @@ LIST_ACTIVE_POLICIES_SQL = """
                   updated_at
                 FROM policies
                 WHERE active = TRUE
+                ORDER BY priority ASC, created_at ASC, id ASC
+                """
+
+LIST_ACTIVE_POLICIES_FOR_PROFILE_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  agent_profile_id,
+                  name,
+                  action,
+                  scope,
+                  effect,
+                  priority,
+                  active,
+                  conditions,
+                  required_consents,
+                  created_at,
+                  updated_at
+                FROM policies
+                WHERE active = TRUE
+                  AND (agent_profile_id IS NULL OR agent_profile_id = %s)
                 ORDER BY priority ASC, created_at ASC, id ASC
                 """
 
@@ -3838,6 +3865,7 @@ class ContinuityStore:
     def create_policy(
         self,
         *,
+        agent_profile_id: str | None = None,
         name: str,
         action: str,
         scope: str,
@@ -3851,6 +3879,7 @@ class ContinuityStore:
             "create_policy",
             INSERT_POLICY_SQL,
             (
+                agent_profile_id,
                 name,
                 action,
                 scope,
@@ -3868,8 +3897,10 @@ class ContinuityStore:
     def list_policies(self) -> list[PolicyRow]:
         return self._fetch_all(LIST_POLICIES_SQL)
 
-    def list_active_policies(self) -> list[PolicyRow]:
-        return self._fetch_all(LIST_ACTIVE_POLICIES_SQL)
+    def list_active_policies(self, *, agent_profile_id: str | None = None) -> list[PolicyRow]:
+        if agent_profile_id is None:
+            return self._fetch_all(LIST_ACTIVE_POLICIES_SQL)
+        return self._fetch_all(LIST_ACTIVE_POLICIES_FOR_PROFILE_SQL, (agent_profile_id,))
 
     def create_tool(
         self,

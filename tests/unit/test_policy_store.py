@@ -98,6 +98,7 @@ def test_policy_store_methods_use_expected_queries_and_jsonb_parameters() -> Non
         fetchone_results=[
             {
                 "id": policy_id,
+                "agent_profile_id": "coach_default",
                 "name": "Allow export",
                 "action": "memory.export",
                 "scope": "profile",
@@ -109,6 +110,7 @@ def test_policy_store_methods_use_expected_queries_and_jsonb_parameters() -> Non
             },
             {
                 "id": policy_id,
+                "agent_profile_id": "coach_default",
                 "name": "Allow export",
                 "action": "memory.export",
                 "scope": "profile",
@@ -122,6 +124,7 @@ def test_policy_store_methods_use_expected_queries_and_jsonb_parameters() -> Non
         fetchall_result=[
             {
                 "id": policy_id,
+                "agent_profile_id": "coach_default",
                 "name": "Allow export",
                 "action": "memory.export",
                 "scope": "profile",
@@ -136,6 +139,7 @@ def test_policy_store_methods_use_expected_queries_and_jsonb_parameters() -> Non
     store = ContinuityStore(RecordingConnection(cursor))
 
     created = store.create_policy(
+        agent_profile_id="coach_default",
         name="Allow export",
         action="memory.export",
         scope="profile",
@@ -146,26 +150,28 @@ def test_policy_store_methods_use_expected_queries_and_jsonb_parameters() -> Non
         required_consents=["email_marketing"],
     )
     fetched = store.get_policy_optional(policy_id)
-    listed = store.list_active_policies()
+    listed = store.list_active_policies(agent_profile_id="coach_default")
 
     assert created["id"] == policy_id
+    assert created["agent_profile_id"] == "coach_default"
     assert fetched is not None
     assert listed[0]["id"] == policy_id
 
     create_query, create_params = cursor.executed[0]
     assert "INSERT INTO policies" in create_query
     assert create_params is not None
-    assert create_params[:6] == ("Allow export", "memory.export", "profile", "allow", 10, True)
-    assert isinstance(create_params[6], Jsonb)
-    assert create_params[6].obj == {"channel": "email"}
+    assert create_params[:7] == ("coach_default", "Allow export", "memory.export", "profile", "allow", 10, True)
     assert isinstance(create_params[7], Jsonb)
-    assert create_params[7].obj == ["email_marketing"]
+    assert create_params[7].obj == {"channel": "email"}
+    assert isinstance(create_params[8], Jsonb)
+    assert create_params[8].obj == ["email_marketing"]
 
     assert cursor.executed[1] == (
         """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   name,
                   action,
                   scope,
@@ -181,4 +187,7 @@ def test_policy_store_methods_use_expected_queries_and_jsonb_parameters() -> Non
                 """,
         (policy_id,),
     )
-    assert "WHERE active = TRUE" in cursor.executed[2][0]
+    list_active_query, list_active_params = cursor.executed[2]
+    assert "WHERE active = TRUE" in list_active_query
+    assert "agent_profile_id IS NULL OR agent_profile_id = %s" in list_active_query
+    assert list_active_params == ("coach_default",)
