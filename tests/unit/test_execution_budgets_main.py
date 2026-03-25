@@ -31,6 +31,7 @@ def test_create_execution_budget_endpoint_returns_payload(monkeypatch) -> None:
         return {
             "execution_budget": {
                 "id": "budget-123",
+                "agent_profile_id": "assistant_default",
                 "tool_key": "proxy.echo",
                 "domain_hint": None,
                 "max_completed_executions": 1,
@@ -50,6 +51,7 @@ def test_create_execution_budget_endpoint_returns_payload(monkeypatch) -> None:
     response = main_module.create_execution_budget(
         main_module.CreateExecutionBudgetRequest(
             user_id=user_id,
+            agent_profile_id="assistant_default",
             tool_key="proxy.echo",
             domain_hint=None,
             max_completed_executions=1,
@@ -63,6 +65,7 @@ def test_create_execution_budget_endpoint_returns_payload(monkeypatch) -> None:
     assert captured["current_user_id"] == user_id
     assert captured["store_type"] == "ContinuityStore"
     assert captured["user_id"] == user_id
+    assert captured["request"].agent_profile_id == "assistant_default"
     assert captured["request"].tool_key == "proxy.echo"
     assert captured["request"].rolling_window_seconds == 3600
 
@@ -117,6 +120,7 @@ def test_list_execution_budgets_endpoint_returns_payload(monkeypatch) -> None:
             "items": [
                 {
                     "id": "budget-123",
+                    "agent_profile_id": None,
                     "tool_key": "proxy.echo",
                     "domain_hint": None,
                     "max_completed_executions": 1,
@@ -169,6 +173,7 @@ def test_get_execution_budget_endpoint_returns_payload(monkeypatch) -> None:
         return {
             "execution_budget": {
                 "id": str(execution_budget_id),
+                "agent_profile_id": None,
                 "tool_key": "proxy.echo",
                 "domain_hint": None,
                 "max_completed_executions": 1,
@@ -242,6 +247,7 @@ def test_deactivate_execution_budget_endpoint_returns_payload(monkeypatch) -> No
         return {
             "execution_budget": {
                 "id": str(execution_budget_id),
+                "agent_profile_id": None,
                 "tool_key": "proxy.echo",
                 "domain_hint": None,
                 "max_completed_executions": 1,
@@ -326,6 +332,7 @@ def test_supersede_execution_budget_endpoint_returns_payload(monkeypatch) -> Non
         return {
             "superseded_budget": {
                 "id": str(execution_budget_id),
+                "agent_profile_id": None,
                 "tool_key": "proxy.echo",
                 "domain_hint": None,
                 "max_completed_executions": 1,
@@ -338,6 +345,7 @@ def test_supersede_execution_budget_endpoint_returns_payload(monkeypatch) -> Non
             },
             "replacement_budget": {
                 "id": "budget-456",
+                "agent_profile_id": None,
                 "tool_key": "proxy.echo",
                 "domain_hint": None,
                 "max_completed_executions": 3,

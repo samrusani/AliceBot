@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from alicebot_api.contracts import (
+    DEFAULT_AGENT_PROFILE_ID,
     ExecutionBudgetCreateInput,
     ExecutionBudgetDeactivateInput,
     ExecutionBudgetSupersedeInput,
@@ -51,6 +52,10 @@ class ExecutionBudgetStoreStub:
         self.base_time = datetime(2026, 3, 13, 11, 0, tzinfo=UTC)
         self.user_id = uuid4()
         self.thread_id = uuid4()
+        self.agent_profiles = {DEFAULT_AGENT_PROFILE_ID, "coach_default"}
+        self.thread_profiles: dict[UUID, str] = {
+            self.thread_id: DEFAULT_AGENT_PROFILE_ID,
+        }
         self.budgets: list[dict[str, object]] = []
         self.executions: list[dict[str, object]] = []
         self.traces: list[dict[str, object]] = []
@@ -62,14 +67,31 @@ class ExecutionBudgetStoreStub:
         return self.base_time + timedelta(minutes=len(self.executions))
 
     def get_thread_optional(self, thread_id: UUID) -> dict[str, object] | None:
-        if thread_id != self.thread_id:
+        if thread_id not in self.thread_profiles:
             return None
         return {
-            "id": self.thread_id,
+            "id": thread_id,
             "user_id": self.user_id,
             "title": "Budget lifecycle thread",
+            "agent_profile_id": self.thread_profiles[thread_id],
             "created_at": self.base_time,
             "updated_at": self.base_time,
+        }
+
+    def create_thread(self, *, agent_profile_id: str) -> UUID:
+        thread_id = uuid4()
+        self.thread_profiles[thread_id] = agent_profile_id
+        return thread_id
+
+    def get_agent_profile_optional(self, profile_id: str) -> dict[str, object] | None:
+        if profile_id not in self.agent_profiles:
+            return None
+        return {
+            "id": profile_id,
+            "name": profile_id,
+            "description": "",
+            "model_provider": None,
+            "model_name": None,
         }
 
     def create_trace(
@@ -118,6 +140,7 @@ class ExecutionBudgetStoreStub:
         self,
         *,
         budget_id: UUID | None = None,
+        agent_profile_id: str | None = None,
         tool_key: str | None,
         domain_hint: str | None,
         max_completed_executions: int,
@@ -127,6 +150,7 @@ class ExecutionBudgetStoreStub:
         row = {
             "id": uuid4() if budget_id is None else budget_id,
             "user_id": self.user_id,
+            "agent_profile_id": agent_profile_id,
             "tool_key": tool_key,
             "domain_hint": domain_hint,
             "max_completed_executions": max_completed_executions,
@@ -182,14 +206,16 @@ class ExecutionBudgetStoreStub:
         domain_hint: str | None,
         status: str,
         offset_minutes: int,
+        thread_id: UUID | None = None,
     ) -> None:
+        execution_thread_id = self.thread_id if thread_id is None else thread_id
         tool_id = uuid4()
         self.executions.append(
             {
                 "id": uuid4(),
                 "user_id": self.user_id,
                 "approval_id": uuid4(),
-                "thread_id": self.thread_id,
+                "thread_id": execution_thread_id,
                 "tool_id": tool_id,
                 "trace_id": uuid4(),
                 "request_event_id": None,
@@ -197,7 +223,7 @@ class ExecutionBudgetStoreStub:
                 "status": status,
                 "handler_key": None if status == "blocked" else tool_key,
                 "request": {
-                    "thread_id": str(self.thread_id),
+                    "thread_id": str(execution_thread_id),
                     "tool_id": str(tool_id),
                     "action": "tool.run",
                     "scope": "workspace",
@@ -268,6 +294,53 @@ def test_create_execution_budget_rejects_duplicate_active_scope() -> None:
         )
 
 
+def test_create_execution_budget_allows_same_selector_across_profile_scopes() -> None:
+    store = ExecutionBudgetStoreStub()
+    default_budget = create_execution_budget_record(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ExecutionBudgetCreateInput(
+            agent_profile_id=DEFAULT_AGENT_PROFILE_ID,
+            tool_key="proxy.echo",
+            domain_hint="docs",
+            max_completed_executions=1,
+        ),
+    )
+    global_budget = create_execution_budget_record(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ExecutionBudgetCreateInput(
+            agent_profile_id=None,
+            tool_key="proxy.echo",
+            domain_hint="docs",
+            max_completed_executions=2,
+        ),
+    )
+
+    assert default_budget["execution_budget"]["agent_profile_id"] == DEFAULT_AGENT_PROFILE_ID
+    assert global_budget["execution_budget"]["agent_profile_id"] is None
+    assert len(store.budgets) == 2
+
+
+def test_create_execution_budget_rejects_unknown_agent_profile_id() -> None:
+    store = ExecutionBudgetStoreStub()
+
+    with pytest.raises(
+        ExecutionBudgetValidationError,
+        match="agent_profile_id must reference an existing profile in the registry",
+    ):
+        create_execution_budget_record(
+            store,  # type: ignore[arg-type]
+            user_id=store.user_id,
+            request=ExecutionBudgetCreateInput(
+                agent_profile_id="profile_missing",
+                tool_key="proxy.echo",
+                domain_hint=None,
+                max_completed_executions=1,
+            ),
+        )
+
+
 def test_create_execution_budget_includes_optional_rolling_window_seconds() -> None:
     store = ExecutionBudgetStoreStub()
 
@@ -283,6 +356,7 @@ def test_create_execution_budget_includes_optional_rolling_window_seconds() -> N
     )
 
     assert payload["execution_budget"]["rolling_window_seconds"] == 3600
+    assert payload["execution_budget"]["agent_profile_id"] is None
     assert store.budgets[0]["rolling_window_seconds"] == 3600
 
 
@@ -556,6 +630,88 @@ def test_evaluate_execution_budget_prefers_more_specific_active_match_and_ignore
         "order": ["specificity_desc", "created_at_asc", "id_asc"],
         "history_order": ["executed_at_asc", "id_asc"],
     }
+    assert decision.blocked_result is None
+
+
+def test_evaluate_execution_budget_prefers_profile_scoped_budget_before_global_fallback() -> None:
+    store = ExecutionBudgetStoreStub()
+    global_budget = store.create_execution_budget(
+        agent_profile_id=None,
+        tool_key="proxy.echo",
+        domain_hint=None,
+        max_completed_executions=1,
+    )
+    profile_budget = store.create_execution_budget(
+        agent_profile_id=DEFAULT_AGENT_PROFILE_ID,
+        tool_key="proxy.echo",
+        domain_hint=None,
+        max_completed_executions=2,
+    )
+    store.seed_execution(
+        tool_key="proxy.echo",
+        domain_hint=None,
+        status="completed",
+        offset_minutes=0,
+        thread_id=store.thread_id,
+    )
+
+    decision = evaluate_execution_budget(
+        store,  # type: ignore[arg-type]
+        tool={"id": str(uuid4()), "tool_key": "proxy.echo"},
+        request={
+            "thread_id": str(store.thread_id),
+            "tool_id": str(uuid4()),
+            "action": "tool.run",
+            "scope": "workspace",
+            "domain_hint": None,
+            "risk_hint": None,
+            "attributes": {},
+        },
+    )
+
+    assert decision.record["matched_budget_id"] == str(profile_budget["id"])
+    assert decision.record["completed_execution_count"] == 1
+    assert decision.record["projected_completed_execution_count"] == 2
+    assert decision.record["reason"] == "within_budget"
+    assert decision.blocked_result is None
+    assert str(global_budget["id"]) != decision.record["matched_budget_id"]
+
+
+def test_evaluate_execution_budget_global_fallback_counts_only_active_thread_profile_history() -> None:
+    store = ExecutionBudgetStoreStub()
+    coach_thread_id = store.create_thread(agent_profile_id="coach_default")
+    global_budget = store.create_execution_budget(
+        agent_profile_id=None,
+        tool_key="proxy.echo",
+        domain_hint=None,
+        max_completed_executions=1,
+    )
+    store.seed_execution(
+        tool_key="proxy.echo",
+        domain_hint=None,
+        status="completed",
+        offset_minutes=0,
+        thread_id=store.thread_id,
+    )
+
+    decision = evaluate_execution_budget(
+        store,  # type: ignore[arg-type]
+        tool={"id": str(uuid4()), "tool_key": "proxy.echo"},
+        request={
+            "thread_id": str(coach_thread_id),
+            "tool_id": str(uuid4()),
+            "action": "tool.run",
+            "scope": "workspace",
+            "domain_hint": None,
+            "risk_hint": None,
+            "attributes": {},
+        },
+    )
+
+    assert decision.record["matched_budget_id"] == str(global_budget["id"])
+    assert decision.record["completed_execution_count"] == 0
+    assert decision.record["projected_completed_execution_count"] == 1
+    assert decision.record["reason"] == "within_budget"
     assert decision.blocked_result is None
 
 

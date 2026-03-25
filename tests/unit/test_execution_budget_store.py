@@ -43,6 +43,7 @@ def test_execution_budget_store_methods_use_expected_queries_and_parameters() ->
     replacement_budget_id = uuid4()
     row = {
         "id": execution_budget_id,
+        "agent_profile_id": None,
         "tool_key": "proxy.echo",
         "domain_hint": "docs",
         "max_completed_executions": 2,
@@ -65,6 +66,7 @@ def test_execution_budget_store_methods_use_expected_queries_and_parameters() ->
     store = ContinuityStore(RecordingConnection(cursor))
 
     created = store.create_execution_budget(
+        agent_profile_id=None,
         tool_key="proxy.echo",
         domain_hint="docs",
         max_completed_executions=2,
@@ -89,7 +91,7 @@ def test_execution_budget_store_methods_use_expected_queries_and_parameters() ->
 
     create_query, create_params = cursor.executed[0]
     assert "INSERT INTO execution_budgets" in create_query
-    assert create_params == (None, "proxy.echo", "docs", 2, 3600, None)
+    assert create_params == (None, None, "proxy.echo", "docs", 2, 3600, None)
     assert "FROM execution_budgets" in cursor.executed[1][0]
     assert "ORDER BY created_at ASC, id ASC" in cursor.executed[2][0]
     assert "UPDATE execution_budgets" in cursor.executed[3][0]
