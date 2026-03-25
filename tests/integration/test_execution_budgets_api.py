@@ -81,6 +81,7 @@ def seed_user(database_url: str, *, email: str) -> dict[str, UUID]:
 def create_budget(
     *,
     user_id: UUID,
+    agent_profile_id: str | None = None,
     tool_key: str | None,
     domain_hint: str | None,
     max_completed_executions: int,
@@ -90,6 +91,8 @@ def create_budget(
         "user_id": str(user_id),
         "max_completed_executions": max_completed_executions,
     }
+    if agent_profile_id is not None:
+        payload["agent_profile_id"] = agent_profile_id
     if tool_key is not None:
         payload["tool_key"] = tool_key
     if domain_hint is not None:
@@ -139,6 +142,7 @@ def test_execution_budget_endpoints_create_list_and_get_in_deterministic_order(
 
     assert first_status == 201
     assert second_status == 201
+    assert second_payload["execution_budget"]["agent_profile_id"] is None
     assert second_payload["execution_budget"]["status"] == "active"
     assert second_payload["execution_budget"]["deactivated_at"] is None
     assert second_payload["execution_budget"]["rolling_window_seconds"] == 3600
@@ -216,8 +220,70 @@ def test_create_execution_budget_endpoint_rejects_duplicate_active_scope(
     assert first_status == 201
     assert second_status == 400
     assert second_payload == {
-        "detail": "active execution budget already exists for selector scope tool_key='proxy.echo', domain_hint='docs'"
+        "detail": (
+            "active execution budget already exists for selector scope "
+            "agent_profile_id=None, tool_key='proxy.echo', domain_hint='docs'"
+        )
     }
+
+
+def test_create_execution_budget_endpoint_rejects_unknown_agent_profile_id(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+
+    status_code, payload = create_budget(
+        user_id=owner["user_id"],
+        agent_profile_id="profile_missing",
+        tool_key="proxy.echo",
+        domain_hint=None,
+        max_completed_executions=1,
+    )
+
+    assert status_code == 400
+    assert payload == {
+        "detail": "agent_profile_id must reference an existing profile in the registry"
+    }
+
+
+def test_create_execution_budget_endpoint_allows_same_selector_across_profile_scopes(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+
+    scoped_status, scoped_payload = create_budget(
+        user_id=owner["user_id"],
+        agent_profile_id="assistant_default",
+        tool_key="proxy.echo",
+        domain_hint="docs",
+        max_completed_executions=1,
+    )
+    global_status, global_payload = create_budget(
+        user_id=owner["user_id"],
+        agent_profile_id=None,
+        tool_key="proxy.echo",
+        domain_hint="docs",
+        max_completed_executions=2,
+    )
+    list_status, list_payload = invoke_request(
+        "GET",
+        "/v0/execution-budgets",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+
+    assert scoped_status == 201
+    assert global_status == 201
+    assert scoped_payload["execution_budget"]["agent_profile_id"] == "assistant_default"
+    assert global_payload["execution_budget"]["agent_profile_id"] is None
+    assert list_status == 200
+    assert [item["id"] for item in list_payload["items"]] == [
+        scoped_payload["execution_budget"]["id"],
+        global_payload["execution_budget"]["id"],
+    ]
 
 
 def test_deactivate_execution_budget_endpoint_updates_reads_and_emits_trace(
