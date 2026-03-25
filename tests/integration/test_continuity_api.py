@@ -717,11 +717,14 @@ def test_thread_creation_rejects_invalid_agent_profile_id_with_deterministic_422
     }
 
 
-def test_agent_profiles_endpoint_returns_deterministic_registry_payload(monkeypatch) -> None:
+def test_agent_profiles_endpoint_returns_deterministic_registry_payload(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         main_module,
         "get_settings",
-        lambda: Settings(database_url="postgresql://unused"),
+        lambda: Settings(database_url=migrated_database_urls["app"]),
     )
 
     status, payload = invoke_request("GET", "/v0/agent-profiles")

@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 3 Sprint 2: Web Agent Profile Adoption
+Phase 3 Sprint 5: Profile-Scoped Memory and Context Isolation
 
 ## Sprint Type
 
@@ -10,160 +10,168 @@ feature
 
 ## Sprint Reason
 
-Phase 3 Sprint 1 shipped and merged the backend profile backbone (`agent_profile_id` persistence, `/v0/agent-profiles`, profile metadata propagation). The operator shell still does not consume this surface, which creates a planning and usability gap for multi-agent deployment.
+Sprint 4 stabilizes durable profile identity in the registry and thread FK binding. The next non-redundant gap is isolation: context compilation still reads user memories globally, so different agent profiles can share memory context unintentionally. Current `main` does not yet include that Sprint 4 registry baseline, so this sprint carries the minimal prerequisite registry artifacts forward to keep the migration/runtime chain coherent.
 
 ## Sprint Intent
 
-Adopt shipped profile identity in the web shell so profile choice and visibility are explicit during thread creation and thread review, while keeping backend scope unchanged.
+Bind memory selection to active thread profile by adding profile attribution on memory records and enforcing profile-scoped context retrieval, while preserving backward-compatible defaults.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase3-sprint2-web-agent-profile-adoption`
+- Branch Name: `codex/phase3-sprint5-profile-memory-context-isolation`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It directly consumes the backend capability that just shipped in Phase 3 Sprint 1.
-- It is non-redundant: current web code does not call `GET /v0/agent-profiles` and does not use `agent_profile_id` on thread create/list/detail.
-- It closes a concrete operator-facing gap before any model routing or orchestration expansion.
+- It is the next non-redundant seam after profile identity + registry.
+- It closes cross-profile memory bleed risk in `POST /v0/context/compile` and `POST /v0/responses`.
+- It establishes a durable boundary needed before profile-specific policy/provider routing.
 
 ## Redundancy Guard
 
-- Already shipped in Sprint 1 (do not re-implement): profile registry, migration, thread persistence, API validation, compile/response metadata propagation.
-- Missing and required now: web client typing, profile fetch/read path, profile selection at thread create, and visible thread profile identity in chat surfaces.
+- Already shipped in Sprint 1: thread-level profile identity + metadata propagation.
+- Already shipped in Sprint 2: web profile selection/visibility.
+- Already shipped in Sprint 3: profile-aware response prompting.
+- Required Sprint 4 baseline not yet present on `main` and carried here as prerequisite only: durable profile registry migration/runtime wiring.
+- Missing and required now: profile-scoped memory attribution and profile-bound context retrieval.
 
 ## Design Truth
 
-- Reuse shipped API seams as-is; no backend contract changes.
-- Preserve current fixture/live fallback behavior across `/chat`.
-- Keep deterministic default profile behavior explicit (`assistant_default`) when profile selection is unavailable.
-- Keep UX bounded and calm: one selector on create, lightweight profile visibility in thread review surfaces.
+- Memory rows carry explicit `agent_profile_id` bound to the profile registry.
+- Memory retrieval for compile/response uses the selected thread profile boundary.
+- Existing behavior defaults safely to `assistant_default` where profile attribution is omitted.
+- API envelopes remain stable; profile fields may be additive where necessary.
 
 ## Exact Surfaces In Scope
 
-- web API client contract adoption for `agent_profile_id` and `/v0/agent-profiles`
-- chat-page live/fixture profile loading and fallback behavior
-- thread create UI profile selection
-- thread list/summary profile visibility
-- targeted tests for all above seams
+- memory schema/profile attribution migration
+- store-layer memory read/write updates with profile filtering
+- compile/response memory retrieval path updated to active thread profile scope
+- prerequisite profile-registry baseline carry-forward required by migration/runtime chain
+- integration and unit tests for isolation and backward-compatible defaults
 
 ## Exact Files In Scope
 
-- [api.ts](apps/web/lib/api.ts)
-- [api.test.ts](apps/web/lib/api.test.ts)
-- [fixtures.ts](apps/web/lib/fixtures.ts)
-- [page.tsx](apps/web/app/chat/page.tsx)
-- [page.test.tsx](apps/web/app/chat/page.test.tsx)
-- [thread-create.tsx](apps/web/components/thread-create.tsx)
-- [thread-create.test.tsx](apps/web/components/thread-create.test.tsx)
-- [thread-list.tsx](apps/web/components/thread-list.tsx)
-- [thread-list.test.tsx](apps/web/components/thread-list.test.tsx)
-- [thread-summary.tsx](apps/web/components/thread-summary.tsx)
-- [thread-summary.test.tsx](apps/web/components/thread-summary.test.tsx)
+- [store.py](apps/api/src/alicebot_api/store.py)
+- [compiler.py](apps/api/src/alicebot_api/compiler.py)
+- [main.py](apps/api/src/alicebot_api/main.py)
+- [contracts.py](apps/api/src/alicebot_api/contracts.py)
+- [memory.py](apps/api/src/alicebot_api/memory.py)
+- [phase3_profiles.py](apps/api/src/alicebot_api/phase3_profiles.py)
+- [20260324_0033_agent_profile_registry.py](apps/api/alembic/versions/20260324_0033_agent_profile_registry.py)
+- [20260324_0034_memory_agent_profile_scope.py](apps/api/alembic/versions/20260324_0034_memory_agent_profile_scope.py)
+- [test_20260324_0033_agent_profile_registry.py](tests/unit/test_20260324_0033_agent_profile_registry.py)
+- [test_20260324_0034_memory_agent_profile_scope.py](tests/unit/test_20260324_0034_memory_agent_profile_scope.py)
+- [test_memory.py](tests/unit/test_memory.py)
+- [test_memory_store.py](tests/unit/test_memory_store.py)
+- [test_context_compile.py](tests/integration/test_context_compile.py)
+- [test_memory_review_api.py](tests/integration/test_memory_review_api.py)
+- [test_continuity_api.py](tests/integration/test_continuity_api.py)
+- [test_responses_api.py](tests/integration/test_responses_api.py)
 - [BUILD_REPORT.md](BUILD_REPORT.md)
 - [REVIEW_REPORT.md](REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](.ai/active/SPRINT_PACKET.md)
 
 ## In Scope
 
-- Extend `ThreadItem` and `ThreadCreatePayload` in web API client with `agent_profile_id`.
-- Add deterministic web API client types/helpers for profile registry:
-  - `AgentProfileItem`
-  - `AgentProfileListSummary`
-  - `listAgentProfiles(apiBaseUrl)`
-- Update `/chat` loading path to fetch profile registry in live mode and preserve fixture behavior when unavailable.
-- Update thread create flow to allow profile selection and submit selected `agent_profile_id`.
-- Show selected thread profile identity in thread review surfaces (`ThreadList` and `ThreadSummary`) without noisy UI expansion.
-- Add/update tests covering:
-  - request payloads include selected profile id
-  - list/detail typing includes profile id
-  - live profile fetch success/fallback behavior
-  - profile identity rendering in list/summary
+- Add `agent_profile_id` to `memories` with:
+  - non-null default `assistant_default`
+  - FK to `agent_profiles(id)`
+  - deterministic index for scoped retrieval (`user_id`, `agent_profile_id`, `updated_at`, `created_at`, `id`)
+- Backfill existing memory rows to `assistant_default` via migration default semantics.
+- Update memory create/upsert flows so new/updated memory rows preserve explicit profile attribution.
+- Update context compilation path to fetch memories scoped to active thread profile.
+- Keep existing response/context metadata profile propagation behavior unchanged.
+- Carry forward required Sprint 4 registry foundation (`0033` migration + profile-registry runtime wiring/tests) without adding CRUD/provider/orchestration scope.
+- Add unit migration tests for upgrade/rollback and profile FK/default invariants.
+- Add integration coverage proving:
+  - compile for `assistant_default` and `coach_default` threads returns profile-scoped memory slices
+  - response generation inherits scoped compile behavior
+  - existing default path remains deterministic when profile is omitted
 
 ## Out of Scope
 
-- backend schema/migration changes
-- backend API contract changes for profile registry or thread create
-- per-profile model-provider routing/switching
 - profile CRUD endpoints
-- external LLM provider integration
-- auth model changes
-- runner/worker orchestration changes
+- per-profile provider/model routing
+- policy/tooling profile scoping
+- web UI changes
+- connector/auth/orchestration expansion
 
 ## Required Deliverables
 
-- web API client + chat UI consume shipped profile seams end-to-end
-- deterministic fallback behavior if profile registry is unavailable
-- updated web tests for the profile adoption seam
+- memory profile-scope migration and store wiring
+- compile/response memory retrieval isolation by active profile
+- passing unit/integration evidence for profile-scoped memory behavior
 - sprint build/review reports scoped to this sprint only
 
 ## Acceptance Criteria
 
-- Thread create in live mode submits `agent_profile_id` along with `user_id` and `title`.
-- Web thread data types and reads retain `agent_profile_id` from API responses.
-- `/chat` reads `GET /v0/agent-profiles` in live mode and remains usable if that read fails.
-- Thread list and selected-thread summary visibly show active profile identity.
-- Fixture mode remains stable and deterministic with no regression to existing fallback paths.
-- `npm --prefix apps/web run test:mvp:validation-matrix` passes.
+- Memory rows are profile-attributed and FK-bound to registry profiles.
+- Compile for a thread includes only memories from that thread’s active profile domain.
+- `/v0/responses` remains backward-compatible while using profile-scoped compile behavior.
+- Default behavior remains deterministic (`assistant_default`) when profile attribution is omitted.
+- `./.venv/bin/python -m pytest tests/unit/test_20260324_0034_memory_agent_profile_scope.py -q` passes.
+- `./.venv/bin/python -m pytest tests/integration/test_context_compile.py tests/integration/test_responses_api.py tests/integration/test_memory_review_api.py -q` passes.
 - `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
-- No backend/API/migration scope enters this sprint.
+- No provider/policy/orchestration scope expansion enters this sprint.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
-- do not modify `apps/api` or migration files
-- keep profile default deterministic (`assistant_default`) when selection data is unavailable
-- preserve existing copy tone and visual containment in chat rail components
+- preserve existing response and compile payload contracts
+- keep migration reversible and forward-safe
+- keep scoped retrieval ordering deterministic with existing memory ordering rules
 
 ## Control Tower Task Cards
 
-### Task 1: API Client + Fixture Contract Adoption
+### Task 1: Memory Scope Migration + Store Wiring
 Owner: tooling operative  
 Write scope:
-- `apps/web/lib/api.ts`
-- `apps/web/lib/api.test.ts`
-- `apps/web/lib/fixtures.ts`
+- `apps/api/alembic/versions/20260324_0033_agent_profile_registry.py`
+- `apps/api/alembic/versions/20260324_0034_memory_agent_profile_scope.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/compiler.py`
+- `apps/api/src/alicebot_api/memory.py`
+- `apps/api/src/alicebot_api/phase3_profiles.py`
 
-### Task 2: Chat Data Loading + Fallback
+### Task 2: Verification
 Owner: tooling operative  
 Write scope:
-- `apps/web/app/chat/page.tsx`
-- `apps/web/app/chat/page.test.tsx`
+- `tests/unit/test_20260324_0033_agent_profile_registry.py`
+- `tests/unit/test_20260324_0034_memory_agent_profile_scope.py`
+- `tests/unit/test_memory.py`
+- `tests/unit/test_memory_store.py`
+- `tests/integration/test_context_compile.py`
+- `tests/integration/test_continuity_api.py`
+- `tests/integration/test_memory_review_api.py`
+- `tests/integration/test_responses_api.py`
+- `apps/api/src/alicebot_api/main.py`
 
-### Task 3: Thread UI Adoption
-Owner: tooling operative  
-Write scope:
-- `apps/web/components/thread-create.tsx`
-- `apps/web/components/thread-create.test.tsx`
-- `apps/web/components/thread-list.tsx`
-- `apps/web/components/thread-list.test.tsx`
-- `apps/web/components/thread-summary.tsx`
-- `apps/web/components/thread-summary.test.tsx`
-
-### Task 4: Integration Review
+### Task 3: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify sprint stays web-adoption scoped
-- verify no backend rework or profile-registry duplication
+- verify sprint stays memory-scope isolation scoped
+- verify no provider/policy/orchestration expansion
 - verify validation matrix remains green
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact web contract/UI deltas for profile adoption
+- exact memory-profile-scope migration and compile isolation deltas
 - exact verification command outcomes
-- explicit deferred scope (routing, provider switching, orchestration)
+- explicit deferred scope (policy/provider/orchestration/profile CRUD)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint stayed bounded to web profile adoption
-- profile selection and visibility are correct and deterministic
-- fallback behavior is explicit and non-breaking
+- sprint stayed bounded to memory/context profile isolation
+- memory profile attribution and scoped compile behavior are correct and deterministic
+- API behavior remains backward-compatible
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when the shipped Phase 3 profile backbone is fully adopted in the web chat operator surface (selection + visibility + tests) with deterministic fallback behavior and all required validation gates green.
+This sprint is complete when context memory selection is profile-scoped and deterministic for the active thread profile, with migration/test evidence and all validation gates green.
