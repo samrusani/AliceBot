@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from alicebot_api.contracts import AgentProfileRecord, DEFAULT_AGENT_PROFILE_ID
+from typing import cast
+
+from alicebot_api.contracts import AgentProfileRecord, DEFAULT_AGENT_PROFILE_ID, ModelProvider
 from alicebot_api.store import ContinuityStore
 
 
@@ -10,6 +12,8 @@ def list_agent_profiles(store: ContinuityStore) -> list[AgentProfileRecord]:
             "id": profile["id"],
             "name": profile["name"],
             "description": profile["description"],
+            "model_provider": cast(ModelProvider | None, profile["model_provider"]),
+            "model_name": profile["model_name"],
         }
         for profile in store.list_agent_profiles()
     ]
@@ -27,6 +31,8 @@ def get_agent_profile(store: ContinuityStore, profile_id: str) -> AgentProfileRe
         "id": profile["id"],
         "name": profile["name"],
         "description": profile["description"],
+        "model_provider": cast(ModelProvider | None, profile["model_provider"]),
+        "model_name": profile["model_name"],
     }
 
 

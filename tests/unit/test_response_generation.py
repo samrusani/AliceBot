@@ -13,6 +13,7 @@ from alicebot_api.response_generation import (
     assemble_prompt,
     build_assistant_response_payload,
     invoke_model,
+    resolve_thread_model_runtime,
 )
 
 
@@ -377,3 +378,82 @@ def test_build_assistant_response_payload_captures_model_and_prompt_metadata() -
             "section_order": ["system", "developer", "context", "conversation"],
         },
     }
+
+
+class FakeProfileStore:
+    def __init__(self, profile: dict[str, object] | None) -> None:
+        self.profile = profile
+        self.lookups: list[str] = []
+
+    def get_agent_profile_optional(self, profile_id: str):
+        self.lookups.append(profile_id)
+        return self.profile
+
+
+def test_resolve_thread_model_runtime_prefers_profile_runtime_when_present() -> None:
+    settings = Settings(
+        model_provider="openai_responses",
+        model_name="gpt-5-mini",
+    )
+    store = FakeProfileStore(
+        {
+            "id": "coach_default",
+            "name": "Coach Default",
+            "description": "Coaching profile",
+            "model_provider": "openai_responses",
+            "model_name": "gpt-5",
+        }
+    )
+
+    provider, model = resolve_thread_model_runtime(
+        store=store,  # type: ignore[arg-type]
+        thread={"agent_profile_id": "coach_default"},  # type: ignore[arg-type]
+        settings=settings,
+    )
+
+    assert store.lookups == ["coach_default"]
+    assert provider == "openai_responses"
+    assert model == "gpt-5"
+
+
+def test_resolve_thread_model_runtime_falls_back_when_profile_runtime_missing_or_partial() -> None:
+    settings = Settings(
+        model_provider="openai_responses",
+        model_name="gpt-5-mini",
+    )
+
+    missing_runtime_store = FakeProfileStore(
+        {
+            "id": "coach_default",
+            "name": "Coach Default",
+            "description": "Coaching profile",
+            "model_provider": None,
+            "model_name": None,
+        }
+    )
+    partial_runtime_store = FakeProfileStore(
+        {
+            "id": "coach_default",
+            "name": "Coach Default",
+            "description": "Coaching profile",
+            "model_provider": "openai_responses",
+            "model_name": None,
+        }
+    )
+    missing_profile_store = FakeProfileStore(None)
+
+    assert resolve_thread_model_runtime(
+        store=missing_runtime_store,  # type: ignore[arg-type]
+        thread={"agent_profile_id": "coach_default"},  # type: ignore[arg-type]
+        settings=settings,
+    ) == ("openai_responses", "gpt-5-mini")
+    assert resolve_thread_model_runtime(
+        store=partial_runtime_store,  # type: ignore[arg-type]
+        thread={"agent_profile_id": "coach_default"},  # type: ignore[arg-type]
+        settings=settings,
+    ) == ("openai_responses", "gpt-5-mini")
+    assert resolve_thread_model_runtime(
+        store=missing_profile_store,  # type: ignore[arg-type]
+        thread={"agent_profile_id": "coach_default"},  # type: ignore[arg-type]
+        settings=settings,
+    ) == ("openai_responses", "gpt-5-mini")

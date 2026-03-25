@@ -394,6 +394,8 @@ class AgentProfileRecord(TypedDict):
     id: str
     name: str
     description: str
+    model_provider: ModelProvider | None
+    model_name: str | None
 
 
 class AgentProfileListSummary(TypedDict):
