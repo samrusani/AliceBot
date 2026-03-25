@@ -14,6 +14,7 @@ from alicebot_api.contracts import (
     AssistantResponseEventPayload,
     CompiledContextPack,
     ContextCompilerLimits,
+    DEFAULT_AGENT_PROFILE_ID,
     GenerateResponseSuccess,
     ModelInvocationRequest,
     ModelInvocationResponse,
@@ -28,7 +29,7 @@ from alicebot_api.contracts import (
     TRACE_KIND_RESPONSE_GENERATE,
     TraceEventRecord,
 )
-from alicebot_api.store import ContinuityStore, JsonObject
+from alicebot_api.store import ContinuityStore, JsonObject, ThreadRow
 
 PROMPT_TRACE_EVENT_KIND = "response.prompt.assembled"
 MODEL_COMPLETED_TRACE_EVENT_KIND = "response.model.completed"
@@ -387,6 +388,31 @@ def _create_response_trace(
     }
 
 
+def resolve_thread_model_runtime(
+    *,
+    store: ContinuityStore,
+    thread: ThreadRow,
+    settings: Settings,
+) -> tuple[str, str]:
+    agent_profile_id = str(thread.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID))
+    profile = store.get_agent_profile_optional(agent_profile_id)
+
+    if profile is None:
+        return settings.model_provider, settings.model_name
+
+    profile_provider = profile.get("model_provider")
+    profile_model = profile.get("model_name")
+    if (
+        isinstance(profile_provider, str)
+        and profile_provider
+        and isinstance(profile_model, str)
+        and profile_model
+    ):
+        return profile_provider, profile_model
+
+    return settings.model_provider, settings.model_name
+
+
 def generate_response(
     *,
     store: ContinuityStore,
@@ -397,7 +423,7 @@ def generate_response(
     limits: ContextCompilerLimits,
 ) -> GenerateResponseSuccess | ResponseFailure:
     store.get_user(user_id)
-    store.get_thread(thread_id)
+    thread = store.get_thread(thread_id)
 
     store.append_event(
         thread_id,
@@ -419,9 +445,14 @@ def generate_response(
         ),
         compile_trace_id=compiled_trace.trace_id,
     )
+    model_provider, model_name = resolve_thread_model_runtime(
+        store=store,
+        thread=thread,
+        settings=settings,
+    )
     request = ModelInvocationRequest(
-        provider=settings.model_provider,  # type: ignore[arg-type]
-        model=settings.model_name,
+        provider=model_provider,  # type: ignore[arg-type]
+        model=model_name,
         prompt=prompt,
     )
     prompt_trace_event = TraceEventRecord(

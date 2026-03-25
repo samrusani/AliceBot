@@ -1,68 +1,60 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Phase 3 Sprint 6: Profile-Scoped Policy Evaluation and Routing.
+Phase 3 Sprint 7: Profile-Scoped Model Routing.
 
-Implement policy profile attribution and scope policy evaluation/routing to the active thread profile domain (global `NULL` + thread-matching profile), while preserving backward-compatible global policy behavior.
+Route `/v0/responses` model selection by active thread profile runtime config (`model_provider`, `model_name`) with deterministic fallback to global `Settings.model_provider` / `Settings.model_name` when profile runtime config is absent.
 
 ## Completed Work
-- Added migration `20260325_0035_policy_agent_profile_scope`:
-- Added nullable `policies.agent_profile_id`.
-- Added FK `policies_agent_profile_id_fkey` -> `agent_profiles(id)`.
-- Replaced active-policy index with profile-aware deterministic index:
-- dropped `policies_user_active_priority_created_idx`
-- added `policies_user_active_profile_priority_created_idx` on `(user_id, active, agent_profile_id, priority, created_at, id)`.
-- Updated store policy schema/read/write wiring:
-- `PolicyRow` now includes `agent_profile_id`.
-- policy insert/select/list SQL now includes `agent_profile_id`.
-- `create_policy(..., agent_profile_id=None)` supports global and profile-scoped policy rows.
-- `list_active_policies(agent_profile_id=...)` loads only global + matching-profile active policies when profile is provided.
-- Updated contracts and API model wiring:
-- `PolicyCreateInput` accepts optional `agent_profile_id`.
-- `PolicyRecord` includes `agent_profile_id`.
-- `/v0/policies` request now accepts optional `agent_profile_id`.
-- `/v0/policies` validates non-null `agent_profile_id` against registered profiles and returns deterministic 422 on invalid IDs.
-- Updated policy runtime behavior:
-- policy serialization includes `agent_profile_id`.
-- policy evaluation context loading is thread-profile-scoped.
-- `evaluate_policy_request` now evaluates only global + thread-profile-matched active policies.
-- Updated routing/approval policy context behavior:
-- tool allowlist and tool routing now load policy context using thread `agent_profile_id`.
-- approval routing outcomes now honor scoped policy sets (mismatched profile policies excluded).
-- Added/updated verification coverage:
-- new migration unit test for 0035 statement order and invariants.
-- updated policy store unit tests for `agent_profile_id` SQL parameterization and scoped active-policy query.
-- updated policy unit tests for scoped evaluation behavior.
-- updated integration policy tests for scoped/global deterministic evaluation and additive API contract field.
-- added integration approval test proving profile-mismatched policy exclusion in routing.
+- Added migration `20260325_0036_agent_profile_model_runtime`:
+- added nullable `agent_profiles.model_provider` and `agent_profiles.model_name`.
+- added bounded-provider/runtime-pairing constraints:
+- `agent_profiles_model_provider_check`
+- `agent_profiles_model_runtime_pairing_check`
+- seeded deterministic runtime config for shipped profiles:
+- `assistant_default` -> `openai_responses` / `gpt-5-mini`
+- `coach_default` -> `openai_responses` / `gpt-5`
+- Updated profile registry/store contract wiring:
+- `AgentProfileRow` now includes `model_provider`, `model_name`.
+- agent profile list/get SQL now selects runtime config columns.
+- `AgentProfileRecord` now includes additive runtime config fields.
+- profile registry serialization now exposes runtime fields in `/v0/agent-profiles` responses.
+- Implemented response model routing:
+- added `resolve_thread_model_runtime(...)` in `response_generation.py`.
+- `/v0/responses` now resolves active thread profile, uses profile runtime model/provider when both are present.
+- deterministic fallback to global settings when profile runtime is missing/incomplete or profile lookup is absent.
+- preserved existing response envelope/trace structure and failure semantics.
+- Added/updated sprint verification tests:
+- new migration unit test `test_20260325_0036_agent_profile_model_runtime.py`.
+- added runtime routing/fallback unit tests in `test_response_generation.py`.
+- updated continuity integration expectations for additive agent profile runtime fields.
+- updated responses integration to verify profile-specific model routing and deterministic fallback behavior.
 
 ## Incomplete Work
 - None within sprint scope.
 
 ## Files Changed
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/api/alembic/versions/20260325_0035_policy_agent_profile_scope.py`
+- `/Users/samirusani/Desktop/Codex/AliceBot/apps/api/alembic/versions/20260325_0036_agent_profile_model_runtime.py`
 - `/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/store.py`
 - `/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/contracts.py`
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/policy.py`
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/main.py`
-- `/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/tools.py`
-- `/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_20260325_0035_policy_agent_profile_scope.py`
-- `/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_policy.py`
-- `/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_policy_store.py`
-- `/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_policy_api.py`
-- `/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_approval_api.py`
+- `/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/phase3_profiles.py`
+- `/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/response_generation.py`
+- `/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_20260325_0036_agent_profile_model_runtime.py`
+- `/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_response_generation.py`
+- `/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_continuity_api.py`
+- `/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_responses_api.py`
 - `/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md`
 - `/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md`
 
 ## Tests Run
-1. `./.venv/bin/python -m pytest tests/unit/test_20260325_0035_policy_agent_profile_scope.py -q`
-- PASS (`4 passed`)
+1. `./.venv/bin/python -m pytest tests/unit/test_20260325_0036_agent_profile_model_runtime.py -q`
+- PASS (`4 passed in 0.22s`)
 
-2. `./.venv/bin/python -m pytest tests/unit/test_policy.py tests/unit/test_policy_store.py -q`
-- PASS (`11 passed`)
+2. `./.venv/bin/python -m pytest tests/unit/test_response_generation.py -q`
+- PASS (`6 passed in 0.24s`)
 
-3. `./.venv/bin/python -m pytest tests/integration/test_policy_api.py tests/integration/test_approval_api.py -q`
-- PASS (`14 passed`)
+3. `./.venv/bin/python -m pytest tests/integration/test_continuity_api.py tests/integration/test_responses_api.py -q`
+- PASS (`13 passed in 4.64s`)
 
 4. `python3 scripts/run_phase2_validation_matrix.py`
 - PASS
@@ -72,19 +64,15 @@ Implement policy profile attribution and scope policy evaluation/routing to the 
 - `backend_integration_matrix: PASS`
 - `web_validation_matrix: PASS`
 
-5. `./.venv/bin/python -m pytest tests/unit/test_tools.py tests/unit/test_approvals.py -q`
-- PASS (`17 passed`)
-
 ## Blockers/Issues
-- Sandbox networking blocked localhost PostgreSQL access for DB-backed integration/matrix commands.
-- Resolved by rerunning required commands with elevated permissions.
-- Scope-adjacent unit regressions in `tests/unit/test_tools.py` and `tests/unit/test_approvals.py` were detected and fixed (legacy stub compatibility for missing `agent_profile_id`/older `list_active_policies` signatures).
+- Sandbox denied localhost PostgreSQL access for DB-backed integration and matrix commands.
+- Resolved by rerunning required DB-backed commands with elevated permissions.
 
 ## Explicit Deferred Scope
-- No profile CRUD expansion.
-- No per-profile provider/model routing expansion.
-- No tool orchestration expansion beyond policy-layer scope filtering.
-- No connector/auth/orchestration expansion.
+- No profile CRUD endpoint work.
+- No new provider integrations or credential/orchestration expansion.
+- No policy/tooling redesign beyond routing to existing provider surface.
+- No web UI changes.
 
 ## Recommended Next Step
-1. Control Tower review focused on profile-scope filtering correctness, deterministic ordering invariants, and merge readiness.
+1. Control Tower review focused on deterministic profile runtime routing/fallback behavior and merge readiness.
