@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import psycopg
 
 from alicebot_api.contracts import (
+    DEFAULT_AGENT_PROFILE_ID,
     EXECUTION_BUDGET_LIFECYCLE_VERSION_V0,
     EXECUTION_BUDGET_LIST_ORDER,
     EXECUTION_BUDGET_MATCH_ORDER,
@@ -58,6 +59,7 @@ class ExecutionBudgetDecision:
 def serialize_execution_budget_row(row: ExecutionBudgetRow) -> ExecutionBudgetRecord:
     return {
         "id": str(row["id"]),
+        "agent_profile_id": cast(str | None, row["agent_profile_id"]),
         "tool_key": row["tool_key"],
         "domain_hint": row["domain_hint"],
         "max_completed_executions": row["max_completed_executions"],
@@ -85,6 +87,19 @@ def _validate_rolling_window_seconds(rolling_window_seconds: int | None) -> None
     if rolling_window_seconds is not None and rolling_window_seconds <= 0:
         raise ExecutionBudgetValidationError(
             "rolling_window_seconds must be greater than 0 when provided"
+        )
+
+
+def _validate_agent_profile_id(
+    store: ContinuityStore,
+    *,
+    agent_profile_id: str | None,
+) -> None:
+    if agent_profile_id is None:
+        return
+    if store.get_agent_profile_optional(agent_profile_id) is None:
+        raise ExecutionBudgetValidationError(
+            "agent_profile_id must reference an existing profile in the registry"
         )
 
 
@@ -122,27 +137,43 @@ def _trace_summary(trace_id: UUID, trace_events: list[tuple[str, dict[str, objec
 def _active_budget_rows_for_scope(
     store: ContinuityStore,
     *,
+    agent_profile_id: str | None,
     tool_key: str | None,
     domain_hint: str | None,
 ) -> list[ExecutionBudgetRow]:
     rows = [
         row
         for row in store.list_execution_budgets()
-        if row["tool_key"] == tool_key
+        if cast(str | None, row["agent_profile_id"]) == agent_profile_id
+        and row["tool_key"] == tool_key
         and row["domain_hint"] == domain_hint
         and cast(str, row["status"]) == "active"
     ]
     return sorted(rows, key=lambda row: (row["created_at"], row["id"]))
 
 
-def _scope_label(*, tool_key: str | None, domain_hint: str | None) -> str:
-    return f"tool_key={tool_key!r}, domain_hint={domain_hint!r}"
+def _scope_label(
+    *,
+    agent_profile_id: str | None,
+    tool_key: str | None,
+    domain_hint: str | None,
+) -> str:
+    return (
+        f"agent_profile_id={agent_profile_id!r}, "
+        f"tool_key={tool_key!r}, "
+        f"domain_hint={domain_hint!r}"
+    )
 
 
-def _duplicate_active_scope_message(*, tool_key: str | None, domain_hint: str | None) -> str:
+def _duplicate_active_scope_message(
+    *,
+    agent_profile_id: str | None,
+    tool_key: str | None,
+    domain_hint: str | None,
+) -> str:
     return (
         "active execution budget already exists for selector scope "
-        f"{_scope_label(tool_key=tool_key, domain_hint=domain_hint)}"
+        f"{_scope_label(agent_profile_id=agent_profile_id, tool_key=tool_key, domain_hint=domain_hint)}"
     )
 
 
@@ -204,19 +235,23 @@ def create_execution_budget_record(
 
     _validate_budget_scope(tool_key=request.tool_key, domain_hint=request.domain_hint)
     _validate_rolling_window_seconds(request.rolling_window_seconds)
+    _validate_agent_profile_id(store, agent_profile_id=request.agent_profile_id)
     if _active_budget_rows_for_scope(
         store,
+        agent_profile_id=request.agent_profile_id,
         tool_key=request.tool_key,
         domain_hint=request.domain_hint,
     ):
         raise ExecutionBudgetValidationError(
             _duplicate_active_scope_message(
+                agent_profile_id=request.agent_profile_id,
                 tool_key=request.tool_key,
                 domain_hint=request.domain_hint,
             )
         )
     try:
         row = store.create_execution_budget(
+            agent_profile_id=request.agent_profile_id,
             tool_key=request.tool_key,
             domain_hint=request.domain_hint,
             max_completed_executions=request.max_completed_executions,
@@ -226,6 +261,7 @@ def create_execution_budget_record(
         if _is_active_scope_uniqueness_error(exc):
             raise ExecutionBudgetValidationError(
                 _duplicate_active_scope_message(
+                    agent_profile_id=request.agent_profile_id,
                     tool_key=request.tool_key,
                     domain_hint=request.domain_hint,
                 )
@@ -448,13 +484,14 @@ def supersede_execution_budget_record(
 
     active_scope_rows = _active_budget_rows_for_scope(
         store,
+        agent_profile_id=cast(str | None, current["agent_profile_id"]),
         tool_key=current["tool_key"],
         domain_hint=current["domain_hint"],
     )
     if [row["id"] for row in active_scope_rows] != [current["id"]]:
         error = ExecutionBudgetLifecycleError(
             "execution budget selector scope must have exactly one active budget to supersede: "
-            f"{_scope_label(tool_key=current['tool_key'], domain_hint=current['domain_hint'])}"
+            f"{_scope_label(agent_profile_id=cast(str | None, current['agent_profile_id']), tool_key=current['tool_key'], domain_hint=current['domain_hint'])}"
         )
         trace = _record_lifecycle_trace(
             store,
@@ -506,6 +543,7 @@ def supersede_execution_budget_record(
                 )
             replacement = store.create_execution_budget(
                 budget_id=replacement_budget_id,
+                agent_profile_id=cast(str | None, current["agent_profile_id"]),
                 tool_key=current["tool_key"],
                 domain_hint=current["domain_hint"],
                 max_completed_executions=request.max_completed_executions,
@@ -516,6 +554,7 @@ def supersede_execution_budget_record(
         if _is_active_scope_uniqueness_error(exc):
             error = ExecutionBudgetLifecycleError(
                 _duplicate_active_scope_message(
+                    agent_profile_id=cast(str | None, current["agent_profile_id"]),
                     tool_key=current["tool_key"],
                     domain_hint=current["domain_hint"],
                 )
@@ -649,19 +688,63 @@ def _matches_budget(
 def _matching_budget_rows(
     store: ContinuityStore,
     *,
+    active_thread_profile_id: str | None,
     tool_key: str,
     domain_hint: str | None,
 ) -> list[ExecutionBudgetRow]:
-    rows = [
-        row
-        for row in store.list_execution_budgets()
-        if cast(str, row["status"]) == "active"
-        and _matches_budget(row, tool_key=tool_key, domain_hint=domain_hint)
-    ]
-    return sorted(
-        rows,
-        key=lambda row: (-_budget_specificity(row), row["created_at"], row["id"]),
-    )
+    scoped_rows: list[ExecutionBudgetRow] = []
+    global_rows: list[ExecutionBudgetRow] = []
+    for row in store.list_execution_budgets():
+        budget_row = cast(ExecutionBudgetRow, row)
+        if cast(str, budget_row["status"]) != "active":
+            continue
+        if not _matches_budget(budget_row, tool_key=tool_key, domain_hint=domain_hint):
+            continue
+        budget_profile_id = cast(str | None, budget_row["agent_profile_id"])
+        if active_thread_profile_id is not None and budget_profile_id == active_thread_profile_id:
+            scoped_rows.append(budget_row)
+        elif budget_profile_id is None:
+            global_rows.append(budget_row)
+    scoped_rows.sort(key=lambda row: (-_budget_specificity(row), row["created_at"], row["id"]))
+    global_rows.sort(key=lambda row: (-_budget_specificity(row), row["created_at"], row["id"]))
+    return [*scoped_rows, *global_rows]
+
+
+def _thread_profile_id_optional(
+    store: ContinuityStore,
+    *,
+    thread_id: UUID,
+) -> str | None:
+    thread = store.get_thread_optional(thread_id)
+    if thread is None:
+        return None
+    profile_id = cast(str | None, thread.get("agent_profile_id"))
+    if profile_id is None:
+        return DEFAULT_AGENT_PROFILE_ID
+    return profile_id
+
+
+def _resolve_request_thread_profile_id(
+    store: ContinuityStore,
+    *,
+    request: ToolRoutingRequestRecord,
+) -> str | None:
+    try:
+        thread_id = UUID(request["thread_id"])
+    except (TypeError, ValueError):
+        return None
+    return _thread_profile_id_optional(store, thread_id=thread_id)
+
+
+def _count_profile_scope_id(
+    *,
+    matched_budget: ExecutionBudgetRow,
+    active_thread_profile_id: str | None,
+) -> str | None:
+    matched_budget_profile_id = cast(str | None, matched_budget["agent_profile_id"])
+    if matched_budget_profile_id is not None:
+        return matched_budget_profile_id
+    return active_thread_profile_id
 
 
 def _execution_matches_budget(row: ToolExecutionRow, budget: ExecutionBudgetRow) -> bool:
@@ -702,16 +785,27 @@ def _counted_completed_execution_rows(
     *,
     matched_budget: ExecutionBudgetRow,
     evaluation_time: datetime,
+    count_profile_scope_id: str | None,
 ) -> list[ToolExecutionRow]:
     window_started_at = _window_started_at(
         evaluation_time=evaluation_time,
         rolling_window_seconds=matched_budget["rolling_window_seconds"],
     )
     counted_rows: list[ToolExecutionRow] = []
+    thread_profile_cache: dict[UUID, str | None] = {}
     for row in store.list_tool_executions():
         execution_row = cast(ToolExecutionRow, row)
         if not _execution_matches_budget(execution_row, matched_budget):
             continue
+        if count_profile_scope_id is not None:
+            thread_id = execution_row["thread_id"]
+            if thread_id not in thread_profile_cache:
+                thread_profile_cache[thread_id] = _thread_profile_id_optional(
+                    store,
+                    thread_id=thread_id,
+                )
+            if thread_profile_cache[thread_id] != count_profile_scope_id:
+                continue
         if window_started_at is not None and execution_row["executed_at"] < window_started_at:
             continue
         counted_rows.append(execution_row)
@@ -751,8 +845,10 @@ def evaluate_execution_budget(
     tool: ToolRecord,
     request: ToolRoutingRequestRecord,
 ) -> ExecutionBudgetDecision:
+    active_thread_profile_id = _resolve_request_thread_profile_id(store, request=request)
     matching_budgets = _matching_budget_rows(
         store,
+        active_thread_profile_id=active_thread_profile_id,
         tool_key=tool["tool_key"],
         domain_hint=request["domain_hint"],
     )
@@ -775,6 +871,10 @@ def evaluate_execution_budget(
                 store,
                 matched_budget=matched_budget,
                 evaluation_time=evaluation_time,
+                count_profile_scope_id=_count_profile_scope_id(
+                    matched_budget=matched_budget,
+                    active_thread_profile_id=active_thread_profile_id,
+                ),
             )
         )
         projected_completed_execution_count = completed_execution_count + 1

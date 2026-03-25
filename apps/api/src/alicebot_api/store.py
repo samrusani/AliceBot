@@ -437,6 +437,7 @@ class ToolExecutionRow(TypedDict):
 class ExecutionBudgetRow(TypedDict):
     id: UUID
     user_id: UUID
+    agent_profile_id: str | None
     tool_key: str | None
     domain_hint: str | None
     max_completed_executions: int
@@ -3075,6 +3076,7 @@ INSERT_EXECUTION_BUDGET_SQL = """
                 INSERT INTO execution_budgets (
                   id,
                   user_id,
+                  agent_profile_id,
                   tool_key,
                   domain_hint,
                   max_completed_executions,
@@ -3088,11 +3090,13 @@ INSERT_EXECUTION_BUDGET_SQL = """
                   %s,
                   %s,
                   %s,
+                  %s,
                   %s
                 )
                 RETURNING
                   id,
                   user_id,
+                  agent_profile_id,
                   tool_key,
                   domain_hint,
                   max_completed_executions,
@@ -3108,6 +3112,7 @@ GET_EXECUTION_BUDGET_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   tool_key,
                   domain_hint,
                   max_completed_executions,
@@ -3125,6 +3130,7 @@ LIST_EXECUTION_BUDGETS_SQL = """
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   tool_key,
                   domain_hint,
                   max_completed_executions,
@@ -3147,6 +3153,7 @@ DEACTIVATE_EXECUTION_BUDGET_SQL = """
                 RETURNING
                   id,
                   user_id,
+                  agent_profile_id,
                   tool_key,
                   domain_hint,
                   max_completed_executions,
@@ -3168,6 +3175,7 @@ SUPERSEDE_EXECUTION_BUDGET_SQL = """
                 RETURNING
                   id,
                   user_id,
+                  agent_profile_id,
                   tool_key,
                   domain_hint,
                   max_completed_executions,
@@ -4540,6 +4548,7 @@ class ContinuityStore:
         self,
         *,
         budget_id: UUID | None = None,
+        agent_profile_id: str | None = None,
         tool_key: str | None,
         domain_hint: str | None,
         max_completed_executions: int,
@@ -4551,6 +4560,7 @@ class ContinuityStore:
             INSERT_EXECUTION_BUDGET_SQL,
             (
                 budget_id,
+                agent_profile_id,
                 tool_key,
                 domain_hint,
                 max_completed_executions,
