@@ -404,6 +404,218 @@ def test_memory_review_endpoints_roundtrip_non_default_typed_metadata(
         assert payload["last_confirmed_at"].startswith("2026-03-20T09:00:00")
 
 
+def test_memory_admit_endpoint_scopes_same_memory_key_by_thread_profile(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = uuid4()
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        store.create_user(user_id, "profiled-admit@example.com", "Profiled Admit")
+        assistant_thread = store.create_thread("Assistant memory thread")
+        coach_thread = store.create_thread("Coach memory thread", agent_profile_id="coach_default")
+        assistant_session = store.create_session(assistant_thread["id"], status="active")
+        coach_session = store.create_session(coach_thread["id"], status="active")
+        assistant_event_id = store.append_event(
+            assistant_thread["id"],
+            assistant_session["id"],
+            "message.user",
+            {"text": "assistant profile memory evidence"},
+        )["id"]
+        coach_event_id = store.append_event(
+            coach_thread["id"],
+            coach_session["id"],
+            "message.user",
+            {"text": "coach profile memory evidence"},
+        )["id"]
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    assistant_status, assistant_payload = invoke_request(
+        "POST",
+        "/v0/memories/admit",
+        payload={
+            "user_id": str(user_id),
+            "memory_key": "user.preference.profiled.coffee",
+            "value": {"likes": "black"},
+            "source_event_ids": [str(assistant_event_id)],
+        },
+    )
+    coach_add_status, coach_add_payload = invoke_request(
+        "POST",
+        "/v0/memories/admit",
+        payload={
+            "user_id": str(user_id),
+            "memory_key": "user.preference.profiled.coffee",
+            "value": {"likes": "oat milk"},
+            "source_event_ids": [str(coach_event_id)],
+        },
+    )
+    coach_update_status, coach_update_payload = invoke_request(
+        "POST",
+        "/v0/memories/admit",
+        payload={
+            "user_id": str(user_id),
+            "memory_key": "user.preference.profiled.coffee",
+            "value": {"likes": "cortado"},
+            "source_event_ids": [str(coach_event_id)],
+        },
+    )
+
+    assert assistant_status == 200
+    assert assistant_payload["decision"] == "ADD"
+    assert coach_add_status == 200
+    assert coach_add_payload["decision"] == "ADD"
+    assert coach_update_status == 200
+    assert coach_update_payload["decision"] == "UPDATE"
+    assert assistant_payload["memory"]["id"] != coach_add_payload["memory"]["id"]
+    assert coach_update_payload["memory"]["id"] == coach_add_payload["memory"]["id"]
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        assistant_memory = store.get_memory(UUID(assistant_payload["memory"]["id"]))
+        coach_memory = store.get_memory(UUID(coach_add_payload["memory"]["id"]))
+
+    assert assistant_memory["agent_profile_id"] == "assistant_default"
+    assert assistant_memory["value"] == {"likes": "black"}
+    assert coach_memory["agent_profile_id"] == "coach_default"
+    assert coach_memory["value"] == {"likes": "cortado"}
+
+
+def test_memory_admit_endpoint_rejects_mixed_profile_source_events(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = uuid4()
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        store.create_user(user_id, "mixed-profile@example.com", "Mixed Profile")
+        assistant_thread = store.create_thread("Assistant mixed thread")
+        coach_thread = store.create_thread("Coach mixed thread", agent_profile_id="coach_default")
+        assistant_session = store.create_session(assistant_thread["id"], status="active")
+        coach_session = store.create_session(coach_thread["id"], status="active")
+        assistant_event_id = store.append_event(
+            assistant_thread["id"],
+            assistant_session["id"],
+            "message.user",
+            {"text": "assistant profile evidence"},
+        )["id"]
+        coach_event_id = store.append_event(
+            coach_thread["id"],
+            coach_session["id"],
+            "message.user",
+            {"text": "coach profile evidence"},
+        )["id"]
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status_code, payload = invoke_request(
+        "POST",
+        "/v0/memories/admit",
+        payload={
+            "user_id": str(user_id),
+            "memory_key": "user.preference.profiled.invalid",
+            "value": {"likes": "espresso"},
+            "source_event_ids": [str(assistant_event_id), str(coach_event_id)],
+        },
+    )
+
+    assert status_code == 400
+    assert payload == {
+        "detail": "source_event_ids must all belong to threads with the same agent_profile_id"
+    }
+
+
+def test_memory_admit_endpoint_rejects_explicit_agent_profile_mismatch(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = uuid4()
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        store.create_user(user_id, "mismatch-profile@example.com", "Mismatch Profile")
+        assistant_thread = store.create_thread("Assistant mismatch thread")
+        assistant_session = store.create_session(assistant_thread["id"], status="active")
+        assistant_event_id = store.append_event(
+            assistant_thread["id"],
+            assistant_session["id"],
+            "message.user",
+            {"text": "assistant profile mismatch evidence"},
+        )["id"]
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status_code, payload = invoke_request(
+        "POST",
+        "/v0/memories/admit",
+        payload={
+            "user_id": str(user_id),
+            "memory_key": "user.preference.profiled.mismatch",
+            "value": {"likes": "espresso"},
+            "source_event_ids": [str(assistant_event_id)],
+            "agent_profile_id": "coach_default",
+        },
+    )
+
+    assert status_code == 400
+    assert payload == {
+        "detail": "agent_profile_id must match the profile resolved from source_event_ids"
+    }
+
+
+def test_memory_admit_endpoint_rejects_unknown_agent_profile_id(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = uuid4()
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        store.create_user(user_id, "unknown-profile@example.com", "Unknown Profile")
+        assistant_thread = store.create_thread("Assistant unknown-profile thread")
+        assistant_session = store.create_session(assistant_thread["id"], status="active")
+        assistant_event_id = store.append_event(
+            assistant_thread["id"],
+            assistant_session["id"],
+            "message.user",
+            {"text": "assistant profile unknown evidence"},
+        )["id"]
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status_code, payload = invoke_request(
+        "POST",
+        "/v0/memories/admit",
+        payload={
+            "user_id": str(user_id),
+            "memory_key": "user.preference.profiled.unknown",
+            "value": {"likes": "espresso"},
+            "source_event_ids": [str(assistant_event_id)],
+            "agent_profile_id": "unknown_profile",
+        },
+    )
+
+    assert status_code == 400
+    assert payload == {
+        "detail": "agent_profile_id must reference an existing profile: unknown_profile"
+    }
+
+
 def test_memory_review_endpoints_enforce_per_user_isolation_and_not_found_behavior(
     migrated_database_urls,
     monkeypatch,

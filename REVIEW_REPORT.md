@@ -4,34 +4,34 @@
 PASS
 
 ## criteria met
-- Thread creation in live mode now submits `agent_profile_id` with `user_id` and `title` (verified in `apps/web/components/thread-create.tsx` and `apps/web/components/thread-create.test.tsx`).
-- Web thread contracts and read paths retain `agent_profile_id` across create/list/detail (`apps/web/lib/api.ts`, `apps/web/lib/api.test.ts`, `apps/web/app/chat/page.tsx`).
-- `/chat` performs live `GET /v0/agent-profiles` reads and remains usable when that read fails (fixture fallback path verified in `apps/web/app/chat/page.tsx` and `apps/web/app/chat/page.test.tsx`).
-- Thread profile identity is visibly rendered in both list and selected-thread summary surfaces (`apps/web/components/thread-list.tsx`, `apps/web/components/thread-summary.tsx`).
-- Fixture-mode behavior remains deterministic, including explicit `assistant_default` fallback when profile selection data is unavailable (`apps/web/lib/fixtures.ts`, `apps/web/components/thread-create.tsx`, `apps/web/app/chat/page.tsx`).
-- Required validation gates are green:
-  - `npm --prefix apps/web run test:mvp:validation-matrix` -> PASS
-  - `python3 scripts/run_phase2_validation_matrix.py` -> PASS (rerun with elevated local DB access)
-- Sprint scope stayed bounded to web profile adoption; no backend/API/migration implementation changes detected.
+- Admission profile scope is enforced end-to-end:
+- derives profile from `source_event_ids` thread context ([memory.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/memory.py:574)).
+- rejects mixed-profile source events deterministically ([memory.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/memory.py:592)).
+- validates explicit `agent_profile_id` for existence + source-profile consistency ([memory.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/memory.py:599)).
+- Admission upsert is profile-scoped by `(memory_key, agent_profile_id)` ([memory.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/memory.py:775), [store.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/store.py:748)).
+- Schema isolation is in place (`UNIQUE (user_id, agent_profile_id, memory_key)`) and downgrade now handles cross-profile duplicates before restoring legacy uniqueness ([20260324_0034_memory_agent_profile_scope.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/alembic/versions/20260324_0034_memory_agent_profile_scope.py:28), [20260324_0034_memory_agent_profile_scope.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/alembic/versions/20260324_0034_memory_agent_profile_scope.py:39)).
+- Branch diff is Sprint 5 scoped plus required Sprint 4 registry prerequisite files needed because `main` does not yet include Sprint 4.
+- Added direct admission-path negative coverage for explicit profile mismatch and unknown profile:
+- unit: [test_memory.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_memory.py:501)
+- integration: [test_memory_review_api.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_memory_review_api.py:537)
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking quality or safety issues found in the in-scope implementation.
+- None blocking for sprint scope.
 
 ## regression risks
-- Low risk: if backend profile IDs expand while fixture profile seeds lag, labels in fallback/profile-name mapping may degrade to raw IDs until fixture registry is updated.
+- Low. Profile-scoped admission/read behavior and rollback guards are covered by unit, integration, and matrix gates.
 
 ## docs issues
-- `BUILD_REPORT.md` is present, scoped to this sprint, includes verification outcomes, and explicitly states deferred scope.
+- None. `BUILD_REPORT.md` documents Sprint 5 scope and required Sprint 4 prerequisite carry-forward.
 
 ## should anything be added to RULES.md?
-- No.
+- Optional: keep a standing rule that profile-scope admission changes must include explicit negative-path tests for profile mismatch/invalid profile IDs.
 
 ## should anything update ARCHITECTURE.md?
-- No architecture update is required for this sprint; this is a web adoption of an already-shipped backend seam.
+- Optional: codify downgrade duplicate-key rewrite behavior for profile-domain memory keys during rollback.
 
 ## recommended next action
-1. Proceed to Control Tower merge review for Phase 3 Sprint 2.
-2. Optionally add a small non-blocking test for unknown profile-ID display fallback (raw ID rendering) to harden future profile-registry drift behavior.
+1. Proceed to Control Tower final merge review for Phase 3 Sprint 5.

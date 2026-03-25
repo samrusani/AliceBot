@@ -385,3 +385,89 @@ def test_generate_response_respects_per_user_isolation(migrated_database_urls, m
         owner_events = ContinuityStore(conn).list_thread_events(owner["thread_id"])
 
     assert [event["sequence_no"] for event in owner_events] == [1]
+
+
+def test_generate_response_inherits_profile_scoped_memory_compile_behavior(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = uuid4()
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        store.create_user(user_id, "profile-response@example.com", "Profile Response")
+        assistant_thread = store.create_thread("Assistant response thread")
+        coach_thread = store.create_thread("Coach response thread", agent_profile_id="coach_default")
+        assistant_session = store.create_session(assistant_thread["id"], status="active")
+        coach_session = store.create_session(coach_thread["id"], status="active")
+        assistant_event = store.append_event(
+            assistant_thread["id"],
+            assistant_session["id"],
+            "message.user",
+            {"text": "assistant memory evidence"},
+        )
+        coach_event = store.append_event(
+            coach_thread["id"],
+            coach_session["id"],
+            "message.user",
+            {"text": "coach memory evidence"},
+        )
+        assistant_memory = store.create_memory(
+            memory_key="user.preference.response.assistant_scope",
+            value={"likes": "americano"},
+            status="active",
+            source_event_ids=[str(assistant_event["id"])],
+        )
+        coach_memory = store.create_memory(
+            memory_key="user.preference.response.coach_scope",
+            value={"likes": "macchiato"},
+            status="active",
+            source_event_ids=[str(coach_event["id"])],
+            agent_profile_id="coach_default",
+        )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            model_provider="openai_responses",
+            model_name="gpt-5-mini",
+            model_api_key="test-key",
+        ),
+    )
+    monkeypatch.setattr(
+        response_generation_module,
+        "invoke_model",
+        lambda **_kwargs: response_generation_module.ModelInvocationResponse(
+            provider="openai_responses",
+            model="gpt-5-mini",
+            response_id="resp_profile_scope",
+            finish_reason="completed",
+            output_text="Scoped response.",
+            usage={"input_tokens": 10, "output_tokens": 3, "total_tokens": 13},
+        ),
+    )
+
+    status_code, payload = invoke_generate_response(
+        {
+            "user_id": str(user_id),
+            "thread_id": str(coach_thread["id"]),
+            "message": "Use my coaching profile context.",
+            "max_memories": 10,
+        }
+    )
+
+    assert status_code == 200
+    assert payload["metadata"] == {"agent_profile_id": "coach_default"}
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        compile_trace_events = store.list_trace_events(UUID(payload["trace"]["compile_trace_id"]))
+
+    memory_decision_ids = [
+        event["payload"]["entity_id"]
+        for event in compile_trace_events
+        if event["payload"].get("entity_type") == "memory"
+    ]
+    assert str(coach_memory["id"]) in memory_decision_ids
+    assert str(assistant_memory["id"]) not in memory_decision_ids

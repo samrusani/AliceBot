@@ -94,6 +94,7 @@ HYBRID_ARTIFACT_MERGED_ORDER = [
     "sequence_no_asc",
     "id_asc",
 ]
+DEFAULT_AGENT_PROFILE_ID = "assistant_default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +166,52 @@ def _serialize_thread(thread: ThreadRow) -> dict[str, str]:
         "created_at": thread["created_at"].isoformat(),
         "updated_at": thread["updated_at"].isoformat(),
     }
+
+
+def _resolve_thread_agent_profile_id(thread: ThreadRow) -> str:
+    return str(thread.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID))
+
+
+def _list_context_memories_for_profile(
+    store: ContinuityStore,
+    *,
+    agent_profile_id: str,
+) -> list[MemoryRow]:
+    list_for_profile = getattr(store, "list_context_memories_for_profile", None)
+    if callable(list_for_profile):
+        return list_for_profile(agent_profile_id=agent_profile_id)
+    return [
+        memory
+        for memory in store.list_context_memories()
+        if str(memory.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID)) == agent_profile_id
+    ]
+
+
+def _retrieve_semantic_memory_matches_for_profile(
+    store: ContinuityStore,
+    *,
+    embedding_config_id: UUID,
+    query_vector: list[float],
+    limit: int,
+    agent_profile_id: str,
+) -> list[SemanticMemoryRetrievalRow]:
+    retrieve_for_profile = getattr(store, "retrieve_semantic_memory_matches_for_profile", None)
+    if callable(retrieve_for_profile):
+        return retrieve_for_profile(
+            embedding_config_id=embedding_config_id,
+            query_vector=query_vector,
+            limit=limit,
+            agent_profile_id=agent_profile_id,
+        )
+    return [
+        memory
+        for memory in store.retrieve_semantic_memory_matches(
+            embedding_config_id=embedding_config_id,
+            query_vector=query_vector,
+            limit=limit,
+        )
+        if str(memory.get("agent_profile_id", DEFAULT_AGENT_PROFILE_ID)) == agent_profile_id
+    ]
 
 
 def _serialize_session(session: SessionRow) -> dict[str, str | None]:
@@ -618,6 +665,7 @@ def _compile_memory_section(
     store: ContinuityStore,
     *,
     memories: list[MemoryRow],
+    agent_profile_id: str,
     limits: ContextCompilerLimits,
     semantic_retrieval: CompileContextSemanticRetrievalInput | None,
 ) -> CompiledMemorySection:
@@ -637,10 +685,12 @@ def _compile_memory_section(
     )
     _config, query_vector = validate_semantic_memory_retrieval_request(store, request=request)
     ordered_semantic_candidates = sorted(
-        store.retrieve_semantic_memory_matches(
+        _retrieve_semantic_memory_matches_for_profile(
+            store,
             embedding_config_id=semantic_retrieval.embedding_config_id,
             query_vector=query_vector,
             limit=_UNBOUNDED_SEMANTIC_RETRIEVAL_LIMIT,
+            agent_profile_id=agent_profile_id,
         ),
         key=_semantic_memory_sort_key,
     )
@@ -1301,6 +1351,7 @@ def compile_resumption_brief(
     bounded_event_limit = max(0, event_limit)
     bounded_open_loop_limit = max(0, open_loop_limit)
     bounded_memory_limit = max(0, memory_limit)
+    agent_profile_id = _resolve_thread_agent_profile_id(thread)
 
     conversation_kinds = frozenset(RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS)
     ordered_conversation_events = [
@@ -1337,7 +1388,14 @@ def compile_resumption_brief(
     }
 
     ordered_memories = sorted(
-        [memory for memory in store.list_context_memories() if memory["status"] == "active"],
+        [
+            memory
+            for memory in _list_context_memories_for_profile(
+                store,
+                agent_profile_id=agent_profile_id,
+            )
+            if memory["status"] == "active"
+        ],
         key=_memory_sort_key,
     )
     included_memories = ordered_memories[-bounded_memory_limit:] if bounded_memory_limit > 0 else []
@@ -1725,13 +1783,15 @@ def compile_and_persist_trace(
 ) -> CompiledTraceRun:
     user = store.get_user(user_id)
     thread = store.get_thread(thread_id)
+    agent_profile_id = _resolve_thread_agent_profile_id(thread)
     sessions = store.list_thread_sessions(thread_id)
     events = store.list_thread_events(thread_id)
-    memories = store.list_context_memories()
+    memories = _list_context_memories_for_profile(store, agent_profile_id=agent_profile_id)
     open_loops = store.list_open_loops(status="open")
     memory_section = _compile_memory_section(
         store,
         memories=memories,
+        agent_profile_id=agent_profile_id,
         limits=limits,
         semantic_retrieval=semantic_retrieval,
     )
