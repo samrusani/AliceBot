@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from alicebot_api.approvals import ApprovalNotFoundError
-from alicebot_api.contracts import ProxyExecutionRequestInput
+from alicebot_api.contracts import DEFAULT_AGENT_PROFILE_ID, ProxyExecutionRequestInput
 from alicebot_api.proxy_execution import (
     PROXY_EXECUTION_REQUEST_EVENT_KIND,
     PROXY_EXECUTION_RESULT_EVENT_KIND,
@@ -22,6 +22,10 @@ class ProxyExecutionStoreStub:
         self.base_time = datetime(2026, 3, 13, 9, 0, tzinfo=UTC)
         self.user_id = uuid4()
         self.thread_id = uuid4()
+        self.agent_profiles = {DEFAULT_AGENT_PROFILE_ID}
+        self.thread_profiles: dict[UUID, str] = {
+            self.thread_id: DEFAULT_AGENT_PROFILE_ID,
+        }
         self.locked_task_ids: list[UUID] = []
         self.approvals: dict[UUID, dict[str, object]] = {}
         self.tasks: list[dict[str, object]] = []
@@ -122,6 +126,7 @@ class ProxyExecutionStoreStub:
     def seed_execution_budget(
         self,
         *,
+        agent_profile_id: str | None = None,
         tool_key: str | None,
         domain_hint: str | None,
         max_completed_executions: int,
@@ -131,6 +136,7 @@ class ProxyExecutionStoreStub:
         row = {
             "id": uuid4(),
             "user_id": self.user_id,
+            "agent_profile_id": agent_profile_id,
             "tool_key": tool_key,
             "domain_hint": domain_hint,
             "max_completed_executions": max_completed_executions,
@@ -147,6 +153,30 @@ class ProxyExecutionStoreStub:
 
     def get_approval_optional(self, approval_id: UUID) -> dict[str, object] | None:
         return self.approvals.get(approval_id)
+
+    def get_thread_optional(self, thread_id: UUID) -> dict[str, object] | None:
+        profile_id = self.thread_profiles.get(thread_id)
+        if profile_id is None:
+            return None
+        return {
+            "id": thread_id,
+            "user_id": self.user_id,
+            "title": "Proxy execution thread",
+            "agent_profile_id": profile_id,
+            "created_at": self.base_time,
+            "updated_at": self.base_time,
+        }
+
+    def get_agent_profile_optional(self, profile_id: str) -> dict[str, object] | None:
+        if profile_id not in self.agent_profiles:
+            return None
+        return {
+            "id": profile_id,
+            "name": profile_id,
+            "description": "",
+            "model_provider": None,
+            "model_name": None,
+        }
 
     def create_trace(
         self,
@@ -766,6 +796,70 @@ def test_execute_approved_proxy_request_returns_blocked_budget_response_and_pers
         "task.step.lifecycle.summary",
     ]
     assert store.trace_events[2]["payload"] == payload["result"]["budget_decision"]
+
+
+def test_execute_approved_proxy_request_fail_closes_when_budget_context_is_invalid() -> None:
+    store = ProxyExecutionStoreStub()
+    approval = store.seed_approval(status="approved", tool_key="proxy.echo")
+    approval["request"]["thread_id"] = "not-a-uuid"  # type: ignore[index]
+
+    payload = execute_approved_proxy_request(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ProxyExecutionRequestInput(approval_id=approval["id"]),
+    )
+
+    assert payload["events"] is None
+    assert payload["result"] == {
+        "handler_key": None,
+        "status": "blocked",
+        "output": None,
+        "reason": (
+            "execution budget invariance blocks execution: invalid request thread/profile "
+            "context: request.thread_id 'not-a-uuid' is not a valid UUID"
+        ),
+        "budget_decision": {
+            "matched_budget_id": None,
+            "tool_key": "proxy.echo",
+            "domain_hint": None,
+            "budget_tool_key": None,
+            "budget_domain_hint": None,
+            "max_completed_executions": None,
+            "rolling_window_seconds": None,
+            "count_scope": "lifetime",
+            "window_started_at": None,
+            "completed_execution_count": 0,
+            "projected_completed_execution_count": 1,
+            "decision": "block",
+            "reason": "invalid_request_context",
+            "order": ["specificity_desc", "created_at_asc", "id_asc"],
+            "history_order": ["executed_at_asc", "id_asc"],
+            "request_thread_id": "not-a-uuid",
+            "context_resolution": "invalid",
+            "context_reason": "request.thread_id 'not-a-uuid' is not a valid UUID",
+        },
+    }
+    assert store.events == []
+    assert len(store.tool_executions) == 1
+    assert store.tool_executions[0]["status"] == "blocked"
+    assert store.tool_executions[0]["result"] == payload["result"]
+    assert [event["kind"] for event in store.trace_events] == [
+        "tool.proxy.execute.request",
+        "tool.proxy.execute.approval",
+        "tool.proxy.execute.budget",
+        "tool.proxy.execute.dispatch",
+        "tool.proxy.execute.summary",
+        "task.lifecycle.state",
+        "task.lifecycle.summary",
+        "task.step.lifecycle.state",
+        "task.step.lifecycle.summary",
+    ]
+    assert store.trace_events[2]["payload"] == payload["result"]["budget_decision"]
+    assert store.trace_events[3]["payload"]["budget_context"] == {
+        "request_thread_id": "not-a-uuid",
+        "context_resolution": "invalid",
+        "context_reason": "request.thread_id 'not-a-uuid' is not a valid UUID",
+    }
 
 
 def test_execute_approved_proxy_request_rejects_missing_visible_approval() -> None:

@@ -51,7 +51,13 @@ TaskStepStatus = Literal["created", "approved", "executed", "blocked", "denied"]
 ProxyExecutionStatus = Literal["completed", "blocked"]
 ExecutionBudgetStatus = Literal["active", "inactive", "superseded"]
 ExecutionBudgetDecision = Literal["allow", "block"]
-ExecutionBudgetDecisionReason = Literal["no_matching_budget", "within_budget", "budget_exceeded"]
+ExecutionBudgetDecisionReason = Literal[
+    "no_matching_budget",
+    "within_budget",
+    "budget_exceeded",
+    "invalid_request_context",
+]
+ExecutionBudgetContextResolution = Literal["resolved", "invalid"]
 ExecutionBudgetCountScope = Literal["lifetime", "rolling_window"]
 ExecutionBudgetLifecycleAction = Literal["deactivate", "supersede"]
 ExecutionBudgetLifecycleOutcome = Literal["deactivated", "superseded", "rejected"]
@@ -3010,6 +3016,9 @@ class ExecutionBudgetDecisionRecord(TypedDict):
     reason: ExecutionBudgetDecisionReason
     order: list[str]
     history_order: list[str]
+    request_thread_id: NotRequired[str | None]
+    context_resolution: NotRequired[ExecutionBudgetContextResolution]
+    context_reason: NotRequired[str | None]
 
 
 class ExecutionBudgetLifecycleRequestTracePayload(TypedDict):
@@ -3153,6 +3162,12 @@ class ProxyExecutionApprovalTracePayload(TypedDict):
     eligible_for_execution: bool
 
 
+class ProxyExecutionBudgetContextTracePayload(TypedDict):
+    request_thread_id: str | None
+    context_resolution: ExecutionBudgetContextResolution
+    context_reason: str | None
+
+
 class ProxyExecutionDispatchTracePayload(TypedDict):
     approval_id: str
     task_step_id: str
@@ -3163,6 +3178,7 @@ class ProxyExecutionDispatchTracePayload(TypedDict):
     reason: str | None
     result_status: ProxyExecutionStatus | None
     output: JsonObject | None
+    budget_context: NotRequired[ProxyExecutionBudgetContextTracePayload]
 
 
 class ProxyExecutionSummaryTracePayload(TypedDict):

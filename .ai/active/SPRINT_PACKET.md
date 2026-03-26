@@ -2,32 +2,32 @@
 
 ## Sprint Title
 
-Phase 3 Sprint 8: Profile-Scoped Execution Budget Isolation
+Phase 3 Sprint 9: Budget Context Invariance Hardening
 
 ## Sprint Type
 
-feature
+hardening
 
 ## Sprint Reason
 
-Sprint 7 completed profile-scoped response model routing. The next non-redundant gap is governed execution budget isolation: execution budgets are still user-global, so one profile can exhaust limits that should be isolated to another profile.
+Sprint 8 completed profile-scoped execution-budget isolation. The remaining non-redundant correctness gap is context invariance: malformed or unresolvable thread/profile context can degrade budget counting/match isolation behavior.
 
 ## Sprint Intent
 
-Scope execution-budget matching and counting to the active thread profile, with deterministic fallback to global budgets when no profile-specific budget matches.
+Make budget decisioning fail-closed and profile-safe when thread context is malformed/unresolvable, and make counted execution history strictly profile-attributable.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase3-sprint8-profile-budget-scope`
+- Branch Name: `codex/phase3-sprint9-budget-context-invariance`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It is the next non-redundant seam after identity, memory isolation, policy isolation, and model isolation.
-- It closes a remaining shared-governance gap where execution budgets can still cross-contaminate profiles.
-- It advances separate-agent runtime behavior without widening orchestration or connector scope.
+- It directly closes the only explicit residual risk called out in Sprint 8 review.
+- It hardens separate-agent isolation semantics under malformed state, not just happy-path contracts.
+- It preserves momentum toward MVP/Phase 3 completion without reopening schema breadth.
 
 ## Redundancy Guard
 
@@ -38,38 +38,35 @@ Scope execution-budget matching and counting to the active thread profile, with 
 - Already shipped in Sprint 5: profile-scoped memory/context isolation.
 - Already shipped in Sprint 6: profile-scoped policy evaluation/routing.
 - Already shipped in Sprint 7: profile-scoped model/provider routing for `/v0/responses`.
-- Missing and required now: profile-scoped execution budget matching + counted execution history isolation.
+- Already shipped in Sprint 8: profile-scoped execution-budget matching + counted execution isolation for normal context.
+- Missing and required now: deterministic fail-closed handling and invariance guarantees for malformed/unresolvable thread context.
 
 ## Design Truth
 
-- Execution budgets can optionally target one `agent_profile_id` while preserving global budget support via nullable scope.
-- Budget match precedence remains deterministic:
-  - first match active budgets scoped to the thread profile
-  - then match active global budgets (`agent_profile_id IS NULL`)
-  - within each scope, preserve existing selector specificity and stable ordering
-- Completed-execution counting for budget decisions must only include executions attributable to the same profile scope as the matched budget.
-- Keep tool/provider/orchestration surface bounded; this sprint is budget-scope isolation only.
+- Budget decisioning must resolve runtime thread/profile context deterministically before counting/match finalization.
+- If request thread context is missing/unresolvable at execution time, decisioning is fail-closed with explicit deterministic reasoning (no unscoped fallback counting).
+- Historical execution rows with malformed/unresolvable thread context are excluded from profile-scoped counted history.
+- Matching precedence remains unchanged for valid context:
+  - profile-scoped active budgets first
+  - global active budgets second
+  - existing selector specificity ordering retained within scope
+- Keep scope strictly bounded to invariance hardening; no provider, connector, or orchestration expansion.
 
 ## Exact Surfaces In Scope
 
-- execution-budget schema/profile scope wiring
-- execution-budget API contracts and lifecycle responses with additive profile scope field
-- budget evaluation matching + counting with thread-profile-aware isolation and global fallback
-- unit/integration tests proving profile isolation and deterministic fallback behavior
+- execution-budget decisioning invariance for malformed/unresolvable runtime context
+- proxy execution fail-closed behavior when decision context is invalid
+- additive trace/decision diagnostics for invalid context handling
+- unit/integration regression coverage for malformed request and malformed history rows
 
 ## Exact Files In Scope
 
-- [store.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/store.py)
-- [main.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/main.py)
 - [contracts.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/contracts.py)
 - [execution_budgets.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/execution_budgets.py)
 - [proxy_execution.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/proxy_execution.py)
-- [20260325_0037_execution_budget_agent_profile_scope.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/alembic/versions/20260325_0037_execution_budget_agent_profile_scope.py)
-- [test_20260325_0037_execution_budget_agent_profile_scope.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_20260325_0037_execution_budget_agent_profile_scope.py)
 - [test_execution_budgets.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_execution_budgets.py)
-- [test_execution_budgets_main.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_execution_budgets_main.py)
-- [test_execution_budget_store.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_execution_budget_store.py)
-- [test_execution_budgets_api.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_execution_budgets_api.py)
+- [test_proxy_execution.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_proxy_execution.py)
+- [test_proxy_execution_main.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_proxy_execution_main.py)
 - [test_proxy_execution_api.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_proxy_execution_api.py)
 - [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md)
 - [REVIEW_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md)
@@ -77,25 +74,25 @@ Scope execution-budget matching and counting to the active thread profile, with 
 
 ## In Scope
 
-- Add nullable `agent_profile_id` to `execution_budgets` with FK to `agent_profiles`.
-- Update active-scope uniqueness/index strategy to include profile scope:
-  - one active budget per `(user_id, agent_profile_id, tool_key, domain_hint)` selector scope
-  - preserve deterministic ordering/index contracts
-- Update execution-budget create/list/get/lifecycle contracts to expose additive `agent_profile_id`.
-- Validate `agent_profile_id` on create when provided (must exist in registry).
-- Update budget evaluation to:
-  - resolve active thread profile from request thread
-  - match profile-scoped budgets first, then global budgets
-  - keep existing selector specificity ordering within each scope
-  - count only completed executions attributable to the matched profile scope
-- Preserve existing proxy execution event and trace contract shapes (additive fields only where necessary).
-- Add migration tests for schema/index invariants and rollback.
-- Add unit/integration coverage for profile-scoped budget matching, fallback, and blocked/allow decisions.
+- Harden budget evaluation context resolution:
+  - resolve request thread/profile deterministically before budget counting
+  - explicitly handle missing/unresolvable thread context as fail-closed path
+- Harden counted execution filtering:
+  - exclude historical executions with malformed/unresolvable thread context from scoped counts
+  - preserve deterministic ordering/rolling-window behavior for valid rows
+- Add additive diagnostics on blocked fail-closed decisions to make reason visible in traces/results.
+- Preserve backward compatibility for existing proxy response envelopes and trace event ordering.
+- Add unit coverage for:
+  - invalid runtime thread context behavior
+  - malformed execution-history row behavior
+  - deterministic blocked reason contracts
+- Add integration coverage proving proxy execution blocks deterministically when context invariants are violated.
 
 ## Out of Scope
 
-- profile CRUD endpoints
-- policy engine redesign beyond budget profile scope filtering
+- schema/migration changes
+- execution-budget CRUD redesign
+- policy engine redesign
 - introducing new providers, connectors, or secret handling changes
 - orchestration/worker runtime changes
 - web UI changes
@@ -103,24 +100,19 @@ Scope execution-budget matching and counting to the active thread profile, with 
 
 ## Required Deliverables
 
-- execution-budget profile-scope migration and store wiring
-- budget create/list/get serialization with additive profile scope fields
-- profile-aware budget evaluation and deterministic global fallback
-- passing unit/integration evidence for profile-scoped budget decisions
+- fail-closed invariance handling for malformed/unresolvable budget runtime context
+- deterministic counting behavior under malformed history conditions
+- passing unit/integration evidence for invariance hardening behavior
 - sprint build/review reports scoped to this sprint only
 
 ## Acceptance Criteria
 
-- `execution_budgets` persist optional `agent_profile_id` with FK integrity.
-- Budget create/list/get payloads include additive `agent_profile_id` and remain backward-compatible.
-- Budget evaluation for proxy execution is profile-isolated:
-  - profile-scoped budgets apply to matching thread profiles
-  - profile-scoped budgets do not throttle non-matching profiles
-  - deterministic fallback to global budgets works when no profile-scoped match exists
-- Existing proxy execution result/event/trace contracts remain backward-compatible.
-- `./.venv/bin/python -m pytest tests/unit/test_20260325_0037_execution_budget_agent_profile_scope.py -q` passes.
-- `./.venv/bin/python -m pytest tests/unit/test_execution_budgets.py tests/unit/test_execution_budgets_main.py tests/unit/test_execution_budget_store.py -q` passes.
-- `./.venv/bin/python -m pytest tests/integration/test_execution_budgets_api.py tests/integration/test_proxy_execution_api.py -q` passes.
+- Budget decisioning does not execute with unresolvable request thread/profile context.
+- Malformed/unresolvable historical execution rows do not contaminate scoped budget counts.
+- Proxy execution returns deterministic blocked outcomes for invalid-context invariance failures.
+- Existing proxy execution event/result/trace contracts remain backward-compatible (additive diagnostics only).
+- `./.venv/bin/python -m pytest tests/unit/test_execution_budgets.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py -q` passes.
+- `./.venv/bin/python -m pytest tests/integration/test_proxy_execution_api.py -q` passes.
 - `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
 - No provider/connector/orchestration scope expansion enters this sprint.
 
@@ -128,54 +120,50 @@ Scope execution-budget matching and counting to the active thread profile, with 
 
 - do not introduce new dependencies
 - preserve existing response/event/trace payload contracts (additive fields only where necessary)
-- keep migration reversible and forward-safe
-- keep deterministic ordering contracts (`created_at_asc`, `id_asc`, `specificity_desc`)
+- keep deterministic ordering contracts (`created_at_asc`, `id_asc`, `specificity_desc`, rolling-window semantics)
+- no new DB migration in this sprint unless an explicit Control Tower scope change is issued
 
 ## Control Tower Task Cards
 
-### Task 1: Budget Profile-Scope Migration + Store Wiring
+### Task 1: Runtime Invariance Hardening
 Owner: tooling operative  
 Write scope:
-- `apps/api/alembic/versions/20260325_0037_execution_budget_agent_profile_scope.py`
-- `apps/api/src/alicebot_api/store.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/main.py`
 - `apps/api/src/alicebot_api/execution_budgets.py`
 - `apps/api/src/alicebot_api/proxy_execution.py`
 
 ### Task 2: Verification
 Owner: tooling operative  
 Write scope:
-- `tests/unit/test_20260325_0037_execution_budget_agent_profile_scope.py`
 - `tests/unit/test_execution_budgets.py`
-- `tests/unit/test_execution_budgets_main.py`
-- `tests/unit/test_execution_budget_store.py`
-- `tests/integration/test_execution_budgets_api.py`
+- `tests/unit/test_proxy_execution.py`
+- `tests/unit/test_proxy_execution_main.py`
 - `tests/integration/test_proxy_execution_api.py`
 
 ### Task 3: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify sprint stays execution-budget-profile-scope scoped
-- verify profile isolation and global fallback are deterministic
+- verify sprint stays budget-context-invariance scoped
+- verify fail-closed behavior for invalid context is deterministic
 - verify no provider/connector/orchestration expansion
 - verify validation matrix remains green
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact execution-budget profile-scope migration and routing/evaluation deltas
+- exact invariance-hardening decisioning deltas
 - exact verification command outcomes
-- explicit deferred scope (providers/connectors, orchestration, profile CRUD)
+- explicit deferred scope (schema expansion, providers/connectors, orchestration, profile CRUD)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint stayed bounded to execution-budget profile scope
-- profile-scoped budget matching/counting and global fallback are deterministic and correct
+- sprint stayed bounded to budget context invariance hardening
+- malformed-context fail-closed behavior is deterministic and correct
+- profile-scoped counting remains isolated under malformed-history pressure
 - API and proxy-execution behavior remain backward-compatible
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when execution-budget decisions are profile-scoped and deterministic for the active thread profile, with migration/test evidence and all validation gates green.
+This sprint is complete when proxy execution budget decisioning is fail-closed under invalid context and profile-scoped counting remains deterministic under malformed-history conditions, with test evidence and validation gates green.

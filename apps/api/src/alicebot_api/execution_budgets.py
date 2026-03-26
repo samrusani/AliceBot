@@ -56,6 +56,14 @@ class ExecutionBudgetDecision:
     blocked_result: ToolExecutionResultRecord | None
 
 
+@dataclass(frozen=True, slots=True)
+class _RequestContextResolution:
+    request_thread_id: str | None
+    active_thread_profile_id: str | None
+    context_resolution: str
+    context_reason: str | None
+
+
 def serialize_execution_budget_row(row: ExecutionBudgetRow) -> ExecutionBudgetRecord:
     return {
         "id": str(row["id"]),
@@ -720,20 +728,51 @@ def _thread_profile_id_optional(
         return None
     profile_id = cast(str | None, thread.get("agent_profile_id"))
     if profile_id is None:
-        return DEFAULT_AGENT_PROFILE_ID
+        profile_id = DEFAULT_AGENT_PROFILE_ID
+    if store.get_agent_profile_optional(profile_id) is None:
+        return None
     return profile_id
 
 
-def _resolve_request_thread_profile_id(
+def _resolve_request_context(
     store: ContinuityStore,
     *,
     request: ToolRoutingRequestRecord,
-) -> str | None:
+) -> _RequestContextResolution:
+    request_thread_id = request.get("thread_id")
+    if not isinstance(request_thread_id, str):
+        return _RequestContextResolution(
+            request_thread_id=None,
+            active_thread_profile_id=None,
+            context_resolution="invalid",
+            context_reason="request.thread_id is missing",
+        )
     try:
-        thread_id = UUID(request["thread_id"])
+        thread_id = UUID(request_thread_id)
     except (TypeError, ValueError):
-        return None
-    return _thread_profile_id_optional(store, thread_id=thread_id)
+        return _RequestContextResolution(
+            request_thread_id=request_thread_id,
+            active_thread_profile_id=None,
+            context_resolution="invalid",
+            context_reason=f"request.thread_id '{request_thread_id}' is not a valid UUID",
+        )
+    active_thread_profile_id = _thread_profile_id_optional(store, thread_id=thread_id)
+    if active_thread_profile_id is None:
+        return _RequestContextResolution(
+            request_thread_id=request_thread_id,
+            active_thread_profile_id=None,
+            context_resolution="invalid",
+            context_reason=(
+                f"request.thread_id '{request_thread_id}' did not resolve to a visible "
+                "thread/profile context"
+            ),
+        )
+    return _RequestContextResolution(
+        request_thread_id=request_thread_id,
+        active_thread_profile_id=active_thread_profile_id,
+        context_resolution="resolved",
+        context_reason=None,
+    )
 
 
 def _count_profile_scope_id(
@@ -797,15 +836,26 @@ def _counted_completed_execution_rows(
         execution_row = cast(ToolExecutionRow, row)
         if not _execution_matches_budget(execution_row, matched_budget):
             continue
-        if count_profile_scope_id is not None:
-            thread_id = execution_row["thread_id"]
-            if thread_id not in thread_profile_cache:
-                thread_profile_cache[thread_id] = _thread_profile_id_optional(
-                    store,
-                    thread_id=thread_id,
-                )
-            if thread_profile_cache[thread_id] != count_profile_scope_id:
-                continue
+        request_payload = cast(dict[str, object], execution_row["request"])
+        request_thread_id_raw = request_payload.get("thread_id")
+        if not isinstance(request_thread_id_raw, str):
+            continue
+        try:
+            request_thread_id = UUID(request_thread_id_raw)
+        except (TypeError, ValueError):
+            continue
+        if request_thread_id != execution_row["thread_id"]:
+            continue
+        if request_thread_id not in thread_profile_cache:
+            thread_profile_cache[request_thread_id] = _thread_profile_id_optional(
+                store,
+                thread_id=request_thread_id,
+            )
+        row_profile_id = thread_profile_cache[request_thread_id]
+        if row_profile_id is None:
+            continue
+        if count_profile_scope_id is not None and row_profile_id != count_profile_scope_id:
+            continue
         if window_started_at is not None and execution_row["executed_at"] < window_started_at:
             continue
         counted_rows.append(execution_row)
@@ -839,18 +889,39 @@ def _blocked_result(
     }
 
 
+def _invalid_context_blocked_result(
+    decision: ExecutionBudgetDecisionRecord,
+) -> ToolExecutionResultRecord:
+    context_reason = cast(str | None, decision.get("context_reason"))
+    reason = "execution budget invariance blocks execution: invalid request thread/profile context"
+    if context_reason is not None:
+        reason = f"{reason}: {context_reason}"
+    return {
+        "handler_key": None,
+        "status": "blocked",
+        "output": None,
+        "reason": reason,
+        "budget_decision": decision,
+    }
+
+
 def evaluate_execution_budget(
     store: ContinuityStore,
     *,
     tool: ToolRecord,
     request: ToolRoutingRequestRecord,
 ) -> ExecutionBudgetDecision:
-    active_thread_profile_id = _resolve_request_thread_profile_id(store, request=request)
-    matching_budgets = _matching_budget_rows(
-        store,
-        active_thread_profile_id=active_thread_profile_id,
-        tool_key=tool["tool_key"],
-        domain_hint=request["domain_hint"],
+    request_context = _resolve_request_context(store, request=request)
+    active_thread_profile_id = request_context.active_thread_profile_id
+    matching_budgets = (
+        []
+        if request_context.context_resolution == "invalid"
+        else _matching_budget_rows(
+            store,
+            active_thread_profile_id=active_thread_profile_id,
+            tool_key=tool["tool_key"],
+            domain_hint=request["domain_hint"],
+        )
     )
     matched_budget = matching_budgets[0] if matching_budgets else None
     evaluation_time = _current_time(store)
@@ -904,6 +975,15 @@ def evaluate_execution_budget(
         "order": list(EXECUTION_BUDGET_MATCH_ORDER),
         "history_order": list(TOOL_EXECUTION_LIST_ORDER),
     }
+
+    if request_context.context_resolution == "invalid":
+        record["decision"] = "block"
+        record["reason"] = "invalid_request_context"
+        record["request_thread_id"] = request_context.request_thread_id
+        record["context_resolution"] = request_context.context_resolution
+        record["context_reason"] = request_context.context_reason
+        blocked_result = _invalid_context_blocked_result(record)
+        return ExecutionBudgetDecision(record=record, blocked_result=blocked_result)
 
     if matched_budget is None:
         return ExecutionBudgetDecision(record=record, blocked_result=None)
