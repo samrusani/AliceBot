@@ -17,20 +17,20 @@ class ControlDocTruthRule:
 CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="ARCHITECTURE.md",
-        required_markers=("through Phase 2 Sprint 14",),
+        required_markers=("through Phase 3 Sprint 9",),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "through Phase 2 Sprint 14",
-            "canonical Phase 2 gate ownership",
+            "through Phase 3 Sprint 9",
+            "canonical Phase 3 gate entrypoints",
         ),
     ),
     ControlDocTruthRule(
         relative_path="README.md",
         required_markers=(
-            "through Phase 2 Sprint 14",
-            "Canonical gate ownership: `scripts/run_phase2_*.py` are implementation source",
+            "through Phase 3 Sprint 9",
+            "Canonical gate entrypoints: `scripts/run_phase3_*.py` are the control-plane entrypoint wrappers",
         ),
     ),
     ControlDocTruthRule(
@@ -44,15 +44,15 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "through Phase 2 Sprint 14",
-            "Gate ownership is canonicalized to Phase 2 runner scripts",
+            "through Phase 3 Sprint 9",
+            "Gate entrypoints are canonicalized to Phase 3 runner script names",
         ),
     ),
     ControlDocTruthRule(
-        relative_path="docs/runbooks/phase2-closeout-packet.md",
+        relative_path="docs/runbooks/phase3-closeout-packet.md",
         required_markers=(
-            "accepted Phase 2 Sprint 14 baseline",
-            "Required Phase 2 Go/No-Go Commands",
+            "accepted Phase 3 Sprint 9 baseline",
+            "Required Phase 3 Go/No-Go Commands",
             "Required PASS Evidence Bundle",
             "Explicit Deferred Scope Entering Next Phase",
         ),
@@ -60,6 +60,11 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
 )
 
 DISALLOWED_MARKERS: tuple[str, ...] = (
+    "through Phase 2 Sprint 14",
+    "current through Phase 2 Sprint 14",
+    "accepted Phase 2 Sprint 14 baseline",
+    "canonical Phase 2 gate ownership",
+    "Gate ownership is canonicalized to Phase 2 runner scripts",
     "through Phase 2 Sprint 11",
     "current through Phase 2 Sprint 11",
     "Phase 2 Sprint 7",
