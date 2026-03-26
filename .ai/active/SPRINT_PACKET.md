@@ -2,32 +2,32 @@
 
 ## Sprint Title
 
-Phase 3 Sprint 9: Budget Context Invariance Hardening
+Phase 3 Sprint 10: Closeout Truth Sync + Phase Gate Canonicalization
 
 ## Sprint Type
 
-hardening
+control-plane
 
 ## Sprint Reason
 
-Sprint 8 completed profile-scoped execution-budget isolation. The remaining non-redundant correctness gap is context invariance: malformed or unresolvable thread/profile context can degrade budget counting/match isolation behavior.
+Sprint 9 closed the last known runtime invariance gap for profile-isolated execution budgets. The next non-redundant blocker to MVP/Phase 3 completion is control-plane drift: canonical docs and control-doc checks still anchor to a Phase 2 Sprint 14 baseline.
 
 ## Sprint Intent
 
-Make budget decisioning fail-closed and profile-safe when thread context is malformed/unresolvable, and make counted execution history strictly profile-attributable.
+Re-anchor canonical truth, validation entrypoints, and closeout runbooks to the accepted Phase 3 Sprint 9 baseline without changing product runtime behavior.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase3-sprint9-budget-context-invariance`
+- Branch Name: `codex/phase3-sprint10-closeout-truth-sync`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It directly closes the only explicit residual risk called out in Sprint 8 review.
-- It hardens separate-agent isolation semantics under malformed state, not just happy-path contracts.
-- It preserves momentum toward MVP/Phase 3 completion without reopening schema breadth.
+- It closes the remaining planning/validation drift risk before phase completion.
+- It enables deterministic “are we done?” checks using phase-correct runbooks and truth guards.
+- It avoids redundant runtime work by focusing only on docs/gates canonicalization.
 
 ## Redundancy Guard
 
@@ -38,132 +38,127 @@ Make budget decisioning fail-closed and profile-safe when thread context is malf
 - Already shipped in Sprint 5: profile-scoped memory/context isolation.
 - Already shipped in Sprint 6: profile-scoped policy evaluation/routing.
 - Already shipped in Sprint 7: profile-scoped model/provider routing for `/v0/responses`.
-- Already shipped in Sprint 8: profile-scoped execution-budget matching + counted execution isolation for normal context.
-- Missing and required now: deterministic fail-closed handling and invariance guarantees for malformed/unresolvable thread context.
+- Already shipped in Sprint 8: profile-scoped execution-budget matching + counted execution isolation.
+- Already shipped in Sprint 9: fail-closed context invariance hardening for budget decisioning.
+- Missing and required now: Phase 3 canonical truth + gate/runbook alignment for deterministic closeout.
 
 ## Design Truth
 
-- Budget decisioning must resolve runtime thread/profile context deterministically before counting/match finalization.
-- If request thread context is missing/unresolvable at execution time, decisioning is fail-closed with explicit deterministic reasoning (no unscoped fallback counting).
-- Historical execution rows with malformed/unresolvable thread context are excluded from profile-scoped counted history.
-- Matching precedence remains unchanged for valid context:
-  - profile-scoped active budgets first
-  - global active budgets second
-  - existing selector specificity ordering retained within scope
-- Keep scope strictly bounded to invariance hardening; no provider, connector, or orchestration expansion.
+- Canonical docs must state the accepted repo baseline through Phase 3 Sprint 9, not Phase 2 Sprint 14.
+- Control-doc truth checks must enforce Phase 3 markers and reject stale Phase 2 baseline claims where now obsolete.
+- Phase gate entrypoints should include Phase 3 names, preserving compatibility aliases to existing gate semantics.
+- This sprint is documentation and control-plane only; runtime API/web behavior must remain unchanged.
 
 ## Exact Surfaces In Scope
 
-- execution-budget decisioning invariance for malformed/unresolvable runtime context
-- proxy execution fail-closed behavior when decision context is invalid
-- additive trace/decision diagnostics for invalid context handling
-- unit/integration regression coverage for malformed request and malformed history rows
+- canonical truth docs baseline alignment (architecture/roadmap/readme/handoff)
+- control-doc truth guardrail update + unit tests
+- Phase 3 gate entrypoint scripts (compatibility wrappers allowed)
+- Phase 3 closeout runbook packet and evidence requirements
 
 ## Exact Files In Scope
 
-- [contracts.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/contracts.py)
-- [execution_budgets.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/execution_budgets.py)
-- [proxy_execution.py](/Users/samirusani/Desktop/Codex/AliceBot/apps/api/src/alicebot_api/proxy_execution.py)
-- [test_execution_budgets.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_execution_budgets.py)
-- [test_proxy_execution.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_proxy_execution.py)
-- [test_proxy_execution_main.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_proxy_execution_main.py)
-- [test_proxy_execution_api.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/integration/test_proxy_execution_api.py)
+- [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md)
+- [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md)
+- [README.md](/Users/samirusani/Desktop/Codex/AliceBot/README.md)
+- [.ai/handoff/CURRENT_STATE.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/handoff/CURRENT_STATE.md)
+- [scripts/check_control_doc_truth.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/check_control_doc_truth.py)
+- [tests/unit/test_control_doc_truth.py](/Users/samirusani/Desktop/Codex/AliceBot/tests/unit/test_control_doc_truth.py)
+- [scripts/run_phase3_acceptance.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_phase3_acceptance.py)
+- [scripts/run_phase3_readiness_gates.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_phase3_readiness_gates.py)
+- [scripts/run_phase3_validation_matrix.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_phase3_validation_matrix.py)
+- [docs/runbooks/phase3-closeout-packet.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/runbooks/phase3-closeout-packet.md)
 - [BUILD_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/BUILD_REPORT.md)
 - [REVIEW_REPORT.md](/Users/samirusani/Desktop/Codex/AliceBot/REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/active/SPRINT_PACKET.md)
 
 ## In Scope
 
-- Harden budget evaluation context resolution:
-  - resolve request thread/profile deterministically before budget counting
-  - explicitly handle missing/unresolvable thread context as fail-closed path
-- Harden counted execution filtering:
-  - exclude historical executions with malformed/unresolvable thread context from scoped counts
-  - preserve deterministic ordering/rolling-window behavior for valid rows
-- Add additive diagnostics on blocked fail-closed decisions to make reason visible in traces/results.
-- Preserve backward compatibility for existing proxy response envelopes and trace event ordering.
-- Add unit coverage for:
-  - invalid runtime thread context behavior
-  - malformed execution-history row behavior
-  - deterministic blocked reason contracts
-- Add integration coverage proving proxy execution blocks deterministically when context invariants are violated.
+- Update canonical docs to reflect accepted baseline through Phase 3 Sprint 9.
+- Update control-doc truth markers/rules and keep stale-marker rejection accurate.
+- Add Phase 3 gate entrypoint scripts as compatibility wrappers to current deterministic gate runners.
+- Add Phase 3 closeout runbook with required commands, PASS evidence bundle, and deferred-scope statement.
+- Keep root `BUILD_REPORT.md`/`REVIEW_REPORT.md` conventions explicit.
+- Validate docs and gate tooling through targeted unit and gate commands.
 
 ## Out of Scope
 
+- runtime API logic changes
+- web UI behavior changes
 - schema/migration changes
-- execution-budget CRUD redesign
-- policy engine redesign
-- introducing new providers, connectors, or secret handling changes
+- provider/connector/auth capability expansion
 - orchestration/worker runtime changes
-- web UI changes
-- connector/auth expansion
+- profile CRUD expansion
 
 ## Required Deliverables
 
-- fail-closed invariance handling for malformed/unresolvable budget runtime context
-- deterministic counting behavior under malformed history conditions
-- passing unit/integration evidence for invariance hardening behavior
+- canonical docs aligned to Phase 3 Sprint 9 baseline
+- control-doc truth guard and unit tests updated and passing
+- Phase 3 gate entrypoint scripts present and executable
+- Phase 3 closeout runbook present with deterministic go/no-go checklist
 - sprint build/review reports scoped to this sprint only
 
 ## Acceptance Criteria
 
-- Budget decisioning does not execute with unresolvable request thread/profile context.
-- Malformed/unresolvable historical execution rows do not contaminate scoped budget counts.
-- Proxy execution returns deterministic blocked outcomes for invalid-context invariance failures.
-- Existing proxy execution event/result/trace contracts remain backward-compatible (additive diagnostics only).
-- `./.venv/bin/python -m pytest tests/unit/test_execution_budgets.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py -q` passes.
-- `./.venv/bin/python -m pytest tests/integration/test_proxy_execution_api.py -q` passes.
-- `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
+- `python3 scripts/check_control_doc_truth.py` passes with Phase 3 markers.
+- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q` passes.
+- `python3 scripts/run_phase3_validation_matrix.py` passes.
+- `python3 scripts/run_phase2_validation_matrix.py` remains PASS (compatibility guarantee).
+- Canonical docs do not claim a baseline earlier than accepted Phase 3 Sprint 9.
+- No runtime API/web/schema capability expansion enters this sprint.
 - No provider/connector/orchestration scope expansion enters this sprint.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
-- preserve existing response/event/trace payload contracts (additive fields only where necessary)
-- keep deterministic ordering contracts (`created_at_asc`, `id_asc`, `specificity_desc`, rolling-window semantics)
-- no new DB migration in this sprint unless an explicit Control Tower scope change is issued
+- keep script behavior deterministic and machine-independent
+- use repo-relative paths and machine-independent command examples in docs
+- preserve existing runtime product behavior (docs/control-plane only)
 
 ## Control Tower Task Cards
 
-### Task 1: Runtime Invariance Hardening
+### Task 1: Canonical Truth Sync
 Owner: tooling operative  
 Write scope:
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/execution_budgets.py`
-- `apps/api/src/alicebot_api/proxy_execution.py`
+- `ARCHITECTURE.md`
+- `ROADMAP.md`
+- `README.md`
+- `.ai/handoff/CURRENT_STATE.md`
 
-### Task 2: Verification
+### Task 2: Control Guard + Gate Entry Points
 Owner: tooling operative  
 Write scope:
-- `tests/unit/test_execution_budgets.py`
-- `tests/unit/test_proxy_execution.py`
-- `tests/unit/test_proxy_execution_main.py`
-- `tests/integration/test_proxy_execution_api.py`
+- `scripts/check_control_doc_truth.py`
+- `tests/unit/test_control_doc_truth.py`
+- `scripts/run_phase3_acceptance.py`
+- `scripts/run_phase3_readiness_gates.py`
+- `scripts/run_phase3_validation_matrix.py`
+- `docs/runbooks/phase3-closeout-packet.md`
 
 ### Task 3: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify sprint stays budget-context-invariance scoped
-- verify fail-closed behavior for invalid context is deterministic
-- verify no provider/connector/orchestration expansion
+- verify sprint stays docs/control-plane scoped
+- verify phase baseline markers and closeout runbook are internally consistent
+- verify no runtime/schema expansion
 - verify validation matrix remains green
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact invariance-hardening decisioning deltas
+- exact canonical-doc and control-guard deltas
 - exact verification command outcomes
-- explicit deferred scope (schema expansion, providers/connectors, orchestration, profile CRUD)
+- explicit deferred scope (runtime/schema/providers/connectors/orchestration/profile CRUD)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint stayed bounded to budget context invariance hardening
-- malformed-context fail-closed behavior is deterministic and correct
-- profile-scoped counting remains isolated under malformed-history pressure
-- API and proxy-execution behavior remain backward-compatible
+- sprint stayed bounded to closeout truth-sync scope
+- canonical docs and truth checks align on Phase 3 baseline markers
+- phase3 gate wrappers and closeout runbook are deterministic and coherent
+- runtime behavior remained unchanged
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when proxy execution budget decisioning is fail-closed under invalid context and profile-scoped counting remains deterministic under malformed-history conditions, with test evidence and validation gates green.
+This sprint is complete when canonical docs, control-doc truth checks, and gate entrypoints consistently represent the accepted Phase 3 Sprint 9 baseline, with all required verification commands passing and no runtime-scope expansion.

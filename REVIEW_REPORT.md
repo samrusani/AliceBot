@@ -4,32 +4,41 @@
 PASS
 
 ## criteria met
-- Budget decisioning is fail-closed for invalid/unresolvable runtime context (`invalid_request_context`) before budget matching/count finalization.
-- Malformed/unresolvable historical execution rows are excluded from counted history (invalid/missing `request.thread_id`, non-UUID values, mismatched `request.thread_id` vs persisted `thread_id`, and unresolvable thread/profile context).
-- Proxy execution returns deterministic blocked outcomes for invalid-context invariance failures, including deterministic blocked reason text and additive decision diagnostics.
-- Existing proxy response/event/trace contracts remain backward-compatible; changes are additive (`request_thread_id`, `context_resolution`, `context_reason`, and optional dispatch `budget_context`).
-- Required test command passed: `./.venv/bin/python -m pytest tests/unit/test_execution_budgets.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py -q` (`37 passed`).
-- Required test command passed: `./.venv/bin/python -m pytest tests/integration/test_proxy_execution_api.py -q` (`16 passed`).
-- Required gate command passed: `python3 scripts/run_phase2_validation_matrix.py` (`Phase 2 validation matrix result: PASS`).
-- Sprint stayed in scope (no provider/connector/orchestration/schema expansion detected).
+- Sprint stayed within closeout truth-sync scope (docs/control-plane only). No runtime API, web behavior, schema, provider, connector, orchestration, or profile-CRUD expansion detected in the diff.
+- Canonical baseline alignment to Phase 3 Sprint 9 is present in `ARCHITECTURE.md`, `ROADMAP.md`, `README.md`, and `.ai/handoff/CURRENT_STATE.md`.
+- Control truth checks were updated to Phase 3 markers and Phase 3 closeout packet path in `scripts/check_control_doc_truth.py`.
+- Stale Phase 2 Sprint 14 ownership/baseline markers are rejected by the control truth guard.
+- Unit coverage for control truth guard was updated and passes (`tests/unit/test_control_doc_truth.py`).
+- Phase 3 gate entrypoint wrappers exist, are executable, and delegate to Phase 2 scripts with compatibility semantics:
+  - `scripts/run_phase3_acceptance.py`
+  - `scripts/run_phase3_readiness_gates.py`
+  - `scripts/run_phase3_validation_matrix.py`
+- Phase 3 closeout packet is present and coherent (`docs/runbooks/phase3-closeout-packet.md`) with required commands, evidence bundle, deferred scope, and checklist.
+- Acceptance commands verified:
+  - `python3 scripts/check_control_doc_truth.py` -> PASS
+  - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q` -> PASS (`5 passed`)
+  - `python3 scripts/run_phase3_validation_matrix.py` -> PASS
+  - `python3 scripts/run_phase2_validation_matrix.py` -> PASS
 
 ## criteria missed
 - None.
 
 ## quality issues
-- None found in sprint scope.
+- No blocking implementation quality issues found.
+- Non-blocking: no direct unit tests for `run_phase3_acceptance.py` and `run_phase3_readiness_gates.py` wrappers themselves (validation matrix wrapper is exercised). Current risk is low because wrappers are thin delegates.
 
 ## regression risks
-- Low risk. Intentional fail-closed behavior will now block execution when legacy/corrupt request thread context is malformed or unresolvable; this is expected by sprint intent.
+- Low. Phase 3 scripts are wrapper entrypoints over existing Phase 2 deterministic runners, so runtime gate behavior remains anchored to known semantics.
+- Low operational risk: validation matrix commands require local Postgres connectivity; sandbox-restricted environments can report false failures unless run with appropriate permissions.
 
 ## docs issues
-- None blocking. `BUILD_REPORT.md` captures implemented deltas, command outcomes, and deferred scope as required.
+- None blocking. Canonical docs, control truth guard, and runbook language are internally consistent on the accepted Phase 3 Sprint 9 baseline.
 
 ## should anything be added to RULES.md?
 - No required changes.
 
 ## should anything update ARCHITECTURE.md?
-- No required changes.
+- No additional updates required beyond this sprint’s baseline truth-sync edits.
 
 ## recommended next action
-- Proceed with Control Tower integration approval and sprint PR merge flow.
+- Proceed with Control Tower sign-off and merge.
