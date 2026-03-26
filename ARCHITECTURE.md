@@ -2,7 +2,7 @@
 
 ## Current Implemented Slice
 
-AliceBot now implements the accepted repo slice through Phase 2 Sprint 14.
+AliceBot now implements the accepted repo slice through Phase 3 Sprint 9.
 
 - `apps/api` is the core shipped surface. It provides continuity storage and review over `users`, `threads`, `sessions`, and append-only `events`; deterministic context compilation; governed memory admission and review plus open-loop lifecycle capture/review; embeddings and semantic retrieval; entities and entity edges; policy, tool, approval, and execution governance; the no-tools assistant-response seam at `POST /v0/responses`; explicit task and task-step lifecycle reads and mutations; rooted local task workspaces and artifact ingestion; artifact chunk retrieval and embeddings; and narrow read-only Gmail and Calendar seams with external-secret-backed credentials plus bounded Calendar event discovery and selected-item ingestion into the artifact pipeline.
 - `apps/web` is a shipped operator shell over those backend seams, not a scaffold-only placeholder. The current routes are `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`. The shell can read live backend seams when configured and otherwise falls back to explicit fixture states instead of pretending the backend is connected.
@@ -19,7 +19,7 @@ The repo is intentionally still narrow. Document ingestion remains local and det
 
 - `docker-compose.yml` starts local Postgres with `pgvector`, Redis, and MinIO.
 - `scripts/dev_up.sh`, `scripts/migrate.sh`, and `scripts/api_dev.sh` provide the local startup path.
-- `scripts/run_phase2_acceptance.py`, `scripts/run_phase2_readiness_gates.py`, and `scripts/run_phase2_validation_matrix.py` provide deterministic Phase 2 gate entrypoints; the validation matrix command is the default go/no-go gate, and MVP script names remain compatible aliases with identical semantics.
+- `scripts/run_phase3_acceptance.py`, `scripts/run_phase3_readiness_gates.py`, and `scripts/run_phase3_validation_matrix.py` are the canonical Phase 3 gate entrypoints; they preserve deterministic gate semantics by delegating to existing Phase 2 implementations. `scripts/run_phase2_*.py` and `scripts/run_mvp_*.py` remain supported compatibility entrypoints with identical semantics.
 - `apps/api` exposes FastAPI endpoints for:
   - continuity and response generation: `/healthz`, `POST /v0/threads`, `GET /v0/threads`, `GET /v0/threads/{thread_id}`, `GET /v0/threads/{thread_id}/sessions`, `GET /v0/threads/{thread_id}/events`, `GET /v0/threads/{thread_id}/resumption-brief`, `POST /v0/context/compile`, `POST /v0/responses`
   - memory and open-loop seams, including `POST /v0/memories/admit`, `POST /v0/memories/capture-explicit-signals`, `GET /v0/open-loops`, `GET /v0/open-loops/{open_loop_id}`, `POST /v0/open-loops`, `POST /v0/open-loops/{open_loop_id}/status`, and `POST /v0/open-loops/extract-explicit-commitments`

@@ -1,6 +1,6 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Phase 2 Sprint 14: a FastAPI backend plus a bounded Next.js operator shell with deterministic readiness and validation matrix gating.
+AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Phase 3 Sprint 9: a FastAPI backend plus a bounded Next.js operator shell with deterministic readiness and validation matrix gating.
 
 ## Current Implemented Slice
 
@@ -21,11 +21,12 @@ AliceBot is a private, permissioned personal AI operating system. The current re
 
 Useful checks:
 
-- Canonical gate ownership: `scripts/run_phase2_*.py` are implementation source; `scripts/run_mvp_*.py` are compatibility aliases.
+- Canonical gate entrypoints: `scripts/run_phase3_*.py` are the control-plane entrypoint wrappers; `scripts/run_phase2_*.py` and `scripts/run_mvp_*.py` remain compatibility entrypoints with identical semantics.
 - API health: [http://127.0.0.1:8000/healthz](http://127.0.0.1:8000/healthz)
-- Phase 2 acceptance gate: `python3 scripts/run_phase2_acceptance.py`
-- Phase 2 readiness gates: `python3 scripts/run_phase2_readiness_gates.py`
-- Phase 2 default go/no-go validation gate: `python3 scripts/run_phase2_validation_matrix.py`
+- Phase 3 acceptance gate: `python3 scripts/run_phase3_acceptance.py`
+- Phase 3 readiness gates: `python3 scripts/run_phase3_readiness_gates.py`
+- Phase 3 default go/no-go validation gate: `python3 scripts/run_phase3_validation_matrix.py`
+- Phase 2 compatibility validation gate: `python3 scripts/run_phase2_validation_matrix.py`
 - MVP alias gates (identical semantics): `python3 scripts/run_mvp_acceptance.py`, `python3 scripts/run_mvp_readiness_gates.py`, `python3 scripts/run_mvp_validation_matrix.py`
 - Backend tests: `./.venv/bin/python -m pytest tests/unit tests/integration`
 - Web tests: `pnpm --dir apps/web test`
