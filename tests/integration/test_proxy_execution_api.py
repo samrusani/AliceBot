@@ -182,6 +182,24 @@ def set_execution_executed_at(
         conn.commit()
 
 
+def set_approval_request_thread_id(
+    admin_database_url: str,
+    *,
+    approval_id: UUID,
+    request_thread_id: str,
+) -> None:
+    with psycopg.connect(admin_database_url) as conn:
+        conn.execute(
+            """
+            UPDATE approvals
+            SET request = jsonb_set(request, '{thread_id}', to_jsonb(%s::text), true)
+            WHERE id = %s
+            """,
+            (request_thread_id, approval_id),
+        )
+        conn.commit()
+
+
 def test_execute_approved_proxy_endpoint_executes_only_approved_requests(
     migrated_database_urls,
     monkeypatch,
@@ -708,6 +726,97 @@ def test_execute_approved_proxy_endpoint_updates_the_explicitly_linked_later_ste
     assert tool_executions[1]["task_step_id"] == UUID(create_step_payload["task_step"]["id"])
     assert task_steps[1]["outcome"]["execution_id"] == str(tool_executions[1]["id"])
     assert len(proxy_traces) == 2
+
+
+def test_execute_approved_proxy_endpoint_fail_closes_when_runtime_context_is_invalid(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    owner = seed_user(migrated_database_urls["app"], email="owner@example.com")
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    tool_id = create_tool_and_policy(
+        migrated_database_urls["app"],
+        user_id=owner["user_id"],
+        tool_key="proxy.echo",
+    )
+
+    create_status, create_payload = create_pending_approval(
+        user_id=owner["user_id"],
+        thread_id=owner["thread_id"],
+        tool_id=tool_id,
+    )
+    assert create_status == 200
+
+    approve_status, _ = invoke_request(
+        "POST",
+        f"/v0/approvals/{create_payload['approval']['id']}/approve",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert approve_status == 200
+
+    set_approval_request_thread_id(
+        migrated_database_urls["admin"],
+        approval_id=UUID(create_payload["approval"]["id"]),
+        request_thread_id="not-a-uuid",
+    )
+
+    execute_status, execute_payload = invoke_request(
+        "POST",
+        f"/v0/approvals/{create_payload['approval']['id']}/execute",
+        payload={"user_id": str(owner["user_id"])},
+    )
+
+    assert execute_status == 200
+    assert execute_payload["events"] is None
+    assert execute_payload["result"] == {
+        "handler_key": None,
+        "status": "blocked",
+        "output": None,
+        "reason": (
+            "execution budget invariance blocks execution: invalid request thread/profile "
+            "context: request.thread_id 'not-a-uuid' is not a valid UUID"
+        ),
+        "budget_decision": {
+            "matched_budget_id": None,
+            "tool_key": "proxy.echo",
+            "domain_hint": None,
+            "budget_tool_key": None,
+            "budget_domain_hint": None,
+            "max_completed_executions": None,
+            "rolling_window_seconds": None,
+            "count_scope": "lifetime",
+            "window_started_at": None,
+            "completed_execution_count": 0,
+            "projected_completed_execution_count": 1,
+            "decision": "block",
+            "reason": "invalid_request_context",
+            "order": ["specificity_desc", "created_at_asc", "id_asc"],
+            "history_order": ["executed_at_asc", "id_asc"],
+            "request_thread_id": "not-a-uuid",
+            "context_resolution": "invalid",
+            "context_reason": "request.thread_id 'not-a-uuid' is not a valid UUID",
+        },
+    }
+
+    with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        stored_executions = store.list_tool_executions()
+        blocked_trace_events = store.list_trace_events(UUID(execute_payload["trace"]["trace_id"]))
+        thread_events = store.list_thread_events(owner["thread_id"])
+
+    assert len(stored_executions) == 1
+    assert stored_executions[0]["status"] == "blocked"
+    assert stored_executions[0]["result"] == execute_payload["result"]
+    assert stored_executions[0]["request_event_id"] is None
+    assert stored_executions[0]["result_event_id"] is None
+    assert thread_events == []
+    assert blocked_trace_events[2]["payload"] == execute_payload["result"]["budget_decision"]
+    assert blocked_trace_events[3]["payload"]["dispatch_status"] == "blocked"
+    assert blocked_trace_events[3]["payload"]["budget_context"] == {
+        "request_thread_id": "not-a-uuid",
+        "context_resolution": "invalid",
+        "context_reason": "request.thread_id 'not-a-uuid' is not a valid UUID",
+    }
 
 
 def test_execute_approved_proxy_endpoint_blocks_when_execution_budget_is_exceeded(
