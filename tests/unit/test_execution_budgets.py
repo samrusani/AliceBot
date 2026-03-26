@@ -582,6 +582,148 @@ def test_get_execution_budget_record_raises_clear_error_when_missing() -> None:
         )
 
 
+def test_evaluate_execution_budget_fail_closed_when_request_thread_context_is_malformed() -> None:
+    store = ExecutionBudgetStoreStub()
+    store.create_execution_budget(
+        tool_key="proxy.echo",
+        domain_hint=None,
+        max_completed_executions=10,
+    )
+
+    decision = evaluate_execution_budget(
+        store,  # type: ignore[arg-type]
+        tool={"id": str(uuid4()), "tool_key": "proxy.echo"},
+        request={
+            "thread_id": "not-a-uuid",
+            "tool_id": str(uuid4()),
+            "action": "tool.run",
+            "scope": "workspace",
+            "domain_hint": None,
+            "risk_hint": None,
+            "attributes": {},
+        },
+    )
+
+    assert decision.record == {
+        "matched_budget_id": None,
+        "tool_key": "proxy.echo",
+        "domain_hint": None,
+        "budget_tool_key": None,
+        "budget_domain_hint": None,
+        "max_completed_executions": None,
+        "rolling_window_seconds": None,
+        "count_scope": "lifetime",
+        "window_started_at": None,
+        "completed_execution_count": 0,
+        "projected_completed_execution_count": 1,
+        "decision": "block",
+        "reason": "invalid_request_context",
+        "order": ["specificity_desc", "created_at_asc", "id_asc"],
+        "history_order": ["executed_at_asc", "id_asc"],
+        "request_thread_id": "not-a-uuid",
+        "context_resolution": "invalid",
+        "context_reason": "request.thread_id 'not-a-uuid' is not a valid UUID",
+    }
+    assert decision.blocked_result == {
+        "handler_key": None,
+        "status": "blocked",
+        "output": None,
+        "reason": (
+            "execution budget invariance blocks execution: invalid request "
+            "thread/profile context: request.thread_id 'not-a-uuid' is not a valid UUID"
+        ),
+        "budget_decision": decision.record,
+    }
+
+
+def test_evaluate_execution_budget_fail_closed_when_request_thread_profile_is_unresolvable() -> None:
+    store = ExecutionBudgetStoreStub()
+    broken_thread_id = store.create_thread(agent_profile_id="profile_missing")
+    store.create_execution_budget(
+        tool_key="proxy.echo",
+        domain_hint=None,
+        max_completed_executions=10,
+    )
+
+    decision = evaluate_execution_budget(
+        store,  # type: ignore[arg-type]
+        tool={"id": str(uuid4()), "tool_key": "proxy.echo"},
+        request={
+            "thread_id": str(broken_thread_id),
+            "tool_id": str(uuid4()),
+            "action": "tool.run",
+            "scope": "workspace",
+            "domain_hint": None,
+            "risk_hint": None,
+            "attributes": {},
+        },
+    )
+
+    assert decision.record["decision"] == "block"
+    assert decision.record["reason"] == "invalid_request_context"
+    assert decision.record["request_thread_id"] == str(broken_thread_id)
+    assert decision.record["context_resolution"] == "invalid"
+    assert decision.record["context_reason"] == (
+        f"request.thread_id '{broken_thread_id}' did not resolve to a visible "
+        "thread/profile context"
+    )
+    assert decision.blocked_result is not None
+    assert decision.blocked_result["status"] == "blocked"
+    assert decision.blocked_result["reason"] == (
+        "execution budget invariance blocks execution: invalid request thread/profile context: "
+        f"request.thread_id '{broken_thread_id}' did not resolve to a visible thread/profile context"
+    )
+
+
+def test_evaluate_execution_budget_excludes_malformed_history_rows_from_profile_scoped_counts() -> None:
+    store = ExecutionBudgetStoreStub()
+    matched = store.create_execution_budget(
+        tool_key="proxy.echo",
+        domain_hint=None,
+        max_completed_executions=2,
+    )
+    store.seed_execution(tool_key="proxy.echo", domain_hint=None, status="completed", offset_minutes=0)
+    store.seed_execution(tool_key="proxy.echo", domain_hint=None, status="completed", offset_minutes=1)
+    store.seed_execution(tool_key="proxy.echo", domain_hint=None, status="completed", offset_minutes=2)
+    malformed_thread_id_row = store.executions[1]
+    malformed_thread_id_row["request"]["thread_id"] = "not-a-uuid"  # type: ignore[index]
+    missing_thread_id_row = store.executions[2]
+    missing_thread_id_row["request"].pop("thread_id")  # type: ignore[index]
+
+    decision = evaluate_execution_budget(
+        store,  # type: ignore[arg-type]
+        tool={"id": str(uuid4()), "tool_key": "proxy.echo"},
+        request={
+            "thread_id": str(store.thread_id),
+            "tool_id": str(uuid4()),
+            "action": "tool.run",
+            "scope": "workspace",
+            "domain_hint": None,
+            "risk_hint": None,
+            "attributes": {},
+        },
+    )
+
+    assert decision.record == {
+        "matched_budget_id": str(matched["id"]),
+        "tool_key": "proxy.echo",
+        "domain_hint": None,
+        "budget_tool_key": "proxy.echo",
+        "budget_domain_hint": None,
+        "max_completed_executions": 2,
+        "rolling_window_seconds": None,
+        "count_scope": "lifetime",
+        "window_started_at": None,
+        "completed_execution_count": 1,
+        "projected_completed_execution_count": 2,
+        "decision": "allow",
+        "reason": "within_budget",
+        "order": ["specificity_desc", "created_at_asc", "id_asc"],
+        "history_order": ["executed_at_asc", "id_asc"],
+    }
+    assert decision.blocked_result is None
+
+
 def test_evaluate_execution_budget_prefers_more_specific_active_match_and_ignores_inactive_rows() -> None:
     store = ExecutionBudgetStoreStub()
     inactive = store.create_execution_budget(
