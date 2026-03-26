@@ -1,60 +1,63 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 3 Sprint 9 budget context invariance hardening so execution-budget decisioning is fail-closed for malformed/unresolvable runtime thread/profile context, and counted history remains strictly profile-attributable under malformed history pressure.
+Implement Phase 3 Sprint 10 closeout truth sync and phase-gate canonicalization by re-anchoring canonical docs, control-doc truth checks, phase gate entrypoints, and closeout runbooks to the accepted Phase 3 Sprint 9 baseline without changing runtime behavior.
 
 ## Completed Work
-- Hardened budget decisioning runtime context resolution in `execution_budgets.py`:
-  - Added deterministic request-context resolution before budget matching/counting finalization.
-  - Added explicit fail-closed decision path for invalid request context (`decision=block`, `reason=invalid_request_context`).
-  - Added deterministic blocked result messaging for invalid context invariance failures.
-- Hardened counted execution filtering invariance in `execution_budgets.py`:
-  - Counted history now requires a valid/parseable `request.thread_id`.
-  - Counted history now requires `request.thread_id` to match persisted `tool_executions.thread_id`.
-  - Counted history rows with missing/malformed/unresolvable thread/profile context are excluded from scoped counts.
-- Added additive diagnostics in contracts and decision payloads:
-  - Added `invalid_request_context` to `ExecutionBudgetDecisionReason`.
-  - Added additive optional decision diagnostics: `request_thread_id`, `context_resolution`, `context_reason`.
-- Added additive proxy trace diagnostics in `proxy_execution.py`:
-  - For invalid-context budget blocks, dispatch trace includes additive `budget_context` payload.
-  - Preserved existing proxy response envelope and trace ordering.
-- Added/updated regression coverage:
-  - Unit tests for malformed runtime context fail-closed behavior.
-  - Unit tests for unresolvable runtime thread/profile context fail-closed behavior.
-  - Unit tests for malformed history-row exclusion from scoped counts.
-  - Unit + integration tests for deterministic proxy blocked outcomes and additive diagnostics on invalid context.
+- Canonical truth docs re-anchored from Phase 2 Sprint 14 to Phase 3 Sprint 9:
+  - Updated baseline marker language in `ARCHITECTURE.md`, `ROADMAP.md`, `README.md`, and `.ai/handoff/CURRENT_STATE.md`.
+  - Updated gate-entrypoint language to Phase 3 names while preserving compatibility semantics for existing Phase 2 and MVP script names.
+- Control-doc truth guardrail updated for Phase 3 baseline:
+  - `scripts/check_control_doc_truth.py` now requires Phase 3 markers in canonical docs and the Phase 3 closeout packet path.
+  - Added stale-marker rejection for obsolete Phase 2 Sprint 14 baseline/gate-ownership markers.
+- Control-doc truth unit tests updated:
+  - `tests/unit/test_control_doc_truth.py` now targets `docs/runbooks/phase3-closeout-packet.md` and verifies stale Phase 2 Sprint 14 marker rejection.
+- Added Phase 3 gate entrypoint wrappers (compatibility-preserving control-plane layer):
+  - `scripts/run_phase3_acceptance.py` -> delegates to `scripts/run_phase2_acceptance.py`.
+  - `scripts/run_phase3_readiness_gates.py` -> delegates to `scripts/run_phase2_readiness_gates.py`.
+  - `scripts/run_phase3_validation_matrix.py` -> delegates to `scripts/run_phase2_validation_matrix.py`.
+- Added Phase 3 closeout packet runbook:
+  - `docs/runbooks/phase3-closeout-packet.md` with required go/no-go commands, PASS evidence bundle requirements, deferred-scope statement, and deterministic checklist.
 
 ## Incomplete Work
 - None within sprint scope.
 
 ## Files Changed
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/execution_budgets.py`
-- `apps/api/src/alicebot_api/proxy_execution.py`
-- `tests/unit/test_execution_budgets.py`
-- `tests/unit/test_proxy_execution.py`
-- `tests/unit/test_proxy_execution_main.py`
-- `tests/integration/test_proxy_execution_api.py`
+- `.ai/handoff/CURRENT_STATE.md`
+- `ARCHITECTURE.md`
+- `ROADMAP.md`
+- `README.md`
+- `scripts/check_control_doc_truth.py`
+- `tests/unit/test_control_doc_truth.py`
+- `scripts/run_phase3_acceptance.py`
+- `scripts/run_phase3_readiness_gates.py`
+- `scripts/run_phase3_validation_matrix.py`
+- `docs/runbooks/phase3-closeout-packet.md`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## Tests Run
-- `./.venv/bin/python -m pytest tests/unit/test_execution_budgets.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py -q`
-  - PASS (`37 passed in 0.63s`)
-- `./.venv/bin/python -m pytest tests/integration/test_proxy_execution_api.py -q`
-  - PASS (`16 passed in 7.53s`)
+- `python3 scripts/check_control_doc_truth.py`
+  - PASS (`Control-doc truth check: PASS`; all configured control docs verified including `docs/runbooks/phase3-closeout-packet.md`)
+- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
+  - PASS (`5 passed in 0.03s`)
+- `python3 scripts/run_phase3_validation_matrix.py`
+  - PASS (Phase 3 wrapper executed Phase 2 matrix semantics; matrix steps all PASS: `control_doc_truth`, `gate_contract_tests`, `readiness_gates`, `backend_integration_matrix`, `web_validation_matrix`; final `Phase 2 validation matrix result: PASS`)
 - `python3 scripts/run_phase2_validation_matrix.py`
-  - PASS (`Phase 2 validation matrix result: PASS`)
+  - PASS (compatibility guarantee confirmed; matrix steps all PASS; final `Phase 2 validation matrix result: PASS`)
 
 ## Blockers / Issues
-- No implementation blockers.
-- Environment constraint encountered: local Postgres-backed integration/validation commands required elevated permissions outside default sandbox. Commands succeeded after rerun with escalation.
+- Initial non-escalated validation-matrix execution could not connect to local Postgres in sandbox (`Operation not permitted` on localhost:5432).
+- Resolved by re-running validation commands with elevated permissions; all required commands then passed.
 
 ## Deferred Scope (Explicit)
+- No runtime API logic changes.
+- No web UI behavior changes.
 - No schema/migration expansion.
-- No provider or connector expansion.
-- No orchestration/worker runtime redesign.
-- No profile CRUD redesign/expansion.
+- No provider expansion.
+- No connector capability expansion.
+- No orchestration/worker runtime changes.
+- No profile CRUD expansion.
 
 ## Recommended Next Step
-Control Tower integration review: validate deterministic fail-closed invalid-context behavior and malformed-history exclusion invariants, then proceed to sprint branch PR review/merge flow.
+Control Tower integration review to confirm closeout truth-sync alignment, then proceed with sprint PR/merge flow.
