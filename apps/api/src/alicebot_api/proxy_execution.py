@@ -11,6 +11,7 @@ from alicebot_api.contracts import (
     TRACE_KIND_PROXY_EXECUTE,
     ApprovalRecord,
     ProxyExecutionApprovalTracePayload,
+    ProxyExecutionBudgetContextTracePayload,
     ProxyExecutionBudgetPrecheckTracePayload,
     ProxyExecutionDispatchTracePayload,
     ProxyExecutionEventSummary,
@@ -132,6 +133,18 @@ def _tool_execution_result(
     if budget_decision is not None:
         payload["budget_decision"] = cast(dict[str, object], budget_decision)
     return payload
+
+
+def _budget_context_trace_payload(
+    budget_decision: ProxyExecutionBudgetPrecheckTracePayload,
+) -> ProxyExecutionBudgetContextTracePayload | None:
+    if budget_decision["reason"] != "invalid_request_context":
+        return None
+    return {
+        "request_thread_id": cast(str | None, budget_decision.get("request_thread_id")),
+        "context_resolution": "invalid",
+        "context_reason": cast(str | None, budget_decision.get("context_reason")),
+    }
 
 
 def _persist_tool_execution(
@@ -286,6 +299,9 @@ def execute_approved_proxy_request(
             "result_status": budget_decision.blocked_result["status"],
             "output": budget_decision.blocked_result["output"],
         }
+        budget_context = _budget_context_trace_payload(budget_trace_payload)
+        if budget_context is not None:
+            dispatch_payload["budget_context"] = budget_context
         summary_payload: ProxyExecutionSummaryTracePayload = {
             "approval_id": approval["id"],
             "task_step_id": linked_task_step_id,
