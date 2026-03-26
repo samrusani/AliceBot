@@ -1,75 +1,60 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 3 Sprint 8 execution-budget profile scope isolation by adding optional `agent_profile_id` scope to budgets, updating create/list/get contracts, and enforcing profile-aware budget matching/counting with deterministic global fallback.
+Implement Phase 3 Sprint 9 budget context invariance hardening so execution-budget decisioning is fail-closed for malformed/unresolvable runtime thread/profile context, and counted history remains strictly profile-attributable under malformed history pressure.
 
 ## Completed Work
-- Added migration `20260325_0037_execution_budget_agent_profile_scope`:
-  - Added nullable `execution_budgets.agent_profile_id`.
-  - Added FK `execution_budgets_agent_profile_id_fkey -> agent_profiles(id)`.
-  - Replaced selector/match indexing with profile-aware index `execution_budgets_user_profile_match_idx`.
-  - Replaced active uniqueness index to include profile scope via `COALESCE(agent_profile_id, '')` while preserving existing index name `execution_budgets_one_active_scope_idx`.
-  - Added reversible downgrade restoring pre-sprint index/column shape.
-- Wired store schema/query surface:
-  - `ExecutionBudgetRow` now includes `agent_profile_id`.
-  - Execution-budget INSERT/GET/LIST/DEACTIVATE/SUPERSEDE SQL now reads/writes `agent_profile_id`.
-  - `ContinuityStore.create_execution_budget(...)` now accepts `agent_profile_id`.
-- Updated API/contracts:
-  - `ExecutionBudgetCreateInput` now accepts/serializes `agent_profile_id`.
-  - `ExecutionBudgetRecord` now includes additive `agent_profile_id`.
-  - `/v0/execution-budgets` request model now accepts optional `agent_profile_id`.
-- Added create-time validation:
-  - Budget create validates provided `agent_profile_id` exists in profile registry (`store.get_agent_profile_optional`).
-- Implemented profile-aware budget evaluation behavior:
-  - Resolves active thread profile from `request.thread_id`.
-  - Matching precedence: profile-scoped active budgets first, then global (`agent_profile_id IS NULL`).
-  - Preserved selector ordering within each scope: `specificity_desc`, `created_at_asc`, `id_asc`.
-  - Completed-execution counting isolated to active thread profile scope (including global-fallback decisions) while preserving rolling-window behavior and history order.
-- Updated lifecycle/supersede scope handling:
-  - Supersede active-scope checks and duplicate scope messages now include profile scope.
-  - Replacement budget preserves source `agent_profile_id`.
-- Added/updated sprint-scoped tests:
-  - New migration test file for `0037` upgrade/downgrade/index/FK contracts.
-  - Updated unit store/main/execution-budget tests for additive `agent_profile_id` contract and profile-aware behavior.
-  - Updated integration execution-budget API tests for profile scope uniqueness/validation.
-  - Added integration proxy execution test for profile-first matching and global fallback isolation.
+- Hardened budget decisioning runtime context resolution in `execution_budgets.py`:
+  - Added deterministic request-context resolution before budget matching/counting finalization.
+  - Added explicit fail-closed decision path for invalid request context (`decision=block`, `reason=invalid_request_context`).
+  - Added deterministic blocked result messaging for invalid context invariance failures.
+- Hardened counted execution filtering invariance in `execution_budgets.py`:
+  - Counted history now requires a valid/parseable `request.thread_id`.
+  - Counted history now requires `request.thread_id` to match persisted `tool_executions.thread_id`.
+  - Counted history rows with missing/malformed/unresolvable thread/profile context are excluded from scoped counts.
+- Added additive diagnostics in contracts and decision payloads:
+  - Added `invalid_request_context` to `ExecutionBudgetDecisionReason`.
+  - Added additive optional decision diagnostics: `request_thread_id`, `context_resolution`, `context_reason`.
+- Added additive proxy trace diagnostics in `proxy_execution.py`:
+  - For invalid-context budget blocks, dispatch trace includes additive `budget_context` payload.
+  - Preserved existing proxy response envelope and trace ordering.
+- Added/updated regression coverage:
+  - Unit tests for malformed runtime context fail-closed behavior.
+  - Unit tests for unresolvable runtime thread/profile context fail-closed behavior.
+  - Unit tests for malformed history-row exclusion from scoped counts.
+  - Unit + integration tests for deterministic proxy blocked outcomes and additive diagnostics on invalid context.
 
 ## Incomplete Work
 - None within sprint scope.
 
 ## Files Changed
-- `apps/api/src/alicebot_api/store.py`
-- `apps/api/src/alicebot_api/main.py`
 - `apps/api/src/alicebot_api/contracts.py`
 - `apps/api/src/alicebot_api/execution_budgets.py`
-- `apps/api/alembic/versions/20260325_0037_execution_budget_agent_profile_scope.py`
-- `tests/unit/test_20260325_0037_execution_budget_agent_profile_scope.py`
+- `apps/api/src/alicebot_api/proxy_execution.py`
 - `tests/unit/test_execution_budgets.py`
-- `tests/unit/test_execution_budgets_main.py`
-- `tests/unit/test_execution_budget_store.py`
-- `tests/integration/test_execution_budgets_api.py`
+- `tests/unit/test_proxy_execution.py`
+- `tests/unit/test_proxy_execution_main.py`
 - `tests/integration/test_proxy_execution_api.py`
 - `BUILD_REPORT.md`
+- `REVIEW_REPORT.md`
 
 ## Tests Run
-- `./.venv/bin/python -m pytest tests/unit/test_20260325_0037_execution_budget_agent_profile_scope.py -q`
-  - PASS (`4 passed`)
-- `./.venv/bin/python -m pytest tests/unit/test_execution_budgets.py tests/unit/test_execution_budgets_main.py tests/unit/test_execution_budget_store.py -q`
-  - PASS (`26 passed`)
-- `./.venv/bin/python -m pytest tests/integration/test_execution_budgets_api.py tests/integration/test_proxy_execution_api.py -q`
-  - PASS (`24 passed`)
+- `./.venv/bin/python -m pytest tests/unit/test_execution_budgets.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py -q`
+  - PASS (`37 passed in 0.63s`)
+- `./.venv/bin/python -m pytest tests/integration/test_proxy_execution_api.py -q`
+  - PASS (`16 passed in 7.53s`)
 - `python3 scripts/run_phase2_validation_matrix.py`
   - PASS (`Phase 2 validation matrix result: PASS`)
-  - Note: one intermediate run had a transient web-test failure; immediate rerun passed with no code changes.
 
 ## Blockers / Issues
 - No implementation blockers.
-- Environment note: integration and validation commands required local DB access outside sandbox constraints; commands were rerun with escalated permissions to complete verification.
+- Environment constraint encountered: local Postgres-backed integration/validation commands required elevated permissions outside default sandbox. Commands succeeded after rerun with escalation.
 
 ## Deferred Scope (Explicit)
-- No provider/connector surface expansion.
+- No schema/migration expansion.
+- No provider or connector expansion.
 - No orchestration/worker runtime redesign.
-- No profile CRUD endpoint expansion.
+- No profile CRUD redesign/expansion.
 
 ## Recommended Next Step
-Open integration review (Control Tower Task 3) focused on deterministic profile-scope matching/counting and contract backward compatibility.
+Control Tower integration review: validate deterministic fail-closed invalid-context behavior and malformed-history exclusion invariants, then proceed to sprint branch PR review/merge flow.

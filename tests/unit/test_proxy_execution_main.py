@@ -287,3 +287,91 @@ def test_execute_approved_proxy_endpoint_returns_budget_blocked_payload(monkeypa
 
     assert response.status_code == 200
     assert json.loads(response.body)["events"] is None
+
+
+def test_execute_approved_proxy_endpoint_returns_invalid_context_budget_blocked_payload(monkeypatch) -> None:
+    user_id = uuid4()
+    approval_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+
+    @contextmanager
+    def fake_user_connection(*_args, **_kwargs):
+        yield object()
+
+    def fake_execute_approved_proxy_request(*_args, **_kwargs):
+        return {
+            "request": {"approval_id": str(approval_id), "task_step_id": "task-step-123"},
+            "approval": {
+                "id": str(approval_id),
+                "thread_id": "thread-123",
+                "task_step_id": "task-step-123",
+                "status": "approved",
+                "request": {
+                    "thread_id": "thread-123",
+                    "tool_id": "tool-123",
+                    "action": "tool.run",
+                    "scope": "workspace",
+                    "domain_hint": None,
+                    "risk_hint": None,
+                    "attributes": {"message": "hello"},
+                },
+                "tool": {"id": "tool-123", "tool_key": "proxy.echo"},
+                "routing": {
+                    "decision": "approval_required",
+                    "reasons": [],
+                    "trace": {"trace_id": "routing-trace-123", "trace_event_count": 3},
+                },
+                "created_at": "2026-03-13T09:00:00+00:00",
+                "resolution": {
+                    "resolved_at": "2026-03-13T09:30:00+00:00",
+                    "resolved_by_user_id": str(user_id),
+                },
+            },
+            "tool": {"id": "tool-123", "tool_key": "proxy.echo"},
+            "result": {
+                "handler_key": None,
+                "status": "blocked",
+                "output": None,
+                "reason": (
+                    "execution budget invariance blocks execution: invalid request thread/profile "
+                    "context: request.thread_id 'not-a-uuid' is not a valid UUID"
+                ),
+                "budget_decision": {
+                    "matched_budget_id": None,
+                    "tool_key": "proxy.echo",
+                    "domain_hint": None,
+                    "budget_tool_key": None,
+                    "budget_domain_hint": None,
+                    "max_completed_executions": None,
+                    "rolling_window_seconds": None,
+                    "count_scope": "lifetime",
+                    "window_started_at": None,
+                    "completed_execution_count": 0,
+                    "projected_completed_execution_count": 1,
+                    "decision": "block",
+                    "reason": "invalid_request_context",
+                    "order": ["specificity_desc", "created_at_asc", "id_asc"],
+                    "history_order": ["executed_at_asc", "id_asc"],
+                    "request_thread_id": "not-a-uuid",
+                    "context_resolution": "invalid",
+                    "context_reason": "request.thread_id 'not-a-uuid' is not a valid UUID",
+                },
+            },
+            "events": None,
+            "trace": {"trace_id": "proxy-trace-456", "trace_event_count": 5},
+        }
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(main_module, "execute_approved_proxy_request", fake_execute_approved_proxy_request)
+
+    response = main_module.execute_approved_proxy(
+        approval_id,
+        main_module.ExecuteApprovedProxyRequest(user_id=user_id),
+    )
+
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    assert payload["events"] is None
+    assert payload["result"]["status"] == "blocked"
+    assert payload["result"]["budget_decision"]["reason"] == "invalid_request_context"
