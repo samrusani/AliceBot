@@ -2,8 +2,11 @@
 
 ## Canonical Truth
 
-- The working repo state is current through Phase 3 Sprint 9.
+- The canonical baseline remains through Phase 3 Sprint 9.
+- Phase 4 Sprint 12 is already delivered: task-run linkage to approvals/executions, idempotent proxy execution replay guards, and approval pause/resume continuity for linked runs.
+- Active Sprint focus is Phase 4 Sprint 13: run transition observability, explicit stop reasons, bounded retries with persisted posture, explicit failure classes, and deterministic Phase 4 gate runners.
 - The accepted baseline includes deterministic Phase 3 gate entrypoints: `python3 scripts/run_phase3_acceptance.py`, `python3 scripts/run_phase3_readiness_gates.py`, and `python3 scripts/run_phase3_validation_matrix.py` (default go/no-go command).
+- Phase 4 gate entrypoints now exist at `python3 scripts/run_phase4_acceptance.py`, `python3 scripts/run_phase4_readiness_gates.py`, and `python3 scripts/run_phase4_validation_matrix.py`.
 - Gate entrypoints are canonicalized to Phase 3 runner script names; `run_phase2_acceptance.py`, `run_phase2_readiness_gates.py`, `run_phase2_validation_matrix.py`, and `run_mvp_*` aliases remain supported compatibility entrypoints with identical semantics.
 - Use [PRODUCT_BRIEF.md](../../PRODUCT_BRIEF.md) for product scope, [ARCHITECTURE.md](../../ARCHITECTURE.md) for implemented boundaries, [ROADMAP.md](../../ROADMAP.md) for forward planning, and [RULES.md](../../RULES.md) for durable operating rules.
 - The live sprint reports are [BUILD_REPORT.md](../../BUILD_REPORT.md) and [REVIEW_REPORT.md](../../REVIEW_REPORT.md) at repo root; older accepted sprint history belongs in [docs/archive/sprints](../../docs/archive/sprints), not in this handoff.

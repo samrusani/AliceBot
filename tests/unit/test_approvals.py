@@ -262,7 +262,11 @@ class ApprovalStoreStub:
         tick_count: int,
         step_count: int,
         max_ticks: int,
-        stop_reason: str | None,
+        retry_count: int = 0,
+        retry_cap: int = 1,
+        retry_posture: str = "none",
+        failure_class: str | None = None,
+        stop_reason: str | None = None,
     ) -> dict[str, object]:
         row = {
             "id": uuid4(),
@@ -273,7 +277,12 @@ class ApprovalStoreStub:
             "tick_count": tick_count,
             "step_count": step_count,
             "max_ticks": max_ticks,
+            "retry_count": retry_count,
+            "retry_cap": retry_cap,
+            "retry_posture": retry_posture,
+            "failure_class": failure_class,
             "stop_reason": stop_reason,
+            "last_transitioned_at": self.base_time + timedelta(minutes=len(self.task_runs)),
             "created_at": self.base_time + timedelta(minutes=len(self.task_runs)),
             "updated_at": self.base_time + timedelta(minutes=len(self.task_runs)),
         }
@@ -291,6 +300,10 @@ class ApprovalStoreStub:
         checkpoint: dict[str, object],
         tick_count: int,
         step_count: int,
+        retry_count: int,
+        retry_cap: int,
+        retry_posture: str,
+        failure_class: str | None,
         stop_reason: str | None,
     ) -> dict[str, object] | None:
         row = self.get_task_run_optional(task_run_id)
@@ -300,7 +313,12 @@ class ApprovalStoreStub:
         row["checkpoint"] = checkpoint
         row["tick_count"] = tick_count
         row["step_count"] = step_count
+        row["retry_count"] = retry_count
+        row["retry_cap"] = retry_cap
+        row["retry_posture"] = retry_posture
+        row["failure_class"] = failure_class
         row["stop_reason"] = stop_reason
+        row["last_transitioned_at"] = self.base_time + timedelta(hours=1, minutes=len(self.trace_events))
         row["updated_at"] = self.base_time + timedelta(hours=1, minutes=len(self.trace_events))
         return row
 

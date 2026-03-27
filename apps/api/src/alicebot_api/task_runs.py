@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
@@ -9,13 +10,16 @@ from alicebot_api.contracts import (
     TaskRunCreateInput,
     TaskRunCreateResponse,
     TaskRunDetailResponse,
+    TaskRunFailureClass,
     TaskRunListResponse,
     TaskRunListSummary,
     TaskRunMutationResponse,
     TaskRunPauseInput,
     TaskRunRecord,
     TaskRunResumeInput,
+    TaskRunRetryPosture,
     TaskRunStatus,
+    TaskRunStopReason,
     TaskRunTickInput,
 )
 from alicebot_api.store import ContinuityStore, JsonObject, TaskRunRow
@@ -23,9 +27,10 @@ from alicebot_api.tasks import TaskNotFoundError
 
 
 RUNNABLE_TASK_RUN_STATUSES = frozenset({"queued", "running"})
-PAUSEABLE_TASK_RUN_STATUSES = frozenset({"queued", "running", "waiting", "waiting_approval"})
-RESUMABLE_TASK_RUN_STATUSES = frozenset({"paused", "waiting", "waiting_approval"})
-CANCELLABLE_TASK_RUN_STATUSES = frozenset({"queued", "running", "waiting", "waiting_approval", "paused"})
+PAUSEABLE_TASK_RUN_STATUSES = frozenset({"queued", "running", "waiting_approval", "waiting_user"})
+RESUMABLE_TASK_RUN_STATUSES = frozenset({"paused", "waiting_approval", "waiting_user", "failed"})
+CANCELLABLE_TASK_RUN_STATUSES = frozenset({"queued", "running", "waiting_approval", "waiting_user", "paused"})
+TERMINAL_TASK_RUN_STATUSES = frozenset({"failed", "done", "cancelled"})
 
 
 class TaskRunValidationError(ValueError):
@@ -49,7 +54,12 @@ def serialize_task_run_row(row: TaskRunRow) -> TaskRunRecord:
         "tick_count": row["tick_count"],
         "step_count": row["step_count"],
         "max_ticks": row["max_ticks"],
-        "stop_reason": cast(str | None, row["stop_reason"]),
+        "retry_count": row["retry_count"],
+        "retry_cap": row["retry_cap"],
+        "retry_posture": cast(TaskRunRetryPosture, row["retry_posture"]),
+        "failure_class": cast(TaskRunFailureClass | None, row["failure_class"]),
+        "stop_reason": cast(TaskRunStopReason | None, row["stop_reason"]),
+        "last_transitioned_at": row["last_transitioned_at"].isoformat(),
         "created_at": row["created_at"].isoformat(),
         "updated_at": row["updated_at"].isoformat(),
     }
@@ -106,6 +116,89 @@ def _transition_conflict(*, task_run_id: UUID, status: str, action: str) -> Task
     return TaskRunTransitionError(f"task run {task_run_id} is {status} and cannot be {action}")
 
 
+def _append_transition_checkpoint_entry(
+    checkpoint: JsonObject,
+    *,
+    source: str,
+    previous_status: TaskRunStatus | None,
+    status: TaskRunStatus,
+    previous_stop_reason: TaskRunStopReason | None,
+    stop_reason: TaskRunStopReason | None,
+    failure_class: TaskRunFailureClass | None,
+    retry_count: int,
+    retry_cap: int,
+    retry_posture: TaskRunRetryPosture,
+) -> JsonObject:
+    normalized = normalize_checkpoint(checkpoint)
+    transitions = normalized.get("transitions")
+    if isinstance(transitions, list):
+        history = [entry for entry in transitions if isinstance(entry, dict)]
+    else:
+        history = []
+
+    transition_entry = {
+        "sequence_no": len(history) + 1,
+        "source": source,
+        "at": datetime.now(UTC).isoformat(),
+        "previous_status": previous_status,
+        "status": status,
+        "previous_stop_reason": previous_stop_reason,
+        "stop_reason": stop_reason,
+        "failure_class": failure_class,
+        "retry_count": retry_count,
+        "retry_cap": retry_cap,
+        "retry_posture": retry_posture,
+    }
+    history.append(transition_entry)
+    normalized["transitions"] = history
+    normalized["last_transition"] = transition_entry
+    return normalized
+
+
+def _update_task_run(
+    store: ContinuityStore,
+    *,
+    row: TaskRunRow,
+    status: TaskRunStatus,
+    checkpoint: JsonObject,
+    tick_count: int,
+    step_count: int,
+    retry_count: int,
+    retry_cap: int,
+    retry_posture: TaskRunRetryPosture,
+    failure_class: TaskRunFailureClass | None,
+    stop_reason: TaskRunStopReason | None,
+    source: str,
+) -> TaskRunRow:
+    checkpoint_with_transition = _append_transition_checkpoint_entry(
+        checkpoint,
+        source=source,
+        previous_status=cast(TaskRunStatus, row["status"]),
+        status=status,
+        previous_stop_reason=cast(TaskRunStopReason | None, row["stop_reason"]),
+        stop_reason=stop_reason,
+        failure_class=failure_class,
+        retry_count=retry_count,
+        retry_cap=retry_cap,
+        retry_posture=retry_posture,
+    )
+    updated = store.update_task_run_optional(
+        task_run_id=cast(UUID, row["id"]),
+        status=status,
+        checkpoint=checkpoint_with_transition,
+        tick_count=tick_count,
+        step_count=step_count,
+        retry_count=retry_count,
+        retry_cap=retry_cap,
+        retry_posture=retry_posture,
+        failure_class=failure_class,
+        stop_reason=stop_reason,
+    )
+    if updated is None:
+        raise TaskRunNotFoundError(f"task run {row['id']} was not found")
+    return updated
+
+
 def create_task_run_record(
     store: ContinuityStore,
     *,
@@ -118,7 +211,22 @@ def create_task_run_record(
     if request.max_ticks <= 0:
         raise TaskRunValidationError("max_ticks must be greater than 0")
 
-    checkpoint = normalize_checkpoint(request.checkpoint)
+    retry_cap = request.retry_cap if request.retry_cap is not None else max(1, request.max_ticks)
+    if retry_cap <= 0:
+        raise TaskRunValidationError("retry_cap must be greater than 0")
+
+    checkpoint = _append_transition_checkpoint_entry(
+        request.checkpoint,
+        source="create",
+        previous_status=None,
+        status="queued",
+        previous_stop_reason=None,
+        stop_reason=None,
+        failure_class=None,
+        retry_count=0,
+        retry_cap=retry_cap,
+        retry_posture="none",
+    )
     row = store.create_task_run(
         task_id=request.task_id,
         status="queued",
@@ -126,6 +234,10 @@ def create_task_run_record(
         tick_count=0,
         step_count=0,
         max_ticks=request.max_ticks,
+        retry_count=0,
+        retry_cap=retry_cap,
+        retry_posture="none",
+        failure_class=None,
         stop_reason=None,
     )
     return {"task_run": serialize_task_run_row(row)}
@@ -164,29 +276,6 @@ def get_task_run_record(
     return {"task_run": serialize_task_run_row(row)}
 
 
-def _update_task_run(
-    store: ContinuityStore,
-    *,
-    row: TaskRunRow,
-    status: TaskRunStatus,
-    checkpoint: JsonObject,
-    tick_count: int,
-    step_count: int,
-    stop_reason: str | None,
-) -> TaskRunRow:
-    updated = store.update_task_run_optional(
-        task_run_id=cast(UUID, row["id"]),
-        status=status,
-        checkpoint=checkpoint,
-        tick_count=tick_count,
-        step_count=step_count,
-        stop_reason=stop_reason,
-    )
-    if updated is None:
-        raise TaskRunNotFoundError(f"task run {row['id']} was not found")
-    return updated
-
-
 def tick_task_run_record(
     store: ContinuityStore,
     *,
@@ -207,6 +296,8 @@ def tick_task_run_record(
     tick_count = int(row["tick_count"])
     step_count = int(row["step_count"])
     max_ticks = int(row["max_ticks"])
+    retry_count = int(row["retry_count"])
+    retry_cap = int(row["retry_cap"])
     task = _require_task_exists_and_load(store, task_id=cast(UUID, row["task_id"]))
 
     if task["status"] == "pending_approval" and task["latest_approval_id"] is not None:
@@ -226,7 +317,12 @@ def tick_task_run_record(
                 checkpoint=checkpoint,
                 tick_count=tick_count + 1,
                 step_count=step_count,
+                retry_count=retry_count,
+                retry_cap=retry_cap,
+                retry_posture="awaiting_approval",
+                failure_class=None,
                 stop_reason="waiting_approval",
+                source="tick_waiting_approval",
             )
             return {
                 "task_run": serialize_task_run_row(updated),
@@ -237,43 +333,60 @@ def tick_task_run_record(
         updated = _update_task_run(
             store,
             row=row,
-            status="completed",
+            status="done",
             checkpoint=checkpoint,
             tick_count=tick_count,
             step_count=step_count,
-            stop_reason="completed",
+            retry_count=retry_count,
+            retry_cap=retry_cap,
+            retry_posture="terminal",
+            failure_class=None,
+            stop_reason="done",
+            source="tick_done_existing_cursor",
         )
     elif tick_count >= max_ticks:
         updated = _update_task_run(
             store,
             row=row,
-            status="paused",
+            status="failed",
             checkpoint=checkpoint,
             tick_count=tick_count,
             step_count=step_count,
+            retry_count=retry_count,
+            retry_cap=retry_cap,
+            retry_posture="terminal",
+            failure_class="budget",
             stop_reason="budget_exhausted",
+            source="tick_budget_exhausted",
         )
     elif wait_for_signal:
         checkpoint["wait_for_signal"] = True
         updated = _update_task_run(
             store,
             row=row,
-            status="waiting",
+            status="waiting_user",
             checkpoint=checkpoint,
             tick_count=tick_count + 1,
             step_count=step_count,
-            stop_reason="wait_state",
+            retry_count=retry_count,
+            retry_cap=retry_cap,
+            retry_posture="awaiting_user",
+            failure_class=None,
+            stop_reason="waiting_user",
+            source="tick_waiting_user",
         )
     else:
         checkpoint["cursor"] = cursor + 1
         next_tick_count = tick_count + 1
         next_step_count = step_count + 1
         if checkpoint["cursor"] >= target_steps:
-            status: TaskRunStatus = "completed"
-            stop_reason = "completed"
+            status: TaskRunStatus = "done"
+            stop_reason: TaskRunStopReason | None = "done"
+            retry_posture: TaskRunRetryPosture = "terminal"
         else:
             status = "running"
             stop_reason = None
+            retry_posture = "none"
         updated = _update_task_run(
             store,
             row=row,
@@ -281,7 +394,12 @@ def tick_task_run_record(
             checkpoint=checkpoint,
             tick_count=next_tick_count,
             step_count=next_step_count,
+            retry_count=retry_count,
+            retry_cap=retry_cap,
+            retry_posture=retry_posture,
+            failure_class=None,
             stop_reason=stop_reason,
+            source="tick_progress",
         )
 
     return {
@@ -311,7 +429,12 @@ def pause_task_run_record(
         checkpoint=checkpoint,
         tick_count=int(row["tick_count"]),
         step_count=int(row["step_count"]),
+        retry_count=int(row["retry_count"]),
+        retry_cap=int(row["retry_cap"]),
+        retry_posture="paused",
+        failure_class=None,
         stop_reason="paused",
+        source="pause",
     )
     return {
         "task_run": serialize_task_run_row(updated),
@@ -347,16 +470,46 @@ def resume_task_run_record(
                     status=previous_status,
                     action="resumed while approval is still pending",
                 )
+
     checkpoint["wait_for_signal"] = False
     checkpoint["waiting_approval_id"] = None
+    checkpoint["resumed_by_user"] = True
+
+    retry_count = int(row["retry_count"])
+    retry_cap = int(row["retry_cap"])
+    if previous_status == "failed":
+        failure_class = cast(TaskRunFailureClass | None, row["failure_class"])
+        if failure_class != "transient":
+            raise _transition_conflict(
+                task_run_id=request.task_run_id,
+                status=previous_status,
+                action="resumed because failure class is terminal",
+            )
+        if retry_count >= retry_cap:
+            raise _transition_conflict(
+                task_run_id=request.task_run_id,
+                status=previous_status,
+                action="resumed because retry cap is exhausted",
+            )
+        next_retry_count = retry_count + 1
+        next_status: TaskRunStatus = "queued"
+    else:
+        next_retry_count = retry_count
+        next_status = "queued" if previous_status == "waiting_approval" else "running"
+
     updated = _update_task_run(
         store,
         row=row,
-        status="running" if previous_status != "waiting_approval" else "queued",
+        status=next_status,
         checkpoint=checkpoint,
         tick_count=int(row["tick_count"]),
         step_count=int(row["step_count"]),
+        retry_count=next_retry_count,
+        retry_cap=retry_cap,
+        retry_posture="none",
+        failure_class=None,
         stop_reason=None,
+        source="resume",
     )
     return {
         "task_run": serialize_task_run_row(updated),
@@ -385,7 +538,64 @@ def cancel_task_run_record(
         checkpoint=checkpoint,
         tick_count=int(row["tick_count"]),
         step_count=int(row["step_count"]),
+        retry_count=int(row["retry_count"]),
+        retry_cap=int(row["retry_cap"]),
+        retry_posture="terminal",
+        failure_class=None,
         stop_reason="cancelled",
+        source="cancel",
+    )
+    return {
+        "task_run": serialize_task_run_row(updated),
+        "previous_status": previous_status,
+    }
+
+
+def mark_task_run_failed(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    task_run_id: UUID,
+    stop_reason: TaskRunStopReason,
+    failure_class: TaskRunFailureClass,
+    source: str,
+) -> TaskRunMutationResponse | None:
+    del user_id
+
+    row = store.get_task_run_optional(task_run_id)
+    if row is None:
+        return None
+
+    previous_status = cast(TaskRunStatus, row["status"])
+    if previous_status in {"done", "cancelled"}:
+        return None
+
+    retry_count = int(row["retry_count"])
+    retry_cap = int(row["retry_cap"])
+    if failure_class == "transient":
+        if retry_count < retry_cap:
+            retry_posture: TaskRunRetryPosture = "retryable"
+            next_stop_reason = stop_reason
+        else:
+            retry_posture = "exhausted"
+            next_stop_reason = "retry_exhausted"
+    else:
+        retry_posture = "terminal"
+        next_stop_reason = stop_reason
+
+    updated = _update_task_run(
+        store,
+        row=row,
+        status="failed",
+        checkpoint=cast(JsonObject, row["checkpoint"]),
+        tick_count=int(row["tick_count"]),
+        step_count=int(row["step_count"]),
+        retry_count=retry_count,
+        retry_cap=retry_cap,
+        retry_posture=retry_posture,
+        failure_class=failure_class,
+        stop_reason=next_stop_reason,
+        source=source,
     )
     return {
         "task_run": serialize_task_run_row(updated),

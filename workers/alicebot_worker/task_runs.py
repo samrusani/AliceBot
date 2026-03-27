@@ -19,6 +19,10 @@ class WorkerTickOutcome:
     previous_status: str
     status: str
     stop_reason: str | None
+    retry_posture: str
+    retry_count: int
+    retry_cap: int
+    failure_class: str | None
 
 
 def acquire_and_tick_one_task_run(
@@ -42,6 +46,10 @@ def acquire_and_tick_one_task_run(
             previous_status=str(row["status"]),
             status=execution_outcome.status,
             stop_reason=execution_outcome.stop_reason,
+            retry_posture=execution_outcome.retry_posture,
+            retry_count=execution_outcome.retry_count,
+            retry_cap=execution_outcome.retry_cap,
+            failure_class=execution_outcome.failure_class,
         )
 
     try:
@@ -59,4 +67,8 @@ def acquire_and_tick_one_task_run(
         previous_status=payload["previous_status"],
         status=task_run["status"],
         stop_reason=task_run["stop_reason"],
+        retry_posture=task_run["retry_posture"],
+        retry_count=task_run["retry_count"],
+        retry_cap=task_run["retry_cap"],
+        failure_class=task_run["failure_class"],
     )

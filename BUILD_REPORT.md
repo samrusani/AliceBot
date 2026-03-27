@@ -1,90 +1,120 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 4 Sprint 12: add run-aware real tool execution beyond `proxy.echo`, enforce idempotent side-effect execution, and wire approval pause/resume transitions to durable `task_runs` with explicit run/task-step/approval/execution linkage.
+Implement Phase 4 Sprint 13: Run Observability, Failure Discipline, and Ship Gates by making run lifecycle transitions auditable, retry/failure behavior explicit and persisted, and Phase 4 validation commands deterministic.
 
 ## Completed Work
-- Added migration `20260327_0039_task_run_execution_linkage.py` to link `task_runs` with approvals/tool executions and persist idempotency keys.
-  - Added `approvals.task_run_id` FK.
-  - Added `tool_executions.task_run_id` and `tool_executions.idempotency_key`.
-  - Added partial unique index for idempotent replay safety: `(user_id, task_run_id, approval_id, idempotency_key)`.
-  - Extended task-run status/stop-reason constraints to include `waiting_approval`.
-- Extended store contracts and SQL in `store.py` for run-aware approval/execution persistence and idempotency lookup.
-  - Added approval/task-run linkage updates.
-  - Added tool execution idempotency lookup seam.
-  - Added optional `task_run_id` and `idempotency_key` persistence fields.
-  - Fixed `INSERT_TOOL_SQL` placeholder regression encountered during integration verification.
-- Implemented idempotent execution semantics and narrow real-tool rollout in `proxy_execution.py`.
-  - Added two new handlers: `proxy.thread_audit` (internal low-risk) and `proxy.calendar.draft_event` (draft-first external).
-  - Added side-effect idempotency key derivation and replay path before dispatch.
-  - Added run-linkage resolution and execution->run checkpoint sync.
-  - Preserved existing trace limits envelope compatibility for established API expectations.
-- Added approval-run integration in `approvals.py` and `task_runs.py`.
-  - Run transitions to `waiting_approval` on governed pending-approval steps.
-  - Approval resolution deterministically resumes linked runs (`approved -> queued`, `rejected -> completed`) with checkpoint evidence.
-- Updated API surface (`contracts.py`, `main.py`, `executions.py`) for optional task-run linkage/idempotency fields and endpoint propagation.
-- Added worker seam for run-aware execution dispatch.
-  - New `workers/alicebot_worker/tool_execution.py`.
-  - `workers/alicebot_worker/task_runs.py` now attempts execution when task/run state is ready.
-- Updated web shell review wiring for run linkage and resumed execution visibility.
-  - `apps/web/lib/api.ts`, `apps/web/components/approval-actions.tsx`, `apps/web/components/approval-detail.tsx`, `apps/web/components/execution-summary.tsx`, `apps/web/components/task-run-list.tsx`, `apps/web/app/tasks/page.tsx`.
-  - Kept backward-compatible request behavior by omitting `task_run_id` when absent.
-- Added minimal web test-command compatibility shim so the exact sprint packet command with `--runInBand` executes under vitest.
-  - Updated `apps/web/package.json` test script to call `node test/run-vitest.mjs`.
-  - Added `apps/web/test/run-vitest.mjs` to strip `--runInBand` and forward remaining args to `vitest run`.
-- Added migration unit coverage in `tests/unit/test_20260327_0039_task_run_execution_linkage.py`.
-- Applied post-review safety fixes:
-  - approval resolution now resumes linked runs only from `waiting_approval` (terminal runs are not reopened).
-  - run sync after execution no longer forces blocked outcomes to `completed`; blocked outcomes pause the run with explicit stop reason mapping.
+- Added migration `apps/api/alembic/versions/20260327_0040_task_run_retry_failure_controls.py`:
+  - added `retry_count`, `retry_cap`, `retry_posture`, `failure_class`, `last_transitioned_at` to `task_runs`
+  - migrated legacy run statuses/reasons (`waiting -> waiting_user`, `completed -> done`)
+  - fail-closed budget-exhausted paused rows to `failed` with explicit budget failure semantics
+  - replaced task-run check constraints with Sprint 13 status/stop-reason/failure/retry enums
+  - added transition timestamp index
+  - normalized legacy `paused + budget_exhausted` posture mapping to terminal retry posture during upgrade
+- Extended run contracts and API models in `apps/api/src/alicebot_api/contracts.py` and `apps/api/src/alicebot_api/main.py`:
+  - new run statuses: `queued`, `running`, `waiting_approval`, `waiting_user`, `paused`, `failed`, `done`, `cancelled`
+  - explicit stop reasons including `budget_exhausted`, `policy_blocked`, `approval_rejected`, `retry_exhausted`, `fatal_error`
+  - explicit failure classes: `transient`, `policy`, `approval`, `budget`, `fatal`
+  - explicit retry posture: `none`, `retryable`, `exhausted`, `terminal`, `paused`, `awaiting_approval`, `awaiting_user`
+  - create-run input now accepts optional `retry_cap`
+- Wired new persistence fields in `apps/api/src/alicebot_api/store.py`:
+  - task-run insert/get/list/update/acquire SQL now includes retry/failure/transition metadata
+  - store row schema and optional update APIs now carry retry/failure fields
+- Reworked run lifecycle logic in `apps/api/src/alicebot_api/task_runs.py`:
+  - deterministic transition evidence in checkpoint (`transitions[]` and `last_transition`)
+  - terminal states now use `failed`/`done` explicitly
+  - waiting path now resolves to `waiting_user`
+  - budget exhaustion now fail-closes to `failed` with budget class
+  - added failure helper (`mark_task_run_failed`) for worker/runtime exception paths
+- Updated approval/execution integration for explicit failure and transition telemetry:
+  - `apps/api/src/alicebot_api/approvals.py`: reject path sets `failed` + `approval_rejected` + `failure_class=approval`; approved path requeues
+  - `apps/api/src/alicebot_api/proxy_execution.py`: blocked execution fail-closes linked run (`policy_blocked`/`budget_exhausted` classification), emits run diagnostics trace event
+- Updated worker failure discipline:
+  - `workers/alicebot_worker/tool_execution.py`, `workers/alicebot_worker/task_runs.py`, `workers/alicebot_worker/main.py`
+  - worker exceptions now write explicit run failure/retry posture instead of silent drop
+  - worker logs include stop reason, failure class, retry count/cap, posture
+- Updated web diagnostics surfaces:
+  - `apps/web/lib/api.ts` and tests with new run unions and fields
+  - `apps/web/app/tasks/page.tsx` fixtures moved to Sprint 13 statuses/diagnostics
+  - `apps/web/components/task-run-list.tsx` now surfaces retry posture/count/cap, failure class, transition timestamps/source
+  - added `apps/web/app/traces/page.test.tsx` coverage
+- Added Phase 4 gate wrappers and runbooks:
+  - `scripts/run_phase4_acceptance.py`
+  - `scripts/run_phase4_readiness_gates.py`
+  - `scripts/run_phase4_validation_matrix.py`
+  - `docs/runbooks/phase4-acceptance-suite.md`
+  - `docs/runbooks/phase4-readiness-gates.md`
+  - `docs/runbooks/phase4-validation-matrix.md`
+  - `docs/runbooks/phase4-closeout-packet.md`
+- Updated canonical control docs for Sprint 13 truth sync:
+  - `README.md`
+  - `ROADMAP.md`
+  - `.ai/handoff/CURRENT_STATE.md`
+- Updated sprint-scoped unit/integration/web tests to reflect deterministic Sprint 13 run semantics.
 
 ## Incomplete Work
-- None inside Sprint 12 scope.
+- None within Sprint 13 packet scope.
 
 ## Files Changed
-- `apps/api/alembic/versions/20260327_0039_task_run_execution_linkage.py`
-- `apps/api/src/alicebot_api/store.py`
+- `.ai/handoff/CURRENT_STATE.md`
+- `README.md`
+- `ROADMAP.md`
+- `apps/api/alembic/versions/20260327_0040_task_run_retry_failure_controls.py`
+- `apps/api/src/alicebot_api/approvals.py`
 - `apps/api/src/alicebot_api/contracts.py`
 - `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/approvals.py`
-- `apps/api/src/alicebot_api/executions.py`
 - `apps/api/src/alicebot_api/proxy_execution.py`
+- `apps/api/src/alicebot_api/store.py`
 - `apps/api/src/alicebot_api/task_runs.py`
+- `workers/alicebot_worker/main.py`
 - `workers/alicebot_worker/task_runs.py`
 - `workers/alicebot_worker/tool_execution.py`
 - `apps/web/lib/api.ts`
-- `apps/web/package.json`
-- `apps/web/test/run-vitest.mjs`
+- `apps/web/lib/api.test.ts`
 - `apps/web/app/tasks/page.tsx`
-- `apps/web/components/approval-actions.tsx`
-- `apps/web/components/approval-detail.tsx`
-- `apps/web/components/execution-summary.tsx`
+- `apps/web/app/tasks/page.test.tsx`
+- `apps/web/app/traces/page.test.tsx`
 - `apps/web/components/task-run-list.tsx`
-- `tests/unit/test_20260327_0039_task_run_execution_linkage.py`
+- `apps/web/components/task-run-list.test.tsx`
+- `tests/unit/test_20260327_0040_task_run_retry_failure_controls.py`
+- `tests/unit/test_task_runs.py`
+- `tests/unit/test_task_run_store.py`
 - `tests/unit/test_proxy_execution.py`
 - `tests/unit/test_approvals.py`
-- `tests/integration/test_approval_api.py`
+- `tests/unit/test_worker_main.py`
+- `tests/integration/test_task_runs_api.py`
 - `tests/integration/test_proxy_execution_api.py`
+- `scripts/run_phase4_acceptance.py`
+- `scripts/run_phase4_readiness_gates.py`
+- `scripts/run_phase4_validation_matrix.py`
+- `docs/runbooks/phase4-acceptance-suite.md`
+- `docs/runbooks/phase4-readiness-gates.md`
+- `docs/runbooks/phase4-validation-matrix.md`
+- `docs/runbooks/phase4-closeout-packet.md`
 - `BUILD_REPORT.md`
+- `REVIEW_REPORT.md`
 
 ## Tests Run
-- `./.venv/bin/python -m pytest tests/unit/test_20260327_0039_task_run_execution_linkage.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py tests/unit/test_executions.py tests/unit/test_executions_main.py tests/unit/test_approvals.py tests/unit/test_approvals_main.py -q`
-  - PASS (`50 passed`)
-- `./.venv/bin/python -m pytest tests/integration/test_proxy_execution_api.py tests/integration/test_approval_api.py tests/integration/test_task_runs_api.py -q`
+- `./.venv/bin/python -m pytest tests/unit/test_20260327_0040_task_run_retry_failure_controls.py tests/unit/test_task_runs.py tests/unit/test_task_runs_main.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py tests/unit/test_worker_main.py -q`
+  - PASS (`37 passed`)
+- `pnpm --dir apps/web test -- --runInBand app/tasks/page.test.tsx app/traces/page.test.tsx components/task-run-list.test.tsx components/execution-summary.test.tsx lib/api.test.ts`
+  - PASS (`37 passed`)
+- `./.venv/bin/python -m pytest tests/integration/test_task_runs_api.py tests/integration/test_proxy_execution_api.py tests/integration/test_approval_api.py -q`
   - PASS (`28 passed`)
-- `pnpm --dir apps/web test -- --runInBand components/approval-actions.test.tsx components/approval-detail.test.tsx components/execution-summary.test.tsx components/task-run-list.test.tsx lib/api.test.ts`
-  - PASS (`39 passed`)
+- `python3 scripts/run_phase4_validation_matrix.py`
+  - PASS (`Phase 4 validation matrix result: PASS`)
 - `python3 scripts/run_phase3_validation_matrix.py`
-  - PASS (all matrix steps PASS: control docs, gate contracts, readiness gates, backend integration matrix, web validation matrix)
+  - PASS (`Phase 2 validation matrix result: PASS` in phase3 chain)
 
 ## Blockers/Issues
-- No remaining sprint blockers.
-- Note: sandboxed runs without escalation cannot access local Postgres and produce false-negative integration/matrix failures (`Operation not permitted`); escalated run was used for authoritative matrix results.
+- No functional blockers remain.
+- Environment note: non-escalated sandbox runs cannot reach local Postgres (`Operation not permitted` on `localhost:5432`), so DB-backed acceptance commands were rerun with escalated permissions for authoritative results.
 
 ## Recommended Next Step
-Proceed to Control Tower review for Sprint 12 and preserve deferred scope boundaries in follow-up sprint planning.
+Submit for Control Tower Sprint 13 review/sign-off, then open the sprint PR from `codex/phase4-sprint-13-run-observability-ship-gates`.
 
 ## Explicit Deferred Scope
-- Broad connector write expansion.
-- Multi-tool external write-capable rollout beyond the two narrow Sprint 12 paths.
-- Major retry-policy framework expansion (Sprint 13 scope).
-- Sprint 13 observability/ship-gate breadth work.
+- Connector breadth expansion beyond current narrow rollout
+- Auth model expansion/redesign
+- Multi-orchestrator runtime experiments
+- Broader platform/channel distribution changes
