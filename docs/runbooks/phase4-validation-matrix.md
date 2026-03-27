@@ -1,6 +1,6 @@
 # Phase 4 Validation Matrix
 
-This runbook defines the deterministic Phase 4 validation chain for Sprint 13.
+This runbook defines the deterministic Phase 4 validation chain for Sprint 14 canonical MVP ship-gate ownership.
 
 ## Canonical Command
 
@@ -15,9 +15,18 @@ The validation matrix executes these ordered steps:
 1. `control_doc_truth`
 2. `phase4_acceptance`
 3. `phase4_readiness_gates`
-4. `phase4_scenarios`
-5. `phase4_web_diagnostics`
-6. `phase3_compat_validation`
+4. `phase4_magnesium_ship_gate`
+5. `phase4_scenarios`
+6. `phase4_web_diagnostics`
+7. `phase3_compat_validation`
+8. `phase2_compat_validation`
+9. `mvp_compat_validation`
+
+## Canonical Magnesium Step
+
+The `phase4_magnesium_ship_gate` step runs:
+
+- `tests/integration/test_mvp_acceptance_suite.py::test_acceptance_canonical_magnesium_reorder_flow_with_memory_write_back_evidence`
 
 ## Scenario Step Coverage
 
@@ -33,3 +42,4 @@ The `phase4_scenarios` step runs:
 
 - PASS only when every step reports `PASS`.
 - NO_GO when any step fails.
+- Failing step IDs are reported explicitly as `Failing steps: ...`.

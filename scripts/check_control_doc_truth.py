@@ -23,14 +23,15 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="ROADMAP.md",
         required_markers=(
             "through Phase 3 Sprint 9",
-            "canonical Phase 3 gate entrypoints",
+            "Phase 4 Sprint 14 is the active release-control layer",
+            "Gate ownership is canonicalized to Phase 4 runner scripts",
         ),
     ),
     ControlDocTruthRule(
         relative_path="README.md",
         required_markers=(
             "through Phase 3 Sprint 9",
-            "Canonical gate entrypoints: `scripts/run_phase3_*.py` are the control-plane entrypoint wrappers",
+            "Canonical gate entrypoints: `scripts/run_phase4_*.py` are the control-plane canonical MVP release gates",
         ),
     ),
     ControlDocTruthRule(
@@ -45,7 +46,8 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
             "through Phase 3 Sprint 9",
-            "Gate entrypoints are canonicalized to Phase 3 runner script names",
+            "Active Sprint focus is Phase 4 Sprint 14",
+            "Gate ownership is canonicalized to Phase 4 runner script names",
         ),
     ),
     ControlDocTruthRule(
@@ -68,6 +70,7 @@ DISALLOWED_MARKERS: tuple[str, ...] = (
     "through Phase 2 Sprint 11",
     "current through Phase 2 Sprint 11",
     "Phase 2 Sprint 7",
+    "Phase 4 Sprint 13",
     "v1 ship gate",
     "v1 ship-gate",
     "ship gates",
