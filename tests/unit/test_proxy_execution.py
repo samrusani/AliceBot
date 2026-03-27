@@ -263,7 +263,11 @@ class ProxyExecutionStoreStub:
         tick_count: int,
         step_count: int,
         max_ticks: int,
-        stop_reason: str | None,
+        retry_count: int = 0,
+        retry_cap: int = 1,
+        retry_posture: str = "none",
+        failure_class: str | None = None,
+        stop_reason: str | None = None,
     ) -> dict[str, object]:
         row = {
             "id": uuid4(),
@@ -274,7 +278,12 @@ class ProxyExecutionStoreStub:
             "tick_count": tick_count,
             "step_count": step_count,
             "max_ticks": max_ticks,
+            "retry_count": retry_count,
+            "retry_cap": retry_cap,
+            "retry_posture": retry_posture,
+            "failure_class": failure_class,
             "stop_reason": stop_reason,
+            "last_transitioned_at": self.base_time + timedelta(minutes=len(self.task_runs)),
             "created_at": self.base_time + timedelta(minutes=len(self.task_runs)),
             "updated_at": self.base_time + timedelta(minutes=len(self.task_runs)),
         }
@@ -292,6 +301,10 @@ class ProxyExecutionStoreStub:
         checkpoint: dict[str, object],
         tick_count: int,
         step_count: int,
+        retry_count: int,
+        retry_cap: int,
+        retry_posture: str,
+        failure_class: str | None,
         stop_reason: str | None,
     ) -> dict[str, object] | None:
         run = self.get_task_run_optional(task_run_id)
@@ -301,7 +314,12 @@ class ProxyExecutionStoreStub:
         run["checkpoint"] = checkpoint
         run["tick_count"] = tick_count
         run["step_count"] = step_count
+        run["retry_count"] = retry_count
+        run["retry_cap"] = retry_cap
+        run["retry_posture"] = retry_posture
+        run["failure_class"] = failure_class
         run["stop_reason"] = stop_reason
+        run["last_transitioned_at"] = self.base_time + timedelta(hours=1, minutes=len(self.trace_events))
         run["updated_at"] = self.base_time + timedelta(hours=1, minutes=len(self.trace_events))
         return run
 
@@ -925,7 +943,7 @@ def test_execute_approved_proxy_request_rejects_missing_visible_approval() -> No
         )
 
 
-def test_execute_approved_proxy_request_marks_linked_run_budget_blocked_as_paused() -> None:
+def test_execute_approved_proxy_request_marks_linked_run_budget_blocked_as_failed() -> None:
     store = ProxyExecutionStoreStub()
     approval = store.seed_approval(status="approved", tool_key="proxy.echo")
     run = store.create_task_run(
@@ -982,13 +1000,15 @@ def test_execute_approved_proxy_request_marks_linked_run_budget_blocked_as_pause
     )
 
     assert payload["result"]["status"] == "blocked"
-    assert store.task_runs[0]["status"] == "paused"
+    assert store.task_runs[0]["status"] == "failed"
     assert store.task_runs[0]["stop_reason"] == "budget_exhausted"
+    assert store.task_runs[0]["failure_class"] == "budget"
+    assert store.task_runs[0]["retry_posture"] == "terminal"
     assert store.task_runs[0]["checkpoint"]["last_execution_status"] == "blocked"
     assert store.task_runs[0]["checkpoint"]["resolved_approval_id"] == str(approval["id"])
 
 
-def test_execute_approved_proxy_request_marks_linked_run_missing_handler_as_paused() -> None:
+def test_execute_approved_proxy_request_marks_linked_run_missing_handler_as_failed() -> None:
     store = ProxyExecutionStoreStub()
     approval = store.seed_approval(status="approved", tool_key="proxy.missing")
     run = store.create_task_run(
@@ -1016,8 +1036,10 @@ def test_execute_approved_proxy_request_marks_linked_run_missing_handler_as_paus
             request=ProxyExecutionRequestInput(approval_id=approval["id"]),
         )
 
-    assert store.task_runs[0]["status"] == "paused"
-    assert store.task_runs[0]["stop_reason"] == "paused"
+    assert store.task_runs[0]["status"] == "failed"
+    assert store.task_runs[0]["stop_reason"] == "policy_blocked"
+    assert store.task_runs[0]["failure_class"] == "policy"
+    assert store.task_runs[0]["retry_posture"] == "terminal"
     assert store.task_runs[0]["checkpoint"]["last_execution_status"] == "blocked"
     assert store.task_runs[0]["checkpoint"]["resolved_approval_id"] == str(approval["id"])
 

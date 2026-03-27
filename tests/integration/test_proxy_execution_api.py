@@ -536,7 +536,7 @@ def test_execute_approved_proxy_endpoint_rejects_missing_handler(
     assert detail_payload == {"execution": list_payload["items"][0]}
 
 
-def test_execute_approved_proxy_endpoint_marks_linked_run_paused_when_blocked(
+def test_execute_approved_proxy_endpoint_marks_linked_run_failed_when_blocked(
     migrated_database_urls,
     monkeypatch,
 ) -> None:
@@ -604,8 +604,10 @@ def test_execute_approved_proxy_endpoint_marks_linked_run_paused_when_blocked(
         query_params={"user_id": str(owner["user_id"])},
     )
     assert run_detail_status == 200
-    assert run_detail_payload["task_run"]["status"] == "paused"
-    assert run_detail_payload["task_run"]["stop_reason"] == "paused"
+    assert run_detail_payload["task_run"]["status"] == "failed"
+    assert run_detail_payload["task_run"]["stop_reason"] == "policy_blocked"
+    assert run_detail_payload["task_run"]["failure_class"] == "policy"
+    assert run_detail_payload["task_run"]["retry_posture"] == "terminal"
     assert run_detail_payload["task_run"]["checkpoint"]["last_execution_status"] == "blocked"
     assert run_detail_payload["task_run"]["checkpoint"]["resolved_approval_id"] == create_payload["approval"]["id"]
 

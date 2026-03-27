@@ -31,6 +31,10 @@ function checkpointSummary(checkpoint: Record<string, unknown>) {
       typeof checkpoint.last_execution_id === "string" ? checkpoint.last_execution_id : null,
     lastExecutionStatus:
       typeof checkpoint.last_execution_status === "string" ? checkpoint.last_execution_status : null,
+    lastTransition:
+      checkpoint.last_transition && typeof checkpoint.last_transition === "object"
+        ? (checkpoint.last_transition as Record<string, unknown>)
+        : null,
   };
 }
 
@@ -110,7 +114,12 @@ export function TaskRunList({
                 <div className="timeline-item__meta">
                   <span className="meta-pill">Tick {run.tick_count} / {run.max_ticks}</span>
                   <span className="meta-pill">Steps {run.step_count}</span>
+                  <span className="meta-pill">Retry {run.retry_count} / {run.retry_cap}</span>
+                  <span className="meta-pill">Posture: {run.retry_posture}</span>
                   {run.stop_reason ? <span className="meta-pill">Stop: {run.stop_reason}</span> : null}
+                  {run.failure_class ? (
+                    <span className="meta-pill">Failure: {run.failure_class}</span>
+                  ) : null}
                   {checkpoint.lastExecutionStatus ? (
                     <span className="meta-pill">Execution: {checkpoint.lastExecutionStatus}</span>
                   ) : null}
@@ -134,6 +143,10 @@ export function TaskRunList({
                     <dt>Source</dt>
                     <dd>{source === "live" ? "Live backend" : "Fixture fallback"}</dd>
                   </div>
+                  <div>
+                    <dt>Last transition</dt>
+                    <dd>{formatDate(run.last_transitioned_at)}</dd>
+                  </div>
                   {checkpoint.waitingApprovalId ? (
                     <div>
                       <dt>Pending approval</dt>
@@ -156,6 +169,12 @@ export function TaskRunList({
                     <div>
                       <dt>Last execution</dt>
                       <dd className="mono">{checkpoint.lastExecutionId}</dd>
+                    </div>
+                  ) : null}
+                  {checkpoint.lastTransition ? (
+                    <div>
+                      <dt>Transition source</dt>
+                      <dd>{String(checkpoint.lastTransition.source ?? "unknown")}</dd>
                     </div>
                   ) : null}
                 </div>

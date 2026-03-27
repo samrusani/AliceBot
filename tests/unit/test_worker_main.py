@@ -43,6 +43,10 @@ def test_run_ticks_one_task_run_when_worker_user_id_is_configured(caplog, monkey
             previous_status="queued",
             status="running",
             stop_reason=None,
+            retry_posture="none",
+            retry_count=0,
+            retry_cap=2,
+            failure_class=None,
         )
 
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
@@ -59,7 +63,7 @@ def test_run_ticks_one_task_run_when_worker_user_id_is_configured(caplog, monkey
         "user_id": worker_user_id,
     }
     assert caplog.messages == [
-        "Worker ticked task run run-1 from queued to running (stop_reason=None).",
+        "Worker ticked task run run-1 from queued to running (stop_reason=None failure_class=None retry=0/2 posture=none).",
     ]
 
 

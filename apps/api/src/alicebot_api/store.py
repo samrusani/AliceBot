@@ -426,7 +426,12 @@ class TaskRunRow(TypedDict):
     tick_count: int
     step_count: int
     max_ticks: int
+    retry_count: int
+    retry_cap: int
+    retry_posture: str
+    failure_class: str | None
     stop_reason: str | None
+    last_transitioned_at: datetime
     created_at: datetime
     updated_at: datetime
 
@@ -3034,7 +3039,12 @@ INSERT_TASK_RUN_SQL = """
                   tick_count,
                   step_count,
                   max_ticks,
+                  retry_count,
+                  retry_cap,
+                  retry_posture,
+                  failure_class,
                   stop_reason,
+                  last_transitioned_at,
                   created_at,
                   updated_at
                 )
@@ -3047,6 +3057,11 @@ INSERT_TASK_RUN_SQL = """
                   %s,
                   %s,
                   %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
                   clock_timestamp(),
                   clock_timestamp()
                 )
@@ -3059,7 +3074,12 @@ INSERT_TASK_RUN_SQL = """
                   tick_count,
                   step_count,
                   max_ticks,
+                  retry_count,
+                  retry_cap,
+                  retry_posture,
+                  failure_class,
                   stop_reason,
+                  last_transitioned_at,
                   created_at,
                   updated_at
                 """
@@ -3074,7 +3094,12 @@ GET_TASK_RUN_SQL = """
                   tick_count,
                   step_count,
                   max_ticks,
+                  retry_count,
+                  retry_cap,
+                  retry_posture,
+                  failure_class,
                   stop_reason,
+                  last_transitioned_at,
                   created_at,
                   updated_at
                 FROM task_runs
@@ -3091,7 +3116,12 @@ LIST_TASK_RUNS_FOR_TASK_SQL = """
                   tick_count,
                   step_count,
                   max_ticks,
+                  retry_count,
+                  retry_cap,
+                  retry_posture,
+                  failure_class,
                   stop_reason,
+                  last_transitioned_at,
                   created_at,
                   updated_at
                 FROM task_runs
@@ -3105,7 +3135,12 @@ UPDATE_TASK_RUN_SQL = """
                     checkpoint = %s,
                     tick_count = %s,
                     step_count = %s,
+                    retry_count = %s,
+                    retry_cap = %s,
+                    retry_posture = %s,
+                    failure_class = %s,
                     stop_reason = %s,
+                    last_transitioned_at = clock_timestamp(),
                     updated_at = clock_timestamp()
                 WHERE id = %s
                 RETURNING
@@ -3117,7 +3152,12 @@ UPDATE_TASK_RUN_SQL = """
                   tick_count,
                   step_count,
                   max_ticks,
+                  retry_count,
+                  retry_cap,
+                  retry_posture,
+                  failure_class,
                   stop_reason,
+                  last_transitioned_at,
                   created_at,
                   updated_at
                 """
@@ -3133,7 +3173,10 @@ ACQUIRE_NEXT_TASK_RUN_SQL = """
                 )
                 UPDATE task_runs
                 SET status = 'running',
+                    retry_posture = 'none',
+                    failure_class = NULL,
                     stop_reason = NULL,
+                    last_transitioned_at = clock_timestamp(),
                     updated_at = clock_timestamp()
                 WHERE id = (SELECT id FROM candidate)
                 RETURNING
@@ -3145,7 +3188,12 @@ ACQUIRE_NEXT_TASK_RUN_SQL = """
                   tick_count,
                   step_count,
                   max_ticks,
+                  retry_count,
+                  retry_cap,
+                  retry_posture,
+                  failure_class,
                   stop_reason,
+                  last_transitioned_at,
                   created_at,
                   updated_at
                 """
@@ -4737,6 +4785,10 @@ class ContinuityStore:
         tick_count: int,
         step_count: int,
         max_ticks: int,
+        retry_count: int,
+        retry_cap: int,
+        retry_posture: str,
+        failure_class: str | None,
         stop_reason: str | None,
     ) -> TaskRunRow:
         return self._fetch_one(
@@ -4749,6 +4801,10 @@ class ContinuityStore:
                 tick_count,
                 step_count,
                 max_ticks,
+                retry_count,
+                retry_cap,
+                retry_posture,
+                failure_class,
                 stop_reason,
             ),
         )
@@ -4767,6 +4823,10 @@ class ContinuityStore:
         checkpoint: JsonObject,
         tick_count: int,
         step_count: int,
+        retry_count: int,
+        retry_cap: int,
+        retry_posture: str,
+        failure_class: str | None,
         stop_reason: str | None,
     ) -> TaskRunRow | None:
         return self._fetch_optional_one(
@@ -4776,6 +4836,10 @@ class ContinuityStore:
                 Jsonb(checkpoint),
                 tick_count,
                 step_count,
+                retry_count,
+                retry_cap,
+                retry_posture,
+                failure_class,
                 stop_reason,
                 task_run_id,
             ),
