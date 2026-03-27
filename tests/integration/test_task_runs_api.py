@@ -259,11 +259,16 @@ def test_task_run_endpoints_cover_budget_wait_resume_pause_cancel_and_conflicts(
     assert first_tick_status == 200
     assert first_tick_payload["task_run"]["status"] == "running"
     assert second_tick_status == 200
-    assert second_tick_payload["task_run"]["status"] == "paused"
+    assert second_tick_payload["task_run"]["status"] == "failed"
     assert second_tick_payload["task_run"]["stop_reason"] == "budget_exhausted"
-    assert budget_resume_status == 200
-    assert budget_resume_payload["task_run"]["status"] == "running"
-    assert budget_resume_payload["task_run"]["stop_reason"] is None
+    assert second_tick_payload["task_run"]["failure_class"] == "budget"
+    assert second_tick_payload["task_run"]["retry_posture"] == "terminal"
+    assert budget_resume_status == 409
+    assert budget_resume_payload == {
+        "detail": (
+            f"task run {budget_run_id} is failed and cannot be resumed because failure class is terminal"
+        )
+    }
 
     wait_create_status, wait_create_payload = invoke_request(
         "POST",
@@ -308,8 +313,8 @@ def test_task_run_endpoints_cover_budget_wait_resume_pause_cancel_and_conflicts(
     )
 
     assert wait_tick_status == 200
-    assert wait_tick_payload["task_run"]["status"] == "waiting"
-    assert wait_tick_payload["task_run"]["stop_reason"] == "wait_state"
+    assert wait_tick_payload["task_run"]["status"] == "waiting_user"
+    assert wait_tick_payload["task_run"]["stop_reason"] == "waiting_user"
     assert wait_resume_status == 200
     assert wait_resume_payload["task_run"]["status"] == "running"
     assert wait_resume_payload["task_run"]["checkpoint"]["wait_for_signal"] is False

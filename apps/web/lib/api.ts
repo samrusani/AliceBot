@@ -234,18 +234,32 @@ export type TaskStepListSummary = {
 export type TaskRunStatus =
   | "queued"
   | "running"
-  | "waiting"
   | "waiting_approval"
+  | "waiting_user"
   | "paused"
-  | "completed"
+  | "failed"
+  | "done"
   | "cancelled";
 export type TaskRunStopReason =
-  | "wait_state"
   | "waiting_approval"
+  | "waiting_user"
   | "budget_exhausted"
   | "paused"
-  | "completed"
+  | "approval_rejected"
+  | "policy_blocked"
+  | "retry_exhausted"
+  | "fatal_error"
+  | "done"
   | "cancelled";
+export type TaskRunFailureClass = "transient" | "policy" | "approval" | "budget" | "fatal";
+export type TaskRunRetryPosture =
+  | "none"
+  | "retryable"
+  | "exhausted"
+  | "terminal"
+  | "paused"
+  | "awaiting_approval"
+  | "awaiting_user";
 
 export type TaskRunItem = {
   id: string;
@@ -255,7 +269,12 @@ export type TaskRunItem = {
   tick_count: number;
   step_count: number;
   max_ticks: number;
+  retry_count: number;
+  retry_cap: number;
+  retry_posture: TaskRunRetryPosture;
+  failure_class: TaskRunFailureClass | null;
   stop_reason: TaskRunStopReason | null;
+  last_transitioned_at: string;
   created_at: string;
   updated_at: string;
 };

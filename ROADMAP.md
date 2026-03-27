@@ -2,13 +2,15 @@
 
 ## Current Position
 
-- The accepted repo state is current through Phase 3 Sprint 9.
+- The canonical repo baseline remains through Phase 3 Sprint 9.
+- Phase 4 Sprint 12 is delivered on top of that baseline: run-aware execution linkage, idempotent replay controls, and approval-to-run pause/resume linkage.
+- Phase 4 Sprint 13 is the active release-confidence layer: explicit run transitions/stop reasons, bounded retry posture, explicit failure classes, and deterministic Phase 4 gate runners.
 - The backend baseline now includes continuity APIs, deterministic context compilation, governed request routing, approvals and execution review, typed memory and open-loop seams, deterministic thread resumption brief reads, unified explicit-signal capture seams, explicit task and task-step lifecycle seams, rooted local workspaces and artifact ingestion, artifact retrieval and embeddings, narrow read-only Gmail and Calendar seams with selected-item ingestion, bounded read-only Calendar event discovery for one connected account, and the no-tools assistant-response seam.
 - The frontend baseline is now real product surface, not scaffolding: the Next.js operator shell ships `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live-backend reads when configured and explicit fixture fallback when they are not.
 - `/chat` now uses selected-thread continuity instead of a raw thread-id-first flow, keeps bounded thread review and deterministic resumption brief review visible beside both assistant and governed-request composition, ships thread-linked governed workflow, ordered task-step timeline review, and bounded explain-why trace embedding, and includes manual explicit-signal capture controls for selected `message.user` events.
 - `/gmail` and `/calendar` are shipped bounded connector workspaces in the shell: account review, selected-account detail, explicit connect, and one selected-item ingestion path into one chosen task workspace. The API baseline also includes bounded Calendar event discovery for one connected account with deterministic ordering and bounded limits.
 - `/memories`, `/entities`, and `/artifacts` are shipped bounded review workspaces in the shell, not planned surface.
-- Phase 3 Sprint 9 confirms deterministic release-candidate validation tooling and canonical Phase 3 gate entrypoints; `python3 scripts/run_phase3_validation_matrix.py` is the default go/no-go command, with `python3 scripts/run_phase2_validation_matrix.py` retained as a compatibility guarantee command.
+- Phase 3 Sprint 9 confirms deterministic release-candidate validation tooling and canonical Phase 3 gate entrypoints; `python3 scripts/run_phase3_validation_matrix.py` remains the compatibility guarantee command while Phase 4 introduces `scripts/run_phase4_*.py` gate runners.
 - Historical sprint detail belongs in build and review artifacts, not in this roadmap.
 
 ## Next Delivery Focus

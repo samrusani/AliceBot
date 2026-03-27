@@ -73,6 +73,10 @@ class TaskRunStoreStub:
         tick_count: int,
         step_count: int,
         max_ticks: int,
+        retry_count: int,
+        retry_cap: int,
+        retry_posture: str,
+        failure_class: str | None,
         stop_reason: str | None,
     ) -> dict[str, object]:
         row = {
@@ -84,7 +88,12 @@ class TaskRunStoreStub:
             "tick_count": tick_count,
             "step_count": step_count,
             "max_ticks": max_ticks,
+            "retry_count": retry_count,
+            "retry_cap": retry_cap,
+            "retry_posture": retry_posture,
+            "failure_class": failure_class,
             "stop_reason": stop_reason,
+            "last_transitioned_at": self.base_time + timedelta(minutes=len(self.task_runs)),
             "created_at": self.base_time + timedelta(minutes=len(self.task_runs)),
             "updated_at": self.base_time + timedelta(minutes=len(self.task_runs)),
         }
@@ -106,6 +115,10 @@ class TaskRunStoreStub:
         checkpoint: dict[str, object],
         tick_count: int,
         step_count: int,
+        retry_count: int,
+        retry_cap: int,
+        retry_posture: str,
+        failure_class: str | None,
         stop_reason: str | None,
     ) -> dict[str, object] | None:
         row = self.get_task_run_optional(task_run_id)
@@ -115,7 +128,12 @@ class TaskRunStoreStub:
         row["checkpoint"] = dict(checkpoint)
         row["tick_count"] = tick_count
         row["step_count"] = step_count
+        row["retry_count"] = retry_count
+        row["retry_cap"] = retry_cap
+        row["retry_posture"] = retry_posture
+        row["failure_class"] = failure_class
         row["stop_reason"] = stop_reason
+        row["last_transitioned_at"] = self.base_time + timedelta(hours=1, minutes=tick_count + step_count)
         row["updated_at"] = self.base_time + timedelta(hours=1, minutes=tick_count + step_count)
         return row
 
@@ -197,16 +215,18 @@ def test_tick_advances_checkpoint_and_completes_run() -> None:
     assert first_tick["task_run"]["step_count"] == 1
     assert first_tick["task_run"]["checkpoint"]["cursor"] == 1
     assert first_tick["task_run"]["stop_reason"] is None
+    assert first_tick["task_run"]["retry_posture"] == "none"
 
     assert second_tick["previous_status"] == "running"
-    assert second_tick["task_run"]["status"] == "completed"
+    assert second_tick["task_run"]["status"] == "done"
     assert second_tick["task_run"]["checkpoint"]["cursor"] == 2
     assert second_tick["task_run"]["tick_count"] == 2
     assert second_tick["task_run"]["step_count"] == 2
-    assert second_tick["task_run"]["stop_reason"] == "completed"
+    assert second_tick["task_run"]["stop_reason"] == "done"
+    assert second_tick["task_run"]["retry_posture"] == "terminal"
 
 
-def test_tick_sets_budget_exhaustion_stop_reason_in_safe_non_running_state() -> None:
+def test_tick_sets_budget_exhaustion_as_failed_with_explicit_failure_class() -> None:
     store = TaskRunStoreStub()
     task_id = store.seed_task()
     created = create_task_run_record(
@@ -232,8 +252,10 @@ def test_tick_sets_budget_exhaustion_stop_reason_in_safe_non_running_state() -> 
     )
 
     assert first_tick["task_run"]["status"] == "running"
-    assert exhausted_tick["task_run"]["status"] == "paused"
+    assert exhausted_tick["task_run"]["status"] == "failed"
     assert exhausted_tick["task_run"]["stop_reason"] == "budget_exhausted"
+    assert exhausted_tick["task_run"]["failure_class"] == "budget"
+    assert exhausted_tick["task_run"]["retry_posture"] == "terminal"
     assert exhausted_tick["task_run"]["tick_count"] == 1
 
 
@@ -272,15 +294,19 @@ def test_wait_resume_pause_cancel_transitions_are_deterministic() -> None:
         request=TaskRunCancelInput(task_run_id=task_run_id),
     )
 
-    assert waiting["task_run"]["status"] == "waiting"
-    assert waiting["task_run"]["stop_reason"] == "wait_state"
+    assert waiting["task_run"]["status"] == "waiting_user"
+    assert waiting["task_run"]["stop_reason"] == "waiting_user"
+    assert waiting["task_run"]["retry_posture"] == "awaiting_user"
     assert waiting["task_run"]["checkpoint"]["wait_for_signal"] is True
     assert resumed["task_run"]["status"] == "running"
     assert resumed["task_run"]["checkpoint"]["wait_for_signal"] is False
+    assert resumed["task_run"]["retry_posture"] == "none"
     assert paused["task_run"]["status"] == "paused"
     assert paused["task_run"]["stop_reason"] == "paused"
+    assert paused["task_run"]["retry_posture"] == "paused"
     assert cancelled["task_run"]["status"] == "cancelled"
     assert cancelled["task_run"]["stop_reason"] == "cancelled"
+    assert cancelled["task_run"]["retry_posture"] == "terminal"
 
     with pytest.raises(
         TaskRunTransitionError,
@@ -329,3 +355,30 @@ def test_get_task_run_raises_not_found_for_missing_record() -> None:
             user_id=store.user_id,
             task_run_id=uuid4(),
         )
+
+
+def test_task_run_transitions_are_recorded_in_checkpoint_history() -> None:
+    store = TaskRunStoreStub()
+    task_id = store.seed_task()
+    created = create_task_run_record(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=TaskRunCreateInput(
+            task_id=task_id,
+            max_ticks=2,
+            checkpoint={"cursor": 0, "target_steps": 2, "wait_for_signal": False},
+        ),
+    )
+    task_run_id = UUID(created["task_run"]["id"])
+
+    tick = tick_task_run_record(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=TaskRunTickInput(task_run_id=task_run_id),
+    )
+
+    transitions = tick["task_run"]["checkpoint"]["transitions"]
+    assert isinstance(transitions, list)
+    assert len(transitions) == 2
+    assert transitions[0]["status"] == "queued"
+    assert transitions[1]["status"] == "running"

@@ -51,11 +51,18 @@ def run() -> None:
         return
 
     LOGGER.info(
-        "Worker ticked task run %s from %s to %s (stop_reason=%s).",
+        (
+            "Worker ticked task run %s from %s to %s "
+            "(stop_reason=%s failure_class=%s retry=%s/%s posture=%s)."
+        ),
         outcome.task_run_id,
         outcome.previous_status,
         outcome.status,
         outcome.stop_reason,
+        outcome.failure_class,
+        outcome.retry_count,
+        outcome.retry_cap,
+        outcome.retry_posture,
     )
 
 

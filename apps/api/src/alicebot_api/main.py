@@ -813,6 +813,7 @@ class TransitionTaskStepRequest(BaseModel):
 class CreateTaskRunRequest(BaseModel):
     user_id: UUID
     max_ticks: int = Field(default=1, ge=1, le=1_000_000)
+    retry_cap: int | None = Field(default=None, ge=1, le=1_000_000)
     checkpoint: dict[str, object] = Field(default_factory=dict)
 
 
@@ -1957,6 +1958,7 @@ def create_task_run(task_id: UUID, request: CreateTaskRunRequest) -> JSONRespons
                 request=TaskRunCreateInput(
                     task_id=task_id,
                     max_ticks=request.max_ticks,
+                    retry_cap=request.retry_cap,
                     checkpoint=request.checkpoint,
                 ),
             )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
@@ -90,7 +91,7 @@ def _resume_task_run_after_resolution(
     store: ContinuityStore,
     *,
     approval: ApprovalRow,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str | None, str | None, str] | None:
     task_run_id = cast(UUID | None, approval.get("task_run_id"))
     if task_run_id is None:
         return None
@@ -110,19 +111,52 @@ def _resume_task_run_after_resolution(
     updated_checkpoint["resolved_approval_id"] = str(approval["id"])
     updated_checkpoint["approval_resolution_status"] = cast(str, approval["status"])
 
-    next_status = "queued" if approval["status"] == "approved" else "completed"
-    next_stop_reason = None if next_status == "queued" else "completed"
+    next_status = "queued" if approval["status"] == "approved" else "failed"
+    next_stop_reason = None if next_status == "queued" else "approval_rejected"
+    next_failure_class = None if next_status == "queued" else "approval"
+    next_retry_posture = "none" if next_status == "queued" else "terminal"
+    transitions = updated_checkpoint.get("transitions")
+    if isinstance(transitions, list):
+        history = [entry for entry in transitions if isinstance(entry, dict)]
+    else:
+        history = []
+    transition_entry = {
+        "sequence_no": len(history) + 1,
+        "source": "approval_resolution",
+        "at": datetime.now(UTC).isoformat(),
+        "previous_status": cast(str, task_run["status"]),
+        "status": next_status,
+        "previous_stop_reason": cast(str | None, task_run["stop_reason"]),
+        "stop_reason": next_stop_reason,
+        "failure_class": next_failure_class,
+        "retry_count": int(task_run["retry_count"]),
+        "retry_cap": int(task_run["retry_cap"]),
+        "retry_posture": next_retry_posture,
+    }
+    history.append(transition_entry)
+    updated_checkpoint["transitions"] = history
+    updated_checkpoint["last_transition"] = transition_entry
     updated = store.update_task_run_optional(
         task_run_id=task_run_id,
         status=next_status,
         checkpoint=updated_checkpoint,
         tick_count=int(task_run["tick_count"]),
         step_count=int(task_run["step_count"]),
+        retry_count=int(task_run["retry_count"]),
+        retry_cap=int(task_run["retry_cap"]),
+        retry_posture=next_retry_posture,
+        failure_class=next_failure_class,
         stop_reason=next_stop_reason,
     )
     if updated is None:
         return None
-    return cast(str, task_run["status"]), cast(str, updated["status"])
+    return (
+        cast(str, task_run["status"]),
+        cast(str, updated["status"]),
+        cast(str | None, updated["stop_reason"]),
+        cast(str | None, updated["failure_class"]),
+        cast(str, updated["retry_posture"]),
+    )
 
 
 def _append_trace_events(
@@ -279,7 +313,13 @@ def _resolve_approval(
         ("approval.resolution.summary", cast(dict[str, object], summary_payload)),
     ]
     if run_transition is not None:
-        previous_run_status, current_run_status = run_transition
+        (
+            previous_run_status,
+            current_run_status,
+            run_stop_reason,
+            run_failure_class,
+            run_retry_posture,
+        ) = run_transition
         trace_events.append(
             (
                 "approval.resolution.run",
@@ -288,6 +328,9 @@ def _resolve_approval(
                     "task_run_id": str(cast(UUID, current.get("task_run_id"))),
                     "previous_status": previous_run_status,
                     "current_status": current_run_status,
+                    "stop_reason": run_stop_reason,
+                    "failure_class": run_failure_class,
+                    "retry_posture": run_retry_posture,
                 },
             )
         )
