@@ -10,6 +10,7 @@ from alicebot_api.task_runs import (
     TaskRunTransitionError,
     tick_task_run_record,
 )
+from alicebot_worker.tool_execution import execute_task_run_if_ready
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,19 @@ def acquire_and_tick_one_task_run(
         return None
 
     task_run_id = row["id"]
+    execution_outcome = execute_task_run_if_ready(
+        store,
+        user_id=user_id,
+        task_run=row,
+    )
+    if execution_outcome is not None:
+        return WorkerTickOutcome(
+            task_run_id=execution_outcome.task_run_id,
+            previous_status=str(row["status"]),
+            status=execution_outcome.status,
+            stop_reason=execution_outcome.stop_reason,
+        )
+
     try:
         payload = tick_task_run_record(
             store,

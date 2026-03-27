@@ -262,6 +262,7 @@ class ApprovalRow(TypedDict):
     user_id: UUID
     thread_id: UUID
     tool_id: UUID
+    task_run_id: UUID | None
     task_step_id: UUID | None
     status: str
     request: JsonObject
@@ -434,6 +435,7 @@ class ToolExecutionRow(TypedDict):
     id: UUID
     user_id: UUID
     approval_id: UUID
+    task_run_id: UUID | None
     task_step_id: UUID
     thread_id: UUID
     tool_id: UUID
@@ -442,6 +444,7 @@ class ToolExecutionRow(TypedDict):
     result_event_id: UUID | None
     status: str
     handler_key: str | None
+    idempotency_key: str | None
     request: JsonObject
     tool: JsonObject
     result: JsonObject
@@ -1871,6 +1874,7 @@ INSERT_APPROVAL_SQL = """
                   user_id,
                   thread_id,
                   tool_id,
+                  task_run_id,
                   task_step_id,
                   status,
                   request,
@@ -1889,6 +1893,7 @@ INSERT_APPROVAL_SQL = """
                   %s,
                   %s,
                   %s,
+                  %s,
                   clock_timestamp()
                 )
                 RETURNING
@@ -1896,6 +1901,7 @@ INSERT_APPROVAL_SQL = """
                   user_id,
                   thread_id,
                   tool_id,
+                  task_run_id,
                   task_step_id,
                   status,
                   request,
@@ -1913,6 +1919,7 @@ GET_APPROVAL_SQL = """
                   user_id,
                   thread_id,
                   tool_id,
+                  task_run_id,
                   task_step_id,
                   status,
                   request,
@@ -1932,6 +1939,7 @@ LIST_APPROVALS_SQL = """
                   user_id,
                   thread_id,
                   tool_id,
+                  task_run_id,
                   task_step_id,
                   status,
                   request,
@@ -1957,6 +1965,7 @@ UPDATE_APPROVAL_RESOLUTION_SQL = """
                   user_id,
                   thread_id,
                   tool_id,
+                  task_run_id,
                   task_step_id,
                   status,
                   request,
@@ -1977,6 +1986,28 @@ UPDATE_APPROVAL_TASK_STEP_SQL = """
                   user_id,
                   thread_id,
                   tool_id,
+                  task_run_id,
+                  task_step_id,
+                  status,
+                  request,
+                  tool,
+                  routing,
+                  routing_trace_id,
+                  created_at,
+                  resolved_at,
+                  resolved_by_user_id
+                """
+
+UPDATE_APPROVAL_TASK_RUN_SQL = """
+                UPDATE approvals
+                SET task_run_id = %s
+                WHERE id = %s
+                RETURNING
+                  id,
+                  user_id,
+                  thread_id,
+                  tool_id,
+                  task_run_id,
                   task_step_id,
                   status,
                   request,
@@ -3123,6 +3154,7 @@ INSERT_TOOL_EXECUTION_SQL = """
                 INSERT INTO tool_executions (
                   user_id,
                   approval_id,
+                  task_run_id,
                   task_step_id,
                   thread_id,
                   tool_id,
@@ -3131,6 +3163,7 @@ INSERT_TOOL_EXECUTION_SQL = """
                   result_event_id,
                   status,
                   handler_key,
+                  idempotency_key,
                   request,
                   tool,
                   result,
@@ -3150,12 +3183,15 @@ INSERT_TOOL_EXECUTION_SQL = """
                   %s,
                   %s,
                   %s,
+                  %s,
+                  %s,
                   clock_timestamp()
                 )
                 RETURNING
                   id,
                   user_id,
                   approval_id,
+                  task_run_id,
                   task_step_id,
                   thread_id,
                   tool_id,
@@ -3164,6 +3200,7 @@ INSERT_TOOL_EXECUTION_SQL = """
                   result_event_id,
                   status,
                   handler_key,
+                  idempotency_key,
                   request,
                   tool,
                   result,
@@ -3175,6 +3212,7 @@ GET_TOOL_EXECUTION_SQL = """
                   id,
                   user_id,
                   approval_id,
+                  task_run_id,
                   task_step_id,
                   thread_id,
                   tool_id,
@@ -3183,6 +3221,7 @@ GET_TOOL_EXECUTION_SQL = """
                   result_event_id,
                   status,
                   handler_key,
+                  idempotency_key,
                   request,
                   tool,
                   result,
@@ -3196,6 +3235,7 @@ LIST_TOOL_EXECUTIONS_SQL = """
                   id,
                   user_id,
                   approval_id,
+                  task_run_id,
                   task_step_id,
                   thread_id,
                   tool_id,
@@ -3204,12 +3244,40 @@ LIST_TOOL_EXECUTIONS_SQL = """
                   result_event_id,
                   status,
                   handler_key,
+                  idempotency_key,
                   request,
                   tool,
                   result,
                   executed_at
                 FROM tool_executions
                 ORDER BY executed_at ASC, id ASC
+                """
+
+GET_TOOL_EXECUTION_BY_IDEMPOTENCY_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  approval_id,
+                  task_run_id,
+                  task_step_id,
+                  thread_id,
+                  tool_id,
+                  trace_id,
+                  request_event_id,
+                  result_event_id,
+                  status,
+                  handler_key,
+                  idempotency_key,
+                  request,
+                  tool,
+                  result,
+                  executed_at
+                FROM tool_executions
+                WHERE task_run_id = %s
+                  AND approval_id = %s
+                  AND idempotency_key = %s
+                ORDER BY executed_at ASC, id ASC
+                LIMIT 1
                 """
 
 INSERT_EXECUTION_BUDGET_SQL = """
@@ -4101,7 +4169,8 @@ class ContinuityStore:
         *,
         thread_id: UUID,
         tool_id: UUID,
-        task_step_id: UUID | None,
+        task_run_id: UUID | None = None,
+        task_step_id: UUID | None = None,
         status: str,
         request: JsonObject,
         tool: JsonObject,
@@ -4114,6 +4183,7 @@ class ContinuityStore:
             (
                 thread_id,
                 tool_id,
+                task_run_id,
                 task_step_id,
                 status,
                 Jsonb(request),
@@ -4149,6 +4219,17 @@ class ContinuityStore:
         return self._fetch_optional_one(
             UPDATE_APPROVAL_TASK_STEP_SQL,
             (task_step_id, approval_id),
+        )
+
+    def update_approval_task_run_optional(
+        self,
+        *,
+        approval_id: UUID,
+        task_run_id: UUID | None,
+    ) -> ApprovalRow | None:
+        return self._fetch_optional_one(
+            UPDATE_APPROVAL_TASK_RUN_SQL,
+            (task_run_id, approval_id),
         )
 
     def create_task(
@@ -4718,12 +4799,15 @@ class ContinuityStore:
         request: JsonObject,
         tool: JsonObject,
         result: JsonObject,
+        task_run_id: UUID | None = None,
+        idempotency_key: str | None = None,
     ) -> ToolExecutionRow:
         return self._fetch_one(
             "create_tool_execution",
             INSERT_TOOL_EXECUTION_SQL,
             (
                 approval_id,
+                task_run_id,
                 task_step_id,
                 thread_id,
                 tool_id,
@@ -4732,6 +4816,7 @@ class ContinuityStore:
                 result_event_id,
                 status,
                 handler_key,
+                idempotency_key,
                 Jsonb(request),
                 Jsonb(tool),
                 Jsonb(result),
@@ -4743,6 +4828,18 @@ class ContinuityStore:
 
     def list_tool_executions(self) -> list[ToolExecutionRow]:
         return self._fetch_all(LIST_TOOL_EXECUTIONS_SQL)
+
+    def get_tool_execution_by_idempotency_optional(
+        self,
+        *,
+        task_run_id: UUID,
+        approval_id: UUID,
+        idempotency_key: str,
+    ) -> ToolExecutionRow | None:
+        return self._fetch_optional_one(
+            GET_TOOL_EXECUTION_BY_IDEMPOTENCY_SQL,
+            (task_run_id, approval_id, idempotency_key),
+        )
 
     def create_execution_budget(
         self,

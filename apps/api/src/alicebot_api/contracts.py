@@ -33,8 +33,8 @@ ApprovalStatus = Literal["pending", "approved", "rejected"]
 ApprovalResolutionAction = Literal["approve", "reject"]
 ApprovalResolutionOutcome = Literal["resolved", "duplicate_rejected", "conflict_rejected"]
 TaskStatus = Literal["pending_approval", "approved", "executed", "denied", "blocked"]
-TaskRunStatus = Literal["queued", "running", "waiting", "paused", "completed", "cancelled"]
-TaskRunStopReason = Literal["wait_state", "budget_exhausted", "paused", "completed", "cancelled"]
+TaskRunStatus = Literal["queued", "running", "waiting", "waiting_approval", "paused", "completed", "cancelled"]
+TaskRunStopReason = Literal["wait_state", "waiting_approval", "budget_exhausted", "paused", "completed", "cancelled"]
 TaskWorkspaceStatus = Literal["active"]
 TaskArtifactStatus = Literal["registered"]
 TaskArtifactIngestionStatus = Literal["pending", "ingested"]
@@ -243,8 +243,8 @@ EXECUTION_BUDGET_LIST_ORDER = ["created_at_asc", "id_asc"]
 EXECUTION_BUDGET_MATCH_ORDER = ["specificity_desc", "created_at_asc", "id_asc"]
 EXECUTION_BUDGET_STATUSES = ["active", "inactive", "superseded"]
 TASK_STATUSES = ["pending_approval", "approved", "executed", "denied", "blocked"]
-TASK_RUN_STATUSES = ["queued", "running", "waiting", "paused", "completed", "cancelled"]
-TASK_RUN_STOP_REASONS = ["wait_state", "budget_exhausted", "paused", "completed", "cancelled"]
+TASK_RUN_STATUSES = ["queued", "running", "waiting", "waiting_approval", "paused", "completed", "cancelled"]
+TASK_RUN_STOP_REASONS = ["wait_state", "waiting_approval", "budget_exhausted", "paused", "completed", "cancelled"]
 TASK_RUN_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
@@ -1379,6 +1379,7 @@ class ApprovalRequestCreateInput:
     tool_id: UUID
     action: str
     scope: str
+    task_run_id: UUID | None = None
     domain_hint: str | None = None
     risk_hint: str | None = None
     attributes: JsonObject = field(default_factory=dict)
@@ -1391,6 +1392,7 @@ class ApprovalRequestCreateInput:
             "scope": self.scope,
             "attributes": self.attributes,
         }
+        payload["task_run_id"] = None if self.task_run_id is None else str(self.task_run_id)
         payload["domain_hint"] = self.domain_hint
         payload["risk_hint"] = self.risk_hint
         return payload
@@ -1421,11 +1423,14 @@ class ApprovalRejectInput:
 @dataclass(frozen=True, slots=True)
 class ProxyExecutionRequestInput:
     approval_id: UUID
+    task_run_id: UUID | None = None
 
     def as_payload(self) -> JsonObject:
-        return {
+        payload: JsonObject = {
             "approval_id": str(self.approval_id),
         }
+        payload["task_run_id"] = None if self.task_run_id is None else str(self.task_run_id)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -2142,6 +2147,7 @@ class ApprovalResolutionRecord(TypedDict):
 class ApprovalRecord(TypedDict):
     id: str
     thread_id: str
+    task_run_id: NotRequired[str | None]
     task_step_id: str | None
     status: ApprovalStatus
     request: ToolRoutingRequestRecord
@@ -3138,11 +3144,14 @@ class ToolExecutionCreateInput:
     request: ToolRoutingRequestRecord
     tool: ToolRecord
     result: "ToolExecutionResultRecord"
+    task_run_id: UUID | None = None
+    idempotency_key: str | None = None
 
 
 class ToolExecutionRecord(TypedDict):
     id: str
     approval_id: str
+    task_run_id: NotRequired[str | None]
     task_step_id: str
     thread_id: str
     tool_id: str
@@ -3151,6 +3160,7 @@ class ToolExecutionRecord(TypedDict):
     result_event_id: str | None
     status: ProxyExecutionStatus
     handler_key: str | None
+    idempotency_key: NotRequired[str | None]
     request: ToolRoutingRequestRecord
     tool: ToolRecord
     result: "ToolExecutionResultRecord"
@@ -3173,11 +3183,13 @@ class ToolExecutionDetailResponse(TypedDict):
 
 class ProxyExecutionRequestRecord(TypedDict):
     approval_id: str
+    task_run_id: NotRequired[str | None]
     task_step_id: str
 
 
 class ProxyExecutionRequestEventPayload(TypedDict):
     approval_id: str
+    task_run_id: NotRequired[str | None]
     task_step_id: str
     tool_id: str
     tool_key: str
@@ -3186,8 +3198,8 @@ class ProxyExecutionRequestEventPayload(TypedDict):
 
 class ProxyExecutionResultRecord(TypedDict):
     handler_key: str
-    status: Literal["completed"]
-    output: JsonObject
+    status: ProxyExecutionStatus
+    output: JsonObject | None
 
 
 class ProxyExecutionResultEventPayload(TypedDict):

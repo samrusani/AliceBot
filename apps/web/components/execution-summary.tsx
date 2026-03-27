@@ -64,6 +64,8 @@ export function ExecutionSummary({
   const traceId = execution?.trace_id ?? preview?.trace.trace_id ?? null;
   const requestEventId = execution?.request_event_id ?? preview?.events?.request_event_id ?? null;
   const resultEventId = execution?.result_event_id ?? preview?.events?.result_event_id ?? null;
+  const taskRunId = execution?.task_run_id ?? preview?.request.task_run_id ?? null;
+  const idempotencyKey = execution?.idempotency_key ?? null;
   const executedAt = execution?.executed_at ?? null;
   const reviewSource = execution ? (source === "live" ? "Live execution detail" : "Fixture execution detail") : "Latest execute response";
 
@@ -114,6 +116,18 @@ export function ExecutionSummary({
           <div>
             <dt>Trace</dt>
             <dd className="mono">{traceId}</dd>
+          </div>
+        ) : null}
+        {taskRunId ? (
+          <div>
+            <dt>Task run</dt>
+            <dd className="mono">{taskRunId}</dd>
+          </div>
+        ) : null}
+        {idempotencyKey ? (
+          <div>
+            <dt>Idempotency</dt>
+            <dd className="mono">{idempotencyKey}</dd>
           </div>
         ) : null}
         {tool ? (

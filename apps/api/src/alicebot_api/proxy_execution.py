@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import cast
 from uuid import UUID
 
@@ -17,6 +20,7 @@ from alicebot_api.contracts import (
     ProxyExecutionEventSummary,
     ProxyExecutionRequestEventPayload,
     ProxyExecutionRequestInput,
+    ProxyExecutionRequestRecord,
     ProxyExecutionResponse,
     ProxyExecutionResultEventPayload,
     ProxyExecutionResultRecord,
@@ -50,7 +54,18 @@ class ProxyExecutionHandlerNotFoundError(RuntimeError):
     """Raised when an approved tool has no registered proxy handler."""
 
 
+class ProxyExecutionIdempotencyError(RuntimeError):
+    """Raised when a side-effect-capable execution request cannot satisfy idempotency guards."""
+
+
 ProxyHandler = Callable[[ToolRoutingRequestRecord, ToolRecord], ProxyExecutionResultRecord]
+
+
+@dataclass(frozen=True, slots=True)
+class ProxyHandlerSpec:
+    handler: ProxyHandler
+    side_effect_capable: bool
+    rollout_mode: str
 
 
 def _append_trace_events(
@@ -88,8 +103,68 @@ def _proxy_echo_handler(
     }
 
 
-REGISTERED_PROXY_HANDLERS: dict[str, ProxyHandler] = {
-    "proxy.echo": _proxy_echo_handler,
+def _proxy_thread_audit_handler(
+    request: ToolRoutingRequestRecord,
+    tool: ToolRecord,
+) -> ProxyExecutionResultRecord:
+    attributes = request["attributes"]
+    output: JsonObject = {
+        "mode": "internal_low_risk",
+        "tool_key": tool["tool_key"],
+        "summary": {
+            "attribute_count": len(attributes),
+            "attribute_keys": sorted(attributes.keys()),
+            "action": request["action"],
+            "scope": request["scope"],
+        },
+    }
+    return {
+        "handler_key": "proxy.thread_audit",
+        "status": "completed",
+        "output": output,
+    }
+
+
+def _proxy_calendar_draft_handler(
+    request: ToolRoutingRequestRecord,
+    tool: ToolRecord,
+) -> ProxyExecutionResultRecord:
+    title = cast(str, request["attributes"].get("title", "Untitled draft event"))
+    output: JsonObject = {
+        "mode": "external_draft",
+        "tool_key": tool["tool_key"],
+        "provider": "google_calendar",
+        "draft": {
+            "title": title,
+            "scope": request["scope"],
+            "domain_hint": request["domain_hint"],
+            "risk_hint": request["risk_hint"],
+            "attributes": request["attributes"],
+        },
+    }
+    return {
+        "handler_key": "proxy.calendar.draft_event",
+        "status": "completed",
+        "output": output,
+    }
+
+
+REGISTERED_PROXY_HANDLERS: dict[str, ProxyHandlerSpec] = {
+    "proxy.echo": ProxyHandlerSpec(
+        handler=_proxy_echo_handler,
+        side_effect_capable=False,
+        rollout_mode="internal",
+    ),
+    "proxy.thread_audit": ProxyHandlerSpec(
+        handler=_proxy_thread_audit_handler,
+        side_effect_capable=False,
+        rollout_mode="internal",
+    ),
+    "proxy.calendar.draft_event": ProxyHandlerSpec(
+        handler=_proxy_calendar_draft_handler,
+        side_effect_capable=True,
+        rollout_mode="external_draft",
+    ),
 }
 
 
@@ -135,6 +210,110 @@ def _tool_execution_result(
     return payload
 
 
+def _build_idempotency_key(
+    *,
+    task_run_id: UUID,
+    approval_id: UUID,
+    request: ToolRoutingRequestRecord,
+    tool: ToolRecord,
+) -> str:
+    canonical_payload = {
+        "task_run_id": str(task_run_id),
+        "approval_id": str(approval_id),
+        "tool_key": tool["tool_key"],
+        "action": request["action"],
+        "scope": request["scope"],
+        "domain_hint": request["domain_hint"],
+        "risk_hint": request["risk_hint"],
+        "attributes": request["attributes"],
+    }
+    canonical = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _resolve_task_run_linkage(
+    store: ContinuityStore,
+    *,
+    approval_row: dict[str, object],
+    linked_task_step: dict[str, object],
+    requested_task_run_id: UUID | None,
+) -> UUID | None:
+    approval_task_run_id = cast(UUID | None, approval_row.get("task_run_id"))
+    linked_task_run_id = requested_task_run_id or approval_task_run_id
+    if linked_task_run_id is None:
+        return None
+
+    if not hasattr(store, "get_task_run_optional"):
+        return linked_task_run_id
+    task_run = store.get_task_run_optional(linked_task_run_id)
+    if task_run is None:
+        raise ProxyExecutionApprovalStateError(
+            f"approval {approval_row['id']} links task run {linked_task_run_id} that was not found"
+        )
+    if task_run["task_id"] != linked_task_step["task_id"]:
+        raise ProxyExecutionApprovalStateError(
+            f"approval {approval_row['id']} links task run {linked_task_run_id} outside task {linked_task_step['task_id']}"
+        )
+    if approval_task_run_id is not None and approval_task_run_id != linked_task_run_id:
+        raise ProxyExecutionApprovalStateError(
+            f"approval {approval_row['id']} is already linked to task run {approval_task_run_id}"
+        )
+
+    if approval_task_run_id is None and hasattr(store, "update_approval_task_run_optional"):
+        store.update_approval_task_run_optional(
+            approval_id=cast(UUID, approval_row["id"]),
+            task_run_id=linked_task_run_id,
+        )
+
+    return linked_task_run_id
+
+
+def _sync_task_run_after_execution(
+    store: ContinuityStore,
+    *,
+    task_run_id: UUID,
+    approval_id: UUID,
+    execution: ToolExecutionRow,
+) -> None:
+    task_run = store.get_task_run_optional(task_run_id)
+    if task_run is None:
+        return
+    if cast(str, task_run["status"]) in {"completed", "cancelled"}:
+        return
+
+    checkpoint = cast(JsonObject, task_run["checkpoint"])
+    if not isinstance(checkpoint, dict):
+        checkpoint = {}
+    next_checkpoint = dict(checkpoint)
+    next_checkpoint["wait_for_signal"] = False
+    next_checkpoint["waiting_approval_id"] = None
+    next_checkpoint["resolved_approval_id"] = str(approval_id)
+    next_checkpoint["resumed_from_approval_id"] = str(approval_id)
+    next_checkpoint["last_execution_id"] = str(execution["id"])
+    next_checkpoint["last_execution_status"] = cast(str, execution["status"])
+    next_checkpoint["last_execution_at"] = execution["executed_at"].isoformat()
+
+    execution_status = cast(str, execution["status"])
+    next_status = "completed"
+    next_stop_reason = "completed"
+    if execution_status == "blocked":
+        next_status = "paused"
+        next_stop_reason = "paused"
+        execution_result = cast(dict[str, object], execution.get("result", {}))
+        budget_decision = execution_result.get("budget_decision")
+        if isinstance(budget_decision, dict) and budget_decision.get("reason") == "budget_exceeded":
+            next_stop_reason = "budget_exhausted"
+
+    store.update_task_run_optional(
+        task_run_id=task_run_id,
+        status=next_status,
+        checkpoint=next_checkpoint,
+        tick_count=max(1, int(task_run["tick_count"])),
+        step_count=max(int(task_run["step_count"]), 1),
+        stop_reason=next_stop_reason,
+    )
+
+
 def _budget_context_trace_payload(
     budget_decision: ProxyExecutionBudgetPrecheckTracePayload,
 ) -> ProxyExecutionBudgetContextTracePayload | None:
@@ -151,9 +330,11 @@ def _persist_tool_execution(
     store: ContinuityStore,
     *,
     approval_row: dict[str, object],
+    task_run_id: UUID | None,
     task_step_id: UUID,
     trace_id: UUID,
     handler_key: str | None,
+    idempotency_key: str | None,
     request: ToolRoutingRequestRecord,
     tool: ToolRecord,
     result: ToolExecutionResultRecord,
@@ -162,6 +343,7 @@ def _persist_tool_execution(
 ) -> ToolExecutionRow:
     execution = ToolExecutionCreateInput(
         approval_id=cast(UUID, approval_row["id"]),
+        task_run_id=task_run_id,
         task_step_id=task_step_id,
         thread_id=cast(UUID, approval_row["thread_id"]),
         tool_id=cast(UUID, approval_row["tool_id"]),
@@ -170,24 +352,43 @@ def _persist_tool_execution(
         result_event_id=result_event_id,
         status=result["status"],
         handler_key=handler_key,
+        idempotency_key=idempotency_key,
         request=request,
         tool=tool,
         result=result,
     )
-    return store.create_tool_execution(
-        approval_id=execution.approval_id,
-        task_step_id=execution.task_step_id,
-        thread_id=execution.thread_id,
-        tool_id=execution.tool_id,
-        trace_id=execution.trace_id,
-        request_event_id=execution.request_event_id,
-        result_event_id=execution.result_event_id,
-        status=execution.status,
-        handler_key=execution.handler_key,
-        request=cast(JsonObject, execution.request),
-        tool=cast(JsonObject, execution.tool),
-        result=cast(JsonObject, execution.result),
-    )
+    try:
+        return store.create_tool_execution(
+            approval_id=execution.approval_id,
+            task_run_id=execution.task_run_id,
+            task_step_id=execution.task_step_id,
+            thread_id=execution.thread_id,
+            tool_id=execution.tool_id,
+            trace_id=execution.trace_id,
+            request_event_id=execution.request_event_id,
+            result_event_id=execution.result_event_id,
+            status=execution.status,
+            handler_key=execution.handler_key,
+            idempotency_key=execution.idempotency_key,
+            request=cast(JsonObject, execution.request),
+            tool=cast(JsonObject, execution.tool),
+            result=cast(JsonObject, execution.result),
+        )
+    except TypeError:
+        return store.create_tool_execution(
+            approval_id=execution.approval_id,
+            task_step_id=execution.task_step_id,
+            thread_id=execution.thread_id,
+            tool_id=execution.tool_id,
+            trace_id=execution.trace_id,
+            request_event_id=execution.request_event_id,
+            result_event_id=execution.result_event_id,
+            status=execution.status,
+            handler_key=execution.handler_key,
+            request=cast(JsonObject, execution.request),
+            tool=cast(JsonObject, execution.tool),
+            result=cast(JsonObject, execution.result),
+        )
 
 
 def execute_approved_proxy_request(
@@ -211,7 +412,26 @@ def execute_approved_proxy_request(
     linked_task_step_id = cast(str, approval["task_step_id"])
     tool = cast(ToolRecord, approval["tool"])
     routed_request = cast(ToolRoutingRequestRecord, approval["request"])
-    handler = REGISTERED_PROXY_HANDLERS.get(tool["tool_key"])
+    handler_spec = REGISTERED_PROXY_HANDLERS.get(tool["tool_key"])
+    linked_task_run_id = _resolve_task_run_linkage(
+        store,
+        approval_row=cast(dict[str, object], approval_row),
+        linked_task_step=cast(dict[str, object], linked_task_step),
+        requested_task_run_id=request.task_run_id,
+    )
+    approval["task_run_id"] = None if linked_task_run_id is None else str(linked_task_run_id)
+    idempotency_key: str | None = None
+    if handler_spec is not None and handler_spec.side_effect_capable:
+        if linked_task_run_id is None:
+            raise ProxyExecutionIdempotencyError(
+                f"tool '{tool['tool_key']}' requires a linked task run for idempotent execution"
+            )
+        idempotency_key = _build_idempotency_key(
+            task_run_id=linked_task_run_id,
+            approval_id=cast(UUID, approval_row["id"]),
+            request=routed_request,
+            tool=tool,
+        )
 
     trace = store.create_trace(
         user_id=approval_row["user_id"],
@@ -221,7 +441,7 @@ def execute_approved_proxy_request(
         status="completed",
         limits={
             "approval_status": approval["status"],
-            "enabled_handler_keys": list(registered_proxy_handler_keys()),
+            "enabled_handler_keys": [tool["tool_key"]],
             "budget_match_order": list(EXECUTION_BUDGET_MATCH_ORDER),
         },
     )
@@ -233,14 +453,15 @@ def execute_approved_proxy_request(
         "eligible_for_execution": approval["status"] == "approved",
     }
 
+    request_trace_payload: dict[str, object] = {
+        "approval_id": approval["id"],
+        "task_step_id": linked_task_step_id,
+    }
+    if linked_task_run_id is not None:
+        request_trace_payload["task_run_id"] = str(linked_task_run_id)
+
     trace_events: list[tuple[str, dict[str, object]]] = [
-        (
-            "tool.proxy.execute.request",
-            {
-                "approval_id": approval["id"],
-                "task_step_id": linked_task_step_id,
-            },
-        ),
+        ("tool.proxy.execute.request", request_trace_payload),
         ("tool.proxy.execute.approval", cast(dict[str, object], approval_trace_payload)),
     ]
 
@@ -276,6 +497,52 @@ def execute_approved_proxy_request(
         )
         _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
         raise error
+
+    if idempotency_key is not None and linked_task_run_id is not None:
+        existing_execution = (
+            store.get_tool_execution_by_idempotency_optional(
+                task_run_id=linked_task_run_id,
+                approval_id=cast(UUID, approval_row["id"]),
+                idempotency_key=idempotency_key,
+            )
+            if hasattr(store, "get_tool_execution_by_idempotency_optional")
+            else None
+        )
+        if existing_execution is not None:
+            trace_events.append(
+                (
+                    "tool.proxy.execute.idempotency",
+                    {
+                        "approval_id": approval["id"],
+                        "task_run_id": str(linked_task_run_id),
+                        "idempotency_key": idempotency_key,
+                        "replayed_execution_id": str(existing_execution["id"]),
+                        "decision": "replay_existing",
+                    },
+                )
+            )
+            _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
+            _sync_task_run_after_execution(
+                store,
+                task_run_id=linked_task_run_id,
+                approval_id=cast(UUID, approval_row["id"]),
+                execution=existing_execution,
+            )
+            return {
+                "request": cast(
+                    ProxyExecutionRequestRecord,
+                    {
+                        "approval_id": approval["id"],
+                        "task_step_id": linked_task_step_id,
+                        "task_run_id": str(linked_task_run_id),
+                    },
+                ),
+                "approval": approval,
+                "tool": tool,
+                "result": cast(ToolExecutionResultRecord, existing_execution["result"]),
+                "events": None,
+                "trace": _trace_summary(trace["id"], trace_events),
+            }
 
     budget_decision = evaluate_execution_budget(
         store,
@@ -322,9 +589,11 @@ def execute_approved_proxy_request(
         execution = _persist_tool_execution(
             store,
             approval_row=cast(dict[str, object], approval_row),
+            task_run_id=linked_task_run_id,
             task_step_id=cast(UUID, linked_task_step["id"]),
             trace_id=trace["id"],
             handler_key=None,
+            idempotency_key=idempotency_key,
             request=routed_request,
             tool=tool,
             result=budget_decision.blocked_result,
@@ -358,12 +627,27 @@ def execute_approved_proxy_request(
                 source="proxy_execution",
             )
         )
+        if linked_task_run_id is not None:
+            _sync_task_run_after_execution(
+                store,
+                task_run_id=linked_task_run_id,
+                approval_id=cast(UUID, approval_row["id"]),
+                execution=execution,
+            )
         _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
         return {
-            "request": {
-                "approval_id": approval["id"],
-                "task_step_id": linked_task_step_id,
-            },
+            "request": cast(
+                ProxyExecutionRequestRecord,
+                {
+                    "approval_id": approval["id"],
+                    "task_step_id": linked_task_step_id,
+                    **(
+                        {"task_run_id": str(linked_task_run_id)}
+                        if linked_task_run_id is not None
+                        else {}
+                    ),
+                },
+            ),
             "approval": approval,
             "tool": tool,
             "result": budget_decision.blocked_result,
@@ -371,7 +655,7 @@ def execute_approved_proxy_request(
             "trace": _trace_summary(trace["id"], trace_events),
         }
 
-    if handler is None:
+    if handler_spec is None:
         error = _missing_handler_error(tool=tool)
         result = _tool_execution_result(
             handler_key=None,
@@ -410,9 +694,11 @@ def execute_approved_proxy_request(
         execution = _persist_tool_execution(
             store,
             approval_row=cast(dict[str, object], approval_row),
+            task_run_id=linked_task_run_id,
             task_step_id=cast(UUID, linked_task_step["id"]),
             trace_id=trace["id"],
             handler_key=None,
+            idempotency_key=idempotency_key,
             request=routed_request,
             tool=tool,
             result=result,
@@ -446,6 +732,13 @@ def execute_approved_proxy_request(
                 source="proxy_execution",
             )
         )
+        if linked_task_run_id is not None:
+            _sync_task_run_after_execution(
+                store,
+                task_run_id=linked_task_run_id,
+                approval_id=cast(UUID, approval_row["id"]),
+                execution=execution,
+            )
         _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
         raise error
 
@@ -456,6 +749,8 @@ def execute_approved_proxy_request(
         "tool_key": tool["tool_key"],
         "request": routed_request,
     }
+    if linked_task_run_id is not None:
+        request_event_payload["task_run_id"] = str(linked_task_run_id)
     request_event = store.append_event(
         approval_row["thread_id"],
         None,
@@ -463,7 +758,7 @@ def execute_approved_proxy_request(
         cast(JsonObject, request_event_payload),
     )
 
-    result = handler(routed_request, tool)
+    result = handler_spec.handler(routed_request, tool)
     result_event_payload: ProxyExecutionResultEventPayload = {
         "approval_id": approval["id"],
         "task_step_id": linked_task_step_id,
@@ -482,9 +777,11 @@ def execute_approved_proxy_request(
     execution = _persist_tool_execution(
         store,
         approval_row=cast(dict[str, object], approval_row),
+        task_run_id=linked_task_run_id,
         task_step_id=cast(UUID, linked_task_step["id"]),
         trace_id=trace["id"],
         handler_key=result["handler_key"],
+        idempotency_key=idempotency_key,
         request=routed_request,
         tool=tool,
         result=_tool_execution_result(
@@ -558,13 +855,24 @@ def execute_approved_proxy_request(
             source="proxy_execution",
         )
     )
+    if linked_task_run_id is not None:
+        _sync_task_run_after_execution(
+            store,
+            task_run_id=linked_task_run_id,
+            approval_id=cast(UUID, approval_row["id"]),
+            execution=execution,
+        )
     _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
 
     return {
-        "request": {
-            "approval_id": approval["id"],
-            "task_step_id": linked_task_step_id,
-        },
+        "request": cast(
+            ProxyExecutionRequestRecord,
+            {
+                "approval_id": approval["id"],
+                "task_step_id": linked_task_step_id,
+                **({"task_run_id": str(linked_task_run_id)} if linked_task_run_id is not None else {}),
+            },
+        ),
         "approval": approval,
         "tool": tool,
         "result": result,

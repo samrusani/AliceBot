@@ -160,6 +160,7 @@ export type GovernedRequestRecord = {
 export type ApprovalItem = {
   id: string;
   thread_id: string;
+  task_run_id: string | null;
   task_step_id: string | null;
   status: string;
   request: GovernedRequestRecord;
@@ -230,8 +231,21 @@ export type TaskStepListSummary = {
   order: string[];
 };
 
-export type TaskRunStatus = "queued" | "running" | "waiting" | "paused" | "completed" | "cancelled";
-export type TaskRunStopReason = "wait_state" | "budget_exhausted" | "paused" | "completed" | "cancelled";
+export type TaskRunStatus =
+  | "queued"
+  | "running"
+  | "waiting"
+  | "waiting_approval"
+  | "paused"
+  | "completed"
+  | "cancelled";
+export type TaskRunStopReason =
+  | "wait_state"
+  | "waiting_approval"
+  | "budget_exhausted"
+  | "paused"
+  | "completed"
+  | "cancelled";
 
 export type TaskRunItem = {
   id: string;
@@ -263,6 +277,7 @@ export type ToolExecutionResult = {
 export type ToolExecutionItem = {
   id: string;
   approval_id: string;
+  task_run_id: string | null;
   task_step_id: string;
   thread_id: string;
   tool_id: string;
@@ -271,6 +286,7 @@ export type ToolExecutionItem = {
   result_event_id: string | null;
   status: string;
   handler_key: string | null;
+  idempotency_key: string | null;
   request: GovernedRequestRecord;
   tool: ToolRecord;
   result: ToolExecutionResult;
@@ -280,6 +296,7 @@ export type ToolExecutionItem = {
 export type ApprovalExecutionResponse = {
   request: {
     approval_id: string;
+    task_run_id: string | null;
     task_step_id: string;
   };
   approval: ApprovalItem;
@@ -1350,10 +1367,21 @@ export function listTaskRuns(apiBaseUrl: string, taskId: string, userId: string)
   );
 }
 
-export function executeApproval(apiBaseUrl: string, approvalId: string, userId: string) {
+export function executeApproval(
+  apiBaseUrl: string,
+  approvalId: string,
+  userId: string,
+  taskRunId?: string | null,
+) {
+  const payload: { user_id: string; task_run_id?: string } = {
+    user_id: userId,
+  };
+  if (taskRunId !== null && taskRunId !== undefined) {
+    payload.task_run_id = taskRunId;
+  }
   return requestJson<ApprovalExecutionResponse>(apiBaseUrl, `/v0/approvals/${approvalId}/execute`, {
     method: "POST",
-    body: JSON.stringify({ user_id: userId }),
+    body: JSON.stringify(payload),
   });
 }
 

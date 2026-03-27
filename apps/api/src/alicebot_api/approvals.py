@@ -30,7 +30,7 @@ from alicebot_api.contracts import (
     TaskStepCreateInput,
     ToolRoutingRequestInput,
 )
-from alicebot_api.store import ApprovalRow, ContinuityStore
+from alicebot_api.store import ApprovalRow, ContinuityStore, JsonObject
 from alicebot_api.tasks import (
     DEFAULT_TASK_STEP_KIND,
     DEFAULT_TASK_STEP_SEQUENCE_NO,
@@ -66,7 +66,7 @@ def _serialize_resolution(row: ApprovalRow) -> ApprovalResolutionRecord | None:
 
 
 def serialize_approval_row(row: ApprovalRow) -> ApprovalRecord:
-    return {
+    payload: ApprovalRecord = {
         "id": str(row["id"]),
         "thread_id": str(row["thread_id"]),
         "task_step_id": None if row["task_step_id"] is None else str(row["task_step_id"]),
@@ -77,9 +77,52 @@ def serialize_approval_row(row: ApprovalRow) -> ApprovalRecord:
         "created_at": row["created_at"].isoformat(),
         "resolution": _serialize_resolution(row),
     }
+    task_run_id = cast(UUID | None, row.get("task_run_id"))
+    if task_run_id is not None:
+        payload["task_run_id"] = str(task_run_id)
+    return payload
 
 
 _serialize_approval = serialize_approval_row
+
+
+def _resume_task_run_after_resolution(
+    store: ContinuityStore,
+    *,
+    approval: ApprovalRow,
+) -> tuple[str, str] | None:
+    task_run_id = cast(UUID | None, approval.get("task_run_id"))
+    if task_run_id is None:
+        return None
+
+    task_run = store.get_task_run_optional(task_run_id)
+    if task_run is None:
+        return None
+    if cast(str, task_run["status"]) != "waiting_approval":
+        return None
+
+    checkpoint = cast(JsonObject, task_run["checkpoint"])
+    if not isinstance(checkpoint, dict):
+        checkpoint = {}
+    updated_checkpoint = dict(checkpoint)
+    updated_checkpoint["wait_for_signal"] = False
+    updated_checkpoint["waiting_approval_id"] = None
+    updated_checkpoint["resolved_approval_id"] = str(approval["id"])
+    updated_checkpoint["approval_resolution_status"] = cast(str, approval["status"])
+
+    next_status = "queued" if approval["status"] == "approved" else "completed"
+    next_stop_reason = None if next_status == "queued" else "completed"
+    updated = store.update_task_run_optional(
+        task_run_id=task_run_id,
+        status=next_status,
+        checkpoint=updated_checkpoint,
+        tick_count=int(task_run["tick_count"]),
+        step_count=int(task_run["step_count"]),
+        stop_reason=next_stop_reason,
+    )
+    if updated is None:
+        return None
+    return cast(str, task_run["status"]), cast(str, updated["status"])
 
 
 def _append_trace_events(
@@ -229,11 +272,25 @@ def _resolve_approval(
         trace_id=trace["id"],
         trace_kind=TRACE_KIND_APPROVAL_RESOLUTION,
     )
+    run_transition = _resume_task_run_after_resolution(store, approval=current)
     trace_events: list[tuple[str, dict[str, object]]] = [
         ("approval.resolution.request", cast(dict[str, object], request_payload)),
         ("approval.resolution.state", cast(dict[str, object], state_payload)),
         ("approval.resolution.summary", cast(dict[str, object], summary_payload)),
     ]
+    if run_transition is not None:
+        previous_run_status, current_run_status = run_transition
+        trace_events.append(
+            (
+                "approval.resolution.run",
+                {
+                    "approval_id": str(current["id"]),
+                    "task_run_id": str(cast(UUID, current.get("task_run_id"))),
+                    "previous_status": previous_run_status,
+                    "current_status": current_run_status,
+                },
+            )
+        )
     trace_events.extend(
         task_lifecycle_trace_events(
             task=task_transition.task,
@@ -294,20 +351,37 @@ def submit_approval_request(
     approval = None
     approval_created = False
     if routing["decision"] == "approval_required":
-        approval_row = store.create_approval(
-            thread_id=request.thread_id,
-            tool_id=request.tool_id,
-            task_step_id=None,
-            status="pending",
-            request=routing["request"],
-            tool=routing["tool"],
-            routing={
-                "decision": routing["decision"],
-                "reasons": routing["reasons"],
-                "trace": routing["trace"],
-            },
-            routing_trace_id=UUID(routing["trace"]["trace_id"]),
-        )
+        try:
+            approval_row = store.create_approval(
+                thread_id=request.thread_id,
+                tool_id=request.tool_id,
+                task_run_id=request.task_run_id,
+                task_step_id=None,
+                status="pending",
+                request=routing["request"],
+                tool=routing["tool"],
+                routing={
+                    "decision": routing["decision"],
+                    "reasons": routing["reasons"],
+                    "trace": routing["trace"],
+                },
+                routing_trace_id=UUID(routing["trace"]["trace_id"]),
+            )
+        except TypeError:
+            approval_row = store.create_approval(
+                thread_id=request.thread_id,
+                tool_id=request.tool_id,
+                task_step_id=None,
+                status="pending",
+                request=routing["request"],
+                tool=routing["tool"],
+                routing={
+                    "decision": routing["decision"],
+                    "reasons": routing["reasons"],
+                    "trace": routing["trace"],
+                },
+                routing_trace_id=UUID(routing["trace"]["trace_id"]),
+            )
         approval = _serialize_approval(approval_row)
         approval_created = True
 
