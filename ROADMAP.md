@@ -3,14 +3,14 @@
 ## Current Position
 
 - The canonical repo baseline remains through Phase 3 Sprint 9.
-- Phase 4 Sprint 12 is delivered on top of that baseline: run-aware execution linkage, idempotent replay controls, and approval-to-run pause/resume linkage.
-- Phase 4 Sprint 13 is the active release-confidence layer: explicit run transitions/stop reasons, bounded retry posture, explicit failure classes, and deterministic Phase 4 gate runners.
+- Earlier Phase 4 increments are delivered on top of that baseline: run-aware execution linkage, idempotent replay controls, approval-to-run pause/resume linkage, explicit run transitions/stop reasons, bounded retry posture, explicit failure classes, and deterministic gate runners.
+- Phase 4 Sprint 14 is the active release-control layer: Phase 4 owns acceptance/readiness/validation semantics directly, canonical magnesium reorder ship-gate evidence is first-class, and compatibility gates stay green.
 - The backend baseline now includes continuity APIs, deterministic context compilation, governed request routing, approvals and execution review, typed memory and open-loop seams, deterministic thread resumption brief reads, unified explicit-signal capture seams, explicit task and task-step lifecycle seams, rooted local workspaces and artifact ingestion, artifact retrieval and embeddings, narrow read-only Gmail and Calendar seams with selected-item ingestion, bounded read-only Calendar event discovery for one connected account, and the no-tools assistant-response seam.
 - The frontend baseline is now real product surface, not scaffolding: the Next.js operator shell ships `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live-backend reads when configured and explicit fixture fallback when they are not.
 - `/chat` now uses selected-thread continuity instead of a raw thread-id-first flow, keeps bounded thread review and deterministic resumption brief review visible beside both assistant and governed-request composition, ships thread-linked governed workflow, ordered task-step timeline review, and bounded explain-why trace embedding, and includes manual explicit-signal capture controls for selected `message.user` events.
 - `/gmail` and `/calendar` are shipped bounded connector workspaces in the shell: account review, selected-account detail, explicit connect, and one selected-item ingestion path into one chosen task workspace. The API baseline also includes bounded Calendar event discovery for one connected account with deterministic ordering and bounded limits.
 - `/memories`, `/entities`, and `/artifacts` are shipped bounded review workspaces in the shell, not planned surface.
-- Phase 3 Sprint 9 confirms deterministic release-candidate validation tooling and canonical Phase 3 gate entrypoints; `python3 scripts/run_phase3_validation_matrix.py` remains the compatibility guarantee command while Phase 4 introduces `scripts/run_phase4_*.py` gate runners.
+- Gate ownership is canonicalized to Phase 4 runner scripts (`scripts/run_phase4_*.py`), while `python3 scripts/run_phase3_validation_matrix.py`, `python3 scripts/run_phase2_validation_matrix.py`, and `python3 scripts/run_mvp_validation_matrix.py` remain compatibility guarantees.
 - Historical sprint detail belongs in build and review artifacts, not in this roadmap.
 
 ## Next Delivery Focus
@@ -19,7 +19,7 @@
 
 - Plan the next sprint from the implemented Phase 3 Sprint 9 backend-plus-web baseline, not from older pre-Phase-3 narratives.
 - Treat transcript continuity, thread-linked workflow review, task-step timeline review, bounded explain-why embedding in `/chat`, deterministic resumption brief review, manual explicit-signal capture controls, the shipped review workspaces (`/memories`, `/entities`, `/artifacts`), the shipped connector workspaces (`/gmail`, `/calendar`), and bounded Calendar event discovery as baseline, not pending work.
-- Treat the deterministic validation matrix command (`python3 scripts/run_phase3_validation_matrix.py`) as the default release-candidate gate, while keeping `python3 scripts/run_phase2_validation_matrix.py` as a compatibility check.
+- Treat the deterministic validation matrix command (`python3 scripts/run_phase4_validation_matrix.py`) as the canonical MVP release gate, while keeping Phase 3/Phase 2/MVP validation commands as compatibility checks.
 - Favor one narrow seam that deepens operator use of already shipped contracts before widening connector breadth or orchestration scope.
 - Reuse the existing continuity, response, approval, task, workspace-artifact, memory, entity, execution, and trace surfaces instead of introducing parallel contracts.
 
