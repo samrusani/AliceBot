@@ -101,6 +101,11 @@ from alicebot_api.contracts import (
     TaskStepNextCreateInput,
     TaskStepStatus,
     TaskStepTransitionInput,
+    TaskRunCancelInput,
+    TaskRunCreateInput,
+    TaskRunPauseInput,
+    TaskRunResumeInput,
+    TaskRunTickInput,
     TaskWorkspaceCreateInput,
     ToolRoutingDecision,
     ToolRoutingRequestInput,
@@ -167,6 +172,18 @@ from alicebot_api.tasks import (
     list_task_records,
     list_task_step_records,
     transition_task_step_record,
+)
+from alicebot_api.task_runs import (
+    TaskRunNotFoundError,
+    TaskRunTransitionError,
+    TaskRunValidationError,
+    cancel_task_run_record,
+    create_task_run_record,
+    get_task_run_record,
+    list_task_run_records,
+    pause_task_run_record,
+    resume_task_run_record,
+    tick_task_run_record,
 )
 from alicebot_api.workspaces import (
     TaskWorkspaceAlreadyExistsError,
@@ -788,6 +805,16 @@ class TransitionTaskStepRequest(BaseModel):
     user_id: UUID
     status: TaskStepStatus
     outcome: TaskStepOutcomeRequest
+
+
+class CreateTaskRunRequest(BaseModel):
+    user_id: UUID
+    max_ticks: int = Field(default=1, ge=1, le=1_000_000)
+    checkpoint: dict[str, object] = Field(default_factory=dict)
+
+
+class MutateTaskRunRequest(BaseModel):
+    user_id: UUID
 
 
 class CreateExecutionBudgetRequest(BaseModel):
@@ -1902,6 +1929,168 @@ def get_task(task_id: UUID, user_id: UUID) -> JSONResponse:
             )
     except TaskNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/tasks/{task_id}/runs")
+def create_task_run(task_id: UUID, request: CreateTaskRunRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = create_task_run_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=TaskRunCreateInput(
+                    task_id=task_id,
+                    max_ticks=request.max_ticks,
+                    checkpoint=request.checkpoint,
+                ),
+            )
+    except TaskNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskRunValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/tasks/{task_id}/runs")
+def list_task_runs(task_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_task_run_records(
+                ContinuityStore(conn),
+                user_id=user_id,
+                task_id=task_id,
+            )
+    except TaskNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/task-runs/{task_run_id}")
+def get_task_run(task_run_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_task_run_record(
+                ContinuityStore(conn),
+                user_id=user_id,
+                task_run_id=task_run_id,
+            )
+    except TaskRunNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/task-runs/{task_run_id}/tick")
+def tick_task_run(task_run_id: UUID, request: MutateTaskRunRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = tick_task_run_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=TaskRunTickInput(task_run_id=task_run_id),
+            )
+    except TaskRunValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except TaskRunNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskRunTransitionError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/task-runs/{task_run_id}/pause")
+def pause_task_run(task_run_id: UUID, request: MutateTaskRunRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = pause_task_run_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=TaskRunPauseInput(task_run_id=task_run_id),
+            )
+    except TaskRunValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except TaskRunNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskRunTransitionError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/task-runs/{task_run_id}/resume")
+def resume_task_run(task_run_id: UUID, request: MutateTaskRunRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = resume_task_run_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=TaskRunResumeInput(task_run_id=task_run_id),
+            )
+    except TaskRunValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except TaskRunNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskRunTransitionError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/task-runs/{task_run_id}/cancel")
+def cancel_task_run(task_run_id: UUID, request: MutateTaskRunRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = cancel_task_run_record(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=TaskRunCancelInput(task_run_id=task_run_id),
+            )
+    except TaskRunValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except TaskRunNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TaskRunTransitionError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,

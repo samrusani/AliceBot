@@ -416,6 +416,20 @@ class TaskStepRow(TypedDict):
     updated_at: datetime
 
 
+class TaskRunRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    task_id: UUID
+    status: str
+    checkpoint: JsonObject
+    tick_count: int
+    step_count: int
+    max_ticks: int
+    stop_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class ToolExecutionRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -517,6 +531,7 @@ LOCK_THREAD_EVENTS_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text
 LOCK_TASK_STEPS_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 2))"
 LOCK_TASK_WORKSPACES_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 3))"
 LOCK_TASK_ARTIFACTS_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 4))"
+LOCK_TASK_RUNS_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 5))"
 
 INSERT_EVENT_SQL = """
                 WITH next_sequence AS (
@@ -2979,6 +2994,131 @@ UPDATE_TASK_STEP_SQL = """
                   updated_at
                 """
 
+INSERT_TASK_RUN_SQL = """
+                INSERT INTO task_runs (
+                  user_id,
+                  task_id,
+                  status,
+                  checkpoint,
+                  tick_count,
+                  step_count,
+                  max_ticks,
+                  stop_reason,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  task_id,
+                  status,
+                  checkpoint,
+                  tick_count,
+                  step_count,
+                  max_ticks,
+                  stop_reason,
+                  created_at,
+                  updated_at
+                """
+
+GET_TASK_RUN_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  task_id,
+                  status,
+                  checkpoint,
+                  tick_count,
+                  step_count,
+                  max_ticks,
+                  stop_reason,
+                  created_at,
+                  updated_at
+                FROM task_runs
+                WHERE id = %s
+                """
+
+LIST_TASK_RUNS_FOR_TASK_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  task_id,
+                  status,
+                  checkpoint,
+                  tick_count,
+                  step_count,
+                  max_ticks,
+                  stop_reason,
+                  created_at,
+                  updated_at
+                FROM task_runs
+                WHERE task_id = %s
+                ORDER BY created_at ASC, id ASC
+                """
+
+UPDATE_TASK_RUN_SQL = """
+                UPDATE task_runs
+                SET status = %s,
+                    checkpoint = %s,
+                    tick_count = %s,
+                    step_count = %s,
+                    stop_reason = %s,
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                RETURNING
+                  id,
+                  user_id,
+                  task_id,
+                  status,
+                  checkpoint,
+                  tick_count,
+                  step_count,
+                  max_ticks,
+                  stop_reason,
+                  created_at,
+                  updated_at
+                """
+
+ACQUIRE_NEXT_TASK_RUN_SQL = """
+                WITH candidate AS (
+                  SELECT id
+                  FROM task_runs
+                  WHERE status IN ('queued', 'running')
+                  ORDER BY updated_at ASC, created_at ASC, id ASC
+                  FOR UPDATE SKIP LOCKED
+                  LIMIT 1
+                )
+                UPDATE task_runs
+                SET status = 'running',
+                    stop_reason = NULL,
+                    updated_at = clock_timestamp()
+                WHERE id = (SELECT id FROM candidate)
+                RETURNING
+                  id,
+                  user_id,
+                  task_id,
+                  status,
+                  checkpoint,
+                  tick_count,
+                  step_count,
+                  max_ticks,
+                  stop_reason,
+                  created_at,
+                  updated_at
+                """
+
 INSERT_TOOL_EXECUTION_SQL = """
                 INSERT INTO tool_executions (
                   user_id,
@@ -4502,6 +4642,66 @@ class ContinuityStore:
                 task_step_id,
             ),
         )
+
+    def lock_task_runs(self, task_id: UUID) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(LOCK_TASK_RUNS_SQL, (str(task_id),))
+
+    def create_task_run(
+        self,
+        *,
+        task_id: UUID,
+        status: str,
+        checkpoint: JsonObject,
+        tick_count: int,
+        step_count: int,
+        max_ticks: int,
+        stop_reason: str | None,
+    ) -> TaskRunRow:
+        return self._fetch_one(
+            "create_task_run",
+            INSERT_TASK_RUN_SQL,
+            (
+                task_id,
+                status,
+                Jsonb(checkpoint),
+                tick_count,
+                step_count,
+                max_ticks,
+                stop_reason,
+            ),
+        )
+
+    def get_task_run_optional(self, task_run_id: UUID) -> TaskRunRow | None:
+        return self._fetch_optional_one(GET_TASK_RUN_SQL, (task_run_id,))
+
+    def list_task_runs_for_task(self, task_id: UUID) -> list[TaskRunRow]:
+        return self._fetch_all(LIST_TASK_RUNS_FOR_TASK_SQL, (task_id,))
+
+    def update_task_run_optional(
+        self,
+        *,
+        task_run_id: UUID,
+        status: str,
+        checkpoint: JsonObject,
+        tick_count: int,
+        step_count: int,
+        stop_reason: str | None,
+    ) -> TaskRunRow | None:
+        return self._fetch_optional_one(
+            UPDATE_TASK_RUN_SQL,
+            (
+                status,
+                Jsonb(checkpoint),
+                tick_count,
+                step_count,
+                stop_reason,
+                task_run_id,
+            ),
+        )
+
+    def acquire_next_task_run_optional(self) -> TaskRunRow | None:
+        return self._fetch_optional_one(ACQUIRE_NEXT_TASK_RUN_SQL)
 
     def create_tool_execution(
         self,

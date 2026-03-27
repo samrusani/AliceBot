@@ -33,6 +33,8 @@ ApprovalStatus = Literal["pending", "approved", "rejected"]
 ApprovalResolutionAction = Literal["approve", "reject"]
 ApprovalResolutionOutcome = Literal["resolved", "duplicate_rejected", "conflict_rejected"]
 TaskStatus = Literal["pending_approval", "approved", "executed", "denied", "blocked"]
+TaskRunStatus = Literal["queued", "running", "waiting", "paused", "completed", "cancelled"]
+TaskRunStopReason = Literal["wait_state", "budget_exhausted", "paused", "completed", "cancelled"]
 TaskWorkspaceStatus = Literal["active"]
 TaskArtifactStatus = Literal["registered"]
 TaskArtifactIngestionStatus = Literal["pending", "ingested"]
@@ -241,6 +243,9 @@ EXECUTION_BUDGET_LIST_ORDER = ["created_at_asc", "id_asc"]
 EXECUTION_BUDGET_MATCH_ORDER = ["specificity_desc", "created_at_asc", "id_asc"]
 EXECUTION_BUDGET_STATUSES = ["active", "inactive", "superseded"]
 TASK_STATUSES = ["pending_approval", "approved", "executed", "denied", "blocked"]
+TASK_RUN_STATUSES = ["queued", "running", "waiting", "paused", "completed", "cancelled"]
+TASK_RUN_STOP_REASONS = ["wait_state", "budget_exhausted", "paused", "completed", "cancelled"]
+TASK_RUN_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -2257,6 +2262,70 @@ class TaskListResponse(TypedDict):
 
 class TaskDetailResponse(TypedDict):
     task: TaskRecord
+
+
+@dataclass(frozen=True, slots=True)
+class TaskRunCreateInput:
+    task_id: UUID
+    checkpoint: JsonObject = field(default_factory=dict)
+    max_ticks: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class TaskRunTickInput:
+    task_run_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class TaskRunPauseInput:
+    task_run_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class TaskRunResumeInput:
+    task_run_id: UUID
+
+
+@dataclass(frozen=True, slots=True)
+class TaskRunCancelInput:
+    task_run_id: UUID
+
+
+class TaskRunRecord(TypedDict):
+    id: str
+    task_id: str
+    status: TaskRunStatus
+    checkpoint: JsonObject
+    tick_count: int
+    step_count: int
+    max_ticks: int
+    stop_reason: TaskRunStopReason | None
+    created_at: str
+    updated_at: str
+
+
+class TaskRunCreateResponse(TypedDict):
+    task_run: TaskRunRecord
+
+
+class TaskRunListSummary(TypedDict):
+    task_id: str
+    total_count: int
+    order: list[str]
+
+
+class TaskRunListResponse(TypedDict):
+    items: list[TaskRunRecord]
+    summary: TaskRunListSummary
+
+
+class TaskRunDetailResponse(TypedDict):
+    task_run: TaskRunRecord
+
+
+class TaskRunMutationResponse(TypedDict):
+    task_run: TaskRunRecord
+    previous_status: TaskRunStatus
 
 
 @dataclass(frozen=True, slots=True)

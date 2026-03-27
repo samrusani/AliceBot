@@ -230,6 +230,28 @@ export type TaskStepListSummary = {
   order: string[];
 };
 
+export type TaskRunStatus = "queued" | "running" | "waiting" | "paused" | "completed" | "cancelled";
+export type TaskRunStopReason = "wait_state" | "budget_exhausted" | "paused" | "completed" | "cancelled";
+
+export type TaskRunItem = {
+  id: string;
+  task_id: string;
+  status: TaskRunStatus;
+  checkpoint: JsonObject;
+  tick_count: number;
+  step_count: number;
+  max_ticks: number;
+  stop_reason: TaskRunStopReason | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type TaskRunListSummary = {
+  task_id: string;
+  total_count: number;
+  order: string[];
+};
+
 export type ToolExecutionResult = {
   handler_key: string | null;
   status: string;
@@ -1314,6 +1336,15 @@ export function getTaskSteps(apiBaseUrl: string, taskId: string, userId: string)
   return requestJson<{ items: TaskStepItem[]; summary: TaskStepListSummary }>(
     apiBaseUrl,
     `/v0/tasks/${taskId}/steps`,
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function listTaskRuns(apiBaseUrl: string, taskId: string, userId: string) {
+  return requestJson<{ items: TaskRunItem[]; summary: TaskRunListSummary }>(
+    apiBaseUrl,
+    `/v0/tasks/${taskId}/runs`,
     undefined,
     { user_id: userId },
   );
