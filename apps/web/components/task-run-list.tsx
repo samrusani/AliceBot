@@ -21,6 +21,16 @@ function checkpointSummary(checkpoint: Record<string, unknown>) {
     cursor,
     targetSteps,
     waitForSignal,
+    waitingApprovalId:
+      typeof checkpoint.waiting_approval_id === "string" ? checkpoint.waiting_approval_id : null,
+    resolvedApprovalId:
+      typeof checkpoint.resolved_approval_id === "string" ? checkpoint.resolved_approval_id : null,
+    resumedFromApprovalId:
+      typeof checkpoint.resumed_from_approval_id === "string" ? checkpoint.resumed_from_approval_id : null,
+    lastExecutionId:
+      typeof checkpoint.last_execution_id === "string" ? checkpoint.last_execution_id : null,
+    lastExecutionStatus:
+      typeof checkpoint.last_execution_status === "string" ? checkpoint.last_execution_status : null,
   };
 }
 
@@ -101,6 +111,9 @@ export function TaskRunList({
                   <span className="meta-pill">Tick {run.tick_count} / {run.max_ticks}</span>
                   <span className="meta-pill">Steps {run.step_count}</span>
                   {run.stop_reason ? <span className="meta-pill">Stop: {run.stop_reason}</span> : null}
+                  {checkpoint.lastExecutionStatus ? (
+                    <span className="meta-pill">Execution: {checkpoint.lastExecutionStatus}</span>
+                  ) : null}
                 </div>
                 <div className="key-value-grid">
                   <div>
@@ -121,6 +134,30 @@ export function TaskRunList({
                     <dt>Source</dt>
                     <dd>{source === "live" ? "Live backend" : "Fixture fallback"}</dd>
                   </div>
+                  {checkpoint.waitingApprovalId ? (
+                    <div>
+                      <dt>Pending approval</dt>
+                      <dd className="mono">{checkpoint.waitingApprovalId}</dd>
+                    </div>
+                  ) : null}
+                  {checkpoint.resolvedApprovalId ? (
+                    <div>
+                      <dt>Resolved approval</dt>
+                      <dd className="mono">{checkpoint.resolvedApprovalId}</dd>
+                    </div>
+                  ) : null}
+                  {checkpoint.resumedFromApprovalId ? (
+                    <div>
+                      <dt>Resumed from</dt>
+                      <dd className="mono">{checkpoint.resumedFromApprovalId}</dd>
+                    </div>
+                  ) : null}
+                  {checkpoint.lastExecutionId ? (
+                    <div>
+                      <dt>Last execution</dt>
+                      <dd className="mono">{checkpoint.lastExecutionId}</dd>
+                    </div>
+                  ) : null}
                 </div>
               </article>
             );

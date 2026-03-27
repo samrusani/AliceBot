@@ -149,7 +149,10 @@ export function ApprovalActions({
     });
 
     try {
-      const payload = await executeApproval(apiBaseUrl, approval.id, userId);
+      const payload =
+        approval.task_run_id == null
+          ? await executeApproval(apiBaseUrl, approval.id, userId)
+          : await executeApproval(apiBaseUrl, approval.id, userId, approval.task_run_id);
       onExecuted(payload);
       setFeedback({
         tone: payload.result.status === "blocked" ? "danger" : "success",

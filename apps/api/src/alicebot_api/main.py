@@ -332,6 +332,7 @@ from alicebot_api.response_generation import (
 from alicebot_api.proxy_execution import (
     ProxyExecutionApprovalStateError,
     ProxyExecutionHandlerNotFoundError,
+    ProxyExecutionIdempotencyError,
     execute_approved_proxy_request,
 )
 from alicebot_api.store import (
@@ -684,6 +685,7 @@ class CreateApprovalRequest(BaseModel):
     user_id: UUID
     thread_id: UUID
     tool_id: UUID
+    task_run_id: UUID | None = None
     action: str = Field(min_length=1, max_length=100)
     scope: str = Field(min_length=1, max_length=200)
     domain_hint: str | None = Field(default=None, min_length=1, max_length=200)
@@ -697,6 +699,7 @@ class ResolveApprovalRequest(BaseModel):
 
 class ExecuteApprovedProxyRequest(BaseModel):
     user_id: UUID
+    task_run_id: UUID | None = None
 
 
 class ConnectGmailAccountRequest(BaseModel):
@@ -1741,6 +1744,7 @@ def create_approval_request(request: CreateApprovalRequest) -> JSONResponse:
                 request=ApprovalRequestCreateInput(
                     thread_id=request.thread_id,
                     tool_id=request.tool_id,
+                    task_run_id=request.task_run_id,
                     action=request.action,
                     scope=request.scope,
                     domain_hint=request.domain_hint,
@@ -1867,6 +1871,7 @@ def execute_approved_proxy(approval_id: UUID, request: ExecuteApprovedProxyReque
     execution_error: (
         ProxyExecutionApprovalStateError
         | ProxyExecutionHandlerNotFoundError
+        | ProxyExecutionIdempotencyError
         | TaskStepApprovalLinkageError
         | TaskStepExecutionLinkageError
         | None
@@ -1878,11 +1883,15 @@ def execute_approved_proxy(approval_id: UUID, request: ExecuteApprovedProxyReque
                 payload = execute_approved_proxy_request(
                     ContinuityStore(conn),
                     user_id=request.user_id,
-                    request=ProxyExecutionRequestInput(approval_id=approval_id),
+                    request=ProxyExecutionRequestInput(
+                        approval_id=approval_id,
+                        task_run_id=request.task_run_id,
+                    ),
                 )
             except (
                 ProxyExecutionApprovalStateError,
                 ProxyExecutionHandlerNotFoundError,
+                ProxyExecutionIdempotencyError,
                 TaskStepApprovalLinkageError,
                 TaskStepExecutionLinkageError,
             ) as exc:

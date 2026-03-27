@@ -99,6 +99,10 @@ export function ApprovalDetail({
             <dd className="mono">{approval.thread_id}</dd>
           </div>
           <div>
+            <dt>Task run</dt>
+            <dd className="mono">{approval.task_run_id ?? "Unlinked"}</dd>
+          </div>
+          <div>
             <dt>Task step</dt>
             <dd className="mono">{approval.task_step_id ?? "Unlinked"}</dd>
           </div>
