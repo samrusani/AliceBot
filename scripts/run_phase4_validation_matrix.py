@@ -20,16 +20,27 @@ StepStatus = Literal["PASS", "FAIL"]
 STEP_CONTROL_DOC_TRUTH = "control_doc_truth"
 STEP_PHASE4_ACCEPTANCE = "phase4_acceptance"
 STEP_PHASE4_READINESS = "phase4_readiness_gates"
+STEP_PHASE4_MAGNESIUM = "phase4_magnesium_ship_gate"
 STEP_PHASE4_SCENARIOS = "phase4_scenarios"
 STEP_PHASE4_WEB = "phase4_web_diagnostics"
 STEP_PHASE3_COMPAT = "phase3_compat_validation"
+STEP_PHASE2_COMPAT = "phase2_compat_validation"
+STEP_MVP_COMPAT = "mvp_compat_validation"
 STEP_IDS: tuple[str, ...] = (
     STEP_CONTROL_DOC_TRUTH,
     STEP_PHASE4_ACCEPTANCE,
     STEP_PHASE4_READINESS,
+    STEP_PHASE4_MAGNESIUM,
     STEP_PHASE4_SCENARIOS,
     STEP_PHASE4_WEB,
     STEP_PHASE3_COMPAT,
+    STEP_PHASE2_COMPAT,
+    STEP_MVP_COMPAT,
+)
+
+PHASE4_MAGNESIUM_NODE_ID = (
+    "tests/integration/test_mvp_acceptance_suite.py::"
+    "test_acceptance_canonical_magnesium_reorder_flow_with_memory_write_back_evidence"
 )
 
 PHASE4_SCENARIO_NODE_IDS: tuple[str, ...] = (
@@ -44,9 +55,9 @@ PHASE4_WEB_COMMAND: tuple[str, ...] = (
     "pnpm",
     "--dir",
     "apps/web",
-    "test",
-    "--",
-    "--runInBand",
+    "exec",
+    "vitest",
+    "run",
     "app/tasks/page.test.tsx",
     "app/traces/page.test.tsx",
     "components/task-run-list.test.tsx",
@@ -88,6 +99,10 @@ def _build_phase4_scenario_command(python_executable: str) -> tuple[str, ...]:
     return (python_executable, "-m", "pytest", "-q", *PHASE4_SCENARIO_NODE_IDS)
 
 
+def _build_phase4_magnesium_command(python_executable: str) -> tuple[str, ...]:
+    return (python_executable, "-m", "pytest", "-q", PHASE4_MAGNESIUM_NODE_ID)
+
+
 def build_validation_matrix_steps(*, python_executable: str | None = None) -> list[MatrixStep]:
     resolved_python = python_executable or _resolve_python_executable()
     return [
@@ -101,13 +116,22 @@ def build_validation_matrix_steps(*, python_executable: str | None = None) -> li
             step=STEP_PHASE4_ACCEPTANCE,
             description="Run Phase 4 acceptance gate entrypoint.",
             command=(resolved_python, "scripts/run_phase4_acceptance.py"),
-            coverage="Phase 4 acceptance wrapper contract",
+            coverage="Phase 4 canonical acceptance chain with magnesium evidence mapping",
         ),
         MatrixStep(
             step=STEP_PHASE4_READINESS,
             description="Run Phase 4 readiness gate entrypoint.",
             command=(resolved_python, "scripts/run_phase4_readiness_gates.py"),
-            coverage="Phase 4 readiness wrapper contract",
+            coverage="Phase 4 deterministic readiness gates and explicit failing-gate signaling",
+        ),
+        MatrixStep(
+            step=STEP_PHASE4_MAGNESIUM,
+            description=(
+                "Run canonical MVP ship-gate magnesium reorder scenario evidence directly: "
+                "request -> approval -> execution -> memory write-back."
+            ),
+            command=_build_phase4_magnesium_command(resolved_python),
+            coverage=PHASE4_MAGNESIUM_NODE_ID,
         ),
         MatrixStep(
             step=STEP_PHASE4_SCENARIOS,
@@ -130,6 +154,18 @@ def build_validation_matrix_steps(*, python_executable: str | None = None) -> li
             description="Run Phase 3 compatibility validation matrix.",
             command=(resolved_python, "scripts/run_phase3_validation_matrix.py"),
             coverage="Phase 3 compatibility chain remains PASS",
+        ),
+        MatrixStep(
+            step=STEP_PHASE2_COMPAT,
+            description="Run Phase 2 compatibility validation matrix.",
+            command=(resolved_python, "scripts/run_phase2_validation_matrix.py"),
+            coverage="Phase 2 compatibility chain remains PASS",
+        ),
+        MatrixStep(
+            step=STEP_MVP_COMPAT,
+            description="Run MVP compatibility validation matrix alias.",
+            command=(resolved_python, "scripts/run_mvp_validation_matrix.py"),
+            coverage="MVP alias compatibility chain remains PASS",
         ),
     ]
 
@@ -215,7 +251,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run deterministic Phase 4 validation matrix over control docs, "
-            "Phase 4 wrappers, scenario evidence, diagnostics shell tests, and Phase 3 compatibility."
+            "canonical Phase 4 acceptance/readiness ownership, magnesium ship-gate evidence, "
+            "diagnostics shell tests, and Phase 3/2/MVP compatibility."
         ),
     )
     parser.add_argument(

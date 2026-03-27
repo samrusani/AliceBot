@@ -4,36 +4,37 @@
 PASS
 
 ## criteria met
-- Run lifecycle observability is implemented and exposed: transition history/last transition, explicit stop reasons, failure classes, retry posture/count/cap, and transition timestamps are persisted and returned.
-- Retry/failure controls are wired through API, worker, and UI surfaces, including explicit fail-closed behavior for blocked/budget paths.
-- Migration normalization gap is fixed: legacy `paused + budget_exhausted` rows now map to terminal retry posture during `20260327_0040` upgrade.
-- Required Sprint 13 verification commands pass:
-  - `./.venv/bin/python -m pytest tests/unit/test_20260327_0040_task_run_retry_failure_controls.py tests/unit/test_task_runs.py tests/unit/test_task_runs_main.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py tests/unit/test_worker_main.py -q` -> PASS (`37 passed`)
-  - `./.venv/bin/python -m pytest tests/integration/test_task_runs_api.py tests/integration/test_proxy_execution_api.py tests/integration/test_approval_api.py -q` -> PASS (`28 passed`)
-  - `pnpm --dir apps/web test -- --runInBand app/tasks/page.test.tsx app/traces/page.test.tsx components/task-run-list.test.tsx components/execution-summary.test.tsx lib/api.test.ts` -> PASS (`37 passed`)
-  - `python3 scripts/run_phase4_validation_matrix.py` -> PASS
-  - Phase 3 compatibility chain (`scripts/run_phase3_validation_matrix.py`, via Phase 4 matrix) -> PASS
-- Independent re-review verification confirms the migration/test fix and reproduces:
-  - `./.venv/bin/python -m pytest tests/unit/test_20260327_0040_task_run_retry_failure_controls.py tests/unit/test_task_runs.py tests/unit/test_task_runs_main.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py tests/unit/test_worker_main.py -q` -> PASS (`37 passed`)
-- Canonical docs requested by the sprint packet were updated: `README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`.
+- `python3 scripts/run_phase4_acceptance.py` passes and includes canonical magnesium scenario evidence mapping.
+- `python3 scripts/run_phase4_readiness_gates.py` passes with deterministic gate output and explicit failing-gate signaling contract.
+- `python3 scripts/run_phase4_validation_matrix.py` passes with deterministic ordered step output and explicit failing-step signaling contract.
+- `./.venv/bin/python -m pytest tests/integration/test_phase4_acceptance_suite.py tests/integration/test_phase4_readiness_gates.py tests/integration/test_phase4_validation_matrix.py tests/unit/test_phase4_gate_wrappers.py -q` passes (`10 passed`).
+- `./.venv/bin/python -m pytest tests/integration/test_mvp_acceptance_suite.py::test_acceptance_canonical_magnesium_reorder_flow_with_memory_write_back_evidence -q` passes (`1 passed`).
+- `python3 scripts/run_phase3_validation_matrix.py` remains PASS (exit `0`).
+- `python3 scripts/run_phase2_validation_matrix.py` remains PASS (exit `0`).
+- `python3 scripts/run_mvp_validation_matrix.py` remains PASS (exit `0`).
+- `python3 scripts/check_control_doc_truth.py` passes with updated Phase 4 ownership markers.
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` are synchronized to Sprint 14 ownership truth.
+- Out-of-scope diff blocker is resolved: previously flagged out-of-scope files are no longer present in the current working diff.
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking quality issues found in sprint-scoped surfaces.
+- No sprint-scoped blocking quality issues found.
 
 ## regression risks
-- Low. The migration mapping is now explicit for the legacy budget-exhausted edge case and unit coverage includes the posture normalization rule.
+- Low operational risk: `scripts/run_phase4_validation_matrix.py` executes expensive compatibility chains (`phase3`, `phase2`, `mvp`) which increase runtime and potential flake exposure in constrained CI environments.
+- Functional regression risk is otherwise low for this sprint scope.
 
 ## docs issues
-- None blocking for Sprint 13 exit.
+- No blocking documentation issues found.
+- `BUILD_REPORT.md` now accurately reflects current changed-file scope and out-of-scope status.
 
 ## should anything be added to RULES.md?
-- No required changes for this sprint exit.
+- Optional improvement: add a durable rule that sprint build reports must enumerate every changed file in the working diff and explicitly classify any out-of-scope edits.
 
 ## should anything update ARCHITECTURE.md?
-- No blocking architecture updates required for Sprint 13 acceptance.
+- No architecture update required for Sprint 14 closeout. Changes are release-control gate orchestration, tests, and control-doc alignment.
 
 ## recommended next action
-1. Proceed to Control Tower Sprint 13 sign-off and PR merge workflow.
+1. Proceed to Control Tower sign-off and PR merge workflow for Sprint 14.
