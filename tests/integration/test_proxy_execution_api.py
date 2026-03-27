@@ -536,6 +536,80 @@ def test_execute_approved_proxy_endpoint_rejects_missing_handler(
     assert detail_payload == {"execution": list_payload["items"][0]}
 
 
+def test_execute_approved_proxy_endpoint_marks_linked_run_paused_when_blocked(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    owner = seed_user(migrated_database_urls["app"], email="owner-linked-run@example.com")
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+    tool_id = create_tool_and_policy(
+        migrated_database_urls["app"],
+        user_id=owner["user_id"],
+        tool_key="proxy.missing",
+    )
+
+    create_status, create_payload = create_pending_approval(
+        user_id=owner["user_id"],
+        thread_id=owner["thread_id"],
+        tool_id=tool_id,
+    )
+    assert create_status == 200
+
+    run_create_status, run_create_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{create_payload['task']['id']}/runs",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "max_ticks": 3,
+            "checkpoint": {
+                "cursor": 0,
+                "target_steps": 1,
+                "wait_for_signal": False,
+            },
+        },
+    )
+    assert run_create_status == 201
+    run_id = run_create_payload["task_run"]["id"]
+
+    run_tick_status, run_tick_payload = invoke_request(
+        "POST",
+        f"/v0/task-runs/{run_id}/tick",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert run_tick_status == 200
+    assert run_tick_payload["task_run"]["status"] == "waiting_approval"
+
+    approve_status, approve_payload = invoke_request(
+        "POST",
+        f"/v0/approvals/{create_payload['approval']['id']}/approve",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert approve_status == 200
+    assert approve_payload["approval"]["status"] == "approved"
+    assert approve_payload["approval"]["task_run_id"] == run_id
+
+    execute_status, execute_payload = invoke_request(
+        "POST",
+        f"/v0/approvals/{create_payload['approval']['id']}/execute",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert execute_status == 409
+    assert execute_payload == {
+        "detail": "tool 'proxy.missing' has no registered proxy handler"
+    }
+
+    run_detail_status, run_detail_payload = invoke_request(
+        "GET",
+        f"/v0/task-runs/{run_id}",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+    assert run_detail_status == 200
+    assert run_detail_payload["task_run"]["status"] == "paused"
+    assert run_detail_payload["task_run"]["stop_reason"] == "paused"
+    assert run_detail_payload["task_run"]["checkpoint"]["last_execution_status"] == "blocked"
+    assert run_detail_payload["task_run"]["checkpoint"]["resolved_approval_id"] == create_payload["approval"]["id"]
+
+
 def test_execute_approved_proxy_endpoint_enforces_user_isolation(
     migrated_database_urls,
     monkeypatch,

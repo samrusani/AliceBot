@@ -23,9 +23,9 @@ from alicebot_api.tasks import TaskNotFoundError
 
 
 RUNNABLE_TASK_RUN_STATUSES = frozenset({"queued", "running"})
-PAUSEABLE_TASK_RUN_STATUSES = frozenset({"queued", "running", "waiting"})
-RESUMABLE_TASK_RUN_STATUSES = frozenset({"paused", "waiting"})
-CANCELLABLE_TASK_RUN_STATUSES = frozenset({"queued", "running", "waiting", "paused"})
+PAUSEABLE_TASK_RUN_STATUSES = frozenset({"queued", "running", "waiting", "waiting_approval"})
+RESUMABLE_TASK_RUN_STATUSES = frozenset({"paused", "waiting", "waiting_approval"})
+CANCELLABLE_TASK_RUN_STATUSES = frozenset({"queued", "running", "waiting", "waiting_approval", "paused"})
 
 
 class TaskRunValidationError(ValueError):
@@ -207,6 +207,31 @@ def tick_task_run_record(
     tick_count = int(row["tick_count"])
     step_count = int(row["step_count"])
     max_ticks = int(row["max_ticks"])
+    task = _require_task_exists_and_load(store, task_id=cast(UUID, row["task_id"]))
+
+    if task["status"] == "pending_approval" and task["latest_approval_id"] is not None:
+        approval_id = cast(UUID, task["latest_approval_id"])
+        approval = store.get_approval_optional(approval_id)
+        if approval is not None and approval["status"] == "pending":
+            checkpoint["wait_for_signal"] = True
+            checkpoint["waiting_approval_id"] = str(approval_id)
+            store.update_approval_task_run_optional(
+                approval_id=approval_id,
+                task_run_id=cast(UUID, row["id"]),
+            )
+            updated = _update_task_run(
+                store,
+                row=row,
+                status="waiting_approval",
+                checkpoint=checkpoint,
+                tick_count=tick_count + 1,
+                step_count=step_count,
+                stop_reason="waiting_approval",
+            )
+            return {
+                "task_run": serialize_task_run_row(updated),
+                "previous_status": previous_status,
+            }
 
     if cursor >= target_steps:
         updated = _update_task_run(
@@ -308,11 +333,26 @@ def resume_task_run_record(
         raise _transition_conflict(task_run_id=request.task_run_id, status=previous_status, action="resumed")
 
     checkpoint = normalize_checkpoint(cast(JsonObject, row["checkpoint"]))
+    if previous_status == "waiting_approval":
+        waiting_approval_id = checkpoint.get("waiting_approval_id")
+        if isinstance(waiting_approval_id, str) and waiting_approval_id:
+            try:
+                waiting_approval_uuid = UUID(waiting_approval_id)
+            except ValueError:
+                waiting_approval_uuid = None
+            approval = None if waiting_approval_uuid is None else store.get_approval_optional(waiting_approval_uuid)
+            if approval is not None and approval["status"] == "pending":
+                raise _transition_conflict(
+                    task_run_id=request.task_run_id,
+                    status=previous_status,
+                    action="resumed while approval is still pending",
+                )
     checkpoint["wait_for_signal"] = False
+    checkpoint["waiting_approval_id"] = None
     updated = _update_task_run(
         store,
         row=row,
-        status="running",
+        status="running" if previous_status != "waiting_approval" else "queued",
         checkpoint=checkpoint,
         tick_count=int(row["tick_count"]),
         step_count=int(row["step_count"]),
@@ -351,3 +391,10 @@ def cancel_task_run_record(
         "task_run": serialize_task_run_row(updated),
         "previous_status": previous_status,
     }
+
+
+def _require_task_exists_and_load(store: ContinuityStore, *, task_id: UUID) -> dict[str, object]:
+    task = store.get_task_optional(task_id)
+    if task is None:
+        raise TaskNotFoundError(f"task {task_id} was not found")
+    return cast(dict[str, object], task)

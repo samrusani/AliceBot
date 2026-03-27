@@ -91,6 +91,28 @@ function buildFixtureTaskRuns(task: TaskItem): TaskRunItem[] {
     ];
   }
 
+  if (task.status === "pending_approval") {
+    return [
+      {
+        id: `fixture-run-${task.id}`,
+        task_id: task.id,
+        status: "waiting_approval",
+        checkpoint: {
+          cursor: 1,
+          target_steps: 2,
+          wait_for_signal: true,
+          waiting_approval_id: task.latest_approval_id,
+        },
+        tick_count: 1,
+        step_count: 1,
+        max_ticks: 3,
+        stop_reason: "waiting_approval",
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+      },
+    ];
+  }
+
   return [
     {
       id: `fixture-run-${task.id}`,
