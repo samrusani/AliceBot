@@ -29,6 +29,7 @@ class ProxyExecutionStoreStub:
         self.locked_task_ids: list[UUID] = []
         self.approvals: dict[UUID, dict[str, object]] = {}
         self.tasks: list[dict[str, object]] = []
+        self.task_runs: list[dict[str, object]] = []
         self.task_steps: list[dict[str, object]] = []
         self.events: list[dict[str, object]] = []
         self.tool_executions: list[dict[str, object]] = []
@@ -252,6 +253,57 @@ class ProxyExecutionStoreStub:
 
     def get_task_optional(self, task_id: UUID) -> dict[str, object] | None:
         return next((task for task in self.tasks if task["id"] == task_id), None)
+
+    def create_task_run(
+        self,
+        *,
+        task_id: UUID,
+        status: str,
+        checkpoint: dict[str, object],
+        tick_count: int,
+        step_count: int,
+        max_ticks: int,
+        stop_reason: str | None,
+    ) -> dict[str, object]:
+        row = {
+            "id": uuid4(),
+            "user_id": self.user_id,
+            "task_id": task_id,
+            "status": status,
+            "checkpoint": checkpoint,
+            "tick_count": tick_count,
+            "step_count": step_count,
+            "max_ticks": max_ticks,
+            "stop_reason": stop_reason,
+            "created_at": self.base_time + timedelta(minutes=len(self.task_runs)),
+            "updated_at": self.base_time + timedelta(minutes=len(self.task_runs)),
+        }
+        self.task_runs.append(row)
+        return row
+
+    def get_task_run_optional(self, task_run_id: UUID) -> dict[str, object] | None:
+        return next((run for run in self.task_runs if run["id"] == task_run_id), None)
+
+    def update_task_run_optional(
+        self,
+        *,
+        task_run_id: UUID,
+        status: str,
+        checkpoint: dict[str, object],
+        tick_count: int,
+        step_count: int,
+        stop_reason: str | None,
+    ) -> dict[str, object] | None:
+        run = self.get_task_run_optional(task_run_id)
+        if run is None:
+            return None
+        run["status"] = status
+        run["checkpoint"] = checkpoint
+        run["tick_count"] = tick_count
+        run["step_count"] = step_count
+        run["stop_reason"] = stop_reason
+        run["updated_at"] = self.base_time + timedelta(hours=1, minutes=len(self.trace_events))
+        return run
 
     def get_task_step_optional(self, task_step_id: UUID) -> dict[str, object] | None:
         return next((task_step for task_step in self.task_steps if task_step["id"] == task_step_id), None)
@@ -873,5 +925,106 @@ def test_execute_approved_proxy_request_rejects_missing_visible_approval() -> No
         )
 
 
+def test_execute_approved_proxy_request_marks_linked_run_budget_blocked_as_paused() -> None:
+    store = ProxyExecutionStoreStub()
+    approval = store.seed_approval(status="approved", tool_key="proxy.echo")
+    run = store.create_task_run(
+        task_id=store.tasks[0]["id"],
+        status="queued",
+        checkpoint={
+            "cursor": 0,
+            "target_steps": 1,
+            "wait_for_signal": False,
+        },
+        tick_count=1,
+        step_count=0,
+        max_ticks=3,
+        stop_reason=None,
+    )
+    approval["task_run_id"] = run["id"]
+    store.seed_execution_budget(
+        tool_key="proxy.echo",
+        domain_hint=None,
+        max_completed_executions=1,
+    )
+    store.create_tool_execution(
+        approval_id=uuid4(),
+        task_step_id=uuid4(),
+        thread_id=store.thread_id,
+        tool_id=UUID(approval["tool"]["id"]),
+        trace_id=uuid4(),
+        request_event_id=uuid4(),
+        result_event_id=uuid4(),
+        status="completed",
+        handler_key="proxy.echo",
+        request={
+            "thread_id": str(store.thread_id),
+            "tool_id": approval["tool"]["id"],
+            "action": "tool.run",
+            "scope": "workspace",
+            "domain_hint": None,
+            "risk_hint": None,
+            "attributes": {"message": "seed"},
+        },
+        tool=approval["tool"],
+        result={
+            "handler_key": "proxy.echo",
+            "status": "completed",
+            "output": {"mode": "no_side_effect"},
+            "reason": None,
+        },
+    )
+
+    payload = execute_approved_proxy_request(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ProxyExecutionRequestInput(approval_id=approval["id"]),
+    )
+
+    assert payload["result"]["status"] == "blocked"
+    assert store.task_runs[0]["status"] == "paused"
+    assert store.task_runs[0]["stop_reason"] == "budget_exhausted"
+    assert store.task_runs[0]["checkpoint"]["last_execution_status"] == "blocked"
+    assert store.task_runs[0]["checkpoint"]["resolved_approval_id"] == str(approval["id"])
+
+
+def test_execute_approved_proxy_request_marks_linked_run_missing_handler_as_paused() -> None:
+    store = ProxyExecutionStoreStub()
+    approval = store.seed_approval(status="approved", tool_key="proxy.missing")
+    run = store.create_task_run(
+        task_id=store.tasks[0]["id"],
+        status="queued",
+        checkpoint={
+            "cursor": 0,
+            "target_steps": 1,
+            "wait_for_signal": False,
+        },
+        tick_count=1,
+        step_count=0,
+        max_ticks=3,
+        stop_reason=None,
+    )
+    approval["task_run_id"] = run["id"]
+
+    with pytest.raises(
+        ProxyExecutionHandlerNotFoundError,
+        match="tool 'proxy.missing' has no registered proxy handler",
+    ):
+        execute_approved_proxy_request(
+            store,  # type: ignore[arg-type]
+            user_id=store.user_id,
+            request=ProxyExecutionRequestInput(approval_id=approval["id"]),
+        )
+
+    assert store.task_runs[0]["status"] == "paused"
+    assert store.task_runs[0]["stop_reason"] == "paused"
+    assert store.task_runs[0]["checkpoint"]["last_execution_status"] == "blocked"
+    assert store.task_runs[0]["checkpoint"]["resolved_approval_id"] == str(approval["id"])
+
+
 def test_registered_proxy_handler_keys_are_sorted_and_explicit() -> None:
-    assert registered_proxy_handler_keys() == ("proxy.echo",)
+    assert registered_proxy_handler_keys() == (
+        "proxy.calendar.draft_event",
+        "proxy.echo",
+        "proxy.thread_audit",
+    )

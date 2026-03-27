@@ -709,6 +709,114 @@ def test_approval_resolution_endpoints_update_reads_and_emit_trace(
     assert reject_trace_events[1]["payload"]["resolved_by_user_id"] == str(owner["user_id"])
 
 
+def test_approval_resolution_does_not_reopen_cancelled_linked_task_run(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    owner = seed_user(migrated_database_urls["app"], email="owner-cancelled-run@example.com")
+    monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url=migrated_database_urls["app"]))
+
+    with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        tool = store.create_tool(
+            tool_key="shell.exec",
+            name="Shell Exec",
+            description="Run shell commands.",
+            version="1.0.0",
+            metadata_version="tool_metadata_v0",
+            active=True,
+            tags=["shell"],
+            action_hints=["tool.run"],
+            scope_hints=["workspace"],
+            domain_hints=[],
+            risk_hints=[],
+            metadata={"transport": "local"},
+        )
+        store.create_policy(
+            name="Require shell approval",
+            action="tool.run",
+            scope="workspace",
+            effect="require_approval",
+            priority=10,
+            active=True,
+            conditions={"tool_key": "shell.exec"},
+            required_consents=[],
+        )
+
+    create_status, create_payload = invoke_request(
+        "POST",
+        "/v0/approvals/requests",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "thread_id": str(owner["thread_id"]),
+            "tool_id": str(tool["id"]),
+            "action": "tool.run",
+            "scope": "workspace",
+            "attributes": {"command": "ls"},
+        },
+    )
+    assert create_status == 200
+    task_id = create_payload["task"]["id"]
+    approval_id = create_payload["approval"]["id"]
+
+    run_create_status, run_create_payload = invoke_request(
+        "POST",
+        f"/v0/tasks/{task_id}/runs",
+        payload={
+            "user_id": str(owner["user_id"]),
+            "max_ticks": 3,
+            "checkpoint": {
+                "cursor": 0,
+                "target_steps": 1,
+                "wait_for_signal": False,
+            },
+        },
+    )
+    assert run_create_status == 201
+    run_id = run_create_payload["task_run"]["id"]
+
+    run_tick_status, run_tick_payload = invoke_request(
+        "POST",
+        f"/v0/task-runs/{run_id}/tick",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert run_tick_status == 200
+    assert run_tick_payload["task_run"]["status"] == "waiting_approval"
+
+    run_cancel_status, run_cancel_payload = invoke_request(
+        "POST",
+        f"/v0/task-runs/{run_id}/cancel",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert run_cancel_status == 200
+    assert run_cancel_payload["task_run"]["status"] == "cancelled"
+    assert run_cancel_payload["task_run"]["stop_reason"] == "cancelled"
+
+    approve_status, approve_payload = invoke_request(
+        "POST",
+        f"/v0/approvals/{approval_id}/approve",
+        payload={"user_id": str(owner["user_id"])},
+    )
+    assert approve_status == 200
+    assert approve_payload["approval"]["status"] == "approved"
+    assert approve_payload["trace"]["trace_event_count"] == 7
+
+    run_detail_status, run_detail_payload = invoke_request(
+        "GET",
+        f"/v0/task-runs/{run_id}",
+        query_params={"user_id": str(owner["user_id"])},
+    )
+    assert run_detail_status == 200
+    assert run_detail_payload["task_run"]["status"] == "cancelled"
+    assert run_detail_payload["task_run"]["stop_reason"] == "cancelled"
+
+    with user_connection(migrated_database_urls["app"], owner["user_id"]) as conn:
+        store = ContinuityStore(conn)
+        trace_events = store.list_trace_events(UUID(approve_payload["trace"]["trace_id"]))
+
+    assert "approval.resolution.run" not in [event["kind"] for event in trace_events]
+
+
 def test_approval_resolution_rejects_duplicate_conflicting_and_cross_user_attempts(
     migrated_database_urls,
     monkeypatch,

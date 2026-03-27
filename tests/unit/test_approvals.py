@@ -27,6 +27,7 @@ class ApprovalStoreStub:
         self.tools: list[dict[str, object]] = []
         self.approvals: list[dict[str, object]] = []
         self.tasks: list[dict[str, object]] = []
+        self.task_runs: list[dict[str, object]] = []
         self.task_steps: list[dict[str, object]] = []
         self.traces: list[dict[str, object]] = []
         self.trace_events: list[dict[str, object]] = []
@@ -251,6 +252,57 @@ class ApprovalStoreStub:
 
     def get_task_optional(self, task_id: UUID) -> dict[str, object] | None:
         return next((task for task in self.tasks if task["id"] == task_id), None)
+
+    def create_task_run(
+        self,
+        *,
+        task_id: UUID,
+        status: str,
+        checkpoint: dict[str, object],
+        tick_count: int,
+        step_count: int,
+        max_ticks: int,
+        stop_reason: str | None,
+    ) -> dict[str, object]:
+        row = {
+            "id": uuid4(),
+            "user_id": self.user_id,
+            "task_id": task_id,
+            "status": status,
+            "checkpoint": checkpoint,
+            "tick_count": tick_count,
+            "step_count": step_count,
+            "max_ticks": max_ticks,
+            "stop_reason": stop_reason,
+            "created_at": self.base_time + timedelta(minutes=len(self.task_runs)),
+            "updated_at": self.base_time + timedelta(minutes=len(self.task_runs)),
+        }
+        self.task_runs.append(row)
+        return row
+
+    def get_task_run_optional(self, task_run_id: UUID) -> dict[str, object] | None:
+        return next((row for row in self.task_runs if row["id"] == task_run_id), None)
+
+    def update_task_run_optional(
+        self,
+        *,
+        task_run_id: UUID,
+        status: str,
+        checkpoint: dict[str, object],
+        tick_count: int,
+        step_count: int,
+        stop_reason: str | None,
+    ) -> dict[str, object] | None:
+        row = self.get_task_run_optional(task_run_id)
+        if row is None:
+            return None
+        row["status"] = status
+        row["checkpoint"] = checkpoint
+        row["tick_count"] = tick_count
+        row["step_count"] = step_count
+        row["stop_reason"] = stop_reason
+        row["updated_at"] = self.base_time + timedelta(hours=1, minutes=len(self.trace_events))
+        return row
 
     def get_task_by_approval_optional(self, approval_id: UUID) -> dict[str, object] | None:
         return next((task for task in self.tasks if task["latest_approval_id"] == approval_id), None)
@@ -789,6 +841,163 @@ def test_reject_approval_record_resolves_pending_and_records_trace() -> None:
     }
     assert store.trace_events[1]["payload"]["requested_action"] == "reject"
     assert store.trace_events[1]["payload"]["current_status"] == "rejected"
+
+
+def test_approval_resolution_resumes_waiting_approval_run_only() -> None:
+    store = ApprovalStoreStub()
+    approval = store.create_approval(
+        thread_id=store.thread_id,
+        tool_id=uuid4(),
+        task_step_id=None,
+        status="pending",
+        request={"thread_id": str(store.thread_id), "tool_id": "tool-run"},
+        tool={"id": "tool-run", "tool_key": "shell.exec"},
+        routing={"decision": "approval_required", "reasons": [], "trace": {"trace_id": "trace-run", "trace_event_count": 3}},
+        routing_trace_id=uuid4(),
+    )
+    created_task = store.create_task(
+        thread_id=store.thread_id,
+        tool_id=approval["tool_id"],
+        status="pending_approval",
+        request=approval["request"],
+        tool=approval["tool"],
+        latest_approval_id=approval["id"],
+        latest_execution_id=None,
+    )
+    created_step = store.create_task_step(
+        task_id=created_task["id"],
+        sequence_no=1,
+        kind="governed_request",
+        status="created",
+        request=approval["request"],
+        outcome={
+            "routing_decision": "approval_required",
+            "approval_id": str(approval["id"]),
+            "approval_status": "pending",
+            "execution_id": None,
+            "execution_status": None,
+            "blocked_reason": None,
+        },
+        trace_id=uuid4(),
+        trace_kind="approval.request",
+    )
+    approval["task_step_id"] = created_step["id"]
+    run = store.create_task_run(
+        task_id=created_task["id"],
+        status="waiting_approval",
+        checkpoint={
+            "cursor": 0,
+            "target_steps": 1,
+            "wait_for_signal": True,
+            "waiting_approval_id": str(approval["id"]),
+        },
+        tick_count=1,
+        step_count=0,
+        max_ticks=3,
+        stop_reason="waiting_approval",
+    )
+    approval["task_run_id"] = run["id"]
+
+    payload = approve_approval_record(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ApprovalApproveInput(approval_id=approval["id"]),
+    )
+
+    assert payload["approval"]["status"] == "approved"
+    assert payload["trace"]["trace_event_count"] == 8
+    assert store.task_runs[0]["status"] == "queued"
+    assert store.task_runs[0]["stop_reason"] is None
+    assert store.task_runs[0]["checkpoint"]["wait_for_signal"] is False
+    assert store.task_runs[0]["checkpoint"]["waiting_approval_id"] is None
+    assert store.task_runs[0]["checkpoint"]["resolved_approval_id"] == str(approval["id"])
+    assert store.task_runs[0]["checkpoint"]["approval_resolution_status"] == "approved"
+    assert [event["kind"] for event in store.trace_events] == [
+        "approval.resolution.request",
+        "approval.resolution.state",
+        "approval.resolution.summary",
+        "approval.resolution.run",
+        "task.lifecycle.state",
+        "task.lifecycle.summary",
+        "task.step.lifecycle.state",
+        "task.step.lifecycle.summary",
+    ]
+
+
+def test_approval_resolution_does_not_reopen_cancelled_linked_run() -> None:
+    store = ApprovalStoreStub()
+    approval = store.create_approval(
+        thread_id=store.thread_id,
+        tool_id=uuid4(),
+        task_step_id=None,
+        status="pending",
+        request={"thread_id": str(store.thread_id), "tool_id": "tool-cancelled-run"},
+        tool={"id": "tool-cancelled-run", "tool_key": "shell.exec"},
+        routing={
+            "decision": "approval_required",
+            "reasons": [],
+            "trace": {"trace_id": "trace-cancelled-run", "trace_event_count": 3},
+        },
+        routing_trace_id=uuid4(),
+    )
+    created_task = store.create_task(
+        thread_id=store.thread_id,
+        tool_id=approval["tool_id"],
+        status="pending_approval",
+        request=approval["request"],
+        tool=approval["tool"],
+        latest_approval_id=approval["id"],
+        latest_execution_id=None,
+    )
+    created_step = store.create_task_step(
+        task_id=created_task["id"],
+        sequence_no=1,
+        kind="governed_request",
+        status="created",
+        request=approval["request"],
+        outcome={
+            "routing_decision": "approval_required",
+            "approval_id": str(approval["id"]),
+            "approval_status": "pending",
+            "execution_id": None,
+            "execution_status": None,
+            "blocked_reason": None,
+        },
+        trace_id=uuid4(),
+        trace_kind="approval.request",
+    )
+    approval["task_step_id"] = created_step["id"]
+    run = store.create_task_run(
+        task_id=created_task["id"],
+        status="cancelled",
+        checkpoint={
+            "cursor": 0,
+            "target_steps": 1,
+            "wait_for_signal": False,
+        },
+        tick_count=1,
+        step_count=0,
+        max_ticks=3,
+        stop_reason="cancelled",
+    )
+    approval["task_run_id"] = run["id"]
+
+    payload = approve_approval_record(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ApprovalApproveInput(approval_id=approval["id"]),
+    )
+
+    assert payload["approval"]["status"] == "approved"
+    assert payload["trace"]["trace_event_count"] == 7
+    assert store.task_runs[0]["status"] == "cancelled"
+    assert store.task_runs[0]["stop_reason"] == "cancelled"
+    assert store.task_runs[0]["checkpoint"] == {
+        "cursor": 0,
+        "target_steps": 1,
+        "wait_for_signal": False,
+    }
+    assert "approval.resolution.run" not in [event["kind"] for event in store.trace_events]
 
 
 def test_approval_resolution_locks_task_steps_before_task_and_step_mutation() -> None:

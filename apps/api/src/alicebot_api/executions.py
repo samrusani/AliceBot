@@ -21,6 +21,7 @@ def serialize_tool_execution_row(row: ToolExecutionRow) -> ToolExecutionRecord:
     return {
         "id": str(row["id"]),
         "approval_id": str(row["approval_id"]),
+        "task_run_id": None if row.get("task_run_id") is None else str(cast(UUID, row["task_run_id"])),
         "task_step_id": str(row["task_step_id"]),
         "thread_id": str(row["thread_id"]),
         "tool_id": str(row["tool_id"]),
@@ -29,6 +30,7 @@ def serialize_tool_execution_row(row: ToolExecutionRow) -> ToolExecutionRecord:
         "result_event_id": None if row["result_event_id"] is None else str(row["result_event_id"]),
         "status": cast(str, row["status"]),
         "handler_key": row["handler_key"],
+        "idempotency_key": cast(str | None, row.get("idempotency_key")),
         "request": cast(dict[str, object], row["request"]),
         "tool": cast(dict[str, object], row["tool"]),
         "result": cast(dict[str, object], row["result"]),
