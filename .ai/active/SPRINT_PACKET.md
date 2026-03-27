@@ -2,163 +2,205 @@
 
 ## Sprint Title
 
-Phase 3 Sprint 10: Closeout Truth Sync + Phase Gate Canonicalization
+Phase 4 Sprint 11: Durable Run Backbone (Task Runs + Worker Tick Skeleton)
 
 ## Sprint Type
 
-control-plane
+feature
 
 ## Sprint Reason
 
-Sprint 9 closed the last known runtime invariance gap for profile-isolated execution budgets. The next non-redundant blocker to MVP/Phase 3 completion is control-plane drift: canonical docs and control-doc checks still anchor to a Phase 2 Sprint 14 baseline.
+Phase 4 starts from an accepted Phase 3 Sprint 9 baseline. The major missing capability is durable execution: workers are scaffold-only and there is no persisted run model that can safely advance tasks across interruptions.
 
 ## Sprint Intent
 
-Re-anchor canonical truth, validation entrypoints, and closeout runbooks to the accepted Phase 3 Sprint 9 baseline without changing product runtime behavior.
+Introduce a workflow-style durable run backbone (`task_runs`), deterministic one-step worker ticking, and basic run review visibility, without introducing real external side effects yet.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase3-sprint10-closeout-truth-sync`
+- Branch Name: `codex/phase4-sprint-11-execution-backbone`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It closes the remaining planning/validation drift risk before phase completion.
-- It enables deterministic “are we done?” checks using phase-correct runbooks and truth guards.
-- It avoids redundant runtime work by focusing only on docs/gates canonicalization.
+- It is the first execution sprint in Phase 4 and the prerequisite for Sprint 12/13 tool and observability work.
+- It establishes one execution brain (workflow-style task runs) aligned with existing task/task-step abstractions.
+- It creates restart-safe progression foundations while keeping side effects bounded.
 
 ## Redundancy Guard
 
-- Already shipped in Sprint 1: thread-level profile identity + metadata propagation.
-- Already shipped in Sprint 2: web profile selection/visibility.
-- Already shipped in Sprint 3: profile-aware response prompting.
-- Already shipped in Sprint 4: durable profile registry + thread FK.
-- Already shipped in Sprint 5: profile-scoped memory/context isolation.
-- Already shipped in Sprint 6: profile-scoped policy evaluation/routing.
-- Already shipped in Sprint 7: profile-scoped model/provider routing for `/v0/responses`.
-- Already shipped in Sprint 8: profile-scoped execution-budget matching + counted execution isolation.
-- Already shipped in Sprint 9: fail-closed context invariance hardening for budget decisioning.
-- Missing and required now: Phase 3 canonical truth + gate/runbook alignment for deterministic closeout.
+- Already shipped through Phase 3 Sprint 9: continuity, memory/open-loop seams, approvals/budgets, traces, bounded connector ingestion, and profile-isolated routing/runtime controls.
+- Missing and required now: durable run records + deterministic worker tick loop behind tasks.
+- Explicitly not in this sprint: real external side effects, connector write breadth, broad retry strategy, or multiple orchestration models.
 
 ## Design Truth
 
-- Canonical docs must state the accepted repo baseline through Phase 3 Sprint 9, not Phase 2 Sprint 14.
-- Control-doc truth checks must enforce Phase 3 markers and reject stale Phase 2 baseline claims where now obsolete.
-- Phase gate entrypoints should include Phase 3 names, preserving compatibility aliases to existing gate semantics.
-- This sprint is documentation and control-plane only; runtime API/web behavior must remain unchanged.
+- Phase 4 execution model is workflow-style durable execution, not graph-runtime-first.
+- `task_runs` are the execution object linked to a `task_id`; task steps remain lineage/evidence records.
+- Worker ticking is deterministic and bounded to one safe step per tick in Sprint 11.
+- Run progression must persist checkpoint state, counters, and explicit stop reason.
+- Side effects remain approval-bounded and narrow; Sprint 11 does not introduce real non-echo external actions.
 
 ## Exact Surfaces In Scope
 
-- canonical truth docs baseline alignment (architecture/roadmap/readme/handoff)
-- control-doc truth guardrail update + unit tests
-- Phase 3 gate entrypoint scripts (compatibility wrappers allowed)
-- Phase 3 closeout runbook packet and evidence requirements
+- `task_runs` schema + store methods
+- task-run lifecycle contracts and bounded API endpoints
+- worker run acquisition + single-step tick skeleton
+- run checkpoint/counter/stop-reason persistence
+- basic task-run review visibility in shell
 
 ## Exact Files In Scope
 
-- [ARCHITECTURE.md](ARCHITECTURE.md)
-- [ROADMAP.md](ROADMAP.md)
-- [README.md](README.md)
-- [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURRENT_STATE.md)
-- [scripts/check_control_doc_truth.py](scripts/check_control_doc_truth.py)
-- [tests/unit/test_control_doc_truth.py](tests/unit/test_control_doc_truth.py)
-- [scripts/run_phase3_acceptance.py](scripts/run_phase3_acceptance.py)
-- [scripts/run_phase3_readiness_gates.py](scripts/run_phase3_readiness_gates.py)
-- [scripts/run_phase3_validation_matrix.py](scripts/run_phase3_validation_matrix.py)
-- [docs/runbooks/phase3-closeout-packet.md](docs/runbooks/phase3-closeout-packet.md)
+- [20260327_0038_task_runs.py](apps/api/alembic/versions/20260327_0038_task_runs.py)
+- [store.py](apps/api/src/alicebot_api/store.py)
+- [contracts.py](apps/api/src/alicebot_api/contracts.py)
+- [main.py](apps/api/src/alicebot_api/main.py)
+- [tasks.py](apps/api/src/alicebot_api/tasks.py)
+- [task_runs.py](apps/api/src/alicebot_api/task_runs.py)
+- [main.py](workers/alicebot_worker/main.py)
+- [task_runs.py](workers/alicebot_worker/task_runs.py)
+- [api.ts](apps/web/lib/api.ts)
+- [api.test.ts](apps/web/lib/api.test.ts)
+- [page.tsx](apps/web/app/tasks/page.tsx)
+- [page.test.tsx](apps/web/app/tasks/page.test.tsx)
+- [task-run-list.tsx](apps/web/components/task-run-list.tsx)
+- [task-run-list.test.tsx](apps/web/components/task-run-list.test.tsx)
+- [test_20260327_0038_task_runs.py](tests/unit/test_20260327_0038_task_runs.py)
+- [test_task_run_store.py](tests/unit/test_task_run_store.py)
+- [test_task_runs.py](tests/unit/test_task_runs.py)
+- [test_task_runs_main.py](tests/unit/test_task_runs_main.py)
+- [test_worker_main.py](tests/unit/test_worker_main.py)
+- [test_task_runs_api.py](tests/integration/test_task_runs_api.py)
 - [BUILD_REPORT.md](BUILD_REPORT.md)
 - [REVIEW_REPORT.md](REVIEW_REPORT.md)
 - [.ai/active/SPRINT_PACKET.md](.ai/active/SPRINT_PACKET.md)
 
 ## In Scope
 
-- Update canonical docs to reflect accepted baseline through Phase 3 Sprint 9.
-- Update control-doc truth markers/rules and keep stale-marker rejection accurate.
-- Add Phase 3 gate entrypoint scripts as compatibility wrappers to current deterministic gate runners.
-- Add Phase 3 closeout runbook with required commands, PASS evidence bundle, and deferred-scope statement.
-- Keep root `BUILD_REPORT.md`/`REVIEW_REPORT.md` conventions explicit.
-- Validate docs and gate tooling through targeted unit and gate commands.
+- Add `task_runs` persistence model with deterministic statuses, counters, checkpoint, and stop reason.
+- Preserve RLS and explicit linkage to existing task/task-step seams.
+- Add run lifecycle API seams:
+  - create
+  - get
+  - list by task
+  - tick
+  - pause
+  - resume
+  - cancel
+- Enforce deterministic lifecycle transitions and fail-clean invalid transitions.
+- Add worker skeleton behavior:
+  - safe run acquisition
+  - one-step tick
+  - persisted checkpoint/counter updates
+  - safe stop on budget exhaustion or wait states
+- Add basic run review UI visibility in `/tasks` with live/fixture/unavailable behavior.
+- Provide migration + unit + integration + UI test evidence for the above.
 
 ## Out of Scope
 
-- runtime API logic changes
-- web UI behavior changes
-- schema/migration changes
-- provider/connector/auth capability expansion
-- orchestration/worker runtime changes
+- real non-echo external side effects
+- Gmail/Calendar write actions
+- broad retry policy framework
+- Sprint 12 tool-execution expansion work
+- Sprint 13 observability/ship-gate expansion work
+- multi-brain orchestration model experimentation
+- connector/auth/platform/channel expansion
 - profile CRUD expansion
 
 ## Required Deliverables
 
-- canonical docs aligned to Phase 3 Sprint 9 baseline
-- control-doc truth guard and unit tests updated and passing
-- Phase 3 gate entrypoint scripts present and executable
-- Phase 3 closeout runbook present with deterministic go/no-go checklist
+- task-runs migration + store wiring
+- task-run contracts/endpoints with deterministic transitions
+- worker single-step tick skeleton with persisted checkpoint/counters
+- task-run review visibility in shell
+- test evidence for migration/store/API/worker/UI seams
 - sprint build/review reports scoped to this sprint only
 
 ## Acceptance Criteria
 
-- `python3 scripts/check_control_doc_truth.py` passes with Phase 3 markers.
-- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q` passes.
-- `python3 scripts/run_phase3_validation_matrix.py` passes.
-- `python3 scripts/run_phase2_validation_matrix.py` remains PASS (compatibility guarantee).
-- Canonical docs do not claim a baseline earlier than accepted Phase 3 Sprint 9.
-- No runtime API/web/schema capability expansion enters this sprint.
-- No provider/connector/orchestration scope expansion enters this sprint.
+- `task_runs` records can be created/read/updated with deterministic status transitions.
+- Worker can acquire and tick one run safely, persisting checkpoint and counters.
+- Budget exhaustion moves run into a safe non-running state with explicit stop reason.
+- Restart-safe continuation from persisted checkpoint state is possible.
+- Run state is visible via API and basic `/tasks` review.
+- No real external side effects beyond existing `proxy.echo` are introduced.
+- `./.venv/bin/python -m pytest tests/unit/test_20260327_0038_task_runs.py tests/unit/test_task_run_store.py tests/unit/test_task_runs.py tests/unit/test_task_runs_main.py tests/unit/test_worker_main.py -q` passes.
+- `./.venv/bin/python -m pytest tests/integration/test_task_runs_api.py -q` passes.
+- `pnpm --dir apps/web test -- --runInBand app/tasks/page.test.tsx components/task-run-list.test.tsx lib/api.test.ts` passes.
+- `python3 scripts/run_phase3_validation_matrix.py` remains PASS.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
-- keep script behavior deterministic and machine-independent
-- use repo-relative paths and machine-independent command examples in docs
-- preserve existing runtime product behavior (docs/control-plane only)
+- keep one execution brain (workflow-style task runs)
+- preserve append-only evidence surfaces and explicit lineage
+- preserve RLS guarantees on new run tables
+- keep side-effect surfaces bounded to existing behavior in Sprint 11
 
 ## Control Tower Task Cards
 
-### Task 1: Canonical Truth Sync
+### Task 1: `task_runs` Schema + Store
 Owner: tooling operative  
 Write scope:
-- `ARCHITECTURE.md`
-- `ROADMAP.md`
-- `README.md`
-- `.ai/handoff/CURRENT_STATE.md`
+- `apps/api/alembic/versions/20260327_0038_task_runs.py`
+- `apps/api/src/alicebot_api/store.py`
+- `tests/unit/test_20260327_0038_task_runs.py`
+- `tests/unit/test_task_run_store.py`
 
-### Task 2: Control Guard + Gate Entry Points
+### Task 2: Contracts + API Lifecycle
 Owner: tooling operative  
 Write scope:
-- `scripts/check_control_doc_truth.py`
-- `tests/unit/test_control_doc_truth.py`
-- `scripts/run_phase3_acceptance.py`
-- `scripts/run_phase3_readiness_gates.py`
-- `scripts/run_phase3_validation_matrix.py`
-- `docs/runbooks/phase3-closeout-packet.md`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/tasks.py`
+- `apps/api/src/alicebot_api/task_runs.py`
+- `tests/unit/test_task_runs.py`
+- `tests/unit/test_task_runs_main.py`
+- `tests/integration/test_task_runs_api.py`
 
-### Task 3: Integration Review
+### Task 3: Worker Tick Skeleton
+Owner: tooling operative  
+Write scope:
+- `workers/alicebot_worker/main.py`
+- `workers/alicebot_worker/task_runs.py`
+- `tests/unit/test_worker_main.py`
+
+### Task 4: Run Review UI
+Owner: tooling operative  
+Write scope:
+- `apps/web/lib/api.ts`
+- `apps/web/lib/api.test.ts`
+- `apps/web/app/tasks/page.tsx`
+- `apps/web/app/tasks/page.test.tsx`
+- `apps/web/components/task-run-list.tsx`
+- `apps/web/components/task-run-list.test.tsx`
+
+### Task 5: Integration Review
 Owner: control tower  
 Responsibilities:
-- verify sprint stays docs/control-plane scoped
-- verify phase baseline markers and closeout runbook are internally consistent
-- verify no runtime/schema expansion
+- verify sprint stays Sprint 11 execution-backbone scoped
+- verify no real external side effects were introduced
+- verify one execution brain model remains intact
 - verify validation matrix remains green
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact canonical-doc and control-guard deltas
+- exact schema/store/API/worker/UI deltas for task runs
 - exact verification command outcomes
-- explicit deferred scope (runtime/schema/providers/connectors/orchestration/profile CRUD)
+- explicit deferred scope (real external tools, connector writes, broad retries, Sprint 12/13 expansion)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint stayed bounded to closeout truth-sync scope
-- canonical docs and truth checks align on Phase 3 baseline markers
-- phase3 gate wrappers and closeout runbook are deterministic and coherent
-- runtime behavior remained unchanged
+- sprint stayed bounded to Sprint 11 execution backbone
+- task-run lifecycle transitions and worker tick behavior are deterministic
+- checkpoint/counter/stop-reason persistence is correct
+- UI run visibility works without breaking existing task review surfaces
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when canonical docs, control-doc truth checks, and gate entrypoints consistently represent the accepted Phase 3 Sprint 9 baseline, with all required verification commands passing and no runtime-scope expansion.
+This sprint is complete when workflow-style `task_runs` are durable, tickable, checkpointed, budget-aware, and reviewable in API/shell, with all required tests/gates passing and no real external side effects introduced.

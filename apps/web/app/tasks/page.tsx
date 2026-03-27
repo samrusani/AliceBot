@@ -1,17 +1,21 @@
 import { PageHeader } from "../../components/page-header";
 import { TaskList } from "../../components/task-list";
+import { TaskRunList } from "../../components/task-run-list";
 import { TaskStepList } from "../../components/task-step-list";
 import { TaskSummary } from "../../components/task-summary";
 import {
   combinePageModes,
   getApiConfig,
   getTaskDetail,
+  listTaskRuns,
   getTaskSteps,
   getToolExecution,
   hasLiveApiConfig,
   listTasks,
   pageModeLabel,
   type ApiSource,
+  type TaskItem,
+  type TaskRunItem,
 } from "../../lib/api";
 import {
   getFixtureExecution,
@@ -22,6 +26,90 @@ import {
 } from "../../lib/fixtures";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+
+function buildFixtureTaskRuns(task: TaskItem): TaskRunItem[] {
+  if (task.status === "executed") {
+    return [
+      {
+        id: `fixture-run-${task.id}`,
+        task_id: task.id,
+        status: "completed",
+        checkpoint: {
+          cursor: 2,
+          target_steps: 2,
+          wait_for_signal: false,
+        },
+        tick_count: 2,
+        step_count: 2,
+        max_ticks: 3,
+        stop_reason: "completed",
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+      },
+    ];
+  }
+
+  if (task.status === "denied") {
+    return [
+      {
+        id: `fixture-run-${task.id}`,
+        task_id: task.id,
+        status: "cancelled",
+        checkpoint: {
+          cursor: 0,
+          target_steps: 1,
+          wait_for_signal: false,
+        },
+        tick_count: 0,
+        step_count: 0,
+        max_ticks: 1,
+        stop_reason: "cancelled",
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+      },
+    ];
+  }
+
+  if (task.status === "blocked") {
+    return [
+      {
+        id: `fixture-run-${task.id}`,
+        task_id: task.id,
+        status: "paused",
+        checkpoint: {
+          cursor: 1,
+          target_steps: 2,
+          wait_for_signal: false,
+        },
+        tick_count: 1,
+        step_count: 1,
+        max_ticks: 1,
+        stop_reason: "budget_exhausted",
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+      },
+    ];
+  }
+
+  return [
+    {
+      id: `fixture-run-${task.id}`,
+      task_id: task.id,
+      status: "queued",
+      checkpoint: {
+        cursor: 0,
+        target_steps: 2,
+        wait_for_signal: false,
+      },
+      tick_count: 0,
+      step_count: 0,
+      max_ticks: 2,
+      stop_reason: null,
+      created_at: task.created_at,
+      updated_at: task.updated_at,
+    },
+  ];
+}
 
 export default async function TasksPage({
   searchParams,
@@ -103,11 +191,28 @@ export default async function TasksPage({
     }
   }
 
+  let taskRuns = selectedTask ? buildFixtureTaskRuns(selectedTask) : [];
+  let taskRunSource: ApiSource | "unavailable" = selectedTask ? "fixture" : "unavailable";
+  let taskRunUnavailableMessage: string | null = null;
+
+  if (selectedTask && liveModeReady && taskSource === "live") {
+    try {
+      const payload = await listTaskRuns(apiConfig.apiBaseUrl, selectedTask.id, apiConfig.userId);
+      taskRuns = payload.items;
+      taskRunSource = "live";
+    } catch {
+      taskRuns = [];
+      taskRunSource = "unavailable";
+      taskRunUnavailableMessage = "The task-run records could not be read from the configured backend.";
+    }
+  }
+
   const pageMode = combinePageModes(
     listSource,
     selectedTask ? taskSource : null,
     selectedTask ? stepSource : null,
     execution ? executionSource : null,
+    taskRunSource === "unavailable" ? null : taskRunSource,
   );
 
   return (
@@ -135,6 +240,12 @@ export default async function TasksPage({
             execution={execution}
             executionSource={executionSource}
             executionUnavailableMessage={executionUnavailableMessage}
+          />
+          <TaskRunList
+            task={selectedTask}
+            runs={taskRuns}
+            source={taskRunSource}
+            unavailableMessage={taskRunUnavailableMessage}
           />
           <TaskStepList steps={steps} summary={stepSummary} source={stepSource} />
         </div>
