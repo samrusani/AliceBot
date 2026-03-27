@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 4 Sprint 12: Real Tool Execution + Approval-Resume Loop
+Phase 4 Sprint 13: Run Observability, Failure Discipline, and Ship Gates
 
 ## Sprint Type
 
@@ -10,224 +10,289 @@ feature
 
 ## Sprint Reason
 
-Sprint 11 established durable `task_runs`, deterministic run lifecycle APIs, and worker single-step ticking. The next non-redundant gap is practical execution value: moving beyond `proxy.echo` with idempotent run-aware tool execution and safe approval-resume progression.
+Sprint 12 delivered run-aware tool execution, idempotency, and approval-resume linkage. The next non-redundant gap is release confidence: explicit run transition evidence, bounded retry/failure behavior, and deterministic Phase 4 gate commands.
 
 ## Sprint Intent
 
-Introduce one narrow real-tool path beyond `proxy.echo` and integrate approval-required pauses/resumes with task runs, while enforcing idempotency and explicit lineage.
+Make durable execution auditable and ship-ready by exposing complete run lifecycle evidence, enforcing explicit retry/failure semantics, and codifying Phase 4 go/no-go scripts and runbooks.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase4-sprint-12-real-tools-approval-resume`
+- Branch Name: `codex/phase4-sprint-13-run-observability-ship-gates`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It is the first sprint where Phase 4 execution becomes product-useful, not just infrastructural.
-- It validates controlled durable execution against real tool semantics and approval boundaries.
-- It keeps rollout narrow so safety, idempotency, and auditability can be verified before broader expansion.
+- It closes the last release-readiness gap between "execution works" and "execution is measurable and explainable."
+- It creates deterministic ship-gate evidence instead of ad-hoc manual checks.
+- It keeps scope narrow and avoids repeating Sprint 12 implementation seams.
 
 ## Redundancy Guard
 
-- Already shipped through Sprint 11: durable run records, deterministic run transitions, worker one-step tick, and run review visibility.
-- Missing and required now: idempotent real tool execution and approval-resume wiring linked to task runs.
-- Explicitly not in this sprint: broad connector write expansion, major retry framework, or Sprint 13 observability/ship-gate breadth.
+- Already shipped in Sprint 12:
+  - run-aware execution linkage
+  - idempotent tool execution replay safety
+  - approval pause/resume lifecycle linkage
+- Required now (Sprint 13):
+  - run transition and stop-reason observability
+  - bounded retries and explicit failure categorization
+  - deterministic Phase 4 acceptance/readiness/validation gates
+- Explicitly out of Sprint 13:
+  - new connector breadth
+  - auth model expansion
+  - multi-orchestrator runtime experiments
 
 ## Design Truth
 
-- Phase 4 execution model is workflow-style durable execution, not graph-runtime-first.
-- `task_runs` remain the execution object; approvals, task steps, and tool executions must explicitly link back to the run.
-- Side-effect-capable tool paths require deterministic idempotency keys and duplicate-side-effect prevention.
-- Approval-required run steps must transition to `waiting_approval`, then resume deterministically after approval resolution.
-- Tool request/result evidence and run-state transitions must remain append-only and audit-ready.
-- Tool rollout stays narrow: one low-risk internal path and one draft-first external path.
+- Phase 4 execution remains workflow-style durable runs, not graph-runtime-first.
+- Runs must emit ordered transitions with explicit stop reasons:
+  - `queued`
+  - `running`
+  - `waiting_approval`
+  - `waiting_user`
+  - `paused`
+  - `failed`
+  - `done`
+  - `cancelled`
+- Retry behavior must be capped, persisted, and reviewable.
+- Failure classes must be explicit and stable:
+  - `transient`
+  - `policy`
+  - `approval`
+  - `budget`
+  - `fatal`
 
 ## Exact Surfaces In Scope
 
-- run-aware tool execution semantics with idempotency
-- approval-required run pause + approval-resolution resume integration
-- explicit linkage between run, task step, approval, and tool execution
-- narrow real-tool path beyond `proxy.echo`
-- shell review updates for approval-wait and resumed-run execution history
+- run transition and stop-reason traceability
+- retry caps and retry posture persistence
+- failure class persistence and API exposure
+- run diagnostics visibility in API and web shell
+- deterministic Phase 4 gate runner scripts and runbooks
+- canonical control-doc synchronization to current sprint truth
 
 ## Exact Files In Scope
 
-- [20260327_0039_task_run_execution_linkage.py](apps/api/alembic/versions/20260327_0039_task_run_execution_linkage.py)
-- [store.py](apps/api/src/alicebot_api/store.py)
-- [contracts.py](apps/api/src/alicebot_api/contracts.py)
-- [main.py](apps/api/src/alicebot_api/main.py)
-- [approvals.py](apps/api/src/alicebot_api/approvals.py)
-- [tools.py](apps/api/src/alicebot_api/tools.py)
-- [executions.py](apps/api/src/alicebot_api/executions.py)
-- [proxy_execution.py](apps/api/src/alicebot_api/proxy_execution.py)
-- [tasks.py](apps/api/src/alicebot_api/tasks.py)
-- [task_runs.py](apps/api/src/alicebot_api/task_runs.py)
-- [main.py](workers/alicebot_worker/main.py)
-- [task_runs.py](workers/alicebot_worker/task_runs.py)
-- [tool_execution.py](workers/alicebot_worker/tool_execution.py)
-- [api.ts](apps/web/lib/api.ts)
-- [api.test.ts](apps/web/lib/api.test.ts)
-- [page.tsx](apps/web/app/tasks/page.tsx)
-- [page.tsx](apps/web/app/approvals/page.tsx)
-- [page.test.tsx](apps/web/app/tasks/page.test.tsx)
-- [task-run-list.tsx](apps/web/components/task-run-list.tsx)
-- [task-run-list.test.tsx](apps/web/components/task-run-list.test.tsx)
-- [approval-actions.tsx](apps/web/components/approval-actions.tsx)
-- [approval-actions.test.tsx](apps/web/components/approval-actions.test.tsx)
-- [approval-detail.tsx](apps/web/components/approval-detail.tsx)
-- [approval-detail.test.tsx](apps/web/components/approval-detail.test.tsx)
-- [execution-summary.tsx](apps/web/components/execution-summary.tsx)
-- [execution-summary.test.tsx](apps/web/components/execution-summary.test.tsx)
-- [test_20260327_0039_task_run_execution_linkage.py](tests/unit/test_20260327_0039_task_run_execution_linkage.py)
-- [test_proxy_execution.py](tests/unit/test_proxy_execution.py)
-- [test_proxy_execution_main.py](tests/unit/test_proxy_execution_main.py)
-- [test_executions.py](tests/unit/test_executions.py)
-- [test_executions_main.py](tests/unit/test_executions_main.py)
-- [test_approvals.py](tests/unit/test_approvals.py)
-- [test_approvals_main.py](tests/unit/test_approvals_main.py)
-- [test_proxy_execution_api.py](tests/integration/test_proxy_execution_api.py)
-- [test_approval_api.py](tests/integration/test_approval_api.py)
-- [test_task_runs_api.py](tests/integration/test_task_runs_api.py)
-- [BUILD_REPORT.md](BUILD_REPORT.md)
-- [REVIEW_REPORT.md](REVIEW_REPORT.md)
-- [.ai/active/SPRINT_PACKET.md](.ai/active/SPRINT_PACKET.md)
-
-## In Scope
-
-- Add run-aware execution linkage persistence (run <-> task step <-> approval <-> tool execution).
-- Add idempotency-key semantics for side-effect-capable tool execution paths.
-- Enforce retry safety so repeated attempts do not duplicate side effects.
-- Integrate approval pauses/resumes:
-  - transition run to `waiting_approval` when required
-  - resume deterministically after approval resolution
-- Implement one narrow real-tool path beyond `proxy.echo`:
-  - one low-risk internal tool path
-  - one draft-first external path
-- Keep immutable request/result evidence and traceability for each execution step.
-- Surface pending-approval run state and resumed execution history in shell review.
-- Provide unit/integration/UI test evidence for idempotency, pause/resume, and run linkage.
-
-## Out of Scope
-
-- broad connector write expansion
-- multiple external write-capable tools
-- standing autonomy across high-risk actions
-- major retry-policy framework expansion (Sprint 13 scope)
-- run-observability/ship-gate breadth (Sprint 13 scope)
-- multi-brain orchestration model experimentation
-- connector/auth/platform/channel expansion
-- profile CRUD expansion
-
-## Required Deliverables
-
-- execution-linkage migration and store wiring for run-aware tool execution
-- idempotent real-tool execution contracts and runtime enforcement
-- deterministic approval pause/resume integration for runs
-- narrow real-tool path beyond `proxy.echo` with traceable request/result evidence
-- shell review visibility for waiting/resumed run execution
-- test evidence for idempotency, linkage, and approval-resume behavior
-- sprint build/review reports scoped to this sprint only
-
-## Acceptance Criteria
-
-- Tool calls beyond `proxy.echo` execute through governed run-aware runtime.
-- Duplicate side effects are prevented on retry for side-effect-capable paths.
-- Approval-required run steps transition to `waiting_approval` and resume safely after approval.
-- Run/task-step/approval/execution linkage is explicit and reviewable.
-- Tool request/result evidence remains immutable and traceable.
-- `./.venv/bin/python -m pytest tests/unit/test_20260327_0039_task_run_execution_linkage.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py tests/unit/test_executions.py tests/unit/test_executions_main.py tests/unit/test_approvals.py tests/unit/test_approvals_main.py -q` passes.
-- `./.venv/bin/python -m pytest tests/integration/test_proxy_execution_api.py tests/integration/test_approval_api.py tests/integration/test_task_runs_api.py -q` passes.
-- `pnpm --dir apps/web test -- --runInBand components/approval-actions.test.tsx components/approval-detail.test.tsx components/execution-summary.test.tsx components/task-run-list.test.tsx lib/api.test.ts` passes.
-- `python3 scripts/run_phase3_validation_matrix.py` remains PASS.
-
-## Implementation Constraints
-
-- do not introduce new dependencies
-- keep one execution brain (workflow-style task runs)
-- preserve append-only evidence surfaces and explicit lineage
-- preserve RLS guarantees on touched run/execution linkage seams
-- require explicit idempotency discipline for side-effect-capable tool paths
-- keep tool rollout narrow and approval-bounded
-
-## Control Tower Task Cards
-
-### Task 1: Run-Execution Linkage Schema + Store
-Owner: tooling operative  
-Write scope:
-- `apps/api/alembic/versions/20260327_0039_task_run_execution_linkage.py`
+- `apps/api/alembic/versions/20260327_0040_task_run_retry_failure_controls.py`
 - `apps/api/src/alicebot_api/store.py`
-- `tests/unit/test_20260327_0039_task_run_execution_linkage.py`
-
-### Task 2: Idempotent Tool Execution Semantics
-Owner: tooling operative  
-Write scope:
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/tools.py`
-- `apps/api/src/alicebot_api/proxy_execution.py`
-- `apps/api/src/alicebot_api/executions.py`
-- `tests/unit/test_proxy_execution.py`
-- `tests/unit/test_proxy_execution_main.py`
-- `tests/unit/test_executions.py`
-- `tests/unit/test_executions_main.py`
-- `tests/integration/test_proxy_execution_api.py`
-
-### Task 3: Approval Pause/Resume Run Integration
-Owner: tooling operative  
-Write scope:
-- `apps/api/src/alicebot_api/approvals.py`
 - `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/task_runs.py`
+- `apps/api/src/alicebot_api/approvals.py`
+- `apps/api/src/alicebot_api/executions.py`
+- `apps/api/src/alicebot_api/proxy_execution.py`
 - `apps/api/src/alicebot_api/tasks.py`
-- `tests/unit/test_approvals.py`
-- `tests/unit/test_approvals_main.py`
-- `tests/integration/test_approval_api.py`
-- `tests/integration/test_task_runs_api.py`
-
-### Task 4: Narrow Real-Tool Path + Review UI
-Owner: tooling operative  
-Write scope:
+- `apps/api/src/alicebot_api/task_runs.py`
+- `apps/api/src/alicebot_api/traces.py`
 - `workers/alicebot_worker/main.py`
 - `workers/alicebot_worker/task_runs.py`
 - `workers/alicebot_worker/tool_execution.py`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
 - `apps/web/app/tasks/page.tsx`
-- `apps/web/app/approvals/page.tsx`
+- `apps/web/app/tasks/page.test.tsx`
+- `apps/web/app/traces/page.tsx`
+- `apps/web/app/traces/page.test.tsx`
 - `apps/web/components/task-run-list.tsx`
 - `apps/web/components/task-run-list.test.tsx`
-- `apps/web/components/approval-actions.tsx`
-- `apps/web/components/approval-actions.test.tsx`
-- `apps/web/components/approval-detail.tsx`
-- `apps/web/components/approval-detail.test.tsx`
 - `apps/web/components/execution-summary.tsx`
 - `apps/web/components/execution-summary.test.tsx`
+- `tests/unit/test_20260327_0040_task_run_retry_failure_controls.py`
+- `tests/unit/test_task_runs.py`
+- `tests/unit/test_task_runs_main.py`
+- `tests/unit/test_proxy_execution.py`
+- `tests/unit/test_proxy_execution_main.py`
+- `tests/unit/test_executions.py`
+- `tests/unit/test_executions_main.py`
+- `tests/unit/test_approvals.py`
+- `tests/unit/test_approvals_main.py`
+- `tests/unit/test_worker_main.py`
+- `tests/integration/test_proxy_execution_api.py`
+- `tests/integration/test_approval_api.py`
+- `tests/integration/test_task_runs_api.py`
+- `scripts/run_phase4_acceptance.py`
+- `scripts/run_phase4_readiness_gates.py`
+- `scripts/run_phase4_validation_matrix.py`
+- `docs/runbooks/phase4-acceptance-suite.md`
+- `docs/runbooks/phase4-readiness-gates.md`
+- `docs/runbooks/phase4-validation-matrix.md`
+- `docs/runbooks/phase4-closeout-packet.md`
+- `README.md`
+- `ROADMAP.md`
+- `.ai/handoff/CURRENT_STATE.md`
+- `BUILD_REPORT.md`
+- `REVIEW_REPORT.md`
+- `.ai/active/SPRINT_PACKET.md`
 
-### Task 5: Integration Review
-Owner: control tower  
+## In Scope
+
+- Add run transition evidence with explicit transition and stop-reason payloads.
+- Persist retry count, retry cap, and next-step posture on runs.
+- Persist and expose failure classes (`transient`, `policy`, `approval`, `budget`, `fatal`).
+- Ensure blocked/paused/waiting runs remain inspectable and never collapse into silent success.
+- Add diagnostics visibility in shell for stop reason and retry posture.
+- Add deterministic Phase 4 gate scenarios:
+  - `run_progression_with_pause`
+  - `restart_safe_resume`
+  - `budget_exhaustion_fail_closed`
+  - `draft_first_tool_execution`
+  - `approval_resume_execution`
+- Add Phase 4 gate entrypoint scripts and runbooks.
+- Refresh canonical truth docs (`README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`) to reflect post-Sprint-12 baseline and Sprint-13 plan.
+
+## Out of Scope
+
+- broad connector write expansion
+- major new tool-surface expansion beyond Sprint 12 narrow paths
+- new external channels/platform distribution
+- auth-model redesign
+- orchestration model experimentation
+- profile CRUD expansion
+
+## Required Deliverables
+
+- retry/failure migration and runtime wiring
+- run observability and diagnostics in API and web shell
+- bounded retry/failure semantics with explicit categories
+- Phase 4 acceptance/readiness/validation scripts and runbooks
+- deterministic scenario evidence for Phase 4 ship gates
+- refreshed canonical docs aligned to new baseline
+- sprint build/review reports scoped to Sprint 13 only
+
+## Acceptance Criteria
+
+- Run transition and stop-reason evidence is deterministic and visible for all non-happy-path and terminal run states.
+- Retry caps are enforced and persisted state is reviewable.
+- Failure classes are explicit and stable in API/trace/review surfaces.
+- Phase 4 scenario commands report deterministic PASS/FAIL outcomes.
+- `./.venv/bin/python -m pytest tests/unit/test_20260327_0040_task_run_retry_failure_controls.py tests/unit/test_task_runs.py tests/unit/test_task_runs_main.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py tests/unit/test_worker_main.py -q` passes.
+- `./.venv/bin/python -m pytest tests/integration/test_task_runs_api.py tests/integration/test_proxy_execution_api.py tests/integration/test_approval_api.py -q` passes.
+- `pnpm --dir apps/web test -- --runInBand app/tasks/page.test.tsx app/traces/page.test.tsx components/task-run-list.test.tsx components/execution-summary.test.tsx lib/api.test.ts` passes.
+- `python3 scripts/run_phase4_validation_matrix.py` passes.
+- `python3 scripts/run_phase3_validation_matrix.py` remains PASS.
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` explicitly reflect Phase 4 Sprint 12 delivered state plus Sprint 13 active gate focus.
+
+## Implementation Constraints
+
+- do not introduce new dependencies
+- keep one execution brain (workflow-style task runs)
+- preserve append-only evidence and explicit lineage
+- preserve RLS guarantees on touched run/execution/trace seams
+- keep failure/retry semantics deterministic and explicit
+- keep Sprint 12 narrow tool rollout unchanged
+
+## Control Tower Task Cards
+
+### Task 1: Retry/Failure Schema + Store
+
+Owner: tooling operative
+
+Write scope:
+
+- `apps/api/alembic/versions/20260327_0040_task_run_retry_failure_controls.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/task_runs.py`
+- `tests/unit/test_20260327_0040_task_run_retry_failure_controls.py`
+- `tests/unit/test_task_runs.py`
+
+### Task 2: Run Observability + Failure Classification
+
+Owner: tooling operative
+
+Write scope:
+
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/traces.py`
+- `apps/api/src/alicebot_api/proxy_execution.py`
+- `apps/api/src/alicebot_api/executions.py`
+- `tests/unit/test_executions.py`
+- `tests/unit/test_executions_main.py`
+- `tests/unit/test_proxy_execution.py`
+- `tests/unit/test_proxy_execution_main.py`
+- `tests/integration/test_proxy_execution_api.py`
+
+### Task 3: Worker Retry/Failure Discipline
+
+Owner: tooling operative
+
+Write scope:
+
+- `workers/alicebot_worker/main.py`
+- `workers/alicebot_worker/task_runs.py`
+- `workers/alicebot_worker/tool_execution.py`
+- `tests/unit/test_worker_main.py`
+
+### Task 4: Diagnostics UI + Gate Runners
+
+Owner: tooling operative
+
+Write scope:
+
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/approvals.py`
+- `tests/unit/test_approvals.py`
+- `tests/unit/test_approvals_main.py`
+- `tests/integration/test_approval_api.py`
+- `tests/integration/test_task_runs_api.py`
+- `apps/web/lib/api.ts`
+- `apps/web/lib/api.test.ts`
+- `apps/web/app/tasks/page.tsx`
+- `apps/web/app/tasks/page.test.tsx`
+- `apps/web/app/traces/page.tsx`
+- `apps/web/app/traces/page.test.tsx`
+- `apps/web/components/task-run-list.tsx`
+- `apps/web/components/task-run-list.test.tsx`
+- `apps/web/components/execution-summary.tsx`
+- `apps/web/components/execution-summary.test.tsx`
+- `scripts/run_phase4_acceptance.py`
+- `scripts/run_phase4_readiness_gates.py`
+- `scripts/run_phase4_validation_matrix.py`
+- `docs/runbooks/phase4-acceptance-suite.md`
+- `docs/runbooks/phase4-readiness-gates.md`
+- `docs/runbooks/phase4-validation-matrix.md`
+- `docs/runbooks/phase4-closeout-packet.md`
+
+### Task 5: Canonical Truth Sync + Integration Review
+
+Owner: control tower
+
+Write scope:
+
+- `README.md`
+- `ROADMAP.md`
+- `.ai/handoff/CURRENT_STATE.md`
+- `BUILD_REPORT.md`
+- `REVIEW_REPORT.md`
+
 Responsibilities:
-- verify sprint stays Sprint 12 real-tool/approval-resume scoped
-- verify side-effect paths are idempotent and approval-bounded
-- verify one execution brain model remains intact
-- verify validation matrix remains green
+
+- verify sprint stays Sprint 13 observability/failure/ship-gate scoped
+- verify no duplicate implementation of Sprint 12 seams
+- verify retry/failure behavior is deterministic and bounded
+- verify Phase 4 gate scenarios are executable and coherent
+- verify one-execution-brain model remains intact
+- verify documentation truth is synchronized with delivered baseline
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
-- exact idempotency/linkage/approval-resume/UI deltas
+
+- exact observability/retry/failure/gate-chain deltas
 - exact verification command outcomes
-- explicit deferred scope (broad connector writes, broad retries, Sprint 13 observability breadth)
+- explicit deferred scope (connector/auth/platform expansion)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
-- sprint stayed bounded to Sprint 12 scope
-- idempotency and duplicate-side-effect prevention are correct
-- approval pause/resume linkage to runs and executions is deterministic
-- UI shows pending/resumed execution state without regressions
+
+- sprint stayed bounded to Sprint 13 scope
+- run transitions, stop reasons, retry posture, and failure classes are deterministic and reviewable
+- Phase 4 gate scenarios and validation chain are measurable and coherent
+- shell diagnostics expose stop reason and retry posture without regressions
+- canonical docs align with delivered repo reality
 - no hidden scope expansion
 
 ## Exit Condition
 
-This sprint is complete when one narrow real-tool path beyond `proxy.echo` executes with idempotent, approval-bounded, run-linked behavior, and all required tests/gates pass without broad scope expansion.
+This sprint is complete when durable runs expose complete transition/stop/failure evidence, retries are bounded and explicit, Phase 4 gate commands pass deterministically, and canonical docs reflect the delivered baseline without drift.

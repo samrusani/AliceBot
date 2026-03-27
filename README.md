@@ -1,6 +1,6 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The current repo contains the accepted slice through Phase 3 Sprint 9: a FastAPI backend plus a bounded Next.js operator shell with deterministic readiness and validation matrix gating.
+AliceBot is a private, permissioned personal AI operating system. The canonical baseline remains through Phase 3 Sprint 9, with Phase 4 Sprint 12 already delivered (run linkage, idempotent execution replay safety, approval pause/resume linkage) and Phase 4 Sprint 13 focused on run observability, retry/failure discipline, and deterministic release-gate runners.
 
 ## Current Implemented Slice
 
@@ -9,7 +9,7 @@ AliceBot is a private, permissioned personal AI operating system. The current re
 - `/chat` supports both assistant and governed-request modes, selected-thread continuity, compact thread creation, deterministic resumption brief review, thread-linked governed workflow review, ordered task-step timeline review, bounded explain-why trace embedding, manual explicit-signal capture controls for selected `message.user` events, and bounded supporting continuity review.
 - `/gmail` and `/calendar` are shipped bounded connector workspaces for account review, selected-account detail, explicit account connection, and explicit single-item ingestion into one selected task workspace.
 - `/artifacts`, `/memories`, and `/entities` are shipped bounded operator review workspaces for artifact, memory, and entity evidence.
-- `workers` remains scaffold-only.
+- `workers` includes bounded task-run ticking and approved proxy execution progression under the workflow-style durable run model.
 
 ## Quick Start
 
@@ -22,6 +22,7 @@ AliceBot is a private, permissioned personal AI operating system. The current re
 Useful checks:
 
 - Canonical gate entrypoints: `scripts/run_phase3_*.py` are the control-plane entrypoint wrappers; `scripts/run_phase2_*.py` and `scripts/run_mvp_*.py` remain compatibility entrypoints with identical semantics.
+- Phase 4 entrypoints: `python3 scripts/run_phase4_acceptance.py`, `python3 scripts/run_phase4_readiness_gates.py`, `python3 scripts/run_phase4_validation_matrix.py`
 - API health: [http://127.0.0.1:8000/healthz](http://127.0.0.1:8000/healthz)
 - Phase 3 acceptance gate: `python3 scripts/run_phase3_acceptance.py`
 - Phase 3 readiness gates: `python3 scripts/run_phase3_readiness_gates.py`

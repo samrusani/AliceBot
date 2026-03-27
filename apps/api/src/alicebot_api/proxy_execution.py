@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID
 
@@ -33,7 +34,7 @@ from alicebot_api.contracts import (
     ToolRoutingRequestRecord,
 )
 from alicebot_api.execution_budgets import evaluate_execution_budget
-from alicebot_api.store import ContinuityStore, JsonObject, ToolExecutionRow
+from alicebot_api.store import ContinuityStore, JsonObject, TaskRunRow, ToolExecutionRow
 from alicebot_api.tasks import (
     validate_linked_task_step_for_approval,
     sync_task_step_with_execution,
@@ -274,12 +275,12 @@ def _sync_task_run_after_execution(
     task_run_id: UUID,
     approval_id: UUID,
     execution: ToolExecutionRow,
-) -> None:
+) -> TaskRunRow | None:
     task_run = store.get_task_run_optional(task_run_id)
     if task_run is None:
-        return
-    if cast(str, task_run["status"]) in {"completed", "cancelled"}:
-        return
+        return None
+    if cast(str, task_run["status"]) in {"done", "cancelled"}:
+        return task_run
 
     checkpoint = cast(JsonObject, task_run["checkpoint"])
     if not isinstance(checkpoint, dict):
@@ -294,22 +295,53 @@ def _sync_task_run_after_execution(
     next_checkpoint["last_execution_at"] = execution["executed_at"].isoformat()
 
     execution_status = cast(str, execution["status"])
-    next_status = "completed"
-    next_stop_reason = "completed"
+    next_status = "done"
+    next_stop_reason = "done"
+    next_failure_class = None
+    next_retry_posture = "terminal"
     if execution_status == "blocked":
-        next_status = "paused"
-        next_stop_reason = "paused"
+        next_status = "failed"
+        next_stop_reason = "policy_blocked"
+        next_failure_class = "policy"
+        next_retry_posture = "terminal"
         execution_result = cast(dict[str, object], execution.get("result", {}))
         budget_decision = execution_result.get("budget_decision")
         if isinstance(budget_decision, dict) and budget_decision.get("reason") == "budget_exceeded":
             next_stop_reason = "budget_exhausted"
+            next_failure_class = "budget"
 
-    store.update_task_run_optional(
+    transitions = next_checkpoint.get("transitions")
+    if isinstance(transitions, list):
+        history = [entry for entry in transitions if isinstance(entry, dict)]
+    else:
+        history = []
+    transition_entry = {
+        "sequence_no": len(history) + 1,
+        "source": "proxy_execution",
+        "at": datetime.now(UTC).isoformat(),
+        "previous_status": cast(str, task_run["status"]),
+        "status": next_status,
+        "previous_stop_reason": cast(str | None, task_run["stop_reason"]),
+        "stop_reason": next_stop_reason,
+        "failure_class": next_failure_class,
+        "retry_count": int(task_run["retry_count"]),
+        "retry_cap": int(task_run["retry_cap"]),
+        "retry_posture": next_retry_posture,
+    }
+    history.append(transition_entry)
+    next_checkpoint["transitions"] = history
+    next_checkpoint["last_transition"] = transition_entry
+
+    return store.update_task_run_optional(
         task_run_id=task_run_id,
         status=next_status,
         checkpoint=next_checkpoint,
         tick_count=max(1, int(task_run["tick_count"])),
         step_count=max(int(task_run["step_count"]), 1),
+        retry_count=int(task_run["retry_count"]),
+        retry_cap=int(task_run["retry_cap"]),
+        retry_posture=next_retry_posture,
+        failure_class=next_failure_class,
         stop_reason=next_stop_reason,
     )
 
@@ -323,6 +355,18 @@ def _budget_context_trace_payload(
         "request_thread_id": cast(str | None, budget_decision.get("request_thread_id")),
         "context_resolution": "invalid",
         "context_reason": cast(str | None, budget_decision.get("context_reason")),
+    }
+
+
+def _task_run_trace_payload(task_run: TaskRunRow) -> dict[str, object]:
+    return {
+        "task_run_id": str(task_run["id"]),
+        "status": cast(str, task_run["status"]),
+        "stop_reason": cast(str | None, task_run["stop_reason"]),
+        "failure_class": cast(str | None, task_run["failure_class"]),
+        "retry_count": int(task_run["retry_count"]),
+        "retry_cap": int(task_run["retry_cap"]),
+        "retry_posture": cast(str, task_run["retry_posture"]),
     }
 
 
@@ -521,13 +565,20 @@ def execute_approved_proxy_request(
                     },
                 )
             )
-            _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
-            _sync_task_run_after_execution(
+            run_after_sync = _sync_task_run_after_execution(
                 store,
                 task_run_id=linked_task_run_id,
                 approval_id=cast(UUID, approval_row["id"]),
                 execution=existing_execution,
             )
+            if run_after_sync is not None:
+                trace_events.append(
+                    (
+                        "tool.proxy.execute.run",
+                        _task_run_trace_payload(run_after_sync),
+                    )
+                )
+            _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
             return {
                 "request": cast(
                     ProxyExecutionRequestRecord,
@@ -628,12 +679,19 @@ def execute_approved_proxy_request(
             )
         )
         if linked_task_run_id is not None:
-            _sync_task_run_after_execution(
+            run_after_sync = _sync_task_run_after_execution(
                 store,
                 task_run_id=linked_task_run_id,
                 approval_id=cast(UUID, approval_row["id"]),
                 execution=execution,
             )
+            if run_after_sync is not None:
+                trace_events.append(
+                    (
+                        "tool.proxy.execute.run",
+                        _task_run_trace_payload(run_after_sync),
+                    )
+                )
         _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
         return {
             "request": cast(
@@ -733,12 +791,19 @@ def execute_approved_proxy_request(
             )
         )
         if linked_task_run_id is not None:
-            _sync_task_run_after_execution(
+            run_after_sync = _sync_task_run_after_execution(
                 store,
                 task_run_id=linked_task_run_id,
                 approval_id=cast(UUID, approval_row["id"]),
                 execution=execution,
             )
+            if run_after_sync is not None:
+                trace_events.append(
+                    (
+                        "tool.proxy.execute.run",
+                        _task_run_trace_payload(run_after_sync),
+                    )
+                )
         _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
         raise error
 
@@ -856,12 +921,19 @@ def execute_approved_proxy_request(
         )
     )
     if linked_task_run_id is not None:
-        _sync_task_run_after_execution(
+        run_after_sync = _sync_task_run_after_execution(
             store,
             task_run_id=linked_task_run_id,
             approval_id=cast(UUID, approval_row["id"]),
             execution=execution,
         )
+        if run_after_sync is not None:
+            trace_events.append(
+                (
+                    "tool.proxy.execute.run",
+                    _task_run_trace_payload(run_after_sync),
+                )
+            )
     _append_trace_events(store, trace_id=trace["id"], trace_events=trace_events)
 
     return {

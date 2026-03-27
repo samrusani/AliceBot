@@ -33,8 +33,38 @@ ApprovalStatus = Literal["pending", "approved", "rejected"]
 ApprovalResolutionAction = Literal["approve", "reject"]
 ApprovalResolutionOutcome = Literal["resolved", "duplicate_rejected", "conflict_rejected"]
 TaskStatus = Literal["pending_approval", "approved", "executed", "denied", "blocked"]
-TaskRunStatus = Literal["queued", "running", "waiting", "waiting_approval", "paused", "completed", "cancelled"]
-TaskRunStopReason = Literal["wait_state", "waiting_approval", "budget_exhausted", "paused", "completed", "cancelled"]
+TaskRunStatus = Literal[
+    "queued",
+    "running",
+    "waiting_approval",
+    "waiting_user",
+    "paused",
+    "failed",
+    "done",
+    "cancelled",
+]
+TaskRunStopReason = Literal[
+    "waiting_approval",
+    "waiting_user",
+    "paused",
+    "budget_exhausted",
+    "approval_rejected",
+    "policy_blocked",
+    "retry_exhausted",
+    "fatal_error",
+    "done",
+    "cancelled",
+]
+TaskRunFailureClass = Literal["transient", "policy", "approval", "budget", "fatal"]
+TaskRunRetryPosture = Literal[
+    "none",
+    "retryable",
+    "exhausted",
+    "terminal",
+    "paused",
+    "awaiting_approval",
+    "awaiting_user",
+]
 TaskWorkspaceStatus = Literal["active"]
 TaskArtifactStatus = Literal["registered"]
 TaskArtifactIngestionStatus = Literal["pending", "ingested"]
@@ -243,8 +273,38 @@ EXECUTION_BUDGET_LIST_ORDER = ["created_at_asc", "id_asc"]
 EXECUTION_BUDGET_MATCH_ORDER = ["specificity_desc", "created_at_asc", "id_asc"]
 EXECUTION_BUDGET_STATUSES = ["active", "inactive", "superseded"]
 TASK_STATUSES = ["pending_approval", "approved", "executed", "denied", "blocked"]
-TASK_RUN_STATUSES = ["queued", "running", "waiting", "waiting_approval", "paused", "completed", "cancelled"]
-TASK_RUN_STOP_REASONS = ["wait_state", "waiting_approval", "budget_exhausted", "paused", "completed", "cancelled"]
+TASK_RUN_STATUSES = [
+    "queued",
+    "running",
+    "waiting_approval",
+    "waiting_user",
+    "paused",
+    "failed",
+    "done",
+    "cancelled",
+]
+TASK_RUN_STOP_REASONS = [
+    "waiting_approval",
+    "waiting_user",
+    "paused",
+    "budget_exhausted",
+    "approval_rejected",
+    "policy_blocked",
+    "retry_exhausted",
+    "fatal_error",
+    "done",
+    "cancelled",
+]
+TASK_RUN_FAILURE_CLASSES = ["transient", "policy", "approval", "budget", "fatal"]
+TASK_RUN_RETRY_POSTURES = [
+    "none",
+    "retryable",
+    "exhausted",
+    "terminal",
+    "paused",
+    "awaiting_approval",
+    "awaiting_user",
+]
 TASK_RUN_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
@@ -2275,6 +2335,7 @@ class TaskRunCreateInput:
     task_id: UUID
     checkpoint: JsonObject = field(default_factory=dict)
     max_ticks: int = 1
+    retry_cap: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2305,7 +2366,12 @@ class TaskRunRecord(TypedDict):
     tick_count: int
     step_count: int
     max_ticks: int
+    retry_count: int
+    retry_cap: int
+    retry_posture: TaskRunRetryPosture
+    failure_class: TaskRunFailureClass | None
     stop_reason: TaskRunStopReason | None
+    last_transitioned_at: str
     created_at: str
     updated_at: str
 

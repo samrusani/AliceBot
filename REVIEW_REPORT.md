@@ -4,36 +4,36 @@
 PASS
 
 ## criteria met
-- Sprint stayed within Sprint 12 implementation scope, including a minimal web test compatibility shim required to satisfy the packet’s exact `--runInBand` acceptance command.
-- Idempotency and duplicate-side-effect prevention are implemented and covered.
-- Approval pause/resume linkage to runs is deterministic and guarded against reopening terminal runs.
-- Blocked execution outcomes no longer force linked runs to `completed`; run state now preserves blocked semantics.
-- Run/task-step/approval/execution linkage is explicit and reviewable across API and UI surfaces.
-- Required acceptance commands pass in this review:
-  - `./.venv/bin/python -m pytest tests/unit/test_20260327_0039_task_run_execution_linkage.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py tests/unit/test_executions.py tests/unit/test_executions_main.py tests/unit/test_approvals.py tests/unit/test_approvals_main.py -q` -> PASS (`50 passed`)
-  - `./.venv/bin/python -m pytest tests/integration/test_proxy_execution_api.py tests/integration/test_approval_api.py tests/integration/test_task_runs_api.py -q` -> PASS (`28 passed`)
-  - `pnpm --dir apps/web test -- --runInBand components/approval-actions.test.tsx components/approval-detail.test.tsx components/execution-summary.test.tsx components/task-run-list.test.tsx lib/api.test.ts` -> PASS (`39 passed`)
-  - `python3 scripts/run_phase3_validation_matrix.py` -> PASS (all matrix steps PASS)
+- Run lifecycle observability is implemented and exposed: transition history/last transition, explicit stop reasons, failure classes, retry posture/count/cap, and transition timestamps are persisted and returned.
+- Retry/failure controls are wired through API, worker, and UI surfaces, including explicit fail-closed behavior for blocked/budget paths.
+- Migration normalization gap is fixed: legacy `paused + budget_exhausted` rows now map to terminal retry posture during `20260327_0040` upgrade.
+- Required Sprint 13 verification commands pass:
+  - `./.venv/bin/python -m pytest tests/unit/test_20260327_0040_task_run_retry_failure_controls.py tests/unit/test_task_runs.py tests/unit/test_task_runs_main.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py tests/unit/test_worker_main.py -q` -> PASS (`37 passed`)
+  - `./.venv/bin/python -m pytest tests/integration/test_task_runs_api.py tests/integration/test_proxy_execution_api.py tests/integration/test_approval_api.py -q` -> PASS (`28 passed`)
+  - `pnpm --dir apps/web test -- --runInBand app/tasks/page.test.tsx app/traces/page.test.tsx components/task-run-list.test.tsx components/execution-summary.test.tsx lib/api.test.ts` -> PASS (`37 passed`)
+  - `python3 scripts/run_phase4_validation_matrix.py` -> PASS
+  - Phase 3 compatibility chain (`scripts/run_phase3_validation_matrix.py`, via Phase 4 matrix) -> PASS
+- Independent re-review verification confirms the migration/test fix and reproduces:
+  - `./.venv/bin/python -m pytest tests/unit/test_20260327_0040_task_run_retry_failure_controls.py tests/unit/test_task_runs.py tests/unit/test_task_runs_main.py tests/unit/test_proxy_execution.py tests/unit/test_proxy_execution_main.py tests/unit/test_worker_main.py -q` -> PASS (`37 passed`)
+- Canonical docs requested by the sprint packet were updated: `README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`.
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking implementation defects found in sprint-scoped runtime or UI changes.
+- No blocking quality issues found in sprint-scoped surfaces.
 
 ## regression risks
-- Low. Targeted unit/integration regressions are covered and all required acceptance/matrix gates are green.
+- Low. The migration mapping is now explicit for the legacy budget-exhausted edge case and unit coverage includes the posture normalization rule.
 
 ## docs issues
-- `BUILD_REPORT.md` was updated during this review to accurately reflect:
-  - the now-passing exact web acceptance command
-  - final changed-file coverage including shim files
+- None blocking for Sprint 13 exit.
 
 ## should anything be added to RULES.md?
-- No required additions for Sprint 12 acceptance.
+- No required changes for this sprint exit.
 
 ## should anything update ARCHITECTURE.md?
-- No blocking architecture updates required for Sprint 12 acceptance.
+- No blocking architecture updates required for Sprint 13 acceptance.
 
 ## recommended next action
-1. Proceed to Control Tower sign-off and Sprint 12 merge flow.
+1. Proceed to Control Tower Sprint 13 sign-off and PR merge workflow.
