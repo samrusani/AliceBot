@@ -38,6 +38,7 @@ import {
   listMemories,
   listMemoryLabels,
   listMemoryReviewQueue,
+  listTaskRuns,
   listAgentProfiles,
   getToolExecution,
   getTraceDetail,
@@ -2210,5 +2211,63 @@ describe("api helpers", () => {
       label: "correct",
       note: "Still matches latest evidence.",
     });
+  });
+
+  it("lists task runs from the shipped task-runs endpoint", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: "run-1",
+              task_id: "task-1",
+              status: "running",
+              checkpoint: {
+                cursor: 1,
+                target_steps: 3,
+                wait_for_signal: false,
+              },
+              tick_count: 1,
+              step_count: 1,
+              max_ticks: 3,
+              stop_reason: null,
+              created_at: "2026-03-27T10:00:00Z",
+              updated_at: "2026-03-27T10:05:00Z",
+            },
+          ],
+          summary: {
+            task_id: "task-1",
+            total_count: 1,
+            order: ["created_at_asc", "id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await listTaskRuns("https://api.example.com", "task-1", "user-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/tasks/task-1/runs?user_id=user-1",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+  });
+
+  it("throws ApiError when task-run listing returns a backend error envelope", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          detail: "task task-1 was not found",
+        }),
+        { status: 404, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await expect(listTaskRuns("https://api.example.com", "task-1", "user-1")).rejects.toEqual(
+      expect.objectContaining<ApiError>({
+        message: "task task-1 was not found",
+        status: 404,
+      }),
+    );
   });
 });
