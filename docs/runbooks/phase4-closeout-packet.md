@@ -1,28 +1,24 @@
 # Phase 4 Closeout Packet
 
-This closeout packet defines Sprint 14 evidence required to mark Phase 4 as the canonical MVP release-control owner.
+This closeout packet defines Sprint 15 evidence required to mark MVP release-candidate rehearsal as deterministic and artifact-driven.
 
 ## Required Go/No-Go Commands
 
-Run from repo root and retain full output:
+Run from repo root:
 
-1. `python3 scripts/check_control_doc_truth.py`
-2. `python3 scripts/run_phase4_acceptance.py`
-3. `python3 scripts/run_phase4_readiness_gates.py`
-4. `python3 scripts/run_phase4_validation_matrix.py`
-5. `python3 scripts/run_phase3_validation_matrix.py`
-6. `python3 scripts/run_phase2_validation_matrix.py`
-7. `python3 scripts/run_mvp_validation_matrix.py`
+1. `python3 scripts/run_phase4_release_candidate.py`
+2. `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix` (contract rehearsal NO_GO path)
 
 ## Required Evidence Bundle
 
-- command transcripts for all required commands
-- explicit PASS/NO_GO outcomes for each command
-- canonical magnesium ship-gate evidence:
-  - request submitted
-  - approval resolved
-  - execution completed with event evidence
-  - memory write-back persisted with explicit decision
+- generated artifact: `artifacts/release/phase4_rc_summary.json`
+- artifact schema fields:
+  - `artifact_version`
+  - `ordered_steps`
+  - `steps[]` entries with `status`, `command`, `exit_code`, `duration_seconds`, and `induced_failure`
+  - `final_decision` and `summary_exit_code`
+- GO requires `final_decision` = `GO` and every step `status` = `PASS`
+- NO_GO requires at least one failed step and preserves partial evidence (`NOT_RUN` for downstream steps)
 - links to current `BUILD_REPORT.md` and `REVIEW_REPORT.md`
 
 ## Explicit Deferred Scope
