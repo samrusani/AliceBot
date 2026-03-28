@@ -48,3 +48,12 @@ def test_verify_phase4_rc_archive_detects_missing_archive_artifact(tmp_path: Pat
 
     errors = verify_archive.verify_archive_index(index_path=index_path)
     assert any("archive_artifact_path missing file" in error for error in errors)
+
+
+def test_verify_phase4_rc_archive_detects_stale_lock_file(tmp_path: Path) -> None:
+    index_path = _write_go_archive(tmp_path)
+    lock_path = tmp_path / "archive" / release_candidate.ARCHIVE_INDEX_LOCK_NAME
+    lock_path.write_text("stale-lock\n", encoding="utf-8")
+
+    errors = verify_archive.verify_archive_index(index_path=index_path)
+    assert any("lock file should not persist" in error for error in errors)
