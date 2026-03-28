@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 4 Sprint 15: MVP Release-Candidate Rehearsal and Evidence Bundle
+Phase 4 Sprint 16: RC Evidence Archive and Audit Ledger
 
 ## Sprint Type
 
@@ -10,70 +10,69 @@ feature
 
 ## Sprint Reason
 
-Sprint 14 made Phase 4 gate ownership canonical. The next non-redundant gap is final MVP release confidence: one deterministic rehearsal command that produces a complete, auditable evidence bundle for go/no-go.
+Sprint 15 delivered deterministic release-candidate rehearsal with GO/NO_GO artifacts, but evidence is currently written to one deterministic path and overwritten on each run. The next non-redundant MVP gap is audit-grade evidence retention for repeated rehearsal/testing cycles.
 
 ## Sprint Intent
 
-Automate MVP release-candidate rehearsal by running the canonical Phase 4 chain plus compatibility checks and emitting a structured evidence bundle that Control Tower and CTO can review directly.
+Make RC evidence durable across runs by adding deterministic archival/ledger support while preserving Sprint 15 gate semantics and compatibility guarantees.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase4-sprint-15-mvp-rc-rehearsal-evidence-bundle`
+- Branch Name: `codex/phase4-sprint-16-rc-evidence-archive-ledger`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It closes the last planning-to-release gap between “gates exist” and “release evidence is deterministic and packaged.”
-- It reduces review churn by standardizing one RC rehearsal command and one evidence shape.
-- It avoids redundant runtime work and keeps scope on MVP closeout operations.
+- It closes the evidence-loss risk called out in Sprint 15 review (`phase4_rc_summary.json` overwrite behavior).
+- It enables thorough MVP testing with retained GO/NO_GO history instead of one latest snapshot.
+- It improves release auditability without reopening runtime or gate-ownership scope.
 
 ## Redundancy Guard
 
-- Already shipped in Sprint 12/13:
-  - runtime execution linkage, idempotency, observability, retry/failure discipline
-- Already shipped in Sprint 14:
-  - canonical Phase 4 acceptance/readiness/validation ownership and magnesium scenario integration
-- Required now (Sprint 15):
-  - deterministic RC rehearsal orchestration and evidence packaging
-  - stable machine-readable result summary for go/no-go
-  - closeout runbook alignment to generated evidence artifact
-- Explicitly out of Sprint 15:
-  - runtime schema or execution semantics changes
+- Already shipped through Sprint 15:
+  - canonical Phase 4 gates and magnesium ship-gate integration
+  - deterministic RC rehearsal and structured summary artifact
+- Required now (Sprint 16):
+  - persistent archival of RC artifacts across runs
+  - deterministic audit ledger/index for historical rehearsal evidence
+  - runbook and control-doc alignment to archive workflow
+- Explicitly not in Sprint 16:
+  - runtime behavior/schema changes under `apps/api` or `workers`
   - connector/auth/platform expansion
-  - orchestration model redesign
+  - gate-chain semantic redesign
 
 ## Design Truth
 
 - Phase 4 remains canonical MVP release gate.
-- Canonical scenario remains magnesium reorder (`request -> approval -> execution -> memory write-back`).
-- Compatibility guarantees remain mandatory:
+- Canonical magnesium scenario remains required in RC chain.
+- Compatibility checks remain required:
   - `python3 scripts/run_phase3_validation_matrix.py`
   - `python3 scripts/run_phase2_validation_matrix.py`
   - `python3 scripts/run_mvp_validation_matrix.py`
-- Release decision must be backed by one deterministic evidence bundle artifact, not ad-hoc command transcripts.
+- RC evidence must support both:
+  - latest summary (`artifacts/release/phase4_rc_summary.json`)
+  - append-only historical archive + index for audit/replay
 
 ## Exact Surfaces In Scope
 
-- RC rehearsal script and evidence output contract
-- Phase 4 closeout runbook updates for artifact-driven review
-- deterministic tests for rehearsal command behavior (success + induced failure paths)
-- control-doc sync to reflect Sprint 15 ownership
+- RC rehearsal artifact write behavior (latest + archived copies)
+- archive index/ledger generation and validation
+- deterministic tests for archival contract and backward compatibility
+- runbook/control-doc synchronization for audit workflow
 
 ## Exact Files In Scope
 
 - `scripts/run_phase4_release_candidate.py`
-- `scripts/run_phase4_validation_matrix.py`
-- `scripts/run_phase4_acceptance.py`
-- `scripts/run_phase4_readiness_gates.py`
+- `scripts/verify_phase4_rc_archive.py`
 - `docs/runbooks/phase4-closeout-packet.md`
 - `docs/runbooks/phase4-validation-matrix.md`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
 - `tests/integration/test_phase4_release_candidate.py`
-- `tests/integration/test_phase4_validation_matrix.py`
+- `tests/integration/test_phase4_rc_archive.py`
 - `tests/unit/test_phase4_gate_wrappers.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
@@ -81,80 +80,75 @@ Automate MVP release-candidate rehearsal by running the canonical Phase 4 chain 
 
 ## In Scope
 
-- Add `scripts/run_phase4_release_candidate.py` to run ordered MVP rehearsal steps:
-  - control-doc truth
-  - phase4 acceptance
-  - phase4 readiness
-  - phase4 validation matrix
-  - phase3 compatibility validation
-  - phase2 compatibility validation
-  - mvp compatibility validation
-- Emit deterministic artifact output (for example `artifacts/release/phase4_rc_summary.json`) with:
-  - per-step status
-  - command
-  - exit code
-  - duration
-  - final GO/NO_GO
-- Ensure failure in any step fails the rehearsal command and preserves partial evidence.
-- Update runbooks so review and merge decisions reference the generated artifact contract.
-- Keep existing phase4 scripts backward-compatible while wiring into the new rehearsal flow.
+- Extend `scripts/run_phase4_release_candidate.py` with deterministic archival support:
+  - keep writing latest artifact to `artifacts/release/phase4_rc_summary.json`
+  - optionally/by-default write timestamped archive copy (for example `artifacts/release/archive/YYYYMMDDTHHMMSSZ_phase4_rc_summary.json`)
+  - update append-only index (for example `artifacts/release/archive/index.json`) with run metadata (`final_decision`, failing steps, command mode, created_at)
+- Add archive verification command:
+  - `python3 scripts/verify_phase4_rc_archive.py`
+  - validates archive index schema, references, and consistency with stored artifacts
+- Preserve backward compatibility for existing Sprint 15 command/JSON contract consumers.
+- Update runbooks and control docs to treat archive index as canonical audit trail for repeated MVP rehearsal runs.
 
 ## Out of Scope
 
-- `apps/api/src/alicebot_api/*` runtime behavior/schema changes
-- `workers/alicebot_worker/*` runtime behavior changes
-- UI feature expansion
-- connector breadth expansion
-- auth expansion
+- any changes in `apps/api/src/alicebot_api/*`
+- any changes in `workers/alicebot_worker/*`
+- UI feature work
+- connector breadth changes
+- auth model changes
 
 ## Required Deliverables
 
-- deterministic Phase 4 RC rehearsal script
-- stable JSON evidence artifact contract for go/no-go
-- integration tests covering PASS and induced-failure NO_GO paths
-- updated closeout runbook instructions tied to artifact review
-- sprint-scoped build/review reports
+- RC rehearsal archival + index contract
+- archive verification script
+- tests covering GO and NO_GO archival behavior
+- updated closeout/runbook docs for archive-driven audit
+- sprint build/review reports scoped to Sprint 16
 
 ## Acceptance Criteria
 
-- `python3 scripts/run_phase4_release_candidate.py` passes and emits RC summary artifact with deterministic schema.
-- `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix` fails with explicit NO_GO and writes failure evidence.
+- `python3 scripts/run_phase4_release_candidate.py` passes and writes:
+  - latest summary (`artifacts/release/phase4_rc_summary.json`)
+  - archive entry + index update
+- `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix` fails as expected and archives NO_GO evidence without overwriting prior archive entries.
+- `python3 scripts/verify_phase4_rc_archive.py` passes.
 - `python3 scripts/run_phase4_validation_matrix.py` remains PASS.
 - `python3 scripts/run_phase3_validation_matrix.py` remains PASS.
 - `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
 - `python3 scripts/run_mvp_validation_matrix.py` remains PASS.
-- `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_validation_matrix.py tests/unit/test_phase4_gate_wrappers.py -q` passes.
-- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` are synchronized to Sprint 15 focus.
+- `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_rc_archive.py tests/unit/test_phase4_gate_wrappers.py -q` passes.
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` are synchronized to Sprint 16 archive/audit focus.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
-- preserve existing Phase 4/3/2/MVP command contracts
-- keep deterministic ordered execution and explicit pass/fail reporting
-- keep machine-independent commands and paths in docs
+- preserve existing Sprint 15 RC summary schema fields
+- keep archival format deterministic and machine-readable
+- keep machine-independent paths and commands in docs
 
 ## Control Tower Task Cards
 
-### Task 1: RC Rehearsal Script
+### Task 1: RC Archive Wiring
 
 Owner: tooling operative
 
 Write scope:
 
 - `scripts/run_phase4_release_candidate.py`
-- `scripts/run_phase4_validation_matrix.py`
+- `scripts/verify_phase4_rc_archive.py`
 
-### Task 2: RC Contract Tests
+### Task 2: Archive Contract Tests
 
 Owner: tooling operative
 
 Write scope:
 
 - `tests/integration/test_phase4_release_candidate.py`
-- `tests/integration/test_phase4_validation_matrix.py`
+- `tests/integration/test_phase4_rc_archive.py`
 - `tests/unit/test_phase4_gate_wrappers.py`
 
-### Task 3: Runbook + Control Sync
+### Task 3: Docs + Control Sync
 
 Owner: tooling operative
 
@@ -177,30 +171,30 @@ Write scope:
 
 Responsibilities:
 
-- verify no reimplementation overlap with Sprint 12/13/14 runtime and gate-ownership work
-- verify RC artifact contract is deterministic and actionable
+- verify no overlap with Sprint 12-15 runtime/gate-ownership scope
+- verify archival index is deterministic and append-only
+- verify GO and NO_GO runs are retained concurrently
 - verify compatibility chains remain PASS
-- verify docs and active packet stay synchronized
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
 
-- exact RC rehearsal orchestration delta
-- exact evidence artifact schema and output path
-- exact verification command outcomes
+- exact archive/index contract delta
+- exact artifact path model (latest + archive + index)
+- verification command outcomes
 - explicit deferred scope
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
 
-- sprint stayed release-control scoped
-- RC command deterministically reports GO/NO_GO with per-step evidence
-- failure injection behavior is explicit and stable
+- sprint stayed release-audit scoped
+- archival behavior preserves historical GO/NO_GO evidence
+- archive verification script catches malformed/missing records
 - compatibility chains remain green
 - no hidden runtime scope expansion
 
 ## Exit Condition
 
-This sprint is complete when one deterministic Phase 4 RC rehearsal command produces a complete evidence bundle with explicit GO/NO_GO and all compatibility gates remain green.
+This sprint is complete when RC evidence is durable across repeated runs via a deterministic archive/index contract, with compatibility gates still green and no runtime scope expansion.

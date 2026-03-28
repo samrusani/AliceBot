@@ -4,38 +4,47 @@
 PASS
 
 ## criteria met
-- `python3 scripts/run_phase4_release_candidate.py` passed (exit `0`) and emitted `artifacts/release/phase4_rc_summary.json` with deterministic schema fields including `artifact_version`, `ordered_steps`, `steps`, `final_decision`, and `summary_exit_code`.
-- `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix` failed as expected (exit `1`) with explicit `NO_GO`, failing step `phase4_validation_matrix`, and preserved partial evidence (`NOT_RUN` downstream steps).
-- RC evidence includes required per-step details: `status`, `command`, `exit_code`, `duration_seconds`, and `induced_failure`.
-- Compatibility chain remained green in executed RC GO step evidence:
-  - `python3 scripts/run_phase4_validation_matrix.py` -> PASS (exit `0`)
-  - `python3 scripts/run_phase3_validation_matrix.py` -> PASS (exit `0`)
-  - `python3 scripts/run_phase2_validation_matrix.py` -> PASS (exit `0`)
-  - `python3 scripts/run_mvp_validation_matrix.py` -> PASS (exit `0`)
-- `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_validation_matrix.py tests/unit/test_phase4_gate_wrappers.py -q` passed (`9 passed`).
-- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` are synchronized to Sprint 15 RC rehearsal focus.
-- Scope remained release-control focused; no runtime behavior changes were introduced under `apps/api` or `workers`.
+- Sprint stayed release-audit scoped. Diff is limited to sprint packet/report docs, RC tooling, and tests; no runtime/API/worker surface expansion (`apps/api/*` and `workers/*` untouched).
+- `python3 scripts/run_phase4_release_candidate.py` passed (exit `0`) and wrote:
+  - latest summary: `artifacts/release/phase4_rc_summary.json`
+  - archive artifact: `artifacts/release/archive/20260328T074928Z_phase4_rc_summary.json`
+  - archive index: `artifacts/release/archive/index.json`
+- `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix` failed as expected (exit `1`) and archived NO_GO evidence:
+  - archive artifact: `artifacts/release/archive/20260328T074449Z_phase4_rc_summary.json`
+  - index entry mode: `induced_failure:phase4_validation_matrix`
+- Archive ledger is retaining concurrent GO + NO_GO history (current index snapshot: `total_entries=5`, `go_entries=2`, `no_go_entries=3`).
+- `python3 scripts/verify_phase4_rc_archive.py` passed (exit `0`).
+- Compatibility commands remained green in executed GO RC evidence:
+  - `python3 scripts/run_phase4_validation_matrix.py` -> PASS
+  - `python3 scripts/run_phase3_validation_matrix.py` -> PASS
+  - `python3 scripts/run_phase2_validation_matrix.py` -> PASS
+  - `python3 scripts/run_mvp_validation_matrix.py` -> PASS
+- `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_rc_archive.py tests/unit/test_phase4_gate_wrappers.py -q` passed (`11 passed`).
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` are synchronized to Sprint 16 archive/audit focus.
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking implementation quality defects found in Sprint 15 scope.
-- Non-blocking: RC rehearsal runtime is high because `phase4_validation_matrix` already includes compatibility checks and RC then runs compatibility checks again by design.
+- No blocking quality defects found in sprint-scoped implementation.
+- Non-blocking: archive index update is a read-modify-write without explicit locking, so concurrent RC runs could race and lose an index append.
 
 ## regression risks
-- Long rehearsal runtime increases operational cost and CI duration sensitivity.
-- Artifact output path is a single deterministic target (`artifacts/release/phase4_rc_summary.json`), so each run overwrites prior evidence unless archived externally.
+- RC chain remains long-running; runtime/cost profile is unchanged from Sprint 15.
+- Archive retention is append-only and will grow storage footprint over time.
+- Concurrent RC invocations may contend on `artifacts/release/archive/index.json` (see quality note).
 
 ## docs issues
-- No blocking documentation issues in sprint-scoped files.
+- No blocking documentation issues found.
 
 ## should anything be added to RULES.md?
-- Optional: add a durable rule requiring archival copy of RC artifacts when both GO and induced NO_GO evidence must be retained for audit.
+- No required change.
+- Optional follow-up: add a rule that CI/release workflows must not pass `--no-archive` for RC rehearsal.
 
 ## should anything update ARCHITECTURE.md?
-- No. Sprint 15 is orchestration/evidence packaging and does not change system architecture boundaries.
+- No. Sprint 16 is tooling/audit-surface work and does not change architecture boundaries.
 
 ## recommended next action
-1. Mark Sprint 15 as accepted and proceed to merge approval.
-2. Optionally open a follow-up improvement to add archival support (for example, timestamped copy or configurable artifact output path) to preserve multiple rehearsal records.
+1. Approve Sprint 16 as PASS.
+2. Merge once Control Tower confirms the retained GO/NO_GO index entries in `artifacts/release/archive/index.json`.
+3. Track optional hardening follow-up for archive index write locking if parallel RC runs are expected.
