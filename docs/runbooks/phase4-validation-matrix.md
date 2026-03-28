@@ -1,12 +1,13 @@
 # Phase 4 Validation Matrix
 
-This runbook defines the deterministic Phase 4 validation chain for Sprint 14 canonical MVP ship-gate ownership.
+This runbook defines the deterministic Phase 4 validation chain used by Sprint 15 release-candidate rehearsal.
 
 ## Canonical Command
 
 Run from repo root:
 
 1. `python3 scripts/run_phase4_validation_matrix.py`
+2. RC rehearsal entrypoint: `python3 scripts/run_phase4_release_candidate.py` (includes this matrix step)
 
 ## Validation Steps
 
@@ -43,3 +44,4 @@ The `phase4_scenarios` step runs:
 - PASS only when every step reports `PASS`.
 - NO_GO when any step fails.
 - Failing step IDs are reported explicitly as `Failing steps: ...`.
+- In RC rehearsal context, matrix failure marks overall `final_decision` as `NO_GO` in `artifacts/release/phase4_rc_summary.json`.

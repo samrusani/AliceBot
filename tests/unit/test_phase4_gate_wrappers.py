@@ -74,3 +74,26 @@ def test_phase4_readiness_gate_contract_sequence_is_stable() -> None:
         module.MAGNESIUM_NODE_ID,
     )
     assert gate_steps[2].command == ("/usr/bin/python3", "scripts/run_phase3_readiness_gates.py")
+
+
+def test_phase4_release_candidate_rehearsal_contract_sequence_is_stable() -> None:
+    module = _load_script_module("run_phase4_release_candidate.py")
+
+    steps = module.build_release_candidate_steps(python_executable="/usr/bin/python3")
+    assert [step.step for step in steps] == [
+        module.STEP_CONTROL_DOC_TRUTH,
+        module.STEP_PHASE4_ACCEPTANCE,
+        module.STEP_PHASE4_READINESS,
+        module.STEP_PHASE4_VALIDATION_MATRIX,
+        module.STEP_PHASE3_COMPAT_VALIDATION,
+        module.STEP_PHASE2_COMPAT_VALIDATION,
+        module.STEP_MVP_COMPAT_VALIDATION,
+    ]
+
+    assert steps[0].command == ("/usr/bin/python3", "scripts/check_control_doc_truth.py")
+    assert steps[1].command == ("/usr/bin/python3", "scripts/run_phase4_acceptance.py")
+    assert steps[2].command == ("/usr/bin/python3", "scripts/run_phase4_readiness_gates.py")
+    assert steps[3].command == ("/usr/bin/python3", "scripts/run_phase4_validation_matrix.py")
+    assert steps[4].command == ("/usr/bin/python3", "scripts/run_phase3_validation_matrix.py")
+    assert steps[5].command == ("/usr/bin/python3", "scripts/run_phase2_validation_matrix.py")
+    assert steps[6].command == ("/usr/bin/python3", "scripts/run_mvp_validation_matrix.py")

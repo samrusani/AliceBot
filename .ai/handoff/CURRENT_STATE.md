@@ -4,9 +4,10 @@
 
 - The canonical baseline remains through Phase 3 Sprint 9.
 - Earlier Phase 4 work is already delivered: task-run linkage to approvals/executions, idempotent proxy execution replay guards, approval pause/resume continuity for linked runs, run transition observability, explicit stop reasons, bounded retries with persisted posture, explicit failure classes, and deterministic Phase 4 gate runners.
-- Active Sprint focus is Phase 4 Sprint 14: canonical MVP release-gate ownership in Phase 4 acceptance/readiness/validation scripts with first-class magnesium reorder ship-gate evidence and compatibility-gate verification.
+- Active Sprint focus is Phase 4 Sprint 14 foundation, with Phase 4 Sprint 15 adding deterministic MVP release-candidate rehearsal and evidence packaging.
 - The accepted baseline includes deterministic Phase 3 gate entrypoints: `python3 scripts/run_phase3_acceptance.py`, `python3 scripts/run_phase3_readiness_gates.py`, and `python3 scripts/run_phase3_validation_matrix.py` (default go/no-go command).
 - Phase 4 gate entrypoints are `python3 scripts/run_phase4_acceptance.py`, `python3 scripts/run_phase4_readiness_gates.py`, and `python3 scripts/run_phase4_validation_matrix.py`.
+- Phase 4 release-candidate rehearsal entrypoint is `python3 scripts/run_phase4_release_candidate.py`, which writes `artifacts/release/phase4_rc_summary.json` for deterministic GO/NO_GO review.
 - Gate ownership is canonicalized to Phase 4 runner script names; Phase 3/Phase 2/MVP commands remain supported compatibility entrypoints with identical semantics.
 - Use [PRODUCT_BRIEF.md](../../PRODUCT_BRIEF.md) for product scope, [ARCHITECTURE.md](../../ARCHITECTURE.md) for implemented boundaries, [ROADMAP.md](../../ROADMAP.md) for forward planning, and [RULES.md](../../RULES.md) for durable operating rules.
 - The live sprint reports are [BUILD_REPORT.md](../../BUILD_REPORT.md) and [REVIEW_REPORT.md](../../REVIEW_REPORT.md) at repo root; older accepted sprint history belongs in [docs/archive/sprints](../../docs/archive/sprints), not in this handoff.
