@@ -1,6 +1,6 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The canonical baseline remains through Phase 3 Sprint 9, with earlier Phase 4 work already delivering run linkage/idempotent replay safety and run observability/retry-failure discipline, Phase 4 Sprint 14 establishing canonical MVP release-gate ownership in Phase 4 gate scripts, Phase 4 Sprint 15 adding deterministic release-candidate rehearsal evidence packaging, Phase 4 Sprint 16 adding durable archive/index evidence retention for repeated RC rehearsal runs, and Phase 4 Sprint 17 hardening archive index writes with deterministic locking and atomic replace behavior under contention.
+AliceBot is a private, permissioned personal AI operating system. The canonical baseline remains through Phase 3 Sprint 9, with earlier Phase 4 work already delivering run linkage/idempotent replay safety and run observability/retry-failure discipline, Phase 4 Sprint 14 establishing canonical MVP release-gate ownership in Phase 4 gate scripts, Phase 4 Sprint 15 adding deterministic release-candidate rehearsal evidence packaging, Phase 4 Sprint 16 adding durable archive/index evidence retention for repeated RC rehearsal runs, Phase 4 Sprint 17 hardening archive index writes with deterministic locking and atomic replace behavior under contention, and Phase 4 Sprint 18 adding deterministic MVP exit manifest generation/verification for formal phase closeout.
 
 ## Current Implemented Slice
 
@@ -25,6 +25,8 @@ Useful checks:
 - Phase 4 RC rehearsal command: `python3 scripts/run_phase4_release_candidate.py` (writes latest summary `artifacts/release/phase4_rc_summary.json` and appends archive evidence in `artifacts/release/archive/`)
 - RC archive hardening contract: index updates are serialized by `artifacts/release/archive/index.lock`; lock timeout exits with code `2` and explicit failure message
 - Phase 4 RC archive verifier: `python3 scripts/verify_phase4_rc_archive.py` (validates `artifacts/release/archive/index.json` against retained archive artifacts)
+- Phase 4 MVP exit manifest generator: `python3 scripts/generate_phase4_mvp_exit_manifest.py` (writes deterministic closeout artifact `artifacts/release/phase4_mvp_exit_manifest.json` from latest GO RC archive evidence)
+- Phase 4 MVP exit manifest verifier: `python3 scripts/verify_phase4_mvp_exit_manifest.py` (validates manifest schema, required fields, and source archive/index references)
 - Phase 4 entrypoints: `python3 scripts/run_phase4_acceptance.py`, `python3 scripts/run_phase4_readiness_gates.py`, `python3 scripts/run_phase4_validation_matrix.py`
 - API health: [http://127.0.0.1:8000/healthz](http://127.0.0.1:8000/healthz)
 - Phase 3 acceptance gate: `python3 scripts/run_phase3_acceptance.py`
