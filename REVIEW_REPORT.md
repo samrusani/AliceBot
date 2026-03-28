@@ -4,57 +4,59 @@
 PASS
 
 ## criteria met
-- Sprint scope stayed within the packet’s hardening surfaces:
-  - code changes are limited to `scripts/run_phase4_release_candidate.py` and `scripts/verify_phase4_rc_archive.py`
-  - tests/docs/report updates are limited to sprint-listed files
-  - no changes under `apps/api/src/alicebot_api/*` or `workers/alicebot_worker/*`
-- Concurrency hardening contract is implemented:
-  - deterministic lock path `artifacts/release/archive/index.lock`
-  - bounded lock wait with deterministic timeout (`ArchiveIndexLockTimeoutError`)
-  - explicit CLI timeout contract (exit code `2`)
-  - atomic JSON persistence via temp-file + `os.replace()`
-- Lost-update prevention under contention is test-covered:
-  - `test_archive_index_concurrent_writes_retain_all_entries`
-  - `test_archive_index_lock_timeout_is_explicit_and_bounded`
-  - `test_phase4_release_candidate_lock_timeout_exit_contract_is_explicit`
-- Archive verifier hardening checks are present and tested:
-  - index path must match `archive_dir/index.json`
-  - stale `index.lock` is a verification failure
-  - stale-lock test added in `tests/integration/test_phase4_rc_archive.py`
-- Required acceptance commands were verified:
-  - `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_rc_archive.py tests/unit/test_phase4_gate_wrappers.py -q` -> PASS (`15 passed`)
-  - `python3 scripts/run_phase4_release_candidate.py` -> PASS (`exit 0`, GO, latest+archive+index written)
-  - `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix` -> expected NO_GO (`exit 1`) with archive/index evidence retained
-  - `python3 scripts/verify_phase4_rc_archive.py` -> PASS
-  - `python3 scripts/run_phase4_validation_matrix.py` -> PASS (rerun with elevated permissions due sandbox localhost DB restrictions)
-  - `python3 scripts/run_phase3_validation_matrix.py` -> PASS (elevated)
-  - `python3 scripts/run_phase2_validation_matrix.py` -> PASS (elevated)
-  - `python3 scripts/run_mvp_validation_matrix.py` -> PASS (elevated)
-- Control docs are synchronized to Sprint 17 hardening focus:
-  - `README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`
+- Sprint stayed closeout-scoped to manifest tooling, manifest contract tests, and closeout/control-doc synchronization.
+- Runtime scope was not expanded:
+  - no changes under `apps/api/src/alicebot_api/*`
+  - no changes under `workers/alicebot_worker/*`
+  - no gate semantics changes across Phase 4/3/2/MVP validation chains
+- Deterministic MVP exit manifest contract is implemented and test-backed:
+  - generator: `python3 scripts/generate_phase4_mvp_exit_manifest.py`
+  - verifier: `python3 scripts/verify_phase4_mvp_exit_manifest.py`
+  - generated artifact path: `artifacts/release/phase4_mvp_exit_manifest.json`
+  - source derivation: latest GO archive entry from `artifacts/release/archive/index.json`
+  - integrity tie: `integrity.archive_artifact_sha256` matches referenced GO archive artifact
+- Manifest verification enforces required fields and source coherence, including index anchor validation:
+  - required top-level schema (`artifact_version`, `artifact_path`, `phase`, `release_gate`, `decision`, `source_references`, `ordered_steps`, `step_status_by_id`, `compatibility_validation_commands`, `integrity`)
+  - required `source_references.archive_entry_index` type/range and correspondence with `archive_artifact_path`
+  - source references must resolve to existing archive/index artifacts
+  - referenced archive entry must remain GO with `summary_exit_code=0` and `failing_steps=[]`
+  - ordered step/status contract must match archive summary GO evidence
+- Test coverage includes manifest contract and tamper-failure paths:
+  - `tests/integration/test_phase4_mvp_exit_manifest.py`
+    - GO manifest generation from latest GO entry while newer NO_GO entries exist
+    - missing referenced archive artifact verification failure path
+    - tampered `archive_entry_index` verification failure path
+  - `tests/unit/test_phase4_gate_wrappers.py`
+    - generator/verifier wrapper path/constant contract checks
+- Acceptance command outcomes were verified:
+  - `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_mvp_exit_manifest.py tests/unit/test_phase4_gate_wrappers.py -q` -> PASS (`16 passed`)
+  - `python3 scripts/run_phase4_release_candidate.py` -> PASS (`GO`; summary + archive + index evidence written)
+  - `python3 scripts/generate_phase4_mvp_exit_manifest.py` -> PASS
+  - `python3 scripts/verify_phase4_mvp_exit_manifest.py` -> PASS
+  - `python3 scripts/run_phase4_validation_matrix.py` -> PASS (inside RC rehearsal and prior elevated direct run)
+  - `python3 scripts/run_phase3_validation_matrix.py` -> PASS (inside RC rehearsal and prior elevated direct run)
+  - `python3 scripts/run_phase2_validation_matrix.py` -> PASS (inside RC rehearsal and prior elevated direct run)
+  - `python3 scripts/run_mvp_validation_matrix.py` -> PASS (inside RC rehearsal and prior elevated direct run)
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking correctness or safety defects found in sprint-scoped code.
-- Non-blocking note: in this environment, direct non-elevated matrix runs can fail on localhost Postgres access (`Operation not permitted`); elevated reruns passed.
+- No blocking correctness defects found in sprint-scoped changes.
 
 ## regression risks
-- Stale lock files after abnormal process termination remain an operational risk; verifier now detects this explicitly, but automatic stale-lock recovery is not implemented.
-- RC rehearsal remains long-running because it intentionally executes the full compatibility chain.
+- Manifest verification intentionally depends on ongoing availability of referenced archive/index artifacts; manual deletion of retained archive files will invalidate verification.
+- Validation matrices remain operationally expensive by design.
 
 ## docs issues
-- No blocking documentation gaps.
-- Optional improvement: add a short stale-lock remediation note (when to remove `artifacts/release/archive/index.lock`) in runbook operations guidance.
+- No blocking documentation gaps in sprint-scoped closeout docs.
 
 ## should anything be added to RULES.md?
-- No required RULES update.
+- Optional hardening rule: release/closeout verifiers should explicitly validate every declared manifest reference field.
 
 ## should anything update ARCHITECTURE.md?
-- No required ARCHITECTURE update. This sprint is operational hardening and does not alter architecture boundaries.
+- No required `ARCHITECTURE.md` update. Sprint 18 remains tooling/closeout scope without boundary changes.
 
 ## recommended next action
-1. Accept Sprint 17 as `PASS`.
-2. Proceed with Control Tower merge flow.
-3. Optionally add stale-lock remediation guidance to runbooks in a follow-up housekeeping change.
+1. Accept Sprint 18 as `PASS`.
+2. Proceed with Control Tower merge flow after closeout packet review.
