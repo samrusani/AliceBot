@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -17,8 +19,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 ARTIFACT_PATH = ROOT_DIR / "artifacts" / "release" / "phase4_rc_summary.json"
 ARCHIVE_DIR_NAME = "archive"
 ARCHIVE_INDEX_NAME = "index.json"
+ARCHIVE_INDEX_LOCK_NAME = "index.lock"
 ARCHIVE_INDEX_VERSION = "phase4_rc_archive_index.v1"
 ARCHIVE_FILENAME_SUFFIX = "_phase4_rc_summary.json"
+ARCHIVE_INDEX_LOCK_TIMEOUT_SECONDS = 5.0
+ARCHIVE_INDEX_LOCK_RETRY_INTERVAL_SECONDS = 0.05
+ARCHIVE_INDEX_LOCK_TIMEOUT_EXIT_CODE = 2
 
 INDUCED_FAILURE_EXIT_CODE = 97
 
@@ -62,6 +68,10 @@ class ReleaseCandidateStepResult:
 
 
 CommandExecutor = Callable[[tuple[str, ...], Path], int]
+
+
+class ArchiveIndexLockTimeoutError(RuntimeError):
+    """Raised when archive index lock acquisition times out."""
 
 
 def _resolve_python_executable() -> str:
@@ -257,6 +267,60 @@ def _archive_index_path_for_artifact_path(artifact_path: Path) -> Path:
     return _archive_dir_for_artifact_path(artifact_path) / ARCHIVE_INDEX_NAME
 
 
+def _archive_index_lock_path_for_artifact_path(artifact_path: Path) -> Path:
+    return _archive_dir_for_artifact_path(artifact_path) / ARCHIVE_INDEX_LOCK_NAME
+
+
+def _render_json(payload: dict[str, object]) -> str:
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def _atomic_write_json(*, path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.parent / f".{path.name}.tmp.{os.getpid()}.{time.monotonic_ns()}"
+    temp_path.write_text(_render_json(payload), encoding="utf-8")
+    try:
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+@contextmanager
+def _acquire_archive_index_lock(
+    *,
+    artifact_path: Path,
+    timeout_seconds: float,
+    retry_interval_seconds: float,
+):
+    lock_path = _archive_index_lock_path_for_artifact_path(artifact_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise ArchiveIndexLockTimeoutError(
+                    "Timed out acquiring archive index lock at "
+                    f"{_render_artifact_path(lock_path)} after {timeout_seconds:.2f}s."
+                )
+            time.sleep(retry_interval_seconds)
+            continue
+
+        with os.fdopen(fd, "w", encoding="utf-8") as lock_file:
+            lock_file.write(f"pid={os.getpid()}\n")
+        break
+
+    try:
+        yield
+    finally:
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _next_archive_artifact_path(*, archive_dir: Path, timestamp: str) -> Path:
     candidate = archive_dir / f"{timestamp}{ARCHIVE_FILENAME_SUFFIX}"
     if not candidate.exists():
@@ -320,8 +384,7 @@ def _append_archive_index_entry(
     entries.append(entry)
 
     index_path = _archive_index_path_for_artifact_path(artifact_path)
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    index_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _atomic_write_json(path=index_path, payload=payload)
     return index_path
 
 
@@ -331,36 +394,44 @@ def _write_archive_copy_and_index(
     artifact_path: Path,
     command_mode: str,
     created_at: datetime | None,
+    lock_timeout_seconds: float = ARCHIVE_INDEX_LOCK_TIMEOUT_SECONDS,
+    lock_retry_interval_seconds: float = ARCHIVE_INDEX_LOCK_RETRY_INTERVAL_SECONDS,
 ) -> tuple[Path, Path]:
     normalized_created_at = _normalize_utc_datetime(created_at)
     created_at_iso = _format_created_at(normalized_created_at)
     timestamp = _format_archive_timestamp(normalized_created_at)
 
     archive_dir = _archive_dir_for_artifact_path(artifact_path)
-    archive_artifact_path = _next_archive_artifact_path(archive_dir=archive_dir, timestamp=timestamp)
-    archive_summary = build_release_candidate_summary(
-        step_results=step_results,
-        artifact_path=archive_artifact_path,
-    )
-    archive_artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    archive_artifact_path.write_text(
-        json.dumps(archive_summary, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-
-    entry = {
-        "created_at": created_at_iso,
-        "archive_artifact_path": _render_artifact_path(archive_artifact_path),
-        "final_decision": archive_summary["final_decision"],
-        "summary_exit_code": archive_summary["summary_exit_code"],
-        "failing_steps": archive_summary["failing_steps"],
-        "command_mode": command_mode,
-    }
-    index_path = _append_archive_index_entry(
+    with _acquire_archive_index_lock(
         artifact_path=artifact_path,
-        archive_dir=archive_dir,
-        entry=entry,
-    )
+        timeout_seconds=lock_timeout_seconds,
+        retry_interval_seconds=lock_retry_interval_seconds,
+    ):
+        archive_artifact_path = _next_archive_artifact_path(archive_dir=archive_dir, timestamp=timestamp)
+        archive_summary = build_release_candidate_summary(
+            step_results=step_results,
+            artifact_path=archive_artifact_path,
+        )
+        try:
+            _atomic_write_json(path=archive_artifact_path, payload=archive_summary)
+
+            entry = {
+                "created_at": created_at_iso,
+                "archive_artifact_path": _render_artifact_path(archive_artifact_path),
+                "final_decision": archive_summary["final_decision"],
+                "summary_exit_code": archive_summary["summary_exit_code"],
+                "failing_steps": archive_summary["failing_steps"],
+                "command_mode": command_mode,
+            }
+            index_path = _append_archive_index_entry(
+                artifact_path=artifact_path,
+                archive_dir=archive_dir,
+                entry=entry,
+            )
+        except Exception:
+            if archive_artifact_path.exists():
+                archive_artifact_path.unlink()
+            raise
     return archive_artifact_path, index_path
 
 
@@ -371,10 +442,11 @@ def write_release_candidate_summary(
     write_archive: bool = True,
     command_mode: str = "default",
     created_at: datetime | None = None,
+    lock_timeout_seconds: float = ARCHIVE_INDEX_LOCK_TIMEOUT_SECONDS,
+    lock_retry_interval_seconds: float = ARCHIVE_INDEX_LOCK_RETRY_INTERVAL_SECONDS,
 ) -> dict[str, object]:
     summary = build_release_candidate_summary(step_results=step_results, artifact_path=artifact_path)
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    artifact_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _atomic_write_json(path=artifact_path, payload=summary)
 
     if write_archive:
         archive_artifact_path, archive_index_path = _write_archive_copy_and_index(
@@ -382,6 +454,8 @@ def write_release_candidate_summary(
             artifact_path=artifact_path,
             command_mode=command_mode,
             created_at=created_at,
+            lock_timeout_seconds=lock_timeout_seconds,
+            lock_retry_interval_seconds=lock_retry_interval_seconds,
         )
         summary["archive_artifact_path"] = _render_artifact_path(archive_artifact_path)
         summary["archive_index_path"] = _render_artifact_path(archive_index_path)
@@ -430,11 +504,16 @@ def main(argv: list[str] | None = None) -> int:
 
     step_results = run_release_candidate(induce_step=args.induce_step)
     command_mode = "default" if args.induce_step is None else f"induced_failure:{args.induce_step}"
-    summary = write_release_candidate_summary(
-        step_results=step_results,
-        write_archive=not args.no_archive,
-        command_mode=command_mode,
-    )
+    try:
+        summary = write_release_candidate_summary(
+            step_results=step_results,
+            write_archive=not args.no_archive,
+            command_mode=command_mode,
+        )
+    except ArchiveIndexLockTimeoutError as exc:
+        _print_step_results(step_results)
+        print(f"Phase 4 release-candidate archive update failed: {exc}")
+        return ARCHIVE_INDEX_LOCK_TIMEOUT_EXIT_CODE
     _print_step_results(step_results)
 
     print(f"Release-candidate summary artifact: {summary['artifact_path']}")
