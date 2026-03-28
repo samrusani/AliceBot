@@ -1,57 +1,56 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 4 Sprint 16: make RC rehearsal evidence durable across repeated runs by retaining archive copies and an append-only audit ledger while preserving Sprint 15 latest-summary compatibility and gate semantics.
+Implement Phase 4 Sprint 17 RC archive concurrency hardening so concurrent `run_phase4_release_candidate.py` runs cannot lose or corrupt `artifacts/release/archive/index.json` entries.
 
 ## Completed Work
-- Extended `scripts/run_phase4_release_candidate.py` to keep writing the latest summary at `artifacts/release/phase4_rc_summary.json` and, by default, also:
-  - write a retained archive copy at `artifacts/release/archive/<timestamp>_phase4_rc_summary.json`
-  - avoid same-second overwrite with deterministic suffixing (`_001`, `_002`, ...)
-  - append run metadata to `artifacts/release/archive/index.json`
-- Added archive index contract `phase4_rc_archive_index.v1` with append-only `entries[]` containing:
-  - `created_at`
-  - `archive_artifact_path`
-  - `final_decision`
-  - `summary_exit_code`
-  - `failing_steps`
-  - `command_mode` (`default` or `induced_failure:<step_id>`)
-- Added archive verification command `python3 scripts/verify_phase4_rc_archive.py` that validates:
-  - index schema/version and required fields
-  - referenced archive artifact file existence and placement under archive dir
-  - index metadata consistency with each archived summary (`final_decision`, `summary_exit_code`, `failing_steps`, `artifact_path`)
-  - append-only ordering constraints (non-decreasing `created_at`, no duplicate artifact paths)
-- Added/updated integration tests:
-  - `tests/integration/test_phase4_release_candidate.py` now validates latest+archive+index behavior for GO and NO_GO and append-only collision-safe archiving.
-  - `tests/integration/test_phase4_rc_archive.py` validates verifier pass path and malformed/missing-record failure detection.
-- Updated sprint-scoped docs for archive/audit workflow:
+- Hardened `scripts/run_phase4_release_candidate.py` archive/index path with deterministic lock + atomic persistence:
+  - lock file path: `artifacts/release/archive/index.lock`
+  - lock acquire: `os.O_CREAT | os.O_EXCL` loop with bounded wait
+  - retry/timeout contract: `0.05s` retry interval, `5.0s` timeout
+  - explicit lock-timeout behavior: `ArchiveIndexLockTimeoutError` and CLI exit code `2`
+  - atomic writes: temp file in target directory + `os.replace()` for index and summary artifacts
+  - contention consistency: archive artifact creation and index append now happen under one lock, with archive cleanup if index append fails before commit
+- Extended `scripts/verify_phase4_rc_archive.py` hardening invariants:
+  - index path must match `archive_dir/index.json`
+  - stale `archive/index.lock` is treated as verification failure
+- Added deterministic contention coverage:
+  - `tests/integration/test_phase4_release_candidate.py`
+    - parallel concurrent archive/index writes keep all entries (no drop)
+    - explicit bounded lock-timeout contract test
+  - `tests/integration/test_phase4_rc_archive.py`
+    - stale lock detection test
+  - `tests/unit/test_phase4_gate_wrappers.py`
+    - CLI lock-timeout exit/message contract test
+- Synced Sprint 17 docs in the sprint packet write scope:
   - `docs/runbooks/phase4-closeout-packet.md`
   - `docs/runbooks/phase4-validation-matrix.md`
   - `README.md`
   - `ROADMAP.md`
   - `.ai/handoff/CURRENT_STATE.md`
 
-## Archive/Index Contract Delta (Exact)
-- Previous (Sprint 15): single latest artifact only at `artifacts/release/phase4_rc_summary.json` (overwritten each run).
-- New (Sprint 16):
-  - Latest compatibility artifact remains: `artifacts/release/phase4_rc_summary.json`
-  - Retained archive artifacts: `artifacts/release/archive/<timestamp>_phase4_rc_summary.json`
-  - Append-only audit ledger: `artifacts/release/archive/index.json`
-  - Index artifact version: `phase4_rc_archive_index.v1`
-
-## Artifact Path Model (Exact)
-- Latest summary path: `artifacts/release/phase4_rc_summary.json`
-- Archive directory: `artifacts/release/archive/`
-- Archive entry path format: `artifacts/release/archive/YYYYMMDDTHHMMSSZ_phase4_rc_summary.json` (with deterministic `_NNN` suffix if same-second collision)
-- Archive index path: `artifacts/release/archive/index.json`
+## Contention Scenario Results
+- Concurrent-writer integration test (`test_archive_index_concurrent_writes_retain_all_entries`) passed:
+  - 4 near-concurrent writers
+  - 4 unique retained archive artifacts (`<timestamp>`, `_001`, `_002`, `_003`)
+  - 4 index entries preserved (no lost updates)
+- Lock-timeout integration test (`test_archive_index_lock_timeout_is_explicit_and_bounded`) passed:
+  - pre-held `index.lock`
+  - bounded timeout raises deterministic lock-timeout error
+  - index write does not proceed
+- CLI lock-timeout exit contract unit test passed:
+  - emits explicit failure message
+  - returns configured lock-timeout exit code `2`
 
 ## Incomplete Work
-- None within Sprint 16 in-scope surfaces.
+- None within Sprint 17 in-scope surfaces.
 
 ## Files Changed
 - `scripts/run_phase4_release_candidate.py`
 - `scripts/verify_phase4_rc_archive.py`
 - `tests/integration/test_phase4_release_candidate.py`
 - `tests/integration/test_phase4_rc_archive.py`
+- `tests/unit/test_phase4_gate_wrappers.py`
 - `docs/runbooks/phase4-closeout-packet.md`
 - `docs/runbooks/phase4-validation-matrix.md`
 - `README.md`
@@ -62,30 +61,33 @@ Implement Phase 4 Sprint 16: make RC rehearsal evidence durable across repeated 
 
 ## Tests Run
 - `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_rc_archive.py tests/unit/test_phase4_gate_wrappers.py -q`
-  - PASS (`11 passed`)
+  - PASS (`15 passed`)
 - `python3 scripts/run_phase4_release_candidate.py`
-  - PASS (exit `0`, final decision `GO`)
+  - PASS (`exit 0`, `GO`)
   - wrote latest summary + archive artifact + archive index entry
 - `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix`
-  - EXPECTED FAIL (exit `1`, final decision `NO_GO`, failing step `phase4_validation_matrix`)
-  - wrote latest summary + additional archive artifact + additional archive index entry
+  - EXPECTED NO_GO (`exit 1`)
+  - archived NO_GO evidence and appended index entry
 - `python3 scripts/verify_phase4_rc_archive.py`
-  - PASS (exit `0`)
-
-Compatibility command outcomes (executed by RC chain and recorded in GO step evidence):
-- `python3 scripts/run_phase4_validation_matrix.py` -> PASS (step `phase4_validation_matrix`, exit `0`)
-- `python3 scripts/run_phase3_validation_matrix.py` -> PASS (step `phase3_compat_validation`, exit `0`)
-- `python3 scripts/run_phase2_validation_matrix.py` -> PASS (step `phase2_compat_validation`, exit `0`)
-- `python3 scripts/run_mvp_validation_matrix.py` -> PASS (step `mvp_compat_validation`, exit `0`)
+  - PASS (`exit 0`)
+- `python3 scripts/run_phase4_validation_matrix.py`
+  - PASS (`exit 0`) via elevated run (sandbox localhost DB restriction workaround)
+- `python3 scripts/run_phase3_validation_matrix.py`
+  - PASS (`exit 0`) via elevated run (sandbox localhost DB restriction workaround)
+- `python3 scripts/run_phase2_validation_matrix.py`
+  - PASS (`exit 0`) via elevated run (sandbox localhost DB restriction workaround)
+- `python3 scripts/run_mvp_validation_matrix.py`
+  - PASS (`exit 0`) via elevated run (sandbox localhost DB restriction workaround)
 
 ## Blockers/Issues
-- No implementation blockers remained after update.
-- RC rehearsal remains runtime-heavy by design because Phase 4 validation and compatibility chains intentionally execute broad integration coverage.
+- Direct non-elevated matrix command reruns in this environment hit sandbox localhost DB restrictions (`psycopg OperationalError: connection ... failed: Operation not permitted`).
+- Resolved for verification by rerunning matrix commands with elevated permissions; results were PASS.
 
 ## Explicit Deferred Scope
-- No changes under `apps/api/src/alicebot_api/*`
-- No changes under `workers/alicebot_worker/*`
-- No connector/auth/platform/runtime gate-chain redesign outside archive/audit surfaces
+- No changes in `apps/api/src/alicebot_api/*`
+- No changes in `workers/alicebot_worker/*`
+- No gate semantics changes
+- No connector/auth/platform/runtime schema changes
 
 ## Recommended Next Step
-- Control Tower should validate Sprint 16 acceptance against retained GO/NO_GO archive entries and proceed with review sign-off/merge approval.
+- Control Tower review should confirm Sprint 17 hardening acceptance and merge once lock/atomic-write behavior and contention coverage are validated against this report.
