@@ -132,3 +132,26 @@ def test_phase4_release_candidate_lock_timeout_exit_contract_is_explicit(
     stdout = capsys.readouterr().out
     assert "Phase 4 release-candidate archive update failed:" in stdout
     assert "Timed out acquiring archive index lock" in stdout
+
+
+def test_phase4_mvp_exit_manifest_generator_contract_is_stable() -> None:
+    module = _load_script_module("generate_phase4_mvp_exit_manifest.py")
+
+    assert module.MANIFEST_ARTIFACT_VERSION == "phase4_mvp_exit_manifest.v1"
+    assert module.DEFAULT_MANIFEST_PATH == (
+        REPO_ROOT / "artifacts" / "release" / "phase4_mvp_exit_manifest.json"
+    )
+    assert module.REQUIRED_COMPATIBILITY_COMMANDS == (
+        "python3 scripts/run_phase4_validation_matrix.py",
+        "python3 scripts/run_phase3_validation_matrix.py",
+        "python3 scripts/run_phase2_validation_matrix.py",
+        "python3 scripts/run_mvp_validation_matrix.py",
+    )
+
+
+def test_phase4_mvp_exit_manifest_verifier_default_path_contract_is_stable() -> None:
+    module = _load_script_module("verify_phase4_mvp_exit_manifest.py")
+
+    assert module.DEFAULT_MANIFEST_PATH == (
+        REPO_ROOT / "artifacts" / "release" / "phase4_mvp_exit_manifest.json"
+    )
