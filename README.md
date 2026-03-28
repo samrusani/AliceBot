@@ -1,6 +1,6 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The canonical baseline remains through Phase 3 Sprint 9, with earlier Phase 4 work already delivering run linkage/idempotent replay safety and run observability/retry-failure discipline, and Phase 4 Sprint 14 establishing canonical MVP release-gate ownership in Phase 4 gate scripts.
+AliceBot is a private, permissioned personal AI operating system. The canonical baseline remains through Phase 3 Sprint 9, with earlier Phase 4 work already delivering run linkage/idempotent replay safety and run observability/retry-failure discipline, Phase 4 Sprint 14 establishing canonical MVP release-gate ownership in Phase 4 gate scripts, and Phase 4 Sprint 15 adding deterministic release-candidate rehearsal evidence packaging.
 
 ## Current Implemented Slice
 
@@ -22,6 +22,7 @@ AliceBot is a private, permissioned personal AI operating system. The canonical 
 Useful checks:
 
 - Canonical gate entrypoints: `scripts/run_phase4_*.py` are the control-plane canonical MVP release gates; `scripts/run_phase3_*.py`, `scripts/run_phase2_*.py`, and `scripts/run_mvp_*.py` remain compatibility entrypoints with identical semantics.
+- Phase 4 RC rehearsal command: `python3 scripts/run_phase4_release_candidate.py` (writes `artifacts/release/phase4_rc_summary.json`)
 - Phase 4 entrypoints: `python3 scripts/run_phase4_acceptance.py`, `python3 scripts/run_phase4_readiness_gates.py`, `python3 scripts/run_phase4_validation_matrix.py`
 - API health: [http://127.0.0.1:8000/healthz](http://127.0.0.1:8000/healthz)
 - Phase 3 acceptance gate: `python3 scripts/run_phase3_acceptance.py`

@@ -1,97 +1,96 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 4 Sprint 14: make Phase 4 the canonical MVP ship gate by owning acceptance/readiness/validation semantics directly, embedding canonical magnesium reorder evidence as first-class gate evidence, and preserving Phase 3/Phase 2/MVP compatibility chains.
+Implement Phase 4 Sprint 15: add a deterministic MVP release-candidate rehearsal command that runs the canonical Phase 4 chain plus compatibility checks and emits a machine-readable GO/NO_GO evidence artifact.
 
 ## Completed Work
-- Replaced Phase 4 wrapper-only gate behavior with canonical Phase 4 command ownership:
-  - `scripts/run_phase4_acceptance.py` now runs deterministic acceptance evidence tests directly (no Phase 3 wrapper delegation), with explicit scenario-to-node evidence mapping and induced-failure support.
-  - `scripts/run_phase4_readiness_gates.py` now executes deterministic ordered Phase 4 readiness gates with explicit failing-gate reporting.
-  - `scripts/run_phase4_validation_matrix.py` now executes deterministic ordered Phase 4 validation steps that include:
-    - canonical magnesium ship-gate step
-    - explicit failing-step reporting
-    - explicit Phase 3/Phase 2/MVP compatibility validation steps
-    - direct web diagnostics execution via `pnpm --dir apps/web exec vitest run ...` (no dependency on out-of-scope package script changes)
-- Canonical magnesium integration delta:
-  - Added first-class magnesium gate contract in acceptance/readiness/validation scripts using:
-    - `tests/integration/test_mvp_acceptance_suite.py::test_acceptance_canonical_magnesium_reorder_flow_with_memory_write_back_evidence`
-  - Updated Phase 4 runbooks and magnesium runbook so docs match script behavior and canonical flow (`request -> approval -> execution -> memory write-back`).
-- Added sprint-scoped Phase 4 gate contract tests:
-  - `tests/unit/test_phase4_gate_wrappers.py`
-  - `tests/integration/test_phase4_acceptance_suite.py`
-  - `tests/integration/test_phase4_readiness_gates.py`
-  - `tests/integration/test_phase4_validation_matrix.py`
-- Updated control-doc truth ownership checks for Sprint 14 Phase 4 canonical ownership markers:
-  - `scripts/check_control_doc_truth.py`
-  - synchronized `README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`
-- Updated Sprint 14 runbooks:
-  - `docs/runbooks/phase4-acceptance-suite.md`
-  - `docs/runbooks/phase4-readiness-gates.md`
-  - `docs/runbooks/phase4-validation-matrix.md`
+- Added `scripts/run_phase4_release_candidate.py` with deterministic ordered orchestration:
+  1. `control_doc_truth`
+  2. `phase4_acceptance`
+  3. `phase4_readiness`
+  4. `phase4_validation_matrix`
+  5. `phase3_compat_validation`
+  6. `phase2_compat_validation`
+  7. `mvp_compat_validation`
+- Added deterministic failure injection support: `--induce-step <step_id>`.
+- Implemented explicit fail-closed behavior for rehearsal:
+  - first failing step marks `FAIL`
+  - downstream steps are recorded as `NOT_RUN`
+  - process exits non-zero (`NO_GO`)
+- Implemented deterministic evidence artifact contract writer:
+  - output path: `artifacts/release/phase4_rc_summary.json`
+  - stable top-level schema fields:
+    - `artifact_version`
+    - `artifact_path`
+    - `final_decision`
+    - `summary_exit_code`
+    - `ordered_steps`
+    - `executed_steps`
+    - `total_steps`
+    - `failing_steps`
+    - `steps[]`
+  - each `steps[]` entry includes:
+    - `step`
+    - `description`
+    - `status`
+    - `command`
+    - `exit_code`
+    - `duration_seconds`
+    - `induced_failure`
+- Added integration coverage for RC rehearsal contract:
+  - `tests/integration/test_phase4_release_candidate.py`
+    - PASS path (`GO`) schema + ordering assertions
+    - induced-failure path (`NO_GO`) + partial-evidence assertions
+- Extended deterministic wrapper contract coverage:
+  - `tests/unit/test_phase4_gate_wrappers.py` now verifies RC rehearsal sequence/commands.
+- Updated sprint-scoped runbooks and control docs for artifact-driven review:
   - `docs/runbooks/phase4-closeout-packet.md`
-  - `docs/runbooks/mvp-ship-gate-magnesium-reorder.md`
+  - `docs/runbooks/phase4-validation-matrix.md`
+  - `README.md`
+  - `ROADMAP.md`
+  - `.ai/handoff/CURRENT_STATE.md`
 
 ## Incomplete Work
-- No remaining implementation gaps in Sprint 14 in-scope files.
+- None within Sprint 15 in-scope implementation surfaces.
 
 ## Files Changed
-Sprint 14 in-scope implementation/reporting files:
-- `scripts/run_phase4_acceptance.py`
-- `scripts/run_phase4_readiness_gates.py`
-- `scripts/run_phase4_validation_matrix.py`
-- `scripts/check_control_doc_truth.py`
+- `scripts/run_phase4_release_candidate.py` (new)
+- `tests/integration/test_phase4_release_candidate.py` (new)
 - `tests/unit/test_phase4_gate_wrappers.py`
-- `tests/integration/test_phase4_acceptance_suite.py`
-- `tests/integration/test_phase4_readiness_gates.py`
-- `tests/integration/test_phase4_validation_matrix.py`
-- `docs/runbooks/phase4-acceptance-suite.md`
-- `docs/runbooks/phase4-readiness-gates.md`
-- `docs/runbooks/phase4-validation-matrix.md`
 - `docs/runbooks/phase4-closeout-packet.md`
-- `docs/runbooks/mvp-ship-gate-magnesium-reorder.md`
+- `docs/runbooks/phase4-validation-matrix.md`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
-Additional in-scope control-doc file present in the current working diff:
-- `.ai/active/SPRINT_PACKET.md` (in-scope control doc, modified in workspace)
-
-Out-of-scope file status:
-- No out-of-scope Sprint 14 implementation files remain in the current working diff.
+Generated evidence artifact (runtime output):
+- `artifacts/release/phase4_rc_summary.json`
 
 ## Tests Run
-- `./.venv/bin/python -m pytest tests/integration/test_phase4_acceptance_suite.py tests/integration/test_phase4_readiness_gates.py tests/integration/test_phase4_validation_matrix.py tests/unit/test_phase4_gate_wrappers.py -q`
-  - PASS (`10 passed`)
-- `./.venv/bin/python -m pytest tests/integration/test_mvp_acceptance_suite.py::test_acceptance_canonical_magnesium_reorder_flow_with_memory_write_back_evidence -q`
-  - PASS (`1 passed`)
-- `pnpm --dir apps/web exec vitest run app/tasks/page.test.tsx app/traces/page.test.tsx components/task-run-list.test.tsx components/execution-summary.test.tsx lib/api.test.ts`
-  - PASS (`5 files, 37 tests`)
-- `python3 scripts/check_control_doc_truth.py`
-  - PASS
-- `python3 scripts/run_phase4_acceptance.py`
-  - PASS (`4 passed` in acceptance suite)
-- `python3 scripts/run_phase4_readiness_gates.py`
-  - PASS
-- `python3 scripts/run_phase4_validation_matrix.py`
-  - PASS
-- `python3 scripts/run_phase3_validation_matrix.py`
-  - PASS (wrapper to Phase 2 matrix, exit `0`)
-- `python3 scripts/run_phase2_validation_matrix.py`
-  - PASS
-- `python3 scripts/run_mvp_validation_matrix.py`
-  - PASS (alias to Phase 2 matrix, exit `0`)
+- `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_validation_matrix.py tests/unit/test_phase4_gate_wrappers.py -q`
+  - PASS (`9 passed`)
+- `python3 scripts/run_phase4_release_candidate.py`
+  - PASS (exit `0`, final decision `GO`, artifact emitted)
+- `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix`
+  - EXPECTED FAIL (exit `1`, final decision `NO_GO`, failing step `phase4_validation_matrix`, artifact emitted)
+
+Compatibility chain verification outcomes (executed by RC rehearsal command and recorded in step evidence):
+- `python3 scripts/run_phase4_validation_matrix.py` => PASS (step `phase4_validation_matrix`, exit `0`)
+- `python3 scripts/run_phase3_validation_matrix.py` => PASS (step `phase3_compat_validation`, exit `0`)
+- `python3 scripts/run_phase2_validation_matrix.py` => PASS (step `phase2_compat_validation`, exit `0`)
+- `python3 scripts/run_mvp_validation_matrix.py` => PASS (step `mvp_compat_validation`, exit `0`)
 
 ## Blockers/Issues
-- No functional blockers.
-- Execution environment note: DB-backed checks fail inside sandbox (`localhost:5432` not permitted), so DB-backed verification commands were rerun with escalated permissions for authoritative PASS results.
+- Sandbox cannot access local Postgres by default; rehearsal commands requiring DB-backed integration checks must be run with escalated permissions.
+- Evidence artifact path is deterministic and reused; the latest run overwrites previous artifact content (current artifact reflects the latest induced-failure NO_GO run).
 
 ## Recommended Next Step
-- Move to Control Tower review/sign-off for Sprint 14 and open the sprint PR from `codex/phase4-sprint-14-mvp-ship-gate-canonicalization`.
+- Control Tower should review the generated RC artifact contract and run outputs, then proceed with sprint review/sign-off.
 
 ## Explicit Deferred Scope
-- Runtime/task-run schema redesign
-- Connector/auth/platform expansion
-- Workflow engine/orchestration redesign
-- Any non-sprint runtime reimplementation overlapping Sprint 12/13 delivery
+- runtime schema/execution semantics redesign
+- connector/auth/platform expansion
+- orchestration model redesign
+- any non-sprint runtime behavior changes under `apps/api` or `workers`
