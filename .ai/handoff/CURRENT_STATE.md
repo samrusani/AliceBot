@@ -4,10 +4,10 @@
 
 - The canonical baseline remains through Phase 3 Sprint 9.
 - Earlier Phase 4 work is already delivered: task-run linkage to approvals/executions, idempotent proxy execution replay guards, approval pause/resume continuity for linked runs, run transition observability, explicit stop reasons, bounded retries with persisted posture, explicit failure classes, and deterministic Phase 4 gate runners.
-- Active Sprint focus is Phase 4 Sprint 14 foundation, with Sprint 15 deterministic MVP release-candidate rehearsal evidence packaging and Sprint 16 archive/audit hardening.
+- Active Sprint focus is Phase 4 Sprint 14 foundation, with Sprint 15 deterministic MVP release-candidate rehearsal evidence packaging, Sprint 16 archive/audit retention, and Sprint 17 RC archive concurrency hardening.
 - The accepted baseline includes deterministic Phase 3 gate entrypoints: `python3 scripts/run_phase3_acceptance.py`, `python3 scripts/run_phase3_readiness_gates.py`, and `python3 scripts/run_phase3_validation_matrix.py` (default go/no-go command).
 - Phase 4 gate entrypoints are `python3 scripts/run_phase4_acceptance.py`, `python3 scripts/run_phase4_readiness_gates.py`, and `python3 scripts/run_phase4_validation_matrix.py`.
-- Phase 4 release-candidate rehearsal entrypoint is `python3 scripts/run_phase4_release_candidate.py`, which writes latest summary evidence at `artifacts/release/phase4_rc_summary.json` and appends retained archive/index evidence under `artifacts/release/archive/` for repeated-run audit.
+- Phase 4 release-candidate rehearsal entrypoint is `python3 scripts/run_phase4_release_candidate.py`, which writes latest summary evidence at `artifacts/release/phase4_rc_summary.json` and appends retained archive/index evidence under `artifacts/release/archive/` for repeated-run audit, with deterministic archive index lock path `artifacts/release/archive/index.lock`, bounded lock-timeout failure contract, and atomic index replace writes.
 - Archive audit verifier entrypoint is `python3 scripts/verify_phase4_rc_archive.py`.
 - Gate ownership is canonicalized to Phase 4 runner script names; Phase 3/Phase 2/MVP commands remain supported compatibility entrypoints with identical semantics.
 - Use [PRODUCT_BRIEF.md](../../PRODUCT_BRIEF.md) for product scope, [ARCHITECTURE.md](../../ARCHITECTURE.md) for implemented boundaries, [ROADMAP.md](../../ROADMAP.md) for forward planning, and [RULES.md](../../RULES.md) for durable operating rules.

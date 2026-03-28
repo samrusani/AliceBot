@@ -4,47 +4,57 @@
 PASS
 
 ## criteria met
-- Sprint stayed release-audit scoped. Diff is limited to sprint packet/report docs, RC tooling, and tests; no runtime/API/worker surface expansion (`apps/api/*` and `workers/*` untouched).
-- `python3 scripts/run_phase4_release_candidate.py` passed (exit `0`) and wrote:
-  - latest summary: `artifacts/release/phase4_rc_summary.json`
-  - archive artifact: `artifacts/release/archive/20260328T074928Z_phase4_rc_summary.json`
-  - archive index: `artifacts/release/archive/index.json`
-- `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix` failed as expected (exit `1`) and archived NO_GO evidence:
-  - archive artifact: `artifacts/release/archive/20260328T074449Z_phase4_rc_summary.json`
-  - index entry mode: `induced_failure:phase4_validation_matrix`
-- Archive ledger is retaining concurrent GO + NO_GO history (current index snapshot: `total_entries=5`, `go_entries=2`, `no_go_entries=3`).
-- `python3 scripts/verify_phase4_rc_archive.py` passed (exit `0`).
-- Compatibility commands remained green in executed GO RC evidence:
-  - `python3 scripts/run_phase4_validation_matrix.py` -> PASS
-  - `python3 scripts/run_phase3_validation_matrix.py` -> PASS
-  - `python3 scripts/run_phase2_validation_matrix.py` -> PASS
-  - `python3 scripts/run_mvp_validation_matrix.py` -> PASS
-- `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_rc_archive.py tests/unit/test_phase4_gate_wrappers.py -q` passed (`11 passed`).
-- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` are synchronized to Sprint 16 archive/audit focus.
+- Sprint scope stayed within the packet’s hardening surfaces:
+  - code changes are limited to `scripts/run_phase4_release_candidate.py` and `scripts/verify_phase4_rc_archive.py`
+  - tests/docs/report updates are limited to sprint-listed files
+  - no changes under `apps/api/src/alicebot_api/*` or `workers/alicebot_worker/*`
+- Concurrency hardening contract is implemented:
+  - deterministic lock path `artifacts/release/archive/index.lock`
+  - bounded lock wait with deterministic timeout (`ArchiveIndexLockTimeoutError`)
+  - explicit CLI timeout contract (exit code `2`)
+  - atomic JSON persistence via temp-file + `os.replace()`
+- Lost-update prevention under contention is test-covered:
+  - `test_archive_index_concurrent_writes_retain_all_entries`
+  - `test_archive_index_lock_timeout_is_explicit_and_bounded`
+  - `test_phase4_release_candidate_lock_timeout_exit_contract_is_explicit`
+- Archive verifier hardening checks are present and tested:
+  - index path must match `archive_dir/index.json`
+  - stale `index.lock` is a verification failure
+  - stale-lock test added in `tests/integration/test_phase4_rc_archive.py`
+- Required acceptance commands were verified:
+  - `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_rc_archive.py tests/unit/test_phase4_gate_wrappers.py -q` -> PASS (`15 passed`)
+  - `python3 scripts/run_phase4_release_candidate.py` -> PASS (`exit 0`, GO, latest+archive+index written)
+  - `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix` -> expected NO_GO (`exit 1`) with archive/index evidence retained
+  - `python3 scripts/verify_phase4_rc_archive.py` -> PASS
+  - `python3 scripts/run_phase4_validation_matrix.py` -> PASS (rerun with elevated permissions due sandbox localhost DB restrictions)
+  - `python3 scripts/run_phase3_validation_matrix.py` -> PASS (elevated)
+  - `python3 scripts/run_phase2_validation_matrix.py` -> PASS (elevated)
+  - `python3 scripts/run_mvp_validation_matrix.py` -> PASS (elevated)
+- Control docs are synchronized to Sprint 17 hardening focus:
+  - `README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking quality defects found in sprint-scoped implementation.
-- Non-blocking: archive index update is a read-modify-write without explicit locking, so concurrent RC runs could race and lose an index append.
+- No blocking correctness or safety defects found in sprint-scoped code.
+- Non-blocking note: in this environment, direct non-elevated matrix runs can fail on localhost Postgres access (`Operation not permitted`); elevated reruns passed.
 
 ## regression risks
-- RC chain remains long-running; runtime/cost profile is unchanged from Sprint 15.
-- Archive retention is append-only and will grow storage footprint over time.
-- Concurrent RC invocations may contend on `artifacts/release/archive/index.json` (see quality note).
+- Stale lock files after abnormal process termination remain an operational risk; verifier now detects this explicitly, but automatic stale-lock recovery is not implemented.
+- RC rehearsal remains long-running because it intentionally executes the full compatibility chain.
 
 ## docs issues
-- No blocking documentation issues found.
+- No blocking documentation gaps.
+- Optional improvement: add a short stale-lock remediation note (when to remove `artifacts/release/archive/index.lock`) in runbook operations guidance.
 
 ## should anything be added to RULES.md?
-- No required change.
-- Optional follow-up: add a rule that CI/release workflows must not pass `--no-archive` for RC rehearsal.
+- No required RULES update.
 
 ## should anything update ARCHITECTURE.md?
-- No. Sprint 16 is tooling/audit-surface work and does not change architecture boundaries.
+- No required ARCHITECTURE update. This sprint is operational hardening and does not alter architecture boundaries.
 
 ## recommended next action
-1. Approve Sprint 16 as PASS.
-2. Merge once Control Tower confirms the retained GO/NO_GO index entries in `artifacts/release/archive/index.json`.
-3. Track optional hardening follow-up for archive index write locking if parallel RC runs are expected.
+1. Accept Sprint 17 as `PASS`.
+2. Proceed with Control Tower merge flow.
+3. Optionally add stale-lock remediation guidance to runbooks in a follow-up housekeeping change.

@@ -2,134 +2,136 @@
 
 ## Sprint Title
 
-Phase 4 Sprint 16: RC Evidence Archive and Audit Ledger
+Phase 4 Sprint 17: RC Archive Concurrency Hardening
 
 ## Sprint Type
 
-feature
+hardening
 
 ## Sprint Reason
 
-Sprint 15 delivered deterministic release-candidate rehearsal with GO/NO_GO artifacts, but evidence is currently written to one deterministic path and overwritten on each run. The next non-redundant MVP gap is audit-grade evidence retention for repeated rehearsal/testing cycles.
+Phase 4 is functionally complete for MVP scope, with one non-blocking operational risk left: concurrent `run_phase4_release_candidate.py` runs can race when updating `artifacts/release/archive/index.json`.
 
 ## Sprint Intent
 
-Make RC evidence durable across runs by adding deterministic archival/ledger support while preserving Sprint 15 gate semantics and compatibility guarantees.
+Harden RC archive/index writes with deterministic locking + atomic update behavior so concurrent rehearsals cannot drop or corrupt ledger entries.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase4-sprint-16-rc-evidence-archive-ledger`
+- Branch Name: `codex/phase4-sprint-17-rc-archive-concurrency-hardening`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It closes the evidence-loss risk called out in Sprint 15 review (`phase4_rc_summary.json` overwrite behavior).
-- It enables thorough MVP testing with retained GO/NO_GO history instead of one latest snapshot.
-- It improves release auditability without reopening runtime or gate-ownership scope.
+- It resolves the only remaining non-blocking risk from Sprint 16 review.
+- It improves reliability of extensive MVP rehearsal/testing workflows.
+- It does not reopen runtime/API scope.
 
 ## Redundancy Guard
 
-- Already shipped through Sprint 15:
-  - canonical Phase 4 gates and magnesium ship-gate integration
-  - deterministic RC rehearsal and structured summary artifact
-- Required now (Sprint 16):
-  - persistent archival of RC artifacts across runs
-  - deterministic audit ledger/index for historical rehearsal evidence
-  - runbook and control-doc alignment to archive workflow
-- Explicitly not in Sprint 16:
+- Already shipped through Sprint 16:
+  - canonical Phase 4 gate ownership
+  - RC rehearsal GO/NO_GO evidence
+  - append-only archive/index retention
+- Required now (Sprint 17):
+  - concurrency-safe archive index append behavior
+  - atomic file-write guarantees for index updates
+  - deterministic tests for parallel/contended update paths
+- Explicitly out of Sprint 17:
+  - gate semantics changes
   - runtime behavior/schema changes under `apps/api` or `workers`
-  - connector/auth/platform expansion
-  - gate-chain semantic redesign
+  - connector/auth/platform changes
 
 ## Design Truth
 
-- Phase 4 remains canonical MVP release gate.
-- Canonical magnesium scenario remains required in RC chain.
-- Compatibility checks remain required:
-  - `python3 scripts/run_phase3_validation_matrix.py`
-  - `python3 scripts/run_phase2_validation_matrix.py`
-  - `python3 scripts/run_mvp_validation_matrix.py`
-- RC evidence must support both:
-  - latest summary (`artifacts/release/phase4_rc_summary.json`)
-  - append-only historical archive + index for audit/replay
+- RC output must remain backward compatible:
+  - latest summary: `artifacts/release/phase4_rc_summary.json`
+  - archive summary copies under `artifacts/release/archive/`
+  - append-only ledger: `artifacts/release/archive/index.json`
+- New hardening must prevent lost updates when multiple RC commands run close together.
+- Existing phase compatibility checks remain unchanged:
+  - `run_phase4_validation_matrix.py`
+  - `run_phase3_validation_matrix.py`
+  - `run_phase2_validation_matrix.py`
+  - `run_mvp_validation_matrix.py`
 
 ## Exact Surfaces In Scope
 
-- RC rehearsal artifact write behavior (latest + archived copies)
-- archive index/ledger generation and validation
-- deterministic tests for archival contract and backward compatibility
-- runbook/control-doc synchronization for audit workflow
+- lock acquisition/release behavior around archive index update
+- atomic write/replace semantics for index persistence
+- deterministic retry/timeout behavior for lock contention
+- archive verification updates for hardening guarantees
 
 ## Exact Files In Scope
 
 - `scripts/run_phase4_release_candidate.py`
 - `scripts/verify_phase4_rc_archive.py`
+- `tests/integration/test_phase4_release_candidate.py`
+- `tests/integration/test_phase4_rc_archive.py`
+- `tests/unit/test_phase4_gate_wrappers.py`
 - `docs/runbooks/phase4-closeout-packet.md`
 - `docs/runbooks/phase4-validation-matrix.md`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
-- `tests/integration/test_phase4_release_candidate.py`
-- `tests/integration/test_phase4_rc_archive.py`
-- `tests/unit/test_phase4_gate_wrappers.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 - `.ai/active/SPRINT_PACKET.md`
 
 ## In Scope
 
-- Extend `scripts/run_phase4_release_candidate.py` with deterministic archival support:
-  - keep writing latest artifact to `artifacts/release/phase4_rc_summary.json`
-  - optionally/by-default write timestamped archive copy (for example `artifacts/release/archive/YYYYMMDDTHHMMSSZ_phase4_rc_summary.json`)
-  - update append-only index (for example `artifacts/release/archive/index.json`) with run metadata (`final_decision`, failing steps, command mode, created_at)
-- Add archive verification command:
-  - `python3 scripts/verify_phase4_rc_archive.py`
-  - validates archive index schema, references, and consistency with stored artifacts
-- Preserve backward compatibility for existing Sprint 15 command/JSON contract consumers.
-- Update runbooks and control docs to treat archive index as canonical audit trail for repeated MVP rehearsal runs.
+- Implement concurrency-safe index append strategy in `run_phase4_release_candidate.py`:
+  - deterministic lock file/path (for example `artifacts/release/archive/index.lock`)
+  - bounded wait with explicit failure message/exit behavior on lock timeout
+  - atomic index write (temp file + atomic replace)
+- Ensure archive artifact creation and index append are consistent under contention.
+- Extend `verify_phase4_rc_archive.py` to validate hardening invariants where applicable.
+- Add/expand tests that simulate contended index updates and verify no ledger entry loss.
+- Update runbooks/control docs with lock/timeout and failure-handling expectations.
 
 ## Out of Scope
 
 - any changes in `apps/api/src/alicebot_api/*`
 - any changes in `workers/alicebot_worker/*`
-- UI feature work
-- connector breadth changes
-- auth model changes
+- UI changes
+- connector/auth expansion
+- new gate steps or changed pass/fail criteria for Phase 4/3/2/MVP chains
 
 ## Required Deliverables
 
-- RC rehearsal archival + index contract
-- archive verification script
-- tests covering GO and NO_GO archival behavior
-- updated closeout/runbook docs for archive-driven audit
-- sprint build/review reports scoped to Sprint 16
+- concurrency-safe RC archive index write path
+- deterministic lock contention behavior contract
+- contended-write test coverage
+- updated closeout docs for hardening behavior
+- sprint-scoped build/review reports
 
 ## Acceptance Criteria
 
-- `python3 scripts/run_phase4_release_candidate.py` passes and writes:
-  - latest summary (`artifacts/release/phase4_rc_summary.json`)
-  - archive entry + index update
-- `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix` fails as expected and archives NO_GO evidence without overwriting prior archive entries.
+- Two sequential or near-concurrent RC runs do not lose archive index entries.
+- `python3 scripts/run_phase4_release_candidate.py` still passes and writes latest + archive + index.
+- `python3 scripts/run_phase4_release_candidate.py --induce-step phase4_validation_matrix` still archives NO_GO evidence correctly.
+- Lock contention behavior is deterministic:
+  - explicit timeout/failure contract is test-covered.
 - `python3 scripts/verify_phase4_rc_archive.py` passes.
 - `python3 scripts/run_phase4_validation_matrix.py` remains PASS.
 - `python3 scripts/run_phase3_validation_matrix.py` remains PASS.
 - `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
 - `python3 scripts/run_mvp_validation_matrix.py` remains PASS.
 - `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_rc_archive.py tests/unit/test_phase4_gate_wrappers.py -q` passes.
-- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` are synchronized to Sprint 16 archive/audit focus.
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` are synchronized to Sprint 17 hardening focus.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
-- preserve existing Sprint 15 RC summary schema fields
-- keep archival format deterministic and machine-readable
-- keep machine-independent paths and commands in docs
+- preserve Sprint 16 archive/index schema and existing field names
+- keep deterministic machine-readable output
+- keep machine-independent commands/paths in docs
 
 ## Control Tower Task Cards
 
-### Task 1: RC Archive Wiring
+### Task 1: Locking + Atomic Write Path
 
 Owner: tooling operative
 
@@ -138,7 +140,7 @@ Write scope:
 - `scripts/run_phase4_release_candidate.py`
 - `scripts/verify_phase4_rc_archive.py`
 
-### Task 2: Archive Contract Tests
+### Task 2: Contention Tests
 
 Owner: tooling operative
 
@@ -148,7 +150,7 @@ Write scope:
 - `tests/integration/test_phase4_rc_archive.py`
 - `tests/unit/test_phase4_gate_wrappers.py`
 
-### Task 3: Docs + Control Sync
+### Task 3: Docs Sync
 
 Owner: tooling operative
 
@@ -171,17 +173,17 @@ Write scope:
 
 Responsibilities:
 
-- verify no overlap with Sprint 12-15 runtime/gate-ownership scope
-- verify archival index is deterministic and append-only
-- verify GO and NO_GO runs are retained concurrently
-- verify compatibility chains remain PASS
+- verify no scope expansion beyond RC archive hardening
+- verify no lost index entries under contention scenarios
+- verify compatibility chain remains green
+- verify docs and active packet stay aligned
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
 
-- exact archive/index contract delta
-- exact artifact path model (latest + archive + index)
+- exact locking/atomic-write implementation approach
+- contention scenario results
 - verification command outcomes
 - explicit deferred scope
 
@@ -189,12 +191,12 @@ Responsibilities:
 
 `REVIEW_REPORT.md` should verify:
 
-- sprint stayed release-audit scoped
-- archival behavior preserves historical GO/NO_GO evidence
-- archive verification script catches malformed/missing records
+- sprint stayed hardening-scoped
+- lock + atomic write behavior prevents lost updates
+- failure modes are explicit and test-backed
 - compatibility chains remain green
 - no hidden runtime scope expansion
 
 ## Exit Condition
 
-This sprint is complete when RC evidence is durable across repeated runs via a deterministic archive/index contract, with compatibility gates still green and no runtime scope expansion.
+This sprint is complete when RC archive/index updates are concurrency-safe and deterministic, with no lost evidence entries under contention and all compatibility gates still passing.

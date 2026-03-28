@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import threading
+
+import pytest
 
 import scripts.run_phase4_release_candidate as release_candidate
 
@@ -167,3 +170,64 @@ def test_archive_index_is_append_only_and_avoids_same_second_overwrite(tmp_path:
     assert len(index_payload["entries"]) == 2
     assert index_payload["entries"][0]["archive_artifact_path"] == str(first_archive)
     assert index_payload["entries"][1]["archive_artifact_path"] == str(second_archive)
+
+
+def test_archive_index_concurrent_writes_retain_all_entries(tmp_path: Path) -> None:
+    summary_path = tmp_path / "phase4_rc_summary.json"
+    created_at = datetime(2026, 3, 28, 9, 30, 0, tzinfo=UTC)
+    run_count = 4
+    barrier = threading.Barrier(run_count)
+    failures: list[str] = []
+
+    def _writer() -> None:
+        try:
+            step_results = release_candidate.run_release_candidate(execute_command=_always_pass_executor)
+            barrier.wait()
+            release_candidate.write_release_candidate_summary(
+                step_results=step_results,
+                artifact_path=summary_path,
+                created_at=created_at,
+            )
+        except Exception as exc:  # pragma: no cover - defensive guard for threaded assertions
+            failures.append(str(exc))
+
+    threads = [threading.Thread(target=_writer) for _ in range(run_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert failures == []
+    archive_dir = tmp_path / "archive"
+    index_payload = json.loads((archive_dir / "index.json").read_text(encoding="utf-8"))
+    archive_paths = [entry["archive_artifact_path"] for entry in index_payload["entries"]]
+    assert len(archive_paths) == run_count
+    assert len(set(archive_paths)) == run_count
+    assert all(Path(path).exists() for path in archive_paths)
+    assert (archive_dir / "20260328T093000Z_phase4_rc_summary.json").exists()
+    assert (archive_dir / "20260328T093000Z_001_phase4_rc_summary.json").exists()
+    assert (archive_dir / "20260328T093000Z_002_phase4_rc_summary.json").exists()
+    assert (archive_dir / "20260328T093000Z_003_phase4_rc_summary.json").exists()
+
+
+def test_archive_index_lock_timeout_is_explicit_and_bounded(tmp_path: Path) -> None:
+    step_results = release_candidate.run_release_candidate(execute_command=_always_pass_executor)
+    summary_path = tmp_path / "phase4_rc_summary.json"
+    lock_path = tmp_path / "archive" / release_candidate.ARCHIVE_INDEX_LOCK_NAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text("held-by-test\n", encoding="utf-8")
+
+    with pytest.raises(
+        release_candidate.ArchiveIndexLockTimeoutError,
+        match=r"Timed out acquiring archive index lock at .*index\.lock",
+    ):
+        release_candidate.write_release_candidate_summary(
+            step_results=step_results,
+            artifact_path=summary_path,
+            created_at=datetime(2026, 3, 28, 9, 45, 0, tzinfo=UTC),
+            lock_timeout_seconds=0.02,
+            lock_retry_interval_seconds=0.005,
+        )
+
+    assert summary_path.exists()
+    assert not (tmp_path / "archive" / "index.json").exists()

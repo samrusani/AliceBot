@@ -97,3 +97,38 @@ def test_phase4_release_candidate_rehearsal_contract_sequence_is_stable() -> Non
     assert steps[4].command == ("/usr/bin/python3", "scripts/run_phase3_validation_matrix.py")
     assert steps[5].command == ("/usr/bin/python3", "scripts/run_phase2_validation_matrix.py")
     assert steps[6].command == ("/usr/bin/python3", "scripts/run_mvp_validation_matrix.py")
+
+
+def test_phase4_release_candidate_lock_timeout_exit_contract_is_explicit(
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_script_module("run_phase4_release_candidate.py")
+    step_result = module.ReleaseCandidateStepResult(
+        step=module.STEP_CONTROL_DOC_TRUTH,
+        description="Validate control-doc truth markers.",
+        status="PASS",
+        exit_code=0,
+        duration_seconds=0.1,
+        command=("/usr/bin/python3", "scripts/check_control_doc_truth.py"),
+        induced_failure=False,
+    )
+
+    def _fake_run_release_candidate(*, induce_step=None, execute_command=module._execute_command):
+        del induce_step, execute_command
+        return [step_result]
+
+    def _fake_write_release_candidate_summary(**kwargs):
+        del kwargs
+        raise module.ArchiveIndexLockTimeoutError(
+            "Timed out acquiring archive index lock at artifacts/release/archive/index.lock after 0.02s."
+        )
+
+    monkeypatch.setattr(module, "run_release_candidate", _fake_run_release_candidate)
+    monkeypatch.setattr(module, "write_release_candidate_summary", _fake_write_release_candidate_summary)
+
+    exit_code = module.main([])
+    assert exit_code == module.ARCHIVE_INDEX_LOCK_TIMEOUT_EXIT_CODE
+    stdout = capsys.readouterr().out
+    assert "Phase 4 release-candidate archive update failed:" in stdout
+    assert "Timed out acquiring archive index lock" in stdout

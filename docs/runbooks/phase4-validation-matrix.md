@@ -1,6 +1,6 @@
 # Phase 4 Validation Matrix
 
-This runbook defines the deterministic Phase 4 validation chain used by Sprint 16 release-candidate rehearsal and archive audit flow.
+This runbook defines the deterministic Phase 4 validation chain used by Sprint 17 release-candidate rehearsal and archive audit flow.
 
 ## Canonical Command
 
@@ -47,3 +47,4 @@ The `phase4_scenarios` step runs:
 - Failing step IDs are reported explicitly as `Failing steps: ...`.
 - In RC rehearsal context, matrix failure marks overall `final_decision` as `NO_GO` in `artifacts/release/phase4_rc_summary.json`.
 - RC rehearsal writes an archive copy and updates `artifacts/release/archive/index.json`; the index is the canonical repeated-run audit ledger.
+- Archive index updates are serialized by deterministic lock path `artifacts/release/archive/index.lock` with bounded timeout behavior and atomic replace writes for `index.json`.

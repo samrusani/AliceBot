@@ -10,6 +10,8 @@ from typing import Literal
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_ARCHIVE_INDEX_PATH = ROOT_DIR / "artifacts" / "release" / "archive" / "index.json"
+ARCHIVE_INDEX_NAME = "index.json"
+ARCHIVE_INDEX_LOCK_NAME = "index.lock"
 ARCHIVE_INDEX_VERSION = "phase4_rc_archive_index.v1"
 SUMMARY_ARTIFACT_VERSION = "phase4_rc_summary.v1"
 FinalDecision = Literal["GO", "NO_GO"]
@@ -100,6 +102,18 @@ def verify_archive_index(index_path: Path = DEFAULT_ARCHIVE_INDEX_PATH) -> list[
         archive_dir = _resolve_path(archive_dir_value)
         if not archive_dir.exists():
             errors.append(f"archive index archive_dir does not exist: {archive_dir_value}")
+        else:
+            expected_index_path = (archive_dir / ARCHIVE_INDEX_NAME).resolve(strict=False)
+            if index_path.resolve(strict=False) != expected_index_path:
+                errors.append(
+                    "archive index path must be archive_dir/index.json for deterministic "
+                    "lock and atomic-write contract."
+                )
+            lock_path = archive_dir / ARCHIVE_INDEX_LOCK_NAME
+            if lock_path.exists():
+                errors.append(
+                    f"archive index lock file should not persist after RC write completion: {lock_path}"
+                )
 
     entries = index_payload.get("entries")
     if not isinstance(entries, list):
