@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import json
 from pathlib import Path
 import shlex
@@ -14,6 +15,10 @@ from typing import Callable, Literal
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 ARTIFACT_PATH = ROOT_DIR / "artifacts" / "release" / "phase4_rc_summary.json"
+ARCHIVE_DIR_NAME = "archive"
+ARCHIVE_INDEX_NAME = "index.json"
+ARCHIVE_INDEX_VERSION = "phase4_rc_archive_index.v1"
+ARCHIVE_FILENAME_SUFFIX = "_phase4_rc_summary.json"
 
 INDUCED_FAILURE_EXIT_CODE = 97
 
@@ -228,14 +233,159 @@ def build_release_candidate_summary(
     }
 
 
+def _normalize_utc_datetime(created_at: datetime | None) -> datetime:
+    if created_at is None:
+        return datetime.now(UTC).replace(microsecond=0)
+    if created_at.tzinfo is None:
+        return created_at.replace(tzinfo=UTC, microsecond=0)
+    return created_at.astimezone(UTC).replace(microsecond=0)
+
+
+def _format_created_at(created_at: datetime) -> str:
+    return created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _format_archive_timestamp(created_at: datetime) -> str:
+    return created_at.strftime("%Y%m%dT%H%M%SZ")
+
+
+def _archive_dir_for_artifact_path(artifact_path: Path) -> Path:
+    return artifact_path.parent / ARCHIVE_DIR_NAME
+
+
+def _archive_index_path_for_artifact_path(artifact_path: Path) -> Path:
+    return _archive_dir_for_artifact_path(artifact_path) / ARCHIVE_INDEX_NAME
+
+
+def _next_archive_artifact_path(*, archive_dir: Path, timestamp: str) -> Path:
+    candidate = archive_dir / f"{timestamp}{ARCHIVE_FILENAME_SUFFIX}"
+    if not candidate.exists():
+        return candidate
+
+    suffix = 1
+    while True:
+        candidate = archive_dir / f"{timestamp}_{suffix:03d}{ARCHIVE_FILENAME_SUFFIX}"
+        if not candidate.exists():
+            return candidate
+        suffix += 1
+
+
+def _new_archive_index_payload(*, artifact_path: Path, archive_dir: Path) -> dict[str, object]:
+    return {
+        "artifact_version": ARCHIVE_INDEX_VERSION,
+        "latest_summary_path": _render_artifact_path(artifact_path),
+        "archive_dir": _render_artifact_path(archive_dir),
+        "entries": [],
+    }
+
+
+def _load_archive_index_payload(*, artifact_path: Path, archive_dir: Path) -> dict[str, object]:
+    index_path = _archive_index_path_for_artifact_path(artifact_path)
+    if not index_path.exists():
+        return _new_archive_index_payload(artifact_path=artifact_path, archive_dir=archive_dir)
+
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Archive index payload must be a JSON object.")
+
+    if payload.get("artifact_version") != ARCHIVE_INDEX_VERSION:
+        raise ValueError(
+            f"Archive index artifact_version must be {ARCHIVE_INDEX_VERSION!r}."
+        )
+
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError("Archive index entries must be a list.")
+
+    latest_summary_path = payload.get("latest_summary_path")
+    if not isinstance(latest_summary_path, str):
+        raise ValueError("Archive index latest_summary_path must be a string.")
+
+    archive_dir_value = payload.get("archive_dir")
+    if not isinstance(archive_dir_value, str):
+        raise ValueError("Archive index archive_dir must be a string.")
+
+    return payload
+
+
+def _append_archive_index_entry(
+    *,
+    artifact_path: Path,
+    archive_dir: Path,
+    entry: dict[str, object],
+) -> Path:
+    payload = _load_archive_index_payload(artifact_path=artifact_path, archive_dir=archive_dir)
+    entries = payload["entries"]
+    assert isinstance(entries, list)
+    entries.append(entry)
+
+    index_path = _archive_index_path_for_artifact_path(artifact_path)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return index_path
+
+
+def _write_archive_copy_and_index(
+    *,
+    step_results: list[ReleaseCandidateStepResult],
+    artifact_path: Path,
+    command_mode: str,
+    created_at: datetime | None,
+) -> tuple[Path, Path]:
+    normalized_created_at = _normalize_utc_datetime(created_at)
+    created_at_iso = _format_created_at(normalized_created_at)
+    timestamp = _format_archive_timestamp(normalized_created_at)
+
+    archive_dir = _archive_dir_for_artifact_path(artifact_path)
+    archive_artifact_path = _next_archive_artifact_path(archive_dir=archive_dir, timestamp=timestamp)
+    archive_summary = build_release_candidate_summary(
+        step_results=step_results,
+        artifact_path=archive_artifact_path,
+    )
+    archive_artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    archive_artifact_path.write_text(
+        json.dumps(archive_summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    entry = {
+        "created_at": created_at_iso,
+        "archive_artifact_path": _render_artifact_path(archive_artifact_path),
+        "final_decision": archive_summary["final_decision"],
+        "summary_exit_code": archive_summary["summary_exit_code"],
+        "failing_steps": archive_summary["failing_steps"],
+        "command_mode": command_mode,
+    }
+    index_path = _append_archive_index_entry(
+        artifact_path=artifact_path,
+        archive_dir=archive_dir,
+        entry=entry,
+    )
+    return archive_artifact_path, index_path
+
+
 def write_release_candidate_summary(
     *,
     step_results: list[ReleaseCandidateStepResult],
     artifact_path: Path = ARTIFACT_PATH,
+    write_archive: bool = True,
+    command_mode: str = "default",
+    created_at: datetime | None = None,
 ) -> dict[str, object]:
     summary = build_release_candidate_summary(step_results=step_results, artifact_path=artifact_path)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    if write_archive:
+        archive_artifact_path, archive_index_path = _write_archive_copy_and_index(
+            step_results=step_results,
+            artifact_path=artifact_path,
+            command_mode=command_mode,
+            created_at=created_at,
+        )
+        summary["archive_artifact_path"] = _render_artifact_path(archive_artifact_path)
+        summary["archive_index_path"] = _render_artifact_path(archive_index_path)
+
     return summary
 
 
@@ -267,6 +417,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Force one rehearsal step to fail deterministically for NO_GO contract validation.",
     )
+    parser.add_argument(
+        "--no-archive",
+        action="store_true",
+        help="Write only the latest summary artifact and skip archive/index updates.",
+    )
     return parser.parse_args(argv)
 
 
@@ -274,10 +429,21 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
     step_results = run_release_candidate(induce_step=args.induce_step)
-    summary = write_release_candidate_summary(step_results=step_results)
+    command_mode = "default" if args.induce_step is None else f"induced_failure:{args.induce_step}"
+    summary = write_release_candidate_summary(
+        step_results=step_results,
+        write_archive=not args.no_archive,
+        command_mode=command_mode,
+    )
     _print_step_results(step_results)
 
     print(f"Release-candidate summary artifact: {summary['artifact_path']}")
+    archive_artifact_path = summary.get("archive_artifact_path")
+    archive_index_path = summary.get("archive_index_path")
+    if isinstance(archive_artifact_path, str):
+        print(f"Release-candidate archive artifact: {archive_artifact_path}")
+    if isinstance(archive_index_path, str):
+        print(f"Release-candidate archive index: {archive_index_path}")
     final_decision = summary["final_decision"]
     if final_decision == "GO":
         print("Phase 4 release-candidate rehearsal result: GO")

@@ -1,13 +1,14 @@
 # Phase 4 Validation Matrix
 
-This runbook defines the deterministic Phase 4 validation chain used by Sprint 15 release-candidate rehearsal.
+This runbook defines the deterministic Phase 4 validation chain used by Sprint 16 release-candidate rehearsal and archive audit flow.
 
 ## Canonical Command
 
 Run from repo root:
 
 1. `python3 scripts/run_phase4_validation_matrix.py`
-2. RC rehearsal entrypoint: `python3 scripts/run_phase4_release_candidate.py` (includes this matrix step)
+2. RC rehearsal entrypoint: `python3 scripts/run_phase4_release_candidate.py` (includes this matrix step, writes latest + archive evidence)
+3. Archive ledger verifier: `python3 scripts/verify_phase4_rc_archive.py`
 
 ## Validation Steps
 
@@ -45,3 +46,4 @@ The `phase4_scenarios` step runs:
 - NO_GO when any step fails.
 - Failing step IDs are reported explicitly as `Failing steps: ...`.
 - In RC rehearsal context, matrix failure marks overall `final_decision` as `NO_GO` in `artifacts/release/phase4_rc_summary.json`.
+- RC rehearsal writes an archive copy and updates `artifacts/release/archive/index.json`; the index is the canonical repeated-run audit ledger.
