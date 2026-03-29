@@ -32,6 +32,7 @@ from alicebot_api.contracts import (
     DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
     DEFAULT_AGENT_PROFILE_ID,
     DEFAULT_CALENDAR_EVENT_LIST_LIMIT,
+    DEFAULT_CONTINUITY_CAPTURE_LIMIT,
     DEFAULT_MAX_EVENTS,
     DEFAULT_MAX_ENTITY_EDGES,
     DEFAULT_MAX_ENTITIES,
@@ -50,8 +51,10 @@ from alicebot_api.contracts import (
     MAX_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT,
     MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
     MAX_CALENDAR_EVENT_LIST_LIMIT,
+    MAX_CONTINUITY_CAPTURE_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
+    ContinuityCaptureCreateInput,
     EmbeddingConfigStatus,
     EmbeddingConfigCreateInput,
     ExecutionBudgetCreateInput,
@@ -278,6 +281,14 @@ from alicebot_api.explicit_signal_capture import (
     ExplicitSignalCaptureValidationError,
     extract_and_admit_explicit_signals,
 )
+from alicebot_api.continuity_capture import (
+    ContinuityCaptureNotFoundError,
+    ContinuityCaptureValidationError,
+    capture_continuity_input,
+    get_continuity_capture_detail,
+    list_continuity_capture_inbox,
+)
+from alicebot_api.continuity_objects import ContinuityObjectValidationError
 from alicebot_api.memory import (
     MemoryAdmissionValidationError,
     MemoryReviewNotFoundError,
@@ -532,6 +543,12 @@ class ExtractExplicitCommitmentsRequest(BaseModel):
 class CaptureExplicitSignalsRequest(BaseModel):
     user_id: UUID
     source_event_id: UUID
+
+
+class ContinuityCaptureRequest(BaseModel):
+    user_id: UUID
+    raw_content: str = Field(min_length=1, max_length=4000)
+    explicit_signal: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class CreateMemoryReviewLabelRequest(BaseModel):
@@ -3035,6 +3052,69 @@ def capture_explicit_signals(request: CaptureExplicitSignalsRequest) -> JSONResp
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except MemoryAdmissionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/continuity/captures")
+def create_continuity_capture(request: ContinuityCaptureRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = capture_continuity_input(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ContinuityCaptureCreateInput(
+                    raw_content=request.raw_content,
+                    explicit_signal=request.explicit_signal,
+                ),
+            )
+    except (ContinuityCaptureValidationError, ContinuityObjectValidationError) as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/captures")
+def list_continuity_captures(
+    user_id: UUID,
+    limit: int = Query(default=DEFAULT_CONTINUITY_CAPTURE_LIMIT, ge=1, le=MAX_CONTINUITY_CAPTURE_LIMIT),
+) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = list_continuity_capture_inbox(
+            ContinuityStore(conn),
+            user_id=user_id,
+            limit=limit,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/captures/{capture_event_id}")
+def get_continuity_capture(capture_event_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_continuity_capture_detail(
+                ContinuityStore(conn),
+                user_id=user_id,
+                capture_event_id=capture_event_id,
+            )
+    except ContinuityCaptureNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,

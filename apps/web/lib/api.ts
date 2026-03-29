@@ -866,6 +866,69 @@ export type ExplicitSignalCaptureResponse = {
   };
 };
 
+export type ContinuityCaptureExplicitSignal =
+  | "remember_this"
+  | "task"
+  | "decision"
+  | "commitment"
+  | "waiting_for"
+  | "blocker"
+  | "next_action"
+  | "note";
+
+export type ContinuityCaptureAdmissionPosture = "DERIVED" | "TRIAGE";
+
+export type ContinuityObjectType =
+  | "Note"
+  | "MemoryFact"
+  | "Decision"
+  | "Commitment"
+  | "WaitingFor"
+  | "Blocker"
+  | "NextAction";
+
+export type ContinuityCaptureEventRecord = {
+  id: string;
+  raw_content: string;
+  explicit_signal: ContinuityCaptureExplicitSignal | null;
+  admission_posture: ContinuityCaptureAdmissionPosture;
+  admission_reason: string;
+  created_at: string;
+};
+
+export type ContinuityObjectRecord = {
+  id: string;
+  capture_event_id: string;
+  object_type: ContinuityObjectType;
+  status: "active" | "completed" | "cancelled" | "superseded" | "stale";
+  title: string;
+  body: JsonObject;
+  provenance: JsonObject;
+  confidence: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ContinuityCaptureInboxItem = {
+  capture_event: ContinuityCaptureEventRecord;
+  derived_object: ContinuityObjectRecord | null;
+};
+
+export type ContinuityCaptureInboxSummary = {
+  limit: number;
+  returned_count: number;
+  total_count: number;
+  derived_count: number;
+  triage_count: number;
+  order: string[];
+};
+
+export type ContinuityCaptureCreatePayload = {
+  user_id: string;
+  raw_content: string;
+  explicit_signal?: ContinuityCaptureExplicitSignal | null;
+};
+
 export type OpenLoopCreatePayload = {
   user_id: string;
   memory_id?: string | null;
@@ -1435,6 +1498,53 @@ export function captureExplicitSignals(
     {
       method: "POST",
       body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function createContinuityCapture(
+  apiBaseUrl: string,
+  payload: ContinuityCaptureCreatePayload,
+) {
+  return requestJson<{ capture: ContinuityCaptureInboxItem }>(
+    apiBaseUrl,
+    "/v0/continuity/captures",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function listContinuityCaptures(
+  apiBaseUrl: string,
+  userId: string,
+  options?: {
+    limit?: number;
+  },
+) {
+  return requestJson<{ items: ContinuityCaptureInboxItem[]; summary: ContinuityCaptureInboxSummary }>(
+    apiBaseUrl,
+    "/v0/continuity/captures",
+    undefined,
+    {
+      user_id: userId,
+      limit: options?.limit ? String(options.limit) : undefined,
+    },
+  );
+}
+
+export function getContinuityCaptureDetail(
+  apiBaseUrl: string,
+  captureEventId: string,
+  userId: string,
+) {
+  return requestJson<{ capture: ContinuityCaptureInboxItem }>(
+    apiBaseUrl,
+    `/v0/continuity/captures/${captureEventId}`,
+    undefined,
+    {
+      user_id: userId,
     },
   );
 }

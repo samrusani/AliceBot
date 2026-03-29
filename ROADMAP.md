@@ -4,12 +4,13 @@
 
 - The canonical repo baseline remains through Phase 3 Sprint 9.
 - Earlier Phase 4 increments are delivered on top of that baseline: run-aware execution linkage, idempotent replay controls, approval-to-run pause/resume linkage, explicit run transitions/stop reasons, bounded retry posture, explicit failure classes, and deterministic gate runners.
-- Phase 4 Sprint 14 is the active release-control layer: Phase 4 owns acceptance/readiness/validation semantics directly, canonical magnesium reorder ship-gate evidence is first-class, and compatibility gates stay green.
+- Phase 4 Sprint 14 is the active release-control layer: Phase 4 release-control is complete and remains the active gate baseline, Phase 4 owns acceptance/readiness/validation semantics directly, canonical magnesium reorder ship-gate evidence is first-class, and compatibility gates stay green.
 - Phase 4 Sprint 15 adds deterministic MVP release-candidate rehearsal orchestration via `python3 scripts/run_phase4_release_candidate.py`, producing `artifacts/release/phase4_rc_summary.json` with explicit per-step evidence and final GO/NO_GO.
 - Phase 4 Sprint 16 adds durable RC evidence retention: each rehearsal run now writes an archive copy plus append-only audit ledger at `artifacts/release/archive/index.json`, while preserving the latest-summary compatibility path.
 - Phase 4 Sprint 17 hardens RC archive/index writes for concurrency: deterministic lock path (`artifacts/release/archive/index.lock`), bounded lock-timeout contract, and atomic index replace persistence.
 - Phase 4 Sprint 18 adds formal closeout evidence tooling: deterministic MVP exit manifest generation (`python3 scripts/generate_phase4_mvp_exit_manifest.py`) and manifest verification (`python3 scripts/verify_phase4_mvp_exit_manifest.py`) from latest GO RC archive evidence.
 - Phase 4 Sprint 19 adds deterministic MVP qualification orchestration (`python3 scripts/run_phase4_mvp_qualification.py`) and formal sign-off record verification (`python3 scripts/verify_phase4_mvp_signoff_record.py`) with explicit GO/NO_GO blocker registry.
+- Phase 5 Sprint 17 adds the typed continuity capture backbone: immutable `continuity_capture_events`, typed `continuity_objects`, conservative admission posture (`DERIVED`/`TRIAGE`), and the fast capture inbox UI/API surface at `/continuity`.
 - The backend baseline now includes continuity APIs, deterministic context compilation, governed request routing, approvals and execution review, typed memory and open-loop seams, deterministic thread resumption brief reads, unified explicit-signal capture seams, explicit task and task-step lifecycle seams, rooted local workspaces and artifact ingestion, artifact retrieval and embeddings, narrow read-only Gmail and Calendar seams with selected-item ingestion, bounded read-only Calendar event discovery for one connected account, and the no-tools assistant-response seam.
 - The frontend baseline is now real product surface, not scaffolding: the Next.js operator shell ships `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live-backend reads when configured and explicit fixture fallback when they are not.
 - `/chat` now uses selected-thread continuity instead of a raw thread-id-first flow, keeps bounded thread review and deterministic resumption brief review visible beside both assistant and governed-request composition, ships thread-linked governed workflow, ordered task-step timeline review, and bounded explain-why trace embedding, and includes manual explicit-signal capture controls for selected `message.user` events.
@@ -30,6 +31,7 @@
 - Treat `python3 scripts/run_phase4_mvp_qualification.py` and `python3 scripts/verify_phase4_mvp_signoff_record.py` as the canonical Sprint 19 MVP qualification/sign-off commands.
 - Treat archive index hardening as baseline behavior (deterministic lock and atomic index replace), not optional operational guidance.
 - Treat the deterministic validation matrix command (`python3 scripts/run_phase4_validation_matrix.py`) as the canonical Phase 4 validation step inside the RC rehearsal chain, while keeping Phase 3/Phase 2/MVP validation commands as compatibility checks.
+- Treat Phase 5 Sprint 17 continuity capture as shipped baseline (`/v0/continuity/captures*` and `/continuity`) and do not relitigate backbone contracts during Sprint 18 planning.
 - Favor one narrow seam that deepens operator use of already shipped contracts before widening connector breadth or orchestration scope.
 - Reuse the existing continuity, response, approval, task, workspace-artifact, memory, entity, execution, and trace surfaces instead of introducing parallel contracts.
 
@@ -37,6 +39,10 @@
 
 - Do not bundle broader Gmail or Calendar breadth, auth expansion, richer document parsing, runner orchestration, or proxy breadth into the next sprint by default.
 - Do not reopen schema or API design unless the next sprint explicitly requires it.
+- Keep Phase 5 deferred scope explicit:
+  - Sprint 18 recall + deterministic resumption briefs
+  - Sprint 19 memory correction/freshness queue
+  - Sprint 20 open-loop daily/weekly review dashboards
 - Keep live docs synchronized with shipped reality so planning does not drift behind the repo again.
 
 ## Ongoing Risks
