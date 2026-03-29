@@ -1,81 +1,48 @@
-import type { MemoryEvaluationSummary } from "./api";
-
-export const MEMORY_QUALITY_PRECISION_TARGET = 0.8;
-export const MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE = 10;
-
-export type MemoryQualityGateStatus =
-  | "on_track"
-  | "needs_review"
-  | "insufficient_evidence"
-  | "unavailable";
-
-export type MemoryQualitySamplePosture = "enough_sample" | "insufficient_sample" | "unavailable";
-export type MemoryQualityQueuePosture = "queue_clear" | "queue_backlog" | "unavailable";
+import type { MemoryEvaluationSummary, MemoryQualityGateSummary } from "./api";
 
 export type MemoryQualityGate = {
-  status: MemoryQualityGateStatus;
+  status: MemoryQualityGateSummary["status"] | "unavailable";
   precision: number | null;
   adjudicatedSampleCount: number | null;
   remainingToMinimumSample: number | null;
   unlabeledQueueCount: number | null;
-  samplePosture: MemoryQualitySamplePosture;
-  queuePosture: MemoryQualityQueuePosture;
-  precisionTarget: number;
-  minimumAdjudicatedSample: number;
+  highRiskMemoryCount: number | null;
+  staleTruthCount: number | null;
+  supersededActiveConflictCount: number | null;
+  precisionTarget: number | null;
+  minimumAdjudicatedSample: number | null;
 };
-
-function calculatePrecision(correctCount: number, incorrectCount: number) {
-  const denominator = correctCount + incorrectCount;
-  if (denominator === 0) {
-    return null;
-  }
-
-  return correctCount / denominator;
-}
 
 export function deriveMemoryQualityGate(
   summary: MemoryEvaluationSummary | null | undefined,
 ): MemoryQualityGate {
-  if (!summary) {
+  const qualityGate = summary?.quality_gate;
+  if (!qualityGate) {
     return {
       status: "unavailable",
       precision: null,
       adjudicatedSampleCount: null,
       remainingToMinimumSample: null,
       unlabeledQueueCount: null,
-      samplePosture: "unavailable",
-      queuePosture: "unavailable",
-      precisionTarget: MEMORY_QUALITY_PRECISION_TARGET,
-      minimumAdjudicatedSample: MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE,
+      highRiskMemoryCount: null,
+      staleTruthCount: null,
+      supersededActiveConflictCount: null,
+      precisionTarget: null,
+      minimumAdjudicatedSample: null,
     };
   }
 
-  const correctCount = summary.label_row_counts_by_value.correct;
-  const incorrectCount = summary.label_row_counts_by_value.incorrect;
-  const adjudicatedSampleCount = correctCount + incorrectCount;
-  const remainingToMinimumSample = Math.max(
-    0,
-    MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE - adjudicatedSampleCount,
-  );
-  const precision = calculatePrecision(correctCount, incorrectCount);
-  const hasMinimumSample = adjudicatedSampleCount >= MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE;
-
-  let status: MemoryQualityGateStatus = "insufficient_evidence";
-  if (hasMinimumSample) {
-    status =
-      precision !== null && precision >= MEMORY_QUALITY_PRECISION_TARGET ? "on_track" : "needs_review";
-  }
-
   return {
-    status,
-    precision,
-    adjudicatedSampleCount,
-    remainingToMinimumSample,
-    unlabeledQueueCount: summary.unlabeled_memory_count,
-    samplePosture: hasMinimumSample ? "enough_sample" : "insufficient_sample",
-    queuePosture: summary.unlabeled_memory_count === 0 ? "queue_clear" : "queue_backlog",
-    precisionTarget: MEMORY_QUALITY_PRECISION_TARGET,
-    minimumAdjudicatedSample: MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE,
+    status: qualityGate.status,
+    precision: qualityGate.precision,
+    adjudicatedSampleCount: qualityGate.adjudicated_sample_count,
+    remainingToMinimumSample: qualityGate.remaining_to_minimum_sample,
+    unlabeledQueueCount: qualityGate.unlabeled_memory_count,
+    highRiskMemoryCount: qualityGate.high_risk_memory_count,
+    staleTruthCount: qualityGate.stale_truth_count,
+    supersededActiveConflictCount: qualityGate.superseded_active_conflict_count,
+    precisionTarget: qualityGate.precision_target,
+    minimumAdjudicatedSample: qualityGate.minimum_adjudicated_sample,
   };
 }
 

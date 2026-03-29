@@ -58,20 +58,31 @@ describe("MemoryList", () => {
         summary={null}
         source="live"
         filter="queue"
+        priorityMode="high_risk_first"
+        availablePriorityModes={[
+          "oldest_first",
+          "recent_first",
+          "high_risk_first",
+          "stale_truth_first",
+        ]}
       />,
     );
 
     expect(screen.getByRole("link", { name: /user.preference.merchant/i })).toHaveAttribute(
       "href",
-      "/memories?filter=queue&memory=memory-1",
+      "/memories?filter=queue&memory=memory-1&priority_mode=high_risk_first",
     );
     expect(screen.getByRole("link", { name: /user.preference.delivery/i })).toHaveAttribute(
       "href",
-      "/memories?filter=queue&memory=memory-2",
+      "/memories?filter=queue&memory=memory-2&priority_mode=high_risk_first",
     );
     expect(screen.getByRole("link", { name: /user.preference.delivery/i })).toHaveAttribute(
       "aria-current",
       "page",
+    );
+    expect(screen.getByRole("link", { name: "High risk first" })).toHaveAttribute(
+      "href",
+      "/memories?filter=queue&priority_mode=high_risk_first",
     );
   });
 

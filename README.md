@@ -1,10 +1,18 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The canonical baseline remains through Phase 3 Sprint 9, with earlier Phase 4 work already delivering run linkage/idempotent replay safety and run observability/retry-failure discipline, Phase 4 Sprint 14 establishing canonical MVP release-gate ownership in Phase 4 gate scripts, Phase 4 Sprint 15 adding deterministic release-candidate rehearsal evidence packaging, Phase 4 Sprint 16 adding durable archive/index evidence retention for repeated RC rehearsal runs, Phase 4 Sprint 17 hardening archive index writes with deterministic locking and atomic replace behavior under contention, Phase 4 Sprint 18 adding deterministic MVP exit manifest generation/verification for formal phase closeout, and Phase 4 Sprint 19 adding deterministic MVP qualification orchestration plus a formal GO/NO_GO sign-off record/verifier. Phase 5 Sprint 17 shipped the typed continuity capture backbone, Phase 5 Sprint 18 shipped provenance-backed recall plus deterministic continuity resumption briefs, Phase 5 Sprint 19 shipped continuity review/correction with explicit freshness and supersession posture, and Phase 5 Sprint 20 shipped open-loop dashboard plus deterministic daily/weekly review flows.
+AliceBot is a private, permissioned personal AI operating system. The canonical baseline remains through Phase 3 Sprint 9, with earlier Phase 4 work already delivering run linkage/idempotent replay safety and run observability/retry-failure discipline, Phase 4 Sprint 14 establishing canonical MVP release-gate ownership in Phase 4 gate scripts, Phase 4 Sprint 15 adding deterministic release-candidate rehearsal evidence packaging, Phase 4 Sprint 16 adding durable archive/index evidence retention for repeated RC rehearsal runs, Phase 4 Sprint 17 hardening archive index writes with deterministic locking and atomic replace behavior under contention, Phase 4 Sprint 18 adding deterministic MVP exit manifest generation/verification for formal phase closeout, and Phase 4 Sprint 19 adding deterministic MVP qualification orchestration plus a formal GO/NO_GO sign-off record/verifier. Phase 5 Sprint 17 shipped the typed continuity capture backbone, Phase 5 Sprint 18 shipped provenance-backed recall plus deterministic continuity resumption briefs, Phase 5 Sprint 19 shipped continuity review/correction with explicit freshness and supersession posture, Phase 5 Sprint 20 shipped open-loop dashboard plus deterministic daily/weekly review flows, and Phase 6 Sprint 21 shipped canonical memory-quality gate semantics plus deterministic memory review-queue prioritization.
 
 ## Current Implemented Slice
 
 - `apps/api` is the core shipped surface. It includes continuity, context compilation, assistant responses, typed memory admission/review and open-loop lifecycle seams, deterministic thread resumption brief reads, explicit-signal capture, policy/tool/approval governance, execution budgets, tasks and task steps, rooted local workspaces and artifacts, artifact retrieval, traces, and narrow read-only Gmail and Calendar seams with bounded event discovery plus selected-item ingestion.
+- `apps/api` now also ships Phase 6 Sprint 21 memory-quality seams:
+  - `GET /v0/memories/quality-gate` for canonical server-side quality posture (`healthy`, `needs_review`, `insufficient_sample`, `degraded`) with deterministic computation counts.
+  - `GET /v0/memories/review-queue` supports explicit deterministic priority modes:
+    - `oldest_first`
+    - `recent_first`
+    - `high_risk_first`
+    - `stale_truth_first`
+  - review-queue payloads include explicit ordering metadata and per-item priority posture fields.
 - `apps/api` now also ships Phase 5 continuity capture/retrieval/review seams:
   - capture backbone endpoints from Sprint 17:
     - `POST /v0/continuity/captures`
@@ -26,6 +34,9 @@ AliceBot is a private, permissioned personal AI operating system. The canonical 
   - correction flows append immutable correction events before lifecycle mutation and expose freshness/supersession metadata (`last_confirmed_at`, `supersedes_object_id`, `superseded_by_object_id`).
   - open-loop review actions (`done`, `deferred`, `still_blocked`) are deterministic, auditable, and reflected immediately in continuity resumption output.
 - `apps/web` is shipped operator UI, not scaffold-only. The shell includes `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live-backend reads when configured and explicit fixture fallback otherwise.
+- `/memories` is aligned to Phase 6 Sprint 21 canonical memory-quality semantics:
+  - quality gate posture is consumed from API-backed `GET /v0/memories/quality-gate` contract via the web API layer.
+  - queue review mode can be selected explicitly (`oldest_first`, `recent_first`, `high_risk_first`, `stale_truth_first`) without breaking existing `submit` / `submit_and_next` labeling flow.
 - `apps/web` now also includes `/continuity` as the Phase 5 continuity workspace with:
   - Sprint 17 fast-capture inbox submit/list/detail
   - Sprint 18 recall query/results panel with provenance-backed cards

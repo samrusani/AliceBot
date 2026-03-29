@@ -474,18 +474,57 @@ export type MemoryReviewQueueItem = {
   valid_from?: string | null;
   valid_to?: string | null;
   last_confirmed_at?: string | null;
+  is_high_risk: boolean;
+  is_stale_truth: boolean;
+  queue_priority_mode: MemoryReviewQueuePriorityMode;
+  priority_reason: string;
   created_at: string;
   updated_at: string;
 };
 
+export type MemoryReviewQueuePriorityMode =
+  | "oldest_first"
+  | "recent_first"
+  | "high_risk_first"
+  | "stale_truth_first";
+
 export type MemoryReviewQueueSummary = {
   memory_status: "active";
   review_state: "unlabeled";
+  priority_mode: MemoryReviewQueuePriorityMode;
+  available_priority_modes: MemoryReviewQueuePriorityMode[];
   limit: number;
   returned_count: number;
   total_count: number;
   has_more: boolean;
   order: string[];
+};
+
+export type MemoryQualityGateStatus =
+  | "healthy"
+  | "needs_review"
+  | "insufficient_sample"
+  | "degraded";
+
+export type MemoryQualityGateSummary = {
+  status: MemoryQualityGateStatus;
+  precision: number | null;
+  precision_target: number;
+  adjudicated_sample_count: number;
+  minimum_adjudicated_sample: number;
+  remaining_to_minimum_sample: number;
+  unlabeled_memory_count: number;
+  high_risk_memory_count: number;
+  stale_truth_count: number;
+  superseded_active_conflict_count: number;
+  counts: {
+    active_memory_count: number;
+    labeled_active_memory_count: number;
+    adjudicated_correct_count: number;
+    adjudicated_incorrect_count: number;
+    outdated_label_count: number;
+    insufficient_evidence_label_count: number;
+  };
 };
 
 export type MemoryEvaluationSummary = {
@@ -497,6 +536,7 @@ export type MemoryEvaluationSummary = {
   total_label_row_count: number;
   label_row_counts_by_value: MemoryReviewLabelCounts;
   label_value_order: MemoryReviewLabelValue[];
+  quality_gate?: MemoryQualityGateSummary;
 };
 
 export type OpenLoopRecord = {
@@ -2380,7 +2420,13 @@ export function listMemories(
   );
 }
 
-export function listMemoryReviewQueue(apiBaseUrl: string, userId: string, limit?: number) {
+export function listMemoryReviewQueue(
+  apiBaseUrl: string,
+  userId: string,
+  options?: number | { limit?: number; priorityMode?: MemoryReviewQueuePriorityMode },
+) {
+  const limit = typeof options === "number" ? options : options?.limit;
+  const priorityMode = typeof options === "number" ? undefined : options?.priorityMode;
   return requestJson<{ items: MemoryReviewQueueItem[]; summary: MemoryReviewQueueSummary }>(
     apiBaseUrl,
     "/v0/memories/review-queue",
@@ -2388,17 +2434,33 @@ export function listMemoryReviewQueue(apiBaseUrl: string, userId: string, limit?
     {
       user_id: userId,
       limit: limit ? String(limit) : undefined,
+      priority_mode: priorityMode,
     },
   );
 }
 
-export function getMemoryEvaluationSummary(apiBaseUrl: string, userId: string) {
-  return requestJson<{ summary: MemoryEvaluationSummary }>(
-    apiBaseUrl,
-    "/v0/memories/evaluation-summary",
-    undefined,
-    { user_id: userId },
-  );
+export async function getMemoryEvaluationSummary(apiBaseUrl: string, userId: string) {
+  const [evaluationPayload, qualityGatePayload] = await Promise.all([
+    requestJson<{ summary: Omit<MemoryEvaluationSummary, "quality_gate"> }>(
+      apiBaseUrl,
+      "/v0/memories/evaluation-summary",
+      undefined,
+      { user_id: userId },
+    ),
+    requestJson<{ summary: MemoryQualityGateSummary }>(
+      apiBaseUrl,
+      "/v0/memories/quality-gate",
+      undefined,
+      { user_id: userId },
+    ),
+  ]);
+
+  return {
+    summary: {
+      ...evaluationPayload.summary,
+      quality_gate: qualityGatePayload.summary,
+    },
+  };
 }
 
 export function getMemoryDetail(apiBaseUrl: string, memoryId: string, userId: string) {
