@@ -8,6 +8,7 @@ import {
   connectGmailAccount,
   createThread,
   createContinuityCapture,
+  applyContinuityCorrection,
   deriveThreadWorkflowState,
   createOpenLoop,
   getCalendarAccountDetail,
@@ -17,6 +18,7 @@ import {
   getTaskWorkspaceDetail,
   getEntityDetail,
   getContinuityCaptureDetail,
+  getContinuityReviewDetail,
   getMemoryDetail,
   getMemoryEvaluationSummary,
   getMemoryRevisions,
@@ -32,6 +34,7 @@ import {
   listCalendarAccounts,
   listCalendarEvents,
   listContinuityCaptures,
+  listContinuityReviewQueue,
   listEntities,
   listEntityEdges,
   listGmailAccounts,
@@ -2462,5 +2465,117 @@ describe("api helpers", () => {
       "https://api.example.com/v0/continuity/resumption-brief?user_id=user-1&thread_id=thread-1&max_recent_changes=4&max_open_loops=3",
       expect.objectContaining({ cache: "no-store" }),
     );
+  });
+
+  it("uses continuity review queue/detail/correction endpoints", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            items: [],
+            summary: {
+              status: "correction_ready",
+              limit: 20,
+              returned_count: 0,
+              total_count: 0,
+              order: ["updated_at_desc", "created_at_desc", "id_desc"],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            review: {
+              continuity_object: {
+                id: "object-1",
+                capture_event_id: "capture-1",
+                object_type: "Decision",
+                status: "active",
+                title: "Decision: Keep rollout phased",
+                body: { decision_text: "Keep rollout phased" },
+                provenance: {},
+                confidence: 0.9,
+                last_confirmed_at: null,
+                supersedes_object_id: null,
+                superseded_by_object_id: null,
+                created_at: "2026-03-30T10:00:00Z",
+                updated_at: "2026-03-30T10:00:00Z",
+              },
+              correction_events: [],
+              supersession_chain: { supersedes: null, superseded_by: null },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            continuity_object: {
+              id: "object-1",
+              capture_event_id: "capture-1",
+              object_type: "Decision",
+              status: "active",
+              title: "Decision: Keep rollout phased",
+              body: { decision_text: "Keep rollout phased" },
+              provenance: {},
+              confidence: 0.9,
+              last_confirmed_at: "2026-03-30T10:01:00Z",
+              supersedes_object_id: null,
+              superseded_by_object_id: null,
+              created_at: "2026-03-30T10:00:00Z",
+              updated_at: "2026-03-30T10:01:00Z",
+            },
+            correction_event: {
+              id: "event-1",
+              continuity_object_id: "object-1",
+              action: "confirm",
+              reason: "Reviewed",
+              before_snapshot: {},
+              after_snapshot: {},
+              payload: {},
+              created_at: "2026-03-30T10:01:00Z",
+            },
+            replacement_object: null,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+    await listContinuityReviewQueue("https://api.example.com", "user-1", {
+      status: "correction_ready",
+      limit: 20,
+    });
+    await getContinuityReviewDetail("https://api.example.com", "object-1", "user-1");
+    await applyContinuityCorrection("https://api.example.com", "object-1", {
+      user_id: "user-1",
+      action: "confirm",
+      reason: "Reviewed",
+    });
+
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "https://api.example.com/v0/continuity/review-queue?user_id=user-1&status=correction_ready&limit=20",
+        expect.objectContaining({ cache: "no-store" }),
+      ],
+      [
+        "https://api.example.com/v0/continuity/review-queue/object-1?user_id=user-1",
+        expect.objectContaining({ cache: "no-store" }),
+      ],
+      [
+        "https://api.example.com/v0/continuity/review-queue/object-1/corrections",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({ "Content-Type": "application/json" }),
+        }),
+      ],
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      action: "confirm",
+      reason: "Reviewed",
+    });
   });
 });

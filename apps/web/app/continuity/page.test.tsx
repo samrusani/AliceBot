@@ -7,16 +7,20 @@ import ContinuityPage from "./page";
 const {
   getApiConfigMock,
   getContinuityCaptureDetailMock,
+  getContinuityReviewDetailMock,
   getContinuityResumptionBriefMock,
   hasLiveApiConfigMock,
+  listContinuityReviewQueueMock,
   listContinuityCapturesMock,
   queryContinuityRecallMock,
   refreshMock,
 } = vi.hoisted(() => ({
   getApiConfigMock: vi.fn(),
   getContinuityCaptureDetailMock: vi.fn(),
+  getContinuityReviewDetailMock: vi.fn(),
   getContinuityResumptionBriefMock: vi.fn(),
   hasLiveApiConfigMock: vi.fn(),
+  listContinuityReviewQueueMock: vi.fn(),
   listContinuityCapturesMock: vi.fn(),
   queryContinuityRecallMock: vi.fn(),
   refreshMock: vi.fn(),
@@ -52,8 +56,10 @@ vi.mock("../../lib/api", async () => {
     ...actual,
     getApiConfig: getApiConfigMock,
     getContinuityCaptureDetail: getContinuityCaptureDetailMock,
+    getContinuityReviewDetail: getContinuityReviewDetailMock,
     getContinuityResumptionBrief: getContinuityResumptionBriefMock,
     hasLiveApiConfig: hasLiveApiConfigMock,
+    listContinuityReviewQueue: listContinuityReviewQueueMock,
     listContinuityCaptures: listContinuityCapturesMock,
     queryContinuityRecall: queryContinuityRecallMock,
   };
@@ -63,8 +69,10 @@ describe("ContinuityPage", () => {
   beforeEach(() => {
     getApiConfigMock.mockReset();
     getContinuityCaptureDetailMock.mockReset();
+    getContinuityReviewDetailMock.mockReset();
     getContinuityResumptionBriefMock.mockReset();
     hasLiveApiConfigMock.mockReset();
+    listContinuityReviewQueueMock.mockReset();
     listContinuityCapturesMock.mockReset();
     queryContinuityRecallMock.mockReset();
     refreshMock.mockReset();
@@ -89,11 +97,13 @@ describe("ContinuityPage", () => {
     expect(screen.getByText("Fixture inbox")).toBeInTheDocument();
     expect(screen.getByText("Fixture recall")).toBeInTheDocument();
     expect(screen.getByText("Fixture brief")).toBeInTheDocument();
+    expect(screen.getByText("Fixture review queue")).toBeInTheDocument();
     expect(screen.getByText("Continuity recall")).toBeInTheDocument();
-    expect(screen.getByText("Resumption brief")).toBeInTheDocument();
+    expect(screen.getAllByText("Correction actions").length).toBeGreaterThan(0);
     expect(listContinuityCapturesMock).not.toHaveBeenCalled();
     expect(queryContinuityRecallMock).not.toHaveBeenCalled();
     expect(getContinuityResumptionBriefMock).not.toHaveBeenCalled();
+    expect(listContinuityReviewQueueMock).not.toHaveBeenCalled();
   });
 
   it("renders live continuity inbox, recall, and resumption when reads succeed", async () => {
@@ -186,6 +196,9 @@ describe("ContinuityPage", () => {
           admission_posture: "DERIVED",
           confidence: 0.95,
           relevance: 130,
+          last_confirmed_at: "2026-03-29T09:20:00Z",
+          supersedes_object_id: null,
+          superseded_by_object_id: null,
           scope_matches: [{ kind: "thread", value: "thread-1" }],
           provenance_references: [{ source_kind: "continuity_capture_event", source_id: "capture-live-1" }],
           ordering: {
@@ -193,6 +206,7 @@ describe("ContinuityPage", () => {
             query_term_match_count: 1,
             confirmation_rank: 3,
             posture_rank: 2,
+            lifecycle_rank: 4,
             confidence: 0.95,
           },
           created_at: "2026-03-29T09:20:00Z",
@@ -229,6 +243,9 @@ describe("ContinuityPage", () => {
             admission_posture: "DERIVED",
             confidence: 0.95,
             relevance: 130,
+            last_confirmed_at: "2026-03-29T09:20:00Z",
+            supersedes_object_id: null,
+            superseded_by_object_id: null,
             scope_matches: [{ kind: "thread", value: "thread-1" }],
             provenance_references: [{ source_kind: "continuity_capture_event", source_id: "capture-live-1" }],
             ordering: {
@@ -236,6 +253,7 @@ describe("ContinuityPage", () => {
               query_term_match_count: 1,
               confirmation_rank: 3,
               posture_rank: 2,
+              lifecycle_rank: 4,
               confidence: 0.95,
             },
             created_at: "2026-03-29T09:20:00Z",
@@ -260,6 +278,60 @@ describe("ContinuityPage", () => {
         sources: ["continuity_capture_events", "continuity_objects"],
       },
     });
+    listContinuityReviewQueueMock.mockResolvedValue({
+      items: [
+        {
+          id: "object-live-1",
+          capture_event_id: "capture-live-1",
+          object_type: "Decision",
+          status: "active",
+          title: "Decision: Keep admission conservative",
+          body: {
+            decision_text: "Keep admission conservative",
+          },
+          provenance: {
+            capture_event_id: "capture-live-1",
+          },
+          confidence: 0.95,
+          last_confirmed_at: "2026-03-29T09:20:00Z",
+          supersedes_object_id: null,
+          superseded_by_object_id: null,
+          created_at: "2026-03-29T09:20:00Z",
+          updated_at: "2026-03-29T09:20:00Z",
+        },
+      ],
+      summary: {
+        status: "correction_ready",
+        limit: 20,
+        returned_count: 1,
+        total_count: 1,
+        order: ["updated_at_desc", "created_at_desc", "id_desc"],
+      },
+    });
+    getContinuityReviewDetailMock.mockResolvedValue({
+      review: {
+        continuity_object: {
+          id: "object-live-1",
+          capture_event_id: "capture-live-1",
+          object_type: "Decision",
+          status: "active",
+          title: "Decision: Keep admission conservative",
+          body: { decision_text: "Keep admission conservative" },
+          provenance: { capture_event_id: "capture-live-1" },
+          confidence: 0.95,
+          last_confirmed_at: "2026-03-29T09:20:00Z",
+          supersedes_object_id: null,
+          superseded_by_object_id: null,
+          created_at: "2026-03-29T09:20:00Z",
+          updated_at: "2026-03-29T09:20:00Z",
+        },
+        correction_events: [],
+        supersession_chain: {
+          supersedes: null,
+          superseded_by: null,
+        },
+      },
+    });
 
     render(await ContinuityPage({ searchParams: Promise.resolve({ capture: "capture-live-1", recall_query: "decision" }) }));
 
@@ -267,6 +339,7 @@ describe("ContinuityPage", () => {
     expect(screen.getByText("Live inbox")).toBeInTheDocument();
     expect(screen.getByText("Live recall")).toBeInTheDocument();
     expect(screen.getByText("Live brief")).toBeInTheDocument();
+    expect(screen.getByText("Live review queue")).toBeInTheDocument();
     expect(screen.getAllByText("Decision: Keep admission conservative").length).toBeGreaterThan(0);
 
     expect(listContinuityCapturesMock).toHaveBeenCalledWith("https://api.example.com", "user-1", {
@@ -287,6 +360,15 @@ describe("ContinuityPage", () => {
       until: "",
       limit: 20,
     });
+    expect(listContinuityReviewQueueMock).toHaveBeenCalledWith("https://api.example.com", "user-1", {
+      status: "correction_ready",
+      limit: 20,
+    });
+    expect(getContinuityReviewDetailMock).toHaveBeenCalledWith(
+      "https://api.example.com",
+      "object-live-1",
+      "user-1",
+    );
     expect(getContinuityResumptionBriefMock).toHaveBeenCalledWith("https://api.example.com", "user-1", {
       query: "decision",
       threadId: "",

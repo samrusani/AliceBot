@@ -168,8 +168,23 @@ class ContinuityObjectRow(TypedDict):
     body: JsonObject
     provenance: JsonObject
     confidence: float
+    last_confirmed_at: datetime | None
+    supersedes_object_id: UUID | None
+    superseded_by_object_id: UUID | None
     created_at: datetime
     updated_at: datetime
+
+
+class ContinuityCorrectionEventRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    continuity_object_id: UUID
+    action: str
+    reason: str | None
+    before_snapshot: JsonObject
+    after_snapshot: JsonObject
+    payload: JsonObject
+    created_at: datetime
 
 
 class ContinuityRecallCandidateRow(TypedDict):
@@ -182,6 +197,9 @@ class ContinuityRecallCandidateRow(TypedDict):
     body: JsonObject
     provenance: JsonObject
     confidence: float
+    last_confirmed_at: datetime | None
+    supersedes_object_id: UUID | None
+    superseded_by_object_id: UUID | None
     object_created_at: datetime
     object_updated_at: datetime
     admission_posture: str
@@ -3551,10 +3569,16 @@ INSERT_CONTINUITY_OBJECT_SQL = """
                   title,
                   body,
                   provenance,
-                  confidence
+                  confidence,
+                  last_confirmed_at,
+                  supersedes_object_id,
+                  superseded_by_object_id
                 )
                 VALUES (
                   app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
                   %s,
                   %s,
                   %s,
@@ -3573,6 +3597,9 @@ INSERT_CONTINUITY_OBJECT_SQL = """
                   body,
                   provenance,
                   confidence,
+                  last_confirmed_at,
+                  supersedes_object_id,
+                  superseded_by_object_id,
                   created_at,
                   updated_at
                 """
@@ -3588,10 +3615,33 @@ GET_CONTINUITY_OBJECT_BY_CAPTURE_EVENT_SQL = """
                   body,
                   provenance,
                   confidence,
+                  last_confirmed_at,
+                  supersedes_object_id,
+                  superseded_by_object_id,
                   created_at,
                   updated_at
                 FROM continuity_objects
                 WHERE capture_event_id = %s
+                """
+
+GET_CONTINUITY_OBJECT_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  capture_event_id,
+                  object_type,
+                  status,
+                  title,
+                  body,
+                  provenance,
+                  confidence,
+                  last_confirmed_at,
+                  supersedes_object_id,
+                  superseded_by_object_id,
+                  created_at,
+                  updated_at
+                FROM continuity_objects
+                WHERE id = %s
                 """
 
 LIST_CONTINUITY_OBJECTS_FOR_CAPTURE_EVENTS_SQL = """
@@ -3605,11 +3655,42 @@ LIST_CONTINUITY_OBJECTS_FOR_CAPTURE_EVENTS_SQL = """
                   body,
                   provenance,
                   confidence,
+                  last_confirmed_at,
+                  supersedes_object_id,
+                  superseded_by_object_id,
                   created_at,
                   updated_at
                 FROM continuity_objects
                 WHERE capture_event_id = ANY(%s)
                 ORDER BY created_at DESC, id DESC
+                """
+
+LIST_CONTINUITY_REVIEW_QUEUE_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  capture_event_id,
+                  object_type,
+                  status,
+                  title,
+                  body,
+                  provenance,
+                  confidence,
+                  last_confirmed_at,
+                  supersedes_object_id,
+                  superseded_by_object_id,
+                  created_at,
+                  updated_at
+                FROM continuity_objects
+                WHERE status = ANY(%s)
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """
+
+COUNT_CONTINUITY_REVIEW_QUEUE_SQL = """
+                SELECT COUNT(*) AS count
+                FROM continuity_objects
+                WHERE status = ANY(%s)
                 """
 
 LIST_CONTINUITY_RECALL_CANDIDATES_SQL = """
@@ -3623,6 +3704,9 @@ LIST_CONTINUITY_RECALL_CANDIDATES_SQL = """
                   continuity_objects.body,
                   continuity_objects.provenance,
                   continuity_objects.confidence,
+                  continuity_objects.last_confirmed_at,
+                  continuity_objects.supersedes_object_id,
+                  continuity_objects.superseded_by_object_id,
                   continuity_objects.created_at AS object_created_at,
                   continuity_objects.updated_at AS object_updated_at,
                   continuity_capture_events.admission_posture,
@@ -3634,6 +3718,83 @@ LIST_CONTINUITY_RECALL_CANDIDATES_SQL = """
                   ON continuity_capture_events.id = continuity_objects.capture_event_id
                  AND continuity_capture_events.user_id = continuity_objects.user_id
                 ORDER BY continuity_objects.created_at DESC, continuity_objects.id DESC
+                """
+
+UPDATE_CONTINUITY_OBJECT_SQL = """
+                UPDATE continuity_objects
+                SET status = %s,
+                    title = %s,
+                    body = %s,
+                    provenance = %s,
+                    confidence = %s,
+                    last_confirmed_at = %s,
+                    supersedes_object_id = %s,
+                    superseded_by_object_id = %s,
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                RETURNING
+                  id,
+                  user_id,
+                  capture_event_id,
+                  object_type,
+                  status,
+                  title,
+                  body,
+                  provenance,
+                  confidence,
+                  last_confirmed_at,
+                  supersedes_object_id,
+                  superseded_by_object_id,
+                  created_at,
+                  updated_at
+                """
+
+INSERT_CONTINUITY_CORRECTION_EVENT_SQL = """
+                INSERT INTO continuity_correction_events (
+                  user_id,
+                  continuity_object_id,
+                  action,
+                  reason,
+                  before_snapshot,
+                  after_snapshot,
+                  payload
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  continuity_object_id,
+                  action,
+                  reason,
+                  before_snapshot,
+                  after_snapshot,
+                  payload,
+                  created_at
+                """
+
+LIST_CONTINUITY_CORRECTION_EVENTS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  continuity_object_id,
+                  action,
+                  reason,
+                  before_snapshot,
+                  after_snapshot,
+                  payload,
+                  created_at
+                FROM continuity_correction_events
+                WHERE continuity_object_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
                 """
 
 UPDATE_EVENT_ERROR = "events are append-only and must be superseded by new records"
@@ -4125,6 +4286,9 @@ class ContinuityStore:
         body: JsonObject,
         provenance: JsonObject,
         confidence: float,
+        last_confirmed_at: datetime | None = None,
+        supersedes_object_id: UUID | None = None,
+        superseded_by_object_id: UUID | None = None,
     ) -> ContinuityObjectRow:
         return self._fetch_one(
             "create_continuity_object",
@@ -4137,6 +4301,9 @@ class ContinuityStore:
                 Jsonb(body),
                 Jsonb(provenance),
                 confidence,
+                last_confirmed_at,
+                supersedes_object_id,
+                superseded_by_object_id,
             ),
         )
 
@@ -4160,8 +4327,100 @@ class ContinuityStore:
             (capture_event_ids,),
         )
 
+    def get_continuity_object_optional(
+        self,
+        continuity_object_id: UUID,
+    ) -> ContinuityObjectRow | None:
+        return self._fetch_optional_one(
+            GET_CONTINUITY_OBJECT_SQL,
+            (continuity_object_id,),
+        )
+
+    def list_continuity_review_queue(
+        self,
+        *,
+        statuses: list[str],
+        limit: int,
+    ) -> list[ContinuityObjectRow]:
+        return self._fetch_all(
+            LIST_CONTINUITY_REVIEW_QUEUE_SQL,
+            (statuses, limit),
+        )
+
+    def count_continuity_review_queue(
+        self,
+        *,
+        statuses: list[str],
+    ) -> int:
+        return self._fetch_count(
+            COUNT_CONTINUITY_REVIEW_QUEUE_SQL,
+            (statuses,),
+        )
+
     def list_continuity_recall_candidates(self) -> list[ContinuityRecallCandidateRow]:
         return self._fetch_all(LIST_CONTINUITY_RECALL_CANDIDATES_SQL)
+
+    def update_continuity_object_optional(
+        self,
+        *,
+        continuity_object_id: UUID,
+        status: str,
+        title: str,
+        body: JsonObject,
+        provenance: JsonObject,
+        confidence: float,
+        last_confirmed_at: datetime | None,
+        supersedes_object_id: UUID | None,
+        superseded_by_object_id: UUID | None,
+    ) -> ContinuityObjectRow | None:
+        return self._fetch_optional_one(
+            UPDATE_CONTINUITY_OBJECT_SQL,
+            (
+                status,
+                title,
+                Jsonb(body),
+                Jsonb(provenance),
+                confidence,
+                last_confirmed_at,
+                supersedes_object_id,
+                superseded_by_object_id,
+                continuity_object_id,
+            ),
+        )
+
+    def create_continuity_correction_event(
+        self,
+        *,
+        continuity_object_id: UUID,
+        action: str,
+        reason: str | None,
+        before_snapshot: JsonObject,
+        after_snapshot: JsonObject,
+        payload: JsonObject,
+    ) -> ContinuityCorrectionEventRow:
+        return self._fetch_one(
+            "create_continuity_correction_event",
+            INSERT_CONTINUITY_CORRECTION_EVENT_SQL,
+            (
+                continuity_object_id,
+                action,
+                reason,
+                Jsonb(before_snapshot),
+                Jsonb(after_snapshot),
+                Jsonb(payload),
+            ),
+        )
+
+    def list_continuity_correction_events(
+        self,
+        *,
+        continuity_object_id: UUID,
+        limit: int,
+    ) -> list[ContinuityCorrectionEventRow]:
+        return self._fetch_all(
+            LIST_CONTINUITY_CORRECTION_EVENTS_SQL,
+            (continuity_object_id, limit),
+        )
 
     def create_embedding_config(
         self,

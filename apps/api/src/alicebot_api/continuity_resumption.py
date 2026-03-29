@@ -29,6 +29,14 @@ class ContinuityResumptionValidationError(ValueError):
     """Raised when a continuity resumption request is invalid."""
 
 
+def _is_active_truth(item: ContinuityRecallResultRecord) -> bool:
+    return item["status"] == "active"
+
+
+def _is_recent_change_candidate(item: ContinuityRecallResultRecord) -> bool:
+    return item["status"] in {"active", "stale", "superseded", "completed", "cancelled"}
+
+
 def _build_empty_state(*, is_empty: bool, message: str) -> ContinuityResumptionEmptyState:
     return {
         "is_empty": is_empty,
@@ -128,7 +136,7 @@ def compile_continuity_resumption_brief(
         (
             item
             for item in recent_ordered_items
-            if item["object_type"] == "Decision" and item["status"] == "active"
+            if item["object_type"] == "Decision" and _is_active_truth(item)
         ),
         None,
     )
@@ -136,7 +144,7 @@ def compile_continuity_resumption_brief(
         (
             item
             for item in recent_ordered_items
-            if item["object_type"] == "NextAction" and item["status"] == "active"
+            if item["object_type"] == "NextAction" and _is_active_truth(item)
         ),
         None,
     )
@@ -144,7 +152,7 @@ def compile_continuity_resumption_brief(
     open_loop_candidates = [
         item
         for item in recent_ordered_items
-        if item["status"] == "active"
+        if _is_active_truth(item)
         and item["object_type"] in {"Commitment", "WaitingFor", "Blocker"}
     ]
     open_loop_items = (
@@ -153,8 +161,13 @@ def compile_continuity_resumption_brief(
         else []
     )
 
+    recent_change_candidates = [
+        item
+        for item in recent_ordered_items
+        if _is_recent_change_candidate(item)
+    ]
     recent_change_items = (
-        recent_ordered_items[: request.max_recent_changes]
+        recent_change_candidates[: request.max_recent_changes]
         if request.max_recent_changes > 0
         else []
     )
@@ -176,7 +189,7 @@ def compile_continuity_resumption_brief(
         "recent_changes": _build_list_section(
             items=recent_change_items,
             limit=request.max_recent_changes,
-            total_count=len(recent_ordered_items),
+            total_count=len(recent_change_candidates),
             order=list(CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER),
             empty_message="No recent changes found in the requested scope.",
         ),

@@ -1,0 +1,464 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from uuid import UUID
+
+from alicebot_api.contracts import (
+    CONTINUITY_CORRECTION_ACTIONS,
+    CONTINUITY_REVIEW_QUEUE_ORDER,
+    DEFAULT_CONTINUITY_REVIEW_LIMIT,
+    MAX_CONTINUITY_REVIEW_LIMIT,
+    ContinuityCorrectionApplyResponse,
+    ContinuityCorrectionEventRecord,
+    ContinuityCorrectionInput,
+    ContinuityReviewDetail,
+    ContinuityReviewDetailResponse,
+    ContinuityReviewObjectRecord,
+    ContinuityReviewQueueQueryInput,
+    ContinuityReviewQueueResponse,
+    ContinuityReviewStatusFilter,
+    ContinuitySupersessionChain,
+    isoformat_or_none,
+)
+from alicebot_api.store import (
+    ContinuityCorrectionEventRow,
+    ContinuityObjectRow,
+    ContinuityStore,
+    JsonObject,
+)
+
+
+class ContinuityReviewValidationError(ValueError):
+    """Raised when a continuity review request is invalid."""
+
+
+class ContinuityReviewNotFoundError(LookupError):
+    """Raised when a continuity object is not visible in scope."""
+
+
+_STATUS_FILTERS: dict[ContinuityReviewStatusFilter, list[str]] = {
+    "correction_ready": ["active", "stale"],
+    "active": ["active"],
+    "stale": ["stale"],
+    "superseded": ["superseded"],
+    "deleted": ["deleted"],
+    "all": ["active", "stale", "superseded", "deleted"],
+}
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def _normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = " ".join(value.split()).strip()
+    if not normalized:
+        return None
+    return normalized
+
+
+def _validate_title(title: str) -> str:
+    normalized = " ".join(title.split()).strip()
+    if not normalized:
+        raise ContinuityReviewValidationError("title must not be empty")
+    if len(normalized) > 280:
+        raise ContinuityReviewValidationError("title must be 280 characters or fewer")
+    return normalized
+
+
+def _validate_confidence(confidence: float) -> float:
+    if confidence < 0.0 or confidence > 1.0:
+        raise ContinuityReviewValidationError("confidence must be between 0.0 and 1.0")
+    return confidence
+
+
+def _serialize_review_object(record: ContinuityObjectRow) -> ContinuityReviewObjectRecord:
+    return {
+        "id": str(record["id"]),
+        "capture_event_id": str(record["capture_event_id"]),
+        "object_type": record["object_type"],  # type: ignore[typeddict-item]
+        "status": record["status"],
+        "title": record["title"],
+        "body": record["body"],
+        "provenance": record["provenance"],
+        "confidence": float(record["confidence"]),
+        "last_confirmed_at": isoformat_or_none(record["last_confirmed_at"]),
+        "supersedes_object_id": (
+            None if record["supersedes_object_id"] is None else str(record["supersedes_object_id"])
+        ),
+        "superseded_by_object_id": (
+            None if record["superseded_by_object_id"] is None else str(record["superseded_by_object_id"])
+        ),
+        "created_at": record["created_at"].isoformat(),
+        "updated_at": record["updated_at"].isoformat(),
+    }
+
+
+def _serialize_correction_event(record: ContinuityCorrectionEventRow) -> ContinuityCorrectionEventRecord:
+    return {
+        "id": str(record["id"]),
+        "continuity_object_id": str(record["continuity_object_id"]),
+        "action": record["action"],  # type: ignore[typeddict-item]
+        "reason": record["reason"],
+        "before_snapshot": record["before_snapshot"],
+        "after_snapshot": record["after_snapshot"],
+        "payload": record["payload"],
+        "created_at": record["created_at"].isoformat(),
+    }
+
+
+def _snapshot(record: ContinuityObjectRow) -> JsonObject:
+    return {
+        "id": str(record["id"]),
+        "capture_event_id": str(record["capture_event_id"]),
+        "object_type": record["object_type"],
+        "status": record["status"],
+        "title": record["title"],
+        "body": record["body"],
+        "provenance": record["provenance"],
+        "confidence": float(record["confidence"]),
+        "last_confirmed_at": isoformat_or_none(record["last_confirmed_at"]),
+        "supersedes_object_id": (
+            None if record["supersedes_object_id"] is None else str(record["supersedes_object_id"])
+        ),
+        "superseded_by_object_id": (
+            None if record["superseded_by_object_id"] is None else str(record["superseded_by_object_id"])
+        ),
+    }
+
+
+def _lookup_object_or_raise(
+    store: ContinuityStore,
+    *,
+    continuity_object_id: UUID,
+) -> ContinuityObjectRow:
+    record = store.get_continuity_object_optional(continuity_object_id)
+    if record is None:
+        raise ContinuityReviewNotFoundError(f"continuity object {continuity_object_id} was not found")
+    return record
+
+
+def _validate_queue_query(request: ContinuityReviewQueueQueryInput) -> list[str]:
+    if request.limit < 1 or request.limit > MAX_CONTINUITY_REVIEW_LIMIT:
+        raise ContinuityReviewValidationError(
+            f"limit must be between 1 and {MAX_CONTINUITY_REVIEW_LIMIT}"
+        )
+
+    if request.status not in _STATUS_FILTERS:
+        allowed = ", ".join(_STATUS_FILTERS)
+        raise ContinuityReviewValidationError(f"status must be one of: {allowed}")
+
+    return _STATUS_FILTERS[request.status]
+
+
+def list_continuity_review_queue(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    request: ContinuityReviewQueueQueryInput,
+) -> ContinuityReviewQueueResponse:
+    del user_id
+
+    statuses = _validate_queue_query(request)
+    rows = store.list_continuity_review_queue(statuses=statuses, limit=request.limit)
+    total_count = store.count_continuity_review_queue(statuses=statuses)
+
+    return {
+        "items": [_serialize_review_object(row) for row in rows],
+        "summary": {
+            "status": request.status,
+            "limit": request.limit,
+            "returned_count": len(rows),
+            "total_count": total_count,
+            "order": list(CONTINUITY_REVIEW_QUEUE_ORDER),
+        },
+    }
+
+
+def get_continuity_review_detail(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    continuity_object_id: UUID,
+) -> ContinuityReviewDetailResponse:
+    del user_id
+
+    continuity_object = _lookup_object_or_raise(
+        store,
+        continuity_object_id=continuity_object_id,
+    )
+
+    supersedes_object = None
+    if continuity_object["supersedes_object_id"] is not None:
+        supersedes_object = store.get_continuity_object_optional(continuity_object["supersedes_object_id"])
+
+    superseded_by_object = None
+    if continuity_object["superseded_by_object_id"] is not None:
+        superseded_by_object = store.get_continuity_object_optional(continuity_object["superseded_by_object_id"])
+
+    correction_events = store.list_continuity_correction_events(
+        continuity_object_id=continuity_object_id,
+        limit=100,
+    )
+
+    supersession_chain: ContinuitySupersessionChain = {
+        "supersedes": None if supersedes_object is None else _serialize_review_object(supersedes_object),
+        "superseded_by": (
+            None if superseded_by_object is None else _serialize_review_object(superseded_by_object)
+        ),
+    }
+
+    detail: ContinuityReviewDetail = {
+        "continuity_object": _serialize_review_object(continuity_object),
+        "correction_events": [_serialize_correction_event(event) for event in correction_events],
+        "supersession_chain": supersession_chain,
+    }
+
+    return {
+        "review": detail,
+    }
+
+
+def _create_correction_event(
+    store: ContinuityStore,
+    *,
+    continuity_object_id: UUID,
+    action: str,
+    reason: str | None,
+    before_snapshot: JsonObject,
+    after_snapshot: JsonObject,
+    payload: JsonObject,
+) -> ContinuityCorrectionEventRow:
+    return store.create_continuity_correction_event(
+        continuity_object_id=continuity_object_id,
+        action=action,
+        reason=reason,
+        before_snapshot=before_snapshot,
+        after_snapshot=after_snapshot,
+        payload=payload,
+    )
+
+
+def apply_continuity_correction(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    continuity_object_id: UUID,
+    request: ContinuityCorrectionInput,
+) -> ContinuityCorrectionApplyResponse:
+    del user_id
+
+    action = request.action
+    if action not in CONTINUITY_CORRECTION_ACTIONS:
+        allowed = ", ".join(CONTINUITY_CORRECTION_ACTIONS)
+        raise ContinuityReviewValidationError(f"action must be one of: {allowed}")
+
+    reason = _normalize_optional_text(request.reason)
+    if reason is not None and len(reason) > 500:
+        raise ContinuityReviewValidationError("reason must be 500 characters or fewer")
+
+    current = _lookup_object_or_raise(store, continuity_object_id=continuity_object_id)
+    before_snapshot = _snapshot(current)
+
+    next_title = current["title"]
+    next_body = current["body"]
+    next_provenance = current["provenance"]
+    next_confidence = float(current["confidence"])
+    next_status = current["status"]
+    next_last_confirmed_at = current["last_confirmed_at"]
+    next_supersedes_object_id = current["supersedes_object_id"]
+    next_superseded_by_object_id = current["superseded_by_object_id"]
+
+    if action == "confirm":
+        if current["status"] not in {"active", "stale"}:
+            raise ContinuityReviewValidationError("confirm requires an active or stale continuity object")
+        next_status = "active"
+        next_last_confirmed_at = _utcnow()
+
+    elif action == "edit":
+        if current["status"] not in {"active", "stale"}:
+            raise ContinuityReviewValidationError("edit requires an active or stale continuity object")
+
+        if (
+            request.title is None
+            and request.body is None
+            and request.provenance is None
+            and request.confidence is None
+        ):
+            raise ContinuityReviewValidationError(
+                "edit requires at least one of title, body, provenance, or confidence"
+            )
+
+        if request.title is not None:
+            next_title = _validate_title(request.title)
+        if request.body is not None:
+            next_body = request.body
+        if request.provenance is not None:
+            next_provenance = request.provenance
+        if request.confidence is not None:
+            next_confidence = _validate_confidence(float(request.confidence))
+
+        next_status = "active"
+        next_last_confirmed_at = _utcnow()
+
+    elif action == "delete":
+        if current["status"] not in {"active", "stale"}:
+            raise ContinuityReviewValidationError("delete requires an active or stale continuity object")
+        next_status = "deleted"
+
+    elif action == "mark_stale":
+        if current["status"] != "active":
+            raise ContinuityReviewValidationError("mark_stale requires an active continuity object")
+        next_status = "stale"
+
+    elif action == "supersede":
+        if current["status"] not in {"active", "stale"}:
+            raise ContinuityReviewValidationError("supersede requires an active or stale continuity object")
+
+        replacement_title = _validate_title(request.replacement_title or current["title"])
+        replacement_body = request.replacement_body if request.replacement_body is not None else current["body"]
+        replacement_provenance = (
+            request.replacement_provenance
+            if request.replacement_provenance is not None
+            else current["provenance"]
+        )
+        replacement_confidence = _validate_confidence(
+            float(request.replacement_confidence)
+            if request.replacement_confidence is not None
+            else float(current["confidence"])
+        )
+
+        supersede_payload: JsonObject = {
+            "replacement_title": replacement_title,
+            "replacement_body": replacement_body,
+            "replacement_provenance": replacement_provenance,
+            "replacement_confidence": replacement_confidence,
+        }
+        supersede_after_snapshot: JsonObject = {
+            **before_snapshot,
+            "status": "superseded",
+            "superseded_by_object_id": None,
+        }
+
+        correction_event = _create_correction_event(
+            store,
+            continuity_object_id=continuity_object_id,
+            action=action,
+            reason=reason,
+            before_snapshot=before_snapshot,
+            after_snapshot=supersede_after_snapshot,
+            payload=supersede_payload,
+        )
+
+        capture_event = store.create_continuity_capture_event(
+            raw_content=replacement_title,
+            explicit_signal=None,
+            admission_posture="DERIVED",
+            admission_reason="correction_supersede",
+        )
+
+        replacement_provenance_payload = {
+            **replacement_provenance,
+            "supersedes_object_id": str(current["id"]),
+            "correction_action": "supersede",
+            "capture_event_id": str(capture_event["id"]),
+            "source_kind": "continuity_correction_event",
+        }
+
+        replacement_object = store.create_continuity_object(
+            capture_event_id=capture_event["id"],
+            object_type=current["object_type"],
+            status="active",
+            title=replacement_title,
+            body=replacement_body,
+            provenance=replacement_provenance_payload,
+            confidence=replacement_confidence,
+            last_confirmed_at=_utcnow(),
+            supersedes_object_id=current["id"],
+            superseded_by_object_id=None,
+        )
+
+        updated = store.update_continuity_object_optional(
+            continuity_object_id=continuity_object_id,
+            status="superseded",
+            title=current["title"],
+            body=current["body"],
+            provenance=current["provenance"],
+            confidence=float(current["confidence"]),
+            last_confirmed_at=current["last_confirmed_at"],
+            supersedes_object_id=current["supersedes_object_id"],
+            superseded_by_object_id=replacement_object["id"],
+        )
+        if updated is None:
+            raise ContinuityReviewNotFoundError(f"continuity object {continuity_object_id} was not found")
+
+        return {
+            "continuity_object": _serialize_review_object(updated),
+            "correction_event": _serialize_correction_event(correction_event),
+            "replacement_object": _serialize_review_object(replacement_object),
+        }
+
+    else:
+        raise ContinuityReviewValidationError(f"unsupported continuity correction action: {action}")
+
+    after_snapshot: JsonObject = {
+        **before_snapshot,
+        "status": next_status,
+        "title": next_title,
+        "body": next_body,
+        "provenance": next_provenance,
+        "confidence": next_confidence,
+        "last_confirmed_at": isoformat_or_none(next_last_confirmed_at),
+        "supersedes_object_id": (
+            None if next_supersedes_object_id is None else str(next_supersedes_object_id)
+        ),
+        "superseded_by_object_id": (
+            None if next_superseded_by_object_id is None else str(next_superseded_by_object_id)
+        ),
+    }
+
+    correction_event = _create_correction_event(
+        store,
+        continuity_object_id=continuity_object_id,
+        action=action,
+        reason=reason,
+        before_snapshot=before_snapshot,
+        after_snapshot=after_snapshot,
+        payload=request.as_payload(),
+    )
+
+    updated = store.update_continuity_object_optional(
+        continuity_object_id=continuity_object_id,
+        status=next_status,
+        title=next_title,
+        body=next_body,
+        provenance=next_provenance,
+        confidence=next_confidence,
+        last_confirmed_at=next_last_confirmed_at,
+        supersedes_object_id=next_supersedes_object_id,
+        superseded_by_object_id=next_superseded_by_object_id,
+    )
+    if updated is None:
+        raise ContinuityReviewNotFoundError(f"continuity object {continuity_object_id} was not found")
+
+    return {
+        "continuity_object": _serialize_review_object(updated),
+        "correction_event": _serialize_correction_event(correction_event),
+        "replacement_object": None,
+    }
+
+
+def build_default_continuity_review_query() -> ContinuityReviewQueueQueryInput:
+    return ContinuityReviewQueueQueryInput(limit=DEFAULT_CONTINUITY_REVIEW_LIMIT)
+
+
+__all__ = [
+    "ContinuityReviewNotFoundError",
+    "ContinuityReviewValidationError",
+    "apply_continuity_correction",
+    "build_default_continuity_review_query",
+    "get_continuity_review_detail",
+    "list_continuity_review_queue",
+]

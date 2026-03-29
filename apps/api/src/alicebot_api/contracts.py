@@ -158,6 +158,9 @@ ContinuityCaptureExplicitSignal = Literal[
 ]
 ContinuityCaptureAdmissionPosture = Literal["DERIVED", "TRIAGE"]
 ContinuityRecallScopeKind = Literal["thread", "task", "project", "person"]
+ContinuityCorrectionAction = Literal["confirm", "edit", "delete", "supersede", "mark_stale"]
+ContinuityReviewStatus = Literal["active", "stale", "superseded", "deleted"]
+ContinuityReviewStatusFilter = Literal["correction_ready", "active", "stale", "superseded", "deleted", "all"]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -187,6 +190,8 @@ DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 5
 MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 50
 DEFAULT_CONTINUITY_CAPTURE_LIMIT = 20
 MAX_CONTINUITY_CAPTURE_LIMIT = 100
+DEFAULT_CONTINUITY_REVIEW_LIMIT = 20
+MAX_CONTINUITY_REVIEW_LIMIT = 100
 DEFAULT_CONTINUITY_RECALL_LIMIT = 20
 MAX_CONTINUITY_RECALL_LIMIT = 100
 DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT = 5
@@ -338,6 +343,8 @@ TASK_RUN_RETRY_POSTURES = [
 TASK_RUN_LIST_ORDER = ["created_at_asc", "id_asc"]
 CONTINUITY_CAPTURE_LIST_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_OBJECT_LIST_ORDER = ["created_at_desc", "id_desc"]
+CONTINUITY_REVIEW_QUEUE_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
+CONTINUITY_CORRECTION_EVENT_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_RECALL_LIST_ORDER = ["relevance_desc", "created_at_desc", "id_desc"]
 CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_RESUMPTION_OPEN_LOOP_ORDER = ["created_at_desc", "id_desc"]
@@ -388,6 +395,19 @@ CONTINUITY_CAPTURE_EXPLICIT_SIGNALS = [
     "blocker",
     "next_action",
     "note",
+]
+CONTINUITY_CORRECTION_ACTIONS = [
+    "confirm",
+    "edit",
+    "delete",
+    "supersede",
+    "mark_stale",
+]
+CONTINUITY_REVIEW_STATUSES = [
+    "active",
+    "stale",
+    "superseded",
+    "deleted",
 ]
 
 
@@ -1223,6 +1243,47 @@ class ContinuityCaptureCreateInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ContinuityReviewQueueQueryInput:
+    status: ContinuityReviewStatusFilter = "correction_ready"
+    limit: int = DEFAULT_CONTINUITY_REVIEW_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "status": self.status,
+            "limit": self.limit,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityCorrectionInput:
+    action: ContinuityCorrectionAction
+    reason: str | None = None
+    title: str | None = None
+    body: JsonObject | None = None
+    provenance: JsonObject | None = None
+    confidence: float | None = None
+    replacement_title: str | None = None
+    replacement_body: JsonObject | None = None
+    replacement_provenance: JsonObject | None = None
+    replacement_confidence: float | None = None
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "action": self.action,
+            "reason": self.reason,
+            "title": self.title,
+            "body": self.body,
+            "provenance": self.provenance,
+            "confidence": self.confidence,
+            "replacement_title": self.replacement_title,
+            "replacement_body": self.replacement_body,
+            "replacement_provenance": self.replacement_provenance,
+            "replacement_confidence": self.replacement_confidence,
+        }
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuityRecallQueryInput:
     query: str | None = None
     thread_id: UUID | None = None
@@ -1797,6 +1858,33 @@ class ContinuityObjectRecord(TypedDict):
     updated_at: str
 
 
+class ContinuityReviewObjectRecord(TypedDict):
+    id: str
+    capture_event_id: str
+    object_type: ContinuityObjectType
+    status: str
+    title: str
+    body: JsonObject
+    provenance: JsonObject
+    confidence: float
+    last_confirmed_at: str | None
+    supersedes_object_id: str | None
+    superseded_by_object_id: str | None
+    created_at: str
+    updated_at: str
+
+
+class ContinuityCorrectionEventRecord(TypedDict):
+    id: str
+    continuity_object_id: str
+    action: ContinuityCorrectionAction
+    reason: str | None
+    before_snapshot: JsonObject
+    after_snapshot: JsonObject
+    payload: JsonObject
+    created_at: str
+
+
 class ContinuityCaptureInboxItem(TypedDict):
     capture_event: ContinuityCaptureEventRecord
     derived_object: ContinuityObjectRecord | None
@@ -1824,6 +1912,34 @@ class ContinuityCaptureDetailResponse(TypedDict):
     capture: ContinuityCaptureInboxItem
 
 
+class ContinuityReviewQueueSummary(TypedDict):
+    status: ContinuityReviewStatusFilter
+    limit: int
+    returned_count: int
+    total_count: int
+    order: list[str]
+
+
+class ContinuityReviewQueueResponse(TypedDict):
+    items: list[ContinuityReviewObjectRecord]
+    summary: ContinuityReviewQueueSummary
+
+
+class ContinuitySupersessionChain(TypedDict):
+    supersedes: ContinuityReviewObjectRecord | None
+    superseded_by: ContinuityReviewObjectRecord | None
+
+
+class ContinuityReviewDetail(TypedDict):
+    continuity_object: ContinuityReviewObjectRecord
+    correction_events: list[ContinuityCorrectionEventRecord]
+    supersession_chain: ContinuitySupersessionChain
+
+
+class ContinuityReviewDetailResponse(TypedDict):
+    review: ContinuityReviewDetail
+
+
 class ContinuityRecallScopeFilters(TypedDict):
     thread_id: NotRequired[str]
     task_id: NotRequired[str]
@@ -1848,6 +1964,7 @@ class ContinuityRecallOrderingMetadata(TypedDict):
     query_term_match_count: int
     confirmation_rank: int
     posture_rank: int
+    lifecycle_rank: int
     confidence: float
 
 
@@ -1863,6 +1980,9 @@ class ContinuityRecallResultRecord(TypedDict):
     admission_posture: ContinuityCaptureAdmissionPosture
     confidence: float
     relevance: float
+    last_confirmed_at: str | None
+    supersedes_object_id: str | None
+    superseded_by_object_id: str | None
     scope_matches: list[ContinuityRecallScopeMatch]
     provenance_references: list[ContinuityRecallProvenanceReference]
     ordering: ContinuityRecallOrderingMetadata
@@ -1912,6 +2032,12 @@ class ContinuityResumptionBriefRecord(TypedDict):
 
 class ContinuityResumptionBriefResponse(TypedDict):
     brief: ContinuityResumptionBriefRecord
+
+
+class ContinuityCorrectionApplyResponse(TypedDict):
+    continuity_object: ContinuityReviewObjectRecord
+    correction_event: ContinuityCorrectionEventRecord
+    replacement_object: ContinuityReviewObjectRecord | None
 
 
 class MemoryReviewRecord(TypedDict):

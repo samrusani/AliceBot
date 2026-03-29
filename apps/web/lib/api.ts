@@ -909,6 +909,74 @@ export type ContinuityObjectRecord = {
   updated_at: string;
 };
 
+export type ContinuityReviewStatusFilter =
+  | "correction_ready"
+  | "active"
+  | "stale"
+  | "superseded"
+  | "deleted"
+  | "all";
+
+export type ContinuityCorrectionAction = "confirm" | "edit" | "delete" | "supersede" | "mark_stale";
+
+export type ContinuityReviewObject = {
+  id: string;
+  capture_event_id: string;
+  object_type: ContinuityObjectType;
+  status: string;
+  title: string;
+  body: JsonObject;
+  provenance: JsonObject;
+  confidence: number;
+  last_confirmed_at: string | null;
+  supersedes_object_id: string | null;
+  superseded_by_object_id: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ContinuityCorrectionEvent = {
+  id: string;
+  continuity_object_id: string;
+  action: ContinuityCorrectionAction;
+  reason: string | null;
+  before_snapshot: JsonObject;
+  after_snapshot: JsonObject;
+  payload: JsonObject;
+  created_at: string;
+};
+
+export type ContinuityReviewQueueSummary = {
+  status: ContinuityReviewStatusFilter;
+  limit: number;
+  returned_count: number;
+  total_count: number;
+  order: string[];
+};
+
+export type ContinuityReviewDetail = {
+  continuity_object: ContinuityReviewObject;
+  correction_events: ContinuityCorrectionEvent[];
+  supersession_chain: {
+    supersedes: ContinuityReviewObject | null;
+    superseded_by: ContinuityReviewObject | null;
+  };
+};
+
+export type ContinuityCorrectionPayload = {
+  user_id: string;
+  action: ContinuityCorrectionAction;
+  reason?: string | null;
+  title?: string | null;
+  body?: JsonObject | null;
+  provenance?: JsonObject | null;
+  confidence?: number | null;
+  replacement_title?: string | null;
+  replacement_body?: JsonObject | null;
+  replacement_provenance?: JsonObject | null;
+  replacement_confidence?: number | null;
+};
+
 export type ContinuityCaptureInboxItem = {
   capture_event: ContinuityCaptureEventRecord;
   derived_object: ContinuityObjectRecord | null;
@@ -946,6 +1014,7 @@ export type ContinuityRecallOrdering = {
   query_term_match_count: number;
   confirmation_rank: number;
   posture_rank: number;
+  lifecycle_rank: number;
   confidence: number;
 };
 
@@ -961,6 +1030,9 @@ export type ContinuityRecallResult = {
   admission_posture: ContinuityCaptureAdmissionPosture;
   confidence: number;
   relevance: number;
+  last_confirmed_at: string | null;
+  supersedes_object_id: string | null;
+  superseded_by_object_id: string | null;
   scope_matches: ContinuityRecallScopeMatch[];
   provenance_references: ContinuityRecallProvenanceReference[];
   ordering: ContinuityRecallOrdering;
@@ -1724,6 +1796,60 @@ export function getContinuityCaptureDetail(
     undefined,
     {
       user_id: userId,
+    },
+  );
+}
+
+export function listContinuityReviewQueue(
+  apiBaseUrl: string,
+  userId: string,
+  options?: {
+    status?: ContinuityReviewStatusFilter;
+    limit?: number;
+  },
+) {
+  return requestJson<{ items: ContinuityReviewObject[]; summary: ContinuityReviewQueueSummary }>(
+    apiBaseUrl,
+    "/v0/continuity/review-queue",
+    undefined,
+    {
+      user_id: userId,
+      status: options?.status ?? "correction_ready",
+      limit: options?.limit ? String(options.limit) : undefined,
+    },
+  );
+}
+
+export function getContinuityReviewDetail(
+  apiBaseUrl: string,
+  continuityObjectId: string,
+  userId: string,
+) {
+  return requestJson<{ review: ContinuityReviewDetail }>(
+    apiBaseUrl,
+    `/v0/continuity/review-queue/${continuityObjectId}`,
+    undefined,
+    {
+      user_id: userId,
+    },
+  );
+}
+
+export function applyContinuityCorrection(
+  apiBaseUrl: string,
+  continuityObjectId: string,
+  payload: ContinuityCorrectionPayload,
+) {
+  return requestJson<{
+    continuity_object: ContinuityReviewObject;
+    correction_event: ContinuityCorrectionEvent;
+    replacement_object: ContinuityReviewObject | null;
+  }>(
+    apiBaseUrl,
+    `/v0/continuity/review-queue/${continuityObjectId}/corrections`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
     },
   );
 }
