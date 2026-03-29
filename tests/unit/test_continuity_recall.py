@@ -128,6 +128,12 @@ def test_recall_returns_deterministic_order_and_provenance_fields() -> None:
         {"source_kind": "task", "source_id": str(task_id)},
         {"source_kind": "thread", "source_id": str(thread_id)},
     ]
+    assert payload["items"][0]["ordering"]["freshness_posture"] == "fresh"
+    assert payload["items"][0]["ordering"]["freshness_rank"] == 4
+    assert payload["items"][0]["ordering"]["provenance_posture"] == "strong"
+    assert payload["items"][0]["ordering"]["provenance_rank"] == 3
+    assert payload["items"][0]["ordering"]["supersession_posture"] == "current"
+    assert payload["items"][0]["ordering"]["supersession_rank"] == 3
     assert payload["items"][0]["ordering"]["lifecycle_rank"] == 4
 
 
@@ -239,3 +245,145 @@ def test_recall_excludes_deleted_and_ranks_lifecycle_posture_deterministically()
                 until=datetime(2026, 3, 29, 11, 0, tzinfo=UTC),
             ),
         )
+
+
+def test_recall_prefers_confirmed_fresh_active_truth_over_stale_and_superseded_candidates() -> None:
+    confirmed_fresh = make_candidate_row(
+        title="Decision: Current rollout policy",
+        object_type="Decision",
+        capture_created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+        confidence=0.62,
+        status="active",
+        body={"decision_text": "rollout policy"},
+        provenance={"confirmation_status": "confirmed", "source_event_ids": ["event-current"]},
+        last_confirmed_at=datetime(2026, 3, 29, 10, 30, tzinfo=UTC),
+    )
+    stale = make_candidate_row(
+        title="Decision: Old rollout policy",
+        object_type="Decision",
+        capture_created_at=datetime(2026, 3, 20, 9, 0, tzinfo=UTC),
+        confidence=0.99,
+        status="stale",
+        body={"decision_text": "rollout policy"},
+        provenance={"confirmation_status": "confirmed"},
+    )
+    superseded = make_candidate_row(
+        title="Decision: Superseded rollout policy",
+        object_type="Decision",
+        capture_created_at=datetime(2026, 3, 10, 9, 0, tzinfo=UTC),
+        confidence=1.0,
+        status="superseded",
+        body={"decision_text": "rollout policy"},
+        provenance={"confirmation_status": "confirmed"},
+        superseded_by_object_id=UUID(str(confirmed_fresh["id"])),
+    )
+
+    payload = query_continuity_recall(
+        ContinuityRecallStoreStub([stale, superseded, confirmed_fresh]),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityRecallQueryInput(
+            query="rollout policy",
+            limit=20,
+        ),
+    )
+
+    assert [item["title"] for item in payload["items"]] == [
+        "Decision: Current rollout policy",
+        "Decision: Old rollout policy",
+        "Decision: Superseded rollout policy",
+    ]
+    assert payload["items"][0]["ordering"]["freshness_posture"] == "fresh"
+    assert payload["items"][0]["ordering"]["supersession_posture"] == "current"
+    assert payload["items"][1]["ordering"]["freshness_posture"] == "stale"
+    assert payload["items"][2]["ordering"]["supersession_posture"] == "superseded"
+
+
+def test_recall_uses_provenance_quality_as_tie_breaker() -> None:
+    rows = [
+        make_candidate_row(
+            title="Decision: pricing guardrail with source event",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 5, tzinfo=UTC),
+            confidence=0.9,
+            provenance={
+                "confirmation_status": "confirmed",
+                "thread_id": "thread-1",
+                "source_event_ids": ["event-strong"],
+            },
+            body={"decision_text": "pricing guardrail"},
+        ),
+        make_candidate_row(
+            title="Decision: pricing guardrail without source event",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 5, tzinfo=UTC),
+            confidence=0.99,
+            provenance={
+                "confirmation_status": "confirmed",
+            },
+            body={"decision_text": "pricing guardrail"},
+        ),
+    ]
+
+    payload = query_continuity_recall(
+        ContinuityRecallStoreStub(rows),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityRecallQueryInput(query="pricing", limit=20),
+    )
+
+    assert [item["title"] for item in payload["items"]] == [
+        "Decision: pricing guardrail with source event",
+        "Decision: pricing guardrail without source event",
+    ]
+    assert payload["items"][0]["ordering"]["provenance_posture"] == "strong"
+    assert payload["items"][1]["ordering"]["provenance_posture"] in {"weak", "partial"}
+
+
+def test_recall_prefers_provenance_freshness_when_explicit_values_conflict() -> None:
+    row = make_candidate_row(
+        title="Decision: rollout policy conflict metadata",
+        object_type="Decision",
+        capture_created_at=datetime(2026, 3, 29, 11, 0, tzinfo=UTC),
+        confidence=0.7,
+        status="active",
+        provenance={
+            "confirmation_status": "confirmed",
+            "freshness_posture": "stale",
+        },
+        body={
+            "decision_text": "rollout policy",
+            "freshness_status": "fresh",
+        },
+    )
+
+    payload = query_continuity_recall(
+        ContinuityRecallStoreStub([row]),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityRecallQueryInput(query="rollout policy", limit=20),
+    )
+
+    assert payload["items"][0]["ordering"]["freshness_posture"] == "stale"
+    assert payload["items"][0]["ordering"]["freshness_rank"] == 2
+
+
+def test_recall_selects_ranked_explicit_values_deterministically_within_source() -> None:
+    row = make_candidate_row(
+        title="Decision: rollout policy list metadata",
+        object_type="Decision",
+        capture_created_at=datetime(2026, 3, 29, 11, 5, tzinfo=UTC),
+        confidence=0.7,
+        status="active",
+        provenance={
+            "confirmation_status": ["contested", "confirmed"],
+            "freshness_posture": ["stale", "fresh"],
+        },
+        body={"decision_text": "rollout policy"},
+    )
+
+    payload = query_continuity_recall(
+        ContinuityRecallStoreStub([row]),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityRecallQueryInput(query="rollout policy", limit=20),
+    )
+
+    assert payload["items"][0]["confirmation_status"] == "confirmed"
+    assert payload["items"][0]["ordering"]["freshness_posture"] == "fresh"

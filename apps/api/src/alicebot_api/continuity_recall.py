@@ -10,8 +10,9 @@ from alicebot_api.contracts import (
     CONTINUITY_RECALL_LIST_ORDER,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
-    MEMORY_CONFIRMATION_STATUSES,
+    ContinuityRecallFreshnessPosture,
     ContinuityRecallOrderingMetadata,
+    ContinuityRecallProvenancePosture,
     ContinuityRecallProvenanceReference,
     ContinuityRecallQueryInput,
     ContinuityRecallResponse,
@@ -19,6 +20,7 @@ from alicebot_api.contracts import (
     ContinuityRecallScopeFilters,
     ContinuityRecallScopeKind,
     ContinuityRecallScopeMatch,
+    ContinuityRecallSupersessionPosture,
     MemoryConfirmationStatus,
     isoformat_or_none,
 )
@@ -36,6 +38,12 @@ class RankedRecallCandidate:
     query_term_match_count: int
     confirmation_status: MemoryConfirmationStatus
     confirmation_rank: int
+    freshness_posture: ContinuityRecallFreshnessPosture
+    freshness_rank: int
+    provenance_posture: ContinuityRecallProvenancePosture
+    provenance_rank: int
+    supersession_posture: ContinuityRecallSupersessionPosture
+    supersession_rank: int
     posture_rank: int
     lifecycle_rank: int
     relevance: float
@@ -51,6 +59,25 @@ _CONFIRMATION_RANK: dict[MemoryConfirmationStatus, int] = {
     "confirmed": 3,
     "unconfirmed": 2,
     "contested": 1,
+}
+_FRESHNESS_RANK: dict[ContinuityRecallFreshnessPosture, int] = {
+    "fresh": 4,
+    "aging": 3,
+    "stale": 2,
+    "superseded": 1,
+    "unknown": 0,
+}
+_PROVENANCE_RANK: dict[ContinuityRecallProvenancePosture, int] = {
+    "strong": 3,
+    "partial": 2,
+    "weak": 1,
+    "missing": 0,
+}
+_SUPERSESSION_RANK: dict[ContinuityRecallSupersessionPosture, int] = {
+    "current": 3,
+    "historical": 2,
+    "superseded": 1,
+    "deleted": 0,
 }
 _POSTURE_RANK: dict[str, int] = {
     "DERIVED": 2,
@@ -110,6 +137,55 @@ def _collect_strings(payload: object, *, keys: set[str]) -> set[str]:
     return values
 
 
+def _collect_strings_in_order(payload: object, *, keys: set[str]) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+
+    def add_value(value: str) -> None:
+        normalized = _normalize_optional_text(value)
+        if normalized is None:
+            return
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        values.append(normalized)
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                normalized_key = key.strip().casefold()
+                if normalized_key in keys:
+                    if isinstance(child, str):
+                        add_value(child)
+                    elif isinstance(child, list):
+                        for item in child:
+                            if isinstance(item, str):
+                                add_value(item)
+                visit(child)
+            return
+
+        if isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(payload)
+    return values
+
+
+def _select_ranked_value(values: list[str], *, rank_map: dict[str, int]) -> str | None:
+    candidates = {
+        value.casefold()
+        for value in values
+        if value.casefold() in rank_map
+    }
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda candidate: (rank_map[candidate], candidate),
+    )
+
+
 def _flatten_text(payload: object) -> str:
     values: list[str] = []
 
@@ -135,19 +211,90 @@ def _flatten_text(payload: object) -> str:
 
 def _extract_confirmation_status(row: ContinuityRecallCandidateRow) -> MemoryConfirmationStatus:
     for source in (row["provenance"], row["body"]):
-        values = _collect_strings(
+        values = _collect_strings_in_order(
             source,
             keys={"confirmation_status", "memory_confirmation_status"},
         )
-        for value in values:
-            normalized = value.casefold()
-            if normalized in MEMORY_CONFIRMATION_STATUSES:
-                return cast(MemoryConfirmationStatus, normalized)
+        ranked_value = _select_ranked_value(values, rank_map=_CONFIRMATION_RANK)
+        if ranked_value is not None:
+            return cast(MemoryConfirmationStatus, ranked_value)
 
     if row["last_confirmed_at"] is not None:
         return "confirmed"
 
     return "unconfirmed"
+
+
+def _extract_freshness_posture(
+    row: ContinuityRecallCandidateRow,
+    *,
+    confirmation_status: MemoryConfirmationStatus,
+) -> ContinuityRecallFreshnessPosture:
+    for source in (row["provenance"], row["body"]):
+        explicit_values = _collect_strings_in_order(
+            source,
+            keys={"freshness_posture", "freshness_status"},
+        )
+        ranked_value = _select_ranked_value(explicit_values, rank_map=_FRESHNESS_RANK)
+        if ranked_value is not None:
+            return cast(ContinuityRecallFreshnessPosture, ranked_value)
+
+    if row["status"] == "superseded" or row["superseded_by_object_id"] is not None:
+        return "superseded"
+    if row["status"] == "stale":
+        return "stale"
+    if confirmation_status == "confirmed" or row["last_confirmed_at"] is not None:
+        return "fresh"
+    if row["status"] in {"active", "completed", "cancelled"}:
+        return "aging"
+    return "unknown"
+
+
+def _extract_supersession_posture(
+    row: ContinuityRecallCandidateRow,
+) -> ContinuityRecallSupersessionPosture:
+    if row["status"] == "deleted":
+        return "deleted"
+    if row["status"] == "superseded" or row["superseded_by_object_id"] is not None:
+        return "superseded"
+    if row["status"] == "stale":
+        return "historical"
+    return "current"
+
+
+def _extract_provenance_posture(
+    row: ContinuityRecallCandidateRow,
+    *,
+    scope_matches: list[ContinuityRecallScopeMatch],
+) -> ContinuityRecallProvenancePosture:
+    has_source_events = bool(
+        _collect_strings(
+            row["provenance"],
+            keys={"source_event_id", "source_event_ids"},
+        )
+        | _collect_strings(
+            row["body"],
+            keys={"source_event_id", "source_event_ids"},
+        )
+    )
+    has_scope_context = len(scope_matches) > 0 or bool(
+        _collect_strings(
+            row["provenance"],
+            keys=(
+                _SCOPE_FILTER_KEYS["thread"]
+                | _SCOPE_FILTER_KEYS["task"]
+                | _SCOPE_FILTER_KEYS["project"]
+                | _SCOPE_FILTER_KEYS["person"]
+            ),
+        )
+    )
+    if has_source_events and has_scope_context:
+        return "strong"
+    if has_source_events or has_scope_context:
+        return "partial"
+    if row["provenance"]:
+        return "weak"
+    return "missing"
 
 
 def _compute_scope_matches(
@@ -310,6 +457,12 @@ def _serialize_recall_result(item: RankedRecallCandidate) -> ContinuityRecallRes
         "scope_match_count": len(item.scope_matches),
         "query_term_match_count": item.query_term_match_count,
         "confirmation_rank": item.confirmation_rank,
+        "freshness_posture": item.freshness_posture,
+        "freshness_rank": item.freshness_rank,
+        "provenance_posture": item.provenance_posture,
+        "provenance_rank": item.provenance_rank,
+        "supersession_posture": item.supersession_posture,
+        "supersession_rank": item.supersession_rank,
         "posture_rank": item.posture_rank,
         "lifecycle_rank": item.lifecycle_rank,
         "confidence": float(row["confidence"]),
@@ -424,14 +577,29 @@ def _ordered_recall_candidates(
 
         confirmation_status = _extract_confirmation_status(row)
         confirmation_rank = _CONFIRMATION_RANK[confirmation_status]
+        freshness_posture = _extract_freshness_posture(
+            row,
+            confirmation_status=confirmation_status,
+        )
+        freshness_rank = _FRESHNESS_RANK[freshness_posture]
+        provenance_posture = _extract_provenance_posture(
+            row,
+            scope_matches=scope_matches,
+        )
+        provenance_rank = _PROVENANCE_RANK[provenance_posture]
+        supersession_posture = _extract_supersession_posture(row)
+        supersession_rank = _SUPERSESSION_RANK[supersession_posture]
         posture_rank = _POSTURE_RANK.get(row["admission_posture"], 0)
         lifecycle_rank = _LIFECYCLE_RANK.get(row["status"], 0)
         relevance = (
             float(len(scope_matches)) * 100.0
-            + float(query_term_match_count) * 10.0
-            + float(confirmation_rank) * 5.0
-            + float(posture_rank) * 2.0
-            + float(lifecycle_rank) * 3.0
+            + float(query_term_match_count) * 20.0
+            + float(confirmation_rank) * 14.0
+            + float(freshness_rank) * 12.0
+            + float(provenance_rank) * 8.0
+            + float(supersession_rank) * 10.0
+            + float(posture_rank) * 4.0
+            + float(lifecycle_rank) * 2.0
             + float(row["confidence"])
         )
 
@@ -442,6 +610,12 @@ def _ordered_recall_candidates(
                 query_term_match_count=query_term_match_count,
                 confirmation_status=confirmation_status,
                 confirmation_rank=confirmation_rank,
+                freshness_posture=freshness_posture,
+                freshness_rank=freshness_rank,
+                provenance_posture=provenance_posture,
+                provenance_rank=provenance_rank,
+                supersession_posture=supersession_posture,
+                supersession_rank=supersession_rank,
                 posture_rank=posture_rank,
                 lifecycle_rank=lifecycle_rank,
                 relevance=relevance,
@@ -454,6 +628,9 @@ def _ordered_recall_candidates(
             len(candidate.scope_matches),
             candidate.query_term_match_count,
             candidate.confirmation_rank,
+            candidate.freshness_rank,
+            candidate.provenance_rank,
+            candidate.supersession_rank,
             candidate.posture_rank,
             candidate.lifecycle_rank,
             float(candidate.row["confidence"]),

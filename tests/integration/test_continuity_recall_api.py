@@ -202,6 +202,9 @@ def test_continuity_recall_api_returns_provenance_backed_scoped_results(
         {"source_kind": "task", "source_id": str(task_id)},
         {"source_kind": "thread", "source_id": str(thread_id)},
     ]
+    assert payload["items"][0]["ordering"]["freshness_posture"] == "fresh"
+    assert payload["items"][0]["ordering"]["provenance_posture"] == "strong"
+    assert payload["items"][0]["ordering"]["supersession_posture"] == "current"
 
     intruder_status, intruder_payload = invoke_request(
         "GET",
@@ -247,3 +250,107 @@ def test_continuity_recall_api_rejects_invalid_time_window(
 
     assert status == 400
     assert payload == {"detail": "until must be greater than or equal to since"}
+
+
+def test_continuity_recall_api_prefers_confirmed_fresh_active_truth_over_superseded_chain(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="freshness@example.com")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+
+        current_capture = store.create_continuity_capture_event(
+            raw_content="Decision: API timeout is 30s",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        current_object = store.create_continuity_object(
+            capture_event_id=current_capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: API timeout is 30s",
+            body={"decision_text": "api timeout is 30 seconds"},
+            provenance={"confirmation_status": "confirmed", "source_event_ids": ["event-current"]},
+            confidence=0.62,
+            last_confirmed_at=datetime(2026, 3, 29, 10, 30, tzinfo=UTC),
+        )
+
+        stale_capture = store.create_continuity_capture_event(
+            raw_content="Decision: API timeout was 45s",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        stale_object = store.create_continuity_object(
+            capture_event_id=stale_capture["id"],
+            object_type="Decision",
+            status="stale",
+            title="Decision: API timeout was 45s",
+            body={"decision_text": "api timeout is 45 seconds"},
+            provenance={"confirmation_status": "confirmed"},
+            confidence=0.99,
+            last_confirmed_at=datetime(2026, 3, 20, 9, 30, tzinfo=UTC),
+        )
+
+        superseded_capture = store.create_continuity_capture_event(
+            raw_content="Decision: API timeout was 60s",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        superseded_object = store.create_continuity_object(
+            capture_event_id=superseded_capture["id"],
+            object_type="Decision",
+            status="superseded",
+            title="Decision: API timeout was 60s",
+            body={"decision_text": "api timeout is 60 seconds"},
+            provenance={"confirmation_status": "confirmed"},
+            confidence=1.0,
+            last_confirmed_at=datetime(2026, 3, 10, 8, 0, tzinfo=UTC),
+            superseded_by_object_id=current_object["id"],
+        )
+
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=current_object["id"],
+        created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+    )
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=stale_object["id"],
+        created_at=datetime(2026, 3, 20, 9, 0, tzinfo=UTC),
+    )
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=superseded_object["id"],
+        created_at=datetime(2026, 3, 10, 8, 0, tzinfo=UTC),
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status, payload = invoke_request(
+        "GET",
+        "/v0/continuity/recall",
+        query_params={
+            "user_id": str(user_id),
+            "query": "api timeout",
+            "limit": "20",
+        },
+    )
+
+    assert status == 200
+    assert [item["title"] for item in payload["items"]] == [
+        "Decision: API timeout is 30s",
+        "Decision: API timeout was 45s",
+        "Decision: API timeout was 60s",
+    ]
+    assert payload["items"][0]["ordering"]["freshness_posture"] == "fresh"
+    assert payload["items"][0]["ordering"]["supersession_posture"] == "current"
+    assert payload["items"][-1]["ordering"]["supersession_posture"] == "superseded"
