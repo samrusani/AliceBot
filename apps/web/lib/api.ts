@@ -929,6 +929,87 @@ export type ContinuityCaptureCreatePayload = {
   explicit_signal?: ContinuityCaptureExplicitSignal | null;
 };
 
+export type ContinuityRecallScopeKind = "thread" | "task" | "project" | "person";
+
+export type ContinuityRecallScopeMatch = {
+  kind: ContinuityRecallScopeKind;
+  value: string;
+};
+
+export type ContinuityRecallProvenanceReference = {
+  source_kind: string;
+  source_id: string;
+};
+
+export type ContinuityRecallOrdering = {
+  scope_match_count: number;
+  query_term_match_count: number;
+  confirmation_rank: number;
+  posture_rank: number;
+  confidence: number;
+};
+
+export type ContinuityRecallResult = {
+  id: string;
+  capture_event_id: string;
+  object_type: ContinuityObjectType;
+  status: string;
+  title: string;
+  body: JsonObject;
+  provenance: JsonObject;
+  confirmation_status: MemoryConfirmationStatus;
+  admission_posture: ContinuityCaptureAdmissionPosture;
+  confidence: number;
+  relevance: number;
+  scope_matches: ContinuityRecallScopeMatch[];
+  provenance_references: ContinuityRecallProvenanceReference[];
+  ordering: ContinuityRecallOrdering;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ContinuityRecallSummary = {
+  query: string | null;
+  filters: {
+    thread_id?: string;
+    task_id?: string;
+    project?: string;
+    person?: string;
+    since: string | null;
+    until: string | null;
+  };
+  limit: number;
+  returned_count: number;
+  total_count: number;
+  order: string[];
+};
+
+export type ContinuityResumptionEmptyState = {
+  is_empty: boolean;
+  message: string;
+};
+
+export type ContinuityResumptionSingleSection = {
+  item: ContinuityRecallResult | null;
+  empty_state: ContinuityResumptionEmptyState;
+};
+
+export type ContinuityResumptionListSection = {
+  items: ContinuityRecallResult[];
+  summary: ResumptionBriefSectionSummary;
+  empty_state: ContinuityResumptionEmptyState;
+};
+
+export type ContinuityResumptionBrief = {
+  assembly_version: string;
+  scope: ContinuityRecallSummary["filters"];
+  last_decision: ContinuityResumptionSingleSection;
+  open_loops: ContinuityResumptionListSection;
+  recent_changes: ContinuityResumptionListSection;
+  next_action: ContinuityResumptionSingleSection;
+  sources: string[];
+};
+
 export type OpenLoopCreatePayload = {
   user_id: string;
   memory_id?: string | null;
@@ -1379,6 +1460,104 @@ export function getThreadResumptionBrief(
           : undefined,
       max_memories:
         typeof options?.maxMemories === "number" ? String(Math.max(0, options.maxMemories)) : undefined,
+    },
+  );
+}
+
+export function queryContinuityRecall(
+  apiBaseUrl: string,
+  userId: string,
+  options?: {
+    query?: string;
+    threadId?: string;
+    taskId?: string;
+    project?: string;
+    person?: string;
+    since?: string;
+    until?: string;
+    limit?: number;
+  },
+) {
+  const query = options?.query?.trim();
+  const threadId = options?.threadId?.trim();
+  const taskId = options?.taskId?.trim();
+  const project = options?.project?.trim();
+  const person = options?.person?.trim();
+  const since = options?.since?.trim();
+  const until = options?.until?.trim();
+  const limit =
+    typeof options?.limit === "number" && Number.isFinite(options.limit) && options.limit > 0
+      ? String(Math.trunc(options.limit))
+      : undefined;
+
+  return requestJson<{ items: ContinuityRecallResult[]; summary: ContinuityRecallSummary }>(
+    apiBaseUrl,
+    "/v0/continuity/recall",
+    undefined,
+    {
+      user_id: userId,
+      query: query || undefined,
+      thread_id: threadId || undefined,
+      task_id: taskId || undefined,
+      project: project || undefined,
+      person: person || undefined,
+      since: since || undefined,
+      until: until || undefined,
+      limit,
+    },
+  );
+}
+
+export function getContinuityResumptionBrief(
+  apiBaseUrl: string,
+  userId: string,
+  options?: {
+    query?: string;
+    threadId?: string;
+    taskId?: string;
+    project?: string;
+    person?: string;
+    since?: string;
+    until?: string;
+    maxRecentChanges?: number;
+    maxOpenLoops?: number;
+  },
+) {
+  const query = options?.query?.trim();
+  const threadId = options?.threadId?.trim();
+  const taskId = options?.taskId?.trim();
+  const project = options?.project?.trim();
+  const person = options?.person?.trim();
+  const since = options?.since?.trim();
+  const until = options?.until?.trim();
+  const maxRecentChanges =
+    typeof options?.maxRecentChanges === "number" &&
+    Number.isFinite(options.maxRecentChanges) &&
+    options.maxRecentChanges >= 0
+      ? String(Math.trunc(options.maxRecentChanges))
+      : undefined;
+  const maxOpenLoops =
+    typeof options?.maxOpenLoops === "number" &&
+    Number.isFinite(options.maxOpenLoops) &&
+    options.maxOpenLoops >= 0
+      ? String(Math.trunc(options.maxOpenLoops))
+      : undefined;
+
+  return requestJson<{ brief: ContinuityResumptionBrief }>(
+    apiBaseUrl,
+    "/v0/continuity/resumption-brief",
+    undefined,
+    {
+      user_id: userId,
+      query: query || undefined,
+      thread_id: threadId || undefined,
+      task_id: taskId || undefined,
+      project: project || undefined,
+      person: person || undefined,
+      since: since || undefined,
+      until: until || undefined,
+      max_recent_changes: maxRecentChanges,
+      max_open_loops: maxOpenLoops,
     },
   );
 }

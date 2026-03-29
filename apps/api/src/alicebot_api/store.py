@@ -172,6 +172,24 @@ class ContinuityObjectRow(TypedDict):
     updated_at: datetime
 
 
+class ContinuityRecallCandidateRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    capture_event_id: UUID
+    object_type: str
+    status: str
+    title: str
+    body: JsonObject
+    provenance: JsonObject
+    confidence: float
+    object_created_at: datetime
+    object_updated_at: datetime
+    admission_posture: str
+    admission_reason: str
+    explicit_signal: str | None
+    capture_created_at: datetime
+
+
 class EmbeddingConfigRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -3594,6 +3612,30 @@ LIST_CONTINUITY_OBJECTS_FOR_CAPTURE_EVENTS_SQL = """
                 ORDER BY created_at DESC, id DESC
                 """
 
+LIST_CONTINUITY_RECALL_CANDIDATES_SQL = """
+                SELECT
+                  continuity_objects.id,
+                  continuity_objects.user_id,
+                  continuity_objects.capture_event_id,
+                  continuity_objects.object_type,
+                  continuity_objects.status,
+                  continuity_objects.title,
+                  continuity_objects.body,
+                  continuity_objects.provenance,
+                  continuity_objects.confidence,
+                  continuity_objects.created_at AS object_created_at,
+                  continuity_objects.updated_at AS object_updated_at,
+                  continuity_capture_events.admission_posture,
+                  continuity_capture_events.admission_reason,
+                  continuity_capture_events.explicit_signal,
+                  continuity_capture_events.created_at AS capture_created_at
+                FROM continuity_objects
+                JOIN continuity_capture_events
+                  ON continuity_capture_events.id = continuity_objects.capture_event_id
+                 AND continuity_capture_events.user_id = continuity_objects.user_id
+                ORDER BY continuity_objects.created_at DESC, continuity_objects.id DESC
+                """
+
 UPDATE_EVENT_ERROR = "events are append-only and must be superseded by new records"
 DELETE_EVENT_ERROR = "events are append-only and must not be deleted in place"
 UPDATE_TRACE_EVENT_ERROR = "trace events are append-only and must be superseded by new records"
@@ -4117,6 +4159,9 @@ class ContinuityStore:
             LIST_CONTINUITY_OBJECTS_FOR_CAPTURE_EVENTS_SQL,
             (capture_event_ids,),
         )
+
+    def list_continuity_recall_candidates(self) -> list[ContinuityRecallCandidateRow]:
+        return self._fetch_all(LIST_CONTINUITY_RECALL_CANDIDATES_SQL)
 
     def create_embedding_config(
         self,
