@@ -1,79 +1,57 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 4 Sprint 18 closeout tooling so MVP phase-exit evidence is deterministic, reviewable, and derived from GO release-candidate archive evidence.
+Implement Phase 4 Sprint 19 MVP qualification/sign-off so qualification runs end-to-end deterministically and emits a formal GO/NO_GO sign-off record with blocker registry.
 
 ## Completed Work
-- Added deterministic MVP exit manifest generator:
-  - `scripts/generate_phase4_mvp_exit_manifest.py`
-  - command: `python3 scripts/generate_phase4_mvp_exit_manifest.py`
-  - output: `artifacts/release/phase4_mvp_exit_manifest.json`
-  - derivation rule: select latest GO entry from `artifacts/release/archive/index.json`, load referenced archive summary artifact, require GO evidence contract.
-- Added deterministic MVP exit manifest verifier:
-  - `scripts/verify_phase4_mvp_exit_manifest.py`
-  - command: `python3 scripts/verify_phase4_mvp_exit_manifest.py`
-  - checks:
-    - required manifest schema/fields
-    - required `source_references.archive_entry_index` type/range/correspondence checks
-    - referenced archive/index paths exist and are coherent
-    - source archive summary remains GO (`summary_exit_code=0`, `failing_steps=[]`, ordered step statuses PASS)
-    - `integrity.archive_artifact_sha256` matches source archive artifact bytes
-- Added manifest contract tests:
-  - `tests/integration/test_phase4_mvp_exit_manifest.py`
-    - GO manifest generation path
-    - invalid/missing-reference failure path
-    - tampered `archive_entry_index` failure path
+- Added deterministic qualification orchestrator:
+  - `scripts/run_phase4_mvp_qualification.py`
+  - command: `python3 scripts/run_phase4_mvp_qualification.py`
+  - ordered chain:
+    1. `python3 scripts/run_phase4_release_candidate.py`
+    2. `python3 scripts/verify_phase4_rc_archive.py`
+    3. `python3 scripts/generate_phase4_mvp_exit_manifest.py`
+    4. `python3 scripts/verify_phase4_mvp_exit_manifest.py`
+  - output artifact: `artifacts/release/phase4_mvp_signoff_record.json`
+  - sign-off fields include ordered executed commands, per-step status, GO/NO_GO, and blocker registry.
+- Added deterministic sign-off verifier:
+  - `scripts/verify_phase4_mvp_signoff_record.py`
+  - command: `python3 scripts/verify_phase4_mvp_signoff_record.py`
+  - validates sign-off schema, required references, and GO/NO_GO consistency.
+- Added qualification contract tests:
+  - `tests/integration/test_phase4_mvp_qualification.py`
+    - GO qualification contract + verifier pass
+    - NO_GO contract with downstream `NOT_RUN` and explicit blockers
+    - verifier rejects tampered GO-with-blockers payload
   - `tests/unit/test_phase4_gate_wrappers.py`
-    - manifest generator/verifier wrapper path/constant stability checks
-- Updated closeout/control docs for Sprint 18:
+    - qualification step sequence/command contract
+    - sign-off verifier default-path contract
+- Updated closeout/control docs:
   - `docs/runbooks/phase4-closeout-packet.md`
+  - `docs/runbooks/phase4-mvp-qualification.md` (new)
   - `README.md`
   - `ROADMAP.md`
   - `.ai/handoff/CURRENT_STATE.md`
-- Updated sprint reports:
-  - `BUILD_REPORT.md`
-  - `REVIEW_REPORT.md`
 
-### Manifest Schema / Output Location
-- Location: `artifacts/release/phase4_mvp_exit_manifest.json`
-- Schema (`artifact_version = phase4_mvp_exit_manifest.v1`):
-  - `artifact_version`
-  - `artifact_path`
-  - `phase` (`phase4`)
-  - `release_gate` (`mvp`)
-  - `decision`:
-    - `final_decision`
-    - `summary_exit_code`
-    - `failing_steps`
-  - `source_references`:
-    - `archive_index_path`
-    - `archive_entry_index`
-    - `archive_entry_created_at`
-    - `archive_artifact_path`
-    - `archive_entry_command_mode`
-  - `ordered_steps`
-  - `step_status_by_id`
-  - `compatibility_validation_commands`
-  - `integrity`:
-    - `archive_artifact_sha256`
-
-### Generation / Verification Command Outcomes
-- `python3 scripts/generate_phase4_mvp_exit_manifest.py`
-  - PASS
-  - wrote: `artifacts/release/phase4_mvp_exit_manifest.json`
-  - source archive artifact: `artifacts/release/archive/20260328T115124Z_phase4_rc_summary.json`
-- `python3 scripts/verify_phase4_mvp_exit_manifest.py`
-  - PASS
+### Qualification Chain And Artifact Outputs
+- Qualification command: `python3 scripts/run_phase4_mvp_qualification.py`
+  - final result: `GO`
+  - sign-off artifact: `artifacts/release/phase4_mvp_signoff_record.json`
+- RC rehearsal artifact: `artifacts/release/phase4_rc_summary.json`
+- RC archive index: `artifacts/release/archive/index.json`
+- RC archive artifact used for manifest/sign-off: `artifacts/release/archive/20260328T201040Z_phase4_rc_summary.json`
+- MVP exit manifest artifact: `artifacts/release/phase4_mvp_exit_manifest.json`
 
 ## Incomplete Work
-- None within Sprint 18 scoped surfaces.
+- None within Sprint 19 scoped surfaces.
 
 ## Files Changed
-- `scripts/generate_phase4_mvp_exit_manifest.py`
-- `scripts/verify_phase4_mvp_exit_manifest.py`
-- `tests/integration/test_phase4_mvp_exit_manifest.py`
+- `scripts/run_phase4_mvp_qualification.py`
+- `scripts/verify_phase4_mvp_signoff_record.py`
+- `tests/integration/test_phase4_mvp_qualification.py`
 - `tests/unit/test_phase4_gate_wrappers.py`
 - `docs/runbooks/phase4-closeout-packet.md`
+- `docs/runbooks/phase4-mvp-qualification.md`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
@@ -81,34 +59,46 @@ Implement Phase 4 Sprint 18 closeout tooling so MVP phase-exit evidence is deter
 - `REVIEW_REPORT.md`
 
 ## Tests Run
-- `./.venv/bin/python -m pytest tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_mvp_exit_manifest.py tests/unit/test_phase4_gate_wrappers.py -q`
+- `./.venv/bin/python -m pytest tests/integration/test_phase4_mvp_qualification.py tests/integration/test_phase4_mvp_exit_manifest.py tests/unit/test_phase4_gate_wrappers.py -q`
   - PASS (`16 passed`)
+- `python3 scripts/run_phase4_mvp_qualification.py`
+  - initial non-elevated run hit sandbox localhost DB restriction (`Operation not permitted`) and produced NO_GO
+  - elevated rerun PASS (`exit 0`, GO)
+- `python3 scripts/verify_phase4_mvp_signoff_record.py`
+  - PASS (`exit 0`)
 - `python3 scripts/run_phase4_release_candidate.py`
   - PASS (`exit 0`, GO)
-  - wrote latest summary + archive artifact + archive index entry
+- `python3 scripts/verify_phase4_rc_archive.py`
+  - PASS (`exit 0`)
 - `python3 scripts/generate_phase4_mvp_exit_manifest.py`
   - PASS (`exit 0`)
 - `python3 scripts/verify_phase4_mvp_exit_manifest.py`
   - PASS (`exit 0`)
-- `python3 scripts/run_phase4_validation_matrix.py`
-  - initial non-elevated attempt hit sandbox localhost DB restrictions (`Operation not permitted`)
-  - elevated rerun PASS (`exit 0`)
-- `python3 scripts/run_phase3_validation_matrix.py`
-  - PASS (`exit 0`, elevated run)
-- `python3 scripts/run_phase2_validation_matrix.py`
-  - PASS (`exit 0`, elevated run)
 - `python3 scripts/run_mvp_validation_matrix.py`
   - PASS (`exit 0`, elevated run)
+- Compatibility matrix command outcomes were also observed as PASS inside the final GO qualification/RC runs:
+  - `python3 scripts/run_phase4_validation_matrix.py` -> PASS
+  - `python3 scripts/run_phase3_validation_matrix.py` -> PASS
+  - `python3 scripts/run_phase2_validation_matrix.py` -> PASS
+  - `python3 scripts/run_mvp_validation_matrix.py` -> PASS
 
 ## Blockers/Issues
-- Non-elevated matrix command execution in this environment can fail on localhost Postgres access with sandbox restrictions.
-- Resolution used for acceptance verification: reran matrix commands with elevated permissions; all required matrix commands passed.
+- Environment blocker: non-elevated execution of DB-backed gates can fail with sandbox localhost restrictions.
+  - Resolution: reran qualification/gate commands with elevated permissions.
+- Transient blocker observed during one elevated rerun:
+  - `run_mvp_validation_matrix.py` briefly failed in `apps/web/components/approval-detail.test.tsx`.
+  - Subsequent reruns passed without code changes; treated as transient/flaky in this environment.
+- No unresolved blocker remains in the final GO sign-off record.
 
 ## Explicit Deferred Scope
 - No changes under `apps/api/src/alicebot_api/*`
 - No changes under `workers/alicebot_worker/*`
 - No connector/auth/platform/runtime scope expansion
 - No Phase 4/3/2/MVP gate semantics changes
+- No architecture/roadmap/rules redesign outside required Sprint 19 control-doc sync
 
 ## Recommended Next Step
-Submit Sprint 18 for Control Tower closeout review and merge after confirming the manifest artifact and verifier output in the closeout packet.
+Submit Sprint 19 for Control Tower integration review and merge approval using:
+- `artifacts/release/phase4_mvp_signoff_record.json` (GO sign-off)
+- `artifacts/release/phase4_mvp_exit_manifest.json`
+- `artifacts/release/archive/index.json`
