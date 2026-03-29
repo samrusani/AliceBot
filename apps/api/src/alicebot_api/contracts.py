@@ -157,6 +157,7 @@ ContinuityCaptureExplicitSignal = Literal[
     "note",
 ]
 ContinuityCaptureAdmissionPosture = Literal["DERIVED", "TRIAGE"]
+ContinuityRecallScopeKind = Literal["thread", "task", "project", "person"]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -186,6 +187,12 @@ DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 5
 MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 50
 DEFAULT_CONTINUITY_CAPTURE_LIMIT = 20
 MAX_CONTINUITY_CAPTURE_LIMIT = 100
+DEFAULT_CONTINUITY_RECALL_LIMIT = 20
+MAX_CONTINUITY_RECALL_LIMIT = 100
+DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT = 5
+MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT = 20
+DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT = 5
+MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT = 20
 DEFAULT_CALENDAR_EVENT_LIST_LIMIT = 20
 MAX_CALENDAR_EVENT_LIST_LIMIT = 50
 COMPILER_VERSION_V0 = "continuity_v0"
@@ -201,6 +208,7 @@ THREAD_SESSION_LIST_ORDER = ["started_at_asc", "created_at_asc", "id_asc"]
 THREAD_EVENT_LIST_ORDER = ["sequence_no_asc"]
 DEFAULT_AGENT_PROFILE_ID = "assistant_default"
 RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "resumption_brief_v0"
+CONTINUITY_RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_resumption_brief_v0"
 RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS = ["message.user", "message.assistant"]
 RESUMPTION_BRIEF_CONVERSATION_ORDER = ["sequence_no_asc"]
 RESUMPTION_BRIEF_MEMORY_ORDER = ["updated_at_asc", "created_at_asc", "id_asc"]
@@ -330,6 +338,9 @@ TASK_RUN_RETRY_POSTURES = [
 TASK_RUN_LIST_ORDER = ["created_at_asc", "id_asc"]
 CONTINUITY_CAPTURE_LIST_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_OBJECT_LIST_ORDER = ["created_at_desc", "id_desc"]
+CONTINUITY_RECALL_LIST_ORDER = ["relevance_desc", "created_at_desc", "id_desc"]
+CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER = ["created_at_desc", "id_desc"]
+CONTINUITY_RESUMPTION_OPEN_LOOP_ORDER = ["created_at_desc", "id_desc"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -1212,6 +1223,58 @@ class ContinuityCaptureCreateInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ContinuityRecallQueryInput:
+    query: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    limit: int = DEFAULT_CONTINUITY_RECALL_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "query": self.query,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+            "limit": self.limit,
+        }
+        payload["since"] = isoformat_or_none(self.since)
+        payload["until"] = isoformat_or_none(self.until)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityResumptionBriefRequestInput:
+    query: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    max_recent_changes: int = DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT
+    max_open_loops: int = DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "query": self.query,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+            "max_recent_changes": self.max_recent_changes,
+            "max_open_loops": self.max_open_loops,
+        }
+        payload["since"] = isoformat_or_none(self.since)
+        payload["until"] = isoformat_or_none(self.until)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class OpenLoopCreateInput:
     title: str
     memory_id: UUID | None = None
@@ -1759,6 +1822,96 @@ class ContinuityCaptureInboxResponse(TypedDict):
 
 class ContinuityCaptureDetailResponse(TypedDict):
     capture: ContinuityCaptureInboxItem
+
+
+class ContinuityRecallScopeFilters(TypedDict):
+    thread_id: NotRequired[str]
+    task_id: NotRequired[str]
+    project: NotRequired[str]
+    person: NotRequired[str]
+    since: str | None
+    until: str | None
+
+
+class ContinuityRecallScopeMatch(TypedDict):
+    kind: ContinuityRecallScopeKind
+    value: str
+
+
+class ContinuityRecallProvenanceReference(TypedDict):
+    source_kind: str
+    source_id: str
+
+
+class ContinuityRecallOrderingMetadata(TypedDict):
+    scope_match_count: int
+    query_term_match_count: int
+    confirmation_rank: int
+    posture_rank: int
+    confidence: float
+
+
+class ContinuityRecallResultRecord(TypedDict):
+    id: str
+    capture_event_id: str
+    object_type: ContinuityObjectType
+    status: str
+    title: str
+    body: JsonObject
+    provenance: JsonObject
+    confirmation_status: MemoryConfirmationStatus
+    admission_posture: ContinuityCaptureAdmissionPosture
+    confidence: float
+    relevance: float
+    scope_matches: list[ContinuityRecallScopeMatch]
+    provenance_references: list[ContinuityRecallProvenanceReference]
+    ordering: ContinuityRecallOrderingMetadata
+    created_at: str
+    updated_at: str
+
+
+class ContinuityRecallSummary(TypedDict):
+    query: str | None
+    filters: ContinuityRecallScopeFilters
+    limit: int
+    returned_count: int
+    total_count: int
+    order: list[str]
+
+
+class ContinuityRecallResponse(TypedDict):
+    items: list[ContinuityRecallResultRecord]
+    summary: ContinuityRecallSummary
+
+
+class ContinuityResumptionEmptyState(TypedDict):
+    is_empty: bool
+    message: str
+
+
+class ContinuityResumptionSingleSection(TypedDict):
+    item: ContinuityRecallResultRecord | None
+    empty_state: ContinuityResumptionEmptyState
+
+
+class ContinuityResumptionListSection(TypedDict):
+    items: list[ContinuityRecallResultRecord]
+    summary: ResumptionBriefSectionSummary
+    empty_state: ContinuityResumptionEmptyState
+
+
+class ContinuityResumptionBriefRecord(TypedDict):
+    assembly_version: str
+    scope: ContinuityRecallScopeFilters
+    last_decision: ContinuityResumptionSingleSection
+    open_loops: ContinuityResumptionListSection
+    recent_changes: ContinuityResumptionListSection
+    next_action: ContinuityResumptionSingleSection
+    sources: list[str]
+
+
+class ContinuityResumptionBriefResponse(TypedDict):
+    brief: ContinuityResumptionBriefRecord
 
 
 class MemoryReviewRecord(TypedDict):

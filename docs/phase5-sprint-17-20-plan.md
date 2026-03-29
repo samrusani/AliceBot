@@ -76,7 +76,7 @@ Recall and Resumption
 
 ### Status
 
-Deferred (not started in P5-S17).
+Shipped on March 29, 2026.
 
 ### Objective
 
@@ -95,6 +95,25 @@ Turn stored continuity into useful retrieval and deterministic resume artifacts.
 - provenance-backed result cards
 - resumption brief generator
 - what-changed view for scoped contexts
+
+### Implementation Snapshot
+
+- API:
+  - `GET /v0/continuity/recall`
+  - `GET /v0/continuity/resumption-brief`
+- Recall behavior:
+  - scoped filters (`thread`, `task`, `project`, `person`, time window)
+  - deterministic ordering (`relevance_desc`, `created_at_desc`, `id_desc`)
+  - provenance references and confirmation/admission posture in each result
+- Resumption behavior:
+  - deterministic section compiler over recall candidates
+  - always-present sections with explicit empty states
+    - `last_decision`
+    - `open_loops`
+    - `recent_changes`
+    - `next_action`
+- Web:
+  - `/continuity` now includes capture inbox/detail plus recall + resumption panels
 
 ### Acceptance Criteria
 
