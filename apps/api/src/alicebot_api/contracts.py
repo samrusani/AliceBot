@@ -137,6 +137,26 @@ ExplicitCommitmentPattern = Literal[
     "dont_let_me_forget_to",
     "remember_to",
 ]
+ContinuityObjectType = Literal[
+    "Note",
+    "MemoryFact",
+    "Decision",
+    "Commitment",
+    "WaitingFor",
+    "Blocker",
+    "NextAction",
+]
+ContinuityCaptureExplicitSignal = Literal[
+    "remember_this",
+    "task",
+    "decision",
+    "commitment",
+    "waiting_for",
+    "blocker",
+    "next_action",
+    "note",
+]
+ContinuityCaptureAdmissionPosture = Literal["DERIVED", "TRIAGE"]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -164,6 +184,8 @@ DEFAULT_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 5
 MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT = 50
 DEFAULT_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 5
 MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT = 50
+DEFAULT_CONTINUITY_CAPTURE_LIMIT = 20
+MAX_CONTINUITY_CAPTURE_LIMIT = 100
 DEFAULT_CALENDAR_EVENT_LIST_LIMIT = 20
 MAX_CALENDAR_EVENT_LIST_LIMIT = 50
 COMPILER_VERSION_V0 = "continuity_v0"
@@ -306,6 +328,8 @@ TASK_RUN_RETRY_POSTURES = [
     "awaiting_user",
 ]
 TASK_RUN_LIST_ORDER = ["created_at_asc", "id_asc"]
+CONTINUITY_CAPTURE_LIST_ORDER = ["created_at_desc", "id_desc"]
+CONTINUITY_OBJECT_LIST_ORDER = ["created_at_desc", "id_desc"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -335,6 +359,25 @@ TASK_STEP_TRANSITION_VERSION_V0 = "task_step_transition_v0"
 TRACE_KIND_TASK_STEP_TRANSITION = "task.step.transition"
 EXECUTION_BUDGET_LIFECYCLE_VERSION_V0 = "execution_budget_lifecycle_v0"
 TRACE_KIND_EXECUTION_BUDGET_LIFECYCLE = "execution_budget.lifecycle"
+CONTINUITY_OBJECT_TYPES = [
+    "Note",
+    "MemoryFact",
+    "Decision",
+    "Commitment",
+    "WaitingFor",
+    "Blocker",
+    "NextAction",
+]
+CONTINUITY_CAPTURE_EXPLICIT_SIGNALS = [
+    "remember_this",
+    "task",
+    "decision",
+    "commitment",
+    "waiting_for",
+    "blocker",
+    "next_action",
+    "note",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1156,6 +1199,19 @@ class ExplicitSignalCaptureRequestInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ContinuityCaptureCreateInput:
+    raw_content: str
+    explicit_signal: ContinuityCaptureExplicitSignal | None = None
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "raw_content": self.raw_content,
+        }
+        payload["explicit_signal"] = self.explicit_signal
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class OpenLoopCreateInput:
     title: str
     memory_id: UUID | None = None
@@ -1654,6 +1710,55 @@ class ExplicitSignalCaptureResponse(TypedDict):
     preferences: ExplicitPreferenceExtractionResponse
     commitments: ExplicitCommitmentExtractionResponse
     summary: ExplicitSignalCaptureSummary
+
+
+class ContinuityCaptureEventRecord(TypedDict):
+    id: str
+    raw_content: str
+    explicit_signal: ContinuityCaptureExplicitSignal | None
+    admission_posture: ContinuityCaptureAdmissionPosture
+    admission_reason: str
+    created_at: str
+
+
+class ContinuityObjectRecord(TypedDict):
+    id: str
+    capture_event_id: str
+    object_type: ContinuityObjectType
+    status: str
+    title: str
+    body: JsonObject
+    provenance: JsonObject
+    confidence: float
+    created_at: str
+    updated_at: str
+
+
+class ContinuityCaptureInboxItem(TypedDict):
+    capture_event: ContinuityCaptureEventRecord
+    derived_object: ContinuityObjectRecord | None
+
+
+class ContinuityCaptureInboxSummary(TypedDict):
+    limit: int
+    returned_count: int
+    total_count: int
+    derived_count: int
+    triage_count: int
+    order: list[str]
+
+
+class ContinuityCaptureCreateResponse(TypedDict):
+    capture: ContinuityCaptureInboxItem
+
+
+class ContinuityCaptureInboxResponse(TypedDict):
+    items: list[ContinuityCaptureInboxItem]
+    summary: ContinuityCaptureInboxSummary
+
+
+class ContinuityCaptureDetailResponse(TypedDict):
+    capture: ContinuityCaptureInboxItem
 
 
 class MemoryReviewRecord(TypedDict):

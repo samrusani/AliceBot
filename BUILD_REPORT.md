@@ -1,57 +1,81 @@
 # BUILD_REPORT.md
 
 ## Sprint Objective
-Implement Phase 4 Sprint 19 MVP qualification/sign-off so qualification runs end-to-end deterministically and emits a formal GO/NO_GO sign-off record with blocker registry.
+Implement Phase 5 Sprint 17: ship typed continuity backbone plus fast capture inbox with conservative admission and provenance visibility.
 
 ## Completed Work
-- Added deterministic qualification orchestrator:
-  - `scripts/run_phase4_mvp_qualification.py`
-  - command: `python3 scripts/run_phase4_mvp_qualification.py`
-  - ordered chain:
-    1. `python3 scripts/run_phase4_release_candidate.py`
-    2. `python3 scripts/verify_phase4_rc_archive.py`
-    3. `python3 scripts/generate_phase4_mvp_exit_manifest.py`
-    4. `python3 scripts/verify_phase4_mvp_exit_manifest.py`
-  - output artifact: `artifacts/release/phase4_mvp_signoff_record.json`
-  - sign-off fields include ordered executed commands, per-step status, GO/NO_GO, and blocker registry.
-- Added deterministic sign-off verifier:
-  - `scripts/verify_phase4_mvp_signoff_record.py`
-  - command: `python3 scripts/verify_phase4_mvp_signoff_record.py`
-  - validates sign-off schema, required references, and GO/NO_GO consistency.
-- Added qualification contract tests:
-  - `tests/integration/test_phase4_mvp_qualification.py`
-    - GO qualification contract + verifier pass
-    - NO_GO contract with downstream `NOT_RUN` and explicit blockers
-    - verifier rejects tampered GO-with-blockers payload
-  - `tests/unit/test_phase4_gate_wrappers.py`
-    - qualification step sequence/command contract
-    - sign-off verifier default-path contract
-- Updated closeout/control docs:
-  - `docs/runbooks/phase4-closeout-packet.md`
-  - `docs/runbooks/phase4-mvp-qualification.md` (new)
-  - `README.md`
-  - `ROADMAP.md`
-  - `.ai/handoff/CURRENT_STATE.md`
+- Added migration `20260329_0041_phase5_continuity_backbone` with:
+  - immutable `continuity_capture_events`
+  - typed `continuity_objects`
+  - deterministic constraints for object types, explicit signals, posture, confidence bounds
+  - RLS/policies/grants and inbox/object indexes
+- Added backend continuity contracts and persistence seams:
+  - typed literals/records for capture create/list/detail and continuity objects
+  - store methods for capture event create/list/count/detail and object create/list/detail
+- Added continuity admission logic:
+  - always persist capture event
+  - explicit signal mapping:
+    - `remember_this -> MemoryFact`
+    - `task/next_action -> NextAction`
+    - `decision -> Decision`
+    - `commitment -> Commitment`
+    - `waiting_for -> WaitingFor`
+    - `blocker -> Blocker`
+    - `note -> Note`
+  - high-confidence prefix mapping for deterministic no-signal capture (`decision:`, `task:`, `todo:`, `next:`, `commitment:`, `waiting for:`, `blocker:`, `remember:`, `fact:`, `note:`)
+  - ambiguous capture posture: `TRIAGE`
+  - provenance on every derived object (`capture_event_id`, `source_kind`, `admission_reason`)
+- Added API routes:
+  - `POST /v0/continuity/captures`
+  - `GET /v0/continuity/captures`
+  - `GET /v0/continuity/captures/{capture_event_id}`
+- Added web fast-capture inbox surface:
+  - `apps/web/app/continuity/page.tsx`
+  - submit capture with optional explicit signal
+  - list recent captures with `DERIVED`/`TRIAGE` posture
+  - detail panel with derived object/provenance or triage posture
+  - live API + fixture fallback behavior
+- Added/updated tests for migration, capture/object services, API integration, and web page/components.
+- Synced phase/control docs for active P5-S17 scope and deferred P5-S18/19/20 scope.
 
-### Qualification Chain And Artifact Outputs
-- Qualification command: `python3 scripts/run_phase4_mvp_qualification.py`
-  - final result: `GO`
-  - sign-off artifact: `artifacts/release/phase4_mvp_signoff_record.json`
-- RC rehearsal artifact: `artifacts/release/phase4_rc_summary.json`
-- RC archive index: `artifacts/release/archive/index.json`
-- RC archive artifact used for manifest/sign-off: `artifacts/release/archive/20260328T201040Z_phase4_rc_summary.json`
-- MVP exit manifest artifact: `artifacts/release/phase4_mvp_exit_manifest.json`
+## Exact Capture/Backbone Delta
+- New immutable capture backbone table and typed continuity object table.
+- Capture and durable object flows are now distinct.
+- Durable object admission is conservative and deterministic, with explicit triage for ambiguity.
+- Capture detail and inbox expose provenance/posture directly.
+
+## Exact Triage/Admission Behavior
+- Admission default: `TRIAGE` with reason `ambiguous_capture_requires_triage`.
+- Admission upgrades to `DERIVED` only when:
+  - explicit signal is supplied, or
+  - deterministic high-confidence prefix rule matches.
+- Every capture persists even when no durable object is created.
 
 ## Incomplete Work
-- None within Sprint 19 scoped surfaces.
+- No implementation gaps inside P5-S17 code scope.
 
 ## Files Changed
-- `scripts/run_phase4_mvp_qualification.py`
-- `scripts/verify_phase4_mvp_signoff_record.py`
-- `tests/integration/test_phase4_mvp_qualification.py`
-- `tests/unit/test_phase4_gate_wrappers.py`
-- `docs/runbooks/phase4-closeout-packet.md`
-- `docs/runbooks/phase4-mvp-qualification.md`
+- `apps/api/alembic/versions/20260329_0041_phase5_continuity_backbone.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/continuity_capture.py`
+- `apps/api/src/alicebot_api/continuity_objects.py`
+- `apps/web/lib/api.ts`
+- `apps/web/lib/api.test.ts`
+- `apps/web/app/continuity/page.tsx`
+- `apps/web/app/continuity/page.test.tsx`
+- `apps/web/components/continuity-capture-form.tsx`
+- `apps/web/components/continuity-capture-form.test.tsx`
+- `apps/web/components/continuity-inbox-list.tsx`
+- `apps/web/components/continuity-inbox-list.test.tsx`
+- `tests/unit/test_20260329_0041_phase5_continuity_backbone.py`
+- `tests/unit/test_continuity_capture.py`
+- `tests/unit/test_continuity_objects.py`
+- `tests/integration/test_continuity_capture_api.py`
+- `docs/phase5-product-spec.md`
+- `docs/phase5-sprint-17-20-plan.md`
+- `docs/phase5-continuity-object-model.md`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
@@ -59,46 +83,22 @@ Implement Phase 4 Sprint 19 MVP qualification/sign-off so qualification runs end
 - `REVIEW_REPORT.md`
 
 ## Tests Run
-- `./.venv/bin/python -m pytest tests/integration/test_phase4_mvp_qualification.py tests/integration/test_phase4_mvp_exit_manifest.py tests/unit/test_phase4_gate_wrappers.py -q`
-  - PASS (`16 passed`)
-- `python3 scripts/run_phase4_mvp_qualification.py`
-  - initial non-elevated run hit sandbox localhost DB restriction (`Operation not permitted`) and produced NO_GO
-  - elevated rerun PASS (`exit 0`, GO)
-- `python3 scripts/verify_phase4_mvp_signoff_record.py`
-  - PASS (`exit 0`)
-- `python3 scripts/run_phase4_release_candidate.py`
-  - PASS (`exit 0`, GO)
-- `python3 scripts/verify_phase4_rc_archive.py`
-  - PASS (`exit 0`)
-- `python3 scripts/generate_phase4_mvp_exit_manifest.py`
-  - PASS (`exit 0`)
-- `python3 scripts/verify_phase4_mvp_exit_manifest.py`
-  - PASS (`exit 0`)
-- `python3 scripts/run_mvp_validation_matrix.py`
-  - PASS (`exit 0`, elevated run)
-- Compatibility matrix command outcomes were also observed as PASS inside the final GO qualification/RC runs:
-  - `python3 scripts/run_phase4_validation_matrix.py` -> PASS
-  - `python3 scripts/run_phase3_validation_matrix.py` -> PASS
-  - `python3 scripts/run_phase2_validation_matrix.py` -> PASS
-  - `python3 scripts/run_mvp_validation_matrix.py` -> PASS
+- `./.venv/bin/python -m pytest tests/unit/test_20260329_0041_phase5_continuity_backbone.py tests/unit/test_continuity_capture.py tests/unit/test_continuity_objects.py tests/integration/test_continuity_capture_api.py -q`
+  - PASS (`15 passed in 1.51s`, elevated run)
+- `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-capture-form.test.tsx components/continuity-inbox-list.test.tsx lib/api.test.ts`
+  - PASS (`32 passed`)
+- `python3 scripts/run_phase4_validation_matrix.py`
+  - PASS (`Phase 4 validation matrix result: PASS`, elevated run)
 
 ## Blockers/Issues
-- Environment blocker: non-elevated execution of DB-backed gates can fail with sandbox localhost restrictions.
-  - Resolution: reran qualification/gate commands with elevated permissions.
-- Transient blocker observed during one elevated rerun:
-  - `run_mvp_validation_matrix.py` briefly failed in `apps/web/components/approval-detail.test.tsx`.
-  - Subsequent reruns passed without code changes; treated as transient/flaky in this environment.
-- No unresolved blocker remains in the final GO sign-off record.
+- Sandbox-localhost restriction blocks DB-backed integration tests and matrix runs in non-elevated mode.
+  - resolved by re-running with elevated execution
 
-## Explicit Deferred Scope
-- No changes under `apps/api/src/alicebot_api/*`
-- No changes under `workers/alicebot_worker/*`
-- No connector/auth/platform/runtime scope expansion
-- No Phase 4/3/2/MVP gate semantics changes
-- No architecture/roadmap/rules redesign outside required Sprint 19 control-doc sync
+## Explicit Deferred Phase 5 Scope (P5-S18/P5-S19/P5-S20)
+- broad recall query UX and ranking surface
+- deterministic resumption brief product surface
+- memory correction queue and supersession workflows
+- daily/weekly open-loop review dashboards
 
 ## Recommended Next Step
-Submit Sprint 19 for Control Tower integration review and merge approval using:
-- `artifacts/release/phase4_mvp_signoff_record.json` (GO sign-off)
-- `artifacts/release/phase4_mvp_exit_manifest.json`
-- `artifacts/release/archive/index.json`
+Open the sprint PR for Control Tower review; acceptance commands now run in repo-compatible form and Phase 4 compatibility remains PASS.
