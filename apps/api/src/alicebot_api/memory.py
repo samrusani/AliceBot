@@ -7,15 +7,20 @@ from alicebot_api.contracts import (
     AdmissionDecisionOutput,
     DEFAULT_AGENT_PROFILE_ID,
     DEFAULT_MEMORY_CONFIRMATION_STATUS,
+    DEFAULT_MEMORY_REVIEW_QUEUE_PRIORITY_MODE,
     DEFAULT_MEMORY_TYPE,
     DEFAULT_MEMORY_REVIEW_LIMIT,
     DEFAULT_OPEN_LOOP_LIMIT,
+    MEMORY_QUALITY_HIGH_RISK_CONFIDENCE_THRESHOLD,
+    MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE,
+    MEMORY_QUALITY_PRECISION_TARGET,
     MEMORY_CONFIRMATION_STATUSES,
     OPEN_LOOP_REVIEW_ORDER,
     OPEN_LOOP_STATUSES,
     MEMORY_REVIEW_LABEL_ORDER,
     MEMORY_REVIEW_LABEL_VALUES,
-    MEMORY_REVIEW_QUEUE_ORDER,
+    MEMORY_REVIEW_QUEUE_ORDER_BY_PRIORITY_MODE,
+    MEMORY_REVIEW_QUEUE_PRIORITY_MODES,
     MEMORY_REVISION_REVIEW_ORDER,
     MEMORY_REVIEW_ORDER,
     MEMORY_TYPES,
@@ -28,9 +33,14 @@ from alicebot_api.contracts import (
     MemoryReviewLabelRecord,
     MemoryReviewLabelSummary,
     MemoryReviewLabelValue,
+    MemoryReviewQueuePriorityMode,
     MemoryReviewQueueItem,
     MemoryReviewQueueResponse,
     MemoryReviewQueueSummary,
+    MemoryQualityGateComputationCounts,
+    MemoryQualityGateResponse,
+    MemoryQualityGateStatus,
+    MemoryQualityGateSummary,
     MemoryRevisionReviewListResponse,
     MemoryRevisionReviewListSummary,
     MemoryRevisionReviewRecord,
@@ -148,13 +158,134 @@ def _serialize_memory_review(memory: MemoryRow) -> MemoryReviewRecord:
     return payload
 
 
-def _serialize_memory_review_queue_item(memory: MemoryRow) -> MemoryReviewQueueItem:
+def _is_stale_truth_memory(memory: MemoryRow) -> bool:
+    if memory.get("confirmation_status") == "contested":
+        return True
+    return memory.get("valid_to") is not None
+
+
+def _is_high_risk_memory(memory: MemoryRow) -> bool:
+    if _is_stale_truth_memory(memory):
+        return True
+    if memory.get("confirmation_status") != "confirmed":
+        return True
+    confidence = memory.get("confidence")
+    if confidence is None:
+        return True
+    return confidence < MEMORY_QUALITY_HIGH_RISK_CONFIDENCE_THRESHOLD
+
+
+def _high_risk_confidence_priority(memory: MemoryRow) -> float:
+    confidence = memory.get("confidence")
+    if confidence is None:
+        return 2.0
+    if confidence < MEMORY_QUALITY_HIGH_RISK_CONFIDENCE_THRESHOLD:
+        return 1.0 - confidence
+    return 0.0
+
+
+def _stale_truth_priority(memory: MemoryRow) -> float:
+    valid_to = memory.get("valid_to")
+    if valid_to is None:
+        return float("-inf")
+    return -valid_to.timestamp()
+
+
+def _order_review_queue_memories(
+    memories: list[MemoryRow],
+    *,
+    priority_mode: MemoryReviewQueuePriorityMode,
+) -> list[MemoryRow]:
+    if priority_mode == "oldest_first":
+        return sorted(
+            memories,
+            key=lambda memory: (memory["updated_at"], memory["created_at"], str(memory["id"])),
+        )
+
+    if priority_mode == "high_risk_first":
+        return sorted(
+            memories,
+            key=lambda memory: (
+                _is_high_risk_memory(memory),
+                _high_risk_confidence_priority(memory),
+                memory["updated_at"],
+                memory["created_at"],
+                str(memory["id"]),
+            ),
+            reverse=True,
+        )
+
+    if priority_mode == "stale_truth_first":
+        return sorted(
+            memories,
+            key=lambda memory: (
+                _is_stale_truth_memory(memory),
+                _stale_truth_priority(memory),
+                memory["updated_at"],
+                memory["created_at"],
+                str(memory["id"]),
+            ),
+            reverse=True,
+        )
+
+    return sorted(
+        memories,
+        key=lambda memory: (memory["updated_at"], memory["created_at"], str(memory["id"])),
+        reverse=True,
+    )
+
+
+def _review_queue_priority_reason(
+    *,
+    priority_mode: MemoryReviewQueuePriorityMode,
+    is_high_risk: bool,
+    is_stale_truth: bool,
+) -> str:
+    if priority_mode == "high_risk_first":
+        if is_high_risk and is_stale_truth:
+            return "high_risk_stale_truth"
+        if is_high_risk:
+            return "high_risk"
+        if is_stale_truth:
+            return "stale_truth"
+        return "recent_backlog"
+
+    if priority_mode == "stale_truth_first":
+        if is_stale_truth and is_high_risk:
+            return "stale_truth_high_risk"
+        if is_stale_truth:
+            return "stale_truth"
+        if is_high_risk:
+            return "high_risk"
+        return "recent_backlog"
+
+    if priority_mode == "oldest_first":
+        return "oldest_first"
+
+    return "recent_first"
+
+
+def _serialize_memory_review_queue_item(
+    memory: MemoryRow,
+    *,
+    priority_mode: MemoryReviewQueuePriorityMode,
+) -> MemoryReviewQueueItem:
+    is_high_risk = _is_high_risk_memory(memory)
+    is_stale_truth = _is_stale_truth_memory(memory)
     payload: MemoryReviewQueueItem = {
         "id": str(memory["id"]),
         "memory_key": memory["memory_key"],
         "value": memory["value"],
         "status": memory["status"],
         "source_event_ids": memory["source_event_ids"],
+        "is_high_risk": is_high_risk,
+        "is_stale_truth": is_stale_truth,
+        "queue_priority_mode": priority_mode,
+        "priority_reason": _review_queue_priority_reason(
+            priority_mode=priority_mode,
+            is_high_risk=is_high_risk,
+            is_stale_truth=is_stale_truth,
+        ),
         "created_at": memory["created_at"].isoformat(),
         "updated_at": memory["updated_at"].isoformat(),
     }
@@ -256,20 +387,34 @@ def list_memory_review_queue_records(
     *,
     user_id: UUID,
     limit: int = DEFAULT_MEMORY_REVIEW_LIMIT,
+    priority_mode: MemoryReviewQueuePriorityMode = DEFAULT_MEMORY_REVIEW_QUEUE_PRIORITY_MODE,
 ) -> MemoryReviewQueueResponse:
     del user_id
 
-    total_count = store.count_unlabeled_review_memories()
-    memories = store.list_unlabeled_review_memories(limit=limit)
-    items = [_serialize_memory_review_queue_item(memory) for memory in memories]
+    candidate_memories = store.list_unlabeled_review_memories(limit=None)
+    ordered_memories = _order_review_queue_memories(
+        candidate_memories,
+        priority_mode=priority_mode,
+    )
+    selected_memories = ordered_memories[:limit]
+    items = [
+        _serialize_memory_review_queue_item(
+            memory,
+            priority_mode=priority_mode,
+        )
+        for memory in selected_memories
+    ]
+    total_count = len(candidate_memories)
     summary: MemoryReviewQueueSummary = {
         "memory_status": "active",
         "review_state": "unlabeled",
+        "priority_mode": priority_mode,
+        "available_priority_modes": list(MEMORY_REVIEW_QUEUE_PRIORITY_MODES),
         "limit": limit,
         "returned_count": len(items),
         "total_count": total_count,
         "has_more": len(items) < total_count,
-        "order": list(MEMORY_REVIEW_QUEUE_ORDER),
+        "order": list(MEMORY_REVIEW_QUEUE_ORDER_BY_PRIORITY_MODE[priority_mode]),
     }
     return {
         "items": items,
@@ -392,6 +537,124 @@ def get_memory_evaluation_summary(
         "total_label_row_count": sum(label_row_counts.values()),
         "label_row_counts_by_value": label_row_counts,
         "label_value_order": list(MEMORY_REVIEW_LABEL_VALUES),
+    }
+    return {
+        "summary": summary,
+    }
+
+
+def _calculate_memory_precision(*, correct_count: int, incorrect_count: int) -> float | None:
+    denominator = correct_count + incorrect_count
+    if denominator == 0:
+        return None
+    return correct_count / denominator
+
+
+def _determine_memory_quality_gate_status(
+    *,
+    adjudicated_sample_count: int,
+    minimum_adjudicated_sample: int,
+    precision: float | None,
+    precision_target: float,
+    unlabeled_memory_count: int,
+    high_risk_memory_count: int,
+    stale_truth_count: int,
+    superseded_active_conflict_count: int,
+) -> MemoryQualityGateStatus:
+    if adjudicated_sample_count < minimum_adjudicated_sample:
+        return "insufficient_sample"
+
+    if precision is None or precision < precision_target:
+        return "degraded"
+
+    if superseded_active_conflict_count > 0:
+        return "degraded"
+
+    if unlabeled_memory_count > 0 or high_risk_memory_count > 0 or stale_truth_count > 0:
+        return "needs_review"
+
+    return "healthy"
+
+
+def _count_superseded_active_conflicts(
+    store: ContinuityStore,
+    *,
+    active_memories: list[MemoryRow],
+) -> int:
+    conflicted_count = 0
+    for memory in active_memories:
+        counts = _summarize_memory_review_label_counts(
+            store.list_memory_review_label_counts(memory["id"])
+        )
+        if counts["outdated"] > 0:
+            conflicted_count += 1
+    return conflicted_count
+
+
+def get_memory_quality_gate_summary(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+) -> MemoryQualityGateResponse:
+    del user_id
+
+    active_memory_count = store.count_memories(status="active")
+    active_memories = (
+        []
+        if active_memory_count == 0
+        else store.list_review_memories(status="active", limit=active_memory_count)
+    )
+    unlabeled_memory_count = store.count_unlabeled_review_memories()
+    high_risk_memory_count = sum(1 for memory in active_memories if _is_high_risk_memory(memory))
+    stale_truth_count = sum(1 for memory in active_memories if _is_stale_truth_memory(memory))
+    active_label_counts = _summarize_memory_review_label_counts(
+        store.list_active_memory_review_label_counts()
+    )
+    adjudicated_correct_count = active_label_counts["correct"]
+    adjudicated_incorrect_count = active_label_counts["incorrect"]
+    adjudicated_sample_count = adjudicated_correct_count + adjudicated_incorrect_count
+    precision = _calculate_memory_precision(
+        correct_count=adjudicated_correct_count,
+        incorrect_count=adjudicated_incorrect_count,
+    )
+    minimum_adjudicated_sample = MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE
+    precision_target = MEMORY_QUALITY_PRECISION_TARGET
+    remaining_to_minimum_sample = max(0, minimum_adjudicated_sample - adjudicated_sample_count)
+    labeled_active_memory_count = max(0, active_memory_count - unlabeled_memory_count)
+    superseded_active_conflict_count = _count_superseded_active_conflicts(
+        store,
+        active_memories=active_memories,
+    )
+
+    counts: MemoryQualityGateComputationCounts = {
+        "active_memory_count": active_memory_count,
+        "labeled_active_memory_count": labeled_active_memory_count,
+        "adjudicated_correct_count": adjudicated_correct_count,
+        "adjudicated_incorrect_count": adjudicated_incorrect_count,
+        "outdated_label_count": active_label_counts["outdated"],
+        "insufficient_evidence_label_count": active_label_counts["insufficient_evidence"],
+    }
+    summary: MemoryQualityGateSummary = {
+        "status": _determine_memory_quality_gate_status(
+            adjudicated_sample_count=adjudicated_sample_count,
+            minimum_adjudicated_sample=minimum_adjudicated_sample,
+            precision=precision,
+            precision_target=precision_target,
+            unlabeled_memory_count=unlabeled_memory_count,
+            high_risk_memory_count=high_risk_memory_count,
+            stale_truth_count=stale_truth_count,
+            superseded_active_conflict_count=superseded_active_conflict_count,
+        ),
+        "precision": precision,
+        "precision_target": precision_target,
+        "adjudicated_sample_count": adjudicated_sample_count,
+        "minimum_adjudicated_sample": minimum_adjudicated_sample,
+        "remaining_to_minimum_sample": remaining_to_minimum_sample,
+        "unlabeled_memory_count": unlabeled_memory_count,
+        "high_risk_memory_count": high_risk_memory_count,
+        "stale_truth_count": stale_truth_count,
+        "superseded_active_conflict_count": superseded_active_conflict_count,
+        "counts": counts,
     }
     return {
         "summary": summary,

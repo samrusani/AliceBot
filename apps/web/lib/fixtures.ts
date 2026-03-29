@@ -303,6 +303,10 @@ export const memoryReviewQueueFixtures: MemoryReviewQueueItem[] = [
     },
     status: "active",
     source_event_ids: ["event-magnesium-1", "event-magnesium-2"],
+    is_high_risk: true,
+    is_stale_truth: false,
+    queue_priority_mode: "recent_first",
+    priority_reason: "recent_first",
     created_at: "2026-03-16T10:25:00Z",
     updated_at: "2026-03-17T08:12:00Z",
   },
@@ -315,6 +319,10 @@ export const memoryReviewQueueFixtures: MemoryReviewQueueItem[] = [
     },
     status: "active",
     source_event_ids: ["event-vitamin-d-1"],
+    is_high_risk: true,
+    is_stale_truth: false,
+    queue_priority_mode: "recent_first",
+    priority_reason: "recent_first",
     created_at: "2026-03-14T09:10:00Z",
     updated_at: "2026-03-16T09:10:00Z",
   },
@@ -332,6 +340,13 @@ export const memoryReviewListSummaryFixture: MemoryReviewListSummary = {
 export const memoryReviewQueueSummaryFixture: MemoryReviewQueueSummary = {
   memory_status: "active",
   review_state: "unlabeled",
+  priority_mode: "recent_first",
+  available_priority_modes: [
+    "oldest_first",
+    "recent_first",
+    "high_risk_first",
+    "stale_truth_first",
+  ],
   limit: 20,
   returned_count: memoryReviewQueueFixtures.length,
   total_count: memoryReviewQueueFixtures.length,
@@ -353,6 +368,26 @@ export const memoryEvaluationSummaryFixture: MemoryEvaluationSummary = {
     insufficient_evidence: 0,
   },
   label_value_order: [...MEMORY_LABEL_VALUE_ORDER],
+  quality_gate: {
+    status: "insufficient_sample",
+    precision: 1,
+    precision_target: 0.8,
+    adjudicated_sample_count: 1,
+    minimum_adjudicated_sample: 10,
+    remaining_to_minimum_sample: 9,
+    unlabeled_memory_count: 3,
+    high_risk_memory_count: 3,
+    stale_truth_count: 0,
+    superseded_active_conflict_count: 0,
+    counts: {
+      active_memory_count: 3,
+      labeled_active_memory_count: 0,
+      adjudicated_correct_count: 1,
+      adjudicated_incorrect_count: 0,
+      outdated_label_count: 1,
+      insufficient_evidence_label_count: 0,
+    },
+  },
 };
 
 export const memoryEvaluationSummaryOnTrackFixture: MemoryEvaluationSummary = {
@@ -369,6 +404,26 @@ export const memoryEvaluationSummaryOnTrackFixture: MemoryEvaluationSummary = {
     insufficient_evidence: 1,
   },
   label_value_order: [...MEMORY_LABEL_VALUE_ORDER],
+  quality_gate: {
+    status: "healthy",
+    precision: 0.8,
+    precision_target: 0.8,
+    adjudicated_sample_count: 10,
+    minimum_adjudicated_sample: 10,
+    remaining_to_minimum_sample: 0,
+    unlabeled_memory_count: 0,
+    high_risk_memory_count: 0,
+    stale_truth_count: 0,
+    superseded_active_conflict_count: 0,
+    counts: {
+      active_memory_count: 10,
+      labeled_active_memory_count: 10,
+      adjudicated_correct_count: 8,
+      adjudicated_incorrect_count: 2,
+      outdated_label_count: 1,
+      insufficient_evidence_label_count: 1,
+    },
+  },
 };
 
 export const memoryEvaluationSummaryNeedsReviewFixture: MemoryEvaluationSummary = {
@@ -385,6 +440,26 @@ export const memoryEvaluationSummaryNeedsReviewFixture: MemoryEvaluationSummary 
     insufficient_evidence: 0,
   },
   label_value_order: [...MEMORY_LABEL_VALUE_ORDER],
+  quality_gate: {
+    status: "degraded",
+    precision: 0.6,
+    precision_target: 0.8,
+    adjudicated_sample_count: 10,
+    minimum_adjudicated_sample: 10,
+    remaining_to_minimum_sample: 0,
+    unlabeled_memory_count: 3,
+    high_risk_memory_count: 3,
+    stale_truth_count: 0,
+    superseded_active_conflict_count: 0,
+    counts: {
+      active_memory_count: 10,
+      labeled_active_memory_count: 7,
+      adjudicated_correct_count: 6,
+      adjudicated_incorrect_count: 4,
+      outdated_label_count: 0,
+      insufficient_evidence_label_count: 0,
+    },
+  },
 };
 
 export const memoryRevisionFixtures: Record<string, MemoryRevisionReviewRecord[]> = {

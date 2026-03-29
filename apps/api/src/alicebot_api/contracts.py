@@ -26,6 +26,13 @@ MemoryType = Literal[
 MemoryConfirmationStatus = Literal["unconfirmed", "confirmed", "contested"]
 MemoryReviewStatusFilter = Literal["active", "deleted", "all"]
 MemoryReviewLabelValue = Literal["correct", "incorrect", "outdated", "insufficient_evidence"]
+MemoryQualityGateStatus = Literal["healthy", "needs_review", "insufficient_sample", "degraded"]
+MemoryReviewQueuePriorityMode = Literal[
+    "oldest_first",
+    "recent_first",
+    "high_risk_first",
+    "stale_truth_first",
+]
 EntityType = Literal["person", "merchant", "product", "project", "routine"]
 EmbeddingConfigStatus = Literal["active", "deprecated", "disabled"]
 ConsentStatus = Literal["granted", "revoked"]
@@ -229,6 +236,34 @@ RESUMPTION_BRIEF_CONVERSATION_ORDER = ["sequence_no_asc"]
 RESUMPTION_BRIEF_MEMORY_ORDER = ["updated_at_asc", "created_at_asc", "id_asc"]
 MEMORY_REVIEW_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
 MEMORY_REVIEW_QUEUE_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
+DEFAULT_MEMORY_REVIEW_QUEUE_PRIORITY_MODE: MemoryReviewQueuePriorityMode = "recent_first"
+MEMORY_REVIEW_QUEUE_PRIORITY_MODES: list[MemoryReviewQueuePriorityMode] = [
+    "oldest_first",
+    "recent_first",
+    "high_risk_first",
+    "stale_truth_first",
+]
+MEMORY_REVIEW_QUEUE_ORDER_BY_PRIORITY_MODE: dict[MemoryReviewQueuePriorityMode, list[str]] = {
+    "oldest_first": ["updated_at_asc", "created_at_asc", "id_asc"],
+    "recent_first": ["updated_at_desc", "created_at_desc", "id_desc"],
+    "high_risk_first": [
+        "is_high_risk_desc",
+        "confidence_asc_nulls_first",
+        "updated_at_desc",
+        "created_at_desc",
+        "id_desc",
+    ],
+    "stale_truth_first": [
+        "is_stale_truth_desc",
+        "valid_to_asc_nulls_last",
+        "updated_at_desc",
+        "created_at_desc",
+        "id_desc",
+    ],
+}
+MEMORY_QUALITY_PRECISION_TARGET = 0.8
+MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE = 10
+MEMORY_QUALITY_HIGH_RISK_CONFIDENCE_THRESHOLD = 0.7
 MEMORY_REVISION_REVIEW_ORDER = ["sequence_no_asc"]
 MEMORY_REVIEW_LABEL_VALUES = [
     "correct",
@@ -2376,6 +2411,10 @@ class MemoryReviewQueueItem(TypedDict):
     valid_from: NotRequired[str | None]
     valid_to: NotRequired[str | None]
     last_confirmed_at: NotRequired[str | None]
+    is_high_risk: bool
+    is_stale_truth: bool
+    queue_priority_mode: MemoryReviewQueuePriorityMode
+    priority_reason: str
     created_at: str
     updated_at: str
 
@@ -2383,6 +2422,8 @@ class MemoryReviewQueueItem(TypedDict):
 class MemoryReviewQueueSummary(TypedDict):
     memory_status: Literal["active"]
     review_state: Literal["unlabeled"]
+    priority_mode: MemoryReviewQueuePriorityMode
+    available_priority_modes: list[MemoryReviewQueuePriorityMode]
     limit: int
     returned_count: int
     total_count: int
@@ -2393,6 +2434,33 @@ class MemoryReviewQueueSummary(TypedDict):
 class MemoryReviewQueueResponse(TypedDict):
     items: list[MemoryReviewQueueItem]
     summary: MemoryReviewQueueSummary
+
+
+class MemoryQualityGateComputationCounts(TypedDict):
+    active_memory_count: int
+    labeled_active_memory_count: int
+    adjudicated_correct_count: int
+    adjudicated_incorrect_count: int
+    outdated_label_count: int
+    insufficient_evidence_label_count: int
+
+
+class MemoryQualityGateSummary(TypedDict):
+    status: MemoryQualityGateStatus
+    precision: float | None
+    precision_target: float
+    adjudicated_sample_count: int
+    minimum_adjudicated_sample: int
+    remaining_to_minimum_sample: int
+    unlabeled_memory_count: int
+    high_risk_memory_count: int
+    stale_truth_count: int
+    superseded_active_conflict_count: int
+    counts: MemoryQualityGateComputationCounts
+
+
+class MemoryQualityGateResponse(TypedDict):
+    summary: MemoryQualityGateSummary
 
 
 class MemoryEvaluationSummary(TypedDict):

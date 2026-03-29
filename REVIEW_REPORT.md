@@ -4,39 +4,51 @@
 PASS
 
 ## criteria met
-- Sprint scope stayed aligned to P5-S20 (open-loop dashboard, daily/weekly briefs, review-action workflow, continuity UI updates, and scoped docs updates).
-- Deterministic open-loop grouping/order is implemented for `waiting_for`, `blocker`, `stale`, `next_action` with explicit ordering metadata.
-- Daily brief and weekly review endpoints are deterministic for fixed input and emit explicit empty states for empty sections.
-- `done` / `deferred` / `still_blocked` actions map to deterministic lifecycle outcomes and persist auditable correction events.
-- Continuity resumption reflects open-loop review-action outcomes immediately.
-- Required verification commands passed in this review run:
-  - `./.venv/bin/python -m pytest tests/unit/test_continuity_open_loops.py tests/integration/test_continuity_open_loops_api.py tests/integration/test_continuity_daily_weekly_review_api.py tests/unit/test_continuity_review.py tests/unit/test_continuity_resumption.py -q` -> `22 passed`
-  - `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-open-loops-panel.test.tsx components/continuity-daily-brief.test.tsx components/continuity-weekly-review.test.tsx lib/api.test.ts` -> `5 files / 38 tests passed`
-  - `python3 scripts/run_phase4_validation_matrix.py` -> `Phase 4 validation matrix result: PASS`
+- `GET /v0/memories/quality-gate` is implemented and returns canonical statuses: `healthy`, `needs_review`, `insufficient_sample`, `degraded`.
+- Quality-gate computation is server-side and deterministic for fixed state.
+- `GET /v0/memories/review-queue` supports all four canonical priority modes with explicit ordering metadata.
+- `/memories` consumes API-backed quality-gate semantics (no duplicated local threshold recomputation).
+- `/memories` queue priority selection is now preserved through queue `submit_and_next` flow:
+  - `MemoryLabelForm` now accepts `queuePriorityMode` and appends `priority_mode` on queue redirect.
+  - `MemoriesPage` now passes the current queue mode into `MemoryLabelForm`.
+  - Regression test now asserts preserved mode in redirect URL.
+- Required verification evidence is green:
+  - Previously verified in this review cycle:
+    - `./.venv/bin/python -m pytest tests/unit/test_memory.py tests/unit/test_main.py tests/integration/test_memory_review_api.py tests/integration/test_memory_quality_gate_api.py -q` -> `89 passed`
+    - `python3 scripts/run_phase4_validation_matrix.py` -> `Phase 4 validation matrix result: PASS`
+  - Re-verified after this fix:
+    - `pnpm --dir apps/web test -- components/memory-label-form.test.tsx app/memories/page.test.tsx` -> `9 passed`
+    - `pnpm --dir apps/web test -- app/memories/page.test.tsx components/memory-quality-gate.test.tsx components/memory-list.test.tsx components/memory-label-form.test.tsx lib/api.test.ts lib/memory-quality.test.ts` -> `50 passed`
 
 ## criteria missed
-- None strictly against packet acceptance checklist.
+- None against the P6-S21 acceptance criteria.
 
 ## quality issues
-- Resolved in this fix:
-  - `apps/api/src/alicebot_api/continuity_open_loops.py` now validates mixed offset-naive/offset-aware windows and raises deterministic `ContinuityOpenLoopValidationError` instead of surfacing `TypeError`.
-  - Added regression coverage asserting HTTP 400 behavior for mixed window inputs on:
-    - `GET /v0/continuity/open-loops`
-    - `GET /v0/continuity/daily-brief`
-    - `GET /v0/continuity/weekly-review`.
+- No blocking implementation quality issues remain in sprint scope.
+- Minor non-blocking scope expansion remains:
+  - Additional unrelated test edits in `tests/unit/test_main.py`.
+  - Added Phase 6 planning docs outside the packet’s strict file list.
 
 ## regression risks
-- Low: fix is narrow to time-window validation and now covered by unit + integration regression tests.
+- Low:
+  - Queue navigation now preserves selected priority mode, reducing prior workflow drift risk.
+  - Quality-gate computation still performs per-memory conflict checks, which may need optimization at larger active-memory counts.
 
 ## docs issues
-- No documentation drift found for shipped P5-S20 scope.
+- In-scope docs are updated and aligned with P6-S21 shipped behavior:
+  - `README.md`
+  - `ROADMAP.md`
+  - `.ai/handoff/CURRENT_STATE.md`
+  - `BUILD_REPORT.md`
+  - `REVIEW_REPORT.md`
 
 ## should anything be added to RULES.md?
-- Not required for this sprint.
+- Optional (recommended, not required for sprint pass): add a UI workflow rule that query-state context (`filter`, `priority_mode`) must be preserved across in-flow actions.
 
 ## should anything update ARCHITECTURE.md?
-- No architecture change required; this is an endpoint-level input-validation defect.
+- Optional (recommended): add explicit mention of canonical Phase 6 memory-quality contracts:
+  - `GET /v0/memories/quality-gate`
+  - `GET /v0/memories/review-queue` priority modes and order metadata.
 
 ## recommended next action
-1. Keep datetime-window validation behavior unchanged unless paired tests are updated.
-2. Proceed with post-Phase-5 planning from the shipped P5-S20 baseline.
+1. Mark P6-S21 complete and proceed to P6-S22 retrieval-quality calibration using these contracts as fixed baseline.
