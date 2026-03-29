@@ -26,6 +26,10 @@ def make_candidate_row(
     admission_posture: str = "DERIVED",
     provenance: dict[str, object] | None = None,
     body: dict[str, object] | None = None,
+    status: str = "active",
+    last_confirmed_at: datetime | None = None,
+    supersedes_object_id: UUID | None = None,
+    superseded_by_object_id: UUID | None = None,
 ) -> dict[str, object]:
     object_id = uuid4()
     capture_event_id = uuid4()
@@ -36,11 +40,14 @@ def make_candidate_row(
         "user_id": UUID("11111111-1111-4111-8111-111111111111"),
         "capture_event_id": capture_event_id,
         "object_type": object_type,
-        "status": "active",
+        "status": status,
         "title": title,
         "body": body or {},
         "provenance": provenance or {},
         "confidence": confidence,
+        "last_confirmed_at": last_confirmed_at,
+        "supersedes_object_id": supersedes_object_id,
+        "superseded_by_object_id": superseded_by_object_id,
         "object_created_at": created_at,
         "object_updated_at": updated_at,
         "admission_posture": admission_posture,
@@ -112,12 +119,16 @@ def test_recall_returns_deterministic_order_and_provenance_fields() -> None:
         {"kind": "thread", "value": str(thread_id).lower()},
         {"kind": "task", "value": str(task_id).lower()},
     ]
+    assert payload["items"][0]["last_confirmed_at"] is None
+    assert payload["items"][0]["supersedes_object_id"] is None
+    assert payload["items"][0]["superseded_by_object_id"] is None
     assert payload["items"][0]["provenance_references"] == [
         {"source_kind": "continuity_capture_event", "source_id": payload["items"][0]["capture_event_id"]},
         {"source_kind": "source_event", "source_id": "event-1"},
         {"source_kind": "task", "source_id": str(task_id)},
         {"source_kind": "thread", "source_id": str(thread_id)},
     ]
+    assert payload["items"][0]["ordering"]["lifecycle_rank"] == 4
 
 
 def test_recall_filters_project_person_query_and_time_window() -> None:
@@ -167,6 +178,57 @@ def test_recall_rejects_invalid_limits_and_time_window() -> None:
             user_id=UUID("11111111-1111-4111-8111-111111111111"),
             request=ContinuityRecallQueryInput(limit=0),
         )
+
+
+def test_recall_excludes_deleted_and_ranks_lifecycle_posture_deterministically() -> None:
+    rows = [
+        make_candidate_row(
+            title="Decision: active item",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+            confidence=0.8,
+            status="active",
+            body={"decision_text": "active item"},
+        ),
+        make_candidate_row(
+            title="Decision: stale item",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 1, tzinfo=UTC),
+            confidence=0.99,
+            status="stale",
+            body={"decision_text": "stale item"},
+        ),
+        make_candidate_row(
+            title="Decision: superseded item",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 2, tzinfo=UTC),
+            confidence=1.0,
+            status="superseded",
+            body={"decision_text": "superseded item"},
+        ),
+        make_candidate_row(
+            title="Decision: deleted item",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 3, tzinfo=UTC),
+            confidence=1.0,
+            status="deleted",
+            body={"decision_text": "deleted item"},
+        ),
+    ]
+
+    store = ContinuityRecallStoreStub(rows)  # type: ignore[arg-type]
+    payload = query_continuity_recall(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityRecallQueryInput(limit=20),
+    )
+
+    assert [item["title"] for item in payload["items"]] == [
+        "Decision: active item",
+        "Decision: stale item",
+        "Decision: superseded item",
+    ]
+    assert all(item["status"] != "deleted" for item in payload["items"])
 
     with pytest.raises(ContinuityRecallValidationError, match="until must be greater than or equal to since"):
         query_continuity_recall(
