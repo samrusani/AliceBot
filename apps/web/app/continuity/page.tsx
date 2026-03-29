@@ -1,6 +1,8 @@
 import { ContinuityCaptureForm } from "../../components/continuity-capture-form";
+import { ContinuityCorrectionForm } from "../../components/continuity-correction-form";
 import { ContinuityInboxList } from "../../components/continuity-inbox-list";
 import { ContinuityRecallPanel } from "../../components/continuity-recall-panel";
+import { ContinuityReviewQueue } from "../../components/continuity-review-queue";
 import { EmptyState } from "../../components/empty-state";
 import { PageHeader } from "../../components/page-header";
 import { ResumptionBrief } from "../../components/resumption-brief";
@@ -12,14 +14,20 @@ import type {
   ContinuityCaptureInboxSummary,
   ContinuityRecallResult,
   ContinuityRecallSummary,
+  ContinuityReviewDetail,
+  ContinuityReviewObject,
+  ContinuityReviewQueueSummary,
+  ContinuityReviewStatusFilter,
   ContinuityResumptionBrief,
 } from "../../lib/api";
 import {
+  getContinuityReviewDetail,
   combinePageModes,
   getApiConfig,
   getContinuityCaptureDetail,
   getContinuityResumptionBrief,
   hasLiveApiConfig,
+  listContinuityReviewQueue,
   listContinuityCaptures,
   pageModeLabel,
   queryContinuityRecall,
@@ -61,6 +69,33 @@ function resolveSelectedCaptureId(requestedCaptureId: string, items: ContinuityC
   }
 
   return items[0]?.capture_event.id ?? "";
+}
+
+function resolveSelectedReviewObjectId(requestedObjectId: string, items: ContinuityReviewObject[]) {
+  if (!items.length) {
+    return "";
+  }
+
+  const available = new Set(items.map((item) => item.id));
+  if (requestedObjectId && available.has(requestedObjectId)) {
+    return requestedObjectId;
+  }
+
+  return items[0]?.id ?? "";
+}
+
+function parseReviewStatus(value: string): ContinuityReviewStatusFilter {
+  if (
+    value === "correction_ready" ||
+    value === "active" ||
+    value === "stale" ||
+    value === "superseded" ||
+    value === "deleted" ||
+    value === "all"
+  ) {
+    return value;
+  }
+  return "correction_ready";
 }
 
 const continuityCaptureFixtures: ContinuityCaptureInboxItem[] = [
@@ -136,6 +171,9 @@ const continuityRecallFixtures: ContinuityRecallResult[] = [
     admission_posture: "DERIVED",
     confidence: 1,
     relevance: 121,
+    last_confirmed_at: null,
+    supersedes_object_id: null,
+    superseded_by_object_id: null,
     scope_matches: [
       { kind: "project", value: "launch project" },
       { kind: "person", value: "alex" },
@@ -150,6 +188,7 @@ const continuityRecallFixtures: ContinuityRecallResult[] = [
       query_term_match_count: 1,
       confirmation_rank: 2,
       posture_rank: 2,
+      lifecycle_rank: 4,
       confidence: 1,
     },
     created_at: "2026-03-29T09:00:00Z",
@@ -216,6 +255,45 @@ const continuityResumptionFixture: ContinuityResumptionBrief = {
     },
   },
   sources: ["continuity_capture_events", "continuity_objects"],
+};
+
+const continuityReviewFixtures: ContinuityReviewObject[] = [
+  {
+    id: "review-fixture-1",
+    capture_event_id: "capture-fixture-1",
+    object_type: "NextAction",
+    status: "active",
+    title: "Next Action: Finalize launch checklist",
+    body: {
+      action_text: "Finalize launch checklist",
+    },
+    provenance: {
+      thread_id: "thread-fixture-1",
+    },
+    confidence: 1,
+    last_confirmed_at: null,
+    supersedes_object_id: null,
+    superseded_by_object_id: null,
+    created_at: "2026-03-29T09:00:00Z",
+    updated_at: "2026-03-29T09:00:00Z",
+  },
+];
+
+const continuityReviewSummaryFixture: ContinuityReviewQueueSummary = {
+  status: "correction_ready",
+  limit: 20,
+  returned_count: continuityReviewFixtures.length,
+  total_count: continuityReviewFixtures.length,
+  order: ["updated_at_desc", "created_at_desc", "id_desc"],
+};
+
+const continuityReviewDetailFixture: ContinuityReviewDetail = {
+  continuity_object: continuityReviewFixtures[0],
+  correction_events: [],
+  supersession_chain: {
+    supersedes: null,
+    superseded_by: null,
+  },
 };
 
 function renderDetail(item: ContinuityCaptureInboxItem | null, source: ApiSource | "unavailable" | null, unavailableReason?: string) {
@@ -322,6 +400,7 @@ export default async function ContinuityPage({
   >;
 
   const requestedCaptureId = normalizeParam(params.capture);
+  const requestedReviewObjectId = normalizeParam(params.review_object);
   const recallQuery = normalizeParam(params.recall_query);
   const recallThreadId = normalizeParam(params.recall_thread);
   const recallTaskId = normalizeParam(params.recall_task);
@@ -330,6 +409,8 @@ export default async function ContinuityPage({
   const recallSince = normalizeParam(params.recall_since);
   const recallUntil = normalizeParam(params.recall_until);
   const recallLimit = parsePositiveInt(normalizeParam(params.recall_limit), 20);
+  const reviewStatus = parseReviewStatus(normalizeParam(params.review_status));
+  const reviewLimit = parsePositiveInt(normalizeParam(params.review_limit), 20);
   const resumptionRecentChanges = parseNonNegativeInt(normalizeParam(params.resumption_recent), 5);
   const resumptionOpenLoops = parseNonNegativeInt(normalizeParam(params.resumption_open), 5);
 
@@ -436,7 +517,62 @@ export default async function ContinuityPage({
     }
   }
 
-  const pageMode = combinePageModes(listSource, selectedSource, recallSource, resumptionSource);
+  let reviewItems = continuityReviewFixtures;
+  let reviewSummary = continuityReviewSummaryFixture;
+  let reviewSource: ApiSource = "fixture";
+  let reviewUnavailableReason: string | undefined;
+
+  if (liveModeReady) {
+    try {
+      const payload = await listContinuityReviewQueue(apiConfig.apiBaseUrl, apiConfig.userId, {
+        status: reviewStatus,
+        limit: reviewLimit,
+      });
+      reviewItems = payload.items;
+      reviewSummary = payload.summary;
+      reviewSource = "live";
+    } catch (error) {
+      reviewUnavailableReason =
+        error instanceof Error
+          ? error.message
+          : "Continuity review queue could not be loaded.";
+    }
+  }
+
+  const selectedReviewObjectId = resolveSelectedReviewObjectId(requestedReviewObjectId, reviewItems);
+  const selectedReviewFromQueue = reviewItems.find((item) => item.id === selectedReviewObjectId) ?? null;
+  let selectedReviewDetail: ContinuityReviewDetail | null = selectedReviewFromQueue
+    ? { ...continuityReviewDetailFixture, continuity_object: selectedReviewFromQueue }
+    : null;
+  let correctionSource: ApiSource | "unavailable" = selectedReviewFromQueue ? reviewSource : "unavailable";
+  let correctionUnavailableReason: string | undefined;
+
+  if (selectedReviewFromQueue && liveModeReady && reviewSource === "live") {
+    try {
+      const payload = await getContinuityReviewDetail(
+        apiConfig.apiBaseUrl,
+        selectedReviewFromQueue.id,
+        apiConfig.userId,
+      );
+      selectedReviewDetail = payload.review;
+      correctionSource = "live";
+    } catch (error) {
+      correctionUnavailableReason =
+        error instanceof Error
+          ? error.message
+          : "Selected continuity review detail could not be loaded.";
+      correctionSource = "unavailable";
+    }
+  }
+
+  const pageMode = combinePageModes(
+    listSource,
+    selectedSource,
+    recallSource,
+    resumptionSource,
+    reviewSource,
+    correctionSource,
+  );
 
   return (
     <main className="stack">
@@ -486,6 +622,34 @@ export default async function ContinuityPage({
           source={resumptionSource}
           unavailableReason={resumptionUnavailableReason}
         />
+      </div>
+
+      <div className="grid grid--two">
+        <ContinuityReviewQueue
+          items={reviewItems}
+          summary={reviewSummary}
+          selectedObjectId={selectedReviewObjectId}
+          source={reviewSource}
+          unavailableReason={reviewUnavailableReason}
+          filters={{
+            status: reviewStatus,
+            limit: reviewLimit,
+          }}
+        />
+        <div className="detail-stack">
+          {correctionUnavailableReason ? (
+            <div className="execution-summary__note execution-summary__note--danger">
+              <p className="execution-summary__label">Review detail</p>
+              <p>{correctionUnavailableReason}</p>
+            </div>
+          ) : null}
+          <ContinuityCorrectionForm
+            apiBaseUrl={apiConfig.apiBaseUrl}
+            userId={apiConfig.userId}
+            source={correctionSource}
+            review={selectedReviewDetail}
+          />
+        </div>
       </div>
     </main>
   );

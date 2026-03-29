@@ -33,6 +33,7 @@ from alicebot_api.contracts import (
     DEFAULT_AGENT_PROFILE_ID,
     DEFAULT_CALENDAR_EVENT_LIST_LIMIT,
     DEFAULT_CONTINUITY_CAPTURE_LIMIT,
+    DEFAULT_CONTINUITY_REVIEW_LIMIT,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
@@ -55,14 +56,19 @@ from alicebot_api.contracts import (
     MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
     MAX_CALENDAR_EVENT_LIST_LIMIT,
     MAX_CONTINUITY_CAPTURE_LIMIT,
+    MAX_CONTINUITY_REVIEW_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
     ContinuityCaptureCreateInput,
+    ContinuityCorrectionInput,
     ContinuityRecallQueryInput,
     ContinuityRecallResponse,
+    ContinuityReviewDetailResponse,
+    ContinuityReviewQueueQueryInput,
+    ContinuityReviewQueueResponse,
     ContinuityResumptionBriefRequestInput,
     ContinuityResumptionBriefResponse,
     EmbeddingConfigStatus,
@@ -301,6 +307,13 @@ from alicebot_api.continuity_capture import (
 from alicebot_api.continuity_recall import (
     ContinuityRecallValidationError,
     query_continuity_recall,
+)
+from alicebot_api.continuity_review import (
+    ContinuityReviewNotFoundError,
+    ContinuityReviewValidationError,
+    apply_continuity_correction,
+    get_continuity_review_detail,
+    list_continuity_review_queue,
 )
 from alicebot_api.continuity_resumption import (
     ContinuityResumptionValidationError,
@@ -567,6 +580,20 @@ class ContinuityCaptureRequest(BaseModel):
     user_id: UUID
     raw_content: str = Field(min_length=1, max_length=4000)
     explicit_signal: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class ContinuityCorrectionRequest(BaseModel):
+    user_id: UUID
+    action: str = Field(min_length=1, max_length=40)
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+    title: str | None = Field(default=None, min_length=1, max_length=280)
+    body: dict[str, object] | None = None
+    provenance: dict[str, object] | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    replacement_title: str | None = Field(default=None, min_length=1, max_length=280)
+    replacement_body: dict[str, object] | None = None
+    replacement_provenance: dict[str, object] | None = None
+    replacement_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class CreateMemoryReviewLabelRequest(BaseModel):
@@ -3132,6 +3159,97 @@ def get_continuity_capture(capture_event_id: UUID, user_id: UUID) -> JSONRespons
                 capture_event_id=capture_event_id,
             )
     except ContinuityCaptureNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/review-queue")
+def list_continuity_review_queue_endpoint(
+    user_id: UUID,
+    status: str = Query(default="correction_ready", min_length=1, max_length=40),
+    limit: int = Query(
+        default=DEFAULT_CONTINUITY_REVIEW_LIMIT,
+        ge=1,
+        le=MAX_CONTINUITY_REVIEW_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityReviewQueueResponse = list_continuity_review_queue(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=ContinuityReviewQueueQueryInput(
+                    status=status,  # type: ignore[arg-type]
+                    limit=limit,
+                ),
+            )
+    except ContinuityReviewValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/review-queue/{continuity_object_id}")
+def get_continuity_review_detail_endpoint(
+    continuity_object_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityReviewDetailResponse = get_continuity_review_detail(
+                ContinuityStore(conn),
+                user_id=user_id,
+                continuity_object_id=continuity_object_id,
+            )
+    except ContinuityReviewNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/continuity/review-queue/{continuity_object_id}/corrections")
+def apply_continuity_correction_endpoint(
+    continuity_object_id: UUID,
+    request: ContinuityCorrectionRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = apply_continuity_correction(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                continuity_object_id=continuity_object_id,
+                request=ContinuityCorrectionInput(
+                    action=request.action,  # type: ignore[arg-type]
+                    reason=request.reason,
+                    title=request.title,
+                    body=request.body,  # type: ignore[arg-type]
+                    provenance=request.provenance,  # type: ignore[arg-type]
+                    confidence=request.confidence,
+                    replacement_title=request.replacement_title,
+                    replacement_body=request.replacement_body,  # type: ignore[arg-type]
+                    replacement_provenance=request.replacement_provenance,  # type: ignore[arg-type]
+                    replacement_confidence=request.replacement_confidence,
+                ),
+            )
+    except ContinuityReviewValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityReviewNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     return JSONResponse(
