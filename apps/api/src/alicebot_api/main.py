@@ -33,6 +33,9 @@ from alicebot_api.contracts import (
     DEFAULT_AGENT_PROFILE_ID,
     DEFAULT_CALENDAR_EVENT_LIST_LIMIT,
     DEFAULT_CONTINUITY_CAPTURE_LIMIT,
+    DEFAULT_CONTINUITY_RECALL_LIMIT,
+    DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+    DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     DEFAULT_MAX_EVENTS,
     DEFAULT_MAX_ENTITY_EDGES,
     DEFAULT_MAX_ENTITIES,
@@ -52,9 +55,16 @@ from alicebot_api.contracts import (
     MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
     MAX_CALENDAR_EVENT_LIST_LIMIT,
     MAX_CONTINUITY_CAPTURE_LIMIT,
+    MAX_CONTINUITY_RECALL_LIMIT,
+    MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+    MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
     ContinuityCaptureCreateInput,
+    ContinuityRecallQueryInput,
+    ContinuityRecallResponse,
+    ContinuityResumptionBriefRequestInput,
+    ContinuityResumptionBriefResponse,
     EmbeddingConfigStatus,
     EmbeddingConfigCreateInput,
     ExecutionBudgetCreateInput,
@@ -287,6 +297,14 @@ from alicebot_api.continuity_capture import (
     capture_continuity_input,
     get_continuity_capture_detail,
     list_continuity_capture_inbox,
+)
+from alicebot_api.continuity_recall import (
+    ContinuityRecallValidationError,
+    query_continuity_recall,
+)
+from alicebot_api.continuity_resumption import (
+    ContinuityResumptionValidationError,
+    compile_continuity_resumption_brief,
 )
 from alicebot_api.continuity_objects import ContinuityObjectValidationError
 from alicebot_api.memory import (
@@ -3115,6 +3133,100 @@ def get_continuity_capture(capture_event_id: UUID, user_id: UUID) -> JSONRespons
             )
     except ContinuityCaptureNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/recall")
+def list_continuity_recall(
+    user_id: UUID,
+    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
+    thread_id: UUID | None = None,
+    task_id: UUID | None = None,
+    project: str | None = Query(default=None, min_length=1, max_length=200),
+    person: str | None = Query(default=None, min_length=1, max_length=200),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(
+        default=DEFAULT_CONTINUITY_RECALL_LIMIT,
+        ge=1,
+        le=MAX_CONTINUITY_RECALL_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityRecallResponse = query_continuity_recall(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=ContinuityRecallQueryInput(
+                    query=query_text,
+                    thread_id=thread_id,
+                    task_id=task_id,
+                    project=project,
+                    person=person,
+                    since=since,
+                    until=until,
+                    limit=limit,
+                ),
+            )
+    except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/resumption-brief")
+def get_continuity_resumption_brief(
+    user_id: UUID,
+    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
+    thread_id: UUID | None = None,
+    task_id: UUID | None = None,
+    project: str | None = Query(default=None, min_length=1, max_length=200),
+    person: str | None = Query(default=None, min_length=1, max_length=200),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    max_recent_changes: int = Query(
+        default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    ),
+    max_open_loops: int = Query(
+        default=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityResumptionBriefResponse = compile_continuity_resumption_brief(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=ContinuityResumptionBriefRequestInput(
+                    query=query_text,
+                    thread_id=thread_id,
+                    task_id=task_id,
+                    project=project,
+                    person=person,
+                    since=since,
+                    until=until,
+                    max_recent_changes=max_recent_changes,
+                    max_open_loops=max_open_loops,
+                ),
+            )
+    except ContinuityResumptionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,
