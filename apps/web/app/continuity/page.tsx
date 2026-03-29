@@ -1,8 +1,11 @@
 import { ContinuityCaptureForm } from "../../components/continuity-capture-form";
 import { ContinuityCorrectionForm } from "../../components/continuity-correction-form";
+import { ContinuityDailyBriefPanel } from "../../components/continuity-daily-brief";
 import { ContinuityInboxList } from "../../components/continuity-inbox-list";
+import { ContinuityOpenLoopsPanel } from "../../components/continuity-open-loops-panel";
 import { ContinuityRecallPanel } from "../../components/continuity-recall-panel";
 import { ContinuityReviewQueue } from "../../components/continuity-review-queue";
+import { ContinuityWeeklyReviewPanel } from "../../components/continuity-weekly-review";
 import { EmptyState } from "../../components/empty-state";
 import { PageHeader } from "../../components/page-header";
 import { ResumptionBrief } from "../../components/resumption-brief";
@@ -12,6 +15,8 @@ import type {
   ApiSource,
   ContinuityCaptureInboxItem,
   ContinuityCaptureInboxSummary,
+  ContinuityDailyBrief,
+  ContinuityOpenLoopDashboard,
   ContinuityRecallResult,
   ContinuityRecallSummary,
   ContinuityReviewDetail,
@@ -19,13 +24,17 @@ import type {
   ContinuityReviewQueueSummary,
   ContinuityReviewStatusFilter,
   ContinuityResumptionBrief,
+  ContinuityWeeklyReview,
 } from "../../lib/api";
 import {
   getContinuityReviewDetail,
   combinePageModes,
   getApiConfig,
   getContinuityCaptureDetail,
+  getContinuityDailyBrief,
+  getContinuityOpenLoopDashboard,
   getContinuityResumptionBrief,
+  getContinuityWeeklyReview,
   hasLiveApiConfig,
   listContinuityReviewQueue,
   listContinuityCaptures,
@@ -257,6 +266,214 @@ const continuityResumptionFixture: ContinuityResumptionBrief = {
   sources: ["continuity_capture_events", "continuity_objects"],
 };
 
+const continuityOpenLoopWaitingFixture: ContinuityRecallResult = {
+  id: "open-loop-waiting-1",
+  capture_event_id: "capture-open-loop-waiting-1",
+  object_type: "WaitingFor",
+  status: "active",
+  title: "Waiting For: Vendor quote",
+  body: {
+    waiting_for_text: "Vendor quote",
+  },
+  provenance: {
+    thread_id: "thread-fixture-1",
+    project: "Launch Project",
+  },
+  confirmation_status: "unconfirmed",
+  admission_posture: "DERIVED",
+  confidence: 1,
+  relevance: 96,
+  last_confirmed_at: null,
+  supersedes_object_id: null,
+  superseded_by_object_id: null,
+  scope_matches: [],
+  provenance_references: [{ source_kind: "continuity_capture_event", source_id: "capture-open-loop-waiting-1" }],
+  ordering: {
+    scope_match_count: 0,
+    query_term_match_count: 0,
+    confirmation_rank: 2,
+    posture_rank: 2,
+    lifecycle_rank: 4,
+    confidence: 1,
+  },
+  created_at: "2026-03-29T09:30:00Z",
+  updated_at: "2026-03-29T09:30:00Z",
+};
+
+const continuityOpenLoopBlockerFixture: ContinuityRecallResult = {
+  id: "open-loop-blocker-1",
+  capture_event_id: "capture-open-loop-blocker-1",
+  object_type: "Blocker",
+  status: "active",
+  title: "Blocker: Await security approval",
+  body: {
+    blocking_reason: "Await security approval",
+  },
+  provenance: {
+    thread_id: "thread-fixture-1",
+    project: "Launch Project",
+  },
+  confirmation_status: "unconfirmed",
+  admission_posture: "DERIVED",
+  confidence: 1,
+  relevance: 95,
+  last_confirmed_at: null,
+  supersedes_object_id: null,
+  superseded_by_object_id: null,
+  scope_matches: [],
+  provenance_references: [{ source_kind: "continuity_capture_event", source_id: "capture-open-loop-blocker-1" }],
+  ordering: {
+    scope_match_count: 0,
+    query_term_match_count: 0,
+    confirmation_rank: 2,
+    posture_rank: 2,
+    lifecycle_rank: 4,
+    confidence: 1,
+  },
+  created_at: "2026-03-29T09:35:00Z",
+  updated_at: "2026-03-29T09:35:00Z",
+};
+
+const continuityOpenLoopStaleFixture: ContinuityRecallResult = {
+  id: "open-loop-stale-1",
+  capture_event_id: "capture-open-loop-stale-1",
+  object_type: "WaitingFor",
+  status: "stale",
+  title: "Waiting For: Stale finance response",
+  body: {
+    waiting_for_text: "Stale finance response",
+  },
+  provenance: {
+    thread_id: "thread-fixture-1",
+    project: "Launch Project",
+  },
+  confirmation_status: "unconfirmed",
+  admission_posture: "DERIVED",
+  confidence: 1,
+  relevance: 90,
+  last_confirmed_at: null,
+  supersedes_object_id: null,
+  superseded_by_object_id: null,
+  scope_matches: [],
+  provenance_references: [{ source_kind: "continuity_capture_event", source_id: "capture-open-loop-stale-1" }],
+  ordering: {
+    scope_match_count: 0,
+    query_term_match_count: 0,
+    confirmation_rank: 2,
+    posture_rank: 2,
+    lifecycle_rank: 3,
+    confidence: 1,
+  },
+  created_at: "2026-03-29T09:40:00Z",
+  updated_at: "2026-03-29T09:40:00Z",
+};
+
+const continuityOpenLoopDashboardFixture: ContinuityOpenLoopDashboard = {
+  scope: {
+    since: null,
+    until: null,
+  },
+  waiting_for: {
+    items: [continuityOpenLoopWaitingFixture],
+    summary: {
+      limit: 20,
+      returned_count: 1,
+      total_count: 1,
+      order: ["created_at_desc", "id_desc"],
+    },
+    empty_state: {
+      is_empty: false,
+      message: "No waiting-for items in the requested scope.",
+    },
+  },
+  blocker: {
+    items: [continuityOpenLoopBlockerFixture],
+    summary: {
+      limit: 20,
+      returned_count: 1,
+      total_count: 1,
+      order: ["created_at_desc", "id_desc"],
+    },
+    empty_state: {
+      is_empty: false,
+      message: "No blocker items in the requested scope.",
+    },
+  },
+  stale: {
+    items: [continuityOpenLoopStaleFixture],
+    summary: {
+      limit: 20,
+      returned_count: 1,
+      total_count: 1,
+      order: ["created_at_desc", "id_desc"],
+    },
+    empty_state: {
+      is_empty: false,
+      message: "No stale items in the requested scope.",
+    },
+  },
+  next_action: {
+    items: [continuityRecallFixtures[0]],
+    summary: {
+      limit: 20,
+      returned_count: 1,
+      total_count: 1,
+      order: ["created_at_desc", "id_desc"],
+    },
+    empty_state: {
+      is_empty: false,
+      message: "No next-action items in the requested scope.",
+    },
+  },
+  summary: {
+    limit: 20,
+    total_count: 4,
+    posture_order: ["waiting_for", "blocker", "stale", "next_action"],
+    item_order: ["created_at_desc", "id_desc"],
+  },
+  sources: ["continuity_capture_events", "continuity_objects", "continuity_correction_events"],
+};
+
+const continuityDailyBriefFixture: ContinuityDailyBrief = {
+  assembly_version: "continuity_daily_brief_v0",
+  scope: {
+    since: null,
+    until: null,
+  },
+  waiting_for_highlights: continuityOpenLoopDashboardFixture.waiting_for,
+  blocker_highlights: continuityOpenLoopDashboardFixture.blocker,
+  stale_items: continuityOpenLoopDashboardFixture.stale,
+  next_suggested_action: {
+    item: continuityRecallFixtures[0],
+    empty_state: {
+      is_empty: false,
+      message: "No next suggested action in the requested scope.",
+    },
+  },
+  sources: ["continuity_capture_events", "continuity_objects", "continuity_correction_events"],
+};
+
+const continuityWeeklyReviewFixture: ContinuityWeeklyReview = {
+  assembly_version: "continuity_weekly_review_v0",
+  scope: {
+    since: null,
+    until: null,
+  },
+  rollup: {
+    total_count: 4,
+    waiting_for_count: 1,
+    blocker_count: 1,
+    stale_count: 1,
+    next_action_count: 1,
+    posture_order: ["waiting_for", "blocker", "stale", "next_action"],
+  },
+  waiting_for: continuityOpenLoopDashboardFixture.waiting_for,
+  blocker: continuityOpenLoopDashboardFixture.blocker,
+  stale: continuityOpenLoopDashboardFixture.stale,
+  next_action: continuityOpenLoopDashboardFixture.next_action,
+  sources: ["continuity_capture_events", "continuity_objects", "continuity_correction_events"],
+};
+
 const continuityReviewFixtures: ContinuityReviewObject[] = [
   {
     id: "review-fixture-1",
@@ -411,6 +628,9 @@ export default async function ContinuityPage({
   const recallLimit = parsePositiveInt(normalizeParam(params.recall_limit), 20);
   const reviewStatus = parseReviewStatus(normalizeParam(params.review_status));
   const reviewLimit = parsePositiveInt(normalizeParam(params.review_limit), 20);
+  const openLoopLimit = parseNonNegativeInt(normalizeParam(params.open_loop_limit), 20);
+  const dailyBriefLimit = parseNonNegativeInt(normalizeParam(params.daily_limit), 3);
+  const weeklyReviewLimit = parseNonNegativeInt(normalizeParam(params.weekly_limit), 5);
   const resumptionRecentChanges = parseNonNegativeInt(normalizeParam(params.resumption_recent), 5);
   const resumptionOpenLoops = parseNonNegativeInt(normalizeParam(params.resumption_open), 5);
 
@@ -517,6 +737,84 @@ export default async function ContinuityPage({
     }
   }
 
+  let openLoopDashboard = continuityOpenLoopDashboardFixture;
+  let openLoopSource: ApiSource = "fixture";
+  let openLoopUnavailableReason: string | undefined;
+
+  if (liveModeReady) {
+    try {
+      const payload = await getContinuityOpenLoopDashboard(apiConfig.apiBaseUrl, apiConfig.userId, {
+        query: recallQuery,
+        threadId: recallThreadId,
+        taskId: recallTaskId,
+        project: recallProject,
+        person: recallPerson,
+        since: recallSince,
+        until: recallUntil,
+        limit: openLoopLimit,
+      });
+      openLoopDashboard = payload.dashboard;
+      openLoopSource = "live";
+    } catch (error) {
+      openLoopUnavailableReason =
+        error instanceof Error
+          ? error.message
+          : "Continuity open-loop dashboard could not be loaded.";
+    }
+  }
+
+  let dailyBrief = continuityDailyBriefFixture;
+  let dailyBriefSource: ApiSource = "fixture";
+  let dailyBriefUnavailableReason: string | undefined;
+
+  if (liveModeReady) {
+    try {
+      const payload = await getContinuityDailyBrief(apiConfig.apiBaseUrl, apiConfig.userId, {
+        query: recallQuery,
+        threadId: recallThreadId,
+        taskId: recallTaskId,
+        project: recallProject,
+        person: recallPerson,
+        since: recallSince,
+        until: recallUntil,
+        limit: dailyBriefLimit,
+      });
+      dailyBrief = payload.brief;
+      dailyBriefSource = "live";
+    } catch (error) {
+      dailyBriefUnavailableReason =
+        error instanceof Error
+          ? error.message
+          : "Continuity daily brief could not be loaded.";
+    }
+  }
+
+  let weeklyReview = continuityWeeklyReviewFixture;
+  let weeklyReviewSource: ApiSource = "fixture";
+  let weeklyReviewUnavailableReason: string | undefined;
+
+  if (liveModeReady) {
+    try {
+      const payload = await getContinuityWeeklyReview(apiConfig.apiBaseUrl, apiConfig.userId, {
+        query: recallQuery,
+        threadId: recallThreadId,
+        taskId: recallTaskId,
+        project: recallProject,
+        person: recallPerson,
+        since: recallSince,
+        until: recallUntil,
+        limit: weeklyReviewLimit,
+      });
+      weeklyReview = payload.review;
+      weeklyReviewSource = "live";
+    } catch (error) {
+      weeklyReviewUnavailableReason =
+        error instanceof Error
+          ? error.message
+          : "Continuity weekly review could not be loaded.";
+    }
+  }
+
   let reviewItems = continuityReviewFixtures;
   let reviewSummary = continuityReviewSummaryFixture;
   let reviewSource: ApiSource = "fixture";
@@ -570,6 +868,9 @@ export default async function ContinuityPage({
     selectedSource,
     recallSource,
     resumptionSource,
+    openLoopSource,
+    dailyBriefSource,
+    weeklyReviewSource,
     reviewSource,
     correctionSource,
   );
@@ -623,6 +924,27 @@ export default async function ContinuityPage({
           unavailableReason={resumptionUnavailableReason}
         />
       </div>
+
+      <div className="grid grid--two">
+        <ContinuityOpenLoopsPanel
+          apiBaseUrl={apiConfig.apiBaseUrl}
+          userId={apiConfig.userId}
+          dashboard={openLoopDashboard}
+          source={openLoopSource}
+          unavailableReason={openLoopUnavailableReason}
+        />
+        <ContinuityDailyBriefPanel
+          brief={dailyBrief}
+          source={dailyBriefSource}
+          unavailableReason={dailyBriefUnavailableReason}
+        />
+      </div>
+
+      <ContinuityWeeklyReviewPanel
+        review={weeklyReview}
+        source={weeklyReviewSource}
+        unavailableReason={weeklyReviewUnavailableReason}
+      />
 
       <div className="grid grid--two">
         <ContinuityReviewQueue

@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 5 Sprint 19 (P5-S19): Memory Review, Correction, and Freshness
+Phase 5 Sprint 20 (P5-S20): Open Loops and Daily Review
 
 ## Sprint Type
 
@@ -10,24 +10,24 @@ feature
 
 ## Sprint Reason
 
-P5-S18 shipped deterministic recall/resumption, but trust still depends on explicit correction. The next non-redundant step is a continuity review/correction path that updates retrieval behavior immediately and preserves historical truth.
+P5-S19 shipped review/correction/freshness, but continuity still needs a deterministic executive-function surface. The next non-redundant step is open-loop review and deterministic daily/weekly briefing built on shipped continuity and correction contracts.
 
 ## Sprint Intent
 
-Ship continuity review queue and correction-event workflows (confirm/edit/delete/supersede/mark_stale) with immediate recall/resumption impact, explicit freshness metadata, and preserved supersession history.
+Ship continuity open-loop dashboard plus deterministic daily/weekly review briefs with review actions (`done`, `deferred`, `still_blocked`) that immediately update resumption behavior.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase5-sprint-19-memory-review-correction-freshness`
+- Branch Name: `codex/phase5-sprint-20-open-loops-daily-review`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It closes the trust loop: corrections now change future retrieval deterministically.
-- It is the planned Phase 5 step after P5-S18 recall/resumption.
-- It avoids redundant scope by not reopening capture or recall/resumption implementation.
+- It turns continuity into daily execution support, not just memory correctness.
+- It is the planned final Phase 5 step after P5-S19 correction/freshness.
+- It avoids redundant scope by not reopening capture, recall/resumption, or correction architecture.
 
 ## Redundancy Guard
 
@@ -40,52 +40,64 @@ Ship continuity review queue and correction-event workflows (confirm/edit/delete
   - provenance-backed recall (`GET /v0/continuity/recall`)
   - deterministic resumption briefs (`GET /v0/continuity/resumption-brief`)
   - `/continuity` recall/resumption panels
-- Required now (P5-S19):
-  - review queue for correction-ready continuity objects
-  - correction event ledger + lifecycle transitions
-  - retrieval/resumption behavior that reflects corrections immediately
-  - superseded-chain visibility and freshness posture
-- Explicitly out of P5-S19:
-  - daily/weekly open-loop dashboard (P5-S20)
-  - channel/connector/platform expansion
+- Already shipped in P5-S19:
+  - continuity review queue (`GET /v0/continuity/review-queue`)
+  - review detail + correction actions
+  - append-only correction event ledger
+  - immediate correction impact on recall/resumption
+- Required now (P5-S20):
+  - open-loop dashboard for waiting-for/blocker/stale/next-action posture
+  - deterministic daily brief and weekly review endpoints
+  - review-action workflow (`done`, `deferred`, `still_blocked`)
+  - immediate resumption refresh after review actions
+- Explicitly out of P5-S20:
+  - connector/channel/platform expansion
+  - new memory backbone or recall ranking redesign
 
 ## Design Truth
 
-- Corrections are append-only events; no silent overwrite of history.
-- Corrected objects must affect next recall/resumption output immediately.
-- Supersession must preserve chain links (`supersedes`/`superseded_by`) for auditability.
-- Freshness posture must be explicit (`last_confirmed_at` and stale status behavior).
-- Confirmed/unconfirmed/stale/superseded posture must remain visible in API/UI.
+- Daily/weekly briefs must be deterministic for fixed input state.
+- Open-loop posture must be explicit and auditable:
+  - waiting_for
+  - blocker
+  - stale
+  - next_action
+- Review actions must map to deterministic lifecycle transitions.
+- Resumption must reflect review actions immediately.
+- Empty brief sections must be explicit empty states.
 
 ## Exact Surfaces In Scope
 
-- continuity review queue API and correction-action API
-- correction event persistence + continuity object lifecycle transitions
-- recall/resumption integration for corrected/superseded/stale objects
-- continuity workspace review/correction UI
-- tests for deterministic correction and supersession behavior
+- continuity open-loop dashboard API
+- deterministic daily brief API
+- deterministic weekly review API
+- review-action mutation API for open loops
+- continuity workspace open-loop/brief UI
+- tests for deterministic brief composition and action transitions
 
 ## Exact Files In Scope
 
-- `apps/api/alembic/versions/20260330_0042_phase5_continuity_corrections.py`
 - `apps/api/src/alicebot_api/contracts.py`
 - `apps/api/src/alicebot_api/store.py`
 - `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/continuity_open_loops.py`
 - `apps/api/src/alicebot_api/continuity_review.py`
-- `apps/api/src/alicebot_api/continuity_recall.py`
 - `apps/api/src/alicebot_api/continuity_resumption.py`
+- `apps/api/src/alicebot_api/memory.py`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
 - `apps/web/app/continuity/page.tsx`
 - `apps/web/app/continuity/page.test.tsx`
-- `apps/web/components/continuity-review-queue.tsx`
-- `apps/web/components/continuity-review-queue.test.tsx`
-- `apps/web/components/continuity-correction-form.tsx`
-- `apps/web/components/continuity-correction-form.test.tsx`
-- `tests/unit/test_20260330_0042_phase5_continuity_corrections.py`
+- `apps/web/components/continuity-open-loops-panel.tsx`
+- `apps/web/components/continuity-open-loops-panel.test.tsx`
+- `apps/web/components/continuity-daily-brief.tsx`
+- `apps/web/components/continuity-daily-brief.test.tsx`
+- `apps/web/components/continuity-weekly-review.tsx`
+- `apps/web/components/continuity-weekly-review.test.tsx`
+- `tests/unit/test_continuity_open_loops.py`
+- `tests/integration/test_continuity_open_loops_api.py`
+- `tests/integration/test_continuity_daily_weekly_review_api.py`
 - `tests/unit/test_continuity_review.py`
-- `tests/integration/test_continuity_review_api.py`
-- `tests/unit/test_continuity_recall.py`
 - `tests/unit/test_continuity_resumption.py`
 - `docs/phase5-product-spec.md`
 - `docs/phase5-sprint-17-20-plan.md`
@@ -98,87 +110,93 @@ Ship continuity review queue and correction-event workflows (confirm/edit/delete
 
 ## In Scope
 
-- Add correction-event model and persistence for:
-  - confirm
-  - edit
-  - delete
-  - supersede
-  - mark_stale
-- Add review queue endpoint for correction-ready continuity objects.
-- Add correction action endpoint(s) on continuity objects.
-- Add object-lifecycle fields required for correction/freshness semantics.
-- Ensure recall/resumption treat superseded/deleted/stale posture deterministically.
+- Add open-loop dashboard endpoint with deterministic grouping and ordering.
+- Add daily brief endpoint that composes:
+  - waiting_for highlights
+  - blocker highlights
+  - stale items
+  - one next suggested action
+- Add weekly review endpoint with deterministic rollup for open-loop posture.
+- Add review-action endpoint for open-loop workflow:
+  - done
+  - deferred
+  - still_blocked
+- Ensure review actions update continuity resumption output immediately.
 - Add continuity UI surfaces for:
-  - review queue list/filter
-  - correction action submit/feedback
-  - superseded-chain visibility on reviewed object detail
+  - open-loop dashboard list/group review
+  - daily brief panel
+  - weekly review panel
+  - review-action controls with explicit outcome feedback
 
 ## Out of Scope
 
-- daily/weekly open-loop dashboard and briefing generation
-- broad cross-connector memory normalization
-- broad `/memories` redesign outside continuity workspace
+- reimplementation of P5-S17 capture backbone
+- reimplementation of P5-S18 recall/resumption ranking contracts
+- reimplementation of P5-S19 correction-event architecture
+- broad `/memories` or `/tasks` redesign outside continuity workspace
 - connector breadth changes
 - broad runtime architecture changes
 
 ## Required Deliverables
 
-- continuity correction event schema + store contracts
-- continuity review queue + correction action APIs
-- recall/resumption correction-awareness updates
-- continuity review/correction UI surfaces
-- unit/integration/web tests for deterministic correction/supersession behavior
+- continuity open-loop dashboard API + deterministic ordering behavior
+- deterministic daily brief and weekly review APIs
+- open-loop review-action mutation API
+- continuity open-loop/daily/weekly UI surfaces
+- unit/integration/web tests for deterministic brief/action behavior
 - synced docs and sprint reports
 
 ## Acceptance Criteria
 
-- correction actions append correction events before lifecycle state mutation.
-- confirm/edit/delete/supersede/mark_stale actions are deterministic for fixed input state.
-- recall and resumption reflect corrections immediately after action commit.
-- superseded chain is queryable and visible in continuity review detail.
-- freshness posture is explicit in API responses (`last_confirmed_at`, status transitions).
-- `./.venv/bin/python -m pytest tests/unit/test_20260330_0042_phase5_continuity_corrections.py tests/unit/test_continuity_review.py tests/integration/test_continuity_review_api.py tests/unit/test_continuity_recall.py tests/unit/test_continuity_resumption.py -q` passes.
-- `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-review-queue.test.tsx components/continuity-correction-form.test.tsx lib/api.test.ts` passes.
+- open-loop dashboard returns deterministic grouped ordering for waiting_for/blocker/stale/next_action posture.
+- daily brief and weekly review endpoints are deterministic for fixed input state and emit explicit empty states when sections are empty.
+- `done`/`deferred`/`still_blocked` actions are deterministic and auditable.
+- continuity resumption reflects review-action outcomes immediately.
+- `./.venv/bin/python -m pytest tests/unit/test_continuity_open_loops.py tests/integration/test_continuity_open_loops_api.py tests/integration/test_continuity_daily_weekly_review_api.py tests/unit/test_continuity_review.py tests/unit/test_continuity_resumption.py -q` passes.
+- `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-open-loops-panel.test.tsx components/continuity-daily-brief.test.tsx components/continuity-weekly-review.test.tsx lib/api.test.ts` passes.
 - `python3 scripts/run_phase4_validation_matrix.py` remains PASS (no Phase 4 regression).
-- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P5-S19 scope.
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P5-S20 scope.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
 - preserve P5-S17 capture/backbone semantics
 - preserve P5-S18 recall/resumption contracts
-- keep correction events append-only and machine-auditable
+- preserve P5-S19 correction-event semantics
+- keep brief composition deterministic and machine-auditable
 - keep docs machine-independent
 
 ## Control Tower Task Cards
 
-### Task 1: Schema + Store Corrections
+### Task 1: Open-Loop Backend
 
 Owner: tooling operative
 
 Write scope:
 
-- `apps/api/alembic/versions/20260330_0042_phase5_continuity_corrections.py`
+- `apps/api/src/alicebot_api/continuity_open_loops.py`
 - `apps/api/src/alicebot_api/store.py`
-- `tests/unit/test_20260330_0042_phase5_continuity_corrections.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `tests/unit/test_continuity_open_loops.py`
+- `tests/integration/test_continuity_open_loops_api.py`
 
-### Task 2: Review + Correction API
+### Task 2: Daily/Weekly Brief + Actions API
 
 Owner: tooling operative
 
 Write scope:
 
+- `apps/api/src/alicebot_api/continuity_open_loops.py`
 - `apps/api/src/alicebot_api/continuity_review.py`
 - `apps/api/src/alicebot_api/main.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/continuity_recall.py`
 - `apps/api/src/alicebot_api/continuity_resumption.py`
+- `apps/api/src/alicebot_api/memory.py`
+- `tests/integration/test_continuity_daily_weekly_review_api.py`
 - `tests/unit/test_continuity_review.py`
-- `tests/integration/test_continuity_review_api.py`
-- `tests/unit/test_continuity_recall.py`
 - `tests/unit/test_continuity_resumption.py`
 
-### Task 3: Continuity Review UI
+### Task 3: Open-Loop/Daily/Weekly UI
 
 Owner: tooling operative
 
@@ -188,10 +206,12 @@ Write scope:
 - `apps/web/lib/api.test.ts`
 - `apps/web/app/continuity/page.tsx`
 - `apps/web/app/continuity/page.test.tsx`
-- `apps/web/components/continuity-review-queue.tsx`
-- `apps/web/components/continuity-review-queue.test.tsx`
-- `apps/web/components/continuity-correction-form.tsx`
-- `apps/web/components/continuity-correction-form.test.tsx`
+- `apps/web/components/continuity-open-loops-panel.tsx`
+- `apps/web/components/continuity-open-loops-panel.test.tsx`
+- `apps/web/components/continuity-daily-brief.tsx`
+- `apps/web/components/continuity-daily-brief.test.tsx`
+- `apps/web/components/continuity-weekly-review.tsx`
+- `apps/web/components/continuity-weekly-review.test.tsx`
 
 ### Task 4: Docs + Integration Review
 
@@ -209,31 +229,31 @@ Write scope:
 
 Responsibilities:
 
-- verify no capture or recall/resumption reimplementation
-- verify no P5-S20 dashboard scope creep
-- verify deterministic correction behavior and supersession chain visibility
+- verify no capture/recall/correction reimplementation
+- verify no connector breadth or orchestration scope creep
+- verify deterministic brief composition and review-action transitions
 - verify no Phase 4 regression
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
 
-- exact correction/freshness delta
-- exact correction-event and lifecycle transition behavior
+- exact open-loop/daily/weekly delta
+- exact brief composition and review-action behavior
 - exact verification command outcomes
-- explicit deferred Phase 5 scope (P5-S20 work)
+- explicit post-Phase-5 deferred scope (if any)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
 
-- sprint stayed P5-S19 scoped
-- correction events are append-only and audit-safe
-- recall/resumption behavior reflects correction/supersession immediately
-- superseded/freshness posture is visible and deterministic
+- sprint stayed P5-S20 scoped
+- open-loop dashboard and daily/weekly briefs are deterministic
+- review actions map to deterministic lifecycle outcomes
+- resumption reflects review-action updates immediately
 - no hidden scope expansion
 - Phase 4 validation remains green
 
 ## Exit Condition
 
-This sprint is complete when continuity review and correction flows (confirm/edit/delete/supersede/mark_stale) are shipped with immediate recall/resumption impact, explicit freshness/supersession posture, and no Phase 4 regression.
+This sprint is complete when continuity open-loop dashboard plus deterministic daily/weekly review flows are shipped with deterministic review-action outcomes and no Phase 4 regression.

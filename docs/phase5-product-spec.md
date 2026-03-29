@@ -297,10 +297,27 @@ Required metrics:
   - selected object correction form with supersession chain visibility
   - correction event history review
 
-## Explicitly Deferred After P5-S19
+## Shipped In P5-S20 (March 29, 2026)
 
-- P5-S20: daily/weekly open-loop review dashboards
-- keep docs and control-tower planning aligned with shipped behavior
+- continuity open-loop/daily/weekly API surfaces:
+  - `GET /v0/continuity/open-loops`
+  - `GET /v0/continuity/daily-brief`
+  - `GET /v0/continuity/weekly-review`
+  - `POST /v0/continuity/open-loops/{continuity_object_id}/review-action`
+- deterministic open-loop posture grouping and ordering:
+  - explicit posture groups: `waiting_for`, `blocker`, `stale`, `next_action`
+  - deterministic item ordering metadata: `created_at_desc`, `id_desc`
+  - explicit empty-state payloads for all sections
+- deterministic review-action workflow for open loops:
+  - `done` -> completed lifecycle outcome
+  - `deferred` -> stale lifecycle outcome
+  - `still_blocked` -> active lifecycle outcome with freshness confirmation
+  - each action appends an auditable correction event payload before lifecycle mutation
+- continuity resumption reflects review-action outcomes immediately in open-loop and recent-change sections
+- `/continuity` workspace expansion for:
+  - open-loop dashboard review panel with per-item action controls
+  - deterministic daily brief panel
+  - deterministic weekly review panel with posture rollup
 
 ## Acceptance Criteria
 
