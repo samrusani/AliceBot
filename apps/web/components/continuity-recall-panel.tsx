@@ -138,6 +138,9 @@ export function ContinuityRecallPanel({
                 </div>
                 <div className="list-row__meta">
                   <span className="meta-pill mono">score {toFixedRelevance(item.relevance)}</span>
+                  <span className="meta-pill">freshness {item.ordering.freshness_posture}</span>
+                  <span className="meta-pill">provenance {item.ordering.provenance_posture}</span>
+                  <span className="meta-pill">supersession {item.ordering.supersession_posture}</span>
                   <span className="meta-pill">{item.provenance_references.length} provenance refs</span>
                   <span className="meta-pill">{item.scope_matches.length} scope matches</span>
                 </div>

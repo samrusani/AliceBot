@@ -1038,6 +1038,9 @@ export type ContinuityCaptureCreatePayload = {
 };
 
 export type ContinuityRecallScopeKind = "thread" | "task" | "project" | "person";
+export type ContinuityRecallFreshnessPosture = "fresh" | "aging" | "stale" | "superseded" | "unknown";
+export type ContinuityRecallProvenancePosture = "strong" | "partial" | "weak" | "missing";
+export type ContinuityRecallSupersessionPosture = "current" | "historical" | "superseded" | "deleted";
 
 export type ContinuityRecallScopeMatch = {
   kind: ContinuityRecallScopeKind;
@@ -1053,6 +1056,12 @@ export type ContinuityRecallOrdering = {
   scope_match_count: number;
   query_term_match_count: number;
   confirmation_rank: number;
+  freshness_posture: ContinuityRecallFreshnessPosture;
+  freshness_rank: number;
+  provenance_posture: ContinuityRecallProvenancePosture;
+  provenance_rank: number;
+  supersession_posture: ContinuityRecallSupersessionPosture;
+  supersession_rank: number;
   posture_rank: number;
   lifecycle_rank: number;
   confidence: number;
@@ -1094,6 +1103,31 @@ export type ContinuityRecallSummary = {
   returned_count: number;
   total_count: number;
   order: string[];
+};
+
+export type RetrievalEvaluationFixtureResult = {
+  fixture_id: string;
+  title: string;
+  query: string;
+  top_k: number;
+  expected_relevant_ids: string[];
+  returned_ids: string[];
+  hit_count: number;
+  precision_at_k: number;
+  top_result_id: string | null;
+  top_result_ordering: ContinuityRecallOrdering | null;
+};
+
+export type RetrievalEvaluationSummary = {
+  fixture_count: number;
+  evaluated_fixture_count: number;
+  passing_fixture_count: number;
+  precision_at_k_mean: number;
+  precision_at_1_mean: number;
+  precision_target: number;
+  status: "pass" | "fail";
+  fixture_order: string[];
+  result_order: string[];
 };
 
 export type ContinuityResumptionEmptyState = {
@@ -1689,6 +1723,17 @@ export function queryContinuityRecall(
       since: since || undefined,
       until: until || undefined,
       limit,
+    },
+  );
+}
+
+export function getContinuityRetrievalEvaluation(apiBaseUrl: string, userId: string) {
+  return requestJson<{ fixtures: RetrievalEvaluationFixtureResult[]; summary: RetrievalEvaluationSummary }>(
+    apiBaseUrl,
+    "/v0/continuity/retrieval-evaluation",
+    undefined,
+    {
+      user_id: userId,
     },
   );
 }

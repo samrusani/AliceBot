@@ -26,6 +26,12 @@ const recallItems = [
       scope_match_count: 1,
       query_term_match_count: 1,
       confirmation_rank: 3,
+      freshness_posture: "fresh" as const,
+      freshness_rank: 4,
+      provenance_posture: "strong" as const,
+      provenance_rank: 3,
+      supersession_posture: "current" as const,
+      supersession_rank: 3,
       posture_rank: 2,
       lifecycle_rank: 4,
       confidence: 0.95,
@@ -77,6 +83,9 @@ describe("ContinuityRecallPanel", () => {
     expect(screen.getByText("Decision: Keep rollout phased")).toBeInTheDocument();
     expect(screen.getByText("1 provenance refs")).toBeInTheDocument();
     expect(screen.getByText("1 scope matches")).toBeInTheDocument();
+    expect(screen.getByText("freshness fresh")).toBeInTheDocument();
+    expect(screen.getByText("provenance strong")).toBeInTheDocument();
+    expect(screen.getByText("supersession current")).toBeInTheDocument();
   });
 
   it("renders explicit empty state when no recall results exist", () => {

@@ -13,6 +13,8 @@ from alicebot_api.contracts import (
 from alicebot_api.semantic_retrieval import (
     SemanticArtifactChunkRetrievalValidationError,
     SemanticMemoryRetrievalValidationError,
+    calculate_mean_precision,
+    calculate_precision_at_k,
     retrieve_artifact_scoped_semantic_artifact_chunk_records,
     retrieve_semantic_memory_records,
     retrieve_task_scoped_semantic_artifact_chunk_records,
@@ -282,6 +284,27 @@ def test_retrieve_semantic_memory_records_rejects_non_active_memory_rows() -> No
                 embedding_config_id=config_id,
                 query_vector=(0.1, 0.2, 0.3),
             ),
+        )
+
+
+def test_calculate_precision_helpers_are_deterministic() -> None:
+    precision = calculate_precision_at_k(
+        returned_ids=["a", "b", "c"],
+        relevant_ids={"a", "c"},
+        top_k=2,
+    )
+    assert precision == 0.5
+    assert calculate_mean_precision([1.0, 0.5, 1.0]) == pytest.approx(0.8333333333)
+    assert calculate_mean_precision([]) == 0.0
+
+    with pytest.raises(
+        SemanticMemoryRetrievalValidationError,
+        match="top_k must be greater than or equal to 1",
+    ):
+        calculate_precision_at_k(
+            returned_ids=["a"],
+            relevant_ids={"a"},
+            top_k=0,
         )
 
 
