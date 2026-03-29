@@ -139,7 +139,7 @@ Memory Review, Correction, and Freshness
 
 ### Status
 
-Deferred (not started in P5-S17).
+Shipped on March 29, 2026.
 
 ### Objective
 
@@ -147,11 +147,11 @@ Make continuity trustworthy by allowing the user to inspect, confirm, edit, dele
 
 ### Scope
 
-- review queue for unconfirmed memory
-- confirm/edit/delete flows
-- contradiction handling
+- review queue for correction-ready continuity objects
+- confirm/edit/delete/supersede/mark_stale flows
+- supersession-chain handling
 - freshness metadata
-- hot consolidation after correction
+- immediate recall/resumption correction effect
 
 ### Deliverables
 
@@ -160,6 +160,26 @@ Make continuity trustworthy by allowing the user to inspect, confirm, edit, dele
 - superseded-chain visibility
 - retrieval hot-path update on correction
 - freshness and last-confirmed metadata
+
+### Implementation Snapshot
+
+- API:
+  - `GET /v0/continuity/review-queue`
+  - `GET /v0/continuity/review-queue/{continuity_object_id}`
+  - `POST /v0/continuity/review-queue/{continuity_object_id}/corrections`
+- Correction behavior:
+  - append-only `continuity_correction_events` ledger
+  - correction event append before lifecycle mutation
+  - deterministic actions: `confirm`, `edit`, `delete`, `supersede`, `mark_stale`
+- Lifecycle/freshness posture:
+  - `last_confirmed_at`, `supersedes_object_id`, `superseded_by_object_id`
+  - explicit lifecycle statuses including `stale`, `superseded`, and `deleted`
+- Retrieval/resumption impact:
+  - recall excludes deleted continuity objects
+  - recall ordering metadata now includes lifecycle rank
+  - resumption keeps active truth in primary sections while retaining historical posture in recent changes
+- Web:
+  - `/continuity` now includes review queue list/filter, selected-object correction form, correction-event history, and supersession chain visibility
 
 ### Acceptance Criteria
 

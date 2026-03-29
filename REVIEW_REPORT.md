@@ -4,41 +4,45 @@
 PASS
 
 ## criteria met
-- Sprint stayed within declared P5-S18 scope and touched only in-scope files for recall/resumption API, UI, tests, and docs.
-- Recall API is implemented and contract-complete for scoped filters, provenance references, confirmation/admission posture, and deterministic ordering metadata.
-- Resumption brief API is implemented and always returns required sections (`last_decision`, `open_loops`, `recent_changes`, `next_action`) with explicit empty-state envelopes.
-- `/continuity` UI now includes recall query/results and resumption brief panels with fixture/live fallback behavior.
-- Acceptance verification commands were executed and passed:
-- `./.venv/bin/python -m pytest tests/unit/test_continuity_recall.py tests/unit/test_continuity_resumption.py tests/integration/test_continuity_recall_api.py tests/integration/test_continuity_resumption_api.py -q` -> PASS (`11 passed`)
-- `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-recall-panel.test.tsx components/resumption-brief.test.tsx lib/api.test.ts` -> PASS (`4 files`, `34 tests`)
-- `python3 scripts/run_phase4_validation_matrix.py` -> PASS (`Phase 4 validation matrix result: PASS`)
+- P5-S19 scope stayed focused on continuity review/correction/freshness with no P5-S20 dashboard expansion.
+- Correction events remain append-only and audit-safe:
+  - persisted in `continuity_correction_events`
+  - update/delete blocked by append-only trigger
+  - correction event appended before lifecycle mutation.
+- Recall/resumption reflects corrections immediately:
+  - recall excludes `deleted`
+  - recall exposes lifecycle/freshness metadata (`last_confirmed_at`, supersession links, `lifecycle_rank`)
+  - resumption preserves active-truth primaries while keeping lifecycle posture in recent changes.
+- Supersession chain visibility is present in API and continuity UI review detail.
+- Required sprint verification commands are now PASS:
+  - `./.venv/bin/python -m pytest tests/unit/test_20260330_0042_phase5_continuity_corrections.py tests/unit/test_continuity_review.py tests/integration/test_continuity_review_api.py tests/unit/test_continuity_recall.py tests/unit/test_continuity_resumption.py -q` -> `20 passed`
+  - `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-review-queue.test.tsx components/continuity-correction-form.test.tsx lib/api.test.ts` -> `4 files / 35 tests passed`
+  - `python3 scripts/run_phase4_validation_matrix.py` -> `Phase 4 validation matrix result: PASS`.
 
 ## criteria missed
-- None strictly against packet acceptance wording.
+- None.
 
 ## quality issues
-- The previously identified resumption truncation risk is fixed:
-  - `apps/api/src/alicebot_api/continuity_resumption.py` now compiles sections from the full scoped recall candidate set (no relevance-limit truncation before recency selection).
-  - `apps/api/src/alicebot_api/continuity_recall.py` now supports unbounded internal recall candidate ordering reuse for deterministic section compilers.
-- Remaining non-blocking note:
-  - `apps/api/src/alicebot_api/store.py` + `apps/api/src/alicebot_api/continuity_recall.py` still do scope/time filtering in Python after row fetch (acceptable for current scale, potential future performance hotspot).
+- Resolved: control-doc marker mismatch in `.ai/handoff/CURRENT_STATE.md` line 7.
+  - Restored exact required phrase: `Active Sprint focus is Phase 4 Sprint 14`.
+- Resolved: flaky UUID tie-order assumption in `tests/unit/test_continuity_review.py`.
+  - Updated assertion to verify status membership independent of UUID tie-order.
+  - Stability check: target test passed `40/40` looped runs.
+- Build report accuracy issue is resolved because the Phase 4 matrix was rerun and is currently PASS.
 
 ## regression risks
-- Added coverage now protects the >100-record edge case for resumption selection:
-  - `tests/unit/test_continuity_resumption.py::test_resumption_brief_uses_full_scoped_set_instead_of_recall_limit`
-  - `tests/integration/test_continuity_resumption_api.py::test_continuity_resumption_api_selects_latest_sections_beyond_recall_limit`
-- Recall scope matching depends on provenance/body key naming (`thread_id`, `task_id`, `project`, `person` aliases); schema drift will reduce match quality without hard failures.
+- Low immediate risk; coverage spans migration/unit/integration/web seams and full Phase 4 compatibility validation.
+- Future risk remains around control-doc marker drift if exact required phrases are reworded without checker updates.
 
 ## docs issues
-- Docs are generally in sync for shipped P5-S18 scope.
-- No blocking documentation gaps remain for this fix.
+- No remaining blocking docs mismatch after marker restoration and matrix rerun.
 
 ## should anything be added to RULES.md?
-- Not required for acceptance.
+- Not required for this sprint acceptance.
 
 ## should anything update ARCHITECTURE.md?
-- Not required for acceptance.
+- Not required for this sprint acceptance.
 
 ## recommended next action
-1. Keep recall/resumption contracts stable and proceed with P5-S19 planning.
-2. If continuity volume grows significantly, consider SQL-side predicate pushdown for recall candidate prefiltering.
+1. Proceed to P5-S20 execution with open-loop daily/weekly review scope only.
+2. Keep P5-S19 correction and recall/resumption contracts stable while implementing P5-S20 UI/API additions.

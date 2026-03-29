@@ -17,6 +17,9 @@ const recallItems = [
     admission_posture: "DERIVED" as const,
     confidence: 0.95,
     relevance: 130,
+    last_confirmed_at: "2026-03-29T10:00:00Z",
+    supersedes_object_id: null,
+    superseded_by_object_id: null,
     scope_matches: [{ kind: "thread" as const, value: "thread-1" }],
     provenance_references: [{ source_kind: "continuity_capture_event", source_id: "capture-1" }],
     ordering: {
@@ -24,6 +27,7 @@ const recallItems = [
       query_term_match_count: 1,
       confirmation_rank: 3,
       posture_rank: 2,
+      lifecycle_rank: 4,
       confidence: 0.95,
     },
     created_at: "2026-03-29T10:00:00Z",

@@ -22,17 +22,21 @@ def make_candidate_row(
     capture_created_at: datetime,
     provenance: dict[str, object] | None = None,
     confidence: float = 1.0,
+    status: str = "active",
 ) -> dict[str, object]:
     return {
         "id": uuid4(),
         "user_id": UUID("11111111-1111-4111-8111-111111111111"),
         "capture_event_id": uuid4(),
         "object_type": object_type,
-        "status": "active",
+        "status": status,
         "title": title,
         "body": {"text": title},
         "provenance": provenance or {},
         "confidence": confidence,
+        "last_confirmed_at": None,
+        "supersedes_object_id": None,
+        "superseded_by_object_id": None,
         "object_created_at": capture_created_at,
         "object_updated_at": capture_created_at,
         "admission_posture": "DERIVED",
@@ -200,4 +204,42 @@ def test_resumption_brief_uses_full_scoped_set_instead_of_recall_limit() -> None
     assert [item["title"] for item in brief["recent_changes"]["items"]] == [
         "Next Action: newest low confidence",
         "Decision: newest low confidence",
+    ]
+
+
+def test_resumption_brief_ignores_superseded_for_primary_sections_but_keeps_recent_changes() -> None:
+    thread_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    rows = [
+        make_candidate_row(
+            title="Decision: superseded old decision",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+            provenance={"thread_id": str(thread_id)},
+            status="superseded",
+        ),
+        make_candidate_row(
+            title="Decision: active latest decision",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 5, tzinfo=UTC),
+            provenance={"thread_id": str(thread_id)},
+            status="active",
+        ),
+    ]
+
+    payload = compile_continuity_resumption_brief(
+        ContinuityResumptionStoreStub(rows),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityResumptionBriefRequestInput(
+            thread_id=thread_id,
+            max_recent_changes=5,
+            max_open_loops=2,
+        ),
+    )
+
+    brief = payload["brief"]
+    assert brief["last_decision"]["item"] is not None
+    assert brief["last_decision"]["item"]["title"] == "Decision: active latest decision"
+    assert [item["title"] for item in brief["recent_changes"]["items"]] == [
+        "Decision: active latest decision",
+        "Decision: superseded old decision",
     ]
