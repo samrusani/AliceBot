@@ -155,3 +155,33 @@ def test_phase4_mvp_exit_manifest_verifier_default_path_contract_is_stable() -> 
     assert module.DEFAULT_MANIFEST_PATH == (
         REPO_ROOT / "artifacts" / "release" / "phase4_mvp_exit_manifest.json"
     )
+
+
+def test_phase4_mvp_qualification_contract_sequence_is_stable() -> None:
+    module = _load_script_module("run_phase4_mvp_qualification.py")
+
+    steps = module.build_qualification_steps(
+        python_executable="/usr/bin/python3",
+        rc_summary_path=Path("/tmp/phase4_rc_summary.json"),
+        rc_archive_index_path=Path("/tmp/archive/index.json"),
+        mvp_exit_manifest_path=Path("/tmp/phase4_mvp_exit_manifest.json"),
+    )
+
+    assert [step.step for step in steps] == [
+        module.STEP_RELEASE_CANDIDATE_REHEARSAL,
+        module.STEP_RELEASE_CANDIDATE_ARCHIVE_VERIFY,
+        module.STEP_MVP_EXIT_MANIFEST_GENERATE,
+        module.STEP_MVP_EXIT_MANIFEST_VERIFY,
+    ]
+    assert steps[0].command == ("/usr/bin/python3", "scripts/run_phase4_release_candidate.py")
+    assert steps[1].command == ("/usr/bin/python3", "scripts/verify_phase4_rc_archive.py")
+    assert steps[2].command == ("/usr/bin/python3", "scripts/generate_phase4_mvp_exit_manifest.py")
+    assert steps[3].command == ("/usr/bin/python3", "scripts/verify_phase4_mvp_exit_manifest.py")
+
+
+def test_phase4_mvp_signoff_verifier_default_path_contract_is_stable() -> None:
+    module = _load_script_module("verify_phase4_mvp_signoff_record.py")
+
+    assert module.DEFAULT_SIGNOFF_PATH == (
+        REPO_ROOT / "artifacts" / "release" / "phase4_mvp_signoff_record.json"
+    )
