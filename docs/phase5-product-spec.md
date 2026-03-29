@@ -249,9 +249,27 @@ Required metrics:
 - provenance-backed derived object visibility in capture detail
 - fast capture inbox surface (`/continuity`) with submit/list/detail
 
-## Explicitly Deferred After P5-S17
+## Shipped In P5-S18 (March 29, 2026)
 
-- P5-S18: broad recall UX and deterministic resumption-brief surfaces
+- provenance-backed recall API surface:
+  - `GET /v0/continuity/recall`
+  - scoped filters (`thread`, `task`, `project`, `person`, `since`, `until`)
+  - deterministic ordering metadata and confirmation/posture exposure
+- deterministic continuity resumption-brief API surface:
+  - `GET /v0/continuity/resumption-brief`
+  - always-present sections:
+    - `last_decision`
+    - `open_loops`
+    - `recent_changes`
+    - `next_action`
+  - explicit empty-state payloads for missing sections
+- `/continuity` workspace expansion for:
+  - recall query and results panel
+  - resumption-brief panel
+  - preserved capture inbox/detail behavior from P5-S17
+
+## Explicitly Deferred After P5-S18
+
 - P5-S19: memory correction queue, supersession workflow, freshness controls
 - P5-S20: daily/weekly open-loop review dashboards
 - keep docs and control-tower planning aligned with shipped behavior
