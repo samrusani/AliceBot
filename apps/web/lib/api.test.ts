@@ -24,6 +24,7 @@ import {
   getThreadDetail,
   getThreadEvents,
   getThreadResumptionBrief,
+  getContinuityResumptionBrief,
   getThreadSessions,
   executeApproval,
   ingestCalendarEvent,
@@ -48,6 +49,7 @@ import {
   getTraceEvents,
   listThreads,
   listTraces,
+  queryContinuityRecall,
   pageModeLabel,
   resolveApproval,
   shouldExpectThreadExecutionReview,
@@ -2389,6 +2391,76 @@ describe("api helpers", () => {
         message: "task task-1 was not found",
         status: 404,
       }),
+    );
+  });
+
+  it("queries continuity recall with scoped filter parameters", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          items: [],
+          summary: {
+            query: "rollout",
+            filters: { thread_id: "thread-1", since: null, until: null },
+            limit: 20,
+            returned_count: 0,
+            total_count: 0,
+            order: ["relevance_desc", "created_at_desc", "id_desc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await queryContinuityRecall("https://api.example.com", "user-1", {
+      query: "rollout",
+      threadId: "thread-1",
+      project: "Project Phoenix",
+      person: "Alex",
+      limit: 20,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/continuity/recall?user_id=user-1&query=rollout&thread_id=thread-1&project=Project+Phoenix&person=Alex&limit=20",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+  });
+
+  it("reads continuity resumption briefs with deterministic section limits", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          brief: {
+            assembly_version: "continuity_resumption_brief_v0",
+            scope: { thread_id: "thread-1", since: null, until: null },
+            last_decision: { item: null, empty_state: { is_empty: true, message: "none" } },
+            open_loops: {
+              items: [],
+              summary: { limit: 3, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+              empty_state: { is_empty: true, message: "none" },
+            },
+            recent_changes: {
+              items: [],
+              summary: { limit: 4, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+              empty_state: { is_empty: true, message: "none" },
+            },
+            next_action: { item: null, empty_state: { is_empty: true, message: "none" } },
+            sources: ["continuity_capture_events", "continuity_objects"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await getContinuityResumptionBrief("https://api.example.com", "user-1", {
+      threadId: "thread-1",
+      maxRecentChanges: 4,
+      maxOpenLoops: 3,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/continuity/resumption-brief?user_id=user-1&thread_id=thread-1&max_recent_changes=4&max_open_loops=3",
+      expect.objectContaining({ cache: "no-store" }),
     );
   });
 });
