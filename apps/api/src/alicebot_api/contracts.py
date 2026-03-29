@@ -24,6 +24,10 @@ MemoryType = Literal[
     "working_style",
 ]
 MemoryConfirmationStatus = Literal["unconfirmed", "confirmed", "contested"]
+ContinuityRecallFreshnessPosture = Literal["fresh", "aging", "stale", "superseded", "unknown"]
+ContinuityRecallProvenancePosture = Literal["strong", "partial", "weak", "missing"]
+ContinuityRecallSupersessionPosture = Literal["current", "historical", "superseded", "deleted"]
+RetrievalEvaluationStatus = Literal["pass", "fail"]
 MemoryReviewStatusFilter = Literal["active", "deleted", "all"]
 MemoryReviewLabelValue = Literal["correct", "incorrect", "outdated", "insufficient_evidence"]
 MemoryQualityGateStatus = Literal["healthy", "needs_review", "insufficient_sample", "degraded"]
@@ -308,6 +312,8 @@ ENTITY_EDGE_LIST_ORDER = ["created_at_asc", "id_asc"]
 EMBEDDING_CONFIG_LIST_ORDER = ["created_at_asc", "id_asc"]
 MEMORY_EMBEDDING_LIST_ORDER = ["created_at_asc", "id_asc"]
 SEMANTIC_MEMORY_RETRIEVAL_ORDER = ["score_desc", "created_at_asc", "id_asc"]
+RETRIEVAL_EVALUATION_FIXTURE_ORDER = ["fixture_id_asc"]
+RETRIEVAL_EVALUATION_RESULT_ORDER = ["precision_at_k_desc", "fixture_id_asc"]
 EMBEDDING_CONFIG_STATUSES = ["active", "deprecated", "disabled"]
 CONSENT_STATUSES = ["granted", "revoked"]
 CONSENT_LIST_ORDER = ["consent_key_asc", "created_at_asc", "id_asc"]
@@ -2108,6 +2114,12 @@ class ContinuityRecallOrderingMetadata(TypedDict):
     scope_match_count: int
     query_term_match_count: int
     confirmation_rank: int
+    freshness_posture: ContinuityRecallFreshnessPosture
+    freshness_rank: int
+    provenance_posture: ContinuityRecallProvenancePosture
+    provenance_rank: int
+    supersession_posture: ContinuityRecallSupersessionPosture
+    supersession_rank: int
     posture_rank: int
     lifecycle_rank: int
     confidence: float
@@ -2606,6 +2618,36 @@ class SemanticMemoryRetrievalSummary(TypedDict):
 class SemanticMemoryRetrievalResponse(TypedDict):
     items: list[SemanticMemoryRetrievalResultItem]
     summary: SemanticMemoryRetrievalSummary
+
+
+class RetrievalEvaluationFixtureResult(TypedDict):
+    fixture_id: str
+    title: str
+    query: str
+    top_k: int
+    expected_relevant_ids: list[str]
+    returned_ids: list[str]
+    hit_count: int
+    precision_at_k: float
+    top_result_id: str | None
+    top_result_ordering: ContinuityRecallOrderingMetadata | None
+
+
+class RetrievalEvaluationSummary(TypedDict):
+    fixture_count: int
+    evaluated_fixture_count: int
+    passing_fixture_count: int
+    precision_at_k_mean: float
+    precision_at_1_mean: float
+    precision_target: float
+    status: RetrievalEvaluationStatus
+    fixture_order: list[str]
+    result_order: list[str]
+
+
+class RetrievalEvaluationResponse(TypedDict):
+    fixtures: list[RetrievalEvaluationFixtureResult]
+    summary: RetrievalEvaluationSummary
 
 
 class ConsentRecord(TypedDict):

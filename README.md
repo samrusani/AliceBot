@@ -1,6 +1,6 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The canonical baseline remains through Phase 3 Sprint 9, with earlier Phase 4 work already delivering run linkage/idempotent replay safety and run observability/retry-failure discipline, Phase 4 Sprint 14 establishing canonical MVP release-gate ownership in Phase 4 gate scripts, Phase 4 Sprint 15 adding deterministic release-candidate rehearsal evidence packaging, Phase 4 Sprint 16 adding durable archive/index evidence retention for repeated RC rehearsal runs, Phase 4 Sprint 17 hardening archive index writes with deterministic locking and atomic replace behavior under contention, Phase 4 Sprint 18 adding deterministic MVP exit manifest generation/verification for formal phase closeout, and Phase 4 Sprint 19 adding deterministic MVP qualification orchestration plus a formal GO/NO_GO sign-off record/verifier. Phase 5 Sprint 17 shipped the typed continuity capture backbone, Phase 5 Sprint 18 shipped provenance-backed recall plus deterministic continuity resumption briefs, Phase 5 Sprint 19 shipped continuity review/correction with explicit freshness and supersession posture, Phase 5 Sprint 20 shipped open-loop dashboard plus deterministic daily/weekly review flows, and Phase 6 Sprint 21 shipped canonical memory-quality gate semantics plus deterministic memory review-queue prioritization.
+AliceBot is a private, permissioned personal AI operating system. The canonical baseline remains through Phase 3 Sprint 9, with earlier Phase 4 work already delivering run linkage/idempotent replay safety and run observability/retry-failure discipline, Phase 4 Sprint 14 establishing canonical MVP release-gate ownership in Phase 4 gate scripts, Phase 4 Sprint 15 adding deterministic release-candidate rehearsal evidence packaging, Phase 4 Sprint 16 adding durable archive/index evidence retention for repeated RC rehearsal runs, Phase 4 Sprint 17 hardening archive index writes with deterministic locking and atomic replace behavior under contention, Phase 4 Sprint 18 adding deterministic MVP exit manifest generation/verification for formal phase closeout, and Phase 4 Sprint 19 adding deterministic MVP qualification orchestration plus a formal GO/NO_GO sign-off record/verifier. Phase 5 Sprint 17 shipped the typed continuity capture backbone, Phase 5 Sprint 18 shipped provenance-backed recall plus deterministic continuity resumption briefs, Phase 5 Sprint 19 shipped continuity review/correction with explicit freshness and supersession posture, Phase 5 Sprint 20 shipped open-loop dashboard plus deterministic daily/weekly review flows, Phase 6 Sprint 21 shipped canonical memory-quality gate semantics plus deterministic memory review-queue prioritization, and Phase 6 Sprint 22 shipped retrieval-quality evaluation plus continuity-recall ranking calibration.
 
 ## Current Implemented Slice
 
@@ -13,6 +13,9 @@ AliceBot is a private, permissioned personal AI operating system. The canonical 
     - `high_risk_first`
     - `stale_truth_first`
   - review-queue payloads include explicit ordering metadata and per-item priority posture fields.
+- `apps/api` now also ships Phase 6 Sprint 22 retrieval-quality seams:
+  - `GET /v0/continuity/retrieval-evaluation` returns deterministic fixture-backed precision summaries and top-result ordering evidence.
+  - `GET /v0/continuity/recall` ranking metadata now explicitly surfaces freshness, provenance quality, and supersession posture contributions in deterministic ordering output.
 - `apps/api` now also ships Phase 5 continuity capture/retrieval/review seams:
   - capture backbone endpoints from Sprint 17:
     - `POST /v0/continuity/captures`
@@ -40,6 +43,7 @@ AliceBot is a private, permissioned personal AI operating system. The canonical 
 - `apps/web` now also includes `/continuity` as the Phase 5 continuity workspace with:
   - Sprint 17 fast-capture inbox submit/list/detail
   - Sprint 18 recall query/results panel with provenance-backed cards
+  - Sprint 22 recall ranking posture evidence in UI (`freshness`, `provenance`, `supersession`)
   - Sprint 18 deterministic resumption-brief panel with required explicit sections
   - Sprint 19 review queue and correction form with correction history and supersession chain visibility
   - Sprint 20 open-loop dashboard with grouped posture sections and review-action controls

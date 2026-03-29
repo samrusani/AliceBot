@@ -86,6 +86,7 @@ from alicebot_api.contracts import (
     ContinuityResumptionBriefResponse,
     ContinuityWeeklyReviewRequestInput,
     ContinuityWeeklyReviewResponse,
+    RetrievalEvaluationResponse,
     EmbeddingConfigStatus,
     EmbeddingConfigCreateInput,
     ExecutionBudgetCreateInput,
@@ -324,6 +325,7 @@ from alicebot_api.continuity_recall import (
     ContinuityRecallValidationError,
     query_continuity_recall,
 )
+from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
 from alicebot_api.continuity_review import (
     ContinuityReviewNotFoundError,
     ContinuityReviewValidationError,
@@ -3489,6 +3491,22 @@ def list_continuity_recall(
             )
     except ContinuityRecallValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/retrieval-evaluation")
+def get_continuity_retrieval_evaluation(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload: RetrievalEvaluationResponse = get_retrieval_evaluation_summary(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
 
     return JSONResponse(
         status_code=200,

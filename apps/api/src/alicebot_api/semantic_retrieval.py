@@ -46,6 +46,29 @@ class SemanticArtifactChunkRetrievalValidationError(ValueError):
     """Raised when semantic artifact chunk retrieval fails explicit validation."""
 
 
+def calculate_precision_at_k(
+    *,
+    returned_ids: list[str],
+    relevant_ids: set[str],
+    top_k: int,
+) -> float:
+    if top_k < 1:
+        raise SemanticMemoryRetrievalValidationError("top_k must be greater than or equal to 1")
+
+    top_results = returned_ids[:top_k]
+    if not top_results:
+        return 0.0
+
+    hit_count = sum(1 for result_id in top_results if result_id in relevant_ids)
+    return hit_count / float(len(top_results))
+
+
+def calculate_mean_precision(precision_values: list[float]) -> float:
+    if not precision_values:
+        return 0.0
+    return sum(precision_values) / float(len(precision_values))
+
+
 def _validate_query_vector(
     query_vector: tuple[float, ...],
     *,

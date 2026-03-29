@@ -1,50 +1,57 @@
 # BUILD_REPORT.md
 
 ## sprint objective
-Implement Phase 6 Sprint 21 (P6-S21): ship a canonical server-side memory-quality gate contract and deterministic memory review-queue prioritization, then align `/memories` UI to those canonical semantics.
+Implement Phase 6 Sprint 22 (P6-S22): ship deterministic retrieval-quality evaluation seams and calibrate continuity recall ranking so confirmed/fresher/current truth is preferred over stale/superseded candidates with explainable ordering evidence in API/UI.
 
 ## completed work
-- Added canonical memory-quality gate backend contract and route:
-  - `GET /v0/memories/quality-gate`
-  - canonical statuses: `healthy`, `needs_review`, `insufficient_sample`, `degraded`
-  - deterministic payload fields for precision/sample/risk posture and explicit computation counts.
-- Canonicalized queue prioritization contract for `GET /v0/memories/review-queue`:
-  - added `priority_mode` query support for `oldest_first`, `recent_first`, `high_risk_first`, `stale_truth_first`
-  - added explicit summary ordering metadata and available mode list
-  - added per-item priority posture fields (`is_high_risk`, `is_stale_truth`, `queue_priority_mode`, `priority_reason`).
-- Updated backend contracts/store/service wiring to support deterministic quality-gate and queue-mode behavior.
-- Updated `/memories` web flow:
-  - queue priority mode parsed from `priority_mode` search param
-  - queue API request now sends explicit priority mode
-  - queue list now renders deterministic priority mode selector links
-  - label submit and submit-and-next flow preserved.
-- Updated web memory-quality logic:
-  - UI gate posture is now sourced from API-backed canonical gate payload (`quality_gate`) instead of local threshold recomputation.
-- Added/updated tests for deterministic status transitions and queue ordering across all four priority modes.
-- Updated in-scope docs to reflect shipped P6-S21 baseline.
+- Implemented continuity recall ranking calibration in backend:
+  - added explicit ranking posture dimensions for `freshness`, `provenance`, and `supersession` in recall ordering metadata.
+  - calibrated deterministic ranking weights/order so confirmed + fresh + current truth outranks stale/superseded alternatives when scope/query match.
+  - preserved deterministic tie-break behavior (`created_at`/`id`) and existing scope/query semantics.
+- Added deterministic retrieval-evaluation seam:
+  - new module: `apps/api/src/alicebot_api/retrieval_evaluation.py`.
+  - new endpoint: `GET /v0/continuity/retrieval-evaluation`.
+  - fixture suite includes 3 deterministic scenarios:
+    - `confirmed_fresh_truth_preferred`
+    - `provenance_breaks_tie`
+    - `supersession_chain_prefers_current_truth`
+  - precision behavior:
+    - `top_k=1` per fixture
+    - expected relevant item is top-ranked in all fixtures
+    - `precision_at_k_mean=1.0`
+    - `precision_at_1_mean=1.0`
+    - `precision_target=0.8`
+    - summary `status=pass`.
+- Updated retrieval utilities:
+  - added deterministic precision helpers in `semantic_retrieval.py` (`calculate_precision_at_k`, `calculate_mean_precision`).
+- Updated continuity UI/API contract surfaces:
+  - web API types now include expanded recall ordering posture fields and retrieval-evaluation response types.
+  - continuity recall panel now renders ranking posture evidence pills (`freshness`, `provenance`, `supersession`).
+  - continuity fixture data/tests updated to include expanded ordering evidence.
+- Added/updated deterministic tests for ranking and evaluation:
+  - unit: recall calibration behavior, provenance tie-break behavior, retrieval evaluation determinism.
+  - integration: recall API ranking posture assertions and retrieval-evaluation endpoint behavior.
 
 ## incomplete work
-- None within P6-S21 sprint packet scope.
+- None inside P6-S22 sprint scope.
 
 ## files changed
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/memory.py`
+- `apps/api/src/alicebot_api/continuity_recall.py`
 - `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/semantic_retrieval.py`
+- `apps/api/src/alicebot_api/retrieval_evaluation.py`
+- `tests/unit/test_continuity_recall.py`
+- `tests/unit/test_semantic_retrieval.py`
+- `tests/unit/test_retrieval_evaluation.py`
+- `tests/integration/test_continuity_recall_api.py`
+- `tests/integration/test_retrieval_evaluation_api.py`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
-- `apps/web/lib/memory-quality.ts`
-- `apps/web/lib/memory-quality.test.ts`
-- `apps/web/app/memories/page.tsx`
-- `apps/web/app/memories/page.test.tsx`
-- `apps/web/components/memory-quality-gate.tsx`
-- `apps/web/components/memory-quality-gate.test.tsx`
-- `apps/web/components/memory-list.tsx`
-- `apps/web/components/memory-list.test.tsx`
-- `tests/unit/test_memory.py`
-- `tests/unit/test_main.py`
-- `tests/integration/test_memory_review_api.py`
-- `tests/integration/test_memory_quality_gate_api.py`
+- `apps/web/app/continuity/page.tsx`
+- `apps/web/app/continuity/page.test.tsx`
+- `apps/web/components/continuity-recall-panel.tsx`
+- `apps/web/components/continuity-recall-panel.test.tsx`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
@@ -52,16 +59,20 @@ Implement Phase 6 Sprint 21 (P6-S21): ship a canonical server-side memory-qualit
 - `REVIEW_REPORT.md`
 
 ## tests run
-- `./.venv/bin/python -m pytest tests/unit/test_memory.py tests/unit/test_main.py tests/integration/test_memory_review_api.py tests/integration/test_memory_quality_gate_api.py -q`
-  - PASS (`89 passed`)
-- `pnpm --dir apps/web test -- app/memories/page.test.tsx components/memory-quality-gate.test.tsx components/memory-list.test.tsx lib/api.test.ts lib/memory-quality.test.ts`
-  - PASS (`5 files`, `46 tests`)
+- `./.venv/bin/python -m pytest tests/unit/test_continuity_recall.py tests/unit/test_semantic_retrieval.py tests/unit/test_retrieval_evaluation.py tests/integration/test_continuity_recall_api.py tests/integration/test_retrieval_evaluation_api.py -q`
+  - PASS (`21 passed`)
+- `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-recall-panel.test.tsx lib/api.test.ts`
+  - PASS (`3 files`, `36 tests`)
 - `python3 scripts/run_phase4_validation_matrix.py`
   - PASS (`Phase 4 validation matrix result: PASS`)
 
 ## blockers/issues
-- Integration and matrix commands required elevated runtime access to local Postgres/network in this environment; reruns with elevated permissions passed.
-- No unresolved functional blockers remain for P6-S21 scope.
+- No functional blockers in P6-S22 scope.
+- Test execution requiring local Postgres access needed elevated runtime permissions in this environment; reruns with elevation passed.
 
 ## recommended next step
-Start P6-S22 with retrieval-quality evaluation/ranking calibration while treating P6-S21 quality-gate and queue-priority contracts as fixed canonical baseline inputs.
+Proceed to P6-S23 correction impact and freshness hygiene while treating P6-S21 (quality-gate/queue-priority) and P6-S22 (retrieval-evaluation/ranking calibration) contracts as fixed baseline.
+
+### deferred phase 6 scope (explicit)
+- P6-S23: correction impact and freshness hygiene (not implemented in this sprint).
+- P6-S24: trust dashboard and release-evidence dashboarding (not implemented in this sprint).
