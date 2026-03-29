@@ -243,3 +243,59 @@ def test_resumption_brief_ignores_superseded_for_primary_sections_but_keeps_rece
         "Decision: active latest decision",
         "Decision: superseded old decision",
     ]
+
+
+def test_resumption_brief_excludes_completed_and_stale_from_primary_open_loop_sections() -> None:
+    thread_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    rows = [
+        make_candidate_row(
+            title="Waiting For: completed item",
+            object_type="WaitingFor",
+            capture_created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+            provenance={"thread_id": str(thread_id)},
+            status="completed",
+        ),
+        make_candidate_row(
+            title="Waiting For: deferred stale item",
+            object_type="WaitingFor",
+            capture_created_at=datetime(2026, 3, 29, 10, 1, tzinfo=UTC),
+            provenance={"thread_id": str(thread_id)},
+            status="stale",
+        ),
+        make_candidate_row(
+            title="Waiting For: still blocked active item",
+            object_type="WaitingFor",
+            capture_created_at=datetime(2026, 3, 29, 10, 2, tzinfo=UTC),
+            provenance={"thread_id": str(thread_id)},
+            status="active",
+        ),
+        make_candidate_row(
+            title="Next Action: done item",
+            object_type="NextAction",
+            capture_created_at=datetime(2026, 3, 29, 10, 3, tzinfo=UTC),
+            provenance={"thread_id": str(thread_id)},
+            status="completed",
+        ),
+    ]
+
+    payload = compile_continuity_resumption_brief(
+        ContinuityResumptionStoreStub(rows),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityResumptionBriefRequestInput(
+            thread_id=thread_id,
+            max_recent_changes=5,
+            max_open_loops=5,
+        ),
+    )
+
+    brief = payload["brief"]
+    assert [item["title"] for item in brief["open_loops"]["items"]] == [
+        "Waiting For: still blocked active item",
+    ]
+    assert brief["next_action"]["item"] is None
+    assert [item["title"] for item in brief["recent_changes"]["items"]] == [
+        "Next Action: done item",
+        "Waiting For: still blocked active item",
+        "Waiting For: deferred stale item",
+        "Waiting For: completed item",
+    ]

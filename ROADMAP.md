@@ -13,6 +13,7 @@
 - Phase 5 Sprint 17 adds the typed continuity capture backbone: immutable `continuity_capture_events`, typed `continuity_objects`, conservative admission posture (`DERIVED`/`TRIAGE`), and the fast capture inbox UI/API surface at `/continuity`.
 - Phase 5 Sprint 18 adds provenance-backed recall and deterministic continuity resumption surfaces: `GET /v0/continuity/recall`, `GET /v0/continuity/resumption-brief`, and `/continuity` recall/resumption panels with always-present required sections.
 - Phase 5 Sprint 19 adds continuity review/correction and freshness posture: `GET /v0/continuity/review-queue`, `GET /v0/continuity/review-queue/{continuity_object_id}`, `POST /v0/continuity/review-queue/{continuity_object_id}/corrections`, append-only correction events, and immediate recall/resumption correction impact with supersession-chain visibility.
+- Phase 5 Sprint 20 adds deterministic open-loop/daily/weekly executive-function seams: `GET /v0/continuity/open-loops`, `GET /v0/continuity/daily-brief`, `GET /v0/continuity/weekly-review`, `POST /v0/continuity/open-loops/{continuity_object_id}/review-action`, grouped posture ordering (`waiting_for`, `blocker`, `stale`, `next_action`), and immediate resumption refresh after `done`/`deferred`/`still_blocked` actions.
 - The backend baseline now includes continuity APIs, deterministic context compilation, governed request routing, approvals and execution review, typed memory and open-loop seams, deterministic thread resumption brief reads, unified explicit-signal capture seams, explicit task and task-step lifecycle seams, rooted local workspaces and artifact ingestion, artifact retrieval and embeddings, narrow read-only Gmail and Calendar seams with selected-item ingestion, bounded read-only Calendar event discovery for one connected account, and the no-tools assistant-response seam.
 - The frontend baseline is now real product surface, not scaffolding: the Next.js operator shell ships `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live-backend reads when configured and explicit fixture fallback when they are not.
 - `/chat` now uses selected-thread continuity instead of a raw thread-id-first flow, keeps bounded thread review and deterministic resumption brief review visible beside both assistant and governed-request composition, ships thread-linked governed workflow, ordered task-step timeline review, and bounded explain-why trace embedding, and includes manual explicit-signal capture controls for selected `message.user` events.
@@ -33,13 +34,17 @@
 - Treat `python3 scripts/run_phase4_mvp_qualification.py` and `python3 scripts/verify_phase4_mvp_signoff_record.py` as the canonical Sprint 19 MVP qualification/sign-off commands.
 - Treat archive index hardening as baseline behavior (deterministic lock and atomic index replace), not optional operational guidance.
 - Treat the deterministic validation matrix command (`python3 scripts/run_phase4_validation_matrix.py`) as the canonical Phase 4 validation step inside the RC rehearsal chain, while keeping Phase 3/Phase 2/MVP validation commands as compatibility checks.
-- Treat Phase 5 Sprint 17, Sprint 18, and Sprint 19 continuity surfaces as shipped baseline:
+- Treat Phase 5 Sprint 17 through Sprint 20 continuity surfaces as shipped baseline:
   - `/v0/continuity/captures*`
   - `/v0/continuity/recall`
   - `/v0/continuity/resumption-brief`
   - `/v0/continuity/review-queue*`
-  - `/continuity` capture/recall/resumption/review workspace
-- Do not relitigate continuity backbone, recall ordering contracts, correction-event append semantics, or required resumption-section contracts during Sprint 20 planning.
+  - `/v0/continuity/open-loops`
+  - `/v0/continuity/daily-brief`
+  - `/v0/continuity/weekly-review`
+  - `/v0/continuity/open-loops/{continuity_object_id}/review-action`
+  - `/continuity` capture/recall/resumption/review/open-loop/daily/weekly workspace
+- Do not relitigate continuity backbone, recall ordering contracts, correction-event append semantics, open-loop posture contracts, or required resumption/brief section contracts.
 - Favor one narrow seam that deepens operator use of already shipped contracts before widening connector breadth or orchestration scope.
 - Reuse the existing continuity, response, approval, task, workspace-artifact, memory, entity, execution, and trace surfaces instead of introducing parallel contracts.
 
@@ -47,8 +52,9 @@
 
 - Do not bundle broader Gmail or Calendar breadth, auth expansion, richer document parsing, runner orchestration, or proxy breadth into the next sprint by default.
 - Do not reopen schema or API design unless the next sprint explicitly requires it.
-- Keep Phase 5 deferred scope explicit:
-  - Sprint 20 open-loop daily/weekly review dashboards
+- Keep Phase 5 follow-up scope explicit:
+  - no additional Sprint 17-20 continuity scope remains
+  - any post-Phase-5 work should be opened as a new packet, not folded into shipped Sprint 20 seams
 - Keep live docs synchronized with shipped reality so planning does not drift behind the repo again.
 
 ## Ongoing Risks

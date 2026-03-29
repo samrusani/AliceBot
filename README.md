@@ -1,6 +1,6 @@
 # AliceBot
 
-AliceBot is a private, permissioned personal AI operating system. The canonical baseline remains through Phase 3 Sprint 9, with earlier Phase 4 work already delivering run linkage/idempotent replay safety and run observability/retry-failure discipline, Phase 4 Sprint 14 establishing canonical MVP release-gate ownership in Phase 4 gate scripts, Phase 4 Sprint 15 adding deterministic release-candidate rehearsal evidence packaging, Phase 4 Sprint 16 adding durable archive/index evidence retention for repeated RC rehearsal runs, Phase 4 Sprint 17 hardening archive index writes with deterministic locking and atomic replace behavior under contention, Phase 4 Sprint 18 adding deterministic MVP exit manifest generation/verification for formal phase closeout, and Phase 4 Sprint 19 adding deterministic MVP qualification orchestration plus a formal GO/NO_GO sign-off record/verifier. Phase 5 Sprint 17 shipped the typed continuity capture backbone, Phase 5 Sprint 18 shipped provenance-backed recall plus deterministic continuity resumption briefs, and Phase 5 Sprint 19 now ships continuity review/correction with explicit freshness and supersession posture.
+AliceBot is a private, permissioned personal AI operating system. The canonical baseline remains through Phase 3 Sprint 9, with earlier Phase 4 work already delivering run linkage/idempotent replay safety and run observability/retry-failure discipline, Phase 4 Sprint 14 establishing canonical MVP release-gate ownership in Phase 4 gate scripts, Phase 4 Sprint 15 adding deterministic release-candidate rehearsal evidence packaging, Phase 4 Sprint 16 adding durable archive/index evidence retention for repeated RC rehearsal runs, Phase 4 Sprint 17 hardening archive index writes with deterministic locking and atomic replace behavior under contention, Phase 4 Sprint 18 adding deterministic MVP exit manifest generation/verification for formal phase closeout, and Phase 4 Sprint 19 adding deterministic MVP qualification orchestration plus a formal GO/NO_GO sign-off record/verifier. Phase 5 Sprint 17 shipped the typed continuity capture backbone, Phase 5 Sprint 18 shipped provenance-backed recall plus deterministic continuity resumption briefs, Phase 5 Sprint 19 shipped continuity review/correction with explicit freshness and supersession posture, and Phase 5 Sprint 20 shipped open-loop dashboard plus deterministic daily/weekly review flows.
 
 ## Current Implemented Slice
 
@@ -17,14 +17,22 @@ AliceBot is a private, permissioned personal AI operating system. The canonical 
     - `GET /v0/continuity/review-queue`
     - `GET /v0/continuity/review-queue/{continuity_object_id}`
     - `POST /v0/continuity/review-queue/{continuity_object_id}/corrections`
+  - Sprint 20 open-loop and review briefing endpoints:
+    - `GET /v0/continuity/open-loops`
+    - `GET /v0/continuity/daily-brief`
+    - `GET /v0/continuity/weekly-review`
+    - `POST /v0/continuity/open-loops/{continuity_object_id}/review-action`
   - recall/resumption responses expose scoped filters, deterministic ordering metadata, confirmation/admission posture, and provenance references.
   - correction flows append immutable correction events before lifecycle mutation and expose freshness/supersession metadata (`last_confirmed_at`, `supersedes_object_id`, `superseded_by_object_id`).
+  - open-loop review actions (`done`, `deferred`, `still_blocked`) are deterministic, auditable, and reflected immediately in continuity resumption output.
 - `apps/web` is shipped operator UI, not scaffold-only. The shell includes `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live-backend reads when configured and explicit fixture fallback otherwise.
 - `apps/web` now also includes `/continuity` as the Phase 5 continuity workspace with:
   - Sprint 17 fast-capture inbox submit/list/detail
   - Sprint 18 recall query/results panel with provenance-backed cards
   - Sprint 18 deterministic resumption-brief panel with required explicit sections
   - Sprint 19 review queue and correction form with correction history and supersession chain visibility
+  - Sprint 20 open-loop dashboard with grouped posture sections and review-action controls
+  - Sprint 20 deterministic daily brief and weekly review panels with explicit empty states
 - `/chat` supports both assistant and governed-request modes, selected-thread continuity, compact thread creation, deterministic resumption brief review, thread-linked governed workflow review, ordered task-step timeline review, bounded explain-why trace embedding, manual explicit-signal capture controls for selected `message.user` events, and bounded supporting continuity review.
 - `/gmail` and `/calendar` are shipped bounded connector workspaces for account review, selected-account detail, explicit account connection, and explicit single-item ingestion into one selected task workspace.
 - `/artifacts`, `/memories`, and `/entities` are shipped bounded operator review workspaces for artifact, memory, and entity evidence.

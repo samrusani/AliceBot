@@ -161,6 +161,8 @@ ContinuityRecallScopeKind = Literal["thread", "task", "project", "person"]
 ContinuityCorrectionAction = Literal["confirm", "edit", "delete", "supersede", "mark_stale"]
 ContinuityReviewStatus = Literal["active", "stale", "superseded", "deleted"]
 ContinuityReviewStatusFilter = Literal["correction_ready", "active", "stale", "superseded", "deleted", "all"]
+ContinuityOpenLoopPosture = Literal["waiting_for", "blocker", "stale", "next_action"]
+ContinuityOpenLoopReviewAction = Literal["done", "deferred", "still_blocked"]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -198,6 +200,12 @@ DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT = 5
 MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT = 20
 DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT = 5
 MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT = 20
+DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT = 20
+MAX_CONTINUITY_OPEN_LOOP_LIMIT = 100
+DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT = 3
+MAX_CONTINUITY_DAILY_BRIEF_LIMIT = 20
+DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT = 5
+MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT = 50
 DEFAULT_CALENDAR_EVENT_LIST_LIMIT = 20
 MAX_CALENDAR_EVENT_LIST_LIMIT = 50
 COMPILER_VERSION_V0 = "continuity_v0"
@@ -214,6 +222,8 @@ THREAD_EVENT_LIST_ORDER = ["sequence_no_asc"]
 DEFAULT_AGENT_PROFILE_ID = "assistant_default"
 RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "resumption_brief_v0"
 CONTINUITY_RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_resumption_brief_v0"
+CONTINUITY_DAILY_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_daily_brief_v0"
+CONTINUITY_WEEKLY_REVIEW_ASSEMBLY_VERSION_V0 = "continuity_weekly_review_v0"
 RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS = ["message.user", "message.assistant"]
 RESUMPTION_BRIEF_CONVERSATION_ORDER = ["sequence_no_asc"]
 RESUMPTION_BRIEF_MEMORY_ORDER = ["updated_at_asc", "created_at_asc", "id_asc"]
@@ -348,6 +358,8 @@ CONTINUITY_CORRECTION_EVENT_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_RECALL_LIST_ORDER = ["relevance_desc", "created_at_desc", "id_desc"]
 CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_RESUMPTION_OPEN_LOOP_ORDER = ["created_at_desc", "id_desc"]
+CONTINUITY_OPEN_LOOP_POSTURE_ORDER = ["waiting_for", "blocker", "stale", "next_action"]
+CONTINUITY_OPEN_LOOP_ITEM_ORDER = ["created_at_desc", "id_desc"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -408,6 +420,17 @@ CONTINUITY_REVIEW_STATUSES = [
     "stale",
     "superseded",
     "deleted",
+]
+CONTINUITY_OPEN_LOOP_POSTURES = [
+    "waiting_for",
+    "blocker",
+    "stale",
+    "next_action",
+]
+CONTINUITY_OPEN_LOOP_REVIEW_ACTIONS = [
+    "done",
+    "deferred",
+    "still_blocked",
 ]
 
 
@@ -1336,6 +1359,93 @@ class ContinuityResumptionBriefRequestInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ContinuityOpenLoopDashboardQueryInput:
+    query: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    limit: int = DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "query": self.query,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+            "limit": self.limit,
+        }
+        payload["since"] = isoformat_or_none(self.since)
+        payload["until"] = isoformat_or_none(self.until)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityDailyBriefRequestInput:
+    query: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    limit: int = DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "query": self.query,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+            "limit": self.limit,
+        }
+        payload["since"] = isoformat_or_none(self.since)
+        payload["until"] = isoformat_or_none(self.until)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityWeeklyReviewRequestInput:
+    query: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    limit: int = DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "query": self.query,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+            "limit": self.limit,
+        }
+        payload["since"] = isoformat_or_none(self.since)
+        payload["until"] = isoformat_or_none(self.until)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityOpenLoopReviewActionInput:
+    action: ContinuityOpenLoopReviewAction
+    note: str | None = None
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "action": self.action,
+            "note": self.note,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class OpenLoopCreateInput:
     title: str
     memory_id: UUID | None = None
@@ -2032,6 +2142,85 @@ class ContinuityResumptionBriefRecord(TypedDict):
 
 class ContinuityResumptionBriefResponse(TypedDict):
     brief: ContinuityResumptionBriefRecord
+
+
+class ContinuityOpenLoopSectionSummary(TypedDict):
+    limit: int
+    returned_count: int
+    total_count: int
+    order: list[str]
+
+
+class ContinuityOpenLoopSection(TypedDict):
+    items: list[ContinuityRecallResultRecord]
+    summary: ContinuityOpenLoopSectionSummary
+    empty_state: ContinuityResumptionEmptyState
+
+
+class ContinuityOpenLoopDashboardSummary(TypedDict):
+    limit: int
+    total_count: int
+    posture_order: list[ContinuityOpenLoopPosture]
+    item_order: list[str]
+
+
+class ContinuityOpenLoopDashboardRecord(TypedDict):
+    scope: ContinuityRecallScopeFilters
+    waiting_for: ContinuityOpenLoopSection
+    blocker: ContinuityOpenLoopSection
+    stale: ContinuityOpenLoopSection
+    next_action: ContinuityOpenLoopSection
+    summary: ContinuityOpenLoopDashboardSummary
+    sources: list[str]
+
+
+class ContinuityOpenLoopDashboardResponse(TypedDict):
+    dashboard: ContinuityOpenLoopDashboardRecord
+
+
+class ContinuityDailyBriefRecord(TypedDict):
+    assembly_version: str
+    scope: ContinuityRecallScopeFilters
+    waiting_for_highlights: ContinuityOpenLoopSection
+    blocker_highlights: ContinuityOpenLoopSection
+    stale_items: ContinuityOpenLoopSection
+    next_suggested_action: ContinuityResumptionSingleSection
+    sources: list[str]
+
+
+class ContinuityDailyBriefResponse(TypedDict):
+    brief: ContinuityDailyBriefRecord
+
+
+class ContinuityWeeklyReviewRollup(TypedDict):
+    total_count: int
+    waiting_for_count: int
+    blocker_count: int
+    stale_count: int
+    next_action_count: int
+    posture_order: list[ContinuityOpenLoopPosture]
+
+
+class ContinuityWeeklyReviewRecord(TypedDict):
+    assembly_version: str
+    scope: ContinuityRecallScopeFilters
+    rollup: ContinuityWeeklyReviewRollup
+    waiting_for: ContinuityOpenLoopSection
+    blocker: ContinuityOpenLoopSection
+    stale: ContinuityOpenLoopSection
+    next_action: ContinuityOpenLoopSection
+    sources: list[str]
+
+
+class ContinuityWeeklyReviewResponse(TypedDict):
+    review: ContinuityWeeklyReviewRecord
+
+
+class ContinuityOpenLoopReviewActionResponse(TypedDict):
+    continuity_object: ContinuityReviewObjectRecord
+    correction_event: ContinuityCorrectionEventRecord
+    review_action: ContinuityOpenLoopReviewAction
+    lifecycle_outcome: str
 
 
 class ContinuityCorrectionApplyResponse(TypedDict):
