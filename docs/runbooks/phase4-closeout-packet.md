@@ -1,15 +1,20 @@
 # Phase 4 Closeout Packet
 
-This closeout packet defines Sprint 18 MVP phase-exit evidence required for formal closeout sign-off.
+This closeout packet defines Sprint 19 MVP qualification and sign-off evidence required for formal closeout approval.
 
 ## Required Go/No-Go Commands
 
 Run from repo root:
 
+1. `python3 scripts/run_phase4_mvp_qualification.py`
+2. `python3 scripts/verify_phase4_mvp_signoff_record.py`
+
+Qualification chain executed by command `#1` (ordered, deterministic):
+
 1. `python3 scripts/run_phase4_release_candidate.py`
-2. `python3 scripts/generate_phase4_mvp_exit_manifest.py`
-3. `python3 scripts/verify_phase4_mvp_exit_manifest.py`
-4. `python3 scripts/verify_phase4_rc_archive.py`
+2. `python3 scripts/verify_phase4_rc_archive.py`
+3. `python3 scripts/generate_phase4_mvp_exit_manifest.py`
+4. `python3 scripts/verify_phase4_mvp_exit_manifest.py`
 
 ## Required Evidence Bundle
 
@@ -18,6 +23,7 @@ Run from repo root:
 - append-only archive ledger: `artifacts/release/archive/index.json`
 - deterministic archive index lock path: `artifacts/release/archive/index.lock`
 - MVP exit manifest artifact: `artifacts/release/phase4_mvp_exit_manifest.json`
+- MVP qualification sign-off artifact: `artifacts/release/phase4_mvp_signoff_record.json`
 - artifact schema fields:
   - `artifact_version`
   - `ordered_steps`
@@ -49,6 +55,18 @@ Run from repo root:
   - lock contention timeout is explicit and deterministic (`exit 2` with lock-timeout message)
 - MVP exit manifest generation must select the latest GO rehearsal entry from archive index evidence.
 - MVP exit manifest verification must validate required schema fields plus referenced archive/index evidence integrity.
+- MVP qualification sign-off record fields:
+  - `artifact_version` (`phase4_mvp_signoff_record.v1`)
+  - `artifact_path`
+  - `generated_at`
+  - `phase` (`phase4`) and `release_gate` (`mvp`)
+  - `ordered_steps`, `executed_steps`, `total_steps`
+  - `failing_steps`, `not_run_steps`
+  - `required_references` (`release_candidate_summary_path`, `release_candidate_archive_index_path`, `mvp_exit_manifest_path`)
+  - `final_decision` (`GO` or `NO_GO`) and `summary_exit_code` (`0` for GO, `1` for NO_GO)
+  - `blockers` (must be empty for GO; explicit blocker entries for NO_GO)
+  - `steps[]` entries with `step`, `status`, `command`, `exit_code`, `required_artifacts`, and `missing_artifacts`
+- Sign-off verifier command `python3 scripts/verify_phase4_mvp_signoff_record.py` must enforce sign-off schema, required references, and GO/NO_GO consistency.
 - links to current `BUILD_REPORT.md` and `REVIEW_REPORT.md`
 
 ## Explicit Deferred Scope
