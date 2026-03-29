@@ -19,6 +19,9 @@ import {
   getEntityDetail,
   getContinuityCaptureDetail,
   getContinuityReviewDetail,
+  getContinuityOpenLoopDashboard,
+  getContinuityDailyBrief,
+  getContinuityWeeklyReview,
   getMemoryDetail,
   getMemoryEvaluationSummary,
   getMemoryRevisions,
@@ -60,6 +63,7 @@ import {
   submitApprovalRequest,
   captureExplicitSignals,
   extractExplicitCommitments,
+  applyContinuityOpenLoopReviewAction,
   submitMemoryLabel,
   updateOpenLoopStatus,
 } from "./api";
@@ -2576,6 +2580,194 @@ describe("api helpers", () => {
       user_id: "user-1",
       action: "confirm",
       reason: "Reviewed",
+    });
+  });
+
+  it("uses continuity open-loop dashboard, daily/weekly brief, and review-action endpoints", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            dashboard: {
+              scope: { thread_id: "thread-1", since: null, until: null },
+              waiting_for: {
+                items: [],
+                summary: { limit: 10, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+                empty_state: { is_empty: true, message: "none" },
+              },
+              blocker: {
+                items: [],
+                summary: { limit: 10, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+                empty_state: { is_empty: true, message: "none" },
+              },
+              stale: {
+                items: [],
+                summary: { limit: 10, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+                empty_state: { is_empty: true, message: "none" },
+              },
+              next_action: {
+                items: [],
+                summary: { limit: 10, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+                empty_state: { is_empty: true, message: "none" },
+              },
+              summary: {
+                limit: 10,
+                total_count: 0,
+                posture_order: ["waiting_for", "blocker", "stale", "next_action"],
+                item_order: ["created_at_desc", "id_desc"],
+              },
+              sources: ["continuity_capture_events", "continuity_objects", "continuity_correction_events"],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            brief: {
+              assembly_version: "continuity_daily_brief_v0",
+              scope: { thread_id: "thread-1", since: null, until: null },
+              waiting_for_highlights: {
+                items: [],
+                summary: { limit: 3, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+                empty_state: { is_empty: true, message: "none" },
+              },
+              blocker_highlights: {
+                items: [],
+                summary: { limit: 3, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+                empty_state: { is_empty: true, message: "none" },
+              },
+              stale_items: {
+                items: [],
+                summary: { limit: 3, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+                empty_state: { is_empty: true, message: "none" },
+              },
+              next_suggested_action: { item: null, empty_state: { is_empty: true, message: "none" } },
+              sources: ["continuity_capture_events", "continuity_objects", "continuity_correction_events"],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            review: {
+              assembly_version: "continuity_weekly_review_v0",
+              scope: { thread_id: "thread-1", since: null, until: null },
+              rollup: {
+                total_count: 0,
+                waiting_for_count: 0,
+                blocker_count: 0,
+                stale_count: 0,
+                next_action_count: 0,
+                posture_order: ["waiting_for", "blocker", "stale", "next_action"],
+              },
+              waiting_for: {
+                items: [],
+                summary: { limit: 5, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+                empty_state: { is_empty: true, message: "none" },
+              },
+              blocker: {
+                items: [],
+                summary: { limit: 5, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+                empty_state: { is_empty: true, message: "none" },
+              },
+              stale: {
+                items: [],
+                summary: { limit: 5, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+                empty_state: { is_empty: true, message: "none" },
+              },
+              next_action: {
+                items: [],
+                summary: { limit: 5, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+                empty_state: { is_empty: true, message: "none" },
+              },
+              sources: ["continuity_capture_events", "continuity_objects", "continuity_correction_events"],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            continuity_object: {
+              id: "object-1",
+              capture_event_id: "capture-1",
+              object_type: "WaitingFor",
+              status: "completed",
+              title: "Waiting For: Vendor quote",
+              body: { waiting_for_text: "Vendor quote" },
+              provenance: {},
+              confidence: 0.9,
+              last_confirmed_at: null,
+              supersedes_object_id: null,
+              superseded_by_object_id: null,
+              created_at: "2026-03-30T10:00:00Z",
+              updated_at: "2026-03-30T10:01:00Z",
+            },
+            correction_event: {
+              id: "event-1",
+              continuity_object_id: "object-1",
+              action: "edit",
+              reason: "done in standup",
+              before_snapshot: {},
+              after_snapshot: {},
+              payload: { review_action: "done" },
+              created_at: "2026-03-30T10:01:00Z",
+            },
+            review_action: "done",
+            lifecycle_outcome: "completed",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+    await getContinuityOpenLoopDashboard("https://api.example.com", "user-1", {
+      threadId: "thread-1",
+      limit: 10,
+    });
+    await getContinuityDailyBrief("https://api.example.com", "user-1", {
+      threadId: "thread-1",
+      limit: 3,
+    });
+    await getContinuityWeeklyReview("https://api.example.com", "user-1", {
+      threadId: "thread-1",
+      limit: 5,
+    });
+    await applyContinuityOpenLoopReviewAction("https://api.example.com", "object-1", {
+      user_id: "user-1",
+      action: "done",
+      note: "done in standup",
+    });
+
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "https://api.example.com/v0/continuity/open-loops?user_id=user-1&thread_id=thread-1&limit=10",
+        expect.objectContaining({ cache: "no-store" }),
+      ],
+      [
+        "https://api.example.com/v0/continuity/daily-brief?user_id=user-1&thread_id=thread-1&limit=3",
+        expect.objectContaining({ cache: "no-store" }),
+      ],
+      [
+        "https://api.example.com/v0/continuity/weekly-review?user_id=user-1&thread_id=thread-1&limit=5",
+        expect.objectContaining({ cache: "no-store" }),
+      ],
+      [
+        "https://api.example.com/v0/continuity/open-loops/object-1/review-action",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({ "Content-Type": "application/json" }),
+        }),
+      ],
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      action: "done",
+      note: "done in standup",
     });
   });
 });

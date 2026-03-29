@@ -6,9 +6,12 @@ import ContinuityPage from "./page";
 
 const {
   getApiConfigMock,
+  getContinuityDailyBriefMock,
+  getContinuityOpenLoopDashboardMock,
   getContinuityCaptureDetailMock,
   getContinuityReviewDetailMock,
   getContinuityResumptionBriefMock,
+  getContinuityWeeklyReviewMock,
   hasLiveApiConfigMock,
   listContinuityReviewQueueMock,
   listContinuityCapturesMock,
@@ -16,9 +19,12 @@ const {
   refreshMock,
 } = vi.hoisted(() => ({
   getApiConfigMock: vi.fn(),
+  getContinuityDailyBriefMock: vi.fn(),
+  getContinuityOpenLoopDashboardMock: vi.fn(),
   getContinuityCaptureDetailMock: vi.fn(),
   getContinuityReviewDetailMock: vi.fn(),
   getContinuityResumptionBriefMock: vi.fn(),
+  getContinuityWeeklyReviewMock: vi.fn(),
   hasLiveApiConfigMock: vi.fn(),
   listContinuityReviewQueueMock: vi.fn(),
   listContinuityCapturesMock: vi.fn(),
@@ -55,9 +61,12 @@ vi.mock("../../lib/api", async () => {
   return {
     ...actual,
     getApiConfig: getApiConfigMock,
+    getContinuityDailyBrief: getContinuityDailyBriefMock,
+    getContinuityOpenLoopDashboard: getContinuityOpenLoopDashboardMock,
     getContinuityCaptureDetail: getContinuityCaptureDetailMock,
     getContinuityReviewDetail: getContinuityReviewDetailMock,
     getContinuityResumptionBrief: getContinuityResumptionBriefMock,
+    getContinuityWeeklyReview: getContinuityWeeklyReviewMock,
     hasLiveApiConfig: hasLiveApiConfigMock,
     listContinuityReviewQueue: listContinuityReviewQueueMock,
     listContinuityCaptures: listContinuityCapturesMock,
@@ -68,9 +77,12 @@ vi.mock("../../lib/api", async () => {
 describe("ContinuityPage", () => {
   beforeEach(() => {
     getApiConfigMock.mockReset();
+    getContinuityDailyBriefMock.mockReset();
+    getContinuityOpenLoopDashboardMock.mockReset();
     getContinuityCaptureDetailMock.mockReset();
     getContinuityReviewDetailMock.mockReset();
     getContinuityResumptionBriefMock.mockReset();
+    getContinuityWeeklyReviewMock.mockReset();
     hasLiveApiConfigMock.mockReset();
     listContinuityReviewQueueMock.mockReset();
     listContinuityCapturesMock.mockReset();
@@ -97,12 +109,18 @@ describe("ContinuityPage", () => {
     expect(screen.getByText("Fixture inbox")).toBeInTheDocument();
     expect(screen.getByText("Fixture recall")).toBeInTheDocument();
     expect(screen.getByText("Fixture brief")).toBeInTheDocument();
+    expect(screen.getByText("Fixture open loops")).toBeInTheDocument();
+    expect(screen.getByText("Fixture daily brief")).toBeInTheDocument();
+    expect(screen.getByText("Fixture weekly review")).toBeInTheDocument();
     expect(screen.getByText("Fixture review queue")).toBeInTheDocument();
     expect(screen.getByText("Continuity recall")).toBeInTheDocument();
     expect(screen.getAllByText("Correction actions").length).toBeGreaterThan(0);
     expect(listContinuityCapturesMock).not.toHaveBeenCalled();
     expect(queryContinuityRecallMock).not.toHaveBeenCalled();
     expect(getContinuityResumptionBriefMock).not.toHaveBeenCalled();
+    expect(getContinuityOpenLoopDashboardMock).not.toHaveBeenCalled();
+    expect(getContinuityDailyBriefMock).not.toHaveBeenCalled();
+    expect(getContinuityWeeklyReviewMock).not.toHaveBeenCalled();
     expect(listContinuityReviewQueueMock).not.toHaveBeenCalled();
   });
 
@@ -278,6 +296,99 @@ describe("ContinuityPage", () => {
         sources: ["continuity_capture_events", "continuity_objects"],
       },
     });
+    getContinuityOpenLoopDashboardMock.mockResolvedValue({
+      dashboard: {
+        scope: { thread_id: "thread-1", since: null, until: null },
+        waiting_for: {
+          items: [],
+          summary: { limit: 20, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+          empty_state: { is_empty: true, message: "No waiting-for items in the requested scope." },
+        },
+        blocker: {
+          items: [],
+          summary: { limit: 20, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+          empty_state: { is_empty: true, message: "No blocker items in the requested scope." },
+        },
+        stale: {
+          items: [],
+          summary: { limit: 20, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+          empty_state: { is_empty: true, message: "No stale items in the requested scope." },
+        },
+        next_action: {
+          items: [],
+          summary: { limit: 20, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+          empty_state: { is_empty: true, message: "No next-action items in the requested scope." },
+        },
+        summary: {
+          limit: 20,
+          total_count: 0,
+          posture_order: ["waiting_for", "blocker", "stale", "next_action"],
+          item_order: ["created_at_desc", "id_desc"],
+        },
+        sources: ["continuity_capture_events", "continuity_objects", "continuity_correction_events"],
+      },
+    });
+    getContinuityDailyBriefMock.mockResolvedValue({
+      brief: {
+        assembly_version: "continuity_daily_brief_v0",
+        scope: { thread_id: "thread-1", since: null, until: null },
+        waiting_for_highlights: {
+          items: [],
+          summary: { limit: 3, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+          empty_state: { is_empty: true, message: "No waiting-for highlights for today in the requested scope." },
+        },
+        blocker_highlights: {
+          items: [],
+          summary: { limit: 3, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+          empty_state: { is_empty: true, message: "No blocker highlights for today in the requested scope." },
+        },
+        stale_items: {
+          items: [],
+          summary: { limit: 3, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+          empty_state: { is_empty: true, message: "No stale items for today in the requested scope." },
+        },
+        next_suggested_action: {
+          item: null,
+          empty_state: { is_empty: true, message: "No next suggested action in the requested scope." },
+        },
+        sources: ["continuity_capture_events", "continuity_objects", "continuity_correction_events"],
+      },
+    });
+    getContinuityWeeklyReviewMock.mockResolvedValue({
+      review: {
+        assembly_version: "continuity_weekly_review_v0",
+        scope: { thread_id: "thread-1", since: null, until: null },
+        rollup: {
+          total_count: 0,
+          waiting_for_count: 0,
+          blocker_count: 0,
+          stale_count: 0,
+          next_action_count: 0,
+          posture_order: ["waiting_for", "blocker", "stale", "next_action"],
+        },
+        waiting_for: {
+          items: [],
+          summary: { limit: 5, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+          empty_state: { is_empty: true, message: "No waiting-for items in the requested scope." },
+        },
+        blocker: {
+          items: [],
+          summary: { limit: 5, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+          empty_state: { is_empty: true, message: "No blocker items in the requested scope." },
+        },
+        stale: {
+          items: [],
+          summary: { limit: 5, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+          empty_state: { is_empty: true, message: "No stale items in the requested scope." },
+        },
+        next_action: {
+          items: [],
+          summary: { limit: 5, returned_count: 0, total_count: 0, order: ["created_at_desc", "id_desc"] },
+          empty_state: { is_empty: true, message: "No next-action items in the requested scope." },
+        },
+        sources: ["continuity_capture_events", "continuity_objects", "continuity_correction_events"],
+      },
+    });
     listContinuityReviewQueueMock.mockResolvedValue({
       items: [
         {
@@ -339,6 +450,9 @@ describe("ContinuityPage", () => {
     expect(screen.getByText("Live inbox")).toBeInTheDocument();
     expect(screen.getByText("Live recall")).toBeInTheDocument();
     expect(screen.getByText("Live brief")).toBeInTheDocument();
+    expect(screen.getByText("Live open loops")).toBeInTheDocument();
+    expect(screen.getByText("Live daily brief")).toBeInTheDocument();
+    expect(screen.getByText("Live weekly review")).toBeInTheDocument();
     expect(screen.getByText("Live review queue")).toBeInTheDocument();
     expect(screen.getAllByText("Decision: Keep admission conservative").length).toBeGreaterThan(0);
 
@@ -379,6 +493,40 @@ describe("ContinuityPage", () => {
       until: "",
       maxRecentChanges: 5,
       maxOpenLoops: 5,
+    });
+    expect(getContinuityOpenLoopDashboardMock).toHaveBeenCalledWith(
+      "https://api.example.com",
+      "user-1",
+      {
+        query: "decision",
+        threadId: "",
+        taskId: "",
+        project: "",
+        person: "",
+        since: "",
+        until: "",
+        limit: 20,
+      },
+    );
+    expect(getContinuityDailyBriefMock).toHaveBeenCalledWith("https://api.example.com", "user-1", {
+      query: "decision",
+      threadId: "",
+      taskId: "",
+      project: "",
+      person: "",
+      since: "",
+      until: "",
+      limit: 3,
+    });
+    expect(getContinuityWeeklyReviewMock).toHaveBeenCalledWith("https://api.example.com", "user-1", {
+      query: "decision",
+      threadId: "",
+      taskId: "",
+      project: "",
+      person: "",
+      since: "",
+      until: "",
+      limit: 5,
     });
   });
 });

@@ -35,6 +35,9 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_CAPTURE_LIMIT,
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
+    DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
+    DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT,
+    DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     DEFAULT_MAX_EVENTS,
@@ -58,11 +61,20 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_CAPTURE_LIMIT,
     MAX_CONTINUITY_REVIEW_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
+    MAX_CONTINUITY_OPEN_LOOP_LIMIT,
+    MAX_CONTINUITY_DAILY_BRIEF_LIMIT,
+    MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
     ContinuityCaptureCreateInput,
+    ContinuityDailyBriefRequestInput,
+    ContinuityDailyBriefResponse,
+    ContinuityOpenLoopDashboardQueryInput,
+    ContinuityOpenLoopDashboardResponse,
+    ContinuityOpenLoopReviewActionInput,
+    ContinuityOpenLoopReviewActionResponse,
     ContinuityCorrectionInput,
     ContinuityRecallQueryInput,
     ContinuityRecallResponse,
@@ -71,6 +83,8 @@ from alicebot_api.contracts import (
     ContinuityReviewQueueResponse,
     ContinuityResumptionBriefRequestInput,
     ContinuityResumptionBriefResponse,
+    ContinuityWeeklyReviewRequestInput,
+    ContinuityWeeklyReviewResponse,
     EmbeddingConfigStatus,
     EmbeddingConfigCreateInput,
     ExecutionBudgetCreateInput,
@@ -318,6 +332,14 @@ from alicebot_api.continuity_review import (
 from alicebot_api.continuity_resumption import (
     ContinuityResumptionValidationError,
     compile_continuity_resumption_brief,
+)
+from alicebot_api.continuity_open_loops import (
+    ContinuityOpenLoopNotFoundError,
+    ContinuityOpenLoopValidationError,
+    apply_continuity_open_loop_review_action,
+    compile_continuity_daily_brief,
+    compile_continuity_open_loop_dashboard,
+    compile_continuity_weekly_review,
 )
 from alicebot_api.continuity_objects import ContinuityObjectValidationError
 from alicebot_api.memory import (
@@ -594,6 +616,12 @@ class ContinuityCorrectionRequest(BaseModel):
     replacement_body: dict[str, object] | None = None
     replacement_provenance: dict[str, object] | None = None
     replacement_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class ContinuityOpenLoopReviewActionRequest(BaseModel):
+    user_id: UUID
+    action: str = Field(min_length=1, max_length=40)
+    note: str | None = Field(default=None, min_length=1, max_length=500)
 
 
 class CreateMemoryReviewLabelRequest(BaseModel):
@@ -3250,6 +3278,170 @@ def apply_continuity_correction_endpoint(
     except ContinuityReviewValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityReviewNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/open-loops")
+def get_continuity_open_loop_dashboard(
+    user_id: UUID,
+    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
+    thread_id: UUID | None = None,
+    task_id: UUID | None = None,
+    project: str | None = Query(default=None, min_length=1, max_length=200),
+    person: str | None = Query(default=None, min_length=1, max_length=200),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(
+        default=DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_OPEN_LOOP_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityOpenLoopDashboardResponse = compile_continuity_open_loop_dashboard(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=ContinuityOpenLoopDashboardQueryInput(
+                    query=query_text,
+                    thread_id=thread_id,
+                    task_id=task_id,
+                    project=project,
+                    person=person,
+                    since=since,
+                    until=until,
+                    limit=limit,
+                ),
+            )
+    except ContinuityOpenLoopValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/daily-brief")
+def get_continuity_daily_brief(
+    user_id: UUID,
+    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
+    thread_id: UUID | None = None,
+    task_id: UUID | None = None,
+    project: str | None = Query(default=None, min_length=1, max_length=200),
+    person: str | None = Query(default=None, min_length=1, max_length=200),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(
+        default=DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_DAILY_BRIEF_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityDailyBriefResponse = compile_continuity_daily_brief(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=ContinuityDailyBriefRequestInput(
+                    query=query_text,
+                    thread_id=thread_id,
+                    task_id=task_id,
+                    project=project,
+                    person=person,
+                    since=since,
+                    until=until,
+                    limit=limit,
+                ),
+            )
+    except ContinuityOpenLoopValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/weekly-review")
+def get_continuity_weekly_review(
+    user_id: UUID,
+    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
+    thread_id: UUID | None = None,
+    task_id: UUID | None = None,
+    project: str | None = Query(default=None, min_length=1, max_length=200),
+    person: str | None = Query(default=None, min_length=1, max_length=200),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(
+        default=DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityWeeklyReviewResponse = compile_continuity_weekly_review(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=ContinuityWeeklyReviewRequestInput(
+                    query=query_text,
+                    thread_id=thread_id,
+                    task_id=task_id,
+                    project=project,
+                    person=person,
+                    since=since,
+                    until=until,
+                    limit=limit,
+                ),
+            )
+    except ContinuityOpenLoopValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/continuity/open-loops/{continuity_object_id}/review-action")
+def apply_continuity_open_loop_review_action_endpoint(
+    continuity_object_id: UUID,
+    request: ContinuityOpenLoopReviewActionRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload: ContinuityOpenLoopReviewActionResponse = apply_continuity_open_loop_review_action(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                continuity_object_id=continuity_object_id,
+                request=ContinuityOpenLoopReviewActionInput(
+                    action=request.action,  # type: ignore[arg-type]
+                    note=request.note,
+                ),
+            )
+    except ContinuityOpenLoopValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityOpenLoopNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     return JSONResponse(
