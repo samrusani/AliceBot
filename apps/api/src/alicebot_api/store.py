@@ -977,6 +977,35 @@ LIST_UNLABELED_REVIEW_MEMORIES_SQL = """
                     WHERE memory_review_labels.memory_id = memories.id
                   )
                 ORDER BY updated_at DESC, created_at DESC, id DESC
+                """
+
+LIST_LIMITED_UNLABELED_REVIEW_MEMORIES_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  agent_profile_id,
+                  memory_key,
+                  value,
+                  status,
+                  source_event_ids,
+                  memory_type,
+                  confidence,
+                  salience,
+                  confirmation_status,
+                  valid_from,
+                  valid_to,
+                  last_confirmed_at,
+                  created_at,
+                  updated_at,
+                  deleted_at
+                FROM memories
+                WHERE status = 'active'
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM memory_review_labels
+                    WHERE memory_review_labels.memory_id = memories.id
+                  )
+                ORDER BY updated_at DESC, created_at DESC, id DESC
                 LIMIT %s
                 """
 
@@ -1166,6 +1195,15 @@ LIST_ALL_MEMORY_REVIEW_LABEL_COUNTS_SQL = """
                 FROM memory_review_labels
                 GROUP BY label
                 ORDER BY label ASC
+                """
+
+LIST_ACTIVE_MEMORY_REVIEW_LABEL_COUNTS_SQL = """
+                SELECT memory_review_labels.label, COUNT(*) AS count
+                FROM memory_review_labels
+                INNER JOIN memories ON memories.id = memory_review_labels.memory_id
+                WHERE memories.status = 'active'
+                GROUP BY memory_review_labels.label
+                ORDER BY memory_review_labels.label ASC
                 """
 
 INSERT_OPEN_LOOP_SQL = """
@@ -4053,8 +4091,10 @@ class ContinuityStore:
             return self._fetch_all(LIST_REVIEW_MEMORIES_SQL, (limit,))
         return self._fetch_all(LIST_REVIEW_MEMORIES_BY_STATUS_SQL, (status, limit))
 
-    def list_unlabeled_review_memories(self, *, limit: int) -> list[MemoryRow]:
-        return self._fetch_all(LIST_UNLABELED_REVIEW_MEMORIES_SQL, (limit,))
+    def list_unlabeled_review_memories(self, *, limit: int | None = None) -> list[MemoryRow]:
+        if limit is None:
+            return self._fetch_all(LIST_UNLABELED_REVIEW_MEMORIES_SQL)
+        return self._fetch_all(LIST_LIMITED_UNLABELED_REVIEW_MEMORIES_SQL, (limit,))
 
     def list_context_memories(self) -> list[MemoryRow]:
         return self._fetch_all(LIST_CONTEXT_MEMORIES_SQL)
@@ -4171,6 +4211,9 @@ class ContinuityStore:
 
     def list_all_memory_review_label_counts(self) -> list[LabelCountRow]:
         return self._fetch_all(LIST_ALL_MEMORY_REVIEW_LABEL_COUNTS_SQL)
+
+    def list_active_memory_review_label_counts(self) -> list[LabelCountRow]:
+        return self._fetch_all(LIST_ACTIVE_MEMORY_REVIEW_LABEL_COUNTS_SQL)
 
     def create_open_loop(
         self,

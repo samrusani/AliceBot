@@ -8,6 +8,7 @@ import { PageHeader } from "../../components/page-header";
 import type {
   ApiSource,
   MemoryReviewLabelSummary,
+  MemoryReviewQueuePriorityMode,
   MemoryReviewRecord,
   MemoryRevisionReviewListSummary,
   OpenLoopListSummary,
@@ -54,6 +55,21 @@ function normalizeParam(value: string | string[] | undefined) {
 function normalizeFilter(value: string | string[] | undefined): "active" | "queue" {
   const normalized = normalizeParam(value).toLowerCase();
   return normalized === "queue" ? "queue" : "active";
+}
+
+function normalizeQueuePriorityMode(
+  value: string | string[] | undefined,
+): MemoryReviewQueuePriorityMode {
+  const normalized = normalizeParam(value).toLowerCase();
+  if (
+    normalized === "oldest_first" ||
+    normalized === "recent_first" ||
+    normalized === "high_risk_first" ||
+    normalized === "stale_truth_first"
+  ) {
+    return normalized;
+  }
+  return "recent_first";
 }
 
 function resolveSelectedMemoryId(requestedMemoryId: string, items: MemoryReviewRecord[]) {
@@ -170,6 +186,7 @@ export default async function MemoriesPage({
   const requestedMemoryId = normalizeParam(params.memory);
   const requestedOpenLoopId = normalizeParam(params.open_loop);
   const activeFilter = normalizeFilter(params.filter);
+  const queuePriorityMode = normalizeQueuePriorityMode(params.priority_mode);
   const apiConfig = getApiConfig();
   const liveModeReady = hasLiveApiConfig(apiConfig);
 
@@ -195,7 +212,9 @@ export default async function MemoriesPage({
   if (liveModeReady) {
     const [memoryResult, queueResult, summaryResult, openLoopResult] = await Promise.allSettled([
       listMemories(apiConfig.apiBaseUrl, apiConfig.userId, { status: "active" }),
-      listMemoryReviewQueue(apiConfig.apiBaseUrl, apiConfig.userId),
+      listMemoryReviewQueue(apiConfig.apiBaseUrl, apiConfig.userId, {
+        priorityMode: queuePriorityMode,
+      }),
       getMemoryEvaluationSummary(apiConfig.apiBaseUrl, apiConfig.userId),
       listOpenLoops(apiConfig.apiBaseUrl, apiConfig.userId, { status: "open", limit: 20 }),
     ]);
@@ -390,6 +409,9 @@ export default async function MemoriesPage({
             <span className="subtle-chip">
               {activeFilter === "queue" ? "Queue filter active" : "Active list filter"}
             </span>
+            {activeFilter === "queue" ? (
+              <span className="subtle-chip">Priority: {queuePriorityMode}</span>
+            ) : null}
             <span className="subtle-chip">{visibleMemories.length} visible memories</span>
             <span className="subtle-chip">{openLoops.length} open loops</span>
           </div>
@@ -435,6 +457,9 @@ export default async function MemoriesPage({
                     ? `memory=${encodeURIComponent(selectedMemory.id)}`
                     : null,
                   activeFilter === "queue" ? "filter=queue" : null,
+                  activeFilter === "queue"
+                    ? `priority_mode=${encodeURIComponent(queuePriorityMode)}`
+                    : null,
                 ].filter(Boolean);
                 const href = hrefParts.length > 1 ? `${hrefParts[0]}&${hrefParts.slice(1).join("&")}` : hrefParts[0];
                 return (
@@ -492,6 +517,10 @@ export default async function MemoriesPage({
           summary={activeFilter === "queue" ? null : memoryListSummary}
           source={selectedListSource}
           filter={activeFilter}
+          priorityMode={activeFilter === "queue" ? queuePriorityMode : undefined}
+          availablePriorityModes={
+            activeFilter === "queue" ? reviewQueueSummary.available_priority_modes : undefined
+          }
           unavailableReason={activeFilter === "queue" ? reviewQueueUnavailableReason : memoryListUnavailableReason}
         />
         <MemoryDetail
@@ -571,6 +600,7 @@ export default async function MemoriesPage({
             userId={apiConfig.userId}
             activeFilter={activeFilter}
             nextQueueMemoryId={nextQueueMemoryId}
+            queuePriorityMode={activeFilter === "queue" ? queuePriorityMode : undefined}
           />
         </div>
       </div>

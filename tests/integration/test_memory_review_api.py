@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
@@ -192,6 +193,63 @@ def seed_memory_evaluation_state(database_url: str) -> dict[str, str]:
         )
 
     return seeded
+
+
+def seed_review_queue_priority_state(database_url: str) -> dict[str, str]:
+    user_id = uuid4()
+
+    with user_connection(database_url, user_id) as conn:
+        store = ContinuityStore(conn)
+        store.create_user(user_id, "priority@example.com", "Priority Reviewer")
+        thread = store.create_thread("Queue priority thread")
+        session = store.create_session(thread["id"], status="active")
+        event_ids = [
+            store.append_event(thread["id"], session["id"], "message.user", {"text": "oldest"})["id"],
+            store.append_event(thread["id"], session["id"], "message.user", {"text": "middle"})["id"],
+            store.append_event(thread["id"], session["id"], "message.user", {"text": "newest"})["id"],
+        ]
+
+        oldest = admit_memory_candidate(
+            store,
+            user_id=user_id,
+            candidate=MemoryCandidateInput(
+                memory_key="user.priority.oldest",
+                value={"rank": "oldest"},
+                source_event_ids=(event_ids[0],),
+                confirmation_status="contested",
+                confidence=0.9,
+                valid_to=datetime(2026, 3, 1, 0, 0, tzinfo=UTC),
+            ),
+        )
+        middle = admit_memory_candidate(
+            store,
+            user_id=user_id,
+            candidate=MemoryCandidateInput(
+                memory_key="user.priority.middle",
+                value={"rank": "middle"},
+                source_event_ids=(event_ids[1],),
+                confirmation_status="confirmed",
+                confidence=0.95,
+            ),
+        )
+        newest = admit_memory_candidate(
+            store,
+            user_id=user_id,
+            candidate=MemoryCandidateInput(
+                memory_key="user.priority.newest",
+                value={"rank": "newest"},
+                source_event_ids=(event_ids[2],),
+                confirmation_status="confirmed",
+                confidence=0.2,
+            ),
+        )
+
+    return {
+        "user_id": str(user_id),
+        "oldest_memory_id": oldest.memory["id"],
+        "middle_memory_id": middle.memory["id"],
+        "newest_memory_id": newest.memory["id"],
+    }
 
 
 def test_list_memories_endpoint_returns_filtered_memories_with_deterministic_order(
@@ -705,6 +763,10 @@ def test_memory_review_queue_endpoint_returns_only_active_unlabeled_memories_in_
                 "valid_from": None,
                 "valid_to": None,
                 "last_confirmed_at": None,
+                "is_high_risk": True,
+                "is_stale_truth": False,
+                "queue_priority_mode": "recent_first",
+                "priority_reason": "recent_first",
                 "created_at": payload["items"][0]["created_at"],
                 "updated_at": payload["items"][0]["updated_at"],
             },
@@ -721,6 +783,10 @@ def test_memory_review_queue_endpoint_returns_only_active_unlabeled_memories_in_
                 "valid_from": None,
                 "valid_to": None,
                 "last_confirmed_at": None,
+                "is_high_risk": True,
+                "is_stale_truth": False,
+                "queue_priority_mode": "recent_first",
+                "priority_reason": "recent_first",
                 "created_at": payload["items"][1]["created_at"],
                 "updated_at": payload["items"][1]["updated_at"],
             },
@@ -728,6 +794,13 @@ def test_memory_review_queue_endpoint_returns_only_active_unlabeled_memories_in_
         "summary": {
             "memory_status": "active",
             "review_state": "unlabeled",
+            "priority_mode": "recent_first",
+            "available_priority_modes": [
+                "oldest_first",
+                "recent_first",
+                "high_risk_first",
+                "stale_truth_first",
+            ],
             "limit": 2,
             "returned_count": 2,
             "total_count": 2,
@@ -735,6 +808,86 @@ def test_memory_review_queue_endpoint_returns_only_active_unlabeled_memories_in_
             "order": ["updated_at_desc", "created_at_desc", "id_desc"],
         },
     }
+
+
+def test_memory_review_queue_endpoint_supports_all_priority_modes(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    seeded = seed_review_queue_priority_state(migrated_database_urls["app"])
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    oldest_status, oldest_payload = invoke_request(
+        "GET",
+        "/v0/memories/review-queue",
+        query_params={
+            "user_id": seeded["user_id"],
+            "limit": "3",
+            "priority_mode": "oldest_first",
+        },
+    )
+    recent_status, recent_payload = invoke_request(
+        "GET",
+        "/v0/memories/review-queue",
+        query_params={
+            "user_id": seeded["user_id"],
+            "limit": "3",
+            "priority_mode": "recent_first",
+        },
+    )
+    high_risk_status, high_risk_payload = invoke_request(
+        "GET",
+        "/v0/memories/review-queue",
+        query_params={
+            "user_id": seeded["user_id"],
+            "limit": "3",
+            "priority_mode": "high_risk_first",
+        },
+    )
+    stale_truth_status, stale_truth_payload = invoke_request(
+        "GET",
+        "/v0/memories/review-queue",
+        query_params={
+            "user_id": seeded["user_id"],
+            "limit": "3",
+            "priority_mode": "stale_truth_first",
+        },
+    )
+
+    assert oldest_status == 200
+    assert recent_status == 200
+    assert high_risk_status == 200
+    assert stale_truth_status == 200
+
+    assert [item["id"] for item in oldest_payload["items"]] == [
+        seeded["oldest_memory_id"],
+        seeded["middle_memory_id"],
+        seeded["newest_memory_id"],
+    ]
+    assert [item["id"] for item in recent_payload["items"]] == [
+        seeded["newest_memory_id"],
+        seeded["middle_memory_id"],
+        seeded["oldest_memory_id"],
+    ]
+    assert [item["id"] for item in high_risk_payload["items"]] == [
+        seeded["newest_memory_id"],
+        seeded["oldest_memory_id"],
+        seeded["middle_memory_id"],
+    ]
+    assert [item["id"] for item in stale_truth_payload["items"]] == [
+        seeded["oldest_memory_id"],
+        seeded["newest_memory_id"],
+        seeded["middle_memory_id"],
+    ]
+    assert oldest_payload["summary"]["priority_mode"] == "oldest_first"
+    assert recent_payload["summary"]["priority_mode"] == "recent_first"
+    assert high_risk_payload["summary"]["priority_mode"] == "high_risk_first"
+    assert stale_truth_payload["summary"]["priority_mode"] == "stale_truth_first"
+    assert stale_truth_payload["items"][0]["is_stale_truth"] is True
 
 
 def test_memory_evaluation_summary_endpoint_returns_explicit_consistent_counts(
@@ -812,6 +965,13 @@ def test_memory_review_queue_and_evaluation_summary_enforce_per_user_isolation(
         "summary": {
             "memory_status": "active",
             "review_state": "unlabeled",
+            "priority_mode": "recent_first",
+            "available_priority_modes": [
+                "oldest_first",
+                "recent_first",
+                "high_risk_first",
+                "stale_truth_first",
+            ],
             "limit": 10,
             "returned_count": 0,
             "total_count": 0,
