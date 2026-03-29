@@ -4,7 +4,7 @@
 
 - The canonical baseline remains through Phase 3 Sprint 9.
 - Earlier Phase 4 work is already delivered: task-run linkage to approvals/executions, idempotent proxy execution replay guards, approval pause/resume continuity for linked runs, run transition observability, explicit stop reasons, bounded retries with persisted posture, explicit failure classes, and deterministic Phase 4 gate runners.
-- Active Sprint focus is Phase 4 Sprint 14 release-control ownership as canonical baseline. Current delivery has advanced through Phase 5 Sprint 19 continuity review/correction/freshness on top of completed Phase 5 Sprint 17 capture backbone, completed Phase 5 Sprint 18 recall/resumption, and completed Phase 4 Sprint 14-19 release-control/sign-off delivery.
+- Active Sprint focus is Phase 4 Sprint 14 release-control ownership as canonical baseline. Current delivery has advanced through Phase 5 Sprint 20 open-loop daily/weekly continuity delivery on top of completed Phase 5 Sprint 17 capture backbone, completed Phase 5 Sprint 18 recall/resumption, completed Phase 5 Sprint 19 review/correction/freshness, and completed Phase 4 Sprint 14-19 release-control/sign-off delivery.
 - The accepted baseline includes deterministic Phase 3 gate entrypoints: `python3 scripts/run_phase3_acceptance.py`, `python3 scripts/run_phase3_readiness_gates.py`, and `python3 scripts/run_phase3_validation_matrix.py` (default go/no-go command).
 - Phase 4 gate entrypoints are `python3 scripts/run_phase4_acceptance.py`, `python3 scripts/run_phase4_readiness_gates.py`, and `python3 scripts/run_phase4_validation_matrix.py`.
 - Phase 4 release-candidate rehearsal entrypoint is `python3 scripts/run_phase4_release_candidate.py`, which writes latest summary evidence at `artifacts/release/phase4_rc_summary.json` and appends retained archive/index evidence under `artifacts/release/archive/` for repeated-run audit, with deterministic archive index lock path `artifacts/release/archive/index.lock`, bounded lock-timeout failure contract, and atomic index replace writes.
@@ -31,14 +31,23 @@
   - `POST /v0/continuity/review-queue/{continuity_object_id}/corrections` applies deterministic `confirm`/`edit`/`delete`/`supersede`/`mark_stale` actions.
   - correction events are append-only and persisted before lifecycle mutation.
   - continuity recall/resumption now reflects correction posture immediately, including freshness/supersession metadata (`last_confirmed_at`, `supersedes_object_id`, `superseded_by_object_id`) and deleted-object exclusion from recall payloads.
+- Phase 5 Sprint 20 adds deterministic open-loop review and briefing seams:
+  - `GET /v0/continuity/open-loops` returns grouped posture sections (`waiting_for`, `blocker`, `stale`, `next_action`) with deterministic ordering metadata.
+  - `GET /v0/continuity/daily-brief` returns deterministic daily sections (`waiting_for_highlights`, `blocker_highlights`, `stale_items`, `next_suggested_action`) with explicit empty states.
+  - `GET /v0/continuity/weekly-review` returns deterministic grouped sections plus posture rollup counts.
+  - `POST /v0/continuity/open-loops/{continuity_object_id}/review-action` applies deterministic `done`/`deferred`/`still_blocked` actions with auditable correction-event payload mapping.
+  - continuity resumption reflects open-loop review-action outcomes immediately.
 - `apps/web` is also a shipped surface now. The operator shell includes `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live reads when API config is present and explicit fixture fallback when it is not.
 - `/chat` now ships assistant-response mode, governed-request mode, visible thread selection, compact thread creation, selected-thread transcript continuity, deterministic resumption brief review, thread-linked governed workflow review, ordered task-step timeline review, bounded explain-why trace embedding, manual explicit-signal capture controls for selected `message.user` events, and bounded supporting continuity review over thread sessions and events.
-- `/continuity` now ships the Phase 5 Sprint 17 + Sprint 18 + Sprint 19 continuity workspace:
+- `/continuity` now ships the Phase 5 Sprint 17 + Sprint 18 + Sprint 19 + Sprint 20 continuity workspace:
   - capture submit (optional explicit signal), recent capture list, and capture detail with posture/provenance
   - recall query/results panel with scoped filters and provenance-backed result cards
   - deterministic resumption-brief panel with always-present required sections
   - review queue list/filter panel
   - selected-object correction form with correction-event history and supersession chain visibility
+  - open-loop dashboard grouped by waiting-for/blocker/stale/next-action posture
+  - daily brief panel and weekly review panel with explicit empty-state rendering
+  - open-loop review-action controls (`done`, `deferred`, `still_blocked`) with immediate page refresh feedback
 - `/gmail` ships a bounded Gmail operator workspace: account list review, selected-account detail, explicit account connection, and explicit single-message ingestion into one selected task workspace.
 - `/calendar` ships a bounded Calendar operator workspace: account list review, selected-account detail, explicit account connection, and explicit single-event ingestion into one selected task workspace. The shipped API baseline now also includes bounded read-only event discovery for one selected account (`GET /v0/calendar-accounts/{calendar_account_id}/events`) with deterministic ordering metadata and bounded limits.
 - `/memories` ships a bounded memory review workspace: active/queue list posture, selected memory detail, revision review, and memory-label review/submit seams with explicit live/fixture/unavailable states.
@@ -61,7 +70,7 @@
 - Auth is still incomplete beyond database user context.
 - Connector breadth, richer parsing, and orchestration are still deferred; docs must stay synchronized with the shipped API-plus-web baseline, including `/gmail` and `/calendar`, so planning does not drift again.
 - Phase 5 remaining scope:
-  - Sprint 20 open-loop daily/weekly review dashboards remains deferred.
+  - none from Sprint 17-20 continuity plan; post-Phase-5 scope should be opened explicitly in a new packet.
 
 ## Repo Evidence To Trust
 
@@ -70,7 +79,7 @@
 - Web `/chat` continuity + workflow/timeline/explainability adoption: `apps/web/app/chat/page.tsx`, `apps/web/app/chat/page.test.tsx`, `apps/web/components/thread-list.tsx`, `apps/web/components/thread-summary.tsx`, `apps/web/components/thread-event-list.tsx`, `apps/web/components/response-composer.tsx`, `apps/web/components/thread-workflow-panel.tsx`, `apps/web/components/task-step-list.tsx`, `apps/web/components/response-history.tsx`, `apps/web/components/thread-trace-panel.tsx`, and matching component tests.
 - Web review workspaces added through the accepted Sprint 6P/6Q/6R sequence: `apps/web/app/memories/page.tsx`, `apps/web/app/memories/page.test.tsx`, `apps/web/app/entities/page.tsx`, `apps/web/app/entities/page.test.tsx`, `apps/web/app/artifacts/page.tsx`, `apps/web/app/artifacts/page.test.tsx`.
 - Web Gmail and Calendar workspaces: `apps/web/app/gmail/page.tsx`, `apps/web/app/calendar/page.tsx`, `apps/web/lib/api.ts`, `apps/web/lib/api.test.ts`, `apps/web/components/gmail-account-list.test.tsx`, `apps/web/components/calendar-account-list.test.tsx`, `apps/web/components/calendar-event-ingest-form.test.tsx`
-- Web continuity workspace + retrieval/resumption/review surfaces: `apps/web/app/continuity/page.tsx`, `apps/web/app/continuity/page.test.tsx`, `apps/web/components/continuity-recall-panel.tsx`, `apps/web/components/continuity-recall-panel.test.tsx`, `apps/web/components/resumption-brief.tsx`, `apps/web/components/resumption-brief.test.tsx`, `apps/web/components/continuity-review-queue.tsx`, `apps/web/components/continuity-review-queue.test.tsx`, `apps/web/components/continuity-correction-form.tsx`, `apps/web/components/continuity-correction-form.test.tsx`
+- Web continuity workspace + retrieval/resumption/review/open-loop briefing surfaces: `apps/web/app/continuity/page.tsx`, `apps/web/app/continuity/page.test.tsx`, `apps/web/components/continuity-recall-panel.tsx`, `apps/web/components/continuity-recall-panel.test.tsx`, `apps/web/components/resumption-brief.tsx`, `apps/web/components/resumption-brief.test.tsx`, `apps/web/components/continuity-review-queue.tsx`, `apps/web/components/continuity-review-queue.test.tsx`, `apps/web/components/continuity-correction-form.tsx`, `apps/web/components/continuity-correction-form.test.tsx`, `apps/web/components/continuity-open-loops-panel.tsx`, `apps/web/components/continuity-open-loops-panel.test.tsx`, `apps/web/components/continuity-daily-brief.tsx`, `apps/web/components/continuity-daily-brief.test.tsx`, `apps/web/components/continuity-weekly-review.tsx`, `apps/web/components/continuity-weekly-review.test.tsx`
 - Shell route inventory and discoverability: `apps/web/components/app-shell.tsx`, `apps/web/app/page.tsx`
 
 ## Planning Guardrails

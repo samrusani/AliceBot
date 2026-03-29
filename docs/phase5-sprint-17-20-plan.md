@@ -201,7 +201,7 @@ Open Loops and Daily Review
 
 ### Status
 
-Deferred (not started in P5-S17).
+Shipped on March 29, 2026.
 
 ### Objective
 
@@ -214,21 +214,45 @@ Convert continuity into executive-function support by surfacing what is waiting,
 - stale-item review
 - daily brief
 - weekly review
+- open-loop review actions with deterministic lifecycle outcomes
 
 ### Deliverables
 
 - open-loop dashboard
 - deterministic daily brief
 - weekly review surface
-- done/defer/dismiss actions
+- done/deferred/still_blocked actions
 - immediate resumption updates after review actions
+
+### Implementation Snapshot
+
+- API:
+  - `GET /v0/continuity/open-loops`
+  - `GET /v0/continuity/daily-brief`
+  - `GET /v0/continuity/weekly-review`
+  - `POST /v0/continuity/open-loops/{continuity_object_id}/review-action`
+- Open-loop dashboard behavior:
+  - explicit posture groups: `waiting_for`, `blocker`, `stale`, `next_action`
+  - deterministic item ordering: `created_at_desc`, `id_desc`
+  - explicit empty-state payloads per section
+- Daily/weekly brief behavior:
+  - daily sections: `waiting_for_highlights`, `blocker_highlights`, `stale_items`, `next_suggested_action`
+  - weekly review includes deterministic posture rollup counts with grouped sections
+- Review-action behavior:
+  - `done` -> `completed`
+  - `deferred` -> `stale`
+  - `still_blocked` -> `active` with refreshed confirmation timestamp
+  - mapped correction event appended before lifecycle mutation
+- Web:
+  - `/continuity` now includes open-loop dashboard, daily brief, weekly review, and open-loop action controls
 
 ### Acceptance Criteria
 
-- daily brief is generated deterministically from continuity objects and task state
-- users can mark items done, deferred, or still blocked
-- review actions improve later resumption output
-- stale and waiting items are surfaced before they disappear from active attention
+- open-loop dashboard returns deterministic grouped ordering for waiting_for/blocker/stale/next_action posture
+- daily brief and weekly review endpoints are deterministic for fixed input state and emit explicit empty states for empty sections
+- users can mark open-loop items done, deferred, or still blocked
+- review-action lifecycle outcomes are deterministic and auditable
+- continuity resumption reflects review-action outcomes immediately
 
 ### Out Of Scope
 

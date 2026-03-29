@@ -1082,6 +1082,79 @@ export type ContinuityResumptionBrief = {
   sources: string[];
 };
 
+export type ContinuityOpenLoopPosture = "waiting_for" | "blocker" | "stale" | "next_action";
+
+export type ContinuityOpenLoopReviewAction = "done" | "deferred" | "still_blocked";
+
+export type ContinuityOpenLoopSectionSummary = {
+  limit: number;
+  returned_count: number;
+  total_count: number;
+  order: string[];
+};
+
+export type ContinuityOpenLoopSection = {
+  items: ContinuityRecallResult[];
+  summary: ContinuityOpenLoopSectionSummary;
+  empty_state: ContinuityResumptionEmptyState;
+};
+
+export type ContinuityOpenLoopDashboard = {
+  scope: ContinuityRecallSummary["filters"];
+  waiting_for: ContinuityOpenLoopSection;
+  blocker: ContinuityOpenLoopSection;
+  stale: ContinuityOpenLoopSection;
+  next_action: ContinuityOpenLoopSection;
+  summary: {
+    limit: number;
+    total_count: number;
+    posture_order: ContinuityOpenLoopPosture[];
+    item_order: string[];
+  };
+  sources: string[];
+};
+
+export type ContinuityDailyBrief = {
+  assembly_version: string;
+  scope: ContinuityRecallSummary["filters"];
+  waiting_for_highlights: ContinuityOpenLoopSection;
+  blocker_highlights: ContinuityOpenLoopSection;
+  stale_items: ContinuityOpenLoopSection;
+  next_suggested_action: ContinuityResumptionSingleSection;
+  sources: string[];
+};
+
+export type ContinuityWeeklyReview = {
+  assembly_version: string;
+  scope: ContinuityRecallSummary["filters"];
+  rollup: {
+    total_count: number;
+    waiting_for_count: number;
+    blocker_count: number;
+    stale_count: number;
+    next_action_count: number;
+    posture_order: ContinuityOpenLoopPosture[];
+  };
+  waiting_for: ContinuityOpenLoopSection;
+  blocker: ContinuityOpenLoopSection;
+  stale: ContinuityOpenLoopSection;
+  next_action: ContinuityOpenLoopSection;
+  sources: string[];
+};
+
+export type ContinuityOpenLoopReviewActionPayload = {
+  user_id: string;
+  action: ContinuityOpenLoopReviewAction;
+  note?: string | null;
+};
+
+export type ContinuityOpenLoopReviewActionResult = {
+  continuity_object: ContinuityReviewObject;
+  correction_event: ContinuityCorrectionEvent;
+  review_action: ContinuityOpenLoopReviewAction;
+  lifecycle_outcome: string;
+};
+
 export type OpenLoopCreatePayload = {
   user_id: string;
   memory_id?: string | null;
@@ -1630,6 +1703,153 @@ export function getContinuityResumptionBrief(
       until: until || undefined,
       max_recent_changes: maxRecentChanges,
       max_open_loops: maxOpenLoops,
+    },
+  );
+}
+
+export function getContinuityOpenLoopDashboard(
+  apiBaseUrl: string,
+  userId: string,
+  options?: {
+    query?: string;
+    threadId?: string;
+    taskId?: string;
+    project?: string;
+    person?: string;
+    since?: string;
+    until?: string;
+    limit?: number;
+  },
+) {
+  const query = options?.query?.trim();
+  const threadId = options?.threadId?.trim();
+  const taskId = options?.taskId?.trim();
+  const project = options?.project?.trim();
+  const person = options?.person?.trim();
+  const since = options?.since?.trim();
+  const until = options?.until?.trim();
+  const limit =
+    typeof options?.limit === "number" && Number.isFinite(options.limit) && options.limit >= 0
+      ? String(Math.trunc(options.limit))
+      : undefined;
+
+  return requestJson<{ dashboard: ContinuityOpenLoopDashboard }>(
+    apiBaseUrl,
+    "/v0/continuity/open-loops",
+    undefined,
+    {
+      user_id: userId,
+      query: query || undefined,
+      thread_id: threadId || undefined,
+      task_id: taskId || undefined,
+      project: project || undefined,
+      person: person || undefined,
+      since: since || undefined,
+      until: until || undefined,
+      limit,
+    },
+  );
+}
+
+export function getContinuityDailyBrief(
+  apiBaseUrl: string,
+  userId: string,
+  options?: {
+    query?: string;
+    threadId?: string;
+    taskId?: string;
+    project?: string;
+    person?: string;
+    since?: string;
+    until?: string;
+    limit?: number;
+  },
+) {
+  const query = options?.query?.trim();
+  const threadId = options?.threadId?.trim();
+  const taskId = options?.taskId?.trim();
+  const project = options?.project?.trim();
+  const person = options?.person?.trim();
+  const since = options?.since?.trim();
+  const until = options?.until?.trim();
+  const limit =
+    typeof options?.limit === "number" && Number.isFinite(options.limit) && options.limit >= 0
+      ? String(Math.trunc(options.limit))
+      : undefined;
+
+  return requestJson<{ brief: ContinuityDailyBrief }>(
+    apiBaseUrl,
+    "/v0/continuity/daily-brief",
+    undefined,
+    {
+      user_id: userId,
+      query: query || undefined,
+      thread_id: threadId || undefined,
+      task_id: taskId || undefined,
+      project: project || undefined,
+      person: person || undefined,
+      since: since || undefined,
+      until: until || undefined,
+      limit,
+    },
+  );
+}
+
+export function getContinuityWeeklyReview(
+  apiBaseUrl: string,
+  userId: string,
+  options?: {
+    query?: string;
+    threadId?: string;
+    taskId?: string;
+    project?: string;
+    person?: string;
+    since?: string;
+    until?: string;
+    limit?: number;
+  },
+) {
+  const query = options?.query?.trim();
+  const threadId = options?.threadId?.trim();
+  const taskId = options?.taskId?.trim();
+  const project = options?.project?.trim();
+  const person = options?.person?.trim();
+  const since = options?.since?.trim();
+  const until = options?.until?.trim();
+  const limit =
+    typeof options?.limit === "number" && Number.isFinite(options.limit) && options.limit >= 0
+      ? String(Math.trunc(options.limit))
+      : undefined;
+
+  return requestJson<{ review: ContinuityWeeklyReview }>(
+    apiBaseUrl,
+    "/v0/continuity/weekly-review",
+    undefined,
+    {
+      user_id: userId,
+      query: query || undefined,
+      thread_id: threadId || undefined,
+      task_id: taskId || undefined,
+      project: project || undefined,
+      person: person || undefined,
+      since: since || undefined,
+      until: until || undefined,
+      limit,
+    },
+  );
+}
+
+export function applyContinuityOpenLoopReviewAction(
+  apiBaseUrl: string,
+  continuityObjectId: string,
+  payload: ContinuityOpenLoopReviewActionPayload,
+) {
+  return requestJson<ContinuityOpenLoopReviewActionResult>(
+    apiBaseUrl,
+    `/v0/continuity/open-loops/${continuityObjectId}/review-action`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
     },
   );
 }
