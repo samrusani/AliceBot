@@ -8,71 +8,75 @@ type MemoryQualityGateProps = {
 };
 
 function statusBadge(status: ReturnType<typeof deriveMemoryQualityGate>["status"]) {
-  if (status === "on_track") {
-    return { badgeStatus: "ready", badgeLabel: "On track" };
+  if (status === "healthy") {
+    return { badgeStatus: "ready", badgeLabel: "Healthy" };
   }
 
   if (status === "needs_review") {
     return { badgeStatus: "requires_review", badgeLabel: "Needs review" };
   }
 
-  if (status === "insufficient_evidence") {
-    return { badgeStatus: "insufficient_evidence", badgeLabel: "Insufficient evidence" };
+  if (status === "insufficient_sample") {
+    return { badgeStatus: "insufficient_evidence", badgeLabel: "Insufficient sample" };
+  }
+
+  if (status === "degraded") {
+    return { badgeStatus: "error", badgeLabel: "Degraded" };
   }
 
   return { badgeStatus: "unavailable", badgeLabel: "Unavailable data" };
 }
 
 function interpretationCopy(gate: ReturnType<typeof deriveMemoryQualityGate>) {
-  if (gate.status === "on_track") {
-    return `Precision meets the ${Math.round(gate.precisionTarget * 100)}% target with enough adjudicated labels.`;
+  if (gate.status === "healthy") {
+    return "Quality gate is healthy: precision target is met, sample minimum is met, and no blocking risk posture remains.";
   }
 
   if (gate.status === "needs_review") {
-    return `Precision is below the ${Math.round(gate.precisionTarget * 100)}% target despite sufficient adjudicated labels.`;
+    return "Quality gate needs review: precision threshold is met, but unresolved queue risk still blocks healthy posture.";
   }
 
-  if (gate.status === "insufficient_evidence") {
-    return `Collect at least ${gate.minimumAdjudicatedSample} adjudicated labels before using this as a ship-gate signal.`;
+  if (gate.status === "insufficient_sample") {
+    return "Quality gate is blocked by insufficient adjudicated sample for reliable precision posture.";
   }
 
-  return "Evaluation summary data is unavailable, so gate readiness cannot be computed.";
-}
-
-function samplePostureCopy(gate: ReturnType<typeof deriveMemoryQualityGate>) {
-  if (gate.samplePosture === "unavailable") {
-    return "Sample posture unavailable.";
+  if (gate.status === "degraded") {
+    return "Quality gate is degraded: precision is below target or active supersession conflicts remain unresolved.";
   }
 
-  if (gate.samplePosture === "enough_sample") {
-    return `Sample posture: ${gate.adjudicatedSampleCount} adjudicated labels, meeting the minimum ${gate.minimumAdjudicatedSample}.`;
-  }
-
-  return `Sample posture: ${gate.adjudicatedSampleCount}/${gate.minimumAdjudicatedSample} adjudicated labels.`;
+  return "Quality-gate data is unavailable, so readiness cannot be determined.";
 }
 
 function sampleProgressCopy(gate: ReturnType<typeof deriveMemoryQualityGate>) {
-  if (gate.remainingToMinimumSample === null) {
-    return "Progress to minimum sample is unavailable.";
+  if (gate.adjudicatedSampleCount === null || gate.minimumAdjudicatedSample === null) {
+    return "Adjudicated sample posture unavailable.";
   }
 
   if (gate.remainingToMinimumSample === 0) {
-    return "Progress: minimum adjudicated sample is met.";
+    return `Sample posture: ${gate.adjudicatedSampleCount}/${gate.minimumAdjudicatedSample} adjudicated labels. Minimum sample is met.`;
   }
 
-  return `Progress: ${gate.remainingToMinimumSample} label${gate.remainingToMinimumSample === 1 ? "" : "s"} remaining to reach the minimum sample.`;
+  return `Sample posture: ${gate.adjudicatedSampleCount}/${gate.minimumAdjudicatedSample} adjudicated labels with ${gate.remainingToMinimumSample} remaining to minimum.`;
 }
 
-function queuePostureCopy(gate: ReturnType<typeof deriveMemoryQualityGate>) {
-  if (gate.queuePosture === "unavailable") {
-    return "Queue posture unavailable.";
+function queueRiskCopy(gate: ReturnType<typeof deriveMemoryQualityGate>) {
+  if (
+    gate.unlabeledQueueCount === null ||
+    gate.highRiskMemoryCount === null ||
+    gate.staleTruthCount === null ||
+    gate.supersededActiveConflictCount === null
+  ) {
+    return "Queue and risk posture unavailable.";
   }
 
-  if (gate.queuePosture === "queue_clear") {
-    return "Queue posture: unlabeled queue is clear.";
-  }
+  return `Queue/risk posture: ${gate.unlabeledQueueCount} unlabeled, ${gate.highRiskMemoryCount} high risk, ${gate.staleTruthCount} stale truth, ${gate.supersededActiveConflictCount} superseded active conflicts.`;
+}
 
-  return `Queue posture: ${gate.unlabeledQueueCount} unlabeled memories still need review.`;
+function formatPercentTarget(value: number | null) {
+  if (value === null) {
+    return "—";
+  }
+  return `${Math.round(value * 100)}%`;
 }
 
 export function MemoryQualityGate({ summary, summarySource }: MemoryQualityGateProps) {
@@ -110,14 +114,15 @@ export function MemoryQualityGate({ summary, summarySource }: MemoryQualityGateP
 
       <div className="memory-quality-gate__copy">
         <p>{interpretationCopy(gate)}</p>
-        <p>{samplePostureCopy(gate)}</p>
         <p>{sampleProgressCopy(gate)}</p>
-        <p>{queuePostureCopy(gate)}</p>
+        <p>{queueRiskCopy(gate)}</p>
       </div>
 
       <div className="cluster">
-        <span className="meta-pill">Precision target: {Math.round(gate.precisionTarget * 100)}%</span>
-        <span className="meta-pill">Minimum adjudicated sample: {gate.minimumAdjudicatedSample}</span>
+        <span className="meta-pill">Precision target: {formatPercentTarget(gate.precisionTarget)}</span>
+        <span className="meta-pill">
+          Minimum adjudicated sample: {gate.minimumAdjudicatedSample ?? "—"}
+        </span>
       </div>
     </section>
   );

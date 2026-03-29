@@ -1,6 +1,11 @@
 import Link from "next/link";
 
-import type { ApiSource, MemoryReviewListSummary, MemoryReviewRecord } from "../lib/api";
+import type {
+  ApiSource,
+  MemoryReviewListSummary,
+  MemoryReviewQueuePriorityMode,
+  MemoryReviewRecord,
+} from "../lib/api";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
@@ -11,6 +16,8 @@ type MemoryListProps = {
   summary: MemoryReviewListSummary | null;
   source: ApiSource | "unavailable";
   filter: "active" | "queue";
+  priorityMode?: MemoryReviewQueuePriorityMode;
+  availablePriorityModes?: MemoryReviewQueuePriorityMode[];
   unavailableReason?: string;
 };
 
@@ -36,12 +43,30 @@ function previewValue(value: unknown) {
   return stringified.length > 120 ? `${stringified.slice(0, 117)}...` : stringified;
 }
 
-function memoryHref(memoryId: string, filter: "active" | "queue") {
+function memoryHref(
+  memoryId: string,
+  filter: "active" | "queue",
+  priorityMode?: MemoryReviewQueuePriorityMode,
+) {
   if (filter === "queue") {
-    return `/memories?filter=queue&memory=${encodeURIComponent(memoryId)}`;
+    const priorityQuery = priorityMode ? `&priority_mode=${encodeURIComponent(priorityMode)}` : "";
+    return `/memories?filter=queue&memory=${encodeURIComponent(memoryId)}${priorityQuery}`;
   }
 
   return `/memories?memory=${encodeURIComponent(memoryId)}`;
+}
+
+function priorityLabel(mode: MemoryReviewQueuePriorityMode) {
+  if (mode === "oldest_first") {
+    return "Oldest first";
+  }
+  if (mode === "recent_first") {
+    return "Recent first";
+  }
+  if (mode === "high_risk_first") {
+    return "High risk first";
+  }
+  return "Stale truth first";
 }
 
 export function MemoryList({
@@ -50,6 +75,8 @@ export function MemoryList({
   summary,
   source,
   filter,
+  priorityMode,
+  availablePriorityModes,
   unavailableReason,
 }: MemoryListProps) {
   if (memories.length === 0) {
@@ -86,6 +113,20 @@ export function MemoryList({
           </div>
         </div>
 
+        {filter === "queue" && priorityMode && availablePriorityModes?.length ? (
+          <div className="cluster">
+            {availablePriorityModes.map((mode) => (
+              <Link
+                key={mode}
+                href={`/memories?filter=queue&priority_mode=${encodeURIComponent(mode)}`}
+                className={`button-secondary button-secondary--compact${mode === priorityMode ? " is-current" : ""}`}
+              >
+                {priorityLabel(mode)}
+              </Link>
+            ))}
+          </div>
+        ) : null}
+
         {unavailableReason ? (
           <p className="responsive-note">Live list read failed: {unavailableReason}</p>
         ) : null}
@@ -94,7 +135,7 @@ export function MemoryList({
           {memories.map((memory) => (
             <Link
               key={memory.id}
-              href={memoryHref(memory.id, filter)}
+              href={memoryHref(memory.id, filter, priorityMode)}
               className={`list-row${memory.id === selectedMemoryId ? " is-selected" : ""}`}
               aria-current={memory.id === selectedMemoryId ? "page" : undefined}
             >

@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 5 Sprint 20 (P5-S20): Open Loops and Daily Review
+Phase 6 Sprint 21 (P6-S21): Memory Quality Gate Alignment and Review Prioritization
 
 ## Sprint Type
 
@@ -10,97 +10,86 @@ feature
 
 ## Sprint Reason
 
-P5-S19 shipped review/correction/freshness, but continuity still needs a deterministic executive-function surface. The next non-redundant step is open-loop review and deterministic daily/weekly briefing built on shipped continuity and correction contracts.
+Phase 5 continuity delivery is complete through P5-S20. The highest remaining product risk is memory extraction/retrieval quality, and current quality-gate semantics are split across surfaces (UI utility thresholds vs gate-script thresholds). The next non-redundant sprint is to make memory-quality gate behavior canonical and operational in shipped API/UI review flows as defined by:
+
+- `docs/phase6-product-spec.md`
+- `docs/phase6-sprint-21-24-plan.md`
+- `docs/phase6-memory-quality-model.md`
 
 ## Sprint Intent
 
-Ship continuity open-loop dashboard plus deterministic daily/weekly review briefs with review actions (`done`, `deferred`, `still_blocked`) that immediately update resumption behavior.
+Ship a canonical server-side memory-quality gate contract and deterministic memory review-queue prioritization so adjudication throughput and quality posture are consistent across API, UI, and gate evidence.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase5-sprint-20-open-loops-daily-review`
+- Branch Name: `codex/phase6-sprint-21-memory-quality-gate`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It turns continuity into daily execution support, not just memory correctness.
-- It is the planned final Phase 5 step after P5-S19 correction/freshness.
-- It avoids redundant scope by not reopening capture, recall/resumption, or correction architecture.
+- It addresses the top active risk (`memory extraction and retrieval quality`).
+- It is post-Phase-5 and does not reopen shipped continuity buildout.
+- It creates one canonical quality-gate truth instead of diverging threshold logic.
 
 ## Redundancy Guard
 
-- Already shipped in P5-S17:
-  - immutable capture events
-  - typed continuity objects
-  - conservative admission posture (`DERIVED`/`TRIAGE`)
-  - `/continuity` capture inbox
-- Already shipped in P5-S18:
-  - provenance-backed recall (`GET /v0/continuity/recall`)
-  - deterministic resumption briefs (`GET /v0/continuity/resumption-brief`)
-  - `/continuity` recall/resumption panels
-- Already shipped in P5-S19:
-  - continuity review queue (`GET /v0/continuity/review-queue`)
-  - review detail + correction actions
-  - append-only correction event ledger
-  - immediate correction impact on recall/resumption
-- Required now (P5-S20):
-  - open-loop dashboard for waiting-for/blocker/stale/next-action posture
-  - deterministic daily brief and weekly review endpoints
-  - review-action workflow (`done`, `deferred`, `still_blocked`)
-  - immediate resumption refresh after review actions
-- Explicitly out of P5-S20:
-  - connector/channel/platform expansion
-  - new memory backbone or recall ranking redesign
+- Already shipped baseline:
+  - Phase 4 MVP qualification/sign-off (`run_phase4_mvp_qualification.py` + verifier)
+  - P5-S17 capture backbone
+  - P5-S18 recall/resumption
+  - P5-S19 correction/freshness
+  - P5-S20 open-loop daily/weekly review
+- Required now (P6-S21):
+  - canonical memory-quality gate API contract
+  - deterministic review-queue prioritization modes
+  - `/memories` UI alignment to canonical gate semantics
+- Explicitly out of P6-S21:
+  - continuity API redesign
+  - connector breadth expansion (Gmail/Calendar writes/sync/search)
+  - auth-model overhaul
+  - runner/orchestration redesign
 
 ## Design Truth
 
-- Daily/weekly briefs must be deterministic for fixed input state.
-- Open-loop posture must be explicit and auditable:
-  - waiting_for
-  - blocker
-  - stale
-  - next_action
-- Review actions must map to deterministic lifecycle transitions.
-- Resumption must reflect review actions immediately.
-- Empty brief sections must be explicit empty states.
+- Memory-quality gate status must be computed server-side and deterministic for fixed input state.
+- Threshold semantics must be canonical across API/UI/gate scripts.
+- Review-queue prioritization must be explicit and deterministic.
+- Existing memory label workflows remain authoritative; no parallel labeling system.
+- Canonical gate statuses for this sprint are:
+  - `healthy`
+  - `needs_review`
+  - `insufficient_sample`
+  - `degraded`
 
 ## Exact Surfaces In Scope
 
-- continuity open-loop dashboard API
-- deterministic daily brief API
-- deterministic weekly review API
-- review-action mutation API for open loops
-- continuity workspace open-loop/brief UI
-- tests for deterministic brief composition and action transitions
+- memory-quality gate API summary contract
+- memory review-queue ordering/prioritization contract
+- `/memories` quality-gate and queue-priority UX alignment
+- tests for deterministic gate and ordering behavior
 
 ## Exact Files In Scope
 
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/store.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/continuity_open_loops.py`
-- `apps/api/src/alicebot_api/continuity_review.py`
-- `apps/api/src/alicebot_api/continuity_resumption.py`
 - `apps/api/src/alicebot_api/memory.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/store.py`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
-- `apps/web/app/continuity/page.tsx`
-- `apps/web/app/continuity/page.test.tsx`
-- `apps/web/components/continuity-open-loops-panel.tsx`
-- `apps/web/components/continuity-open-loops-panel.test.tsx`
-- `apps/web/components/continuity-daily-brief.tsx`
-- `apps/web/components/continuity-daily-brief.test.tsx`
-- `apps/web/components/continuity-weekly-review.tsx`
-- `apps/web/components/continuity-weekly-review.test.tsx`
-- `tests/unit/test_continuity_open_loops.py`
-- `tests/integration/test_continuity_open_loops_api.py`
-- `tests/integration/test_continuity_daily_weekly_review_api.py`
-- `tests/unit/test_continuity_review.py`
-- `tests/unit/test_continuity_resumption.py`
-- `docs/phase5-product-spec.md`
-- `docs/phase5-sprint-17-20-plan.md`
+- `apps/web/lib/memory-quality.ts`
+- `apps/web/lib/memory-quality.test.ts`
+- `apps/web/app/memories/page.tsx`
+- `apps/web/app/memories/page.test.tsx`
+- `apps/web/components/memory-quality-gate.tsx`
+- `apps/web/components/memory-quality-gate.test.tsx`
+- `apps/web/components/memory-list.tsx`
+- `apps/web/components/memory-list.test.tsx`
+- `tests/unit/test_memory.py`
+- `tests/unit/test_main.py`
+- `tests/integration/test_memory_review_api.py`
+- `tests/integration/test_memory_quality_gate_api.py`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
@@ -110,93 +99,93 @@ Ship continuity open-loop dashboard plus deterministic daily/weekly review brief
 
 ## In Scope
 
-- Add open-loop dashboard endpoint with deterministic grouping and ordering.
-- Add daily brief endpoint that composes:
-  - waiting_for highlights
-  - blocker highlights
-  - stale items
-  - one next suggested action
-- Add weekly review endpoint with deterministic rollup for open-loop posture.
-- Add review-action endpoint for open-loop workflow:
-  - done
-  - deferred
-  - still_blocked
-- Ensure review actions update continuity resumption output immediately.
-- Add continuity UI surfaces for:
-  - open-loop dashboard list/group review
-  - daily brief panel
-  - weekly review panel
-  - review-action controls with explicit outcome feedback
+- Add `GET /v0/memories/quality-gate` endpoint returning canonical quality-gate payload:
+  - `status`
+  - `precision`
+  - `precision_target`
+  - `adjudicated_sample_count`
+  - `minimum_adjudicated_sample`
+  - `remaining_to_minimum_sample`
+  - `unlabeled_memory_count`
+  - `high_risk_memory_count`
+  - `stale_truth_count`
+  - `superseded_active_conflict_count`
+  - counts backing the computation
+- Canonicalize threshold semantics to one source of truth used by API and UI.
+- Extend `GET /v0/memories/review-queue` to support deterministic priority modes:
+  - `oldest_first`
+  - `recent_first`
+  - `high_risk_first`
+  - `stale_truth_first`
+  with explicit returned ordering metadata.
+- Update `/memories` page to:
+  - consume API-backed quality-gate payload
+  - expose review-queue priority mode selection
+  - preserve existing single-item labeling flow (`submit` / `submit_and_next`).
+- Add deterministic tests for quality-gate status transitions and queue ordering.
 
 ## Out of Scope
 
-- reimplementation of P5-S17 capture backbone
-- reimplementation of P5-S18 recall/resumption ranking contracts
-- reimplementation of P5-S19 correction-event architecture
-- broad `/memories` or `/tasks` redesign outside continuity workspace
-- connector breadth changes
-- broad runtime architecture changes
+- P5 continuity endpoint/schema changes (`/v0/continuity/*`)
+- changes to Phase 4 qualification/sign-off scripts semantics
+- new connectors, write-capable connector actions, or proxy breadth expansion
+- broad UI redesign outside `/memories`
 
 ## Required Deliverables
 
-- continuity open-loop dashboard API + deterministic ordering behavior
-- deterministic daily brief and weekly review APIs
-- open-loop review-action mutation API
-- continuity open-loop/daily/weekly UI surfaces
-- unit/integration/web tests for deterministic brief/action behavior
+- canonical memory-quality gate API route + contract
+- deterministic review-queue priority contract
+- `/memories` UI alignment to canonical gate semantics
+- unit/integration/web tests for gate and ordering behavior
 - synced docs and sprint reports
 
 ## Acceptance Criteria
 
-- open-loop dashboard returns deterministic grouped ordering for waiting_for/blocker/stale/next_action posture.
-- daily brief and weekly review endpoints are deterministic for fixed input state and emit explicit empty states when sections are empty.
-- `done`/`deferred`/`still_blocked` actions are deterministic and auditable.
-- continuity resumption reflects review-action outcomes immediately.
-- `./.venv/bin/python -m pytest tests/unit/test_continuity_open_loops.py tests/integration/test_continuity_open_loops_api.py tests/integration/test_continuity_daily_weekly_review_api.py tests/unit/test_continuity_review.py tests/unit/test_continuity_resumption.py -q` passes.
-- `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-open-loops-panel.test.tsx components/continuity-daily-brief.test.tsx components/continuity-weekly-review.test.tsx lib/api.test.ts` passes.
-- `python3 scripts/run_phase4_validation_matrix.py` remains PASS (no Phase 4 regression).
-- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P5-S20 scope.
+- `GET /v0/memories/quality-gate` returns deterministic status and metric fields for fixed dataset state.
+- quality-gate `status` uses only canonical Phase 6 statuses (`healthy`, `needs_review`, `insufficient_sample`, `degraded`).
+- UI memory-quality gate consumes API contract, not duplicated local threshold logic.
+- `GET /v0/memories/review-queue` supports all four canonical priority modes and returns deterministic ordering with explicit order metadata.
+- `/memories` supports selecting queue priority mode without breaking existing label submission flows.
+- `./.venv/bin/python -m pytest tests/unit/test_memory.py tests/unit/test_main.py tests/integration/test_memory_review_api.py tests/integration/test_memory_quality_gate_api.py -q` passes.
+- `pnpm --dir apps/web test -- app/memories/page.test.tsx components/memory-quality-gate.test.tsx components/memory-list.test.tsx lib/api.test.ts lib/memory-quality.test.ts` passes.
+- `python3 scripts/run_phase4_validation_matrix.py` remains PASS.
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P6-S21 scope and preserve “MVP complete” truth.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
-- preserve P5-S17 capture/backbone semantics
-- preserve P5-S18 recall/resumption contracts
-- preserve P5-S19 correction-event semantics
-- keep brief composition deterministic and machine-auditable
+- keep existing memory-label value vocabulary and semantics unchanged
+- keep review ordering deterministic and explicit in response metadata
 - keep docs machine-independent
 
 ## Control Tower Task Cards
 
-### Task 1: Open-Loop Backend
+### Task 1: Gate Backend Contract
 
 Owner: tooling operative
 
 Write scope:
 
-- `apps/api/src/alicebot_api/continuity_open_loops.py`
-- `apps/api/src/alicebot_api/store.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `tests/unit/test_continuity_open_loops.py`
-- `tests/integration/test_continuity_open_loops_api.py`
-
-### Task 2: Daily/Weekly Brief + Actions API
-
-Owner: tooling operative
-
-Write scope:
-
-- `apps/api/src/alicebot_api/continuity_open_loops.py`
-- `apps/api/src/alicebot_api/continuity_review.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/continuity_resumption.py`
 - `apps/api/src/alicebot_api/memory.py`
-- `tests/integration/test_continuity_daily_weekly_review_api.py`
-- `tests/unit/test_continuity_review.py`
-- `tests/unit/test_continuity_resumption.py`
+- `apps/api/src/alicebot_api/main.py`
+- `tests/unit/test_memory.py`
+- `tests/unit/test_main.py`
+- `tests/integration/test_memory_quality_gate_api.py`
 
-### Task 3: Open-Loop/Daily/Weekly UI
+### Task 2: Queue Prioritization Backend
+
+Owner: tooling operative
+
+Write scope:
+
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/memory.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/main.py`
+- `tests/integration/test_memory_review_api.py`
+
+### Task 3: Memories UI Alignment
 
 Owner: tooling operative
 
@@ -204,14 +193,14 @@ Write scope:
 
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
-- `apps/web/app/continuity/page.tsx`
-- `apps/web/app/continuity/page.test.tsx`
-- `apps/web/components/continuity-open-loops-panel.tsx`
-- `apps/web/components/continuity-open-loops-panel.test.tsx`
-- `apps/web/components/continuity-daily-brief.tsx`
-- `apps/web/components/continuity-daily-brief.test.tsx`
-- `apps/web/components/continuity-weekly-review.tsx`
-- `apps/web/components/continuity-weekly-review.test.tsx`
+- `apps/web/lib/memory-quality.ts`
+- `apps/web/lib/memory-quality.test.ts`
+- `apps/web/app/memories/page.tsx`
+- `apps/web/app/memories/page.test.tsx`
+- `apps/web/components/memory-quality-gate.tsx`
+- `apps/web/components/memory-quality-gate.test.tsx`
+- `apps/web/components/memory-list.tsx`
+- `apps/web/components/memory-list.test.tsx`
 
 ### Task 4: Docs + Integration Review
 
@@ -219,8 +208,6 @@ Owner: control tower
 
 Write scope:
 
-- `docs/phase5-product-spec.md`
-- `docs/phase5-sprint-17-20-plan.md`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
@@ -229,31 +216,30 @@ Write scope:
 
 Responsibilities:
 
-- verify no capture/recall/correction reimplementation
-- verify no connector breadth or orchestration scope creep
-- verify deterministic brief composition and review-action transitions
+- verify no P5 continuity scope reimplementation
+- verify threshold semantics are canonicalized (no split logic)
+- verify deterministic ordering and no hidden scope expansion
 - verify no Phase 4 regression
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
 
-- exact open-loop/daily/weekly delta
-- exact brief composition and review-action behavior
+- exact quality-gate contract delta
+- exact queue-priority ordering semantics
 - exact verification command outcomes
-- explicit post-Phase-5 deferred scope (if any)
+- explicit deferred post-P6 scope
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
 
-- sprint stayed P5-S20 scoped
-- open-loop dashboard and daily/weekly briefs are deterministic
-- review actions map to deterministic lifecycle outcomes
-- resumption reflects review-action updates immediately
-- no hidden scope expansion
+- sprint stayed P6-S21 scoped
+- quality-gate semantics are canonical across API/UI
+- queue prioritization is deterministic and explicit
+- no hidden continuity/connector scope expansion
 - Phase 4 validation remains green
 
 ## Exit Condition
 
-This sprint is complete when continuity open-loop dashboard plus deterministic daily/weekly review flows are shipped with deterministic review-action outcomes and no Phase 4 regression.
+This sprint is complete when a canonical memory-quality gate contract and deterministic memory review prioritization are shipped in `/memories` with no Phase 4 regression.

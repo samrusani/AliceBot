@@ -101,7 +101,7 @@ describe("MemoriesPage", () => {
     expect(screen.getByText("Fixture-backed")).toBeInTheDocument();
     expect(screen.getByText("Summary Fixture")).toBeInTheDocument();
     expect(screen.getByText("Queue Fixture")).toBeInTheDocument();
-    expect(screen.getAllByText("Insufficient evidence").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Insufficient sample").length).toBeGreaterThan(0);
     expect(screen.getByText("Fixture list")).toBeInTheDocument();
     expect(screen.getByText("Fixture detail")).toBeInTheDocument();
     expect(
@@ -147,6 +147,13 @@ describe("MemoriesPage", () => {
       summary: {
         memory_status: "active",
         review_state: "unlabeled",
+        priority_mode: "recent_first",
+        available_priority_modes: [
+          "oldest_first",
+          "recent_first",
+          "high_risk_first",
+          "stale_truth_first",
+        ],
         limit: 20,
         returned_count: 0,
         total_count: 0,
@@ -169,6 +176,26 @@ describe("MemoriesPage", () => {
           insufficient_evidence: 0,
         },
         label_value_order: ["correct", "incorrect", "outdated", "insufficient_evidence"],
+        quality_gate: {
+          status: "healthy",
+          precision: 0.8,
+          precision_target: 0.8,
+          adjudicated_sample_count: 10,
+          minimum_adjudicated_sample: 10,
+          remaining_to_minimum_sample: 0,
+          unlabeled_memory_count: 0,
+          high_risk_memory_count: 0,
+          stale_truth_count: 0,
+          superseded_active_conflict_count: 0,
+          counts: {
+            active_memory_count: 10,
+            labeled_active_memory_count: 10,
+            adjudicated_correct_count: 8,
+            adjudicated_incorrect_count: 2,
+            outdated_label_count: 0,
+            insufficient_evidence_label_count: 0,
+          },
+        },
       },
     });
     listOpenLoopsMock.mockResolvedValue({
@@ -286,7 +313,7 @@ describe("MemoriesPage", () => {
     expect(screen.getByText("Live API")).toBeInTheDocument();
     expect(screen.getByText("Summary Live")).toBeInTheDocument();
     expect(screen.getByText("Queue Live")).toBeInTheDocument();
-    expect(screen.getByText("On track")).toBeInTheDocument();
+    expect(screen.getByText("Healthy")).toBeInTheDocument();
     expect(screen.getByText("Live list")).toBeInTheDocument();
     expect(screen.getByText("Live detail")).toBeInTheDocument();
     expect(screen.getByText("Live revisions")).toBeInTheDocument();
@@ -313,6 +340,9 @@ describe("MemoriesPage", () => {
     expect(listOpenLoopsMock).toHaveBeenCalledWith("https://api.example.com", "user-1", {
       status: "open",
       limit: 20,
+    });
+    expect(listMemoryReviewQueueMock).toHaveBeenCalledWith("https://api.example.com", "user-1", {
+      priorityMode: "recent_first",
     });
   });
 
@@ -364,7 +394,7 @@ describe("MemoriesPage", () => {
     expect(screen.getByText("Summary: summary down")).toBeInTheDocument();
     expect(screen.getByText("Queue: queue down")).toBeInTheDocument();
     expect(screen.getByText(/open loops down/)).toBeInTheDocument();
-    expect(screen.getAllByText("Insufficient evidence").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Insufficient sample").length).toBeGreaterThan(0);
     expect(screen.getByText("Detail read")).toBeInTheDocument();
     expect(screen.getByText("detail down")).toBeInTheDocument();
     expect(screen.getByText("Revisions unavailable")).toBeInTheDocument();

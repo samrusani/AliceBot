@@ -5,7 +5,11 @@ import { useRef, useState } from "react";
 
 import { useRouter } from "next/navigation";
 
-import type { ApiSource, MemoryReviewLabelValue } from "../lib/api";
+import type {
+  ApiSource,
+  MemoryReviewLabelValue,
+  MemoryReviewQueuePriorityMode,
+} from "../lib/api";
 import { submitMemoryLabel } from "../lib/api";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
@@ -18,6 +22,7 @@ type MemoryLabelFormProps = {
   userId?: string;
   activeFilter?: "active" | "queue";
   nextQueueMemoryId?: string | null;
+  queuePriorityMode?: MemoryReviewQueuePriorityMode;
 };
 
 const LABEL_OPTIONS: Array<{
@@ -37,6 +42,7 @@ export function MemoryLabelForm({
   userId,
   activeFilter = "active",
   nextQueueMemoryId = null,
+  queuePriorityMode,
 }: MemoryLabelFormProps) {
   const router = useRouter();
   const submitActionRef = useRef<"submit" | "submit_and_next">("submit");
@@ -96,7 +102,12 @@ export function MemoryLabelForm({
       }
       setNote("");
       if (submitAndNextRequested && activeFilter === "queue" && nextQueueMemoryId) {
-        router.push(`/memories?filter=queue&memory=${encodeURIComponent(nextQueueMemoryId)}`);
+        const priorityQuery = queuePriorityMode
+          ? `&priority_mode=${encodeURIComponent(queuePriorityMode)}`
+          : "";
+        router.push(
+          `/memories?filter=queue&memory=${encodeURIComponent(nextQueueMemoryId)}${priorityQuery}`,
+        );
       } else {
         router.refresh();
       }

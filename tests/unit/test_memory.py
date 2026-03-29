@@ -21,6 +21,7 @@ from alicebot_api.memory import (
     create_memory_review_label_record,
     get_open_loop_record,
     get_memory_evaluation_summary,
+    get_memory_quality_gate_summary,
     get_memory_review_record,
     list_open_loop_records,
     list_memory_review_queue_records,
@@ -555,14 +556,17 @@ class MemoryReviewStoreStub:
             [memory for memory in self.memories if memory["status"] == "active" and not self.labels.get(memory["id"])]
         )
 
-    def list_unlabeled_review_memories(self, *, limit: int) -> list[dict[str, object]]:
-        return self._review_sorted_memories(
+    def list_unlabeled_review_memories(self, *, limit: int | None = None) -> list[dict[str, object]]:
+        items = self._review_sorted_memories(
             [
                 memory
                 for memory in self.memories
                 if memory["status"] == "active" and not self.labels.get(memory["id"])
             ]
-        )[:limit]
+        )
+        if limit is None:
+            return items
+        return items[:limit]
 
     def get_memory_optional(self, memory_id: UUID) -> dict[str, object] | None:
         for memory in self.memories:
@@ -618,6 +622,16 @@ class MemoryReviewStoreStub:
         counts: dict[str, int] = {}
         for labels in self.labels.values():
             for label in labels:
+                label_name = label["label"]
+                counts[label_name] = counts.get(label_name, 0) + 1
+        return [{"label": label, "count": count} for label, count in sorted(counts.items())]
+
+    def list_active_memory_review_label_counts(self) -> list[dict[str, object]]:
+        counts: dict[str, int] = {}
+        for memory in self.memories:
+            if memory["status"] != "active":
+                continue
+            for label in self.labels.get(memory["id"], []):
                 label_name = label["label"]
                 counts[label_name] = counts.get(label_name, 0) + 1
         return [{"label": label, "count": count} for label, count in sorted(counts.items())]
@@ -982,6 +996,10 @@ def test_list_memory_review_queue_records_returns_only_active_unlabeled_memories
                 "value": {"likes": "oat milk"},
                 "status": "active",
                 "source_event_ids": ["event-4"],
+                "is_high_risk": True,
+                "is_stale_truth": False,
+                "queue_priority_mode": "recent_first",
+                "priority_reason": "recent_first",
                 "created_at": "2026-03-11T12:03:00+00:00",
                 "updated_at": "2026-03-11T12:06:00+00:00",
             },
@@ -991,6 +1009,10 @@ def test_list_memory_review_queue_records_returns_only_active_unlabeled_memories
                 "value": {"genre": "science fiction"},
                 "status": "active",
                 "source_event_ids": ["event-2"],
+                "is_high_risk": True,
+                "is_stale_truth": False,
+                "queue_priority_mode": "recent_first",
+                "priority_reason": "recent_first",
                 "created_at": "2026-03-11T12:01:00+00:00",
                 "updated_at": "2026-03-11T12:04:00+00:00",
             },
@@ -998,6 +1020,13 @@ def test_list_memory_review_queue_records_returns_only_active_unlabeled_memories
         "summary": {
             "memory_status": "active",
             "review_state": "unlabeled",
+            "priority_mode": "recent_first",
+            "available_priority_modes": [
+                "oldest_first",
+                "recent_first",
+                "high_risk_first",
+                "stale_truth_first",
+            ],
             "limit": 2,
             "returned_count": 2,
             "total_count": 2,
@@ -1005,6 +1034,209 @@ def test_list_memory_review_queue_records_returns_only_active_unlabeled_memories
             "order": ["updated_at_desc", "created_at_desc", "id_desc"],
         },
     }
+
+
+def test_list_memory_review_queue_records_supports_all_priority_modes_with_deterministic_order() -> None:
+    store = MemoryReviewStoreStub()
+    base_time = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
+    oldest_id = uuid4()
+    middle_id = uuid4()
+    newest_id = uuid4()
+    store.memories = [
+        {
+            "id": oldest_id,
+            "user_id": uuid4(),
+            "memory_key": "user.preference.oldest",
+            "value": {"value": "oldest"},
+            "status": "active",
+            "source_event_ids": ["event-1"],
+            "confirmation_status": "contested",
+            "confidence": 0.9,
+            "valid_to": datetime(2026, 3, 1, tzinfo=UTC),
+            "created_at": base_time,
+            "updated_at": base_time,
+            "deleted_at": None,
+        },
+        {
+            "id": middle_id,
+            "user_id": uuid4(),
+            "memory_key": "user.preference.middle",
+            "value": {"value": "middle"},
+            "status": "active",
+            "source_event_ids": ["event-2"],
+            "confirmation_status": "confirmed",
+            "confidence": 0.95,
+            "created_at": base_time + timedelta(minutes=1),
+            "updated_at": base_time + timedelta(minutes=1),
+            "deleted_at": None,
+        },
+        {
+            "id": newest_id,
+            "user_id": uuid4(),
+            "memory_key": "user.preference.newest",
+            "value": {"value": "newest"},
+            "status": "active",
+            "source_event_ids": ["event-3"],
+            "confirmation_status": "confirmed",
+            "confidence": 0.2,
+            "created_at": base_time + timedelta(minutes=2),
+            "updated_at": base_time + timedelta(minutes=2),
+            "deleted_at": None,
+        },
+    ]
+
+    oldest_first = list_memory_review_queue_records(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        limit=3,
+        priority_mode="oldest_first",
+    )
+    recent_first = list_memory_review_queue_records(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        limit=3,
+        priority_mode="recent_first",
+    )
+    high_risk_first = list_memory_review_queue_records(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        limit=3,
+        priority_mode="high_risk_first",
+    )
+    stale_truth_first = list_memory_review_queue_records(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        limit=3,
+        priority_mode="stale_truth_first",
+    )
+
+    assert [item["id"] for item in oldest_first["items"]] == [
+        str(oldest_id),
+        str(middle_id),
+        str(newest_id),
+    ]
+    assert [item["id"] for item in recent_first["items"]] == [
+        str(newest_id),
+        str(middle_id),
+        str(oldest_id),
+    ]
+    assert [item["id"] for item in high_risk_first["items"]] == [
+        str(newest_id),
+        str(oldest_id),
+        str(middle_id),
+    ]
+    assert [item["id"] for item in stale_truth_first["items"]] == [
+        str(oldest_id),
+        str(newest_id),
+        str(middle_id),
+    ]
+    assert high_risk_first["summary"]["priority_mode"] == "high_risk_first"
+    assert high_risk_first["summary"]["order"] == [
+        "is_high_risk_desc",
+        "confidence_asc_nulls_first",
+        "updated_at_desc",
+        "created_at_desc",
+        "id_desc",
+    ]
+    assert stale_truth_first["items"][0]["is_stale_truth"] is True
+
+
+def test_get_memory_quality_gate_summary_returns_canonical_status_transitions() -> None:
+    store = MemoryReviewStoreStub()
+    base_time = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
+
+    def build_active_memory(memory_id: UUID, index: int) -> dict[str, object]:
+        return {
+            "id": memory_id,
+            "user_id": uuid4(),
+            "memory_key": f"user.preference.item_{index}",
+            "value": {"index": index},
+            "status": "active",
+            "source_event_ids": [f"event-{index}"],
+            "confirmation_status": "confirmed",
+            "confidence": 0.95,
+            "valid_to": None,
+            "created_at": base_time + timedelta(minutes=index),
+            "updated_at": base_time + timedelta(minutes=index),
+            "deleted_at": None,
+        }
+
+    memory_ids = [uuid4() for _ in range(11)]
+    store.memories = [build_active_memory(memory_id, index) for index, memory_id in enumerate(memory_ids)]
+
+    def assign_labels(*, correct: int, incorrect: int, outdated_memory_ids: set[UUID] | None = None) -> None:
+        store.labels = {}
+        outdated_memory_ids = outdated_memory_ids or set()
+        cursor = 0
+        for _ in range(correct):
+            memory_id = memory_ids[cursor]
+            store.labels.setdefault(memory_id, []).append(
+                {
+                    "id": uuid4(),
+                    "user_id": uuid4(),
+                    "memory_id": memory_id,
+                    "label": "correct",
+                    "note": None,
+                    "created_at": base_time + timedelta(hours=1, minutes=cursor),
+                }
+            )
+            cursor += 1
+        for _ in range(incorrect):
+            memory_id = memory_ids[cursor]
+            store.labels.setdefault(memory_id, []).append(
+                {
+                    "id": uuid4(),
+                    "user_id": uuid4(),
+                    "memory_id": memory_id,
+                    "label": "incorrect",
+                    "note": None,
+                    "created_at": base_time + timedelta(hours=2, minutes=cursor),
+                }
+            )
+            cursor += 1
+        for memory_id in outdated_memory_ids:
+            store.labels.setdefault(memory_id, []).append(
+                {
+                    "id": uuid4(),
+                    "user_id": uuid4(),
+                    "memory_id": memory_id,
+                    "label": "outdated",
+                    "note": "Superseded.",
+                    "created_at": base_time + timedelta(hours=3),
+                }
+            )
+
+    assign_labels(correct=1, incorrect=0)
+    insufficient = get_memory_quality_gate_summary(store, user_id=uuid4())  # type: ignore[arg-type]
+    assert insufficient["summary"]["status"] == "insufficient_sample"
+    assert insufficient["summary"]["adjudicated_sample_count"] == 1
+    assert insufficient["summary"]["remaining_to_minimum_sample"] == 9
+
+    assign_labels(correct=7, incorrect=3)
+    degraded_precision = get_memory_quality_gate_summary(store, user_id=uuid4())  # type: ignore[arg-type]
+    assert degraded_precision["summary"]["status"] == "degraded"
+    assert degraded_precision["summary"]["precision"] == 0.7
+
+    assign_labels(correct=10, incorrect=0, outdated_memory_ids={memory_ids[0]})
+    degraded_conflict = get_memory_quality_gate_summary(store, user_id=uuid4())  # type: ignore[arg-type]
+    assert degraded_conflict["summary"]["status"] == "degraded"
+    assert degraded_conflict["summary"]["superseded_active_conflict_count"] == 1
+
+    assign_labels(correct=10, incorrect=0)
+    needs_review_memory = next(memory for memory in store.memories if memory["id"] == memory_ids[10])
+    needs_review_memory["confirmation_status"] = "unconfirmed"
+    needs_review = get_memory_quality_gate_summary(store, user_id=uuid4())  # type: ignore[arg-type]
+    assert needs_review["summary"]["status"] == "needs_review"
+    assert needs_review["summary"]["high_risk_memory_count"] >= 1
+
+    assign_labels(correct=11, incorrect=0)
+    needs_review_memory["confirmation_status"] = "confirmed"
+    healthy = get_memory_quality_gate_summary(store, user_id=uuid4())  # type: ignore[arg-type]
+    assert healthy["summary"]["status"] == "healthy"
+    assert healthy["summary"]["precision"] == 1.0
+    assert healthy["summary"]["high_risk_memory_count"] == 0
+    assert healthy["summary"]["stale_truth_count"] == 0
+    assert healthy["summary"]["superseded_active_conflict_count"] == 0
 
 
 def test_list_memory_revision_review_records_returns_deterministic_revision_order() -> None:

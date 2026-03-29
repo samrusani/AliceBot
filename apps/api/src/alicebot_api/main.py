@@ -45,6 +45,7 @@ from alicebot_api.contracts import (
     DEFAULT_MAX_ENTITIES,
     DEFAULT_MAX_MEMORIES,
     DEFAULT_MEMORY_REVIEW_LIMIT,
+    DEFAULT_MEMORY_REVIEW_QUEUE_PRIORITY_MODE,
     DEFAULT_OPEN_LOOP_LIMIT,
     DEFAULT_RESUMPTION_BRIEF_EVENT_LIMIT,
     DEFAULT_RESUMPTION_BRIEF_MEMORY_LIMIT,
@@ -110,6 +111,7 @@ from alicebot_api.contracts import (
     THREAD_LIST_ORDER,
     THREAD_SESSION_LIST_ORDER,
     MemoryReviewLabelValue,
+    MemoryReviewQueuePriorityMode,
     MemoryReviewStatusFilter,
     OpenLoopStatusFilter,
     OpenLoopCreateInput,
@@ -352,6 +354,7 @@ from alicebot_api.memory import (
     create_memory_review_label_record,
     get_open_loop_record,
     get_memory_evaluation_summary,
+    get_memory_quality_gate_summary,
     get_memory_review_record,
     list_open_loop_records,
     list_memory_review_queue_records,
@@ -3570,6 +3573,9 @@ def list_memories(
 def list_memory_review_queue(
     user_id: UUID,
     limit: int = Query(default=DEFAULT_MEMORY_REVIEW_LIMIT, ge=1, le=MAX_MEMORY_REVIEW_LIMIT),
+    priority_mode: MemoryReviewQueuePriorityMode = Query(
+        default=DEFAULT_MEMORY_REVIEW_QUEUE_PRIORITY_MODE
+    ),
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -3578,6 +3584,23 @@ def list_memory_review_queue(
             ContinuityStore(conn),
             user_id=user_id,
             limit=limit,
+            priority_mode=priority_mode,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/memories/quality-gate")
+def get_memories_quality_gate(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload = get_memory_quality_gate_summary(
+            ContinuityStore(conn),
+            user_id=user_id,
         )
 
     return JSONResponse(

@@ -1,103 +1,67 @@
 # BUILD_REPORT.md
 
-## Sprint Objective
-Implement Phase 5 Sprint 20 (P5-S20): ship continuity open-loop dashboard, deterministic daily/weekly review briefs, and deterministic open-loop review actions (`done`, `deferred`, `still_blocked`) that update continuity resumption behavior immediately.
+## sprint objective
+Implement Phase 6 Sprint 21 (P6-S21): ship a canonical server-side memory-quality gate contract and deterministic memory review-queue prioritization, then align `/memories` UI to those canonical semantics.
 
-## Completed Work
-- Added P5-S20 continuity contracts in `apps/api/src/alicebot_api/contracts.py`:
-  - open-loop posture/action literals
-  - request/response types for dashboard, daily brief, weekly review, and review-action mutation
-  - deterministic ordering constants and limit defaults.
-- Added new backend compiler/mutation module `apps/api/src/alicebot_api/continuity_open_loops.py` with deterministic behavior:
-  - open-loop posture grouping: `waiting_for`, `blocker`, `stale`, `next_action`
-  - deterministic item ordering: `created_at_desc`, `id_desc`
-  - explicit empty-state payloads in all sections
-  - deterministic daily brief composition:
-    - `waiting_for_highlights`
-    - `blocker_highlights`
-    - `stale_items`
-    - `next_suggested_action`
-  - deterministic weekly review composition with posture rollup counts
-  - open-loop review-action transitions with auditable correction-event payload mapping:
-    - `done` -> lifecycle `completed`
-    - `deferred` -> lifecycle `stale`
-    - `still_blocked` -> lifecycle `active` with refreshed confirmation timestamp.
-- Added P5-S20 API routes in `apps/api/src/alicebot_api/main.py`:
-  - `GET /v0/continuity/open-loops`
-  - `GET /v0/continuity/daily-brief`
-  - `GET /v0/continuity/weekly-review`
-  - `POST /v0/continuity/open-loops/{continuity_object_id}/review-action`.
-- Added backend tests:
-  - `tests/unit/test_continuity_open_loops.py`
-  - `tests/integration/test_continuity_open_loops_api.py`
-  - `tests/integration/test_continuity_daily_weekly_review_api.py`
-  - updated `tests/unit/test_continuity_resumption.py` with open-loop lifecycle filtering coverage after action outcomes.
-- Extended web API client and tests:
-  - `apps/web/lib/api.ts`
-  - `apps/web/lib/api.test.ts`.
-- Added continuity UI surfaces and tests:
-  - `apps/web/components/continuity-open-loops-panel.tsx`
-  - `apps/web/components/continuity-open-loops-panel.test.tsx`
-  - `apps/web/components/continuity-daily-brief.tsx`
-  - `apps/web/components/continuity-daily-brief.test.tsx`
-  - `apps/web/components/continuity-weekly-review.tsx`
-  - `apps/web/components/continuity-weekly-review.test.tsx`.
-- Integrated new surfaces into continuity workspace page and tests:
-  - `apps/web/app/continuity/page.tsx`
-  - `apps/web/app/continuity/page.test.tsx`.
-- Synced sprint-listed docs for shipped P5-S20 state:
-  - `docs/phase5-product-spec.md`
-  - `docs/phase5-sprint-17-20-plan.md`
-  - `README.md`
-  - `ROADMAP.md`
-  - `.ai/handoff/CURRENT_STATE.md`
-  - `REVIEW_REPORT.md`
-  - `BUILD_REPORT.md`.
+## completed work
+- Added canonical memory-quality gate backend contract and route:
+  - `GET /v0/memories/quality-gate`
+  - canonical statuses: `healthy`, `needs_review`, `insufficient_sample`, `degraded`
+  - deterministic payload fields for precision/sample/risk posture and explicit computation counts.
+- Canonicalized queue prioritization contract for `GET /v0/memories/review-queue`:
+  - added `priority_mode` query support for `oldest_first`, `recent_first`, `high_risk_first`, `stale_truth_first`
+  - added explicit summary ordering metadata and available mode list
+  - added per-item priority posture fields (`is_high_risk`, `is_stale_truth`, `queue_priority_mode`, `priority_reason`).
+- Updated backend contracts/store/service wiring to support deterministic quality-gate and queue-mode behavior.
+- Updated `/memories` web flow:
+  - queue priority mode parsed from `priority_mode` search param
+  - queue API request now sends explicit priority mode
+  - queue list now renders deterministic priority mode selector links
+  - label submit and submit-and-next flow preserved.
+- Updated web memory-quality logic:
+  - UI gate posture is now sourced from API-backed canonical gate payload (`quality_gate`) instead of local threshold recomputation.
+- Added/updated tests for deterministic status transitions and queue ordering across all four priority modes.
+- Updated in-scope docs to reflect shipped P6-S21 baseline.
 
-## Incomplete Work
-- None within P5-S20 packet scope.
+## incomplete work
+- None within P6-S21 sprint packet scope.
 
-## Files Changed
+## files changed
 - `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/memory.py`
 - `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/continuity_open_loops.py`
+- `apps/api/src/alicebot_api/store.py`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
-- `apps/web/app/continuity/page.tsx`
-- `apps/web/app/continuity/page.test.tsx`
-- `apps/web/components/continuity-open-loops-panel.tsx`
-- `apps/web/components/continuity-open-loops-panel.test.tsx`
-- `apps/web/components/continuity-daily-brief.tsx`
-- `apps/web/components/continuity-daily-brief.test.tsx`
-- `apps/web/components/continuity-weekly-review.tsx`
-- `apps/web/components/continuity-weekly-review.test.tsx`
-- `tests/unit/test_continuity_open_loops.py`
-- `tests/integration/test_continuity_open_loops_api.py`
-- `tests/integration/test_continuity_daily_weekly_review_api.py`
-- `tests/unit/test_continuity_resumption.py`
-- `docs/phase5-product-spec.md`
-- `docs/phase5-sprint-17-20-plan.md`
+- `apps/web/lib/memory-quality.ts`
+- `apps/web/lib/memory-quality.test.ts`
+- `apps/web/app/memories/page.tsx`
+- `apps/web/app/memories/page.test.tsx`
+- `apps/web/components/memory-quality-gate.tsx`
+- `apps/web/components/memory-quality-gate.test.tsx`
+- `apps/web/components/memory-list.tsx`
+- `apps/web/components/memory-list.test.tsx`
+- `tests/unit/test_memory.py`
+- `tests/unit/test_main.py`
+- `tests/integration/test_memory_review_api.py`
+- `tests/integration/test_memory_quality_gate_api.py`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
-- `REVIEW_REPORT.md`
 - `BUILD_REPORT.md`
+- `REVIEW_REPORT.md`
 
-## Tests Run
-- `./.venv/bin/python -m pytest tests/unit/test_continuity_open_loops.py tests/integration/test_continuity_open_loops_api.py tests/integration/test_continuity_daily_weekly_review_api.py tests/unit/test_continuity_review.py tests/unit/test_continuity_resumption.py -q`
-  - PASS (`19 passed in 2.14s`).
-- `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-open-loops-panel.test.tsx components/continuity-daily-brief.test.tsx components/continuity-weekly-review.test.tsx lib/api.test.ts`
-  - PASS (`5 files`, `38 tests`).
+## tests run
+- `./.venv/bin/python -m pytest tests/unit/test_memory.py tests/unit/test_main.py tests/integration/test_memory_review_api.py tests/integration/test_memory_quality_gate_api.py -q`
+  - PASS (`89 passed`)
+- `pnpm --dir apps/web test -- app/memories/page.test.tsx components/memory-quality-gate.test.tsx components/memory-list.test.tsx lib/api.test.ts lib/memory-quality.test.ts`
+  - PASS (`5 files`, `46 tests`)
 - `python3 scripts/run_phase4_validation_matrix.py`
-  - PASS (`Phase 4 validation matrix result: PASS`).
+  - PASS (`Phase 4 validation matrix result: PASS`)
 
-## Blockers/Issues
-- Integration and matrix commands required elevated local permissions in this runtime to connect to Postgres on `localhost:5432`; reruns with elevated permissions passed.
-- No unresolved code or scope blockers remain for P5-S20.
+## blockers/issues
+- Integration and matrix commands required elevated runtime access to local Postgres/network in this environment; reruns with elevated permissions passed.
+- No unresolved functional blockers remain for P6-S21 scope.
 
-## Explicit Post-Phase-5 Deferred Scope
-- No additional Sprint 17-20 continuity scope is deferred.
-- Any post-Phase-5 expansion (connector breadth, orchestration changes, broader memory architecture changes) should be opened as a new packet.
-
-## Recommended Next Step
-Open a new post-Phase-5 packet that selects one narrow next objective while keeping P5-S17..P5-S20 continuity contracts stable.
+## recommended next step
+Start P6-S22 with retrieval-quality evaluation/ranking calibration while treating P6-S21 quality-gate and queue-priority contracts as fixed canonical baseline inputs.
