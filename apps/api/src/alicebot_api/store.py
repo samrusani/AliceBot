@@ -148,6 +148,30 @@ class OpenLoopRow(TypedDict):
     updated_at: datetime
 
 
+class ContinuityCaptureEventRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    raw_content: str
+    explicit_signal: str | None
+    admission_posture: str
+    admission_reason: str
+    created_at: datetime
+
+
+class ContinuityObjectRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    capture_event_id: UUID
+    object_type: str
+    status: str
+    title: str
+    body: JsonObject
+    provenance: JsonObject
+    confidence: float
+    created_at: datetime
+    updated_at: datetime
+
+
 class EmbeddingConfigRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -3443,6 +3467,133 @@ SUPERSEDE_EXECUTION_BUDGET_SQL = """
                   created_at
                 """
 
+INSERT_CONTINUITY_CAPTURE_EVENT_SQL = """
+                INSERT INTO continuity_capture_events (
+                  user_id,
+                  raw_content,
+                  explicit_signal,
+                  admission_posture,
+                  admission_reason
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  raw_content,
+                  explicit_signal,
+                  admission_posture,
+                  admission_reason,
+                  created_at
+                """
+
+GET_CONTINUITY_CAPTURE_EVENT_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  raw_content,
+                  explicit_signal,
+                  admission_posture,
+                  admission_reason,
+                  created_at
+                FROM continuity_capture_events
+                WHERE id = %s
+                """
+
+LIST_CONTINUITY_CAPTURE_EVENTS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  raw_content,
+                  explicit_signal,
+                  admission_posture,
+                  admission_reason,
+                  created_at
+                FROM continuity_capture_events
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """
+
+COUNT_CONTINUITY_CAPTURE_EVENTS_SQL = """
+                SELECT COUNT(*) AS count
+                FROM continuity_capture_events
+                """
+
+INSERT_CONTINUITY_OBJECT_SQL = """
+                INSERT INTO continuity_objects (
+                  user_id,
+                  capture_event_id,
+                  object_type,
+                  status,
+                  title,
+                  body,
+                  provenance,
+                  confidence
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  capture_event_id,
+                  object_type,
+                  status,
+                  title,
+                  body,
+                  provenance,
+                  confidence,
+                  created_at,
+                  updated_at
+                """
+
+GET_CONTINUITY_OBJECT_BY_CAPTURE_EVENT_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  capture_event_id,
+                  object_type,
+                  status,
+                  title,
+                  body,
+                  provenance,
+                  confidence,
+                  created_at,
+                  updated_at
+                FROM continuity_objects
+                WHERE capture_event_id = %s
+                """
+
+LIST_CONTINUITY_OBJECTS_FOR_CAPTURE_EVENTS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  capture_event_id,
+                  object_type,
+                  status,
+                  title,
+                  body,
+                  provenance,
+                  confidence,
+                  created_at,
+                  updated_at
+                FROM continuity_objects
+                WHERE capture_event_id = ANY(%s)
+                ORDER BY created_at DESC, id DESC
+                """
+
 UPDATE_EVENT_ERROR = "events are append-only and must be superseded by new records"
 DELETE_EVENT_ERROR = "events are append-only and must not be deleted in place"
 UPDATE_TRACE_EVENT_ERROR = "trace events are append-only and must be superseded by new records"
@@ -3886,6 +4037,85 @@ class ContinuityStore:
                 resolution_note,
                 open_loop_id,
             ),
+        )
+
+    def create_continuity_capture_event(
+        self,
+        *,
+        raw_content: str,
+        explicit_signal: str | None,
+        admission_posture: str,
+        admission_reason: str,
+    ) -> ContinuityCaptureEventRow:
+        return self._fetch_one(
+            "create_continuity_capture_event",
+            INSERT_CONTINUITY_CAPTURE_EVENT_SQL,
+            (
+                raw_content,
+                explicit_signal,
+                admission_posture,
+                admission_reason,
+            ),
+        )
+
+    def get_continuity_capture_event_optional(
+        self,
+        capture_event_id: UUID,
+    ) -> ContinuityCaptureEventRow | None:
+        return self._fetch_optional_one(
+            GET_CONTINUITY_CAPTURE_EVENT_SQL,
+            (capture_event_id,),
+        )
+
+    def list_continuity_capture_events(self, *, limit: int) -> list[ContinuityCaptureEventRow]:
+        return self._fetch_all(LIST_CONTINUITY_CAPTURE_EVENTS_SQL, (limit,))
+
+    def count_continuity_capture_events(self) -> int:
+        return self._fetch_count(COUNT_CONTINUITY_CAPTURE_EVENTS_SQL)
+
+    def create_continuity_object(
+        self,
+        *,
+        capture_event_id: UUID,
+        object_type: str,
+        status: str,
+        title: str,
+        body: JsonObject,
+        provenance: JsonObject,
+        confidence: float,
+    ) -> ContinuityObjectRow:
+        return self._fetch_one(
+            "create_continuity_object",
+            INSERT_CONTINUITY_OBJECT_SQL,
+            (
+                capture_event_id,
+                object_type,
+                status,
+                title,
+                Jsonb(body),
+                Jsonb(provenance),
+                confidence,
+            ),
+        )
+
+    def get_continuity_object_by_capture_event_optional(
+        self,
+        capture_event_id: UUID,
+    ) -> ContinuityObjectRow | None:
+        return self._fetch_optional_one(
+            GET_CONTINUITY_OBJECT_BY_CAPTURE_EVENT_SQL,
+            (capture_event_id,),
+        )
+
+    def list_continuity_objects_for_capture_events(
+        self,
+        capture_event_ids: list[UUID],
+    ) -> list[ContinuityObjectRow]:
+        if not capture_event_ids:
+            return []
+        return self._fetch_all(
+            LIST_CONTINUITY_OBJECTS_FOR_CAPTURE_EVENTS_SQL,
+            (capture_event_ids,),
         )
 
     def create_embedding_config(

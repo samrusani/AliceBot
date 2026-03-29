@@ -7,6 +7,7 @@ import {
   connectCalendarAccount,
   connectGmailAccount,
   createThread,
+  createContinuityCapture,
   deriveThreadWorkflowState,
   createOpenLoop,
   getCalendarAccountDetail,
@@ -15,6 +16,7 @@ import {
   getTaskArtifactDetail,
   getTaskWorkspaceDetail,
   getEntityDetail,
+  getContinuityCaptureDetail,
   getMemoryDetail,
   getMemoryEvaluationSummary,
   getMemoryRevisions,
@@ -28,6 +30,7 @@ import {
   ingestGmailMessage,
   listCalendarAccounts,
   listCalendarEvents,
+  listContinuityCaptures,
   listEntities,
   listEntityEdges,
   listGmailAccounts,
@@ -2137,6 +2140,119 @@ describe("api helpers", () => {
         status: 400,
       }),
     );
+  });
+
+  it("posts and reads continuity capture inbox endpoints", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          capture: {
+            capture_event: {
+              id: "capture-1",
+              raw_content: "Finalize launch checklist",
+              explicit_signal: "task",
+              admission_posture: "DERIVED",
+              admission_reason: "explicit_signal_task",
+              created_at: "2026-03-29T09:00:00Z",
+            },
+            derived_object: {
+              id: "object-1",
+              capture_event_id: "capture-1",
+              object_type: "NextAction",
+              status: "active",
+              title: "Next Action: Finalize launch checklist",
+              body: {
+                action_text: "Finalize launch checklist",
+                raw_content: "Finalize launch checklist",
+                explicit_signal: "task",
+              },
+              provenance: {
+                capture_event_id: "capture-1",
+                source_kind: "continuity_capture_event",
+              },
+              confidence: 1,
+              created_at: "2026-03-29T09:00:00Z",
+              updated_at: "2026-03-29T09:00:00Z",
+            },
+          },
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [
+            {
+              capture_event: {
+                id: "capture-1",
+                raw_content: "Finalize launch checklist",
+                explicit_signal: "task",
+                admission_posture: "DERIVED",
+                admission_reason: "explicit_signal_task",
+                created_at: "2026-03-29T09:00:00Z",
+              },
+              derived_object: null,
+            },
+          ],
+          summary: {
+            limit: 20,
+            returned_count: 1,
+            total_count: 1,
+            derived_count: 1,
+            triage_count: 0,
+            order: ["created_at_desc", "id_desc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          capture: {
+            capture_event: {
+              id: "capture-1",
+              raw_content: "Finalize launch checklist",
+              explicit_signal: "task",
+              admission_posture: "DERIVED",
+              admission_reason: "explicit_signal_task",
+              created_at: "2026-03-29T09:00:00Z",
+            },
+            derived_object: null,
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await createContinuityCapture("https://api.example.com", {
+      user_id: "user-1",
+      raw_content: "Finalize launch checklist",
+      explicit_signal: "task",
+    });
+    await listContinuityCaptures("https://api.example.com", "user-1", { limit: 20 });
+    await getContinuityCaptureDetail("https://api.example.com", "capture-1", "user-1");
+
+    expect(fetchMock.mock.calls).toEqual([
+      [
+        "https://api.example.com/v0/continuity/captures",
+        expect.objectContaining({ method: "POST" }),
+      ],
+      [
+        "https://api.example.com/v0/continuity/captures?user_id=user-1&limit=20",
+        expect.objectContaining({ cache: "no-store" }),
+      ],
+      [
+        "https://api.example.com/v0/continuity/captures/capture-1?user_id=user-1",
+        expect.objectContaining({ cache: "no-store" }),
+      ],
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      user_id: "user-1",
+      raw_content: "Finalize launch checklist",
+      explicit_signal: "task",
+    });
   });
 
   it("throws ApiError when memory admission returns a backend error envelope", async () => {

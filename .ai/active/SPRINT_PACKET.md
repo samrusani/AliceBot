@@ -2,219 +2,228 @@
 
 ## Sprint Title
 
-Phase 4 Sprint 19: MVP Qualification and Sign-off Record
+Phase 5 Sprint 17 (P5-S17): Continuity Backbone and Fast Capture
 
 ## Sprint Type
 
-hardening
+feature
 
 ## Sprint Reason
 
-Phase 4 closeout tooling is complete through Sprint 18, but MVP still needs one deterministic qualification run and a formal sign-off record that captures GO/NO_GO plus any residual blockers.
+Phase 4 MVP qualification/sign-off is complete. The first Phase 5 non-redundant delivery is the typed continuity backbone and one fast capture flow, because all later Phase 5 recall/resumption/review work depends on it.
 
 ## Sprint Intent
 
-Run the full MVP qualification chain end-to-end, generate a deterministic sign-off record artifact, and resolve only blocking defects discovered in that bounded qualification scope.
+Ship a deterministic typed continuity object backbone plus fast capture inbox flow that always preserves immutable capture events and only promotes durable objects when signals are explicit or high-confidence.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase4-sprint-19-mvp-qualification-signoff`
+- Branch Name: `codex/phase5-sprint-17-continuity-backbone-fast-capture`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It converts “tools exist” into “MVP qualification executed and recorded.”
-- It prevents redundant tooling loops by moving to an execution/sign-off sprint.
-- It establishes a clear handoff checkpoint before Phase 5 planning.
+- It starts Phase 5 with the minimum shared data model required by all later sprints.
+- It creates immediate user value (capture without loss) while keeping admission conservative.
+- It avoids redundant work by not touching recall/resumption/review dashboards yet.
 
 ## Redundancy Guard
 
-- Already shipped through Sprint 18:
-  - canonical Phase 4 gates
-  - RC rehearsal + archive/index + concurrency hardening
-  - MVP exit manifest generation/verification
-- Required now (Sprint 19):
-  - deterministic qualification orchestrator command
-  - deterministic sign-off record artifact with GO/NO_GO + blocker registry
-  - only blocker fixes needed to make qualification pass
-- Explicitly out of Sprint 19:
-  - net-new product scope expansion
-  - connector/auth/platform expansion
-  - broad refactors unrelated to qualification blockers
+- Already shipped in Phase 4:
+  - release-control, RC rehearsal, archive/index, sign-off tooling
+- Required now (P5-S17):
+  - continuity object contracts
+  - fast capture API/UI
+  - triage posture for ambiguous captures
+- Explicitly out of P5-S17:
+  - broad recall UX
+  - deterministic resumption briefs
+  - memory correction queues
+  - daily/weekly review dashboards
 
 ## Design Truth
 
-- Qualification must be derived from existing Phase 4 release controls, not alternate paths.
-- Canonical compatibility checks remain:
-  - `run_phase4_validation_matrix.py`
-  - `run_phase3_validation_matrix.py`
-  - `run_phase2_validation_matrix.py`
-  - `run_mvp_validation_matrix.py`
-- Sign-off record must capture:
-  - executed commands
-  - pass/fail status per gate
-  - final GO/NO_GO
-  - blocker list (empty for GO)
+- Every capture produces an immutable capture event.
+- Durable continuity objects are typed and provenance-backed.
+- Admission defaults to conservative behavior (`NOOP`/triage) for ambiguous inputs.
+- Raw capture events and derived continuity objects remain distinct.
 
 ## Exact Surfaces In Scope
 
-- MVP qualification orchestration script
-- sign-off record generation and verification
-- closeout docs/control docs alignment
-- blocker-only fixes discovered during qualification execution
+- typed continuity object contracts and persistence seams
+- capture intake endpoint(s) with explicit signal typing
+- capture inbox review surface (list/detail)
+- triage posture visibility for uncertain captures
 
 ## Exact Files In Scope
 
-- `scripts/run_phase4_mvp_qualification.py`
-- `scripts/verify_phase4_mvp_signoff_record.py`
-- `scripts/run_phase4_release_candidate.py`
-- `scripts/generate_phase4_mvp_exit_manifest.py`
-- `scripts/verify_phase4_mvp_exit_manifest.py`
-- `docs/runbooks/phase4-closeout-packet.md`
-- `docs/runbooks/phase4-mvp-qualification.md`
+- `apps/api/alembic/versions/20260329_0041_phase5_continuity_backbone.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/continuity_capture.py`
+- `apps/api/src/alicebot_api/continuity_objects.py`
+- `apps/web/lib/api.ts`
+- `apps/web/lib/api.test.ts`
+- `apps/web/app/continuity/page.tsx`
+- `apps/web/app/continuity/page.test.tsx`
+- `apps/web/components/continuity-capture-form.tsx`
+- `apps/web/components/continuity-capture-form.test.tsx`
+- `apps/web/components/continuity-inbox-list.tsx`
+- `apps/web/components/continuity-inbox-list.test.tsx`
+- `tests/unit/test_20260329_0041_phase5_continuity_backbone.py`
+- `tests/unit/test_continuity_capture.py`
+- `tests/unit/test_continuity_objects.py`
+- `tests/integration/test_continuity_capture_api.py`
+- `docs/phase5-product-spec.md`
+- `docs/phase5-sprint-17-20-plan.md`
+- `docs/phase5-continuity-object-model.md`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
-- `tests/integration/test_phase4_mvp_qualification.py`
-- `tests/integration/test_phase4_mvp_exit_manifest.py`
-- `tests/unit/test_phase4_gate_wrappers.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 - `.ai/active/SPRINT_PACKET.md`
 
 ## In Scope
 
-- Add qualification command:
-  - `python3 scripts/run_phase4_mvp_qualification.py`
-  - runs ordered sequence:
-    - RC rehearsal (`run_phase4_release_candidate.py`)
-    - RC archive verify (`verify_phase4_rc_archive.py`)
-    - MVP exit manifest generation (`generate_phase4_mvp_exit_manifest.py`)
-    - MVP exit manifest verify (`verify_phase4_mvp_exit_manifest.py`)
-  - emits sign-off record artifact (for example `artifacts/release/phase4_mvp_signoff_record.json`)
-- Add sign-off verifier command:
-  - `python3 scripts/verify_phase4_mvp_signoff_record.py`
-  - validates schema, required references, and GO/NO_GO consistency.
-- Fix only blocking defects found by qualification chain.
-- Update closeout docs with final qualification/sign-off workflow and criteria.
+- Add minimal typed object model for:
+  - `Note`
+  - `MemoryFact`
+  - `Decision`
+  - `Commitment`
+  - `WaitingFor`
+  - `Blocker`
+  - `NextAction`
+- Implement capture endpoint that:
+  - always writes capture event
+  - accepts optional explicit signal (`remember_this`, `task`, `decision`, etc.)
+  - creates typed continuity object when explicit/high-confidence
+  - records triage posture when ambiguous
+- Implement capture inbox UI:
+  - submit capture
+  - list recent captures with posture
+  - view derived object/provenance summary
+- Keep provenance visible for all derived objects.
 
 ## Out of Scope
 
-- non-blocking UX enhancement work
-- broad runtime refactors
-- new connector/platform capabilities
-- architecture redesign
+- recall query and ranking UX
+- deterministic resumption brief generation
+- correction queue and supersession flows
+- daily/weekly open-loop review dashboard
+- connector/channel/platform expansion
 
 ## Required Deliverables
 
-- deterministic qualification orchestration command
-- deterministic sign-off record + verifier
-- blocker-only fixes (if required)
-- updated closeout and qualification runbooks
-- sprint build/review reports
+- migration + persistence seam for typed continuity backbone
+- capture API and conservative admission behavior
+- capture inbox UI surface
+- unit/integration/web tests for deterministic capture + triage behavior
+- synced phase/control docs
 
 ## Acceptance Criteria
 
-- `python3 scripts/run_phase4_mvp_qualification.py` runs and writes sign-off record artifact.
-- `python3 scripts/verify_phase4_mvp_signoff_record.py` passes.
-- `python3 scripts/run_phase4_release_candidate.py` passes.
-- `python3 scripts/verify_phase4_rc_archive.py` passes.
-- `python3 scripts/generate_phase4_mvp_exit_manifest.py` passes.
-- `python3 scripts/verify_phase4_mvp_exit_manifest.py` passes.
-- `python3 scripts/run_phase4_validation_matrix.py` remains PASS.
-- `python3 scripts/run_phase3_validation_matrix.py` remains PASS.
-- `python3 scripts/run_phase2_validation_matrix.py` remains PASS.
-- `python3 scripts/run_mvp_validation_matrix.py` remains PASS.
-- `./.venv/bin/python -m pytest tests/integration/test_phase4_mvp_qualification.py tests/integration/test_phase4_mvp_exit_manifest.py tests/unit/test_phase4_gate_wrappers.py -q` passes.
-- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect Sprint 19 qualification/sign-off ownership.
+- capture API always persists an immutable capture event.
+- explicit signals deterministically map to correct typed continuity object.
+- ambiguous captures are persisted and marked triage instead of creating unsafe durable objects.
+- provenance references are present for every derived continuity object.
+- `./.venv/bin/python -m pytest tests/unit/test_20260329_0041_phase5_continuity_backbone.py tests/unit/test_continuity_capture.py tests/unit/test_continuity_objects.py tests/integration/test_continuity_capture_api.py -q` passes.
+- `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-capture-form.test.tsx components/continuity-inbox-list.test.tsx lib/api.test.ts` passes.
+- `python3 scripts/run_phase4_validation_matrix.py` remains PASS (no Phase 4 regression).
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P5-S17 scope.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
-- keep qualification deterministic and machine-readable
-- preserve existing gate semantics and artifact schema compatibility
-- keep docs machine-independent
+- preserve Phase 4 release-control commands and artifacts
+- keep admission conservative by default
+- keep machine-independent docs/paths
 
 ## Control Tower Task Cards
 
-### Task 1: Qualification Orchestrator
+### Task 1: Backbone Schema + Store
 
 Owner: tooling operative
 
 Write scope:
 
-- `scripts/run_phase4_mvp_qualification.py`
-- `scripts/verify_phase4_mvp_signoff_record.py`
+- `apps/api/alembic/versions/20260329_0041_phase5_continuity_backbone.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/continuity_objects.py`
+- `tests/unit/test_20260329_0041_phase5_continuity_backbone.py`
+- `tests/unit/test_continuity_objects.py`
 
-### Task 2: Qualification Contract Tests
-
-Owner: tooling operative
-
-Write scope:
-
-- `tests/integration/test_phase4_mvp_qualification.py`
-- `tests/integration/test_phase4_mvp_exit_manifest.py`
-- `tests/unit/test_phase4_gate_wrappers.py`
-
-### Task 3: Blocker Fixes (If Any)
+### Task 2: Capture API + Admission
 
 Owner: tooling operative
 
 Write scope:
 
-- only files required to resolve qualification blockers, with explicit justification in `BUILD_REPORT.md`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/continuity_capture.py`
+- `tests/unit/test_continuity_capture.py`
+- `tests/integration/test_continuity_capture_api.py`
 
-### Task 4: Docs + Control Sync
+### Task 3: Capture Inbox UI
 
 Owner: tooling operative
 
 Write scope:
 
-- `docs/runbooks/phase4-closeout-packet.md`
-- `docs/runbooks/phase4-mvp-qualification.md`
-- `README.md`
-- `ROADMAP.md`
-- `.ai/handoff/CURRENT_STATE.md`
+- `apps/web/lib/api.ts`
+- `apps/web/lib/api.test.ts`
+- `apps/web/app/continuity/page.tsx`
+- `apps/web/app/continuity/page.test.tsx`
+- `apps/web/components/continuity-capture-form.tsx`
+- `apps/web/components/continuity-capture-form.test.tsx`
+- `apps/web/components/continuity-inbox-list.tsx`
+- `apps/web/components/continuity-inbox-list.test.tsx`
 
-### Task 5: Integration Review
+### Task 4: Docs + Integration Review
 
 Owner: control tower
 
 Write scope:
 
+- `docs/phase5-product-spec.md`
+- `docs/phase5-sprint-17-20-plan.md`
+- `docs/phase5-continuity-object-model.md`
+- `README.md`
+- `ROADMAP.md`
+- `.ai/handoff/CURRENT_STATE.md`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 Responsibilities:
 
-- verify sprint remained qualification/sign-off scoped
-- verify blocker fixes were truly blocker-only and minimal
-- verify GO/NO_GO record is deterministic and coherent
-- verify no hidden scope expansion
+- verify sprint stayed P5-S17 scoped
+- verify no recall/resumption/review-dashboard scope creep
+- verify conservative admission posture and provenance guarantees
+- verify no Phase 4 regression
 
 ## Build Report Requirements
 
 `BUILD_REPORT.md` must include:
 
-- exact qualification chain and artifact outputs
-- any blocker fixes and why they were required
-- command outcomes for each gate
-- explicit deferred scope
+- exact capture/backbone delta
+- exact triage/admission behavior
+- exact verification command outcomes
+- explicit deferred Phase 5 scope (P5-S18/19/20 work)
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
 
-- qualification chain is deterministic and complete
-- sign-off record schema and references are valid
-- blocker list is empty for GO or explicit for NO_GO
-- compatibility chains remain green
-- no hidden runtime/product scope expansion
+- sprint stayed in capture/backbone scope
+- typed object mapping and triage behavior are deterministic
+- provenance is visible and consistent
+- no hidden scope expansion
+- Phase 4 validation remains green
 
 ## Exit Condition
 
-This sprint is complete when MVP qualification is executed end-to-end with a deterministic sign-off record artifact and either:
-- GO with no unresolved blockers, or
-- NO_GO with explicit blocker registry and remediation ownership.
+This sprint is complete when typed continuity backbone + fast capture inbox are shipped with deterministic admission/triage behavior, provenance visibility, and no Phase 4 regression.
