@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from datetime import datetime
 from uuid import uuid4
 
 import pytest
@@ -119,6 +120,7 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v0/memories/capture-explicit-signals" in route_paths
     assert "/v0/memories" in route_paths
     assert "/v0/memories/review-queue" in route_paths
+    assert "/v0/memories/quality-gate" in route_paths
     assert "/v0/memories/evaluation-summary" in route_paths
     assert "/v0/memories/semantic-retrieval" in route_paths
     assert "/v0/memories/{memory_id}" in route_paths
@@ -364,6 +366,18 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module.ContinuityStore,
+        "get_thread",
+        lambda _self, thread_id: {
+            "id": thread_id,
+            "user_id": user_id,
+            "title": "Thread",
+            "agent_profile_id": "assistant_default",
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        },
+    )
     monkeypatch.setattr(main_module, "compile_and_persist_trace", fake_compile_and_persist_trace)
 
     response = main_module.compile_context(
@@ -511,14 +525,17 @@ def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
                     "created_at": "2026-03-11T09:04:00+00:00",
                 }
             ],
-            "entity_edge_summary": {
-                "anchor_entity_count": 1,
-                "candidate_count": 2,
-                "included_count": 1,
-                "excluded_limit_count": 1,
+                "entity_edge_summary": {
+                    "anchor_entity_count": 1,
+                    "candidate_count": 2,
+                    "included_count": 1,
+                    "excluded_limit_count": 1,
+                },
             },
-        },
-    }
+            "metadata": {
+                "agent_profile_id": "assistant_default",
+            },
+        }
     assert captured["database_url"] == "postgresql://app"
     assert captured["current_user_id"] == user_id
     assert captured["user_id"] == user_id
@@ -540,6 +557,18 @@ def test_compile_context_returns_not_found_when_scope_row_is_missing(monkeypatch
 
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module.ContinuityStore,
+        "get_thread",
+        lambda _self, thread_id: {
+            "id": thread_id,
+            "user_id": uuid4(),
+            "title": "Thread",
+            "agent_profile_id": "assistant_default",
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        },
+    )
     monkeypatch.setattr(
         main_module,
         "compile_and_persist_trace",
@@ -738,6 +767,18 @@ def test_compile_context_routes_semantic_and_artifact_inputs_and_validation_erro
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module.ContinuityStore,
+        "get_thread",
+        lambda _self, thread_id: {
+            "id": thread_id,
+            "user_id": user_id,
+            "title": "Thread",
+            "agent_profile_id": "assistant_default",
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        },
+    )
     monkeypatch.setattr(main_module, "compile_and_persist_trace", fake_compile_and_persist_trace)
 
     response = main_module.compile_context(
@@ -929,6 +970,18 @@ def test_generate_assistant_response_returns_assistant_and_trace_payload(monkeyp
 
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module.ContinuityStore,
+        "get_thread",
+        lambda _self, thread_id: {
+            "id": thread_id,
+            "user_id": user_id,
+            "title": "Thread",
+            "agent_profile_id": "assistant_default",
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        },
+    )
     monkeypatch.setattr(main_module, "generate_response", fake_generate_response)
 
     response = main_module.generate_assistant_response(
@@ -959,6 +1012,9 @@ def test_generate_assistant_response_returns_assistant_and_trace_payload(monkeyp
             "response_trace_id": "response-trace-123",
             "response_trace_event_count": 2,
         },
+        "metadata": {
+            "agent_profile_id": "assistant_default",
+        },
     }
     assert captured["database_url"] == "postgresql://app"
     assert captured["current_user_id"] == user_id
@@ -984,6 +1040,18 @@ def test_generate_assistant_response_returns_502_with_trace_when_model_invocatio
 
     monkeypatch.setattr(main_module, "get_settings", lambda: Settings(database_url="postgresql://app"))
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module.ContinuityStore,
+        "get_thread",
+        lambda _self, thread_id: {
+            "id": thread_id,
+            "user_id": user_id,
+            "title": "Thread",
+            "agent_profile_id": "assistant_default",
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        },
+    )
     monkeypatch.setattr(
         main_module,
         "generate_response",
@@ -1014,6 +1082,9 @@ def test_generate_assistant_response_returns_502_with_trace_when_model_invocatio
             "compile_trace_event_count": 9,
             "response_trace_id": "response-trace-123",
             "response_trace_event_count": 2,
+        },
+        "metadata": {
+            "agent_profile_id": "assistant_default",
         },
     }
 
@@ -2023,10 +2094,11 @@ def test_list_memory_review_queue_returns_unlabeled_active_queue_payload(monkeyp
         captured["current_user_id"] = current_user_id
         yield object()
 
-    def fake_list_memory_review_queue_records(store, *, user_id, limit):
+    def fake_list_memory_review_queue_records(store, *, user_id, limit, priority_mode):
         captured["store_type"] = type(store).__name__
         captured["user_id"] = user_id
         captured["limit"] = limit
+        captured["priority_mode"] = priority_mode
         return {
             "items": [
                 {
@@ -2035,6 +2107,10 @@ def test_list_memory_review_queue_returns_unlabeled_active_queue_payload(monkeyp
                     "value": {"likes": "oat milk"},
                     "status": "active",
                     "source_event_ids": ["event-1"],
+                    "is_high_risk": True,
+                    "is_stale_truth": False,
+                    "queue_priority_mode": "high_risk_first",
+                    "priority_reason": "high_risk",
                     "created_at": "2026-03-12T09:00:00+00:00",
                     "updated_at": "2026-03-12T09:02:00+00:00",
                 }
@@ -2042,11 +2118,24 @@ def test_list_memory_review_queue_returns_unlabeled_active_queue_payload(monkeyp
             "summary": {
                 "memory_status": "active",
                 "review_state": "unlabeled",
+                "priority_mode": "high_risk_first",
+                "available_priority_modes": [
+                    "oldest_first",
+                    "recent_first",
+                    "high_risk_first",
+                    "stale_truth_first",
+                ],
                 "limit": 7,
                 "returned_count": 1,
                 "total_count": 1,
                 "has_more": False,
-                "order": ["updated_at_desc", "created_at_desc", "id_desc"],
+                "order": [
+                    "is_high_risk_desc",
+                    "confidence_asc_nulls_first",
+                    "updated_at_desc",
+                    "created_at_desc",
+                    "id_desc",
+                ],
             },
         }
 
@@ -2054,7 +2143,11 @@ def test_list_memory_review_queue_returns_unlabeled_active_queue_payload(monkeyp
     monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
     monkeypatch.setattr(main_module, "list_memory_review_queue_records", fake_list_memory_review_queue_records)
 
-    response = main_module.list_memory_review_queue(user_id=user_id, limit=7)
+    response = main_module.list_memory_review_queue(
+        user_id=user_id,
+        limit=7,
+        priority_mode="high_risk_first",
+    )
 
     assert response.status_code == 200
     assert json.loads(response.body) == {
@@ -2065,6 +2158,10 @@ def test_list_memory_review_queue_returns_unlabeled_active_queue_payload(monkeyp
                 "value": {"likes": "oat milk"},
                 "status": "active",
                 "source_event_ids": ["event-1"],
+                "is_high_risk": True,
+                "is_stale_truth": False,
+                "queue_priority_mode": "high_risk_first",
+                "priority_reason": "high_risk",
                 "created_at": "2026-03-12T09:00:00+00:00",
                 "updated_at": "2026-03-12T09:02:00+00:00",
             }
@@ -2072,17 +2169,31 @@ def test_list_memory_review_queue_returns_unlabeled_active_queue_payload(monkeyp
         "summary": {
             "memory_status": "active",
             "review_state": "unlabeled",
+            "priority_mode": "high_risk_first",
+            "available_priority_modes": [
+                "oldest_first",
+                "recent_first",
+                "high_risk_first",
+                "stale_truth_first",
+            ],
             "limit": 7,
             "returned_count": 1,
             "total_count": 1,
             "has_more": False,
-            "order": ["updated_at_desc", "created_at_desc", "id_desc"],
+            "order": [
+                "is_high_risk_desc",
+                "confidence_asc_nulls_first",
+                "updated_at_desc",
+                "created_at_desc",
+                "id_desc",
+            ],
         },
     }
     assert captured["database_url"] == "postgresql://app"
     assert captured["current_user_id"] == user_id
     assert captured["user_id"] == user_id
     assert captured["limit"] == 7
+    assert captured["priority_mode"] == "high_risk_first"
 
 
 def test_get_memories_evaluation_summary_returns_aggregate_payload(monkeypatch) -> None:
@@ -2149,6 +2260,77 @@ def test_get_memories_evaluation_summary_returns_aggregate_payload(monkeypatch) 
                 "outdated",
                 "insufficient_evidence",
             ],
+        }
+    }
+    assert captured["database_url"] == "postgresql://app"
+    assert captured["current_user_id"] == user_id
+    assert captured["user_id"] == user_id
+
+
+def test_get_memories_quality_gate_returns_canonical_payload(monkeypatch) -> None:
+    user_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_user_connection(database_url: str, current_user_id):
+        captured["database_url"] = database_url
+        captured["current_user_id"] = current_user_id
+        yield object()
+
+    def fake_get_memory_quality_gate_summary(store, *, user_id):
+        captured["store_type"] = type(store).__name__
+        captured["user_id"] = user_id
+        return {
+            "summary": {
+                "status": "needs_review",
+                "precision": 0.9,
+                "precision_target": 0.8,
+                "adjudicated_sample_count": 10,
+                "minimum_adjudicated_sample": 10,
+                "remaining_to_minimum_sample": 0,
+                "unlabeled_memory_count": 1,
+                "high_risk_memory_count": 1,
+                "stale_truth_count": 0,
+                "superseded_active_conflict_count": 0,
+                "counts": {
+                    "active_memory_count": 11,
+                    "labeled_active_memory_count": 10,
+                    "adjudicated_correct_count": 9,
+                    "adjudicated_incorrect_count": 1,
+                    "outdated_label_count": 0,
+                    "insufficient_evidence_label_count": 0,
+                },
+            }
+        }
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(main_module, "get_memory_quality_gate_summary", fake_get_memory_quality_gate_summary)
+
+    response = main_module.get_memories_quality_gate(user_id=user_id)
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {
+        "summary": {
+            "status": "needs_review",
+            "precision": 0.9,
+            "precision_target": 0.8,
+            "adjudicated_sample_count": 10,
+            "minimum_adjudicated_sample": 10,
+            "remaining_to_minimum_sample": 0,
+            "unlabeled_memory_count": 1,
+            "high_risk_memory_count": 1,
+            "stale_truth_count": 0,
+            "superseded_active_conflict_count": 0,
+            "counts": {
+                "active_memory_count": 11,
+                "labeled_active_memory_count": 10,
+                "adjudicated_correct_count": 9,
+                "adjudicated_incorrect_count": 1,
+                "outdated_label_count": 0,
+                "insufficient_evidence_label_count": 0,
+            },
         }
     }
     assert captured["database_url"] == "postgresql://app"

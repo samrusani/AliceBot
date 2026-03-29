@@ -120,13 +120,16 @@ describe("MemoryLabelForm", () => {
         userId="user-1"
         activeFilter="queue"
         nextQueueMemoryId="memory-2"
+        queuePriorityMode="high_risk_first"
       />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Submit and next in queue" }));
 
     await waitFor(() => {
-      expect(pushMock).toHaveBeenCalledWith("/memories?filter=queue&memory=memory-2");
+      expect(pushMock).toHaveBeenCalledWith(
+        "/memories?filter=queue&memory=memory-2&priority_mode=high_risk_first",
+      );
     });
     expect(refreshMock).not.toHaveBeenCalled();
     expect(screen.getByText("Label saved. Advancing to next queue memory.")).toBeInTheDocument();

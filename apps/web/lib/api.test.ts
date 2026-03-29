@@ -1661,6 +1661,33 @@ describe("api helpers", () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
+          summary: {
+            status: "needs_review",
+            precision: 0.8,
+            precision_target: 0.8,
+            adjudicated_sample_count: 10,
+            minimum_adjudicated_sample: 10,
+            remaining_to_minimum_sample: 0,
+            unlabeled_memory_count: 1,
+            high_risk_memory_count: 1,
+            stale_truth_count: 0,
+            superseded_active_conflict_count: 0,
+            counts: {
+              active_memory_count: 3,
+              labeled_active_memory_count: 2,
+              adjudicated_correct_count: 8,
+              adjudicated_incorrect_count: 2,
+              outdated_label_count: 0,
+              insufficient_evidence_label_count: 0,
+            },
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
           memory: {
             id: "memory-1",
             memory_key: "user.preference.merchant",
@@ -1712,7 +1739,10 @@ describe("api helpers", () => {
     );
 
     await listMemories("https://api.example.com", "user-1", { status: "active", limit: 5 });
-    await listMemoryReviewQueue("https://api.example.com", "user-1", 3);
+    await listMemoryReviewQueue("https://api.example.com", "user-1", {
+      limit: 3,
+      priorityMode: "high_risk_first",
+    });
     await getMemoryEvaluationSummary("https://api.example.com", "user-1");
     await getMemoryDetail("https://api.example.com", "memory-1", "user-1");
     await getMemoryRevisions("https://api.example.com", "memory-1", "user-1", 10);
@@ -1726,13 +1756,19 @@ describe("api helpers", () => {
         }),
       ],
       [
-        "https://api.example.com/v0/memories/review-queue?user_id=user-1&limit=3",
+        "https://api.example.com/v0/memories/review-queue?user_id=user-1&limit=3&priority_mode=high_risk_first",
         expect.objectContaining({
           cache: "no-store",
         }),
       ],
       [
         "https://api.example.com/v0/memories/evaluation-summary?user_id=user-1",
+        expect.objectContaining({
+          cache: "no-store",
+        }),
+      ],
+      [
+        "https://api.example.com/v0/memories/quality-gate?user_id=user-1",
         expect.objectContaining({
           cache: "no-store",
         }),
@@ -1756,6 +1792,63 @@ describe("api helpers", () => {
         }),
       ],
     ]);
+  });
+
+  it("combines memory evaluation summary with canonical quality-gate payload", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          summary: {
+            total_memory_count: 2,
+            active_memory_count: 2,
+            deleted_memory_count: 0,
+            labeled_memory_count: 2,
+            unlabeled_memory_count: 0,
+            total_label_row_count: 2,
+            label_row_counts_by_value: {
+              correct: 2,
+              incorrect: 0,
+              outdated: 0,
+              insufficient_evidence: 0,
+            },
+            label_value_order: ["correct", "incorrect", "outdated", "insufficient_evidence"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          summary: {
+            status: "healthy",
+            precision: 1,
+            precision_target: 0.8,
+            adjudicated_sample_count: 10,
+            minimum_adjudicated_sample: 10,
+            remaining_to_minimum_sample: 0,
+            unlabeled_memory_count: 0,
+            high_risk_memory_count: 0,
+            stale_truth_count: 0,
+            superseded_active_conflict_count: 0,
+            counts: {
+              active_memory_count: 2,
+              labeled_active_memory_count: 2,
+              adjudicated_correct_count: 10,
+              adjudicated_incorrect_count: 0,
+              outdated_label_count: 0,
+              insufficient_evidence_label_count: 0,
+            },
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const payload = await getMemoryEvaluationSummary("https://api.example.com", "user-1");
+
+    expect(payload.summary.quality_gate?.status).toBe("healthy");
+    expect(payload.summary.quality_gate?.precision_target).toBe(0.8);
   });
 
   it("reads and mutates open-loop endpoints with user-scoped routing", async () => {
