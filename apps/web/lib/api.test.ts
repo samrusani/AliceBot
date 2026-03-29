@@ -56,6 +56,7 @@ import {
   listThreads,
   listTraces,
   queryContinuityRecall,
+  getContinuityRetrievalEvaluation,
   pageModeLabel,
   resolveApproval,
   shouldExpectThreadExecutionReview,
@@ -2522,6 +2523,35 @@ describe("api helpers", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/continuity/recall?user_id=user-1&query=rollout&thread_id=thread-1&project=Project+Phoenix&person=Alex&limit=20",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+  });
+
+  it("reads continuity retrieval evaluation fixture summary from the shipped endpoint", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          fixtures: [],
+          summary: {
+            fixture_count: 3,
+            evaluated_fixture_count: 3,
+            passing_fixture_count: 3,
+            precision_at_k_mean: 1,
+            precision_at_1_mean: 1,
+            precision_target: 0.8,
+            status: "pass",
+            fixture_order: ["fixture_id_asc"],
+            result_order: ["precision_at_k_desc", "fixture_id_asc"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await getContinuityRetrievalEvaluation("https://api.example.com", "user-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/continuity/retrieval-evaluation?user_id=user-1",
       expect.objectContaining({ cache: "no-store" }),
     );
   });
