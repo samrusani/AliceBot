@@ -268,9 +268,37 @@ Required metrics:
   - resumption-brief panel
   - preserved capture inbox/detail behavior from P5-S17
 
-## Explicitly Deferred After P5-S18
+## Shipped In P5-S19 (March 29, 2026)
 
-- P5-S19: memory correction queue, supersession workflow, freshness controls
+- continuity review/correction API surfaces:
+  - `GET /v0/continuity/review-queue`
+  - `GET /v0/continuity/review-queue/{continuity_object_id}`
+  - `POST /v0/continuity/review-queue/{continuity_object_id}/corrections`
+- deterministic correction actions:
+  - `confirm`
+  - `edit`
+  - `delete`
+  - `supersede`
+  - `mark_stale`
+- append-only correction-event ledger:
+  - immutable `continuity_correction_events` records
+  - correction event write occurs before lifecycle mutation
+- continuity-object freshness and supersession posture:
+  - `last_confirmed_at`
+  - `supersedes_object_id`
+  - `superseded_by_object_id`
+  - explicit lifecycle posture including `active`, `stale`, `superseded`, and `deleted`
+- recall/resumption correction awareness:
+  - deleted objects are excluded from recall payloads
+  - lifecycle posture ordering metadata includes `lifecycle_rank`
+  - superseded and stale posture remains explicit in review + recent-change outputs
+- `/continuity` workspace expansion for:
+  - review queue list/filter
+  - selected object correction form with supersession chain visibility
+  - correction event history review
+
+## Explicitly Deferred After P5-S19
+
 - P5-S20: daily/weekly open-loop review dashboards
 - keep docs and control-tower planning aligned with shipped behavior
 

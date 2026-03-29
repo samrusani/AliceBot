@@ -37,6 +37,7 @@ class RankedRecallCandidate:
     confirmation_status: MemoryConfirmationStatus
     confirmation_rank: int
     posture_rank: int
+    lifecycle_rank: int
     relevance: float
 
 
@@ -54,6 +55,14 @@ _CONFIRMATION_RANK: dict[MemoryConfirmationStatus, int] = {
 _POSTURE_RANK: dict[str, int] = {
     "DERIVED": 2,
     "TRIAGE": 1,
+}
+_LIFECYCLE_RANK: dict[str, int] = {
+    "active": 4,
+    "stale": 3,
+    "completed": 2,
+    "cancelled": 2,
+    "superseded": 1,
+    "deleted": 0,
 }
 
 
@@ -134,6 +143,9 @@ def _extract_confirmation_status(row: ContinuityRecallCandidateRow) -> MemoryCon
             normalized = value.casefold()
             if normalized in MEMORY_CONFIRMATION_STATUSES:
                 return cast(MemoryConfirmationStatus, normalized)
+
+    if row["last_confirmed_at"] is not None:
+        return "confirmed"
 
     return "unconfirmed"
 
@@ -299,6 +311,7 @@ def _serialize_recall_result(item: RankedRecallCandidate) -> ContinuityRecallRes
         "query_term_match_count": item.query_term_match_count,
         "confirmation_rank": item.confirmation_rank,
         "posture_rank": item.posture_rank,
+        "lifecycle_rank": item.lifecycle_rank,
         "confidence": float(row["confidence"]),
     }
 
@@ -314,6 +327,13 @@ def _serialize_recall_result(item: RankedRecallCandidate) -> ContinuityRecallRes
         "admission_posture": row["admission_posture"],  # type: ignore[typeddict-item]
         "confidence": float(row["confidence"]),
         "relevance": item.relevance,
+        "last_confirmed_at": isoformat_or_none(row["last_confirmed_at"]),
+        "supersedes_object_id": (
+            None if row["supersedes_object_id"] is None else str(row["supersedes_object_id"])
+        ),
+        "superseded_by_object_id": (
+            None if row["superseded_by_object_id"] is None else str(row["superseded_by_object_id"])
+        ),
         "scope_matches": item.scope_matches,
         "provenance_references": _build_provenance_references(
             row["capture_event_id"],
@@ -373,6 +393,9 @@ def _ordered_recall_candidates(
     ranked_candidates: list[RankedRecallCandidate] = []
 
     for row in store.list_continuity_recall_candidates():
+        if row["status"] == "deleted":
+            continue
+
         if not _matches_time_window(
             row,
             since=request.since,
@@ -402,11 +425,13 @@ def _ordered_recall_candidates(
         confirmation_status = _extract_confirmation_status(row)
         confirmation_rank = _CONFIRMATION_RANK[confirmation_status]
         posture_rank = _POSTURE_RANK.get(row["admission_posture"], 0)
+        lifecycle_rank = _LIFECYCLE_RANK.get(row["status"], 0)
         relevance = (
             float(len(scope_matches)) * 100.0
             + float(query_term_match_count) * 10.0
             + float(confirmation_rank) * 5.0
             + float(posture_rank) * 2.0
+            + float(lifecycle_rank) * 3.0
             + float(row["confidence"])
         )
 
@@ -418,6 +443,7 @@ def _ordered_recall_candidates(
                 confirmation_status=confirmation_status,
                 confirmation_rank=confirmation_rank,
                 posture_rank=posture_rank,
+                lifecycle_rank=lifecycle_rank,
                 relevance=relevance,
             )
         )
@@ -429,6 +455,7 @@ def _ordered_recall_candidates(
             candidate.query_term_match_count,
             candidate.confirmation_rank,
             candidate.posture_rank,
+            candidate.lifecycle_rank,
             float(candidate.row["confidence"]),
             candidate.row["object_created_at"],
             str(candidate.row["id"]),
