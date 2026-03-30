@@ -8,6 +8,7 @@ const {
   getApiConfigMock,
   getMemoryDetailMock,
   getMemoryEvaluationSummaryMock,
+  getMemoryTrustDashboardMock,
   getMemoryRevisionsMock,
   getOpenLoopDetailMock,
   hasLiveApiConfigMock,
@@ -19,6 +20,7 @@ const {
   getApiConfigMock: vi.fn(),
   getMemoryDetailMock: vi.fn(),
   getMemoryEvaluationSummaryMock: vi.fn(),
+  getMemoryTrustDashboardMock: vi.fn(),
   getMemoryRevisionsMock: vi.fn(),
   getOpenLoopDetailMock: vi.fn(),
   hasLiveApiConfigMock: vi.fn(),
@@ -59,6 +61,7 @@ vi.mock("../../lib/api", async () => {
     getApiConfig: getApiConfigMock,
     getMemoryDetail: getMemoryDetailMock,
     getMemoryEvaluationSummary: getMemoryEvaluationSummaryMock,
+    getMemoryTrustDashboard: getMemoryTrustDashboardMock,
     getMemoryRevisions: getMemoryRevisionsMock,
     getOpenLoopDetail: getOpenLoopDetailMock,
     hasLiveApiConfig: hasLiveApiConfigMock,
@@ -74,6 +77,7 @@ describe("MemoriesPage", () => {
     getApiConfigMock.mockReset();
     getMemoryDetailMock.mockReset();
     getMemoryEvaluationSummaryMock.mockReset();
+    getMemoryTrustDashboardMock.mockReset();
     getMemoryRevisionsMock.mockReset();
     getOpenLoopDetailMock.mockReset();
     hasLiveApiConfigMock.mockReset();
@@ -100,6 +104,8 @@ describe("MemoriesPage", () => {
 
     expect(screen.getByText("Fixture-backed")).toBeInTheDocument();
     expect(screen.getByText("Summary Fixture")).toBeInTheDocument();
+    expect(screen.getByText("Canonical quality posture")).toBeInTheDocument();
+    expect(screen.getByText(/Fixture dashboard/)).toBeInTheDocument();
     expect(screen.getByText("Queue Fixture")).toBeInTheDocument();
     expect(screen.getAllByText("Insufficient sample").length).toBeGreaterThan(0);
     expect(screen.getByText("Fixture list")).toBeInTheDocument();
@@ -196,6 +202,76 @@ describe("MemoriesPage", () => {
             insufficient_evidence_label_count: 0,
           },
         },
+      },
+    });
+    getMemoryTrustDashboardMock.mockResolvedValue({
+      dashboard: {
+        quality_gate: {
+          status: "needs_review",
+          precision: 0.8,
+          precision_target: 0.8,
+          adjudicated_sample_count: 10,
+          minimum_adjudicated_sample: 10,
+          remaining_to_minimum_sample: 0,
+          unlabeled_memory_count: 2,
+          high_risk_memory_count: 1,
+          stale_truth_count: 1,
+          superseded_active_conflict_count: 0,
+          counts: {
+            active_memory_count: 12,
+            labeled_active_memory_count: 10,
+            adjudicated_correct_count: 8,
+            adjudicated_incorrect_count: 2,
+            outdated_label_count: 0,
+            insufficient_evidence_label_count: 0,
+          },
+        },
+        queue_posture: {
+          priority_mode: "recent_first",
+          total_count: 2,
+          high_risk_count: 1,
+          stale_truth_count: 1,
+          priority_reason_counts: { recent_first: 2 },
+          order: ["updated_at_desc", "created_at_desc", "id_desc"],
+          aging: {
+            anchor_updated_at: "2026-03-23T09:00:00Z",
+            newest_updated_at: "2026-03-23T09:00:00Z",
+            oldest_updated_at: "2026-03-22T09:00:00Z",
+            backlog_span_hours: 24,
+            fresh_within_24h_count: 2,
+            aging_24h_to_72h_count: 0,
+            stale_over_72h_count: 0,
+          },
+        },
+        retrieval_quality: {
+          fixture_count: 3,
+          evaluated_fixture_count: 3,
+          passing_fixture_count: 3,
+          precision_at_k_mean: 1,
+          precision_at_1_mean: 1,
+          precision_target: 0.8,
+          status: "pass",
+          fixture_order: ["fixture_id_asc"],
+          result_order: ["precision_at_k_desc", "fixture_id_asc"],
+        },
+        correction_freshness: {
+          total_open_loop_count: 1,
+          stale_open_loop_count: 0,
+          correction_recurrence_count: 0,
+          freshness_drift_count: 0,
+        },
+        recommended_review: {
+          priority_mode: "high_risk_first",
+          action: "review_high_risk_queue",
+          reason: "High-risk unlabeled memories are present; triage those before lower-risk backlog.",
+        },
+        sources: [
+          "memories",
+          "memory_review_labels",
+          "continuity_recall",
+          "continuity_correction_events",
+          "retrieval_evaluation_fixtures",
+        ],
       },
     });
     listOpenLoopsMock.mockResolvedValue({
@@ -312,6 +388,8 @@ describe("MemoriesPage", () => {
 
     expect(screen.getByText("Live API")).toBeInTheDocument();
     expect(screen.getByText("Summary Live")).toBeInTheDocument();
+    expect(screen.getByText(/Live dashboard/)).toBeInTheDocument();
+    expect(screen.getByText("review_high_risk_queue")).toBeInTheDocument();
     expect(screen.getByText("Queue Live")).toBeInTheDocument();
     expect(screen.getByText("Healthy")).toBeInTheDocument();
     expect(screen.getByText("Live list")).toBeInTheDocument();
@@ -344,6 +422,7 @@ describe("MemoriesPage", () => {
     expect(listMemoryReviewQueueMock).toHaveBeenCalledWith("https://api.example.com", "user-1", {
       priorityMode: "recent_first",
     });
+    expect(getMemoryTrustDashboardMock).toHaveBeenCalledWith("https://api.example.com", "user-1");
   });
 
   it("keeps fallback state explicit when live reads partially fail and shows unavailable revision/label panels", async () => {
@@ -378,6 +457,7 @@ describe("MemoriesPage", () => {
     });
     listMemoryReviewQueueMock.mockRejectedValue(new Error("queue down"));
     getMemoryEvaluationSummaryMock.mockRejectedValue(new Error("summary down"));
+    getMemoryTrustDashboardMock.mockRejectedValue(new Error("trust dashboard down"));
     listOpenLoopsMock.mockRejectedValue(new Error("open loops down"));
     getMemoryDetailMock.mockRejectedValue(new Error("detail down"));
     getMemoryRevisionsMock.mockRejectedValue(new Error("revisions down"));
@@ -392,6 +472,7 @@ describe("MemoriesPage", () => {
     );
 
     expect(screen.getByText("Summary: summary down")).toBeInTheDocument();
+    expect(screen.getByText(/trust dashboard down/)).toBeInTheDocument();
     expect(screen.getByText("Queue: queue down")).toBeInTheDocument();
     expect(screen.getByText(/open loops down/)).toBeInTheDocument();
     expect(screen.getAllByText("Insufficient sample").length).toBeGreaterThan(0);
