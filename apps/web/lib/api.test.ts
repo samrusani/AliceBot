@@ -24,6 +24,7 @@ import {
   getContinuityWeeklyReview,
   getMemoryDetail,
   getMemoryEvaluationSummary,
+  getMemoryTrustDashboard,
   getMemoryRevisions,
   getTaskSteps,
   getThreadDetail,
@@ -1850,6 +1851,97 @@ describe("api helpers", () => {
 
     expect(payload.summary.quality_gate?.status).toBe("healthy");
     expect(payload.summary.quality_gate?.precision_target).toBe(0.8);
+  });
+
+  it("reads canonical memory trust dashboard payload", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          dashboard: {
+            quality_gate: {
+              status: "needs_review",
+              precision: 0.9,
+              precision_target: 0.8,
+              adjudicated_sample_count: 10,
+              minimum_adjudicated_sample: 10,
+              remaining_to_minimum_sample: 0,
+              unlabeled_memory_count: 2,
+              high_risk_memory_count: 1,
+              stale_truth_count: 1,
+              superseded_active_conflict_count: 0,
+              counts: {
+                active_memory_count: 12,
+                labeled_active_memory_count: 10,
+                adjudicated_correct_count: 9,
+                adjudicated_incorrect_count: 1,
+                outdated_label_count: 0,
+                insufficient_evidence_label_count: 0,
+              },
+            },
+            queue_posture: {
+              priority_mode: "recent_first",
+              total_count: 2,
+              high_risk_count: 1,
+              stale_truth_count: 1,
+              priority_reason_counts: {
+                recent_first: 2,
+              },
+              order: ["updated_at_desc", "created_at_desc", "id_desc"],
+              aging: {
+                anchor_updated_at: "2026-03-29T12:00:00Z",
+                newest_updated_at: "2026-03-29T12:00:00Z",
+                oldest_updated_at: "2026-03-27T12:00:00Z",
+                backlog_span_hours: 48,
+                fresh_within_24h_count: 1,
+                aging_24h_to_72h_count: 1,
+                stale_over_72h_count: 0,
+              },
+            },
+            retrieval_quality: {
+              fixture_count: 3,
+              evaluated_fixture_count: 3,
+              passing_fixture_count: 3,
+              precision_at_k_mean: 1,
+              precision_at_1_mean: 1,
+              precision_target: 0.8,
+              status: "pass",
+              fixture_order: ["fixture_id_asc"],
+              result_order: ["precision_at_k_desc", "fixture_id_asc"],
+            },
+            correction_freshness: {
+              total_open_loop_count: 4,
+              stale_open_loop_count: 1,
+              correction_recurrence_count: 1,
+              freshness_drift_count: 1,
+            },
+            recommended_review: {
+              priority_mode: "high_risk_first",
+              action: "review_high_risk_queue",
+              reason: "High-risk unlabeled memories are present; triage those first.",
+            },
+            sources: [
+              "memories",
+              "memory_review_labels",
+              "continuity_recall",
+              "continuity_correction_events",
+              "retrieval_evaluation_fixtures",
+            ],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const payload = await getMemoryTrustDashboard("https://api.example.com", "user-1");
+
+    expect(payload.dashboard.recommended_review.action).toBe("review_high_risk_queue");
+    expect(payload.dashboard.queue_posture.total_count).toBe(2);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/memories/trust-dashboard?user_id=user-1",
+      expect.objectContaining({
+        cache: "no-store",
+      }),
+    );
   });
 
   it("reads and mutates open-loop endpoints with user-scoped routing", async () => {

@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
+import psycopg
+
+from alicebot_api.continuity_open_loops import compile_continuity_weekly_review
 from alicebot_api.contracts import (
     AdmissionDecisionOutput,
     DEFAULT_AGENT_PROFILE_ID,
@@ -39,8 +42,15 @@ from alicebot_api.contracts import (
     MemoryReviewQueueSummary,
     MemoryQualityGateComputationCounts,
     MemoryQualityGateResponse,
+    MemoryQualityReviewAction,
     MemoryQualityGateStatus,
     MemoryQualityGateSummary,
+    MemoryTrustCorrectionFreshnessSummary,
+    MemoryTrustDashboardResponse,
+    MemoryTrustDashboardSummary,
+    MemoryTrustQueueAgingSummary,
+    MemoryTrustQueuePostureSummary,
+    MemoryTrustRecommendedReview,
     MemoryRevisionReviewListResponse,
     MemoryRevisionReviewListSummary,
     MemoryRevisionReviewRecord,
@@ -60,8 +70,10 @@ from alicebot_api.contracts import (
     OpenLoopStatusUpdateResponse,
     PersistedMemoryRecord,
     PersistedMemoryRevisionRecord,
+    ContinuityWeeklyReviewRequestInput,
     isoformat_or_none,
 )
+from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
 from alicebot_api.store import (
     ContinuityStore,
     EventRow,
@@ -550,6 +562,183 @@ def _calculate_memory_precision(*, correct_count: int, incorrect_count: int) -> 
     return correct_count / denominator
 
 
+def _queue_age_hours(*, anchor_updated_at: datetime, updated_at: datetime) -> float:
+    age_hours = (anchor_updated_at - updated_at).total_seconds() / 3600.0
+    return max(0.0, age_hours)
+
+
+def _summarize_queue_aging(queue_memories: list[MemoryRow]) -> MemoryTrustQueueAgingSummary:
+    if not queue_memories:
+        return {
+            "anchor_updated_at": None,
+            "newest_updated_at": None,
+            "oldest_updated_at": None,
+            "backlog_span_hours": 0.0,
+            "fresh_within_24h_count": 0,
+            "aging_24h_to_72h_count": 0,
+            "stale_over_72h_count": 0,
+        }
+
+    newest_updated_at = max(memory["updated_at"] for memory in queue_memories)
+    oldest_updated_at = min(memory["updated_at"] for memory in queue_memories)
+    fresh_count = 0
+    aging_count = 0
+    stale_count = 0
+
+    for memory in queue_memories:
+        age_hours = _queue_age_hours(
+            anchor_updated_at=newest_updated_at,
+            updated_at=memory["updated_at"],
+        )
+        if age_hours <= 24.0:
+            fresh_count += 1
+        elif age_hours <= 72.0:
+            aging_count += 1
+        else:
+            stale_count += 1
+
+    backlog_span_hours = max(
+        0.0,
+        (newest_updated_at - oldest_updated_at).total_seconds() / 3600.0,
+    )
+    return {
+        "anchor_updated_at": newest_updated_at.isoformat(),
+        "newest_updated_at": newest_updated_at.isoformat(),
+        "oldest_updated_at": oldest_updated_at.isoformat(),
+        "backlog_span_hours": round(backlog_span_hours, 6),
+        "fresh_within_24h_count": fresh_count,
+        "aging_24h_to_72h_count": aging_count,
+        "stale_over_72h_count": stale_count,
+    }
+
+
+def _summarize_queue_posture(
+    *,
+    queue_memories: list[MemoryRow],
+    priority_mode: MemoryReviewQueuePriorityMode,
+) -> MemoryTrustQueuePostureSummary:
+    high_risk_count = 0
+    stale_truth_count = 0
+    priority_reason_counts: dict[str, int] = {}
+
+    for memory in queue_memories:
+        is_high_risk = _is_high_risk_memory(memory)
+        is_stale_truth = _is_stale_truth_memory(memory)
+        if is_high_risk:
+            high_risk_count += 1
+        if is_stale_truth:
+            stale_truth_count += 1
+
+        reason = _review_queue_priority_reason(
+            priority_mode=priority_mode,
+            is_high_risk=is_high_risk,
+            is_stale_truth=is_stale_truth,
+        )
+        priority_reason_counts[reason] = priority_reason_counts.get(reason, 0) + 1
+
+    return {
+        "priority_mode": priority_mode,
+        "total_count": len(queue_memories),
+        "high_risk_count": high_risk_count,
+        "stale_truth_count": stale_truth_count,
+        "priority_reason_counts": {
+            reason: priority_reason_counts[reason] for reason in sorted(priority_reason_counts)
+        },
+        "order": list(MEMORY_REVIEW_QUEUE_ORDER_BY_PRIORITY_MODE[priority_mode]),
+        "aging": _summarize_queue_aging(queue_memories),
+    }
+
+
+def _determine_recommended_review(
+    *,
+    quality_gate: MemoryQualityGateSummary,
+    queue_posture: MemoryTrustQueuePostureSummary,
+    correction_freshness: MemoryTrustCorrectionFreshnessSummary,
+) -> MemoryTrustRecommendedReview:
+    action: MemoryQualityReviewAction
+    priority_mode: MemoryReviewQueuePriorityMode
+    reason: str
+
+    if quality_gate["remaining_to_minimum_sample"] > 0:
+        action = "adjudicate_minimum_sample"
+        priority_mode = "recent_first"
+        reason = (
+            "Adjudicated sample is below minimum threshold; prioritize recent backlog "
+            "to reach quality-gate sample sufficiency."
+        )
+    elif queue_posture["high_risk_count"] > 0:
+        action = "review_high_risk_queue"
+        priority_mode = "high_risk_first"
+        reason = "High-risk unlabeled memories are present; triage those before lower-risk backlog."
+    elif queue_posture["stale_truth_count"] > 0:
+        action = "review_stale_truth_queue"
+        priority_mode = "stale_truth_first"
+        reason = "Stale-truth unlabeled memories are present; resolve stale truth before newer backlog."
+    elif queue_posture["total_count"] > 0:
+        action = "drain_unlabeled_queue"
+        priority_mode = "oldest_first"
+        reason = "Unlabeled backlog remains; drain oldest-first for deterministic queue hygiene."
+    elif correction_freshness["correction_recurrence_count"] > 0:
+        action = "investigate_correction_recurrence"
+        priority_mode = "recent_first"
+        reason = (
+            "Queue is clear but recurring correction patterns are present; inspect recent corrections "
+            "for repeated quality misses."
+        )
+    elif correction_freshness["freshness_drift_count"] > 0:
+        action = "remediate_freshness_drift"
+        priority_mode = "stale_truth_first"
+        reason = "Queue is clear but freshness drift is present; prioritize stale truth remediation."
+    else:
+        action = "monitor_quality_posture"
+        priority_mode = "recent_first"
+        reason = "Quality posture is stable; continue deterministic monitoring with recent-first review."
+
+    return {
+        "priority_mode": priority_mode,
+        "action": action,
+        "reason": reason,
+    }
+
+
+def _is_missing_continuity_table_error(exc: psycopg.errors.UndefinedTable) -> bool:
+    message = str(exc)
+    return (
+        "continuity_objects" in message
+        or "continuity_capture_events" in message
+        or "continuity_correction_events" in message
+    )
+
+
+def _summarize_correction_freshness(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+) -> MemoryTrustCorrectionFreshnessSummary:
+    try:
+        weekly_rollup = compile_continuity_weekly_review(
+            store,
+            user_id=user_id,
+            request=ContinuityWeeklyReviewRequestInput(),
+        )["review"]["rollup"]
+    except psycopg.errors.UndefinedTable as exc:
+        if not _is_missing_continuity_table_error(exc):
+            raise
+        return {
+            "total_open_loop_count": 0,
+            "stale_open_loop_count": 0,
+            "correction_recurrence_count": 0,
+            "freshness_drift_count": 0,
+        }
+
+    return {
+        "total_open_loop_count": weekly_rollup["total_count"],
+        "stale_open_loop_count": weekly_rollup["stale_count"],
+        "correction_recurrence_count": weekly_rollup["correction_recurrence_count"],
+        "freshness_drift_count": weekly_rollup["freshness_drift_count"],
+    }
+
+
 def _determine_memory_quality_gate_status(
     *,
     adjudicated_sample_count: int,
@@ -659,6 +848,63 @@ def get_memory_quality_gate_summary(
     return {
         "summary": summary,
     }
+
+
+def get_memory_trust_dashboard_summary(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+) -> MemoryTrustDashboardResponse:
+    quality_gate_summary = get_memory_quality_gate_summary(
+        store,
+        user_id=user_id,
+    )["summary"]
+
+    queue_priority_mode = DEFAULT_MEMORY_REVIEW_QUEUE_PRIORITY_MODE
+    unlabeled_queue_count = store.count_unlabeled_review_memories()
+    queue_candidates = (
+        []
+        if unlabeled_queue_count == 0
+        else store.list_unlabeled_review_memories(limit=None)
+    )
+    queue_memories = _order_review_queue_memories(
+        queue_candidates,
+        priority_mode=queue_priority_mode,
+    )
+    queue_posture = _summarize_queue_posture(
+        queue_memories=queue_memories,
+        priority_mode=queue_priority_mode,
+    )
+
+    retrieval_quality_summary = get_retrieval_evaluation_summary(
+        store,
+        user_id=user_id,
+    )["summary"]
+    correction_freshness = _summarize_correction_freshness(
+        store,
+        user_id=user_id,
+    )
+    recommended_review = _determine_recommended_review(
+        quality_gate=quality_gate_summary,
+        queue_posture=queue_posture,
+        correction_freshness=correction_freshness,
+    )
+
+    dashboard: MemoryTrustDashboardSummary = {
+        "quality_gate": quality_gate_summary,
+        "queue_posture": queue_posture,
+        "retrieval_quality": retrieval_quality_summary,
+        "correction_freshness": correction_freshness,
+        "recommended_review": recommended_review,
+        "sources": [
+            "memories",
+            "memory_review_labels",
+            "continuity_recall",
+            "continuity_correction_events",
+            "retrieval_evaluation_fixtures",
+        ],
+    }
+    return {"dashboard": dashboard}
 
 
 def _serialize_open_loop(open_loop: OpenLoopRow) -> OpenLoopRecord:

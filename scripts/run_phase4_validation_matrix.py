@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import shlex
 import subprocess
@@ -12,6 +13,7 @@ from typing import Callable, Literal
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+QUALITY_EVIDENCE_ARTIFACT_PATH = ROOT_DIR / "artifacts" / "release" / "phase6_quality_evidence.json"
 
 INDUCED_FAILURE_EXIT_CODE = 97
 
@@ -264,10 +266,72 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _collect_quality_evidence_summary(*, python_executable: str) -> dict[str, object]:
+    command = (python_executable, "scripts/run_phase6_quality_evidence.py")
+    completed = subprocess.run(
+        list(command),
+        cwd=ROOT_DIR,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    summary: dict[str, object] = {
+        "status": "PASS" if completed.returncode == 0 else "WARN",
+        "command": list(command),
+        "exit_code": completed.returncode,
+        "artifact_path": None,
+        "quality_gate_status": None,
+        "recommended_review_mode": None,
+        "recommended_review_action": None,
+        "detail": None,
+    }
+    if completed.returncode != 0:
+        summary["detail"] = (completed.stderr or completed.stdout).strip() or "quality evidence command failed"
+        return summary
+    if not QUALITY_EVIDENCE_ARTIFACT_PATH.exists():
+        summary["status"] = "WARN"
+        summary["detail"] = (
+            "quality evidence command exited successfully but artifact path was not found: "
+            f"{QUALITY_EVIDENCE_ARTIFACT_PATH}"
+        )
+        return summary
+
+    payload = json.loads(QUALITY_EVIDENCE_ARTIFACT_PATH.read_text(encoding="utf-8"))
+    dashboard = payload.get("dashboard", {})
+    quality_gate = dashboard.get("quality_gate", {}) if isinstance(dashboard, dict) else {}
+    recommended_review = dashboard.get("recommended_review", {}) if isinstance(dashboard, dict) else {}
+    summary["artifact_path"] = payload.get("artifact_path")
+    summary["quality_gate_status"] = quality_gate.get("status")
+    summary["recommended_review_mode"] = recommended_review.get("priority_mode")
+    summary["recommended_review_action"] = recommended_review.get("action")
+    return summary
+
+
+def _print_quality_evidence_summary(summary: dict[str, object]) -> None:
+    print("Phase 6 quality evidence summary:")
+    print(f" - status: {summary['status']}")
+    print(f"   command: {shlex.join(summary['command'])}")
+    print(f"   exit_code: {summary['exit_code']}")
+    if summary.get("artifact_path") is not None:
+        print(f"   artifact_path: {summary['artifact_path']}")
+    if summary.get("quality_gate_status") is not None:
+        print(f"   quality_gate_status: {summary['quality_gate_status']}")
+    if summary.get("recommended_review_mode") is not None:
+        print(f"   recommended_review_mode: {summary['recommended_review_mode']}")
+    if summary.get("recommended_review_action") is not None:
+        print(f"   recommended_review_action: {summary['recommended_review_action']}")
+    if summary.get("detail") is not None:
+        print(f"   detail: {summary['detail']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     step_results = run_validation_matrix(induce_step=args.induce_step)
     _print_step_results(step_results)
+    quality_evidence_summary = _collect_quality_evidence_summary(
+        python_executable=_resolve_python_executable()
+    )
+    _print_quality_evidence_summary(quality_evidence_summary)
 
     exit_code = exit_code_for_step_results(step_results)
     if exit_code == 0:
