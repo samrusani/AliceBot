@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import psycopg
 import pytest
 
+import alicebot_api.memory as memory_module
 from alicebot_api.contracts import (
     MemoryCandidateInput,
     OpenLoopCandidateInput,
@@ -22,6 +24,7 @@ from alicebot_api.memory import (
     get_open_loop_record,
     get_memory_evaluation_summary,
     get_memory_quality_gate_summary,
+    get_memory_trust_dashboard_summary,
     get_memory_review_record,
     list_open_loop_records,
     list_memory_review_queue_records,
@@ -636,6 +639,19 @@ class MemoryReviewStoreStub:
                 counts[label_name] = counts.get(label_name, 0) + 1
         return [{"label": label, "count": count} for label, count in sorted(counts.items())]
 
+    def list_continuity_recall_candidates(self) -> list[dict[str, object]]:
+        return []
+
+    def list_continuity_correction_events(
+        self,
+        *,
+        continuity_object_id: UUID,
+        limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        del continuity_object_id
+        del limit
+        return []
+
     def _filtered_memories(self, status: str | None) -> list[dict[str, object]]:
         if status is None:
             return list(self.memories)
@@ -1237,6 +1253,115 @@ def test_get_memory_quality_gate_summary_returns_canonical_status_transitions() 
     assert healthy["summary"]["high_risk_memory_count"] == 0
     assert healthy["summary"]["stale_truth_count"] == 0
     assert healthy["summary"]["superseded_active_conflict_count"] == 0
+
+
+def test_get_memory_trust_dashboard_summary_is_deterministic_and_uses_canonical_components() -> None:
+    store = MemoryReviewStoreStub()
+    base_time = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
+
+    labeled_memory_ids = [uuid4() for _ in range(10)]
+    for index, memory_id in enumerate(labeled_memory_ids):
+        store.memories.append(
+            {
+                "id": memory_id,
+                "user_id": uuid4(),
+                "memory_key": f"user.preference.reviewed_{index}",
+                "value": {"index": index},
+                "status": "active",
+                "source_event_ids": [f"event-reviewed-{index}"],
+                "confirmation_status": "confirmed",
+                "confidence": 0.95,
+                "valid_to": None,
+                "created_at": base_time + timedelta(minutes=index),
+                "updated_at": base_time + timedelta(minutes=index),
+                "deleted_at": None,
+            }
+        )
+        store.labels[memory_id] = [
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "memory_id": memory_id,
+                "label": "correct",
+                "note": None,
+                "created_at": base_time + timedelta(hours=1, minutes=index),
+            }
+        ]
+
+    high_risk_memory_id = uuid4()
+    stale_truth_memory_id = uuid4()
+    store.memories.extend(
+        [
+            {
+                "id": high_risk_memory_id,
+                "user_id": uuid4(),
+                "memory_key": "user.preference.high_risk",
+                "value": {"state": "high_risk"},
+                "status": "active",
+                "source_event_ids": ["event-high-risk"],
+                "confirmation_status": "unconfirmed",
+                "confidence": 0.2,
+                "valid_to": None,
+                "created_at": base_time + timedelta(hours=2),
+                "updated_at": base_time + timedelta(hours=2),
+                "deleted_at": None,
+            },
+            {
+                "id": stale_truth_memory_id,
+                "user_id": uuid4(),
+                "memory_key": "user.preference.stale_truth",
+                "value": {"state": "stale_truth"},
+                "status": "active",
+                "source_event_ids": ["event-stale-truth"],
+                "confirmation_status": "contested",
+                "confidence": 0.95,
+                "valid_to": base_time - timedelta(days=1),
+                "created_at": base_time,
+                "updated_at": base_time,
+                "deleted_at": None,
+            },
+        ]
+    )
+
+    first = get_memory_trust_dashboard_summary(store, user_id=uuid4())  # type: ignore[arg-type]
+    second = get_memory_trust_dashboard_summary(store, user_id=uuid4())  # type: ignore[arg-type]
+
+    assert first == second
+    assert first["dashboard"]["quality_gate"]["status"] == "needs_review"
+    assert first["dashboard"]["queue_posture"]["total_count"] == 2
+    assert first["dashboard"]["queue_posture"]["high_risk_count"] == 2
+    assert first["dashboard"]["queue_posture"]["stale_truth_count"] == 1
+    assert first["dashboard"]["retrieval_quality"]["fixture_count"] == 3
+    assert first["dashboard"]["correction_freshness"] == {
+        "total_open_loop_count": 0,
+        "stale_open_loop_count": 0,
+        "correction_recurrence_count": 0,
+        "freshness_drift_count": 0,
+    }
+    assert first["dashboard"]["recommended_review"]["priority_mode"] == "high_risk_first"
+    assert first["dashboard"]["recommended_review"]["action"] == "review_high_risk_queue"
+
+
+def test_get_memory_trust_dashboard_summary_handles_missing_continuity_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = MemoryReviewStoreStub()
+
+    def _raise_missing_continuity_table(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args
+        del kwargs
+        raise psycopg.errors.UndefinedTable('relation "continuity_objects" does not exist')
+
+    monkeypatch.setattr(memory_module, "compile_continuity_weekly_review", _raise_missing_continuity_table)
+
+    payload = get_memory_trust_dashboard_summary(store, user_id=uuid4())  # type: ignore[arg-type]
+
+    assert payload["dashboard"]["correction_freshness"] == {
+        "total_open_loop_count": 0,
+        "stale_open_loop_count": 0,
+        "correction_recurrence_count": 0,
+        "freshness_drift_count": 0,
+    }
 
 
 def test_list_memory_revision_review_records_returns_deterministic_revision_order() -> None:

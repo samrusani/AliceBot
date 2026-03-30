@@ -506,6 +506,15 @@ export type MemoryQualityGateStatus =
   | "insufficient_sample"
   | "degraded";
 
+export type MemoryQualityReviewAction =
+  | "adjudicate_minimum_sample"
+  | "review_high_risk_queue"
+  | "review_stale_truth_queue"
+  | "drain_unlabeled_queue"
+  | "investigate_correction_recurrence"
+  | "remediate_freshness_drift"
+  | "monitor_quality_posture";
+
 export type MemoryQualityGateSummary = {
   status: MemoryQualityGateStatus;
   precision: number | null;
@@ -537,6 +546,48 @@ export type MemoryEvaluationSummary = {
   label_row_counts_by_value: MemoryReviewLabelCounts;
   label_value_order: MemoryReviewLabelValue[];
   quality_gate?: MemoryQualityGateSummary;
+};
+
+export type MemoryTrustQueueAgingSummary = {
+  anchor_updated_at: string | null;
+  newest_updated_at: string | null;
+  oldest_updated_at: string | null;
+  backlog_span_hours: number;
+  fresh_within_24h_count: number;
+  aging_24h_to_72h_count: number;
+  stale_over_72h_count: number;
+};
+
+export type MemoryTrustQueuePostureSummary = {
+  priority_mode: MemoryReviewQueuePriorityMode;
+  total_count: number;
+  high_risk_count: number;
+  stale_truth_count: number;
+  priority_reason_counts: Record<string, number>;
+  order: string[];
+  aging: MemoryTrustQueueAgingSummary;
+};
+
+export type MemoryTrustCorrectionFreshnessSummary = {
+  total_open_loop_count: number;
+  stale_open_loop_count: number;
+  correction_recurrence_count: number;
+  freshness_drift_count: number;
+};
+
+export type MemoryTrustRecommendedReview = {
+  priority_mode: MemoryReviewQueuePriorityMode;
+  action: MemoryQualityReviewAction;
+  reason: string;
+};
+
+export type MemoryTrustDashboardSummary = {
+  quality_gate: MemoryQualityGateSummary;
+  queue_posture: MemoryTrustQueuePostureSummary;
+  retrieval_quality: RetrievalEvaluationSummary;
+  correction_freshness: MemoryTrustCorrectionFreshnessSummary;
+  recommended_review: MemoryTrustRecommendedReview;
+  sources: string[];
 };
 
 export type OpenLoopRecord = {
@@ -2508,6 +2559,15 @@ export async function getMemoryEvaluationSummary(apiBaseUrl: string, userId: str
       quality_gate: qualityGatePayload.summary,
     },
   };
+}
+
+export function getMemoryTrustDashboard(apiBaseUrl: string, userId: string) {
+  return requestJson<{ dashboard: MemoryTrustDashboardSummary }>(
+    apiBaseUrl,
+    "/v0/memories/trust-dashboard",
+    undefined,
+    { user_id: userId },
+  );
 }
 
 export function getMemoryDetail(apiBaseUrl: string, memoryId: string, userId: string) {
