@@ -3,8 +3,9 @@
 ## Canonical Truth
 
 - The canonical baseline remains through Phase 3 Sprint 9.
+- Active Sprint focus is Phase 4 Sprint 14 release-control layer for canonical gate ownership compatibility.
 - Earlier Phase 4 work is already delivered: task-run linkage to approvals/executions, idempotent proxy execution replay guards, approval pause/resume continuity for linked runs, run transition observability, explicit stop reasons, bounded retries with persisted posture, explicit failure classes, and deterministic Phase 4 gate runners.
-- Active Sprint focus is Phase 4 Sprint 14 release-control ownership as canonical baseline. Current delivery has advanced through Phase 5 Sprint 20 open-loop daily/weekly continuity delivery on top of completed Phase 5 Sprint 17 capture backbone, completed Phase 5 Sprint 18 recall/resumption, completed Phase 5 Sprint 19 review/correction/freshness, and completed Phase 4 Sprint 14-19 release-control/sign-off delivery.
+- Phase 4 Sprint 14-19 release-control/sign-off delivery is shipped baseline, and Phase 5 Sprint 17-20 continuity delivery is shipped baseline.
 - Latest shipped post-Phase-5 packet is P6-S22 retrieval quality evaluation and ranking calibration.
 - Active post-Phase-5 packet is P6-S23 correction impact and freshness hygiene; it is not yet shipped baseline.
 - Phase 6 planning docs now exist and are the control anchors for post-Phase-5 sequencing:
@@ -52,6 +53,9 @@
   - `GET /v0/continuity/recall` ranking is calibrated for confirmation, freshness posture, provenance quality, and supersession posture while preserving deterministic ordering.
   - continuity recall ordering metadata now surfaces explicit ranking evidence fields (`freshness_posture`, `provenance_posture`, `supersession_posture`) and their deterministic rank contributions.
   - `/continuity` recall cards render ranking posture evidence (`freshness`, `provenance`, `supersession`) from API ordering metadata.
+- Phase 6 Sprint 23 correction/freshness hygiene implementation is active and currently adds deterministic weekly review evidence fields:
+  - `correction_recurrence_count` (open-loop objects with recurring correction events)
+  - `freshness_drift_count` (open-loop items currently in stale posture)
 - `apps/web` is also a shipped surface now. The operator shell includes `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live reads when API config is present and explicit fixture fallback when it is not.
 - `/chat` now ships assistant-response mode, governed-request mode, visible thread selection, compact thread creation, selected-thread transcript continuity, deterministic resumption brief review, thread-linked governed workflow review, ordered task-step timeline review, bounded explain-why trace embedding, manual explicit-signal capture controls for selected `message.user` events, and bounded supporting continuity review over thread sessions and events.
 - `/continuity` now ships the Phase 5 Sprint 17 + Sprint 18 + Sprint 19 + Sprint 20 continuity workspace:

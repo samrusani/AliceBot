@@ -1206,6 +1206,8 @@ export type ContinuityWeeklyReview = {
     waiting_for_count: number;
     blocker_count: number;
     stale_count: number;
+    correction_recurrence_count: number;
+    freshness_drift_count: number;
     next_action_count: number;
     posture_order: ContinuityOpenLoopPosture[];
   };
