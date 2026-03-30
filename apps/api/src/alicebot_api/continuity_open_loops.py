@@ -247,6 +247,31 @@ def _group_open_loops(
     return grouped
 
 
+def _correction_recurrence_count(
+    store: ContinuityStore,
+    *,
+    grouped: dict[ContinuityOpenLoopPosture, list[ContinuityRecallResultRecord]],
+) -> int:
+    object_ids: set[UUID] = set()
+    for posture in CONTINUITY_OPEN_LOOP_POSTURES:
+        for item in grouped[posture]:
+            try:
+                object_ids.add(UUID(item["id"]))
+            except (TypeError, ValueError):
+                continue
+
+    recurrence_count = 0
+    for continuity_object_id in sorted(object_ids, key=str):
+        correction_events = store.list_continuity_correction_events(
+            continuity_object_id=continuity_object_id,
+            limit=2,
+        )
+        if len(correction_events) >= 2:
+            recurrence_count += 1
+
+    return recurrence_count
+
+
 def _load_grouped_open_loop_candidates(
     store: ContinuityStore,
     *,
@@ -408,6 +433,11 @@ def compile_continuity_weekly_review(
         since=request.since,
         until=request.until,
     )
+    correction_recurrence_count = _correction_recurrence_count(
+        store,
+        grouped=grouped,
+    )
+    freshness_drift_count = len(grouped["stale"])
 
     review: ContinuityWeeklyReviewRecord = {
         "assembly_version": CONTINUITY_WEEKLY_REVIEW_ASSEMBLY_VERSION_V0,
@@ -417,6 +447,8 @@ def compile_continuity_weekly_review(
             "waiting_for_count": len(grouped["waiting_for"]),
             "blocker_count": len(grouped["blocker"]),
             "stale_count": len(grouped["stale"]),
+            "correction_recurrence_count": correction_recurrence_count,
+            "freshness_drift_count": freshness_drift_count,
             "next_action_count": len(grouped["next_action"]),
             "posture_order": list(CONTINUITY_OPEN_LOOP_POSTURE_ORDER),
         },
