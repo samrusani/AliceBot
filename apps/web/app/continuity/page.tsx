@@ -488,6 +488,8 @@ const continuityWeeklyReviewFixture: ContinuityWeeklyReview = {
     waiting_for_count: 1,
     blocker_count: 1,
     stale_count: 1,
+    correction_recurrence_count: 0,
+    freshness_drift_count: 1,
     next_action_count: 1,
     posture_order: ["waiting_for", "blocker", "stale", "next_action"],
   },
