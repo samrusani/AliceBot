@@ -2784,6 +2784,8 @@ describe("api helpers", () => {
                 waiting_for_count: 0,
                 blocker_count: 0,
                 stale_count: 0,
+                correction_recurrence_count: 0,
+                freshness_drift_count: 0,
                 next_action_count: 0,
                 posture_order: ["waiting_for", "blocker", "stale", "next_action"],
               },

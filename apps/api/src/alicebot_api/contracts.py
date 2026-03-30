@@ -2244,6 +2244,8 @@ class ContinuityWeeklyReviewRollup(TypedDict):
     waiting_for_count: int
     blocker_count: int
     stale_count: int
+    correction_recurrence_count: int
+    freshness_drift_count: int
     next_action_count: int
     posture_order: list[ContinuityOpenLoopPosture]
 

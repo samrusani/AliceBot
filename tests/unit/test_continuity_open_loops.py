@@ -90,6 +90,15 @@ class ContinuityOpenLoopsStoreStub:
         self.events.append(event)
         return dict(event)
 
+    def list_continuity_correction_events(self, *, continuity_object_id: UUID, limit: int):
+        matching = [
+            dict(event)
+            for event in self.events
+            if event["continuity_object_id"] == continuity_object_id
+        ]
+        matching.sort(key=lambda item: (item["created_at"], item["id"]), reverse=True)
+        return matching[:limit]
+
     def update_continuity_object_optional(
         self,
         *,
@@ -266,9 +275,60 @@ def test_daily_and_weekly_briefs_emit_explicit_empty_states() -> None:
         "waiting_for_count": 0,
         "blocker_count": 0,
         "stale_count": 0,
+        "correction_recurrence_count": 0,
+        "freshness_drift_count": 0,
         "next_action_count": 0,
         "posture_order": ["waiting_for", "blocker", "stale", "next_action"],
     }
+
+
+def test_weekly_rollup_surfaces_correction_recurrence_and_freshness_drift() -> None:
+    stale_id = uuid4()
+    recurring_id = uuid4()
+    rows = [
+        {
+            **make_candidate_row(
+                title="Waiting For: stale handoff",
+                object_type="WaitingFor",
+                status="stale",
+                created_at=datetime(2026, 3, 30, 10, 0, tzinfo=UTC),
+            ),
+            "id": stale_id,
+        },
+        {
+            **make_candidate_row(
+                title="Blocker: recurring correction",
+                object_type="Blocker",
+                status="active",
+                created_at=datetime(2026, 3, 30, 10, 1, tzinfo=UTC),
+            ),
+            "id": recurring_id,
+        },
+    ]
+    store = ContinuityOpenLoopsStoreStub(rows)
+    store.events.extend(
+        [
+            {
+                "id": uuid4(),
+                "continuity_object_id": recurring_id,
+                "created_at": datetime(2026, 3, 30, 9, 1, tzinfo=UTC),
+            },
+            {
+                "id": uuid4(),
+                "continuity_object_id": recurring_id,
+                "created_at": datetime(2026, 3, 30, 9, 2, tzinfo=UTC),
+            },
+        ]
+    )
+
+    weekly = compile_continuity_weekly_review(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityWeeklyReviewRequestInput(limit=5),
+    )["review"]
+
+    assert weekly["rollup"]["correction_recurrence_count"] == 1
+    assert weekly["rollup"]["freshness_drift_count"] == 1
 
 
 def test_open_loop_dashboard_rejects_mixed_naive_and_offset_aware_time_window() -> None:
