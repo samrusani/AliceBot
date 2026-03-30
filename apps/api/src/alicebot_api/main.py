@@ -86,6 +86,7 @@ from alicebot_api.contracts import (
     ContinuityResumptionBriefResponse,
     ContinuityWeeklyReviewRequestInput,
     ContinuityWeeklyReviewResponse,
+    MemoryTrustDashboardResponse,
     RetrievalEvaluationResponse,
     EmbeddingConfigStatus,
     EmbeddingConfigCreateInput,
@@ -357,6 +358,7 @@ from alicebot_api.memory import (
     get_open_loop_record,
     get_memory_evaluation_summary,
     get_memory_quality_gate_summary,
+    get_memory_trust_dashboard_summary,
     get_memory_review_record,
     list_open_loop_records,
     list_memory_review_queue_records,
@@ -3617,6 +3619,22 @@ def get_memories_quality_gate(user_id: UUID) -> JSONResponse:
 
     with user_connection(settings.database_url, user_id) as conn:
         payload = get_memory_quality_gate_summary(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/memories/trust-dashboard")
+def get_memories_trust_dashboard(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload: MemoryTrustDashboardResponse = get_memory_trust_dashboard_summary(
             ContinuityStore(conn),
             user_id=user_id,
         )

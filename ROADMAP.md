@@ -4,7 +4,8 @@
 
 - The canonical repo baseline remains through Phase 3 Sprint 9.
 - Earlier Phase 4 increments are delivered on top of that baseline: run-aware execution linkage, idempotent replay controls, approval-to-run pause/resume linkage, explicit run transitions/stop reasons, bounded retry posture, explicit failure classes, and deterministic gate runners.
-- Phase 4 Sprint 14 is the active release-control layer: Phase 4 release-control is complete and remains the active gate baseline, Phase 4 owns acceptance/readiness/validation semantics directly, canonical magnesium reorder ship-gate evidence is first-class, and compatibility gates stay green.
+- Phase 4 Sprint 14 is the active release-control layer for canonical gate-ownership truth compatibility.
+- Phase 4 Sprint 14 established the release-control layer: Phase 4 release-control is complete and remains the gate baseline, Phase 4 owns acceptance/readiness/validation semantics directly, canonical magnesium reorder ship-gate evidence is first-class, and compatibility gates stay green.
 - Phase 4 Sprint 15 adds deterministic MVP release-candidate rehearsal orchestration via `python3 scripts/run_phase4_release_candidate.py`, producing `artifacts/release/phase4_rc_summary.json` with explicit per-step evidence and final GO/NO_GO.
 - Phase 4 Sprint 16 adds durable RC evidence retention: each rehearsal run now writes an archive copy plus append-only audit ledger at `artifacts/release/archive/index.json`, while preserving the latest-summary compatibility path.
 - Phase 4 Sprint 17 hardens RC archive/index writes for concurrency: deterministic lock path (`artifacts/release/archive/index.lock`), bounded lock-timeout contract, and atomic index replace persistence.
@@ -16,8 +17,8 @@
 - Phase 5 Sprint 20 adds deterministic open-loop/daily/weekly executive-function seams: `GET /v0/continuity/open-loops`, `GET /v0/continuity/daily-brief`, `GET /v0/continuity/weekly-review`, `POST /v0/continuity/open-loops/{continuity_object_id}/review-action`, grouped posture ordering (`waiting_for`, `blocker`, `stale`, `next_action`), and immediate resumption refresh after `done`/`deferred`/`still_blocked` actions.
 - Phase 6 Sprint 21 adds canonical memory-quality gate and deterministic review prioritization seams: `GET /v0/memories/quality-gate` with canonical statuses (`healthy`, `needs_review`, `insufficient_sample`, `degraded`), deterministic queue ordering modes (`oldest_first`, `recent_first`, `high_risk_first`, `stale_truth_first`) on `GET /v0/memories/review-queue`, and `/memories` UI alignment to API-backed quality-gate semantics plus priority-mode selection.
 - Phase 6 Sprint 22 adds retrieval-quality evaluation and recall ranking calibration seams: deterministic fixture-backed precision reporting via `GET /v0/continuity/retrieval-evaluation`, calibrated recall ordering that favors confirmed/fresher/current truth over stale/superseded alternatives, and explicit ordering posture evidence (`freshness`, `provenance`, `supersession`) in continuity recall API/UI surfaces.
-- Active Phase 6 Sprint 23 focus is correction impact and freshness hygiene: corrections must deterministically and immediately influence current-truth recall posture, with superseded/stale hygiene and recurrence evidence, without reopening P6-S21/P6-S22 contracts.
-- P6-S23 sprint implementation now includes deterministic weekly review evidence fields for correction recurrence and freshness drift (`correction_recurrence_count`, `freshness_drift_count`) while preserving P6-S21/P6-S22 contracts.
+- Phase 6 Sprint 23 adds correction-impact and freshness-hygiene reliability seams, including deterministic weekly review evidence fields for correction recurrence and freshness drift (`correction_recurrence_count`, `freshness_drift_count`) while preserving P6-S21/P6-S22 contracts.
+- Phase 6 Sprint 24 adds trust dashboard and quality release evidence seams: `GET /v0/memories/trust-dashboard`, deterministic evidence generation via `python3 scripts/run_phase6_quality_evidence.py`, and additive quality evidence summary integration in Phase 4 readiness/release/validation reporting paths without changing GO/NO_GO semantics.
 - The backend baseline now includes continuity APIs, deterministic context compilation, governed request routing, approvals and execution review, typed memory and open-loop seams, deterministic thread resumption brief reads, unified explicit-signal capture seams, explicit task and task-step lifecycle seams, rooted local workspaces and artifact ingestion, artifact retrieval and embeddings, narrow read-only Gmail and Calendar seams with selected-item ingestion, bounded read-only Calendar event discovery for one connected account, and the no-tools assistant-response seam.
 - The frontend baseline is now real product surface, not scaffolding: the Next.js operator shell ships `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/entities`, and `/traces`, with live-backend reads when configured and explicit fixture fallback when they are not.
 - `/chat` now uses selected-thread continuity instead of a raw thread-id-first flow, keeps bounded thread review and deterministic resumption brief review visible beside both assistant and governed-request composition, ships thread-linked governed workflow, ordered task-step timeline review, and bounded explain-why trace embedding, and includes manual explicit-signal capture controls for selected `message.user` events.
@@ -60,8 +61,9 @@
   - no additional Sprint 17-20 continuity scope remains
   - P6-S21 memory-quality gate alignment and deterministic review prioritization is now shipped baseline
   - P6-S22 retrieval-quality calibration is now shipped baseline
-  - active post-Phase-5 packet is P6-S23 correction impact and freshness hygiene
-  - do not reopen P6-S21/P6-S22 contracts while executing P6-S23
+  - P6-S23 correction impact and freshness hygiene is now shipped baseline
+  - P6-S24 trust dashboard and quality release evidence is now shipped baseline
+  - do not reopen P6-S21/P6-S22/P6-S23 contracts while operating on post-P6-S24 follow-up scope
   - Phase 6 planning anchors are:
     - `docs/phase6-product-spec.md`
     - `docs/phase6-sprint-21-24-plan.md`

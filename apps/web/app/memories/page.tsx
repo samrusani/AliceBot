@@ -10,6 +10,7 @@ import type {
   MemoryReviewLabelSummary,
   MemoryReviewQueuePriorityMode,
   MemoryReviewRecord,
+  MemoryTrustDashboardSummary,
   MemoryRevisionReviewListSummary,
   OpenLoopListSummary,
   OpenLoopRecord,
@@ -20,6 +21,7 @@ import {
   getApiConfig,
   getMemoryDetail,
   getMemoryEvaluationSummary,
+  getMemoryTrustDashboard,
   getMemoryRevisions,
   hasLiveApiConfig,
   listOpenLoops,
@@ -125,6 +127,88 @@ function formatTypedTimestamp(value: string | null | undefined) {
   return value ?? "Not set";
 }
 
+function formatPercent(value: number | null | undefined) {
+  if (value == null) {
+    return "Not available";
+  }
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatHours(value: number) {
+  return `${value.toFixed(1)}h`;
+}
+
+const trustDashboardFixture: MemoryTrustDashboardSummary = {
+  quality_gate: {
+    status: "insufficient_sample",
+    precision: null,
+    precision_target: 0.8,
+    adjudicated_sample_count: 2,
+    minimum_adjudicated_sample: 10,
+    remaining_to_minimum_sample: 8,
+    unlabeled_memory_count: 2,
+    high_risk_memory_count: 2,
+    stale_truth_count: 1,
+    superseded_active_conflict_count: 0,
+    counts: {
+      active_memory_count: 4,
+      labeled_active_memory_count: 2,
+      adjudicated_correct_count: 2,
+      adjudicated_incorrect_count: 0,
+      outdated_label_count: 0,
+      insufficient_evidence_label_count: 0,
+    },
+  },
+  queue_posture: {
+    priority_mode: "recent_first",
+    total_count: 2,
+    high_risk_count: 2,
+    stale_truth_count: 1,
+    priority_reason_counts: {
+      recent_first: 2,
+    },
+    order: ["updated_at_desc", "created_at_desc", "id_desc"],
+    aging: {
+      anchor_updated_at: "2026-03-23T09:00:00Z",
+      newest_updated_at: "2026-03-23T09:00:00Z",
+      oldest_updated_at: "2026-03-20T09:00:00Z",
+      backlog_span_hours: 72,
+      fresh_within_24h_count: 1,
+      aging_24h_to_72h_count: 1,
+      stale_over_72h_count: 0,
+    },
+  },
+  retrieval_quality: {
+    fixture_count: 3,
+    evaluated_fixture_count: 3,
+    passing_fixture_count: 3,
+    precision_at_k_mean: 1,
+    precision_at_1_mean: 1,
+    precision_target: 0.8,
+    status: "pass",
+    fixture_order: ["fixture_id_asc"],
+    result_order: ["precision_at_k_desc", "fixture_id_asc"],
+  },
+  correction_freshness: {
+    total_open_loop_count: 2,
+    stale_open_loop_count: 0,
+    correction_recurrence_count: 0,
+    freshness_drift_count: 0,
+  },
+  recommended_review: {
+    priority_mode: "recent_first",
+    action: "adjudicate_minimum_sample",
+    reason: "Adjudicated sample remains below minimum threshold.",
+  },
+  sources: [
+    "memories",
+    "memory_review_labels",
+    "continuity_recall",
+    "continuity_correction_events",
+    "retrieval_evaluation_fixtures",
+  ],
+};
+
 const openLoopFixtures: OpenLoopRecord[] = [
   {
     id: "loop-fixture-1",
@@ -204,18 +288,24 @@ export default async function MemoriesPage({
   let evaluationSummarySource: ApiSource = "fixture";
   let evaluationSummaryUnavailableReason: string | undefined;
 
+  let trustDashboard = trustDashboardFixture;
+  let trustDashboardSource: ApiSource = "fixture";
+  let trustDashboardUnavailableReason: string | undefined;
+
   let openLoops = openLoopFixtures;
   let openLoopSummary = openLoopSummaryFixture;
   let openLoopSource: ApiSource = "fixture";
   let openLoopUnavailableReason: string | undefined;
 
   if (liveModeReady) {
-    const [memoryResult, queueResult, summaryResult, openLoopResult] = await Promise.allSettled([
+    const [memoryResult, queueResult, summaryResult, trustDashboardResult, openLoopResult] =
+      await Promise.allSettled([
       listMemories(apiConfig.apiBaseUrl, apiConfig.userId, { status: "active" }),
       listMemoryReviewQueue(apiConfig.apiBaseUrl, apiConfig.userId, {
         priorityMode: queuePriorityMode,
       }),
       getMemoryEvaluationSummary(apiConfig.apiBaseUrl, apiConfig.userId),
+      getMemoryTrustDashboard(apiConfig.apiBaseUrl, apiConfig.userId),
       listOpenLoops(apiConfig.apiBaseUrl, apiConfig.userId, { status: "open", limit: 20 }),
     ]);
 
@@ -249,6 +339,16 @@ export default async function MemoriesPage({
         summaryResult.reason instanceof Error
           ? summaryResult.reason.message
           : "Memory evaluation summary could not be loaded.";
+    }
+
+    if (trustDashboardResult.status === "fulfilled") {
+      trustDashboard = trustDashboardResult.value.dashboard;
+      trustDashboardSource = "live";
+    } else {
+      trustDashboardUnavailableReason =
+        trustDashboardResult.reason instanceof Error
+          ? trustDashboardResult.reason.message
+          : "Memory trust dashboard could not be loaded.";
     }
 
     if (openLoopResult.status === "fulfilled") {
@@ -390,6 +490,7 @@ export default async function MemoriesPage({
     memoryListSource,
     reviewQueueSource,
     evaluationSummarySource,
+    trustDashboardSource,
     openLoopSource,
     selectedMemorySource,
     selectedOpenLoopSource,
@@ -427,6 +528,76 @@ export default async function MemoriesPage({
         queueUnavailableReason={reviewQueueUnavailableReason}
         activeFilter={activeFilter}
       />
+
+      <div className="section-card">
+        <header className="section-card__header">
+          <div>
+            <p className="section-card__eyebrow">Trust dashboard</p>
+            <h2 className="section-card__title">Canonical quality posture</h2>
+          </div>
+          <p className="section-card__description">
+            One deterministic view for gate posture, queue aging, retrieval quality, correction
+            recurrence, and recommended next review action.
+          </p>
+        </header>
+        <div className="stack">
+          <p className="muted-copy">
+            Source: {trustDashboardSource === "live" ? "Live dashboard" : "Fixture dashboard"}
+            {trustDashboardUnavailableReason ? ` · ${trustDashboardUnavailableReason}` : ""}
+          </p>
+          <dl className="key-value-grid key-value-grid--compact">
+            <div>
+              <dt>Gate status</dt>
+              <dd>{trustDashboard.quality_gate.status}</dd>
+            </div>
+            <div>
+              <dt>Precision</dt>
+              <dd>{formatPercent(trustDashboard.quality_gate.precision)}</dd>
+            </div>
+            <div>
+              <dt>Queue total</dt>
+              <dd>{trustDashboard.queue_posture.total_count}</dd>
+            </div>
+            <div>
+              <dt>Queue high risk</dt>
+              <dd>{trustDashboard.queue_posture.high_risk_count}</dd>
+            </div>
+            <div>
+              <dt>Queue stale truth</dt>
+              <dd>{trustDashboard.queue_posture.stale_truth_count}</dd>
+            </div>
+            <div>
+              <dt>Queue span</dt>
+              <dd>{formatHours(trustDashboard.queue_posture.aging.backlog_span_hours)}</dd>
+            </div>
+            <div>
+              <dt>Retrieval status</dt>
+              <dd>{trustDashboard.retrieval_quality.status}</dd>
+            </div>
+            <div>
+              <dt>Retrieval precision mean</dt>
+              <dd>{formatPercent(trustDashboard.retrieval_quality.precision_at_k_mean)}</dd>
+            </div>
+            <div>
+              <dt>Correction recurrence</dt>
+              <dd>{trustDashboard.correction_freshness.correction_recurrence_count}</dd>
+            </div>
+            <div>
+              <dt>Freshness drift</dt>
+              <dd>{trustDashboard.correction_freshness.freshness_drift_count}</dd>
+            </div>
+            <div>
+              <dt>Recommended mode</dt>
+              <dd>{trustDashboard.recommended_review.priority_mode}</dd>
+            </div>
+            <div>
+              <dt>Recommended action</dt>
+              <dd>{trustDashboard.recommended_review.action}</dd>
+            </div>
+          </dl>
+          <p className="muted-copy">{trustDashboard.recommended_review.reason}</p>
+        </div>
+      </div>
 
       <div className="section-card">
         <header className="section-card__header">

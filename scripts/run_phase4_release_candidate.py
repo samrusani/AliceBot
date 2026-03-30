@@ -17,6 +17,7 @@ from typing import Callable, Literal
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 ARTIFACT_PATH = ROOT_DIR / "artifacts" / "release" / "phase4_rc_summary.json"
+QUALITY_EVIDENCE_ARTIFACT_PATH = ROOT_DIR / "artifacts" / "release" / "phase6_quality_evidence.json"
 ARCHIVE_DIR_NAME = "archive"
 ARCHIVE_INDEX_NAME = "index.json"
 ARCHIVE_INDEX_LOCK_NAME = "index.lock"
@@ -217,8 +218,19 @@ def build_release_candidate_summary(
     *,
     step_results: list[ReleaseCandidateStepResult],
     artifact_path: Path,
+    quality_evidence_summary: dict[str, object] | None = None,
 ) -> dict[str, object]:
     final_decision = final_decision_for_step_results(step_results)
+    normalized_quality_evidence = quality_evidence_summary or {
+        "status": "NOT_RUN",
+        "command": None,
+        "exit_code": None,
+        "artifact_path": None,
+        "quality_gate_status": None,
+        "recommended_review_mode": None,
+        "recommended_review_action": None,
+        "detail": "quality evidence was not collected for this run",
+    }
     return {
         "artifact_version": "phase4_rc_summary.v1",
         "artifact_path": _render_artifact_path(artifact_path),
@@ -240,6 +252,7 @@ def build_release_candidate_summary(
             }
             for result in step_results
         ],
+        "quality_evidence": normalized_quality_evidence,
     }
 
 
@@ -394,6 +407,7 @@ def _write_archive_copy_and_index(
     artifact_path: Path,
     command_mode: str,
     created_at: datetime | None,
+    quality_evidence_summary: dict[str, object] | None = None,
     lock_timeout_seconds: float = ARCHIVE_INDEX_LOCK_TIMEOUT_SECONDS,
     lock_retry_interval_seconds: float = ARCHIVE_INDEX_LOCK_RETRY_INTERVAL_SECONDS,
 ) -> tuple[Path, Path]:
@@ -411,6 +425,7 @@ def _write_archive_copy_and_index(
         archive_summary = build_release_candidate_summary(
             step_results=step_results,
             artifact_path=archive_artifact_path,
+            quality_evidence_summary=quality_evidence_summary,
         )
         try:
             _atomic_write_json(path=archive_artifact_path, payload=archive_summary)
@@ -439,13 +454,18 @@ def write_release_candidate_summary(
     *,
     step_results: list[ReleaseCandidateStepResult],
     artifact_path: Path = ARTIFACT_PATH,
+    quality_evidence_summary: dict[str, object] | None = None,
     write_archive: bool = True,
     command_mode: str = "default",
     created_at: datetime | None = None,
     lock_timeout_seconds: float = ARCHIVE_INDEX_LOCK_TIMEOUT_SECONDS,
     lock_retry_interval_seconds: float = ARCHIVE_INDEX_LOCK_RETRY_INTERVAL_SECONDS,
 ) -> dict[str, object]:
-    summary = build_release_candidate_summary(step_results=step_results, artifact_path=artifact_path)
+    summary = build_release_candidate_summary(
+        step_results=step_results,
+        artifact_path=artifact_path,
+        quality_evidence_summary=quality_evidence_summary,
+    )
     _atomic_write_json(path=artifact_path, payload=summary)
 
     if write_archive:
@@ -454,6 +474,7 @@ def write_release_candidate_summary(
             artifact_path=artifact_path,
             command_mode=command_mode,
             created_at=created_at,
+            quality_evidence_summary=quality_evidence_summary,
             lock_timeout_seconds=lock_timeout_seconds,
             lock_retry_interval_seconds=lock_retry_interval_seconds,
         )
@@ -476,6 +497,66 @@ def _print_step_results(step_results: list[ReleaseCandidateStepResult]) -> None:
     failing_steps = [result.step for result in step_results if result.status == "FAIL"]
     if failing_steps:
         print(f"Failing steps: {', '.join(failing_steps)}")
+
+
+def _collect_quality_evidence_summary(*, python_executable: str) -> dict[str, object]:
+    command = (python_executable, "scripts/run_phase6_quality_evidence.py")
+    completed = subprocess.run(
+        list(command),
+        cwd=ROOT_DIR,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    summary: dict[str, object] = {
+        "status": "PASS" if completed.returncode == 0 else "WARN",
+        "command": list(command),
+        "exit_code": completed.returncode,
+        "artifact_path": None,
+        "quality_gate_status": None,
+        "recommended_review_mode": None,
+        "recommended_review_action": None,
+        "detail": None,
+    }
+    if completed.returncode != 0:
+        summary["detail"] = (completed.stderr or completed.stdout).strip() or "quality evidence command failed"
+        return summary
+    if not QUALITY_EVIDENCE_ARTIFACT_PATH.exists():
+        summary["status"] = "WARN"
+        summary["detail"] = (
+            "quality evidence command exited successfully but artifact path was not found: "
+            f"{QUALITY_EVIDENCE_ARTIFACT_PATH}"
+        )
+        return summary
+
+    payload = json.loads(QUALITY_EVIDENCE_ARTIFACT_PATH.read_text(encoding="utf-8"))
+    dashboard = payload.get("dashboard", {})
+    quality_gate = dashboard.get("quality_gate", {}) if isinstance(dashboard, dict) else {}
+    recommended_review = dashboard.get("recommended_review", {}) if isinstance(dashboard, dict) else {}
+    summary["artifact_path"] = payload.get("artifact_path")
+    summary["quality_gate_status"] = quality_gate.get("status")
+    summary["recommended_review_mode"] = recommended_review.get("priority_mode")
+    summary["recommended_review_action"] = recommended_review.get("action")
+    return summary
+
+
+def _print_quality_evidence_summary(summary: dict[str, object]) -> None:
+    print("Phase 6 quality evidence summary:")
+    print(f" - status: {summary['status']}")
+    command = summary.get("command")
+    if isinstance(command, list):
+        print(f"   command: {shlex.join(command)}")
+    print(f"   exit_code: {summary['exit_code']}")
+    if summary.get("artifact_path") is not None:
+        print(f"   artifact_path: {summary['artifact_path']}")
+    if summary.get("quality_gate_status") is not None:
+        print(f"   quality_gate_status: {summary['quality_gate_status']}")
+    if summary.get("recommended_review_mode") is not None:
+        print(f"   recommended_review_mode: {summary['recommended_review_mode']}")
+    if summary.get("recommended_review_action") is not None:
+        print(f"   recommended_review_action: {summary['recommended_review_action']}")
+    if summary.get("detail") is not None:
+        print(f"   detail: {summary['detail']}")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -504,9 +585,13 @@ def main(argv: list[str] | None = None) -> int:
 
     step_results = run_release_candidate(induce_step=args.induce_step)
     command_mode = "default" if args.induce_step is None else f"induced_failure:{args.induce_step}"
+    quality_evidence_summary = _collect_quality_evidence_summary(
+        python_executable=_resolve_python_executable()
+    )
     try:
         summary = write_release_candidate_summary(
             step_results=step_results,
+            quality_evidence_summary=quality_evidence_summary,
             write_archive=not args.no_archive,
             command_mode=command_mode,
         )
@@ -515,6 +600,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Phase 4 release-candidate archive update failed: {exc}")
         return ARCHIVE_INDEX_LOCK_TIMEOUT_EXIT_CODE
     _print_step_results(step_results)
+    _print_quality_evidence_summary(quality_evidence_summary)
 
     print(f"Release-candidate summary artifact: {summary['artifact_path']}")
     archive_artifact_path = summary.get("archive_artifact_path")
