@@ -31,6 +31,15 @@ RetrievalEvaluationStatus = Literal["pass", "fail"]
 MemoryReviewStatusFilter = Literal["active", "deleted", "all"]
 MemoryReviewLabelValue = Literal["correct", "incorrect", "outdated", "insufficient_evidence"]
 MemoryQualityGateStatus = Literal["healthy", "needs_review", "insufficient_sample", "degraded"]
+MemoryQualityReviewAction = Literal[
+    "adjudicate_minimum_sample",
+    "review_high_risk_queue",
+    "review_stale_truth_queue",
+    "drain_unlabeled_queue",
+    "investigate_correction_recurrence",
+    "remediate_freshness_drift",
+    "monitor_quality_posture",
+]
 MemoryReviewQueuePriorityMode = Literal[
     "oldest_first",
     "recent_first",
@@ -2475,6 +2484,52 @@ class MemoryQualityGateSummary(TypedDict):
 
 class MemoryQualityGateResponse(TypedDict):
     summary: MemoryQualityGateSummary
+
+
+class MemoryTrustQueueAgingSummary(TypedDict):
+    anchor_updated_at: str | None
+    newest_updated_at: str | None
+    oldest_updated_at: str | None
+    backlog_span_hours: float
+    fresh_within_24h_count: int
+    aging_24h_to_72h_count: int
+    stale_over_72h_count: int
+
+
+class MemoryTrustQueuePostureSummary(TypedDict):
+    priority_mode: MemoryReviewQueuePriorityMode
+    total_count: int
+    high_risk_count: int
+    stale_truth_count: int
+    priority_reason_counts: dict[str, int]
+    order: list[str]
+    aging: MemoryTrustQueueAgingSummary
+
+
+class MemoryTrustCorrectionFreshnessSummary(TypedDict):
+    total_open_loop_count: int
+    stale_open_loop_count: int
+    correction_recurrence_count: int
+    freshness_drift_count: int
+
+
+class MemoryTrustRecommendedReview(TypedDict):
+    priority_mode: MemoryReviewQueuePriorityMode
+    action: MemoryQualityReviewAction
+    reason: str
+
+
+class MemoryTrustDashboardSummary(TypedDict):
+    quality_gate: MemoryQualityGateSummary
+    queue_posture: MemoryTrustQueuePostureSummary
+    retrieval_quality: RetrievalEvaluationSummary
+    correction_freshness: MemoryTrustCorrectionFreshnessSummary
+    recommended_review: MemoryTrustRecommendedReview
+    sources: list[str]
+
+
+class MemoryTrustDashboardResponse(TypedDict):
+    dashboard: MemoryTrustDashboardSummary
 
 
 class MemoryEvaluationSummary(TypedDict):

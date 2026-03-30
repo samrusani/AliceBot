@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 6 Sprint 23 (P6-S23): Correction Impact and Freshness Hygiene
+Phase 6 Sprint 24 (P6-S24): Trust Dashboard and Quality Release Evidence
 
 ## Sprint Type
 
@@ -10,11 +10,11 @@ feature
 
 ## Sprint Reason
 
-P6-S22 shipped deterministic retrieval evaluation and ranking calibration. The next non-redundant Phase 6 seam is ensuring correction actions and freshness posture drive immediate, durable recall behavior so stale or superseded truth does not quietly re-enter primary recall.
+P6-S23 shipped correction-impact and freshness-hygiene reliability signals. The remaining non-redundant Phase 6 seam is to make those quality semantics operator-visible and release-visible in one canonical dashboard/evidence flow.
 
 ## Sprint Intent
 
-Ship deterministic correction-impact and freshness-hygiene behavior across continuity recall/review/resumption surfaces, aligned to:
+Ship a deterministic memory-quality dashboard and release-evidence seam that uses the same canonical semantics as the API/UI quality gates and review posture:
 
 - `docs/phase6-product-spec.md`
 - `docs/phase6-sprint-21-24-plan.md`
@@ -22,16 +22,16 @@ Ship deterministic correction-impact and freshness-hygiene behavior across conti
 
 ## Git Instructions
 
-- Branch Name: `codex/phase6-sprint-23-correction-freshness-hygiene`
+- Branch Name: `codex/phase6-sprint-24-trust-dashboard-quality-evidence`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It is the next planned P6 seam after ranking calibration.
-- It prevents redundant rework of P6-S21/P6-S22 by focusing only on correction effect durability and freshness posture hygiene.
-- It closes the trust gap where corrected or aging truth may still be retrieved as current.
+- It is the final planned Phase 6 seam and closes the trust-calibration loop.
+- It avoids redundant rework of retrieval/correction logic by focusing only on visibility and release evidence.
+- It gives operators one deterministic view of quality posture and what to review next.
 
 ## Redundancy Guard
 
@@ -40,60 +40,51 @@ Ship deterministic correction-impact and freshness-hygiene behavior across conti
   - P5-S17 through P5-S20 continuity capture/recall/review/open-loop seams.
   - P6-S21 quality gate and deterministic review prioritization.
   - P6-S22 retrieval evaluation and ranking calibration.
-- Required now (P6-S23):
-  - correction-impact durability in recall/resumption behavior
-  - canonical freshness posture hygiene (`fresh`, `aging`, `stale`, `superseded`)
-  - superseded/stale suppression for primary current-truth recall
-  - correction recurrence and freshness drift evidence
-- Explicitly out of P6-S23:
-  - trust dashboard/release evidence dashboarding (P6-S24)
-  - broad ranking-model redesign beyond correction/freshness effects
+  - P6-S23 correction impact and freshness hygiene, including recurrence/drift weekly signals.
+- Required now (P6-S24):
+  - operator-visible trust dashboard in `/memories`
+  - deterministic quality evidence artifact for release/readiness reporting
+  - explicit quality section integration in release-control reporting paths
+- Explicitly out of P6-S24:
+  - gate-threshold redesign
+  - ranking/correction/freshness model redesign
   - connector/auth/orchestration expansion
   - new continuity object classes
 
 ## Design Truth
 
-- Correction actions must change primary recall behavior immediately and deterministically.
-- Superseded memories remain historically visible but are not treated as current truth by default recall views.
-- Freshness posture must be canonical, explicit, and shared across API and UI surfaces.
-- Recurrence and freshness-drift evidence must be machine-checkable and reproducible.
+- Dashboard and release evidence must read from the same canonical quality semantics.
+- Quality posture must remain deterministic for fixed input state.
+- Operator guidance (what to review next) must be explicit and derived from canonical queue posture.
+- Evidence output must be machine-checkable and archive-safe.
 
 ## Exact Surfaces In Scope
 
-- correction impact propagation through recall/resumption/open-loop brief outputs
-- canonical freshness posture transitions and visibility
-- superseded/stale hygiene for default recall behavior
-- correction recurrence/freshness-drift summary seams
-- deterministic tests for correction impact and freshness suppression behavior
+- memory quality dashboard payload seam
+- `/memories` trust dashboard UI section
+- deterministic quality evidence generation seam
+- Phase 4 readiness/release reporting integration for quality evidence
+- deterministic test coverage for dashboard/evidence behavior
 
 ## Exact Files In Scope
 
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/continuity_review.py`
-- `apps/api/src/alicebot_api/continuity_recall.py`
-- `apps/api/src/alicebot_api/continuity_resumption.py`
-- `apps/api/src/alicebot_api/continuity_open_loops.py`
-- `apps/api/src/alicebot_api/retrieval_evaluation.py`
+- `apps/api/src/alicebot_api/memory.py`
 - `apps/api/src/alicebot_api/main.py`
 - `apps/api/src/alicebot_api/store.py`
-- `apps/api/src/alicebot_api/memory.py`
+- `apps/api/src/alicebot_api/retrieval_evaluation.py`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
-- `apps/web/app/continuity/page.tsx`
-- `apps/web/app/continuity/page.test.tsx`
-- `apps/web/components/continuity-recall-panel.tsx`
-- `apps/web/components/continuity-recall-panel.test.tsx`
-- `apps/web/components/continuity-review-queue.tsx`
-- `apps/web/components/continuity-review-queue.test.tsx`
-- `apps/web/components/continuity-correction-form.tsx`
-- `apps/web/components/continuity-correction-form.test.tsx`
-- `tests/unit/test_continuity_review.py`
-- `tests/unit/test_continuity_recall.py`
-- `tests/unit/test_continuity_open_loops.py`
+- `apps/web/app/memories/page.tsx`
+- `apps/web/app/memories/page.test.tsx`
+- `scripts/run_phase4_readiness_gates.py`
+- `scripts/run_phase4_release_candidate.py`
+- `scripts/run_phase4_validation_matrix.py`
+- `scripts/run_phase6_quality_evidence.py`
+- `tests/unit/test_memory.py`
 - `tests/unit/test_retrieval_evaluation.py`
-- `tests/integration/test_continuity_review_api.py`
-- `tests/integration/test_continuity_recall_api.py`
-- `tests/integration/test_continuity_daily_weekly_review_api.py`
+- `tests/integration/test_memory_quality_gate_api.py`
+- `tests/integration/test_retrieval_evaluation_api.py`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
@@ -103,80 +94,82 @@ Ship deterministic correction-impact and freshness-hygiene behavior across conti
 
 ## In Scope
 
-- Ensure correction actions (`confirm`, `edit`, `supersede`, `mark_stale`, `delete`) produce deterministic immediate impact on default recall ordering/eligibility.
-- Enforce canonical freshness posture transitions for active continuity objects and expose that posture consistently in recall/review/resumption outputs.
-- Add deterministic correction-recurrence/freshness-drift evidence seam for quality tracking.
-- Ensure superseded/stale objects remain audit-visible while being suppressed from default current-truth recall posture.
-- Add test coverage for hot correction impact, freshness posture transitions, and superseded-chain suppression behavior.
+- Add deterministic quality-dashboard API surface (or deterministic extension of existing quality-gate surface) that aggregates:
+  - gate status posture
+  - queue posture/aging summary
+  - retrieval quality summary
+  - correction recurrence/freshness drift summary
+  - recommended next review mode/action
+- Add deterministic quality evidence command (`python3 scripts/run_phase6_quality_evidence.py`) that writes a canonical artifact for release/readiness usage.
+- Integrate quality evidence summary into Phase 4 release/readiness reporting outputs without changing Phase 4 pass/fail semantics.
+- Add `/memories` trust dashboard rendering using canonical API payload fields.
+- Add test coverage for deterministic dashboard payload and quality evidence generation.
 
 ## Out of Scope
 
-- trust dashboard and release-evidence dashboarding work (P6-S24)
-- connector/channel expansion
-- auth model or orchestration changes
-- broad UI redesign outside continuity correction/recall/review posture surfaces
-- reopening P6-S21 gate semantics or P6-S22 ranking contracts
+- changes to P6-S21 gate thresholds/status semantics
+- changes to P6-S22 ranking contracts
+- changes to P6-S23 correction/freshness behavior semantics
+- connector/channel/auth/orchestration expansion
+- broad UI redesign beyond `/memories` trust dashboard surfaces
 
 ## Required Deliverables
 
-- deterministic correction-impact behavior contract across recall/resumption/open-loop outputs
-- canonical freshness posture contract and API/UI exposure
-- correction-recurrence/freshness-drift summary seam
-- API/web unit and integration tests for correction/freshness hygiene behavior
+- deterministic quality dashboard contract and API implementation
+- `/memories` trust dashboard UI with canonical posture fields
+- deterministic quality evidence artifact generator and Phase 4 reporting integration
+- API/web/script tests for dashboard and evidence seams
 - synced docs and sprint reports
 
 ## Acceptance Criteria
 
-- corrected and superseded memories are suppressed from default current-truth recall posture when replacement truth exists.
-- correction actions update recall/resumption outputs immediately and deterministically for fixed state.
-- freshness posture transitions are explicit and consistent across review and recall surfaces.
-- correction recurrence and freshness-drift evidence is deterministic and reproducible.
-- `./.venv/bin/python -m pytest tests/unit/test_continuity_review.py tests/unit/test_continuity_recall.py tests/unit/test_continuity_open_loops.py tests/unit/test_retrieval_evaluation.py tests/integration/test_continuity_review_api.py tests/integration/test_continuity_recall_api.py tests/integration/test_continuity_daily_weekly_review_api.py -q` passes.
-- `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-recall-panel.test.tsx components/continuity-review-queue.test.tsx components/continuity-correction-form.test.tsx lib/api.test.ts` passes.
+- operator can view current quality posture and recommended review next-step in `/memories` without relying on inferred semantics.
+- dashboard quality values match release-evidence quality values for the same state.
+- `python3 scripts/run_phase6_quality_evidence.py` writes deterministic artifact output and exits successfully.
+- Phase 4 reporting includes quality evidence summary while preserving existing GO/NO_GO semantics.
+- `./.venv/bin/python -m pytest tests/unit/test_memory.py tests/unit/test_retrieval_evaluation.py tests/integration/test_memory_quality_gate_api.py tests/integration/test_retrieval_evaluation_api.py -q` passes.
+- `pnpm --dir apps/web test -- app/memories/page.test.tsx lib/api.test.ts` passes.
 - `python3 scripts/run_phase4_validation_matrix.py` remains PASS.
-- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P6-S23 scope and preserve “MVP complete” truth.
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P6-S24 scope and preserve “MVP complete” truth.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
-- preserve shipped P6-S21 quality-gate/priority semantics
-- preserve shipped P6-S22 ranking contracts except correction/freshness posture influence
-- keep freshness/correction behavior deterministic and explicitly test-backed
+- preserve shipped P6-S21/P6-S22/P6-S23 contracts
+- keep dashboard/evidence semantics server-side and deterministic
+- keep release-control semantics stable (quality section additive only)
 - keep docs machine-independent
 
 ## Control Tower Task Cards
 
-### Task 1: Correction Impact Backend
-
-Owner: tooling operative
-
-Write scope:
-
-- `apps/api/src/alicebot_api/continuity_review.py`
-- `apps/api/src/alicebot_api/continuity_recall.py`
-- `apps/api/src/alicebot_api/continuity_resumption.py`
-- `apps/api/src/alicebot_api/store.py`
-- `apps/api/src/alicebot_api/memory.py`
-- `tests/unit/test_continuity_review.py`
-- `tests/unit/test_continuity_recall.py`
-- `tests/integration/test_continuity_review_api.py`
-- `tests/integration/test_continuity_recall_api.py`
-
-### Task 2: Freshness Hygiene + Metrics
+### Task 1: Dashboard Contract + API
 
 Owner: tooling operative
 
 Write scope:
 
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/continuity_open_loops.py`
-- `apps/api/src/alicebot_api/retrieval_evaluation.py`
+- `apps/api/src/alicebot_api/memory.py`
 - `apps/api/src/alicebot_api/main.py`
-- `tests/unit/test_continuity_open_loops.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/retrieval_evaluation.py`
+- `tests/unit/test_memory.py`
 - `tests/unit/test_retrieval_evaluation.py`
-- `tests/integration/test_continuity_daily_weekly_review_api.py`
+- `tests/integration/test_memory_quality_gate_api.py`
+- `tests/integration/test_retrieval_evaluation_api.py`
 
-### Task 3: Continuity UI Posture Alignment
+### Task 2: Quality Evidence Integration
+
+Owner: tooling operative
+
+Write scope:
+
+- `scripts/run_phase6_quality_evidence.py`
+- `scripts/run_phase4_readiness_gates.py`
+- `scripts/run_phase4_release_candidate.py`
+- `scripts/run_phase4_validation_matrix.py`
+
+### Task 3: `/memories` Dashboard UI
 
 Owner: tooling operative
 
@@ -184,14 +177,8 @@ Write scope:
 
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
-- `apps/web/app/continuity/page.tsx`
-- `apps/web/app/continuity/page.test.tsx`
-- `apps/web/components/continuity-recall-panel.tsx`
-- `apps/web/components/continuity-recall-panel.test.tsx`
-- `apps/web/components/continuity-review-queue.tsx`
-- `apps/web/components/continuity-review-queue.test.tsx`
-- `apps/web/components/continuity-correction-form.tsx`
-- `apps/web/components/continuity-correction-form.test.tsx`
+- `apps/web/app/memories/page.tsx`
+- `apps/web/app/memories/page.test.tsx`
 
 ### Task 4: Docs + Integration Review
 
@@ -207,8 +194,8 @@ Write scope:
 
 Responsibilities:
 
-- verify no P6-S21/P6-S22 relitigation
-- verify deterministic correction impact and freshness posture behavior
+- verify no P6-S21/P6-S22/P6-S23 relitigation
+- verify dashboard/evidence semantic parity
 - verify no hidden connector/auth/orchestration expansion
 - verify no Phase 4 regression
 
@@ -216,22 +203,21 @@ Responsibilities:
 
 `BUILD_REPORT.md` must include:
 
-- exact correction-impact behavior delta
-- exact freshness posture/supersession hygiene delta
-- exact correction-recurrence/freshness-drift evidence behavior
+- exact dashboard contract delta
+- exact quality evidence artifact and reporting integration delta
 - exact verification command outcomes
-- explicit deferred Phase 6 scope (P6-S24)
+- explicit statement that P6-S21/P6-S22/P6-S23 contracts were preserved
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
 
-- sprint stayed P6-S23 scoped
-- correction impact is immediate and deterministic
-- freshness posture and supersession hygiene are coherent and visible
+- sprint stayed P6-S24 scoped
+- dashboard/evidence semantics are canonical and deterministic
+- UI/API/release quality values are consistent
 - no hidden scope expansion
 - Phase 4 validation remains green
 
 ## Exit Condition
 
-This sprint is complete when correction actions and freshness posture deterministically control current-truth recall behavior, with reproducible evidence and no Phase 4 regression.
+This sprint is complete when memory quality posture is clearly visible in `/memories` and deterministically represented in release evidence, with no regression to shipped Phase 4/5/6 contracts.

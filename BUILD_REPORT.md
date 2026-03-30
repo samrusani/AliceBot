@@ -1,51 +1,99 @@
 # BUILD_REPORT.md
 
 ## sprint objective
-Implement Phase 6 Sprint 23 (P6-S23): Correction Impact and Freshness Hygiene, so correction actions deterministically affect current-truth recall behavior, freshness posture is canonical (`fresh`/`aging`/`stale`/`superseded`), superseded/stale truth is suppressed from primary posture, and recurrence/drift evidence is reproducible.
+Implement Phase 6 Sprint 24 (P6-S24): Trust Dashboard and Quality Release Evidence by shipping one canonical memory-quality trust dashboard in `/memories`, deterministic quality evidence generation for release/readiness, and additive Phase 4 reporting integration without changing existing GO/NO_GO semantics.
 
 ## completed work
-- Added deterministic correction-recurrence and freshness-drift weekly evidence seam in backend:
-  - `correction_recurrence_count`: count of open-loop continuity objects in weekly scope with at least 2 correction events.
-  - `freshness_drift_count`: count of open-loop continuity objects in weekly scope currently in stale posture.
-- Wired new evidence seam into weekly review rollup contract and implementation:
-  - contract update in `ContinuityWeeklyReviewRollup`.
-  - deterministic computation in `compile_continuity_weekly_review`.
-- Extended backend test coverage to lock these behaviors:
-  - unit coverage for recurrence/drift rollup values.
-  - integration coverage for deterministic API rollup values.
-- Kept correction-impact + freshness suppression semantics intact and deterministic across recall/review/open-loop surfaces (no P6-S21/P6-S22 contract relitigation).
-- Synced active-sprint docs and control-doc compatibility:
-  - added required control-doc marker in `.ai/handoff/CURRENT_STATE.md`.
-  - updated `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` to reflect active P6-S23 focus and recurrence/drift evidence seam while preserving MVP-complete/Phase-4-control truth.
+- Added canonical trust dashboard contract + API implementation:
+  - New API payload contracts in `apps/api/src/alicebot_api/contracts.py`:
+    - `MemoryTrustDashboardResponse`
+    - `MemoryTrustDashboardSummary`
+    - `MemoryTrustQueuePostureSummary`
+    - `MemoryTrustQueueAgingSummary`
+    - `MemoryTrustCorrectionFreshnessSummary`
+    - `MemoryTrustRecommendedReview`
+  - New endpoint in `apps/api/src/alicebot_api/main.py`:
+    - `GET /v0/memories/trust-dashboard`
+  - New server-side aggregator in `apps/api/src/alicebot_api/memory.py`:
+    - `get_memory_trust_dashboard_summary(...)`
+    - deterministic queue posture + aging summary
+    - retrieval-quality summary reuse from canonical retrieval evaluation
+    - correction recurrence/freshness drift summary reuse from canonical weekly review rollup
+    - deterministic `recommended_review` mode/action/reason derived from canonical queue + gate posture
+- Added deterministic quality evidence seam:
+  - New command: `python3 scripts/run_phase6_quality_evidence.py`
+  - Writes canonical machine-checkable artifact: `artifacts/release/phase6_quality_evidence.json`
+  - Artifact contains canonical dashboard payload (same semantic source as `/v0/memories/trust-dashboard`)
+  - Added deterministic fallback for partially migrated local DBs: when continuity correction tables are absent, correction/freshness summary degrades to explicit zero-count posture instead of crashing.
+- Integrated additive quality evidence section into Phase 4 reporting paths (no gate semantics change):
+  - `scripts/run_phase4_readiness_gates.py`: prints `Phase 6 quality evidence summary` section
+  - `scripts/run_phase4_validation_matrix.py`: prints `Phase 6 quality evidence summary` section
+  - `scripts/run_phase4_release_candidate.py`:
+    - prints `Phase 6 quality evidence summary` section
+    - embeds additive `quality_evidence` block in summary artifact payload
+- Added `/memories` trust dashboard UI section:
+  - `apps/web/lib/api.ts`: added `getMemoryTrustDashboard(...)` and trust-dashboard types
+  - `apps/web/app/memories/page.tsx`: fetches and renders trust dashboard (live/fixture/unavailable states)
+  - explicit rendering for gate posture, queue posture/aging, retrieval status, correction/freshness summary, and recommended next review action
+- Added deterministic tests for dashboard/evidence behavior:
+  - `tests/unit/test_memory.py`: deterministic trust dashboard summary unit coverage
+  - `tests/integration/test_memory_quality_gate_api.py`:
+    - trust dashboard endpoint canonical aggregation assertions
+    - trust dashboard determinism assertions
+    - quality evidence script artifact parity assertion against trust dashboard payload
+  - `apps/web/lib/api.test.ts`: trust dashboard API client contract test
+  - `apps/web/app/memories/page.test.tsx`: trust dashboard rendering in fixture/live/fallback paths
+- Updated sprint-scoped docs:
+  - `README.md`
+  - `ROADMAP.md`
+  - `.ai/handoff/CURRENT_STATE.md`
 
-## exact correction-impact behavior delta
-- No contract break to existing correction actions (`confirm`, `edit`, `delete`, `supersede`, `mark_stale`).
-- Correction effects remain immediate and deterministic in shipped review/correction flows.
-- Added deterministic weekly recurrence evidence that derives from persisted correction history (`>=2` correction events per object) to track repeated corrected mistakes.
+## exact dashboard contract delta
+- Added `GET /v0/memories/trust-dashboard` returning:
+  - `quality_gate`: canonical P6-S21 quality-gate summary (unchanged semantics)
+  - `queue_posture`:
+    - `priority_mode`, `total_count`, `high_risk_count`, `stale_truth_count`
+    - `priority_reason_counts`
+    - deterministic `aging` summary:
+      - `anchor_updated_at`, `newest_updated_at`, `oldest_updated_at`
+      - `backlog_span_hours`
+      - `fresh_within_24h_count`, `aging_24h_to_72h_count`, `stale_over_72h_count`
+  - `retrieval_quality`: canonical retrieval evaluation summary (P6-S22)
+  - `correction_freshness`:
+    - `total_open_loop_count`, `stale_open_loop_count`
+    - `correction_recurrence_count`, `freshness_drift_count` (P6-S23)
+  - `recommended_review`:
+    - deterministic `priority_mode`, `action`, `reason`
+  - `sources`: explicit source list
 
-## exact freshness posture and supersession hygiene delta
-- Preserved canonical freshness/supersession posture semantics already present in recall ordering (`fresh`, `aging`, `stale`, `superseded`) and current-vs-historical posture ranking.
-- Added deterministic weekly `freshness_drift_count` to summarize stale-posture drift in open-loop review surfaces.
-
-## exact correction-recurrence and freshness-drift evidence behavior
-- Weekly review rollup now includes:
-  - `correction_recurrence_count` (integer, deterministic for fixed DB state).
-  - `freshness_drift_count` (integer, deterministic for fixed DB state).
-- Recurrence is evaluated by object-level correction-event history (minimum 2 events).
-- Drift is evaluated by stale posture count in weekly-scope open-loop candidates.
+## exact quality evidence artifact and reporting integration delta
+- New deterministic artifact command:
+  - `python3 scripts/run_phase6_quality_evidence.py`
+- New artifact:
+  - `artifacts/release/phase6_quality_evidence.json`
+  - fields: `artifact_version`, `artifact_path`, `user_id`, `dashboard`
+- Phase 4 reporting integration (additive only):
+  - readiness/validation scripts print quality evidence summary block
+  - release-candidate summary artifact now includes additive top-level `quality_evidence`
+  - no change to existing ordered Phase 4 step IDs, step execution ordering, or GO/NO_GO decision function
 
 ## incomplete work
-- None inside explicit P6-S23 sprint packet scope.
+- No in-scope implementation item remains incomplete.
 
 ## files changed
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/continuity_open_loops.py`
+- `apps/api/src/alicebot_api/memory.py`
+- `apps/api/src/alicebot_api/main.py`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
-- `apps/web/app/continuity/page.tsx`
-- `apps/web/app/continuity/page.test.tsx`
-- `tests/unit/test_continuity_open_loops.py`
-- `tests/integration/test_continuity_daily_weekly_review_api.py`
+- `apps/web/app/memories/page.tsx`
+- `apps/web/app/memories/page.test.tsx`
+- `scripts/run_phase6_quality_evidence.py`
+- `scripts/run_phase4_readiness_gates.py`
+- `scripts/run_phase4_release_candidate.py`
+- `scripts/run_phase4_validation_matrix.py`
+- `tests/unit/test_memory.py`
+- `tests/integration/test_memory_quality_gate_api.py`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
@@ -53,24 +101,33 @@ Implement Phase 6 Sprint 23 (P6-S23): Correction Impact and Freshness Hygiene, s
 - `REVIEW_REPORT.md`
 
 ## tests run
-- `./.venv/bin/python -m pytest tests/unit/test_continuity_review.py tests/unit/test_continuity_recall.py tests/unit/test_continuity_open_loops.py tests/unit/test_retrieval_evaluation.py tests/integration/test_continuity_review_api.py tests/integration/test_continuity_recall_api.py tests/integration/test_continuity_daily_weekly_review_api.py -q`
-  - PASS (`30 passed`)
-- `pnpm --dir apps/web test -- app/continuity/page.test.tsx components/continuity-recall-panel.test.tsx components/continuity-review-queue.test.tsx components/continuity-correction-form.test.tsx lib/api.test.ts`
-  - PASS (`5 files`, `40 tests`)
+- `./.venv/bin/python -m pytest tests/unit/test_memory.py tests/unit/test_retrieval_evaluation.py tests/integration/test_memory_quality_gate_api.py tests/integration/test_retrieval_evaluation_api.py -q`
+  - PASS (`35 passed`)
+- `pnpm --dir apps/web test -- app/memories/page.test.tsx lib/api.test.ts`
+  - PASS (`2 files`, `38 tests`)
+- `./.venv/bin/python -m pytest tests/integration/test_phase4_readiness_gates.py tests/integration/test_phase4_release_candidate.py tests/integration/test_phase4_validation_matrix.py -q`
+  - PASS (`9 passed`)
 - `python3 scripts/run_phase4_validation_matrix.py`
   - PASS (`Phase 4 validation matrix result: PASS`)
+- `python3 scripts/run_phase6_quality_evidence.py`
+  - PASS (artifact written at `artifacts/release/phase6_quality_evidence.json`)
 
 ## exact verification command outcomes
-- Sprint backend suite: PASS.
-- Sprint web suite: PASS.
-- Phase 4 validation matrix compatibility chain: PASS (control-doc truth, Phase 4 acceptance/readiness/scenarios, Phase 3/2/MVP compatibility).
+- Required sprint backend suite passed.
+- Required sprint web suite passed.
+- Required Phase 4 validation matrix remained PASS.
+- Quality evidence script behavior verification:
+  - Migrated-db integration path: PASS via `test_phase6_quality_evidence_script_writes_deterministic_artifact_matching_dashboard`.
+  - Direct local default DB command (`python3 scripts/run_phase6_quality_evidence.py`): PASS with deterministic fallback behavior for missing continuity correction tables.
 
 ## blockers/issues
-- No functional blockers after scoped implementation.
-- Environment note: local Postgres access required elevated execution in this environment for integration and matrix commands.
+- None blocking sprint acceptance.
+
+## explicit statement on preserved prior contracts
+- P6-S21 memory-quality gate semantics were preserved.
+- P6-S22 retrieval-quality evaluation and ranking semantics were preserved.
+- P6-S23 correction recurrence/freshness drift semantics were preserved.
+- No threshold redesign or model redesign was introduced.
 
 ## recommended next step
-Prepare P6-S24 trust dashboard/release-evidence seam using the new recurrence/drift fields as canonical inputs, without changing P6-S21/P6-S23 semantics.
-
-## explicit deferred Phase 6 scope
-- P6-S24 Trust Dashboard and Quality Release Evidence remains deferred and out of this sprint’s implementation scope.
+Optional hardening: add an explicit operator-facing diagnostics field in the quality evidence artifact noting when fallback correction/freshness posture was used due missing continuity correction tables.

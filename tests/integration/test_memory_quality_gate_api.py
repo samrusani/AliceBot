@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import anyio
 
 import apps.api.src.alicebot_api.main as main_module
+import scripts.run_phase6_quality_evidence as quality_evidence
 from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.contracts import MemoryCandidateInput
 from alicebot_api.db import user_connection
@@ -400,3 +401,139 @@ def test_memory_quality_gate_endpoint_enforces_per_user_isolation(
             },
         }
     }
+
+
+def test_memory_trust_dashboard_endpoint_aggregates_canonical_quality_inputs(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_quality_gate_state(
+        migrated_database_urls["app"],
+        correct_count=10,
+        incorrect_count=0,
+        add_unlabeled=True,
+        add_high_risk=True,
+        add_stale_truth=True,
+        add_outdated_conflict=False,
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    dashboard_status, dashboard_payload = invoke_request(
+        "GET",
+        "/v0/memories/trust-dashboard",
+        query_params={"user_id": user_id},
+    )
+    gate_status, gate_payload = invoke_request(
+        "GET",
+        "/v0/memories/quality-gate",
+        query_params={"user_id": user_id},
+    )
+    retrieval_status, retrieval_payload = invoke_request(
+        "GET",
+        "/v0/continuity/retrieval-evaluation",
+        query_params={"user_id": user_id},
+    )
+
+    assert dashboard_status == 200
+    assert gate_status == 200
+    assert retrieval_status == 200
+    assert dashboard_payload["dashboard"]["quality_gate"] == gate_payload["summary"]
+    assert dashboard_payload["dashboard"]["queue_posture"]["total_count"] == gate_payload["summary"][
+        "unlabeled_memory_count"
+    ]
+    assert dashboard_payload["dashboard"]["retrieval_quality"] == retrieval_payload["summary"]
+    assert dashboard_payload["dashboard"]["correction_freshness"] == {
+        "total_open_loop_count": 0,
+        "stale_open_loop_count": 0,
+        "correction_recurrence_count": 0,
+        "freshness_drift_count": 0,
+    }
+    assert dashboard_payload["dashboard"]["recommended_review"]["priority_mode"] == "high_risk_first"
+    assert dashboard_payload["dashboard"]["recommended_review"]["action"] == "review_high_risk_queue"
+
+
+def test_memory_trust_dashboard_endpoint_is_deterministic_for_fixed_state(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_quality_gate_state(
+        migrated_database_urls["app"],
+        correct_count=10,
+        incorrect_count=0,
+        add_unlabeled=True,
+        add_high_risk=False,
+        add_stale_truth=False,
+        add_outdated_conflict=False,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    first_status, first_payload = invoke_request(
+        "GET",
+        "/v0/memories/trust-dashboard",
+        query_params={"user_id": user_id},
+    )
+    second_status, second_payload = invoke_request(
+        "GET",
+        "/v0/memories/trust-dashboard",
+        query_params={"user_id": user_id},
+    )
+
+    assert first_status == 200
+    assert second_status == 200
+    assert first_payload == second_payload
+
+
+def test_phase6_quality_evidence_script_writes_deterministic_artifact_matching_dashboard(
+    migrated_database_urls,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    user_id = seed_quality_gate_state(
+        migrated_database_urls["app"],
+        correct_count=10,
+        incorrect_count=0,
+        add_unlabeled=True,
+        add_high_risk=True,
+        add_stale_truth=False,
+        add_outdated_conflict=False,
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    monkeypatch.setattr(
+        quality_evidence,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    dashboard_status, dashboard_payload = invoke_request(
+        "GET",
+        "/v0/memories/trust-dashboard",
+        query_params={"user_id": user_id},
+    )
+    assert dashboard_status == 200
+
+    artifact_path = tmp_path / "phase6_quality_evidence.json"
+    exit_code = quality_evidence.main(
+        ["--user-id", user_id, "--output", str(artifact_path)],
+    )
+    assert exit_code == 0
+    assert artifact_path.exists()
+
+    written_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert written_payload["artifact_version"] == quality_evidence.ARTIFACT_VERSION
+    assert written_payload["artifact_path"] == str(artifact_path)
+    assert written_payload["user_id"] == user_id
+    assert written_payload["dashboard"] == dashboard_payload["dashboard"]
