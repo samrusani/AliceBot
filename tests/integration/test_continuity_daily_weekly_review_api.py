@@ -159,6 +159,23 @@ def test_daily_and_weekly_review_endpoints_are_deterministic(
             confidence=1.0,
         )
 
+        store.create_continuity_correction_event(
+            continuity_object_id=waiting_object["id"],
+            action="confirm",
+            reason="weekly-check-1",
+            before_snapshot={"status": "active"},
+            after_snapshot={"status": "active"},
+            payload={"source": "weekly_review_seed"},
+        )
+        store.create_continuity_correction_event(
+            continuity_object_id=waiting_object["id"],
+            action="edit",
+            reason="weekly-check-2",
+            before_snapshot={"status": "active"},
+            after_snapshot={"status": "active"},
+            payload={"source": "weekly_review_seed"},
+        )
+
     set_continuity_timestamps(
         migrated_database_urls["admin"],
         continuity_object_id=waiting_object["id"],
@@ -246,6 +263,8 @@ def test_daily_and_weekly_review_endpoints_are_deterministic(
         "waiting_for_count": 1,
         "blocker_count": 1,
         "stale_count": 1,
+        "correction_recurrence_count": 1,
+        "freshness_drift_count": 1,
         "next_action_count": 1,
         "posture_order": ["waiting_for", "blocker", "stale", "next_action"],
     }
@@ -330,6 +349,8 @@ def test_daily_and_weekly_review_endpoints_emit_explicit_empty_states(
 
     assert weekly_status == 200
     assert weekly_payload["review"]["rollup"]["total_count"] == 0
+    assert weekly_payload["review"]["rollup"]["correction_recurrence_count"] == 0
+    assert weekly_payload["review"]["rollup"]["freshness_drift_count"] == 0
     assert weekly_payload["review"]["waiting_for"]["empty_state"] == {
         "is_empty": True,
         "message": "No waiting-for items in the requested scope.",
