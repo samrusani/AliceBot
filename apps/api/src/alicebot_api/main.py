@@ -88,6 +88,8 @@ from alicebot_api.contracts import (
     ContinuityResumptionBriefResponse,
     ChiefOfStaffPriorityBriefRequestInput,
     ChiefOfStaffPriorityBriefResponse,
+    ChiefOfStaffRecommendationOutcomeCaptureInput,
+    ChiefOfStaffRecommendationOutcomeCaptureResponse,
     ContinuityWeeklyReviewRequestInput,
     ContinuityWeeklyReviewResponse,
     MemoryTrustDashboardResponse,
@@ -344,6 +346,7 @@ from alicebot_api.continuity_resumption import (
 )
 from alicebot_api.chief_of_staff import (
     ChiefOfStaffValidationError,
+    capture_chief_of_staff_recommendation_outcome,
     compile_chief_of_staff_priority_brief,
 )
 from alicebot_api.continuity_open_loops import (
@@ -637,6 +640,20 @@ class ContinuityOpenLoopReviewActionRequest(BaseModel):
     user_id: UUID
     action: str = Field(min_length=1, max_length=40)
     note: str | None = Field(default=None, min_length=1, max_length=500)
+
+
+class ChiefOfStaffRecommendationOutcomeCaptureRequest(BaseModel):
+    user_id: UUID
+    outcome: str = Field(min_length=1, max_length=40)
+    recommendation_action_type: str = Field(min_length=1, max_length=60)
+    recommendation_title: str = Field(min_length=1, max_length=280)
+    rationale: str | None = Field(default=None, min_length=1, max_length=500)
+    rewritten_title: str | None = Field(default=None, min_length=1, max_length=280)
+    target_priority_id: UUID | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = Field(default=None, min_length=1, max_length=200)
+    person: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class CreateMemoryReviewLabelRequest(BaseModel):
@@ -3612,6 +3629,41 @@ def get_chief_of_staff_priority_brief(
     except ChiefOfStaffValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/chief-of-staff/recommendation-outcomes")
+def capture_chief_of_staff_recommendation_outcome_endpoint(
+    request: ChiefOfStaffRecommendationOutcomeCaptureRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload: ChiefOfStaffRecommendationOutcomeCaptureResponse = (
+                capture_chief_of_staff_recommendation_outcome(
+                    ContinuityStore(conn),
+                    user_id=request.user_id,
+                    request=ChiefOfStaffRecommendationOutcomeCaptureInput(
+                        outcome=request.outcome,  # type: ignore[arg-type]
+                        recommendation_action_type=request.recommendation_action_type,  # type: ignore[arg-type]
+                        recommendation_title=request.recommendation_title,
+                        rationale=request.rationale,
+                        rewritten_title=request.rewritten_title,
+                        target_priority_id=request.target_priority_id,
+                        thread_id=request.thread_id,
+                        task_id=request.task_id,
+                        project=request.project,
+                        person=request.person,
+                    ),
+                )
+            )
+    except ChiefOfStaffValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(

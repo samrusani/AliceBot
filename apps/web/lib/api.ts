@@ -1506,6 +1506,76 @@ export type ChiefOfStaffResumptionSupervision = {
   summary: ChiefOfStaffPreparationSectionSummary;
 };
 
+export type ChiefOfStaffRecommendationOutcome = "accept" | "defer" | "ignore" | "rewrite";
+
+export type ChiefOfStaffWeeklyReviewGuidanceAction = "close" | "defer" | "escalate";
+
+export type ChiefOfStaffPatternDriftPosture = "improving" | "stable" | "drifting" | "insufficient_signal";
+
+export type ChiefOfStaffWeeklyReviewBrief = {
+  scope: ContinuityRecallSummary["filters"];
+  rollup: ContinuityWeeklyReview["rollup"];
+  guidance: Array<{
+    rank: number;
+    action: ChiefOfStaffWeeklyReviewGuidanceAction;
+    signal_count: number;
+    rationale: string;
+  }>;
+  summary: {
+    guidance_order: ChiefOfStaffWeeklyReviewGuidanceAction[];
+    guidance_item_order: string[];
+  };
+};
+
+export type ChiefOfStaffRecommendationOutcomeRecord = {
+  id: string;
+  capture_event_id: string;
+  outcome: ChiefOfStaffRecommendationOutcome;
+  recommendation_action_type: ChiefOfStaffRecommendedActionType;
+  recommendation_title: string;
+  rewritten_title: string | null;
+  target_priority_id: string | null;
+  rationale: string | null;
+  provenance_references: ContinuityRecallProvenanceReference[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChiefOfStaffRecommendationOutcomeSection = {
+  items: ChiefOfStaffRecommendationOutcomeRecord[];
+  summary: {
+    returned_count: number;
+    total_count: number;
+    outcome_counts: Record<ChiefOfStaffRecommendationOutcome, number>;
+    order: string[];
+  };
+};
+
+export type ChiefOfStaffOutcomeHotspotRecord = {
+  key: string;
+  count: number;
+};
+
+export type ChiefOfStaffPriorityLearningSummary = {
+  total_count: number;
+  accept_count: number;
+  defer_count: number;
+  ignore_count: number;
+  rewrite_count: number;
+  acceptance_rate: number;
+  override_rate: number;
+  defer_hotspots: ChiefOfStaffOutcomeHotspotRecord[];
+  ignore_hotspots: ChiefOfStaffOutcomeHotspotRecord[];
+  priority_shift_explanation: string;
+  hotspot_order: string[];
+};
+
+export type ChiefOfStaffPatternDriftSummary = {
+  posture: ChiefOfStaffPatternDriftPosture;
+  reason: string;
+  supporting_signals: string[];
+};
+
 export type ChiefOfStaffPriorityBrief = {
   assembly_version: string;
   scope: ContinuityRecallSummary["filters"];
@@ -1521,8 +1591,33 @@ export type ChiefOfStaffPriorityBrief = {
   prep_checklist: ChiefOfStaffPrepChecklist;
   suggested_talking_points: ChiefOfStaffSuggestedTalkingPoints;
   resumption_supervision: ChiefOfStaffResumptionSupervision;
+  weekly_review_brief: ChiefOfStaffWeeklyReviewBrief;
+  recommendation_outcomes: ChiefOfStaffRecommendationOutcomeSection;
+  priority_learning_summary: ChiefOfStaffPriorityLearningSummary;
+  pattern_drift_summary: ChiefOfStaffPatternDriftSummary;
   summary: ChiefOfStaffPrioritySummary;
   sources: string[];
+};
+
+export type ChiefOfStaffRecommendationOutcomeCapturePayload = {
+  user_id: string;
+  outcome: ChiefOfStaffRecommendationOutcome;
+  recommendation_action_type: ChiefOfStaffRecommendedActionType;
+  recommendation_title: string;
+  rationale?: string | null;
+  rewritten_title?: string | null;
+  target_priority_id?: string | null;
+  thread_id?: string | null;
+  task_id?: string | null;
+  project?: string | null;
+  person?: string | null;
+};
+
+export type ChiefOfStaffRecommendationOutcomeCaptureResult = {
+  outcome: ChiefOfStaffRecommendationOutcomeRecord;
+  recommendation_outcomes: ChiefOfStaffRecommendationOutcomeSection;
+  priority_learning_summary: ChiefOfStaffPriorityLearningSummary;
+  pattern_drift_summary: ChiefOfStaffPatternDriftSummary;
 };
 
 export type ContinuityOpenLoopReviewActionPayload = {
@@ -2141,6 +2236,20 @@ export function getChiefOfStaffPriorityBrief(
       since: since || undefined,
       until: until || undefined,
       limit,
+    },
+  );
+}
+
+export function captureChiefOfStaffRecommendationOutcome(
+  apiBaseUrl: string,
+  payload: ChiefOfStaffRecommendationOutcomeCapturePayload,
+) {
+  return requestJson<ChiefOfStaffRecommendationOutcomeCaptureResult>(
+    apiBaseUrl,
+    "/v0/chief-of-staff/recommendation-outcomes",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
     },
   );
 }

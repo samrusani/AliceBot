@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 import alicebot_api.chief_of_staff as chief
-from alicebot_api.contracts import ChiefOfStaffPriorityBriefRequestInput
+from alicebot_api.contracts import (
+    ChiefOfStaffPriorityBriefRequestInput,
+    ChiefOfStaffRecommendationOutcomeCaptureInput,
+)
 
 
 def _recall_item(
@@ -52,6 +56,37 @@ def _recall_item(
     }
 
 
+def _outcome_recall_item(
+    *,
+    item_id: str,
+    created_at: str,
+    outcome: str,
+    recommendation_action_type: str,
+    recommendation_title: str,
+    target_priority_id: str | None = None,
+    rationale: str | None = None,
+) -> dict[str, object]:
+    item = _recall_item(
+        item_id=item_id,
+        object_type="Note",
+        status="active",
+        title=f"Recommendation outcome: {outcome}",
+        created_at=created_at,
+        confidence=1.0,
+        confirmation_status="confirmed",
+    )
+    item["body"] = {
+        "kind": "chief_of_staff_recommendation_outcome",
+        "outcome": outcome,
+        "recommendation_action_type": recommendation_action_type,
+        "recommendation_title": recommendation_title,
+        "target_priority_id": target_priority_id,
+        "rationale": rationale,
+        "rewritten_title": None,
+    }
+    return item
+
+
 def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> None:
     recall_items = [
         _recall_item(
@@ -87,6 +122,24 @@ def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> N
             created_at="2026-03-23T08:30:00+00:00",
             confidence=0.95,
             confirmation_status="unconfirmed",
+        ),
+        _outcome_recall_item(
+            item_id="outcome-accept-1",
+            created_at="2026-03-31T11:00:00+00:00",
+            outcome="accept",
+            recommendation_action_type="execute_next_action",
+            recommendation_title="Next Action: Send launch update",
+            target_priority_id="next-1",
+            rationale="Accepted and executed directly.",
+        ),
+        _outcome_recall_item(
+            item_id="outcome-ignore-1",
+            created_at="2026-03-31T10:30:00+00:00",
+            outcome="ignore",
+            recommendation_action_type="follow_up_waiting_for",
+            recommendation_title="Waiting For: Vendor quote",
+            target_priority_id="waiting-1",
+            rationale="Deferred by operator due to dependency risk.",
         ),
     ]
 
@@ -166,8 +219,32 @@ def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> N
             }
         }
 
+    def fake_weekly_review(*args, **kwargs):
+        return {
+            "review": {
+                "assembly_version": "continuity_weekly_review_v0",
+                "scope": {"thread_id": "thread-1", "since": None, "until": None},
+                "rollup": {
+                    "total_count": 3,
+                    "waiting_for_count": 1,
+                    "blocker_count": 1,
+                    "stale_count": 0,
+                    "correction_recurrence_count": 0,
+                    "freshness_drift_count": 0,
+                    "next_action_count": 1,
+                    "posture_order": ["waiting_for", "blocker", "stale", "next_action"],
+                },
+                "waiting_for": {"items": [], "summary": {"limit": 5, "returned_count": 0, "total_count": 0, "order": []}, "empty_state": {"is_empty": True, "message": "none"}},
+                "blocker": {"items": [], "summary": {"limit": 5, "returned_count": 0, "total_count": 0, "order": []}, "empty_state": {"is_empty": True, "message": "none"}},
+                "stale": {"items": [], "summary": {"limit": 5, "returned_count": 0, "total_count": 0, "order": []}, "empty_state": {"is_empty": True, "message": "none"}},
+                "next_action": {"items": [], "summary": {"limit": 5, "returned_count": 0, "total_count": 0, "order": []}, "empty_state": {"is_empty": True, "message": "none"}},
+                "sources": ["continuity_capture_events", "continuity_objects"],
+            }
+        }
+
     monkeypatch.setattr(chief, "query_continuity_recall", fake_recall)
     monkeypatch.setattr(chief, "compile_continuity_open_loop_dashboard", fake_open_loops)
+    monkeypatch.setattr(chief, "compile_continuity_weekly_review", fake_weekly_review)
     monkeypatch.setattr(chief, "compile_continuity_resumption_brief", fake_resumption)
     monkeypatch.setattr(chief, "get_memory_trust_dashboard_summary", fake_trust)
 
@@ -251,6 +328,14 @@ def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> N
     assert first["brief"]["prep_checklist"]["items"]
     assert first["brief"]["suggested_talking_points"]["items"]
     assert first["brief"]["resumption_supervision"]["recommendations"]
+    assert first["brief"]["weekly_review_brief"]["summary"]["guidance_order"] == ["close", "defer", "escalate"]
+    assert first["brief"]["recommendation_outcomes"]["summary"]["total_count"] == 2
+    assert first["brief"]["recommendation_outcomes"]["summary"]["outcome_counts"]["accept"] == 1
+    assert first["brief"]["recommendation_outcomes"]["summary"]["outcome_counts"]["ignore"] == 1
+    assert first["brief"]["priority_learning_summary"]["acceptance_rate"] == 0.5
+    assert first["brief"]["priority_learning_summary"]["override_rate"] == 0.5
+    assert "Prioritization is reinforcing" in first["brief"]["priority_learning_summary"]["priority_shift_explanation"]
+    assert first["brief"]["pattern_drift_summary"]["posture"] == "stable"
 
 
 def test_follow_through_item_ranking_is_deterministic_for_ties() -> None:
@@ -362,6 +447,25 @@ def test_priority_brief_downgrades_confidence_when_trust_is_weak(monkeypatch) ->
     )
     monkeypatch.setattr(
         chief,
+        "compile_continuity_weekly_review",
+        lambda *args, **kwargs: {
+            "review": {
+                "scope": {"thread_id": None, "since": None, "until": None},
+                "rollup": {
+                    "total_count": 0,
+                    "waiting_for_count": 0,
+                    "blocker_count": 0,
+                    "stale_count": 0,
+                    "correction_recurrence_count": 0,
+                    "freshness_drift_count": 0,
+                    "next_action_count": 0,
+                    "posture_order": ["waiting_for", "blocker", "stale", "next_action"],
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(
+        chief,
         "get_memory_trust_dashboard_summary",
         lambda *args, **kwargs: {
             "dashboard": {
@@ -447,6 +551,25 @@ def test_priority_brief_retrieval_failure_respects_non_healthy_quality_caps(monk
             }
         },
     )
+    monkeypatch.setattr(
+        chief,
+        "compile_continuity_weekly_review",
+        lambda *args, **kwargs: {
+            "review": {
+                "scope": {"thread_id": None, "since": None, "until": None},
+                "rollup": {
+                    "total_count": 0,
+                    "waiting_for_count": 0,
+                    "blocker_count": 0,
+                    "stale_count": 0,
+                    "correction_recurrence_count": 0,
+                    "freshness_drift_count": 0,
+                    "next_action_count": 0,
+                    "posture_order": ["waiting_for", "blocker", "stale", "next_action"],
+                },
+            }
+        },
+    )
 
     def compile_with_trust_status(status: str) -> dict[str, object]:
         monkeypatch.setattr(
@@ -482,3 +605,117 @@ def test_priority_brief_retrieval_failure_respects_non_healthy_quality_caps(monk
     assert "weak" in insufficient_sample_ranked["rationale"]["trust_signals"]["reason"]
     assert insufficient_sample_payload["brief"]["draft_follow_up"]["status"] == "none"
     assert insufficient_sample_payload["brief"]["resumption_supervision"]["confidence_posture"] == "low"
+
+
+def test_capture_recommendation_outcome_creates_auditable_note_and_returns_learning(monkeypatch) -> None:
+    class _FakeStore:
+        def __init__(self) -> None:
+            self.capture_event_payloads: list[dict[str, object]] = []
+            self.object_payloads: list[dict[str, object]] = []
+
+        def create_continuity_capture_event(
+            self,
+            *,
+            raw_content: str,
+            explicit_signal: str,
+            admission_posture: str,
+            admission_reason: str,
+        ) -> dict[str, object]:
+            self.capture_event_payloads.append(
+                {
+                    "raw_content": raw_content,
+                    "explicit_signal": explicit_signal,
+                    "admission_posture": admission_posture,
+                    "admission_reason": admission_reason,
+                }
+            )
+            return {"id": UUID("11111111-1111-4111-8111-111111111111")}
+
+        def create_continuity_object(
+            self,
+            *,
+            capture_event_id: UUID,
+            object_type: str,
+            status: str,
+            title: str,
+            body: dict[str, object],
+            provenance: dict[str, object],
+            confidence: float,
+        ) -> dict[str, object]:
+            self.object_payloads.append(
+                {
+                    "capture_event_id": capture_event_id,
+                    "object_type": object_type,
+                    "status": status,
+                    "title": title,
+                    "body": body,
+                    "provenance": provenance,
+                    "confidence": confidence,
+                }
+            )
+            return {
+                "id": UUID("22222222-2222-4222-8222-222222222222"),
+                "capture_event_id": capture_event_id,
+                "created_at": datetime(2026, 3, 31, 12, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 3, 31, 12, 0, tzinfo=UTC),
+            }
+
+    monkeypatch.setattr(
+        chief,
+        "compile_chief_of_staff_priority_brief",
+        lambda *args, **kwargs: {
+            "brief": {
+                "recommendation_outcomes": {
+                    "items": [],
+                    "summary": {
+                        "returned_count": 0,
+                        "total_count": 1,
+                        "outcome_counts": {"accept": 1, "defer": 0, "ignore": 0, "rewrite": 0},
+                        "order": ["created_at_desc", "id_desc"],
+                    },
+                },
+                "priority_learning_summary": {
+                    "total_count": 1,
+                    "accept_count": 1,
+                    "defer_count": 0,
+                    "ignore_count": 0,
+                    "rewrite_count": 0,
+                    "acceptance_rate": 1.0,
+                    "override_rate": 0.0,
+                    "defer_hotspots": [],
+                    "ignore_hotspots": [],
+                    "priority_shift_explanation": "Prioritization is reinforcing currently accepted recommendation patterns while tracking defer/override hotspots.",
+                    "hotspot_order": ["count_desc", "key_asc"],
+                },
+                "pattern_drift_summary": {
+                    "posture": "improving",
+                    "reason": "Accepted outcomes are leading with bounded defers/overrides, indicating improving recommendation fit.",
+                    "supporting_signals": [],
+                },
+            }
+        },
+    )
+
+    store = _FakeStore()
+    response = chief.capture_chief_of_staff_recommendation_outcome(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        request=ChiefOfStaffRecommendationOutcomeCaptureInput(
+            outcome="accept",
+            recommendation_action_type="execute_next_action",
+            recommendation_title="Next Action: Ship dashboard",
+            rationale="Accepted in weekly review.",
+            target_priority_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            thread_id=UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+        ),
+    )
+
+    assert store.capture_event_payloads
+    assert store.object_payloads
+    assert store.object_payloads[0]["object_type"] == "Note"
+    assert store.object_payloads[0]["body"]["kind"] == "chief_of_staff_recommendation_outcome"
+    assert response["outcome"]["outcome"] == "accept"
+    assert response["outcome"]["recommendation_action_type"] == "execute_next_action"
+    assert response["recommendation_outcomes"]["summary"]["outcome_counts"]["accept"] == 1
+    assert response["priority_learning_summary"]["acceptance_rate"] == 1.0
+    assert response["pattern_drift_summary"]["posture"] == "improving"

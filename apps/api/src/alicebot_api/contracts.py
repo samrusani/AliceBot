@@ -216,6 +216,9 @@ ChiefOfStaffResumptionRecommendationAction = Literal[
     "close_loop_candidate",
     "review_scope",
 ]
+ChiefOfStaffRecommendationOutcome = Literal["accept", "defer", "ignore", "rewrite"]
+ChiefOfStaffWeeklyReviewGuidanceAction = Literal["close", "defer", "escalate"]
+ChiefOfStaffPatternDriftPosture = Literal["improving", "stable", "drifting", "insufficient_signal"]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -492,6 +495,10 @@ CHIEF_OF_STAFF_RESUMPTION_RECOMMENDATION_ACTIONS = [
     "close_loop_candidate",
     "review_scope",
 ]
+CHIEF_OF_STAFF_RECOMMENDATION_OUTCOMES = ["accept", "defer", "ignore", "rewrite"]
+CHIEF_OF_STAFF_WEEKLY_REVIEW_GUIDANCE_ACTIONS = ["close", "defer", "escalate"]
+CHIEF_OF_STAFF_RECOMMENDATION_OUTCOME_ORDER = ["created_at_desc", "id_desc"]
+CHIEF_OF_STAFF_OUTCOME_HOTSPOT_ORDER = ["count_desc", "key_asc"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -1591,6 +1598,34 @@ class ChiefOfStaffPriorityBriefRequestInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ChiefOfStaffRecommendationOutcomeCaptureInput:
+    outcome: ChiefOfStaffRecommendationOutcome
+    recommendation_action_type: ChiefOfStaffRecommendedActionType
+    recommendation_title: str
+    rationale: str | None = None
+    rewritten_title: str | None = None
+    target_priority_id: UUID | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "outcome": self.outcome,
+            "recommendation_action_type": self.recommendation_action_type,
+            "recommendation_title": self.recommendation_title,
+            "rationale": self.rationale,
+            "rewritten_title": self.rewritten_title,
+            "target_priority_id": None if self.target_priority_id is None else str(self.target_priority_id),
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuityOpenLoopReviewActionInput:
     action: ContinuityOpenLoopReviewAction
     note: str | None = None
@@ -2576,6 +2611,76 @@ class ChiefOfStaffResumptionSupervisionRecord(TypedDict):
     summary: ChiefOfStaffPreparationSectionSummary
 
 
+class ChiefOfStaffWeeklyReviewGuidanceItem(TypedDict):
+    rank: int
+    action: ChiefOfStaffWeeklyReviewGuidanceAction
+    signal_count: int
+    rationale: str
+
+
+class ChiefOfStaffWeeklyReviewBriefSummary(TypedDict):
+    guidance_order: list[ChiefOfStaffWeeklyReviewGuidanceAction]
+    guidance_item_order: list[str]
+
+
+class ChiefOfStaffWeeklyReviewBriefRecord(TypedDict):
+    scope: ContinuityRecallScopeFilters
+    rollup: ContinuityWeeklyReviewRollup
+    guidance: list[ChiefOfStaffWeeklyReviewGuidanceItem]
+    summary: ChiefOfStaffWeeklyReviewBriefSummary
+
+
+class ChiefOfStaffRecommendationOutcomeRecord(TypedDict):
+    id: str
+    capture_event_id: str
+    outcome: ChiefOfStaffRecommendationOutcome
+    recommendation_action_type: ChiefOfStaffRecommendedActionType
+    recommendation_title: str
+    rewritten_title: str | None
+    target_priority_id: str | None
+    rationale: str | None
+    provenance_references: list[ContinuityRecallProvenanceReference]
+    created_at: str
+    updated_at: str
+
+
+class ChiefOfStaffRecommendationOutcomeSummary(TypedDict):
+    returned_count: int
+    total_count: int
+    outcome_counts: dict[ChiefOfStaffRecommendationOutcome, int]
+    order: list[str]
+
+
+class ChiefOfStaffRecommendationOutcomeSection(TypedDict):
+    items: list[ChiefOfStaffRecommendationOutcomeRecord]
+    summary: ChiefOfStaffRecommendationOutcomeSummary
+
+
+class ChiefOfStaffOutcomeHotspotRecord(TypedDict):
+    key: str
+    count: int
+
+
+class ChiefOfStaffPriorityLearningSummaryRecord(TypedDict):
+    total_count: int
+    accept_count: int
+    defer_count: int
+    ignore_count: int
+    rewrite_count: int
+    acceptance_rate: float
+    override_rate: float
+    defer_hotspots: list[ChiefOfStaffOutcomeHotspotRecord]
+    ignore_hotspots: list[ChiefOfStaffOutcomeHotspotRecord]
+    priority_shift_explanation: str
+    hotspot_order: list[str]
+
+
+class ChiefOfStaffPatternDriftSummaryRecord(TypedDict):
+    posture: ChiefOfStaffPatternDriftPosture
+    reason: str
+    supporting_signals: list[str]
+
+
 class ChiefOfStaffPriorityBriefRecord(TypedDict):
     assembly_version: str
     scope: ContinuityRecallScopeFilters
@@ -2591,12 +2696,23 @@ class ChiefOfStaffPriorityBriefRecord(TypedDict):
     prep_checklist: ChiefOfStaffPrepChecklistRecord
     suggested_talking_points: ChiefOfStaffSuggestedTalkingPointsRecord
     resumption_supervision: ChiefOfStaffResumptionSupervisionRecord
+    weekly_review_brief: ChiefOfStaffWeeklyReviewBriefRecord
+    recommendation_outcomes: ChiefOfStaffRecommendationOutcomeSection
+    priority_learning_summary: ChiefOfStaffPriorityLearningSummaryRecord
+    pattern_drift_summary: ChiefOfStaffPatternDriftSummaryRecord
     summary: ChiefOfStaffPrioritySummary
     sources: list[str]
 
 
 class ChiefOfStaffPriorityBriefResponse(TypedDict):
     brief: ChiefOfStaffPriorityBriefRecord
+
+
+class ChiefOfStaffRecommendationOutcomeCaptureResponse(TypedDict):
+    outcome: ChiefOfStaffRecommendationOutcomeRecord
+    recommendation_outcomes: ChiefOfStaffRecommendationOutcomeSection
+    priority_learning_summary: ChiefOfStaffPriorityLearningSummaryRecord
+    pattern_drift_summary: ChiefOfStaffPatternDriftSummaryRecord
 
 
 class ContinuityOpenLoopReviewActionResponse(TypedDict):
