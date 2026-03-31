@@ -1288,6 +1288,16 @@ export type ChiefOfStaffRecommendedActionType =
   | "review_and_defer"
   | "capture_new_priority";
 
+export type ChiefOfStaffFollowThroughPosture = "overdue" | "stale_waiting_for" | "slipped_commitment";
+
+export type ChiefOfStaffFollowThroughRecommendationAction =
+  | "nudge"
+  | "defer"
+  | "escalate"
+  | "close_loop_candidate";
+
+export type ChiefOfStaffEscalationPosture = "watch" | "elevated" | "critical";
+
 export type ChiefOfStaffPriorityRankingInputs = {
   posture: ChiefOfStaffPriorityPosture;
   open_loop_posture: ContinuityOpenLoopPosture | null;
@@ -1333,6 +1343,58 @@ export type ChiefOfStaffPriorityItem = {
   rationale: ChiefOfStaffPriorityRationale;
 };
 
+export type ChiefOfStaffFollowThroughItem = {
+  rank: number;
+  id: string;
+  capture_event_id: string;
+  object_type: ContinuityObjectType;
+  status: string;
+  title: string;
+  current_priority_posture: ChiefOfStaffPriorityPosture;
+  follow_through_posture: ChiefOfStaffFollowThroughPosture;
+  recommendation_action: ChiefOfStaffFollowThroughRecommendationAction;
+  reason: string;
+  age_hours: number;
+  provenance_references: ContinuityRecallProvenanceReference[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChiefOfStaffEscalationPostureRecord = {
+  posture: ChiefOfStaffEscalationPosture;
+  reason: string;
+  total_follow_through_count: number;
+  nudge_count: number;
+  defer_count: number;
+  escalate_count: number;
+  close_loop_candidate_count: number;
+};
+
+export type ChiefOfStaffDraftFollowUpTargetMetadata = {
+  continuity_object_id: string | null;
+  capture_event_id: string | null;
+  object_type: ContinuityObjectType | null;
+  priority_posture: ChiefOfStaffPriorityPosture | null;
+  follow_through_posture: ChiefOfStaffFollowThroughPosture | null;
+  recommendation_action: ChiefOfStaffFollowThroughRecommendationAction | null;
+  thread_id: string | null;
+};
+
+export type ChiefOfStaffDraftFollowUpContent = {
+  subject: string;
+  body: string;
+};
+
+export type ChiefOfStaffDraftFollowUp = {
+  status: "drafted" | "none";
+  mode: "draft_only";
+  approval_required: boolean;
+  auto_send: boolean;
+  reason: string;
+  target_metadata: ChiefOfStaffDraftFollowUpTargetMetadata;
+  content: ChiefOfStaffDraftFollowUpContent;
+};
+
 export type ChiefOfStaffRecommendedNextAction = {
   action_type: ChiefOfStaffRecommendedActionType;
   title: string;
@@ -1350,6 +1412,12 @@ export type ChiefOfStaffPrioritySummary = {
   total_count: number;
   posture_order: ChiefOfStaffPriorityPosture[];
   order: string[];
+  follow_through_posture_order: ChiefOfStaffFollowThroughPosture[];
+  follow_through_item_order: string[];
+  follow_through_total_count: number;
+  overdue_count: number;
+  stale_waiting_for_count: number;
+  slipped_commitment_count: number;
   trust_confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
   trust_confidence_reason: string;
   quality_gate_status: MemoryQualityGateStatus;
@@ -1360,6 +1428,11 @@ export type ChiefOfStaffPriorityBrief = {
   assembly_version: string;
   scope: ContinuityRecallSummary["filters"];
   ranked_items: ChiefOfStaffPriorityItem[];
+  overdue_items: ChiefOfStaffFollowThroughItem[];
+  stale_waiting_for_items: ChiefOfStaffFollowThroughItem[];
+  slipped_commitments: ChiefOfStaffFollowThroughItem[];
+  escalation_posture: ChiefOfStaffEscalationPostureRecord;
+  draft_follow_up: ChiefOfStaffDraftFollowUp;
   recommended_next_action: ChiefOfStaffRecommendedNextAction;
   summary: ChiefOfStaffPrioritySummary;
   sources: string[];

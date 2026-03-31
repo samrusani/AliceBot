@@ -194,6 +194,14 @@ ChiefOfStaffRecommendedActionType = Literal[
     "review_and_defer",
     "capture_new_priority",
 ]
+ChiefOfStaffFollowThroughPosture = Literal["overdue", "stale_waiting_for", "slipped_commitment"]
+ChiefOfStaffFollowThroughRecommendationAction = Literal[
+    "nudge",
+    "defer",
+    "escalate",
+    "close_loop_candidate",
+]
+ChiefOfStaffEscalationPosture = Literal["watch", "elevated", "critical"]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -436,6 +444,24 @@ CHIEF_OF_STAFF_RECOMMENDED_ACTION_TYPES = [
     "review_and_defer",
     "capture_new_priority",
 ]
+CHIEF_OF_STAFF_FOLLOW_THROUGH_POSTURE_ORDER = [
+    "overdue",
+    "stale_waiting_for",
+    "slipped_commitment",
+]
+CHIEF_OF_STAFF_FOLLOW_THROUGH_ITEM_ORDER = [
+    "recommendation_action_desc",
+    "age_hours_desc",
+    "created_at_desc",
+    "id_desc",
+]
+CHIEF_OF_STAFF_FOLLOW_THROUGH_RECOMMENDATION_ACTIONS = [
+    "nudge",
+    "defer",
+    "escalate",
+    "close_loop_candidate",
+]
+CHIEF_OF_STAFF_ESCALATION_POSTURE_ORDER = ["watch", "elevated", "critical"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -2370,6 +2396,58 @@ class ChiefOfStaffPriorityItem(TypedDict):
     rationale: ChiefOfStaffPriorityRationale
 
 
+class ChiefOfStaffFollowThroughItem(TypedDict):
+    rank: int
+    id: str
+    capture_event_id: str
+    object_type: ContinuityObjectType
+    status: str
+    title: str
+    current_priority_posture: ChiefOfStaffPriorityPosture
+    follow_through_posture: ChiefOfStaffFollowThroughPosture
+    recommendation_action: ChiefOfStaffFollowThroughRecommendationAction
+    reason: str
+    age_hours: float
+    provenance_references: list[ContinuityRecallProvenanceReference]
+    created_at: str
+    updated_at: str
+
+
+class ChiefOfStaffEscalationPostureRecord(TypedDict):
+    posture: ChiefOfStaffEscalationPosture
+    reason: str
+    total_follow_through_count: int
+    nudge_count: int
+    defer_count: int
+    escalate_count: int
+    close_loop_candidate_count: int
+
+
+class ChiefOfStaffDraftFollowUpTargetMetadata(TypedDict):
+    continuity_object_id: str | None
+    capture_event_id: str | None
+    object_type: ContinuityObjectType | None
+    priority_posture: ChiefOfStaffPriorityPosture | None
+    follow_through_posture: ChiefOfStaffFollowThroughPosture | None
+    recommendation_action: ChiefOfStaffFollowThroughRecommendationAction | None
+    thread_id: str | None
+
+
+class ChiefOfStaffDraftFollowUpContent(TypedDict):
+    subject: str
+    body: str
+
+
+class ChiefOfStaffDraftFollowUpRecord(TypedDict):
+    status: Literal["drafted", "none"]
+    mode: Literal["draft_only"]
+    approval_required: bool
+    auto_send: bool
+    reason: str
+    target_metadata: ChiefOfStaffDraftFollowUpTargetMetadata
+    content: ChiefOfStaffDraftFollowUpContent
+
+
 class ChiefOfStaffRecommendedNextAction(TypedDict):
     action_type: ChiefOfStaffRecommendedActionType
     title: str
@@ -2387,6 +2465,12 @@ class ChiefOfStaffPrioritySummary(TypedDict):
     total_count: int
     posture_order: list[ChiefOfStaffPriorityPosture]
     order: list[str]
+    follow_through_posture_order: list[ChiefOfStaffFollowThroughPosture]
+    follow_through_item_order: list[str]
+    follow_through_total_count: int
+    overdue_count: int
+    stale_waiting_for_count: int
+    slipped_commitment_count: int
     trust_confidence_posture: ChiefOfStaffRecommendationConfidencePosture
     trust_confidence_reason: str
     quality_gate_status: MemoryQualityGateStatus
@@ -2397,6 +2481,11 @@ class ChiefOfStaffPriorityBriefRecord(TypedDict):
     assembly_version: str
     scope: ContinuityRecallScopeFilters
     ranked_items: list[ChiefOfStaffPriorityItem]
+    overdue_items: list[ChiefOfStaffFollowThroughItem]
+    stale_waiting_for_items: list[ChiefOfStaffFollowThroughItem]
+    slipped_commitments: list[ChiefOfStaffFollowThroughItem]
+    escalation_posture: ChiefOfStaffEscalationPostureRecord
+    draft_follow_up: ChiefOfStaffDraftFollowUpRecord
     recommended_next_action: ChiefOfStaffRecommendedNextAction
     summary: ChiefOfStaffPrioritySummary
     sources: list[str]
