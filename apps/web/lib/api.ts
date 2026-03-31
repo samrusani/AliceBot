@@ -1269,6 +1269,102 @@ export type ContinuityWeeklyReview = {
   sources: string[];
 };
 
+export type ChiefOfStaffPriorityPosture =
+  | "urgent"
+  | "important"
+  | "waiting"
+  | "blocked"
+  | "stale"
+  | "defer";
+
+export type ChiefOfStaffRecommendationConfidencePosture = "high" | "medium" | "low";
+
+export type ChiefOfStaffRecommendedActionType =
+  | "execute_next_action"
+  | "progress_commitment"
+  | "follow_up_waiting_for"
+  | "unblock_blocker"
+  | "refresh_stale_item"
+  | "review_and_defer"
+  | "capture_new_priority";
+
+export type ChiefOfStaffPriorityRankingInputs = {
+  posture: ChiefOfStaffPriorityPosture;
+  open_loop_posture: ContinuityOpenLoopPosture | null;
+  recency_rank: number | null;
+  age_hours_relative_to_latest: number;
+  recall_relevance: number;
+  scope_match_count: number;
+  query_term_match_count: number;
+  freshness_posture: ContinuityRecallFreshnessPosture;
+  provenance_posture: ContinuityRecallProvenancePosture;
+  supersession_posture: ContinuityRecallSupersessionPosture;
+};
+
+export type ChiefOfStaffPriorityTrustSignals = {
+  quality_gate_status: MemoryQualityGateStatus;
+  retrieval_status: RetrievalEvaluationSummary["status"];
+  trust_confidence_cap: ChiefOfStaffRecommendationConfidencePosture;
+  downgraded_by_trust: boolean;
+  reason: string;
+};
+
+export type ChiefOfStaffPriorityRationale = {
+  reasons: string[];
+  ranking_inputs: ChiefOfStaffPriorityRankingInputs;
+  provenance_references: ContinuityRecallProvenanceReference[];
+  trust_signals: ChiefOfStaffPriorityTrustSignals;
+};
+
+export type ChiefOfStaffPriorityItem = {
+  rank: number;
+  id: string;
+  capture_event_id: string;
+  object_type: ContinuityObjectType;
+  status: string;
+  title: string;
+  priority_posture: ChiefOfStaffPriorityPosture;
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  confidence: number;
+  score: number;
+  provenance: JsonObject;
+  created_at: string;
+  updated_at: string;
+  rationale: ChiefOfStaffPriorityRationale;
+};
+
+export type ChiefOfStaffRecommendedNextAction = {
+  action_type: ChiefOfStaffRecommendedActionType;
+  title: string;
+  target_priority_id: string | null;
+  priority_posture: ChiefOfStaffPriorityPosture | null;
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  reason: string;
+  provenance_references: ContinuityRecallProvenanceReference[];
+  deterministic_rank_key: string;
+};
+
+export type ChiefOfStaffPrioritySummary = {
+  limit: number;
+  returned_count: number;
+  total_count: number;
+  posture_order: ChiefOfStaffPriorityPosture[];
+  order: string[];
+  trust_confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  trust_confidence_reason: string;
+  quality_gate_status: MemoryQualityGateStatus;
+  retrieval_status: RetrievalEvaluationSummary["status"];
+};
+
+export type ChiefOfStaffPriorityBrief = {
+  assembly_version: string;
+  scope: ContinuityRecallSummary["filters"];
+  ranked_items: ChiefOfStaffPriorityItem[];
+  recommended_next_action: ChiefOfStaffRecommendedNextAction;
+  summary: ChiefOfStaffPrioritySummary;
+  sources: string[];
+};
+
 export type ContinuityOpenLoopReviewActionPayload = {
   user_id: string;
   action: ContinuityOpenLoopReviewAction;
@@ -1841,6 +1937,50 @@ export function getContinuityResumptionBrief(
       until: until || undefined,
       max_recent_changes: maxRecentChanges,
       max_open_loops: maxOpenLoops,
+    },
+  );
+}
+
+export function getChiefOfStaffPriorityBrief(
+  apiBaseUrl: string,
+  userId: string,
+  options?: {
+    query?: string;
+    threadId?: string;
+    taskId?: string;
+    project?: string;
+    person?: string;
+    since?: string;
+    until?: string;
+    limit?: number;
+  },
+) {
+  const query = options?.query?.trim();
+  const threadId = options?.threadId?.trim();
+  const taskId = options?.taskId?.trim();
+  const project = options?.project?.trim();
+  const person = options?.person?.trim();
+  const since = options?.since?.trim();
+  const until = options?.until?.trim();
+  const limit =
+    typeof options?.limit === "number" && Number.isFinite(options.limit) && options.limit >= 0
+      ? String(Math.trunc(options.limit))
+      : undefined;
+
+  return requestJson<{ brief: ChiefOfStaffPriorityBrief }>(
+    apiBaseUrl,
+    "/v0/chief-of-staff",
+    undefined,
+    {
+      user_id: userId,
+      query: query || undefined,
+      thread_id: threadId || undefined,
+      task_id: taskId || undefined,
+      project: project || undefined,
+      person: person || undefined,
+      since: since || undefined,
+      until: until || undefined,
+      limit,
     },
   );
 }

@@ -4,40 +4,42 @@
 PASS
 
 ## criteria met
-- Sprint stayed P6-S24 scoped (trust dashboard contract/API, `/memories` dashboard UI, deterministic quality evidence artifact seam, additive Phase 4 reporting integration, sprint-scoped tests/docs).
-- Dashboard/evidence semantics are canonical and deterministic:
-  - `GET /v0/memories/trust-dashboard` is assembled server-side from canonical gate/retrieval/correction semantics.
-  - `python3 scripts/run_phase6_quality_evidence.py` writes deterministic artifact payload from the same dashboard seam.
-  - Integration parity test confirms artifact dashboard equals API dashboard for the same state.
-- Operator guidance is explicit in `/memories` via canonical `recommended_review` mode/action/reason.
-- Phase 4 release/readiness semantics remain additive-only for quality evidence and preserve GO/NO_GO behavior.
-- Required verification commands pass in this review run:
-  - `python3 scripts/run_phase6_quality_evidence.py` -> PASS (exit 0)
-  - `./.venv/bin/python -m pytest tests/unit/test_memory.py tests/unit/test_retrieval_evaluation.py tests/integration/test_memory_quality_gate_api.py tests/integration/test_retrieval_evaluation_api.py -q` -> `35 passed`
-  - `pnpm --dir apps/web test -- app/memories/page.test.tsx lib/api.test.ts` -> `38 passed`
-  - `python3 scripts/run_phase4_validation_matrix.py` -> `Phase 4 validation matrix result: PASS`
+- Sprint stayed P7-S25 scoped.
+  - Removed out-of-scope planning/spec doc additions from this sprint change set.
+- Deterministic and explainable ranking/recommendation behavior is implemented and verified.
+  - Ranked priorities include explicit posture labels and provenance-backed rationale.
+  - Recommended next action is deterministic for fixed input state.
+- Trust-aware confidence downgrade behavior is explicit.
+  - Added edge-case unit coverage for retrieval-fail behavior under non-healthy trust states.
+- No hidden connector/channel/auth/orchestration scope expansion found.
+- Required verification commands pass:
+  - `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py tests/integration/test_chief_of_staff_api.py -q` -> PASS (`4 passed`)
+  - `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-priority-panel.test.tsx lib/api.test.ts` -> PASS (`3 files, 38 tests`)
+  - `python3 scripts/run_phase4_validation_matrix.py` -> PASS
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking quality issues found after fix.
-- Implemented resilience improvement: trust-dashboard correction/freshness rollup now degrades deterministically to zero-count posture when continuity tables are absent, preventing standalone evidence-command crashes in partially migrated local DBs.
+- None blocking.
 
 ## regression risks
 - Low.
-- Main residual operational caveat: environments should still run full migrations for complete correction/freshness signal fidelity (fallback is deterministic but intentionally conservative).
+- Residual normal risk remains around future edits to deterministic ranking heuristics and trust-cap semantics; current unit/integration coverage is in place for baseline and key edge paths.
 
 ## docs issues
-- No blocking docs issues.
-- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect P6-S24 scope and preserve MVP-complete/Phase-4 canonical truth.
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P7-S25 and preserve Phase 6 completion truth.
+- `ARCHITECTURE.md` was updated to include shipped chief-of-staff API/UI seams and route inventory.
 
 ## should anything be added to RULES.md?
-- Optional: add a release rule requiring standalone acceptance commands to pass in default local environment or provide explicit deterministic fallback behavior.
+- No required additions.
 
 ## should anything update ARCHITECTURE.md?
-- Optional: document the trust-dashboard correction/freshness fallback behavior for partially migrated local environments.
+- Already updated in this sprint to include:
+  - `GET /v0/chief-of-staff`
+  - `/chief-of-staff` route
+  - chief-of-staff testing coverage references
 
 ## recommended next action
-1. Merge P6-S24 as PASS.
-2. Optional hardening follow-up: add an explicit API integration test for `GET /v0/memories/trust-dashboard` per-user isolation.
+1. Approve and merge P7-S25.
+2. Start P7-S26 follow-through supervision on top of the shipped deterministic chief-of-staff artifact.
