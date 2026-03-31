@@ -219,6 +219,30 @@ ChiefOfStaffResumptionRecommendationAction = Literal[
 ChiefOfStaffRecommendationOutcome = Literal["accept", "defer", "ignore", "rewrite"]
 ChiefOfStaffWeeklyReviewGuidanceAction = Literal["close", "defer", "escalate"]
 ChiefOfStaffPatternDriftPosture = Literal["improving", "stable", "drifting", "insufficient_signal"]
+ChiefOfStaffActionHandoffSourceKind = Literal[
+    "recommended_next_action",
+    "follow_through",
+    "prep_checklist",
+    "weekly_review",
+]
+ChiefOfStaffActionHandoffAction = Literal[
+    "execute_next_action",
+    "progress_commitment",
+    "follow_up_waiting_for",
+    "unblock_blocker",
+    "refresh_stale_item",
+    "review_and_defer",
+    "capture_new_priority",
+    "nudge",
+    "defer",
+    "escalate",
+    "close_loop_candidate",
+    "review_scope",
+    "weekly_review_close",
+    "weekly_review_defer",
+    "weekly_review_escalate",
+]
+ChiefOfStaffExecutionPosture = Literal["approval_bounded_artifact_only"]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -499,6 +523,31 @@ CHIEF_OF_STAFF_RECOMMENDATION_OUTCOMES = ["accept", "defer", "ignore", "rewrite"
 CHIEF_OF_STAFF_WEEKLY_REVIEW_GUIDANCE_ACTIONS = ["close", "defer", "escalate"]
 CHIEF_OF_STAFF_RECOMMENDATION_OUTCOME_ORDER = ["created_at_desc", "id_desc"]
 CHIEF_OF_STAFF_OUTCOME_HOTSPOT_ORDER = ["count_desc", "key_asc"]
+CHIEF_OF_STAFF_ACTION_HANDOFF_SOURCE_ORDER = [
+    "recommended_next_action",
+    "follow_through",
+    "prep_checklist",
+    "weekly_review",
+]
+CHIEF_OF_STAFF_ACTION_HANDOFF_ITEM_ORDER = ["score_desc", "source_order_asc", "source_reference_id_asc"]
+CHIEF_OF_STAFF_ACTION_HANDOFF_ACTIONS = [
+    "execute_next_action",
+    "progress_commitment",
+    "follow_up_waiting_for",
+    "unblock_blocker",
+    "refresh_stale_item",
+    "review_and_defer",
+    "capture_new_priority",
+    "nudge",
+    "defer",
+    "escalate",
+    "close_loop_candidate",
+    "review_scope",
+    "weekly_review_close",
+    "weekly_review_defer",
+    "weekly_review_escalate",
+]
+CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER = ["approval_bounded_artifact_only"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -2524,6 +2573,84 @@ class ChiefOfStaffRecommendedNextAction(TypedDict):
     deterministic_rank_key: str
 
 
+class ChiefOfStaffActionHandoffRequestTarget(TypedDict):
+    thread_id: str | None
+    task_id: str | None
+    project: str | None
+    person: str | None
+
+
+class ChiefOfStaffActionHandoffRequestDraft(TypedDict):
+    action: str
+    scope: str
+    domain_hint: str | None
+    risk_hint: str | None
+    attributes: JsonObject
+
+
+class ChiefOfStaffActionHandoffTaskDraftRecord(TypedDict):
+    status: Literal["draft"]
+    mode: Literal["governed_request_draft"]
+    approval_required: bool
+    auto_execute: bool
+    source_handoff_item_id: str
+    title: str
+    summary: str
+    target: ChiefOfStaffActionHandoffRequestTarget
+    request: ChiefOfStaffActionHandoffRequestDraft
+    rationale: str
+    provenance_references: list[ContinuityRecallProvenanceReference]
+
+
+class ChiefOfStaffActionHandoffApprovalDraftRecord(TypedDict):
+    status: Literal["draft_only"]
+    mode: Literal["approval_request_draft"]
+    decision: ToolRoutingDecision
+    approval_required: bool
+    auto_submit: bool
+    source_handoff_item_id: str
+    request: ChiefOfStaffActionHandoffRequestDraft
+    reason: str
+    required_checks: list[str]
+    provenance_references: list[ContinuityRecallProvenanceReference]
+
+
+class ChiefOfStaffActionHandoffItem(TypedDict):
+    rank: int
+    handoff_item_id: str
+    source_kind: ChiefOfStaffActionHandoffSourceKind
+    source_reference_id: str | None
+    title: str
+    recommendation_action: ChiefOfStaffActionHandoffAction
+    priority_posture: ChiefOfStaffPriorityPosture | None
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    rationale: str
+    provenance_references: list[ContinuityRecallProvenanceReference]
+    score: float
+    task_draft: ChiefOfStaffActionHandoffTaskDraftRecord
+    approval_draft: ChiefOfStaffActionHandoffApprovalDraftRecord
+
+
+class ChiefOfStaffActionHandoffBriefRecord(TypedDict):
+    summary: str
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    non_autonomous_guarantee: str
+    order: list[str]
+    source_order: list[ChiefOfStaffActionHandoffSourceKind]
+    provenance_references: list[ContinuityRecallProvenanceReference]
+
+
+class ChiefOfStaffExecutionPostureRecord(TypedDict):
+    posture: ChiefOfStaffExecutionPosture
+    approval_required: bool
+    autonomous_execution: bool
+    external_side_effects_allowed: bool
+    default_routing_decision: ToolRoutingDecision
+    required_operator_actions: list[str]
+    non_autonomous_guarantee: str
+    reason: str
+
+
 class ChiefOfStaffPrioritySummary(TypedDict):
     limit: int
     returned_count: int
@@ -2540,6 +2667,9 @@ class ChiefOfStaffPrioritySummary(TypedDict):
     trust_confidence_reason: str
     quality_gate_status: MemoryQualityGateStatus
     retrieval_status: RetrievalEvaluationStatus
+    handoff_item_count: int
+    handoff_item_order: list[str]
+    execution_posture_order: list[ChiefOfStaffExecutionPosture]
 
 
 class ChiefOfStaffPreparationArtifactItem(TypedDict):
@@ -2700,6 +2830,11 @@ class ChiefOfStaffPriorityBriefRecord(TypedDict):
     recommendation_outcomes: ChiefOfStaffRecommendationOutcomeSection
     priority_learning_summary: ChiefOfStaffPriorityLearningSummaryRecord
     pattern_drift_summary: ChiefOfStaffPatternDriftSummaryRecord
+    action_handoff_brief: ChiefOfStaffActionHandoffBriefRecord
+    handoff_items: list[ChiefOfStaffActionHandoffItem]
+    task_draft: ChiefOfStaffActionHandoffTaskDraftRecord
+    approval_draft: ChiefOfStaffActionHandoffApprovalDraftRecord
+    execution_posture: ChiefOfStaffExecutionPostureRecord
     summary: ChiefOfStaffPrioritySummary
     sources: list[str]
 
