@@ -202,6 +202,20 @@ ChiefOfStaffFollowThroughRecommendationAction = Literal[
     "close_loop_candidate",
 ]
 ChiefOfStaffEscalationPosture = Literal["watch", "elevated", "critical"]
+ChiefOfStaffResumptionRecommendationAction = Literal[
+    "execute_next_action",
+    "progress_commitment",
+    "follow_up_waiting_for",
+    "unblock_blocker",
+    "refresh_stale_item",
+    "review_and_defer",
+    "capture_new_priority",
+    "nudge",
+    "defer",
+    "escalate",
+    "close_loop_candidate",
+    "review_scope",
+]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -462,6 +476,22 @@ CHIEF_OF_STAFF_FOLLOW_THROUGH_RECOMMENDATION_ACTIONS = [
     "close_loop_candidate",
 ]
 CHIEF_OF_STAFF_ESCALATION_POSTURE_ORDER = ["watch", "elevated", "critical"]
+CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER = ["rank_asc", "created_at_desc", "id_desc"]
+CHIEF_OF_STAFF_RESUMPTION_SUPERVISION_ITEM_ORDER = ["rank_asc"]
+CHIEF_OF_STAFF_RESUMPTION_RECOMMENDATION_ACTIONS = [
+    "execute_next_action",
+    "progress_commitment",
+    "follow_up_waiting_for",
+    "unblock_blocker",
+    "refresh_stale_item",
+    "review_and_defer",
+    "capture_new_priority",
+    "nudge",
+    "defer",
+    "escalate",
+    "close_loop_candidate",
+    "review_scope",
+]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -2477,6 +2507,75 @@ class ChiefOfStaffPrioritySummary(TypedDict):
     retrieval_status: RetrievalEvaluationStatus
 
 
+class ChiefOfStaffPreparationArtifactItem(TypedDict):
+    rank: int
+    id: str
+    capture_event_id: str
+    object_type: ContinuityObjectType
+    status: str
+    title: str
+    reason: str
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    provenance_references: list[ContinuityRecallProvenanceReference]
+    created_at: str
+
+
+class ChiefOfStaffPreparationSectionSummary(TypedDict):
+    limit: int
+    returned_count: int
+    total_count: int
+    order: list[str]
+
+
+class ChiefOfStaffPreparationBriefRecord(TypedDict):
+    scope: ContinuityRecallScopeFilters
+    context_items: list[ChiefOfStaffPreparationArtifactItem]
+    last_decision: ChiefOfStaffPreparationArtifactItem | None
+    open_loops: list[ChiefOfStaffPreparationArtifactItem]
+    next_action: ChiefOfStaffPreparationArtifactItem | None
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    confidence_reason: str
+    summary: ChiefOfStaffPreparationSectionSummary
+
+
+class ChiefOfStaffWhatChangedSummaryRecord(TypedDict):
+    items: list[ChiefOfStaffPreparationArtifactItem]
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    confidence_reason: str
+    summary: ChiefOfStaffPreparationSectionSummary
+
+
+class ChiefOfStaffPrepChecklistRecord(TypedDict):
+    items: list[ChiefOfStaffPreparationArtifactItem]
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    confidence_reason: str
+    summary: ChiefOfStaffPreparationSectionSummary
+
+
+class ChiefOfStaffSuggestedTalkingPointsRecord(TypedDict):
+    items: list[ChiefOfStaffPreparationArtifactItem]
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    confidence_reason: str
+    summary: ChiefOfStaffPreparationSectionSummary
+
+
+class ChiefOfStaffResumptionSupervisionRecommendation(TypedDict):
+    rank: int
+    action: ChiefOfStaffResumptionRecommendationAction
+    title: str
+    reason: str
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    target_priority_id: str | None
+    provenance_references: list[ContinuityRecallProvenanceReference]
+
+
+class ChiefOfStaffResumptionSupervisionRecord(TypedDict):
+    recommendations: list[ChiefOfStaffResumptionSupervisionRecommendation]
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    confidence_reason: str
+    summary: ChiefOfStaffPreparationSectionSummary
+
+
 class ChiefOfStaffPriorityBriefRecord(TypedDict):
     assembly_version: str
     scope: ContinuityRecallScopeFilters
@@ -2487,6 +2586,11 @@ class ChiefOfStaffPriorityBriefRecord(TypedDict):
     escalation_posture: ChiefOfStaffEscalationPostureRecord
     draft_follow_up: ChiefOfStaffDraftFollowUpRecord
     recommended_next_action: ChiefOfStaffRecommendedNextAction
+    preparation_brief: ChiefOfStaffPreparationBriefRecord
+    what_changed_summary: ChiefOfStaffWhatChangedSummaryRecord
+    prep_checklist: ChiefOfStaffPrepChecklistRecord
+    suggested_talking_points: ChiefOfStaffSuggestedTalkingPointsRecord
+    resumption_supervision: ChiefOfStaffResumptionSupervisionRecord
     summary: ChiefOfStaffPrioritySummary
     sources: list[str]
 

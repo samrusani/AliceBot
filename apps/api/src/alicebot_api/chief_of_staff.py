@@ -12,10 +12,13 @@ from alicebot_api.contracts import (
     CHIEF_OF_STAFF_FOLLOW_THROUGH_ITEM_ORDER,
     CHIEF_OF_STAFF_FOLLOW_THROUGH_POSTURE_ORDER,
     CHIEF_OF_STAFF_FOLLOW_THROUGH_RECOMMENDATION_ACTIONS,
+    CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER,
     CHIEF_OF_STAFF_PRIORITY_BRIEF_ASSEMBLY_VERSION_V0,
     CHIEF_OF_STAFF_PRIORITY_ITEM_ORDER,
     CHIEF_OF_STAFF_PRIORITY_POSTURE_ORDER,
     CHIEF_OF_STAFF_RECOMMENDED_ACTION_TYPES,
+    CHIEF_OF_STAFF_RESUMPTION_RECOMMENDATION_ACTIONS,
+    CHIEF_OF_STAFF_RESUMPTION_SUPERVISION_ITEM_ORDER,
     CONTINUITY_OPEN_LOOP_POSTURE_ORDER,
     DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT,
     MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
@@ -29,6 +32,10 @@ from alicebot_api.contracts import (
     ChiefOfStaffFollowThroughItem,
     ChiefOfStaffFollowThroughPosture,
     ChiefOfStaffFollowThroughRecommendationAction,
+    ChiefOfStaffPrepChecklistRecord,
+    ChiefOfStaffPreparationArtifactItem,
+    ChiefOfStaffPreparationBriefRecord,
+    ChiefOfStaffPreparationSectionSummary,
     ChiefOfStaffPriorityBriefRecord,
     ChiefOfStaffPriorityBriefRequestInput,
     ChiefOfStaffPriorityBriefResponse,
@@ -37,9 +44,15 @@ from alicebot_api.contracts import (
     ChiefOfStaffRecommendationConfidencePosture,
     ChiefOfStaffRecommendedActionType,
     ChiefOfStaffRecommendedNextAction,
+    ChiefOfStaffResumptionRecommendationAction,
+    ChiefOfStaffResumptionSupervisionRecommendation,
+    ChiefOfStaffResumptionSupervisionRecord,
+    ChiefOfStaffSuggestedTalkingPointsRecord,
     ChiefOfStaffPrioritySummary,
+    ChiefOfStaffWhatChangedSummaryRecord,
     ContinuityOpenLoopDashboardQueryInput,
     ContinuityOpenLoopPosture,
+    ContinuityRecallProvenanceReference,
     ContinuityRecallQueryInput,
     ContinuityRecallResultRecord,
     ContinuityResumptionBriefRequestInput,
@@ -90,6 +103,11 @@ _FOLLOW_THROUGH_POSTURE_WEIGHT: dict[ChiefOfStaffFollowThroughPosture, int] = {
     "stale_waiting_for": 2,
     "overdue": 3,
 }
+_PREPARATION_CONTEXT_LIMIT = 6
+_WHAT_CHANGED_LIMIT = 6
+_PREP_CHECKLIST_LIMIT = 6
+_SUGGESTED_TALKING_POINT_LIMIT = 6
+_RESUMPTION_SUPERVISION_LIMIT = 3
 
 
 def _is_offset_aware(value: datetime) -> bool:
@@ -550,7 +568,10 @@ def _build_recommended_action(
             "priority_posture": None,
             "confidence_posture": trust_cap,
             "reason": "No active priority items are present, so capture one concrete next action to restore focus.",
-            "provenance_references": [],
+            "provenance_references": _synthetic_provenance_references(
+                source_kind="chief_of_staff_synthesis",
+                source_id="recommended_next_action_fallback",
+            ),
             "deterministic_rank_key": "none",
         }
 
@@ -584,6 +605,437 @@ def _build_recommended_action(
         "reason": reason,
         "provenance_references": target["rationale"]["provenance_references"],
         "deterministic_rank_key": f"{target['rank']}:{target['id']}:{target['score']:.6f}",
+    }
+
+
+def _build_preparation_section_summary(
+    *,
+    limit: int,
+    returned_count: int,
+    total_count: int,
+    order: list[str],
+) -> ChiefOfStaffPreparationSectionSummary:
+    return {
+        "limit": limit,
+        "returned_count": returned_count,
+        "total_count": total_count,
+        "order": list(order),
+    }
+
+
+def _serialize_preparation_item(
+    *,
+    source: ContinuityRecallResultRecord,
+    rank: int,
+    reason: str,
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture,
+) -> ChiefOfStaffPreparationArtifactItem:
+    return {
+        "rank": rank,
+        "id": source["id"],
+        "capture_event_id": source["capture_event_id"],
+        "object_type": source["object_type"],
+        "status": source["status"],
+        "title": source["title"],
+        "reason": reason,
+        "confidence_posture": confidence_posture,
+        "provenance_references": source["provenance_references"],
+        "created_at": source["created_at"],
+    }
+
+
+def _synthetic_provenance_references(
+    *,
+    source_kind: str,
+    source_id: str,
+) -> list[ContinuityRecallProvenanceReference]:
+    return [
+        {
+            "source_kind": source_kind,
+            "source_id": source_id,
+        }
+    ]
+
+
+def _serialize_synthetic_preparation_item(
+    *,
+    synthetic_id: str,
+    rank: int,
+    title: str,
+    reason: str,
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture,
+) -> ChiefOfStaffPreparationArtifactItem:
+    return {
+        "rank": rank,
+        "id": synthetic_id,
+        "capture_event_id": synthetic_id,
+        "object_type": "Note",
+        "status": "active",
+        "title": title,
+        "reason": reason,
+        "confidence_posture": confidence_posture,
+        "provenance_references": _synthetic_provenance_references(
+            source_kind="chief_of_staff_synthesis",
+            source_id=synthetic_id,
+        ),
+        "created_at": "1970-01-01T00:00:00+00:00",
+    }
+
+
+def _preparation_reason_for_context(item: ContinuityRecallResultRecord) -> str:
+    object_type = item["object_type"]
+    if object_type == "Decision":
+        return "Decision context carried forward for deterministic meeting prep."
+    if object_type == "NextAction":
+        return "Immediate execution context included to reduce ambiguity at resume time."
+    if object_type == "WaitingFor":
+        return "Waiting-for dependency included so follow-up context is explicit before conversation."
+    if object_type == "Blocker":
+        return "Blocker context included so unblock discussion can happen immediately."
+    if object_type == "Commitment":
+        return "Active commitment included to anchor accountability in prep."
+    return "Relevant continuity context included for deterministic preparation."
+
+
+def _build_preparation_brief(
+    *,
+    recall_items: list[ContinuityRecallResultRecord],
+    scope: dict[str, object],
+    last_decision: ContinuityRecallResultRecord | None,
+    open_loops: list[ContinuityRecallResultRecord],
+    next_action: ContinuityRecallResultRecord | None,
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture,
+    confidence_reason: str,
+) -> ChiefOfStaffPreparationBriefRecord:
+    context_candidates = sorted(
+        [item for item in recall_items if item["status"] != "deleted"],
+        key=lambda item: (_parse_timestamp(item["created_at"]), item["id"]),
+        reverse=True,
+    )
+    selected_context = context_candidates[:_PREPARATION_CONTEXT_LIMIT]
+    context_items = [
+        _serialize_preparation_item(
+            source=item,
+            rank=index,
+            reason=_preparation_reason_for_context(item),
+            confidence_posture=confidence_posture,
+        )
+        for index, item in enumerate(selected_context, start=1)
+    ]
+
+    serialized_last_decision = (
+        None
+        if last_decision is None
+        else _serialize_preparation_item(
+            source=last_decision,
+            rank=1,
+            reason="Latest scoped decision included to ground upcoming preparation context.",
+            confidence_posture=confidence_posture,
+        )
+    )
+    serialized_open_loops = [
+        _serialize_preparation_item(
+            source=item,
+            rank=index,
+            reason="Open loop included so unresolved items are visible before resuming execution.",
+            confidence_posture=confidence_posture,
+        )
+        for index, item in enumerate(open_loops[:_PREPARATION_CONTEXT_LIMIT], start=1)
+    ]
+    serialized_next_action = (
+        None
+        if next_action is None
+        else _serialize_preparation_item(
+            source=next_action,
+            rank=1,
+            reason="Next action is included to keep immediate execution focus explicit after interruption.",
+            confidence_posture=confidence_posture,
+        )
+    )
+
+    return {
+        "scope": scope,  # type: ignore[typeddict-item]
+        "context_items": context_items,
+        "last_decision": serialized_last_decision,
+        "open_loops": serialized_open_loops,
+        "next_action": serialized_next_action,
+        "confidence_posture": confidence_posture,
+        "confidence_reason": confidence_reason,
+        "summary": _build_preparation_section_summary(
+            limit=_PREPARATION_CONTEXT_LIMIT,
+            returned_count=len(context_items),
+            total_count=len(context_candidates),
+            order=list(CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER),
+        ),
+    }
+
+
+def _build_what_changed_summary(
+    *,
+    recent_changes: list[ContinuityRecallResultRecord],
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture,
+    confidence_reason: str,
+) -> ChiefOfStaffWhatChangedSummaryRecord:
+    selected_items = recent_changes[:_WHAT_CHANGED_LIMIT]
+    items = [
+        _serialize_preparation_item(
+            source=item,
+            rank=index,
+            reason="Included from deterministic continuity recent-changes ordering.",
+            confidence_posture=confidence_posture,
+        )
+        for index, item in enumerate(selected_items, start=1)
+    ]
+    return {
+        "items": items,
+        "confidence_posture": confidence_posture,
+        "confidence_reason": confidence_reason,
+        "summary": _build_preparation_section_summary(
+            limit=_WHAT_CHANGED_LIMIT,
+            returned_count=len(items),
+            total_count=len(recent_changes),
+            order=list(CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER),
+        ),
+    }
+
+
+def _build_prep_checklist(
+    *,
+    last_decision: ContinuityRecallResultRecord | None,
+    open_loops: list[ContinuityRecallResultRecord],
+    next_action: ContinuityRecallResultRecord | None,
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture,
+    confidence_reason: str,
+) -> ChiefOfStaffPrepChecklistRecord:
+    checklist_items: list[ChiefOfStaffPreparationArtifactItem] = []
+    checklist_candidates_count = 0
+    seen_ids: set[str] = set()
+
+    if last_decision is not None:
+        checklist_candidates_count += 1
+        seen_ids.add(last_decision["id"])
+        checklist_items.append(
+            _serialize_preparation_item(
+                source=last_decision,
+                rank=0,
+                reason="Review the latest decision assumptions before the upcoming conversation.",
+                confidence_posture=confidence_posture,
+            )
+        )
+
+    for open_loop in open_loops:
+        checklist_candidates_count += 1
+        if open_loop["id"] in seen_ids:
+            continue
+        seen_ids.add(open_loop["id"])
+        checklist_items.append(
+            _serialize_preparation_item(
+                source=open_loop,
+                rank=0,
+                reason="Prepare a status check and explicit owner for this unresolved open loop.",
+                confidence_posture=confidence_posture,
+            )
+        )
+
+    if next_action is not None:
+        checklist_candidates_count += 1
+        if next_action["id"] not in seen_ids:
+            checklist_items.append(
+                _serialize_preparation_item(
+                    source=next_action,
+                    rank=0,
+                    reason="Confirm the first executable step and owner before resuming.",
+                    confidence_posture=confidence_posture,
+                )
+            )
+            seen_ids.add(next_action["id"])
+
+    if not checklist_items:
+        checklist_items.append(
+            _serialize_synthetic_preparation_item(
+                synthetic_id="prep-checklist-capture-next-action",
+                rank=0,
+                title="Capture one concrete next action",
+                reason="No scoped prep candidates are available; capture one explicit next action before resume.",
+                confidence_posture=confidence_posture,
+            )
+        )
+
+    selected_items = checklist_items[:_PREP_CHECKLIST_LIMIT]
+    for rank, item in enumerate(selected_items, start=1):
+        item["rank"] = rank
+
+    return {
+        "items": selected_items,
+        "confidence_posture": confidence_posture,
+        "confidence_reason": confidence_reason,
+        "summary": _build_preparation_section_summary(
+            limit=_PREP_CHECKLIST_LIMIT,
+            returned_count=len(selected_items),
+            total_count=max(checklist_candidates_count, len(selected_items)),
+            order=list(CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER),
+        ),
+    }
+
+
+def _build_suggested_talking_points(
+    *,
+    last_decision: ContinuityRecallResultRecord | None,
+    top_ranked_priority: ChiefOfStaffPriorityItem | None,
+    open_loops: list[ContinuityRecallResultRecord],
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture,
+    confidence_reason: str,
+) -> ChiefOfStaffSuggestedTalkingPointsRecord:
+    talking_points: list[ChiefOfStaffPreparationArtifactItem] = []
+    talking_point_candidates_count = 0
+    seen_ids: set[str] = set()
+
+    if last_decision is not None:
+        talking_point_candidates_count += 1
+        seen_ids.add(last_decision["id"])
+        talking_points.append(
+            _serialize_preparation_item(
+                source=last_decision,
+                rank=0,
+                reason="Use this decision as opening context to align assumptions quickly.",
+                confidence_posture=confidence_posture,
+            )
+        )
+
+    if top_ranked_priority is not None:
+        talking_point_candidates_count += 1
+        priority_id = top_ranked_priority["id"]
+        if priority_id not in seen_ids:
+            seen_ids.add(priority_id)
+            talking_points.append(
+                {
+                    "rank": 0,
+                    "id": priority_id,
+                    "capture_event_id": top_ranked_priority["capture_event_id"],
+                    "object_type": top_ranked_priority["object_type"],
+                    "status": top_ranked_priority["status"],
+                    "title": top_ranked_priority["title"],
+                    "reason": "Lead with the top-ranked current priority to reduce ambiguity on what to do next.",
+                    "confidence_posture": top_ranked_priority["confidence_posture"],
+                    "provenance_references": top_ranked_priority["rationale"]["provenance_references"],
+                    "created_at": top_ranked_priority["created_at"],
+                }
+            )
+
+    for open_loop in open_loops:
+        talking_point_candidates_count += 1
+        if open_loop["id"] in seen_ids:
+            continue
+        seen_ids.add(open_loop["id"])
+        talking_points.append(
+            _serialize_preparation_item(
+                source=open_loop,
+                rank=0,
+                reason="Raise this unresolved dependency explicitly and confirm a concrete follow-up path.",
+                confidence_posture=confidence_posture,
+            )
+        )
+
+    if not talking_points:
+        talking_points.append(
+            _serialize_synthetic_preparation_item(
+                synthetic_id="talking-point-capture-next-action",
+                rank=0,
+                title="What is the single next action after this conversation?",
+                reason="No scoped continuity signals are available, so establish one explicit next action.",
+                confidence_posture=confidence_posture,
+            )
+        )
+
+    selected_items = talking_points[:_SUGGESTED_TALKING_POINT_LIMIT]
+    for rank, item in enumerate(selected_items, start=1):
+        item["rank"] = rank
+
+    return {
+        "items": selected_items,
+        "confidence_posture": confidence_posture,
+        "confidence_reason": confidence_reason,
+        "summary": _build_preparation_section_summary(
+            limit=_SUGGESTED_TALKING_POINT_LIMIT,
+            returned_count=len(selected_items),
+            total_count=max(talking_point_candidates_count, len(selected_items)),
+            order=list(CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER),
+        ),
+    }
+
+
+def _normalize_resumption_action(
+    action: str,
+) -> ChiefOfStaffResumptionRecommendationAction:
+    if action in CHIEF_OF_STAFF_RESUMPTION_RECOMMENDATION_ACTIONS:
+        return action  # type: ignore[return-value]
+    return "review_scope"
+
+
+def _build_resumption_supervision(
+    *,
+    recommended_next_action: ChiefOfStaffRecommendedNextAction,
+    follow_through_items: list[ChiefOfStaffFollowThroughItem],
+    trust_cap: _TrustConfidenceCap,
+) -> ChiefOfStaffResumptionSupervisionRecord:
+    recommendations: list[ChiefOfStaffResumptionSupervisionRecommendation] = []
+
+    recommendations.append(
+        {
+            "rank": 0,
+            "action": _normalize_resumption_action(recommended_next_action["action_type"]),
+            "title": recommended_next_action["title"],
+            "reason": recommended_next_action["reason"],
+            "confidence_posture": recommended_next_action["confidence_posture"],
+            "target_priority_id": recommended_next_action["target_priority_id"],
+            "provenance_references": recommended_next_action["provenance_references"],
+        }
+    )
+
+    if follow_through_items:
+        top_follow_through_item = follow_through_items[0]
+        recommendations.append(
+            {
+                "rank": 0,
+                "action": _normalize_resumption_action(top_follow_through_item["recommendation_action"]),
+                "title": f"Follow-through: {top_follow_through_item['title']}",
+                "reason": top_follow_through_item["reason"],
+                "confidence_posture": trust_cap.posture,
+                "target_priority_id": top_follow_through_item["id"],
+                "provenance_references": top_follow_through_item["provenance_references"],
+            }
+        )
+
+    if trust_cap.posture != "high":
+        recommendations.append(
+            {
+                "rank": 0,
+                "action": "review_scope",
+                "title": "Calibrate recommendation confidence before execution",
+                "reason": trust_cap.reason,
+                "confidence_posture": trust_cap.posture,
+                "target_priority_id": None,
+                "provenance_references": _synthetic_provenance_references(
+                    source_kind="memory_trust_dashboard",
+                    source_id="trust_confidence_cap",
+                ),
+            }
+        )
+
+    selected = recommendations[:_RESUMPTION_SUPERVISION_LIMIT]
+    for rank, recommendation in enumerate(selected, start=1):
+        recommendation["rank"] = rank
+
+    return {
+        "recommendations": selected,
+        "confidence_posture": trust_cap.posture,
+        "confidence_reason": trust_cap.reason,
+        "summary": _build_preparation_section_summary(
+            limit=_RESUMPTION_SUPERVISION_LIMIT,
+            returned_count=len(selected),
+            total_count=len(recommendations),
+            order=list(CHIEF_OF_STAFF_RESUMPTION_SUPERVISION_ITEM_ORDER),
+        ),
     }
 
 
@@ -651,6 +1103,10 @@ def compile_chief_of_staff_priority_brief(
             max_open_loops=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
         ),
     )["brief"]
+    recent_changes_items = resumption_brief.get("recent_changes", {}).get("items", [])  # type: ignore[call-overload]
+    open_loop_items = resumption_brief.get("open_loops", {}).get("items", [])  # type: ignore[call-overload]
+    resumption_last_decision_item = resumption_brief.get("last_decision", {}).get("item")  # type: ignore[call-overload]
+    resumption_next_action_item = resumption_brief.get("next_action", {}).get("item")  # type: ignore[call-overload]
 
     trust_dashboard = get_memory_trust_dashboard_summary(
         store,
@@ -667,9 +1123,8 @@ def compile_chief_of_staff_priority_brief(
     open_loop_posture_by_id = _build_open_loop_posture_map(open_loop_dashboard)
     recent_change_index_by_id: dict[str, int] = {
         item["id"]: index
-        for index, item in enumerate(resumption_brief["recent_changes"]["items"])
+        for index, item in enumerate(recent_changes_items)
     }
-    resumption_next_action_item = resumption_brief["next_action"]["item"]
     resumption_next_action_id = (
         None
         if resumption_next_action_item is None
@@ -866,6 +1321,40 @@ def compile_chief_of_staff_priority_brief(
         all_follow_through_items=all_follow_through_items,
         thread_hint=thread_hint,
     )
+    top_ranked_priority = ranked_items[0] if ranked_items else None
+    preparation_brief = _build_preparation_brief(
+        recall_items=recall_payload["items"],
+        scope=recall_payload["summary"]["filters"],
+        last_decision=resumption_last_decision_item,
+        open_loops=open_loop_items,
+        next_action=resumption_next_action_item,
+        confidence_posture=trust_cap.posture,
+        confidence_reason=trust_cap.reason,
+    )
+    what_changed_summary = _build_what_changed_summary(
+        recent_changes=recent_changes_items,
+        confidence_posture=trust_cap.posture,
+        confidence_reason=trust_cap.reason,
+    )
+    prep_checklist = _build_prep_checklist(
+        last_decision=resumption_last_decision_item,
+        open_loops=open_loop_items,
+        next_action=resumption_next_action_item,
+        confidence_posture=trust_cap.posture,
+        confidence_reason=trust_cap.reason,
+    )
+    suggested_talking_points = _build_suggested_talking_points(
+        last_decision=resumption_last_decision_item,
+        top_ranked_priority=top_ranked_priority,
+        open_loops=open_loop_items,
+        confidence_posture=trust_cap.posture,
+        confidence_reason=trust_cap.reason,
+    )
+    resumption_supervision = _build_resumption_supervision(
+        recommended_next_action=recommended_next_action,
+        follow_through_items=all_follow_through_items,
+        trust_cap=trust_cap,
+    )
 
     summary: ChiefOfStaffPrioritySummary = {
         "limit": limit,
@@ -895,6 +1384,11 @@ def compile_chief_of_staff_priority_brief(
         "escalation_posture": escalation_posture,
         "draft_follow_up": draft_follow_up,
         "recommended_next_action": recommended_next_action,
+        "preparation_brief": preparation_brief,
+        "what_changed_summary": what_changed_summary,
+        "prep_checklist": prep_checklist,
+        "suggested_talking_points": suggested_talking_points,
+        "resumption_supervision": resumption_supervision,
         "summary": summary,
         "sources": [
             "continuity_recall",
