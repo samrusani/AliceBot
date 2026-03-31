@@ -4,8 +4,8 @@
 
 - The canonical repo baseline remains through Phase 3 Sprint 9.
 - Earlier Phase 4 increments are delivered on top of that baseline: run-aware execution linkage, idempotent replay controls, approval-to-run pause/resume linkage, explicit run transitions/stop reasons, bounded retry posture, explicit failure classes, and deterministic gate runners.
-- Phase 4 Sprint 14 is the active release-control layer for gate-ownership truth compatibility.
 - Phase 4 Sprint 14 established the release-control layer: Phase 4 release-control is complete and remains the gate baseline, Phase 4 owns acceptance/readiness/validation semantics directly, canonical magnesium reorder ship-gate evidence is first-class, and compatibility gates stay green.
+- Phase 4 Sprint 14 is the active release-control layer for gate-ownership semantics and compatibility validation commands.
 - Phase 4 Sprint 15 adds deterministic MVP release-candidate rehearsal orchestration via `python3 scripts/run_phase4_release_candidate.py`, producing `artifacts/release/phase4_rc_summary.json` with explicit per-step evidence and final GO/NO_GO.
 - Phase 4 Sprint 16 adds durable RC evidence retention: each rehearsal run now writes an archive copy plus append-only audit ledger at `artifacts/release/archive/index.json`, while preserving the latest-summary compatibility path.
 - Phase 4 Sprint 17 hardens RC archive/index writes for concurrency: deterministic lock path (`artifacts/release/archive/index.lock`), bounded lock-timeout contract, and atomic index replace persistence.
@@ -38,7 +38,16 @@
   - `POST /v0/chief-of-staff/recommendation-outcomes` captures explicit recommendation handling outcomes (`accept`, `defer`, `ignore`, `rewrite`) as auditable continuity records.
   - weekly review guidance now explicitly ranks close/defer/escalate actions with deterministic rationale.
   - `/chief-of-staff` web now renders a weekly review and learning panel with outcome-capture controls and drift visibility.
-- Active post-Phase-6 sprint is Phase 7 Sprint 28: weekly review and outcome learning on top of shipped P7-S25/P7-S26/P7-S27 seams.
+- Phase 8 Sprint 29 adds deterministic chief-of-staff action handoff artifacts on top of shipped P7 outputs:
+  - `GET /v0/chief-of-staff` now also includes `action_handoff_brief`, `handoff_items`, `task_draft`, `approval_draft`, and explicit `execution_posture`.
+  - handoff mapping deterministically selects top recommendations from priority/follow-through/preparation/weekly-review signals and emits governed task/approval draft structures with rationale + provenance.
+  - execution posture is explicit and non-autonomous (`approval_bounded_artifact_only`, `approval_required=true`, no autonomous side effects).
+  - `/chief-of-staff` web now renders an action handoff panel showing posture, primary task/approval drafts, and per-item rationale/provenance.
+- Phase 7 is complete (`P7-S25` through `P7-S28` shipped).
+- Active post-Phase-7 sprint is Phase 8 Sprint 29: chief-of-staff action handoff artifacts.
+- Phase 8 planning anchors are:
+  - `docs/phase8-product-spec.md`
+  - `docs/phase8-sprint-29-32-plan.md`
 - The backend baseline now includes continuity APIs, deterministic context compilation, governed request routing, approvals and execution review, typed memory and open-loop seams, deterministic thread resumption brief reads, unified explicit-signal capture seams, explicit task and task-step lifecycle seams, rooted local workspaces and artifact ingestion, artifact retrieval and embeddings, narrow read-only Gmail and Calendar seams with selected-item ingestion, bounded read-only Calendar event discovery for one connected account, and the no-tools assistant-response seam.
 - The frontend baseline is now real product surface, not scaffolding: the Next.js operator shell ships `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/chief-of-staff`, `/entities`, and `/traces`, with live-backend reads when configured and explicit fixture fallback when they are not.
 - `/chat` now uses selected-thread continuity instead of a raw thread-id-first flow, keeps bounded thread review and deterministic resumption brief review visible beside both assistant and governed-request composition, ships thread-linked governed workflow, ordered task-step timeline review, and bounded explain-why trace embedding, and includes manual explicit-signal capture controls for selected `message.user` events.
@@ -86,15 +95,10 @@
   - P7-S25 priority engine and chief-of-staff dashboard is now shipped baseline
   - P7-S26 follow-through supervision is now shipped baseline
   - P7-S27 preparation briefs and resumption supervision is now shipped baseline
-  - active post-Phase-6 packet is P7-S28 weekly review and outcome learning
+  - P7-S28 weekly review and outcome learning is now shipped baseline
+  - active post-Phase-7 packet is P8-S29 chief-of-staff action handoff artifacts
   - do not reopen P6-S21/P6-S22/P6-S23/P6-S24 contracts while operating on post-P6-S24 follow-up scope
-  - do not reopen P7-S25 ranking/rationale semantics while executing P7-S28
-  - do not reopen P7-S26 follow-through semantics while executing P7-S28
-  - do not reopen P7-S27 preparation/resumption semantics while executing P7-S28
-  - Phase 6 planning anchors are:
-    - `docs/phase6-product-spec.md`
-    - `docs/phase6-sprint-21-24-plan.md`
-    - `docs/phase6-memory-quality-model.md`
+  - do not reopen P7-S25/P7-S26/P7-S27/P7-S28 semantics while executing P8-S29
   - do not fold post-Phase-5 work back into shipped Sprint 20 seams
 - Keep live docs synchronized with shipped reality so planning does not drift behind the repo again.
 

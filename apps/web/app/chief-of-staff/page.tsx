@@ -1,3 +1,4 @@
+import { ChiefOfStaffActionHandoffPanel } from "../../components/chief-of-staff-action-handoff-panel";
 import { ChiefOfStaffFollowThroughPanel } from "../../components/chief-of-staff-follow-through-panel";
 import { ChiefOfStaffPreparationPanel } from "../../components/chief-of-staff-preparation-panel";
 import { ChiefOfStaffPriorityPanel } from "../../components/chief-of-staff-priority-panel";
@@ -563,6 +564,176 @@ const chiefOfStaffFixture: ChiefOfStaffPriorityBrief = {
       "Acceptance rate=1.000000, Override rate=0.000000",
     ],
   },
+  action_handoff_brief: {
+    summary:
+      "Prepared 1 deterministic handoff item from recommended_next_action signals. All task and approval drafts remain artifact-only and approval-bounded.",
+    confidence_posture: "low",
+    non_autonomous_guarantee:
+      "No task, approval, connector send, or external side effect is executed by this endpoint.",
+    order: ["score_desc", "source_order_asc", "source_reference_id_asc"],
+    source_order: ["recommended_next_action", "follow_through", "prep_checklist", "weekly_review"],
+    provenance_references: [
+      {
+        source_kind: "continuity_capture_event",
+        source_id: "capture-priority-fixture-1",
+      },
+      {
+        source_kind: "continuity_capture_event",
+        source_id: "capture-follow-fixture-overdue-1",
+      },
+    ],
+  },
+  handoff_items: [
+    {
+      rank: 1,
+      handoff_item_id: "handoff-1-recommended_next_action-priority-fixture-1",
+      source_kind: "recommended_next_action",
+      source_reference_id: "priority-fixture-1",
+      title: "Next Action: Confirm launch checklist owner",
+      recommendation_action: "execute_next_action",
+      priority_posture: "urgent",
+      confidence_posture: "low",
+      rationale: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+      provenance_references: [
+        {
+          source_kind: "continuity_capture_event",
+          source_id: "capture-priority-fixture-1",
+        },
+      ],
+      score: 1650,
+      task_draft: {
+        status: "draft",
+        mode: "governed_request_draft",
+        approval_required: true,
+        auto_execute: false,
+        source_handoff_item_id: "handoff-1-recommended_next_action-priority-fixture-1",
+        title: "Next Action: Confirm launch checklist owner",
+        summary:
+          "Draft-only governed request assembled from chief-of-staff handoff artifacts; requires explicit approval before any execution.",
+        target: {
+          thread_id: "thread-fixture-1",
+          task_id: null,
+          project: null,
+          person: null,
+        },
+        request: {
+          action: "execute_next_action",
+          scope: "chief_of_staff_priority",
+          domain_hint: "planning",
+          risk_hint: "governed_handoff",
+          attributes: {},
+        },
+        rationale: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+        provenance_references: [
+          {
+            source_kind: "continuity_capture_event",
+            source_id: "capture-priority-fixture-1",
+          },
+        ],
+      },
+      approval_draft: {
+        status: "draft_only",
+        mode: "approval_request_draft",
+        decision: "approval_required",
+        approval_required: true,
+        auto_submit: false,
+        source_handoff_item_id: "handoff-1-recommended_next_action-priority-fixture-1",
+        request: {
+          action: "execute_next_action",
+          scope: "chief_of_staff_priority",
+          domain_hint: "planning",
+          risk_hint: "governed_handoff",
+          attributes: {},
+        },
+        reason:
+          "Execution remains approval-bounded. This approval draft is artifact-only and must be explicitly submitted and resolved before any side effect.",
+        required_checks: [
+          "operator_review_handoff_artifact",
+          "submit_governed_approval_request",
+          "explicit_approval_resolution",
+        ],
+        provenance_references: [
+          {
+            source_kind: "continuity_capture_event",
+            source_id: "capture-priority-fixture-1",
+          },
+        ],
+      },
+    },
+  ],
+  task_draft: {
+    status: "draft",
+    mode: "governed_request_draft",
+    approval_required: true,
+    auto_execute: false,
+    source_handoff_item_id: "handoff-1-recommended_next_action-priority-fixture-1",
+    title: "Next Action: Confirm launch checklist owner",
+    summary:
+      "Draft-only governed request assembled from chief-of-staff handoff artifacts; requires explicit approval before any execution.",
+    target: {
+      thread_id: "thread-fixture-1",
+      task_id: null,
+      project: null,
+      person: null,
+    },
+    request: {
+      action: "execute_next_action",
+      scope: "chief_of_staff_priority",
+      domain_hint: "planning",
+      risk_hint: "governed_handoff",
+      attributes: {},
+    },
+    rationale: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+    provenance_references: [
+      {
+        source_kind: "continuity_capture_event",
+        source_id: "capture-priority-fixture-1",
+      },
+    ],
+  },
+  approval_draft: {
+    status: "draft_only",
+    mode: "approval_request_draft",
+    decision: "approval_required",
+    approval_required: true,
+    auto_submit: false,
+    source_handoff_item_id: "handoff-1-recommended_next_action-priority-fixture-1",
+    request: {
+      action: "execute_next_action",
+      scope: "chief_of_staff_priority",
+      domain_hint: "planning",
+      risk_hint: "governed_handoff",
+      attributes: {},
+    },
+    reason:
+      "Execution remains approval-bounded. This approval draft is artifact-only and must be explicitly submitted and resolved before any side effect.",
+    required_checks: [
+      "operator_review_handoff_artifact",
+      "submit_governed_approval_request",
+      "explicit_approval_resolution",
+    ],
+    provenance_references: [
+      {
+        source_kind: "continuity_capture_event",
+        source_id: "capture-priority-fixture-1",
+      },
+    ],
+  },
+  execution_posture: {
+    posture: "approval_bounded_artifact_only",
+    approval_required: true,
+    autonomous_execution: false,
+    external_side_effects_allowed: false,
+    default_routing_decision: "approval_required",
+    required_operator_actions: [
+      "review_handoff_items",
+      "submit_task_or_approval_request",
+      "resolve_approval_before_execution",
+    ],
+    non_autonomous_guarantee:
+      "No task, approval, connector send, or external side effect is executed by this endpoint.",
+    reason: "Chief-of-staff handoff artifacts are deterministic execution-prep only in P8-S29.",
+  },
   summary: {
     limit: 12,
     returned_count: 2,
@@ -585,11 +756,15 @@ const chiefOfStaffFixture: ChiefOfStaffPriorityBrief = {
       "Memory quality gate is weak (insufficient sample or degraded), so recommendation confidence is capped at low.",
     quality_gate_status: "insufficient_sample",
     retrieval_status: "pass",
+    handoff_item_count: 1,
+    handoff_item_order: ["score_desc", "source_order_asc", "source_reference_id_asc"],
+    execution_posture_order: ["approval_bounded_artifact_only"],
   },
   sources: [
     "continuity_recall",
     "continuity_open_loops",
     "continuity_resumption_brief",
+    "chief_of_staff_action_handoff",
     "memory_trust_dashboard",
   ],
 };
@@ -644,15 +819,16 @@ export default async function ChiefOfStaffPage({
   return (
     <div className="page-stack">
       <PageHeader
-        eyebrow="Phase 7"
+        eyebrow="Phase 8"
         title="Chief-of-staff"
-        description="Deterministic priority ranking, follow-through and preparation supervision, plus weekly review and recommendation outcome-learning signals with explicit rationale."
+        description="Deterministic priority ranking, follow-through/preparation supervision, weekly review learning, and approval-bounded action handoff artifacts with explicit rationale."
         meta={
           <div className="header-meta">
             <span className="subtle-chip">{pageModeLabel(mode)}</span>
             <span className="subtle-chip">{brief.summary.returned_count} ranked priorities</span>
             <span className="subtle-chip">{brief.summary.follow_through_total_count} follow-through items</span>
             <span className="subtle-chip">{brief.prep_checklist.summary.returned_count} prep checklist items</span>
+            <span className="subtle-chip">{brief.summary.handoff_item_count} handoff items</span>
             <StatusBadge
               status={brief.summary.trust_confidence_posture}
               label={`${brief.summary.trust_confidence_posture} confidence`}
@@ -679,6 +855,11 @@ export default async function ChiefOfStaffPage({
       <ChiefOfStaffWeeklyReviewPanel
         apiBaseUrl={briefSource === "live" ? apiConfig.apiBaseUrl : undefined}
         userId={briefSource === "live" ? apiConfig.userId : undefined}
+        brief={brief}
+        source={briefSource}
+        unavailableReason={briefUnavailableReason}
+      />
+      <ChiefOfStaffActionHandoffPanel
         brief={brief}
         source={briefSource}
         unavailableReason={briefUnavailableReason}

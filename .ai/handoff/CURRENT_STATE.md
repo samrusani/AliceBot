@@ -4,16 +4,15 @@
 
 - The canonical baseline remains through Phase 3 Sprint 9.
 - Phase 4 release-control layer remains the canonical gate ownership compatibility baseline.
-- Active Sprint focus is Phase 4 Sprint 14 (legacy control-doc marker for gate ownership compatibility checks).
-- Active sprint focus is Phase 7 Sprint 28 weekly review and outcome learning.
+- Active Sprint focus is Phase 4 Sprint 14 (control-doc compatibility marker for release-control gate ownership).
+- Active sprint focus is Phase 8 Sprint 29 chief-of-staff action handoff artifacts.
 - Earlier Phase 4 work is already delivered: task-run linkage to approvals/executions, idempotent proxy execution replay guards, approval pause/resume continuity for linked runs, run transition observability, explicit stop reasons, bounded retries with persisted posture, explicit failure classes, and deterministic Phase 4 gate runners.
 - Phase 4 Sprint 14-19 release-control/sign-off delivery is shipped baseline, and Phase 5 Sprint 17-20 continuity delivery is shipped baseline.
 - Latest shipped post-Phase-5 packet is P6-S24 trust dashboard and quality release evidence.
-- Active post-Phase-6 packet is P7-S28 weekly review and outcome learning.
-- Phase 6 planning docs now exist and are the control anchors for post-Phase-5 sequencing:
-  - `docs/phase6-product-spec.md`
-  - `docs/phase6-sprint-21-24-plan.md`
-  - `docs/phase6-memory-quality-model.md`
+- Active post-Phase-7 packet is P8-S29 chief-of-staff action handoff artifacts.
+- Phase 8 planning anchors are:
+  - `docs/phase8-product-spec.md`
+  - `docs/phase8-sprint-29-32-plan.md`
 - The accepted baseline includes deterministic Phase 3 gate entrypoints: `python3 scripts/run_phase3_acceptance.py`, `python3 scripts/run_phase3_readiness_gates.py`, and `python3 scripts/run_phase3_validation_matrix.py` (default go/no-go command).
 - Phase 4 gate entrypoints are `python3 scripts/run_phase4_acceptance.py`, `python3 scripts/run_phase4_readiness_gates.py`, and `python3 scripts/run_phase4_validation_matrix.py`.
 - Phase 4 release-candidate rehearsal entrypoint is `python3 scripts/run_phase4_release_candidate.py`, which writes latest summary evidence at `artifacts/release/phase4_rc_summary.json` and appends retained archive/index evidence under `artifacts/release/archive/` for repeated-run audit, with deterministic archive index lock path `artifacts/release/archive/index.lock`, bounded lock-timeout failure contract, and atomic index replace writes.
@@ -44,6 +43,11 @@
   - weekly-review guidance explicitly ranks `close` / `defer` / `escalate` actions with deterministic rationale and signal counts.
   - `POST /v0/chief-of-staff/recommendation-outcomes` captures deterministic recommendation handling outcomes (`accept`, `defer`, `ignore`, `rewrite`) as auditable continuity records.
   - `/chief-of-staff` now includes a dedicated weekly review and learning panel with explicit outcome-capture controls and drift visibility.
+- Phase 8 Sprint 29 chief-of-staff action-handoff implementation is now in place:
+  - `GET /v0/chief-of-staff` now also returns deterministic `action_handoff_brief`, `handoff_items`, `task_draft`, `approval_draft`, and explicit `execution_posture`.
+  - handoff artifacts deterministically map top actionable recommendations from priority/follow-through/preparation/weekly-review seams into governed task/approval-ready draft structures with rationale and provenance.
+  - execution posture is explicit and non-autonomous (`approval_bounded_artifact_only`, `approval_required=true`, `autonomous_execution=false`, no external side effects).
+  - `/chief-of-staff` now includes a dedicated action handoff panel with posture visibility and draft artifact review.
 - Phase 5 Sprint 17 adds typed continuity capture seams:
   - `POST /v0/continuity/captures` always appends an immutable capture event and conservatively admits typed durable objects.
   - `GET /v0/continuity/captures` returns inbox rows with admission posture (`DERIVED`/`TRIAGE`) and optional derived object summary.
@@ -119,7 +123,8 @@
   - P7-S25 priority engine and chief-of-staff dashboard is shipped baseline.
   - P7-S26 follow-through supervision is shipped baseline.
   - P7-S27 preparation briefs and resumption supervision is shipped baseline.
-  - active post-P6 scope is P7-S28 weekly review and outcome learning.
+  - P7-S28 weekly review and outcome learning is shipped baseline.
+  - active post-P7 scope is P8-S29 chief-of-staff action handoff artifacts.
 
 ## Repo Evidence To Trust
 
