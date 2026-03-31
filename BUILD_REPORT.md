@@ -1,81 +1,98 @@
 # BUILD_REPORT.md
 
 ## sprint objective
-Implement Phase 7 Sprint 27 (P7-S27): deterministic preparation briefs and resumption supervision artifacts on `/v0/chief-of-staff` and `/chief-of-staff`, while preserving shipped P7-S25/P7-S26 semantics and trust posture behavior.
+Implement Phase 7 Sprint 28 (P7-S28): deterministic weekly review and recommendation outcome-learning seams for chief-of-staff, including auditable outcome capture (`accept`, `defer`, `ignore`, `rewrite`), deterministic learning rollups, visible priority-shift rationale, and `/chief-of-staff` weekly review + outcome controls.
 
 ## completed work
-- Extended chief-of-staff backend contract/assembly to include deterministic preparation/resumption artifacts:
-  - `preparation_brief`
-  - `what_changed_summary`
-  - `prep_checklist`
-  - `suggested_talking_points`
-  - `resumption_supervision`
-- Added deterministic preparation/resumption artifact generation in `apps/api/src/alicebot_api/chief_of_staff.py` using existing seams:
-  - `continuity_recall`
-  - `continuity_open_loops`
-  - `continuity_resumption_brief`
-  - `memory_trust_dashboard`
-- Added explicit trust-aware confidence posture propagation for all new preparation/resumption artifacts.
-- Preserved P7-S25/P7-S26 outputs (priority ranking, follow-through supervision, draft follow-up) without redesign.
-- Added/updated backend unit and integration assertions for deterministic output shape/order and trust-aware confidence downgrade.
-- Extended web API types in `apps/web/lib/api.ts` for the new chief-of-staff fields.
-- Added new `/chief-of-staff` preparation UI panel:
-  - `apps/web/components/chief-of-staff-preparation-panel.tsx`
-  - `apps/web/components/chief-of-staff-preparation-panel.test.tsx`
-- Integrated preparation panel into `apps/web/app/chief-of-staff/page.tsx` and updated page/component/lib fixtures/tests.
-- Updated sprint-scoped docs:
-  - `README.md`
-  - `ROADMAP.md`
-  - `.ai/handoff/CURRENT_STATE.md`
+- Extended chief-of-staff contracts and response shape with P7-S28 fields:
+  - `weekly_review_brief`
+  - `recommendation_outcomes`
+  - `priority_learning_summary`
+  - `pattern_drift_summary`
+- Added deterministic recommendation outcome capture seam:
+  - new endpoint: `POST /v0/chief-of-staff/recommendation-outcomes`
+  - new request/response contracts for outcome capture and returned learning summaries
+  - auditable persistence via continuity capture + continuity note object records (no autonomous external side effects)
+- Added deterministic weekly review synthesis in `compile_chief_of_staff_priority_brief`:
+  - consumes continuity weekly review rollup
+  - computes explicit close/defer/escalate guidance with deterministic ordering and rationale
+- Added deterministic outcome-learning rollups:
+  - outcome counts by type (`accept`, `defer`, `ignore`, `rewrite`)
+  - acceptance and override rates
+  - defer/ignore hotspots (stable count/key ordering)
+  - explicit priority-shift explanation
+  - explicit pattern drift posture (`improving`, `stable`, `drifting`, `insufficient_signal`) with supporting signals
+- Added chief-of-staff weekly review UI panel and controls:
+  - new `ChiefOfStaffWeeklyReviewPanel` component
+  - visible weekly rollup, guidance, outcomes, learning summary, drift summary
+  - outcome-capture controls wired to the new API seam
+- Extended web API client/types for new chief-of-staff fields and outcome capture helper.
+- Updated and expanded unit/integration/web tests for outcome capture, weekly review rendering, and learning rollups.
+- Updated sprint-scoped docs (`README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`) to reflect active P7-S28 scope while preserving Phase 6 completion truth.
 
-## exact preparation/resumption contract delta
-- Added literals/constants in `apps/api/src/alicebot_api/contracts.py`:
-  - `ChiefOfStaffResumptionRecommendationAction`
-  - `CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER`
-  - `CHIEF_OF_STAFF_RESUMPTION_SUPERVISION_ITEM_ORDER`
-  - `CHIEF_OF_STAFF_RESUMPTION_RECOMMENDATION_ACTIONS`
-- Added new typed records:
-  - `ChiefOfStaffPreparationArtifactItem`
-  - `ChiefOfStaffPreparationSectionSummary`
-  - `ChiefOfStaffPreparationBriefRecord`
-  - `ChiefOfStaffWhatChangedSummaryRecord`
-  - `ChiefOfStaffPrepChecklistRecord`
-  - `ChiefOfStaffSuggestedTalkingPointsRecord`
-  - `ChiefOfStaffResumptionSupervisionRecommendation`
-  - `ChiefOfStaffResumptionSupervisionRecord`
-- Extended `ChiefOfStaffPriorityBriefRecord` with:
-  - `preparation_brief`
-  - `what_changed_summary`
-  - `prep_checklist`
-  - `suggested_talking_points`
-  - `resumption_supervision`
+## exact weekly-review/outcome contract delta
+- `apps/api/src/alicebot_api/contracts.py`
+  - Added literals:
+    - `ChiefOfStaffRecommendationOutcome = Literal["accept", "defer", "ignore", "rewrite"]`
+    - `ChiefOfStaffWeeklyReviewGuidanceAction = Literal["close", "defer", "escalate"]`
+    - `ChiefOfStaffPatternDriftPosture = Literal["improving", "stable", "drifting", "insufficient_signal"]`
+  - Added constants/ordering sets:
+    - `CHIEF_OF_STAFF_RECOMMENDATION_OUTCOMES`
+    - `CHIEF_OF_STAFF_WEEKLY_REVIEW_GUIDANCE_ACTIONS`
+    - `CHIEF_OF_STAFF_RECOMMENDATION_OUTCOME_ORDER`
+    - `CHIEF_OF_STAFF_OUTCOME_HOTSPOT_ORDER`
+  - Added request/response contracts:
+    - `ChiefOfStaffRecommendationOutcomeCaptureInput`
+    - `ChiefOfStaffRecommendationOutcomeCaptureResponse`
+  - Added new chief-of-staff records:
+    - `ChiefOfStaffWeeklyReviewBriefRecord`
+    - `ChiefOfStaffRecommendationOutcomeSection`
+    - `ChiefOfStaffPriorityLearningSummaryRecord`
+    - `ChiefOfStaffPatternDriftSummaryRecord`
+  - Extended `ChiefOfStaffPriorityBriefRecord` with:
+    - `weekly_review_brief`
+    - `recommendation_outcomes`
+    - `priority_learning_summary`
+    - `pattern_drift_summary`
 
-## exact deterministic what-changed/checklist/talking-points behavior
-- `what_changed_summary.items` is derived from deterministic continuity resumption `recent_changes` ordering and capped by deterministic section limit.
-- `prep_checklist.items` is built deterministically from `last_decision`, `open_loops`, and `next_action`, with stable ranking/order and a deterministic synthetic fallback when scoped signals are absent.
-- `suggested_talking_points.items` is built deterministically from `last_decision`, top ranked priority, and open loops, with stable de-duplication/ranking and deterministic fallback.
-- `resumption_supervision.recommendations` deterministically includes recommended next action, top follow-through item (if present), and low/medium trust calibration guidance when applicable.
-- All new recommendation artifacts carry explicit `confidence_posture` and provenance references.
+## exact deterministic outcome-capture and learning-summary behavior
+- Outcome capture (`POST /v0/chief-of-staff/recommendation-outcomes`):
+  - validates deterministic outcome/action enums
+  - enforces rewrite-title rule (`rewrite` requires `rewritten_title`; other outcomes reject it)
+  - writes an auditable continuity capture event and continuity note object (`kind=chief_of_staff_recommendation_outcome`)
+  - returns captured outcome plus updated recommendation outcomes + learning summaries for the scoped brief
+- Recommendation outcome aggregation:
+  - parsed only from continuity note records tagged with `kind=chief_of_staff_recommendation_outcome`
+  - deterministic sort order: `created_at_desc`, `id_desc`
+  - deterministic summary counts for all four outcomes
+- Priority learning summary:
+  - deterministic totals/counts
+  - deterministic `acceptance_rate` and `override_rate` (rounded)
+  - deterministic defer/ignore hotspots ordered by `count_desc`, then `key_asc`
+  - explicit `priority_shift_explanation` derived from outcome mix
+- Pattern drift summary:
+  - deterministic posture assignment (`improving`/`stable`/`drifting`/`insufficient_signal`)
+  - explicit reason + stable supporting signal lines
+- Weekly review guidance:
+  - deterministic close/defer/escalate guidance list with stable ranking and signal counts
+  - explicit rationale text per guidance item
 
 ## incomplete work
-- None inside P7-S27 scope.
-
-## explicit deferred scope
-- P7-S28 weekly outcome-learning loop and adaptive ranking changes.
-- Connector/channel/auth/orchestration expansion.
-- Autonomous external sends/writes.
+- None within P7-S28 scope.
 
 ## files changed
 - `apps/api/src/alicebot_api/chief_of_staff.py`
 - `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/main.py`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
 - `apps/web/app/chief-of-staff/page.tsx`
 - `apps/web/app/chief-of-staff/page.test.tsx`
 - `apps/web/components/chief-of-staff-priority-panel.test.tsx`
 - `apps/web/components/chief-of-staff-follow-through-panel.test.tsx`
-- `apps/web/components/chief-of-staff-preparation-panel.tsx`
 - `apps/web/components/chief-of-staff-preparation-panel.test.tsx`
+- `apps/web/components/chief-of-staff-weekly-review-panel.tsx` (new)
+- `apps/web/components/chief-of-staff-weekly-review-panel.test.tsx` (new)
 - `tests/unit/test_chief_of_staff.py`
 - `tests/integration/test_chief_of_staff_api.py`
 - `README.md`
@@ -86,20 +103,17 @@ Implement Phase 7 Sprint 27 (P7-S27): deterministic preparation briefs and resum
 
 ## tests run
 - `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py tests/integration/test_chief_of_staff_api.py -q`
-  - PASS (`5 passed`)
-- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-priority-panel.test.tsx components/chief-of-staff-follow-through-panel.test.tsx components/chief-of-staff-preparation-panel.test.tsx lib/api.test.ts`
-  - PASS (`5 files, 42 tests`)
+  - PASS (`7 passed`)
+- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-priority-panel.test.tsx components/chief-of-staff-follow-through-panel.test.tsx components/chief-of-staff-preparation-panel.test.tsx components/chief-of-staff-weekly-review-panel.test.tsx lib/api.test.ts`
+  - PASS (`6 files, 46 tests`)
 - `python3 scripts/run_phase4_validation_matrix.py`
   - PASS (`Phase 4 validation matrix result: PASS`)
 
-## exact verification command outcomes
-- Required backend chief-of-staff tests: PASS
-- Required web chief-of-staff tests: PASS
-- Required Phase 4 validation matrix: PASS
-
 ## blockers/issues
 - No unresolved implementation blockers.
-- One intermediate matrix run initially failed due sandboxed localhost DB/network restrictions and control-doc marker requirements; rerun with required local access and doc marker correction passed.
+- Intermediate validation runs initially failed due control-doc marker mismatch and sandboxed DB access; resolved by doc synchronization and rerun with local DB access.
 
 ## recommended next step
-Prepare and approve the P7-S27 review/merge decision, then open P7-S28 as a separate scoped sprint without modifying P7-S25/P7-S26/P7-S27 deterministic contracts.
+Proceed to merge review for P7-S28 and begin Phase 8 planning from the shipped P7-S25/P7-S26/P7-S27/P7-S28 baseline without reopening prior semantics.
+
+Phase 7 scope is complete after P7-S28.

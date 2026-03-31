@@ -4,12 +4,12 @@
 
 - The canonical baseline remains through Phase 3 Sprint 9.
 - Phase 4 release-control layer remains the canonical gate ownership compatibility baseline.
-- Active Sprint focus is Phase 4 Sprint 14.
-- Active sprint focus is Phase 7 Sprint 27 preparation briefs and resumption supervision.
+- Active Sprint focus is Phase 4 Sprint 14 (legacy control-doc marker for gate ownership compatibility checks).
+- Active sprint focus is Phase 7 Sprint 28 weekly review and outcome learning.
 - Earlier Phase 4 work is already delivered: task-run linkage to approvals/executions, idempotent proxy execution replay guards, approval pause/resume continuity for linked runs, run transition observability, explicit stop reasons, bounded retries with persisted posture, explicit failure classes, and deterministic Phase 4 gate runners.
 - Phase 4 Sprint 14-19 release-control/sign-off delivery is shipped baseline, and Phase 5 Sprint 17-20 continuity delivery is shipped baseline.
 - Latest shipped post-Phase-5 packet is P6-S24 trust dashboard and quality release evidence.
-- Active post-Phase-6 packet is P7-S27 preparation briefs and resumption supervision.
+- Active post-Phase-6 packet is P7-S28 weekly review and outcome learning.
 - Phase 6 planning docs now exist and are the control anchors for post-Phase-5 sequencing:
   - `docs/phase6-product-spec.md`
   - `docs/phase6-sprint-21-24-plan.md`
@@ -39,6 +39,11 @@
   - preparation and resumption recommendations are provenance-backed and explicitly trust-calibrated.
   - low-trust memory posture visibly downgrades preparation/resumption confidence posture.
   - `/chief-of-staff` now includes a dedicated preparation panel with rationale and provenance visibility.
+- Phase 7 Sprint 28 chief-of-staff weekly review/outcome-learning implementation is now in place:
+  - `GET /v0/chief-of-staff` now also returns deterministic `weekly_review_brief`, `recommendation_outcomes`, `priority_learning_summary`, and `pattern_drift_summary`.
+  - weekly-review guidance explicitly ranks `close` / `defer` / `escalate` actions with deterministic rationale and signal counts.
+  - `POST /v0/chief-of-staff/recommendation-outcomes` captures deterministic recommendation handling outcomes (`accept`, `defer`, `ignore`, `rewrite`) as auditable continuity records.
+  - `/chief-of-staff` now includes a dedicated weekly review and learning panel with explicit outcome-capture controls and drift visibility.
 - Phase 5 Sprint 17 adds typed continuity capture seams:
   - `POST /v0/continuity/captures` always appends an immutable capture event and conservatively admits typed durable objects.
   - `GET /v0/continuity/captures` returns inbox rows with admission posture (`DERIVED`/`TRIAGE`) and optional derived object summary.
@@ -114,7 +119,7 @@
   - P7-S25 priority engine and chief-of-staff dashboard is shipped baseline.
   - P7-S26 follow-through supervision is shipped baseline.
   - P7-S27 preparation briefs and resumption supervision is shipped baseline.
-  - active post-P6 scope remains governed by P7-S27 packet closure and P7-S28 deferral boundaries.
+  - active post-P6 scope is P7-S28 weekly review and outcome learning.
 
 ## Repo Evidence To Trust
 
