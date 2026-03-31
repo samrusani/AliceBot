@@ -8,6 +8,10 @@ from alicebot_api.continuity_open_loops import compile_continuity_open_loop_dash
 from alicebot_api.continuity_recall import query_continuity_recall
 from alicebot_api.continuity_resumption import compile_continuity_resumption_brief
 from alicebot_api.contracts import (
+    CHIEF_OF_STAFF_ESCALATION_POSTURE_ORDER,
+    CHIEF_OF_STAFF_FOLLOW_THROUGH_ITEM_ORDER,
+    CHIEF_OF_STAFF_FOLLOW_THROUGH_POSTURE_ORDER,
+    CHIEF_OF_STAFF_FOLLOW_THROUGH_RECOMMENDATION_ACTIONS,
     CHIEF_OF_STAFF_PRIORITY_BRIEF_ASSEMBLY_VERSION_V0,
     CHIEF_OF_STAFF_PRIORITY_ITEM_ORDER,
     CHIEF_OF_STAFF_PRIORITY_POSTURE_ORDER,
@@ -19,6 +23,12 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    ChiefOfStaffDraftFollowUpRecord,
+    ChiefOfStaffEscalationPosture,
+    ChiefOfStaffEscalationPostureRecord,
+    ChiefOfStaffFollowThroughItem,
+    ChiefOfStaffFollowThroughPosture,
+    ChiefOfStaffFollowThroughRecommendationAction,
     ChiefOfStaffPriorityBriefRecord,
     ChiefOfStaffPriorityBriefRequestInput,
     ChiefOfStaffPriorityBriefResponse,
@@ -62,6 +72,23 @@ _POSTURE_WEIGHT: dict[ChiefOfStaffPriorityPosture, float] = {
     "blocked": 300.0,
     "stale": 200.0,
     "defer": 100.0,
+}
+_FOLLOW_THROUGH_OVERDUE_HOURS = 24.0
+_FOLLOW_THROUGH_STALE_WAITING_FOR_HOURS = 72.0
+_FOLLOW_THROUGH_SLIPPED_COMMITMENT_HOURS = 48.0
+_FOLLOW_THROUGH_CLOSE_LOOP_HOURS = 168.0
+_FOLLOW_THROUGH_NUDGE_HOURS = 48.0
+_FOLLOW_THROUGH_ESCALATE_HOURS = 120.0
+_FOLLOW_THROUGH_ACTION_WEIGHT: dict[ChiefOfStaffFollowThroughRecommendationAction, int] = {
+    "defer": 1,
+    "close_loop_candidate": 2,
+    "nudge": 3,
+    "escalate": 4,
+}
+_FOLLOW_THROUGH_POSTURE_WEIGHT: dict[ChiefOfStaffFollowThroughPosture, int] = {
+    "slipped_commitment": 1,
+    "stale_waiting_for": 2,
+    "overdue": 3,
 }
 
 
@@ -268,6 +295,246 @@ def _posture_reason(posture: ChiefOfStaffPriorityPosture) -> str:
     return "Marked defer because lifecycle posture indicates it is not current active focus."
 
 
+def _follow_through_action_for_age(
+    *,
+    age_hours: float,
+    close_loop_floor: float = _FOLLOW_THROUGH_CLOSE_LOOP_HOURS,
+    escalate_floor: float = _FOLLOW_THROUGH_ESCALATE_HOURS,
+    nudge_floor: float = _FOLLOW_THROUGH_NUDGE_HOURS,
+    prioritize_escalation: bool = False,
+) -> ChiefOfStaffFollowThroughRecommendationAction:
+    if prioritize_escalation and age_hours >= escalate_floor:
+        return "escalate"
+    if age_hours >= close_loop_floor:
+        return "close_loop_candidate"
+    if age_hours >= escalate_floor:
+        return "escalate"
+    if age_hours >= nudge_floor:
+        return "nudge"
+    return "defer"
+
+
+def _classify_follow_through_item(
+    *,
+    item: ContinuityRecallResultRecord,
+    open_loop_posture: ContinuityOpenLoopPosture | None,
+    age_hours: float,
+    priority_posture: ChiefOfStaffPriorityPosture,
+) -> tuple[
+    ChiefOfStaffFollowThroughPosture | None,
+    ChiefOfStaffFollowThroughRecommendationAction | None,
+    str | None,
+]:
+    status = item["status"]
+    object_type = item["object_type"]
+
+    if status in {"completed", "cancelled", "superseded"}:
+        return None, None, None
+
+    if object_type == "Commitment":
+        if status == "stale" or age_hours >= _FOLLOW_THROUGH_SLIPPED_COMMITMENT_HOURS:
+            action = _follow_through_action_for_age(age_hours=age_hours)
+            if status == "stale" and action == "defer":
+                action = "nudge"
+            reason = (
+                f"Commitment is slipping (status={status}, age={age_hours:.1f}h from latest scoped item), "
+                f"so action '{action}' is recommended."
+            )
+            return "slipped_commitment", action, reason
+        return None, None, None
+
+    if object_type == "WaitingFor":
+        if status == "stale" or open_loop_posture == "stale" or age_hours >= _FOLLOW_THROUGH_STALE_WAITING_FOR_HOURS:
+            action = _follow_through_action_for_age(age_hours=age_hours)
+            if status == "stale" and action == "defer":
+                action = "nudge"
+            reason = (
+                f"Waiting-for item is stale (status={status}, age={age_hours:.1f}h from latest scoped item), "
+                f"so action '{action}' is recommended."
+            )
+            return "stale_waiting_for", action, reason
+
+        if age_hours >= _FOLLOW_THROUGH_OVERDUE_HOURS:
+            action = _follow_through_action_for_age(
+                age_hours=age_hours,
+                prioritize_escalation=True,
+            )
+            reason = (
+                f"Waiting-for follow-up is overdue ({age_hours:.1f}h from latest scoped item), "
+                f"so action '{action}' is recommended."
+            )
+            return "overdue", action, reason
+        return None, None, None
+
+    if object_type in {"NextAction", "Blocker"}:
+        overdue_from_age = age_hours >= _FOLLOW_THROUGH_OVERDUE_HOURS
+        overdue_from_priority = priority_posture in {"waiting", "blocked"} and age_hours >= _FOLLOW_THROUGH_NUDGE_HOURS
+        if overdue_from_age or overdue_from_priority:
+            action = _follow_through_action_for_age(
+                age_hours=age_hours,
+                prioritize_escalation=True,
+            )
+            if priority_posture == "blocked" and action in {"defer", "nudge", "close_loop_candidate"}:
+                action = "escalate"
+            reason = (
+                f"Execution follow-through is overdue (posture={priority_posture}, age={age_hours:.1f}h), "
+                f"so action '{action}' is recommended."
+            )
+            return "overdue", action, reason
+        return None, None, None
+
+    return None, None, None
+
+
+def _follow_through_sort_key(
+    item: ChiefOfStaffFollowThroughItem,
+) -> tuple[int, float, str, str]:
+    return (
+        _FOLLOW_THROUGH_ACTION_WEIGHT[item["recommendation_action"]],
+        item["age_hours"],
+        item["created_at"],
+        item["id"],
+    )
+
+
+def _rank_follow_through_items(
+    items: list[ChiefOfStaffFollowThroughItem],
+    *,
+    limit: int,
+) -> list[ChiefOfStaffFollowThroughItem]:
+    if limit <= 0:
+        return []
+
+    sorted_items = sorted(
+        items,
+        key=_follow_through_sort_key,
+        reverse=True,
+    )
+    ranked: list[ChiefOfStaffFollowThroughItem] = []
+    for rank, item in enumerate(sorted_items[:limit], start=1):
+        ranked_item = dict(item)
+        ranked_item["rank"] = rank
+        ranked.append(ranked_item)  # type: ignore[arg-type]
+    return ranked
+
+
+def _build_escalation_posture(
+    *,
+    all_follow_through_items: list[ChiefOfStaffFollowThroughItem],
+) -> ChiefOfStaffEscalationPostureRecord:
+    action_counts: dict[ChiefOfStaffFollowThroughRecommendationAction, int] = {
+        "nudge": 0,
+        "defer": 0,
+        "escalate": 0,
+        "close_loop_candidate": 0,
+    }
+    for item in all_follow_through_items:
+        action_counts[item["recommendation_action"]] += 1
+
+    posture: ChiefOfStaffEscalationPosture
+    reason: str
+    if action_counts["escalate"] > 0:
+        posture = "critical"
+        reason = "At least one follow-through item requires escalation."
+    elif action_counts["nudge"] > 0:
+        posture = "elevated"
+        reason = "Follow-through items require nudges but no immediate escalations."
+    elif action_counts["close_loop_candidate"] > 0:
+        posture = "watch"
+        reason = "Only close-loop candidates are present; keep watch posture and confirm closure."
+    else:
+        posture = "watch"
+        reason = "No active follow-through escalations are present."
+
+    if posture not in CHIEF_OF_STAFF_ESCALATION_POSTURE_ORDER:
+        posture = "watch"
+
+    return {
+        "posture": posture,
+        "reason": reason,
+        "total_follow_through_count": len(all_follow_through_items),
+        "nudge_count": action_counts["nudge"],
+        "defer_count": action_counts["defer"],
+        "escalate_count": action_counts["escalate"],
+        "close_loop_candidate_count": action_counts["close_loop_candidate"],
+    }
+
+
+def _draft_follow_up_sort_key(
+    item: ChiefOfStaffFollowThroughItem,
+) -> tuple[int, int, float, str, str]:
+    return (
+        _FOLLOW_THROUGH_ACTION_WEIGHT[item["recommendation_action"]],
+        _FOLLOW_THROUGH_POSTURE_WEIGHT[item["follow_through_posture"]],
+        item["age_hours"],
+        item["created_at"],
+        item["id"],
+    )
+
+
+def _build_draft_follow_up(
+    *,
+    all_follow_through_items: list[ChiefOfStaffFollowThroughItem],
+    thread_hint: str | None,
+) -> ChiefOfStaffDraftFollowUpRecord:
+    if not all_follow_through_items:
+        return {
+            "status": "none",
+            "mode": "draft_only",
+            "approval_required": True,
+            "auto_send": False,
+            "reason": "No follow-through targets are currently queued for drafting.",
+            "target_metadata": {
+                "continuity_object_id": None,
+                "capture_event_id": None,
+                "object_type": None,
+                "priority_posture": None,
+                "follow_through_posture": None,
+                "recommendation_action": None,
+                "thread_id": thread_hint,
+            },
+            "content": {
+                "subject": "",
+                "body": "",
+            },
+        }
+
+    target = sorted(all_follow_through_items, key=_draft_follow_up_sort_key, reverse=True)[0]
+    subject = f"Follow-up: {target['title']}"
+    body = "\n".join(
+        [
+            f"Following up on: {target['title']}",
+            f"Current follow-through posture: {target['follow_through_posture']}",
+            f"Current priority posture: {target['current_priority_posture']}",
+            f"Recommended action: {target['recommendation_action']}",
+            f"Reason: {target['reason']}",
+            "",
+            "This draft is artifact-only and requires explicit approval before any external send.",
+        ]
+    )
+
+    return {
+        "status": "drafted",
+        "mode": "draft_only",
+        "approval_required": True,
+        "auto_send": False,
+        "reason": "Highest-severity follow-through item selected deterministically for operator review.",
+        "target_metadata": {
+            "continuity_object_id": target["id"],
+            "capture_event_id": target["capture_event_id"],
+            "object_type": target["object_type"],
+            "priority_posture": target["current_priority_posture"],
+            "follow_through_posture": target["follow_through_posture"],
+            "recommendation_action": target["recommendation_action"],
+            "thread_id": thread_hint,
+        },
+        "content": {
+            "subject": subject,
+            "body": body,
+        },
+    }
+
+
 def _build_recommended_action(
     *,
     ranked_items: list[ChiefOfStaffPriorityItem],
@@ -419,6 +686,7 @@ def compile_chief_of_staff_priority_brief(
     latest_created_at = max(created_at_values) if created_at_values else None
 
     scored_items: list[tuple[float, datetime, ChiefOfStaffPriorityItem]] = []
+    follow_through_candidates: list[ChiefOfStaffFollowThroughItem] = []
 
     for item in candidate_items:
         item_id = item["id"]
@@ -516,6 +784,40 @@ def compile_chief_of_staff_priority_brief(
             )
         )
 
+        follow_through_posture, recommendation_action, follow_through_reason = _classify_follow_through_item(
+            item=item,
+            open_loop_posture=open_loop_posture,
+            age_hours=age_hours,
+            priority_posture=posture,
+        )
+        if (
+            follow_through_posture is not None
+            and recommendation_action is not None
+            and follow_through_reason is not None
+        ):
+            if recommendation_action not in CHIEF_OF_STAFF_FOLLOW_THROUGH_RECOMMENDATION_ACTIONS:
+                recommendation_action = "defer"
+            if follow_through_posture not in CHIEF_OF_STAFF_FOLLOW_THROUGH_POSTURE_ORDER:
+                follow_through_posture = "overdue"
+            follow_through_candidates.append(
+                {
+                    "rank": 0,
+                    "id": item_id,
+                    "capture_event_id": item["capture_event_id"],
+                    "object_type": item["object_type"],
+                    "status": item["status"],
+                    "title": item["title"],
+                    "current_priority_posture": posture,
+                    "follow_through_posture": follow_through_posture,
+                    "recommendation_action": recommendation_action,
+                    "reason": follow_through_reason,
+                    "age_hours": age_hours,
+                    "provenance_references": item["provenance_references"],
+                    "created_at": item["created_at"],
+                    "updated_at": item["updated_at"],
+                }
+            )
+
     scored_items.sort(
         key=lambda entry: (entry[0], entry[1], entry[2]["id"]),
         reverse=True,
@@ -536,12 +838,47 @@ def compile_chief_of_staff_priority_brief(
         trust_cap=trust_cap.posture,
     )
 
+    overdue_items_all = [
+        item for item in follow_through_candidates if item["follow_through_posture"] == "overdue"
+    ]
+    stale_waiting_for_items_all = [
+        item for item in follow_through_candidates if item["follow_through_posture"] == "stale_waiting_for"
+    ]
+    slipped_commitments_all = [
+        item for item in follow_through_candidates if item["follow_through_posture"] == "slipped_commitment"
+    ]
+
+    overdue_items = _rank_follow_through_items(overdue_items_all, limit=limit)
+    stale_waiting_for_items = _rank_follow_through_items(stale_waiting_for_items_all, limit=limit)
+    slipped_commitments = _rank_follow_through_items(slipped_commitments_all, limit=limit)
+
+    all_follow_through_items = sorted(
+        follow_through_candidates,
+        key=_draft_follow_up_sort_key,
+        reverse=True,
+    )
+    escalation_posture = _build_escalation_posture(
+        all_follow_through_items=all_follow_through_items,
+    )
+    scope_thread_id = recall_payload["summary"]["filters"].get("thread_id")
+    thread_hint = None if scope_thread_id is None else str(scope_thread_id)
+    draft_follow_up = _build_draft_follow_up(
+        all_follow_through_items=all_follow_through_items,
+        thread_hint=thread_hint,
+    )
+
     summary: ChiefOfStaffPrioritySummary = {
         "limit": limit,
         "returned_count": len(ranked_items),
         "total_count": total_count,
         "posture_order": list(CHIEF_OF_STAFF_PRIORITY_POSTURE_ORDER),
         "order": list(CHIEF_OF_STAFF_PRIORITY_ITEM_ORDER),
+        "follow_through_posture_order": list(CHIEF_OF_STAFF_FOLLOW_THROUGH_POSTURE_ORDER),
+        "follow_through_item_order": list(CHIEF_OF_STAFF_FOLLOW_THROUGH_ITEM_ORDER),
+        "follow_through_total_count": len(follow_through_candidates),
+        "overdue_count": len(overdue_items_all),
+        "stale_waiting_for_count": len(stale_waiting_for_items_all),
+        "slipped_commitment_count": len(slipped_commitments_all),
         "trust_confidence_posture": trust_cap.posture,
         "trust_confidence_reason": trust_cap.reason,
         "quality_gate_status": quality_gate_status,
@@ -552,6 +889,11 @@ def compile_chief_of_staff_priority_brief(
         "assembly_version": CHIEF_OF_STAFF_PRIORITY_BRIEF_ASSEMBLY_VERSION_V0,
         "scope": recall_payload["summary"]["filters"],
         "ranked_items": ranked_items,
+        "overdue_items": overdue_items,
+        "stale_waiting_for_items": stale_waiting_for_items,
+        "slipped_commitments": slipped_commitments,
+        "escalation_posture": escalation_posture,
+        "draft_follow_up": draft_follow_up,
         "recommended_next_action": recommended_next_action,
         "summary": summary,
         "sources": [
