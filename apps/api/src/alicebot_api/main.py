@@ -40,6 +40,7 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT,
     DEFAULT_MAX_EVENTS,
     DEFAULT_MAX_ENTITY_EDGES,
     DEFAULT_MAX_ENTITIES,
@@ -67,6 +68,7 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
     ContinuityCaptureCreateInput,
@@ -84,6 +86,8 @@ from alicebot_api.contracts import (
     ContinuityReviewQueueResponse,
     ContinuityResumptionBriefRequestInput,
     ContinuityResumptionBriefResponse,
+    ChiefOfStaffPriorityBriefRequestInput,
+    ChiefOfStaffPriorityBriefResponse,
     ContinuityWeeklyReviewRequestInput,
     ContinuityWeeklyReviewResponse,
     MemoryTrustDashboardResponse,
@@ -337,6 +341,10 @@ from alicebot_api.continuity_review import (
 from alicebot_api.continuity_resumption import (
     ContinuityResumptionValidationError,
     compile_continuity_resumption_brief,
+)
+from alicebot_api.chief_of_staff import (
+    ChiefOfStaffValidationError,
+    compile_chief_of_staff_priority_brief,
 )
 from alicebot_api.continuity_open_loops import (
     ContinuityOpenLoopNotFoundError,
@@ -3557,6 +3565,51 @@ def get_continuity_resumption_brief(
                 ),
             )
     except ContinuityResumptionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/chief-of-staff")
+def get_chief_of_staff_priority_brief(
+    user_id: UUID,
+    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
+    thread_id: UUID | None = None,
+    task_id: UUID | None = None,
+    project: str | None = Query(default=None, min_length=1, max_length=200),
+    person: str | None = Query(default=None, min_length=1, max_length=200),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(
+        default=DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT,
+        ge=0,
+        le=MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ChiefOfStaffPriorityBriefResponse = compile_chief_of_staff_priority_brief(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=ChiefOfStaffPriorityBriefRequestInput(
+                    query=query_text,
+                    thread_id=thread_id,
+                    task_id=task_id,
+                    project=project,
+                    person=person,
+                    since=since,
+                    until=until,
+                    limit=limit,
+                ),
+            )
+    except ChiefOfStaffValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityRecallValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
