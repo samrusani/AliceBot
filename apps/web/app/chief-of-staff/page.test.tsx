@@ -64,9 +64,11 @@ describe("ChiefOfStaffPage", () => {
     expect(screen.getByText("Chief-of-staff")).toBeInTheDocument();
     expect(screen.getByText("Fixture chief-of-staff brief")).toBeInTheDocument();
     expect(screen.getByText("Fixture follow-through")).toBeInTheDocument();
+    expect(screen.getByText("Fixture preparation brief")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Confirm launch checklist owner").length).toBeGreaterThan(0);
     expect(screen.getByText("Action type: execute_next_action")).toBeInTheDocument();
     expect(screen.getByText("Follow-through supervision")).toBeInTheDocument();
+    expect(screen.getByText("Preparation and resumption")).toBeInTheDocument();
     expect(getChiefOfStaffPriorityBriefMock).not.toHaveBeenCalled();
   });
 
@@ -197,6 +199,168 @@ describe("ChiefOfStaffPage", () => {
           ],
           deterministic_rank_key: "1:priority-live-1:650.000000",
         },
+        preparation_brief: {
+          scope: { thread_id: "thread-1", since: null, until: null },
+          context_items: [
+            {
+              rank: 1,
+              id: "prep-context-live-1",
+              capture_event_id: "capture-prep-context-live-1",
+              object_type: "Decision",
+              status: "active",
+              title: "Decision: Keep launch phased",
+              reason: "Decision context carried forward for deterministic meeting prep.",
+              confidence_posture: "medium",
+              provenance_references: [
+                {
+                  source_kind: "continuity_capture_event",
+                  source_id: "capture-prep-context-live-1",
+                },
+              ],
+              created_at: "2026-03-31T08:30:00Z",
+            },
+          ],
+          last_decision: {
+            rank: 1,
+            id: "prep-decision-live-1",
+            capture_event_id: "capture-prep-decision-live-1",
+            object_type: "Decision",
+            status: "active",
+            title: "Decision: Keep launch phased",
+            reason: "Latest scoped decision included to ground upcoming preparation context.",
+            confidence_posture: "medium",
+            provenance_references: [
+              {
+                source_kind: "continuity_capture_event",
+                source_id: "capture-prep-decision-live-1",
+              },
+            ],
+            created_at: "2026-03-31T08:30:00Z",
+          },
+          open_loops: [],
+          next_action: null,
+          confidence_posture: "medium",
+          confidence_reason: "Memory quality gate needs review, so recommendation confidence is capped at medium.",
+          summary: {
+            limit: 6,
+            returned_count: 1,
+            total_count: 1,
+            order: ["rank_asc", "created_at_desc", "id_desc"],
+          },
+        },
+        what_changed_summary: {
+          items: [
+            {
+              rank: 1,
+              id: "what-changed-live-1",
+              capture_event_id: "capture-what-changed-live-1",
+              object_type: "NextAction",
+              status: "active",
+              title: "Next Action: Send partner follow-up",
+              reason: "Included from deterministic continuity recent-changes ordering.",
+              confidence_posture: "medium",
+              provenance_references: [
+                {
+                  source_kind: "continuity_capture_event",
+                  source_id: "capture-what-changed-live-1",
+                },
+              ],
+              created_at: "2026-03-31T10:10:00Z",
+            },
+          ],
+          confidence_posture: "medium",
+          confidence_reason: "Memory quality gate needs review, so recommendation confidence is capped at medium.",
+          summary: {
+            limit: 6,
+            returned_count: 1,
+            total_count: 1,
+            order: ["rank_asc", "created_at_desc", "id_desc"],
+          },
+        },
+        prep_checklist: {
+          items: [
+            {
+              rank: 1,
+              id: "prep-check-live-1",
+              capture_event_id: "capture-prep-check-live-1",
+              object_type: "WaitingFor",
+              status: "active",
+              title: "Waiting For: Vendor legal review",
+              reason: "Prepare a status check and explicit owner for this unresolved open loop.",
+              confidence_posture: "medium",
+              provenance_references: [
+                {
+                  source_kind: "continuity_capture_event",
+                  source_id: "capture-prep-check-live-1",
+                },
+              ],
+              created_at: "2026-03-31T09:00:00Z",
+            },
+          ],
+          confidence_posture: "medium",
+          confidence_reason: "Memory quality gate needs review, so recommendation confidence is capped at medium.",
+          summary: {
+            limit: 6,
+            returned_count: 1,
+            total_count: 1,
+            order: ["rank_asc", "created_at_desc", "id_desc"],
+          },
+        },
+        suggested_talking_points: {
+          items: [
+            {
+              rank: 1,
+              id: "talking-live-1",
+              capture_event_id: "capture-talking-live-1",
+              object_type: "Blocker",
+              status: "active",
+              title: "Blocker: Launch token pending",
+              reason: "Raise this unresolved dependency explicitly and confirm a concrete follow-up path.",
+              confidence_posture: "medium",
+              provenance_references: [
+                {
+                  source_kind: "continuity_capture_event",
+                  source_id: "capture-talking-live-1",
+                },
+              ],
+              created_at: "2026-03-30T10:10:00Z",
+            },
+          ],
+          confidence_posture: "medium",
+          confidence_reason: "Memory quality gate needs review, so recommendation confidence is capped at medium.",
+          summary: {
+            limit: 6,
+            returned_count: 1,
+            total_count: 1,
+            order: ["rank_asc", "created_at_desc", "id_desc"],
+          },
+        },
+        resumption_supervision: {
+          recommendations: [
+            {
+              rank: 1,
+              action: "execute_next_action",
+              title: "Next Action: Send partner follow-up",
+              reason: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+              confidence_posture: "medium",
+              target_priority_id: "priority-live-1",
+              provenance_references: [
+                {
+                  source_kind: "continuity_capture_event",
+                  source_id: "capture-live-1",
+                },
+              ],
+            },
+          ],
+          confidence_posture: "medium",
+          confidence_reason: "Memory quality gate needs review, so recommendation confidence is capped at medium.",
+          summary: {
+            limit: 3,
+            returned_count: 1,
+            total_count: 1,
+            order: ["rank_asc"],
+          },
+        },
         summary: {
           limit: 12,
           returned_count: 1,
@@ -229,6 +393,7 @@ describe("ChiefOfStaffPage", () => {
     expect(screen.getByText("Live API")).toBeInTheDocument();
     expect(screen.getByText("Live chief-of-staff brief")).toBeInTheDocument();
     expect(screen.getByText("Live follow-through")).toBeInTheDocument();
+    expect(screen.getByText("Live preparation brief")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Send partner follow-up").length).toBeGreaterThan(0);
     expect(getChiefOfStaffPriorityBriefMock).toHaveBeenCalledWith(
       "https://api.example.com",

@@ -218,6 +218,39 @@ def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> N
     assert "artifact-only" in first["brief"]["draft_follow_up"]["content"]["body"]
     assert first["brief"]["ranked_items"][0]["rationale"]["provenance_references"]
     assert first["brief"]["ranked_items"][0]["rationale"]["reasons"]
+    assert first["brief"]["preparation_brief"]["summary"]["order"] == [
+        "rank_asc",
+        "created_at_desc",
+        "id_desc",
+    ]
+    assert first["brief"]["what_changed_summary"]["summary"]["order"] == [
+        "rank_asc",
+        "created_at_desc",
+        "id_desc",
+    ]
+    assert first["brief"]["prep_checklist"]["summary"]["order"] == [
+        "rank_asc",
+        "created_at_desc",
+        "id_desc",
+    ]
+    assert first["brief"]["suggested_talking_points"]["summary"]["order"] == [
+        "rank_asc",
+        "created_at_desc",
+        "id_desc",
+    ]
+    assert first["brief"]["resumption_supervision"]["summary"]["order"] == [
+        "rank_asc",
+    ]
+    assert first["brief"]["preparation_brief"]["confidence_posture"] == "high"
+    assert first["brief"]["what_changed_summary"]["confidence_posture"] == "high"
+    assert first["brief"]["prep_checklist"]["confidence_posture"] == "high"
+    assert first["brief"]["suggested_talking_points"]["confidence_posture"] == "high"
+    assert first["brief"]["resumption_supervision"]["confidence_posture"] == "high"
+    assert first["brief"]["preparation_brief"]["context_items"]
+    assert first["brief"]["what_changed_summary"]["items"]
+    assert first["brief"]["prep_checklist"]["items"]
+    assert first["brief"]["suggested_talking_points"]["items"]
+    assert first["brief"]["resumption_supervision"]["recommendations"]
 
 
 def test_follow_through_item_ranking_is_deterministic_for_ties() -> None:
@@ -351,6 +384,19 @@ def test_priority_brief_downgrades_confidence_when_trust_is_weak(monkeypatch) ->
     assert payload["brief"]["recommended_next_action"]["confidence_posture"] == "low"
     assert payload["brief"]["escalation_posture"]["posture"] == "watch"
     assert payload["brief"]["draft_follow_up"]["status"] == "none"
+    assert payload["brief"]["preparation_brief"]["confidence_posture"] == "low"
+    assert payload["brief"]["what_changed_summary"]["confidence_posture"] == "low"
+    assert payload["brief"]["prep_checklist"]["confidence_posture"] == "low"
+    assert payload["brief"]["suggested_talking_points"]["confidence_posture"] == "low"
+    assert payload["brief"]["resumption_supervision"]["confidence_posture"] == "low"
+    assert payload["brief"]["resumption_supervision"]["recommendations"][0]["action"] in {
+        "execute_next_action",
+        "capture_new_priority",
+    }
+    assert any(
+        recommendation["action"] == "review_scope" and recommendation["provenance_references"]
+        for recommendation in payload["brief"]["resumption_supervision"]["recommendations"]
+    )
 
 
 def test_priority_brief_retrieval_failure_respects_non_healthy_quality_caps(monkeypatch) -> None:
@@ -435,3 +481,4 @@ def test_priority_brief_retrieval_failure_respects_non_healthy_quality_caps(monk
     assert insufficient_sample_ranked["rationale"]["trust_signals"]["trust_confidence_cap"] == "low"
     assert "weak" in insufficient_sample_ranked["rationale"]["trust_signals"]["reason"]
     assert insufficient_sample_payload["brief"]["draft_follow_up"]["status"] == "none"
+    assert insufficient_sample_payload["brief"]["resumption_supervision"]["confidence_posture"] == "low"
