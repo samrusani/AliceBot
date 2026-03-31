@@ -1,4 +1,5 @@
 import { ChiefOfStaffFollowThroughPanel } from "../../components/chief-of-staff-follow-through-panel";
+import { ChiefOfStaffPreparationPanel } from "../../components/chief-of-staff-preparation-panel";
 import { ChiefOfStaffPriorityPanel } from "../../components/chief-of-staff-priority-panel";
 import { PageHeader } from "../../components/page-header";
 import { StatusBadge } from "../../components/status-badge";
@@ -263,6 +264,203 @@ const chiefOfStaffFixture: ChiefOfStaffPriorityBrief = {
     ],
     deterministic_rank_key: "1:priority-fixture-1:642.500000",
   },
+  preparation_brief: {
+    scope: {
+      thread_id: "thread-fixture-1",
+      since: null,
+      until: null,
+    },
+    context_items: [
+      {
+        rank: 1,
+        id: "prep-context-fixture-1",
+        capture_event_id: "capture-prep-context-fixture-1",
+        object_type: "Decision",
+        status: "active",
+        title: "Decision: Keep rollout to one launch cohort",
+        reason: "Decision context carried forward for deterministic meeting prep.",
+        confidence_posture: "low",
+        provenance_references: [
+          {
+            source_kind: "continuity_capture_event",
+            source_id: "capture-prep-context-fixture-1",
+          },
+        ],
+        created_at: "2026-03-31T07:45:00Z",
+      },
+    ],
+    last_decision: {
+      rank: 1,
+      id: "prep-decision-fixture-1",
+      capture_event_id: "capture-prep-decision-fixture-1",
+      object_type: "Decision",
+      status: "active",
+      title: "Decision: Keep rollout to one launch cohort",
+      reason: "Latest scoped decision included to ground upcoming preparation context.",
+      confidence_posture: "low",
+      provenance_references: [
+        {
+          source_kind: "continuity_capture_event",
+          source_id: "capture-prep-decision-fixture-1",
+        },
+      ],
+      created_at: "2026-03-31T07:45:00Z",
+    },
+    open_loops: [],
+    next_action: {
+      rank: 1,
+      id: "prep-next-action-fixture-1",
+      capture_event_id: "capture-prep-next-action-fixture-1",
+      object_type: "NextAction",
+      status: "active",
+      title: "Next Action: Confirm launch checklist owner",
+      reason: "Next action is included to keep immediate execution focus explicit after interruption.",
+      confidence_posture: "low",
+      provenance_references: [
+        {
+          source_kind: "continuity_capture_event",
+          source_id: "capture-prep-next-action-fixture-1",
+        },
+      ],
+      created_at: "2026-03-31T10:05:00Z",
+    },
+    confidence_posture: "low",
+    confidence_reason:
+      "Memory quality gate is weak (insufficient sample or degraded), so recommendation confidence is capped at low.",
+    summary: {
+      limit: 6,
+      returned_count: 1,
+      total_count: 1,
+      order: ["rank_asc", "created_at_desc", "id_desc"],
+    },
+  },
+  what_changed_summary: {
+    items: [
+      {
+        rank: 1,
+        id: "what-changed-fixture-1",
+        capture_event_id: "capture-what-changed-fixture-1",
+        object_type: "NextAction",
+        status: "active",
+        title: "Next Action: Confirm launch checklist owner",
+        reason: "Included from deterministic continuity recent-changes ordering.",
+        confidence_posture: "low",
+        provenance_references: [
+          {
+            source_kind: "continuity_capture_event",
+            source_id: "capture-what-changed-fixture-1",
+          },
+        ],
+        created_at: "2026-03-31T10:05:00Z",
+      },
+    ],
+    confidence_posture: "low",
+    confidence_reason:
+      "Memory quality gate is weak (insufficient sample or degraded), so recommendation confidence is capped at low.",
+    summary: {
+      limit: 6,
+      returned_count: 1,
+      total_count: 1,
+      order: ["rank_asc", "created_at_desc", "id_desc"],
+    },
+  },
+  prep_checklist: {
+    items: [
+      {
+        rank: 1,
+        id: "prep-checklist-fixture-1",
+        capture_event_id: "capture-prep-checklist-fixture-1",
+        object_type: "WaitingFor",
+        status: "active",
+        title: "Waiting For: Vendor legal review",
+        reason: "Prepare a status check and explicit owner for this unresolved open loop.",
+        confidence_posture: "low",
+        provenance_references: [
+          {
+            source_kind: "continuity_capture_event",
+            source_id: "capture-prep-checklist-fixture-1",
+          },
+        ],
+        created_at: "2026-03-31T09:15:00Z",
+      },
+    ],
+    confidence_posture: "low",
+    confidence_reason:
+      "Memory quality gate is weak (insufficient sample or degraded), so recommendation confidence is capped at low.",
+    summary: {
+      limit: 6,
+      returned_count: 1,
+      total_count: 1,
+      order: ["rank_asc", "created_at_desc", "id_desc"],
+    },
+  },
+  suggested_talking_points: {
+    items: [
+      {
+        rank: 1,
+        id: "suggested-point-fixture-1",
+        capture_event_id: "capture-suggested-point-fixture-1",
+        object_type: "Blocker",
+        status: "active",
+        title: "Blocker: Release token rotation lag",
+        reason: "Raise this unresolved dependency explicitly and confirm a concrete follow-up path.",
+        confidence_posture: "low",
+        provenance_references: [
+          {
+            source_kind: "continuity_capture_event",
+            source_id: "capture-suggested-point-fixture-1",
+          },
+        ],
+        created_at: "2026-03-30T10:00:00Z",
+      },
+    ],
+    confidence_posture: "low",
+    confidence_reason:
+      "Memory quality gate is weak (insufficient sample or degraded), so recommendation confidence is capped at low.",
+    summary: {
+      limit: 6,
+      returned_count: 1,
+      total_count: 1,
+      order: ["rank_asc", "created_at_desc", "id_desc"],
+    },
+  },
+  resumption_supervision: {
+    recommendations: [
+      {
+        rank: 1,
+        action: "execute_next_action",
+        title: "Next Action: Confirm launch checklist owner",
+        reason: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+        confidence_posture: "low",
+        target_priority_id: "priority-fixture-1",
+        provenance_references: [
+          {
+            source_kind: "continuity_capture_event",
+            source_id: "capture-priority-fixture-1",
+          },
+        ],
+      },
+      {
+        rank: 2,
+        action: "review_scope",
+        title: "Calibrate recommendation confidence before execution",
+        reason:
+          "Memory quality gate is weak (insufficient sample or degraded), so recommendation confidence is capped at low.",
+        confidence_posture: "low",
+        target_priority_id: null,
+        provenance_references: [],
+      },
+    ],
+    confidence_posture: "low",
+    confidence_reason:
+      "Memory quality gate is weak (insufficient sample or degraded), so recommendation confidence is capped at low.",
+    summary: {
+      limit: 3,
+      returned_count: 2,
+      total_count: 2,
+      order: ["rank_asc"],
+    },
+  },
   summary: {
     limit: 12,
     returned_count: 2,
@@ -346,12 +544,13 @@ export default async function ChiefOfStaffPage({
       <PageHeader
         eyebrow="Phase 7"
         title="Chief-of-staff"
-        description="Deterministic priority ranking and follow-through supervision with explicit rationale, trust-aware confidence posture, and draft-only follow-up artifacts."
+        description="Deterministic priority ranking, preparation artifacts, and resumption supervision with explicit rationale, provenance visibility, trust-aware confidence posture, and draft-only follow-up artifacts."
         meta={
           <div className="header-meta">
             <span className="subtle-chip">{pageModeLabel(mode)}</span>
             <span className="subtle-chip">{brief.summary.returned_count} ranked priorities</span>
             <span className="subtle-chip">{brief.summary.follow_through_total_count} follow-through items</span>
+            <span className="subtle-chip">{brief.prep_checklist.summary.returned_count} prep checklist items</span>
             <StatusBadge
               status={brief.summary.trust_confidence_posture}
               label={`${brief.summary.trust_confidence_posture} confidence`}
@@ -366,6 +565,11 @@ export default async function ChiefOfStaffPage({
         unavailableReason={briefUnavailableReason}
       />
       <ChiefOfStaffFollowThroughPanel
+        brief={brief}
+        source={briefSource}
+        unavailableReason={briefUnavailableReason}
+      />
+      <ChiefOfStaffPreparationPanel
         brief={brief}
         source={briefSource}
         unavailableReason={briefUnavailableReason}

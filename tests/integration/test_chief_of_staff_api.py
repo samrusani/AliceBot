@@ -274,3 +274,40 @@ def test_chief_of_staff_priority_brief_is_deterministic_and_trust_aware(
         "review_and_defer",
         "capture_new_priority",
     }
+    assert brief["preparation_brief"]["summary"]["order"] == [
+        "rank_asc",
+        "created_at_desc",
+        "id_desc",
+    ]
+    assert brief["what_changed_summary"]["summary"]["order"] == [
+        "rank_asc",
+        "created_at_desc",
+        "id_desc",
+    ]
+    assert brief["prep_checklist"]["summary"]["order"] == [
+        "rank_asc",
+        "created_at_desc",
+        "id_desc",
+    ]
+    assert brief["suggested_talking_points"]["summary"]["order"] == [
+        "rank_asc",
+        "created_at_desc",
+        "id_desc",
+    ]
+    assert brief["resumption_supervision"]["summary"]["order"] == [
+        "rank_asc",
+    ]
+    assert brief["preparation_brief"]["confidence_posture"] == "low"
+    assert brief["what_changed_summary"]["confidence_posture"] == "low"
+    assert brief["prep_checklist"]["confidence_posture"] == "low"
+    assert brief["suggested_talking_points"]["confidence_posture"] == "low"
+    assert brief["resumption_supervision"]["confidence_posture"] == "low"
+    assert brief["preparation_brief"]["context_items"]
+    assert brief["what_changed_summary"]["items"]
+    assert brief["prep_checklist"]["items"]
+    assert brief["suggested_talking_points"]["items"]
+    assert brief["resumption_supervision"]["recommendations"]
+    assert any(
+        recommendation["action"] == "review_scope" and recommendation["provenance_references"]
+        for recommendation in brief["resumption_supervision"]["recommendations"]
+    )

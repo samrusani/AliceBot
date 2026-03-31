@@ -4,12 +4,12 @@
 
 - The canonical baseline remains through Phase 3 Sprint 9.
 - Phase 4 release-control layer remains the canonical gate ownership compatibility baseline.
-- Active Sprint focus is Phase 4 Sprint 14 release-control compatibility truth for canonical gate ownership checks.
-- Active sprint focus is Phase 7 Sprint 26 follow-through supervision.
+- Active Sprint focus is Phase 4 Sprint 14.
+- Active sprint focus is Phase 7 Sprint 27 preparation briefs and resumption supervision.
 - Earlier Phase 4 work is already delivered: task-run linkage to approvals/executions, idempotent proxy execution replay guards, approval pause/resume continuity for linked runs, run transition observability, explicit stop reasons, bounded retries with persisted posture, explicit failure classes, and deterministic Phase 4 gate runners.
 - Phase 4 Sprint 14-19 release-control/sign-off delivery is shipped baseline, and Phase 5 Sprint 17-20 continuity delivery is shipped baseline.
 - Latest shipped post-Phase-5 packet is P6-S24 trust dashboard and quality release evidence.
-- Active post-Phase-6 packet is P7-S26 follow-through supervision.
+- Active post-Phase-6 packet is P7-S27 preparation briefs and resumption supervision.
 - Phase 6 planning docs now exist and are the control anchors for post-Phase-5 sequencing:
   - `docs/phase6-product-spec.md`
   - `docs/phase6-sprint-21-24-plan.md`
@@ -34,6 +34,11 @@
   - deterministic follow-through supervision fields are shipped: `overdue_items`, `stale_waiting_for_items`, `slipped_commitments`, `escalation_posture`, and governed `draft_follow_up`.
   - each follow-through item includes explicit current priority posture, follow-through posture, deterministic recommendation action (`nudge`, `defer`, `escalate`, `close_loop_candidate`), and rationale.
   - `draft_follow_up` is artifact-only and approval-bounded (`mode=draft_only`, `approval_required=true`, `auto_send=false`).
+- Phase 7 Sprint 27 chief-of-staff preparation/resumption implementation is now in place:
+  - `GET /v0/chief-of-staff` now also returns deterministic `preparation_brief`, `what_changed_summary`, `prep_checklist`, `suggested_talking_points`, and `resumption_supervision`.
+  - preparation and resumption recommendations are provenance-backed and explicitly trust-calibrated.
+  - low-trust memory posture visibly downgrades preparation/resumption confidence posture.
+  - `/chief-of-staff` now includes a dedicated preparation panel with rationale and provenance visibility.
 - Phase 5 Sprint 17 adds typed continuity capture seams:
   - `POST /v0/continuity/captures` always appends an immutable capture event and conservatively admits typed durable objects.
   - `GET /v0/continuity/captures` returns inbox rows with admission posture (`DERIVED`/`TRIAGE`) and optional derived object summary.
@@ -70,7 +75,7 @@
   - `python3 scripts/run_phase6_quality_evidence.py` writes deterministic quality evidence artifact output for release/readiness paths.
   - `python3 scripts/run_phase4_readiness_gates.py`, `python3 scripts/run_phase4_release_candidate.py`, and `python3 scripts/run_phase4_validation_matrix.py` now include additive quality evidence summary reporting while preserving existing GO/NO_GO semantics.
 - `apps/web` is also a shipped surface now. The operator shell includes `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/chief-of-staff`, `/entities`, and `/traces`, with live reads when API config is present and explicit fixture fallback when it is not.
-- `/chief-of-staff` now ships P7-S26 follow-through supervision on top of P7-S25: deterministic ranked priorities, rationale visibility, trust-aware confidence posture (including explicit low-trust downgrade rendering), deterministic recommended next action, deterministic escalation posture, and draft-only follow-up artifact visibility.
+- `/chief-of-staff` now ships P7-S27 preparation and resumption supervision on top of P7-S25/P7-S26: deterministic ranked priorities, deterministic follow-through supervision, deterministic preparation artifacts, trust-aware confidence posture (including explicit low-trust downgrade rendering), deterministic recommended next action, deterministic escalation posture, and draft-only follow-up artifact visibility.
 - `/chat` now ships assistant-response mode, governed-request mode, visible thread selection, compact thread creation, selected-thread transcript continuity, deterministic resumption brief review, thread-linked governed workflow review, ordered task-step timeline review, bounded explain-why trace embedding, manual explicit-signal capture controls for selected `message.user` events, and bounded supporting continuity review over thread sessions and events.
 - `/continuity` now ships the Phase 5 Sprint 17 + Sprint 18 + Sprint 19 + Sprint 20 continuity workspace:
   - capture submit (optional explicit signal), recent capture list, and capture detail with posture/provenance
@@ -107,7 +112,9 @@
 - Post-Phase-5 active scope:
   - P6-S21, P6-S22, P6-S23, and P6-S24 are shipped baseline.
   - P7-S25 priority engine and chief-of-staff dashboard is shipped baseline.
-  - active post-P6 scope is P7-S26 follow-through supervision.
+  - P7-S26 follow-through supervision is shipped baseline.
+  - P7-S27 preparation briefs and resumption supervision is shipped baseline.
+  - active post-P6 scope remains governed by P7-S27 packet closure and P7-S28 deferral boundaries.
 
 ## Repo Evidence To Trust
 

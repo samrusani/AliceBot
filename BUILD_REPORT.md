@@ -1,110 +1,83 @@
 # BUILD_REPORT.md
 
 ## sprint objective
-Implement Phase 7 Sprint 26 (P7-S26): follow-through supervision on top of shipped P7-S25 chief-of-staff priority seams, including deterministic overdue/stale/slipped surfacing, escalation posture, and draft-only follow-up artifacts.
+Implement Phase 7 Sprint 27 (P7-S27): deterministic preparation briefs and resumption supervision artifacts on `/v0/chief-of-staff` and `/chief-of-staff`, while preserving shipped P7-S25/P7-S26 semantics and trust posture behavior.
 
 ## completed work
-- Extended the chief-of-staff API artifact with follow-through supervision fields:
-  - `overdue_items`
-  - `stale_waiting_for_items`
-  - `slipped_commitments`
-  - `escalation_posture`
-  - `draft_follow_up`
-- Added deterministic follow-through classification logic in `apps/api/src/alicebot_api/chief_of_staff.py`.
-- Added deterministic per-item recommendation actions:
-  - `nudge`
-  - `defer`
-  - `escalate`
-  - `close_loop_candidate`
-- Added deterministic escalation posture synthesis (`watch`, `elevated`, `critical`) from follow-through action counts.
-- Added deterministic draft follow-up artifact generation:
-  - highest-severity follow-through target selected deterministically
-  - artifact contains subject/body + target metadata
-  - explicit non-send posture (`mode=draft_only`, `approval_required=true`, `auto_send=false`)
-- Extended backend contracts in `apps/api/src/alicebot_api/contracts.py` for all follow-through and draft artifacts.
-- Extended web API types in `apps/web/lib/api.ts` and API client tests in `apps/web/lib/api.test.ts`.
-- Added `/chief-of-staff` follow-through UI panel:
-  - new component `apps/web/components/chief-of-staff-follow-through-panel.tsx`
-  - new component tests `apps/web/components/chief-of-staff-follow-through-panel.test.tsx`
-  - page integration in `apps/web/app/chief-of-staff/page.tsx`
-- Updated chief-of-staff page and priority panel test fixtures for expanded contract shape.
-- Added/updated deterministic backend and integration tests for follow-through classification/order and draft artifact behavior.
+- Extended chief-of-staff backend contract/assembly to include deterministic preparation/resumption artifacts:
+  - `preparation_brief`
+  - `what_changed_summary`
+  - `prep_checklist`
+  - `suggested_talking_points`
+  - `resumption_supervision`
+- Added deterministic preparation/resumption artifact generation in `apps/api/src/alicebot_api/chief_of_staff.py` using existing seams:
+  - `continuity_recall`
+  - `continuity_open_loops`
+  - `continuity_resumption_brief`
+  - `memory_trust_dashboard`
+- Added explicit trust-aware confidence posture propagation for all new preparation/resumption artifacts.
+- Preserved P7-S25/P7-S26 outputs (priority ranking, follow-through supervision, draft follow-up) without redesign.
+- Added/updated backend unit and integration assertions for deterministic output shape/order and trust-aware confidence downgrade.
+- Extended web API types in `apps/web/lib/api.ts` for the new chief-of-staff fields.
+- Added new `/chief-of-staff` preparation UI panel:
+  - `apps/web/components/chief-of-staff-preparation-panel.tsx`
+  - `apps/web/components/chief-of-staff-preparation-panel.test.tsx`
+- Integrated preparation panel into `apps/web/app/chief-of-staff/page.tsx` and updated page/component/lib fixtures/tests.
 - Updated sprint-scoped docs:
   - `README.md`
   - `ROADMAP.md`
   - `.ai/handoff/CURRENT_STATE.md`
 
-## exact follow-through contract delta
-- Added literals/constants:
-  - `ChiefOfStaffFollowThroughPosture`: `overdue`, `stale_waiting_for`, `slipped_commitment`
-  - `ChiefOfStaffFollowThroughRecommendationAction`: `nudge`, `defer`, `escalate`, `close_loop_candidate`
-  - `ChiefOfStaffEscalationPosture`: `watch`, `elevated`, `critical`
-  - deterministic orders for follow-through posture/item order and escalation order
-- Added response records:
-  - `ChiefOfStaffFollowThroughItem`
-  - `ChiefOfStaffEscalationPostureRecord`
-  - `ChiefOfStaffDraftFollowUpRecord` (+ target/content records)
-- Added `ChiefOfStaffPriorityBriefRecord` fields:
-  - `overdue_items`
-  - `stale_waiting_for_items`
-  - `slipped_commitments`
-  - `escalation_posture`
-  - `draft_follow_up`
-- Added `ChiefOfStaffPrioritySummary` fields:
-  - `follow_through_posture_order`
-  - `follow_through_item_order`
-  - `follow_through_total_count`
-  - `overdue_count`
-  - `stale_waiting_for_count`
-  - `slipped_commitment_count`
+## exact preparation/resumption contract delta
+- Added literals/constants in `apps/api/src/alicebot_api/contracts.py`:
+  - `ChiefOfStaffResumptionRecommendationAction`
+  - `CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER`
+  - `CHIEF_OF_STAFF_RESUMPTION_SUPERVISION_ITEM_ORDER`
+  - `CHIEF_OF_STAFF_RESUMPTION_RECOMMENDATION_ACTIONS`
+- Added new typed records:
+  - `ChiefOfStaffPreparationArtifactItem`
+  - `ChiefOfStaffPreparationSectionSummary`
+  - `ChiefOfStaffPreparationBriefRecord`
+  - `ChiefOfStaffWhatChangedSummaryRecord`
+  - `ChiefOfStaffPrepChecklistRecord`
+  - `ChiefOfStaffSuggestedTalkingPointsRecord`
+  - `ChiefOfStaffResumptionSupervisionRecommendation`
+  - `ChiefOfStaffResumptionSupervisionRecord`
+- Extended `ChiefOfStaffPriorityBriefRecord` with:
+  - `preparation_brief`
+  - `what_changed_summary`
+  - `prep_checklist`
+  - `suggested_talking_points`
+  - `resumption_supervision`
 
-## exact deterministic classification/escalation behavior
-- Classification is deterministic for fixed scoped recall/open-loop/resumption/trust state.
-- Deterministic rules:
-  - `slipped_commitment`: commitment items with stale status or age >= 48h (relative to latest scoped item timestamp)
-  - `stale_waiting_for`: waiting-for items with stale status/open-loop stale posture or age >= 72h
-  - `overdue`: waiting-for/next-action/blocker follow-through items beyond overdue thresholds
-- Deterministic per-item action recommendation:
-  - age/status/posture maps to one of `nudge`/`defer`/`escalate`/`close_loop_candidate`
-  - overdue execution follow-through (`WaitingFor` overdue, `NextAction`, `Blocker`) prioritizes escalation at high age; blocker overdue posture is forced to `escalate` when lower actions would otherwise apply
-- Deterministic ordering:
-  - category queues sorted by action severity, then age_hours, then `created_at`, then `id`
-  - category item ranks are assigned from this stable order
-- Deterministic escalation posture:
-  - `critical` when any item requires `escalate`
-  - `elevated` when nudges exist but no escalations
-  - `watch` when only defer/close-loop candidates exist or no follow-through items exist
-
-## exact draft artifact behavior and non-send guarantees
-- Draft target is chosen deterministically from combined follow-through queue by action severity, posture severity, age, timestamp, and id.
-- Draft artifact always carries explicit non-send controls:
-  - `mode: draft_only`
-  - `approval_required: true`
-  - `auto_send: false`
-- When no follow-through items exist, draft payload is explicit `status: none` with empty content and null target metadata.
-- No autonomous send side effects are introduced.
+## exact deterministic what-changed/checklist/talking-points behavior
+- `what_changed_summary.items` is derived from deterministic continuity resumption `recent_changes` ordering and capped by deterministic section limit.
+- `prep_checklist.items` is built deterministically from `last_decision`, `open_loops`, and `next_action`, with stable ranking/order and a deterministic synthetic fallback when scoped signals are absent.
+- `suggested_talking_points.items` is built deterministically from `last_decision`, top ranked priority, and open loops, with stable de-duplication/ranking and deterministic fallback.
+- `resumption_supervision.recommendations` deterministically includes recommended next action, top follow-through item (if present), and low/medium trust calibration guidance when applicable.
+- All new recommendation artifacts carry explicit `confidence_posture` and provenance references.
 
 ## incomplete work
-- None within P7-S26 scope.
+- None inside P7-S27 scope.
 
 ## explicit deferred scope
-- P7-S27 preparation briefs are deferred.
-- P7-S28 weekly outcome-learning loop is deferred.
-- Connector/channel/auth/orchestration expansion remains deferred.
-- Autonomous external sends remain deferred.
+- P7-S28 weekly outcome-learning loop and adaptive ranking changes.
+- Connector/channel/auth/orchestration expansion.
+- Autonomous external sends/writes.
 
 ## files changed
 - `apps/api/src/alicebot_api/chief_of_staff.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `tests/unit/test_chief_of_staff.py`
-- `tests/integration/test_chief_of_staff_api.py`
 - `apps/web/lib/api.ts`
 - `apps/web/lib/api.test.ts`
 - `apps/web/app/chief-of-staff/page.tsx`
 - `apps/web/app/chief-of-staff/page.test.tsx`
 - `apps/web/components/chief-of-staff-priority-panel.test.tsx`
-- `apps/web/components/chief-of-staff-follow-through-panel.tsx`
 - `apps/web/components/chief-of-staff-follow-through-panel.test.tsx`
+- `apps/web/components/chief-of-staff-preparation-panel.tsx`
+- `apps/web/components/chief-of-staff-preparation-panel.test.tsx`
+- `tests/unit/test_chief_of_staff.py`
+- `tests/integration/test_chief_of_staff_api.py`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
@@ -113,20 +86,20 @@ Implement Phase 7 Sprint 26 (P7-S26): follow-through supervision on top of shipp
 
 ## tests run
 - `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py tests/integration/test_chief_of_staff_api.py -q`
-  - PASS (`5 passed in 0.98s`)
-- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-priority-panel.test.tsx components/chief-of-staff-follow-through-panel.test.tsx lib/api.test.ts`
-  - PASS (`4 files, 40 tests`)
+  - PASS (`5 passed`)
+- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-priority-panel.test.tsx components/chief-of-staff-follow-through-panel.test.tsx components/chief-of-staff-preparation-panel.test.tsx lib/api.test.ts`
+  - PASS (`5 files, 42 tests`)
 - `python3 scripts/run_phase4_validation_matrix.py`
   - PASS (`Phase 4 validation matrix result: PASS`)
 
 ## exact verification command outcomes
-- Required backend tests: PASS
-- Required web tests: PASS
+- Required backend chief-of-staff tests: PASS
+- Required web chief-of-staff tests: PASS
 - Required Phase 4 validation matrix: PASS
 
 ## blockers/issues
-- No unresolved blockers.
-- During verification, one intermediate full matrix run produced transient compatibility failures; rerun completed cleanly with PASS and no code changes required.
+- No unresolved implementation blockers.
+- One intermediate matrix run initially failed due sandboxed localhost DB/network restrictions and control-doc marker requirements; rerun with required local access and doc marker correction passed.
 
 ## recommended next step
-Start P7-S27 with a narrow preparation-brief seam that consumes the shipped P7-S26 follow-through artifact without changing P7-S25/P7-S26 deterministic ranking and supervision contracts.
+Prepare and approve the P7-S27 review/merge decision, then open P7-S28 as a separate scoped sprint without modifying P7-S25/P7-S26/P7-S27 deterministic contracts.
