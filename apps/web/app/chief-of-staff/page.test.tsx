@@ -66,11 +66,13 @@ describe("ChiefOfStaffPage", () => {
     expect(screen.getByText("Fixture follow-through")).toBeInTheDocument();
     expect(screen.getByText("Fixture preparation brief")).toBeInTheDocument();
     expect(screen.getByText("Fixture weekly review")).toBeInTheDocument();
+    expect(screen.getByText("Fixture action handoff")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Confirm launch checklist owner").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Action type: execute_next_action").length).toBeGreaterThan(0);
     expect(screen.getByText("Follow-through supervision")).toBeInTheDocument();
     expect(screen.getByText("Preparation and resumption")).toBeInTheDocument();
     expect(screen.getByText("Weekly review and learning")).toBeInTheDocument();
+    expect(screen.getByText("Action handoff")).toBeInTheDocument();
     expect(getChiefOfStaffPriorityBriefMock).not.toHaveBeenCalled();
   });
 
@@ -448,6 +450,163 @@ describe("ChiefOfStaffPage", () => {
             "Accepted outcomes are leading with bounded defers/overrides, indicating improving recommendation fit.",
           supporting_signals: ["Outcomes captured: 1"],
         },
+        action_handoff_brief: {
+          summary:
+            "Prepared 1 deterministic handoff item from recommended_next_action signals. All task and approval drafts remain artifact-only and approval-bounded.",
+          confidence_posture: "medium",
+          non_autonomous_guarantee:
+            "No task, approval, connector send, or external side effect is executed by this endpoint.",
+          order: ["score_desc", "source_order_asc", "source_reference_id_asc"],
+          source_order: ["recommended_next_action", "follow_through", "prep_checklist", "weekly_review"],
+          provenance_references: [
+            {
+              source_kind: "continuity_capture_event",
+              source_id: "capture-live-1",
+            },
+          ],
+        },
+        handoff_items: [
+          {
+            rank: 1,
+            handoff_item_id: "handoff-1-recommended_next_action-priority-live-1",
+            source_kind: "recommended_next_action",
+            source_reference_id: "priority-live-1",
+            title: "Next Action: Send partner follow-up",
+            recommendation_action: "execute_next_action",
+            priority_posture: "urgent",
+            confidence_posture: "medium",
+            rationale: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+            provenance_references: [
+              {
+                source_kind: "continuity_capture_event",
+                source_id: "capture-live-1",
+              },
+            ],
+            score: 1650,
+            task_draft: {
+              status: "draft",
+              mode: "governed_request_draft",
+              approval_required: true,
+              auto_execute: false,
+              source_handoff_item_id: "handoff-1-recommended_next_action-priority-live-1",
+              title: "Next Action: Send partner follow-up",
+              summary:
+                "Draft-only governed request assembled from chief-of-staff handoff artifacts; requires explicit approval before any execution.",
+              target: { thread_id: "thread-1", task_id: null, project: null, person: null },
+              request: {
+                action: "execute_next_action",
+                scope: "chief_of_staff_priority",
+                domain_hint: "planning",
+                risk_hint: "governed_handoff",
+                attributes: {},
+              },
+              rationale:
+                "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+              provenance_references: [
+                {
+                  source_kind: "continuity_capture_event",
+                  source_id: "capture-live-1",
+                },
+              ],
+            },
+            approval_draft: {
+              status: "draft_only",
+              mode: "approval_request_draft",
+              decision: "approval_required",
+              approval_required: true,
+              auto_submit: false,
+              source_handoff_item_id: "handoff-1-recommended_next_action-priority-live-1",
+              request: {
+                action: "execute_next_action",
+                scope: "chief_of_staff_priority",
+                domain_hint: "planning",
+                risk_hint: "governed_handoff",
+                attributes: {},
+              },
+              reason:
+                "Execution remains approval-bounded. This approval draft is artifact-only and must be explicitly submitted and resolved before any side effect.",
+              required_checks: [
+                "operator_review_handoff_artifact",
+                "submit_governed_approval_request",
+                "explicit_approval_resolution",
+              ],
+              provenance_references: [
+                {
+                  source_kind: "continuity_capture_event",
+                  source_id: "capture-live-1",
+                },
+              ],
+            },
+          },
+        ],
+        task_draft: {
+          status: "draft",
+          mode: "governed_request_draft",
+          approval_required: true,
+          auto_execute: false,
+          source_handoff_item_id: "handoff-1-recommended_next_action-priority-live-1",
+          title: "Next Action: Send partner follow-up",
+          summary:
+            "Draft-only governed request assembled from chief-of-staff handoff artifacts; requires explicit approval before any execution.",
+          target: { thread_id: "thread-1", task_id: null, project: null, person: null },
+          request: {
+            action: "execute_next_action",
+            scope: "chief_of_staff_priority",
+            domain_hint: "planning",
+            risk_hint: "governed_handoff",
+            attributes: {},
+          },
+          rationale: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+          provenance_references: [
+            {
+              source_kind: "continuity_capture_event",
+              source_id: "capture-live-1",
+            },
+          ],
+        },
+        approval_draft: {
+          status: "draft_only",
+          mode: "approval_request_draft",
+          decision: "approval_required",
+          approval_required: true,
+          auto_submit: false,
+          source_handoff_item_id: "handoff-1-recommended_next_action-priority-live-1",
+          request: {
+            action: "execute_next_action",
+            scope: "chief_of_staff_priority",
+            domain_hint: "planning",
+            risk_hint: "governed_handoff",
+            attributes: {},
+          },
+          reason:
+            "Execution remains approval-bounded. This approval draft is artifact-only and must be explicitly submitted and resolved before any side effect.",
+          required_checks: [
+            "operator_review_handoff_artifact",
+            "submit_governed_approval_request",
+            "explicit_approval_resolution",
+          ],
+          provenance_references: [
+            {
+              source_kind: "continuity_capture_event",
+              source_id: "capture-live-1",
+            },
+          ],
+        },
+        execution_posture: {
+          posture: "approval_bounded_artifact_only",
+          approval_required: true,
+          autonomous_execution: false,
+          external_side_effects_allowed: false,
+          default_routing_decision: "approval_required",
+          required_operator_actions: [
+            "review_handoff_items",
+            "submit_task_or_approval_request",
+            "resolve_approval_before_execution",
+          ],
+          non_autonomous_guarantee:
+            "No task, approval, connector send, or external side effect is executed by this endpoint.",
+          reason: "Chief-of-staff handoff artifacts are deterministic execution-prep only in P8-S29.",
+        },
         summary: {
           limit: 12,
           returned_count: 1,
@@ -470,8 +629,11 @@ describe("ChiefOfStaffPage", () => {
             "Memory quality gate needs review, so recommendation confidence is capped at medium.",
           quality_gate_status: "needs_review",
           retrieval_status: "pass",
+          handoff_item_count: 1,
+          handoff_item_order: ["score_desc", "source_order_asc", "source_reference_id_asc"],
+          execution_posture_order: ["approval_bounded_artifact_only"],
         },
-        sources: ["continuity_recall", "memory_trust_dashboard"],
+        sources: ["continuity_recall", "memory_trust_dashboard", "chief_of_staff_action_handoff"],
       },
     });
 
@@ -482,6 +644,7 @@ describe("ChiefOfStaffPage", () => {
     expect(screen.getByText("Live follow-through")).toBeInTheDocument();
     expect(screen.getByText("Live preparation brief")).toBeInTheDocument();
     expect(screen.getByText("Live weekly review")).toBeInTheDocument();
+    expect(screen.getByText("Live action handoff")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Send partner follow-up").length).toBeGreaterThan(0);
     expect(getChiefOfStaffPriorityBriefMock).toHaveBeenCalledWith(
       "https://api.example.com",

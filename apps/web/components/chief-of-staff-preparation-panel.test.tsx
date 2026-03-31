@@ -279,6 +279,75 @@ const briefFixture = {
     reason: "No recommendation outcomes are available yet, so drift posture is informational only.",
     supporting_signals: [],
   },
+  action_handoff_brief: {
+    summary:
+      "Prepared 1 deterministic handoff item from recommended_next_action signals. All task and approval drafts remain artifact-only and approval-bounded.",
+    confidence_posture: "low" as const,
+    non_autonomous_guarantee:
+      "No task, approval, connector send, or external side effect is executed by this endpoint.",
+    order: ["score_desc", "source_order_asc", "source_reference_id_asc"],
+    source_order: ["recommended_next_action", "follow_through", "prep_checklist", "weekly_review"] as const,
+    provenance_references: [],
+  },
+  handoff_items: [],
+  task_draft: {
+    status: "draft" as const,
+    mode: "governed_request_draft" as const,
+    approval_required: true,
+    auto_execute: false,
+    source_handoff_item_id: "handoff-1-recommended_next_action-priority-1",
+    title: "Next Action: Ship dashboard",
+    summary:
+      "Draft-only governed request assembled from chief-of-staff handoff artifacts; requires explicit approval before any execution.",
+    target: { thread_id: "thread-1", task_id: null, project: null, person: null },
+    request: {
+      action: "execute_next_action",
+      scope: "chief_of_staff_priority",
+      domain_hint: "planning",
+      risk_hint: "governed_handoff",
+      attributes: {},
+    },
+    rationale: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+    provenance_references: [],
+  },
+  approval_draft: {
+    status: "draft_only" as const,
+    mode: "approval_request_draft" as const,
+    decision: "approval_required" as const,
+    approval_required: true,
+    auto_submit: false,
+    source_handoff_item_id: "handoff-1-recommended_next_action-priority-1",
+    request: {
+      action: "execute_next_action",
+      scope: "chief_of_staff_priority",
+      domain_hint: "planning",
+      risk_hint: "governed_handoff",
+      attributes: {},
+    },
+    reason:
+      "Execution remains approval-bounded. This approval draft is artifact-only and must be explicitly submitted and resolved before any side effect.",
+    required_checks: [
+      "operator_review_handoff_artifact",
+      "submit_governed_approval_request",
+      "explicit_approval_resolution",
+    ],
+    provenance_references: [],
+  },
+  execution_posture: {
+    posture: "approval_bounded_artifact_only" as const,
+    approval_required: true,
+    autonomous_execution: false,
+    external_side_effects_allowed: false,
+    default_routing_decision: "approval_required" as const,
+    required_operator_actions: [
+      "review_handoff_items",
+      "submit_task_or_approval_request",
+      "resolve_approval_before_execution",
+    ],
+    non_autonomous_guarantee:
+      "No task, approval, connector send, or external side effect is executed by this endpoint.",
+    reason: "Chief-of-staff handoff artifacts are deterministic execution-prep only in P8-S29.",
+  },
   summary: {
     limit: 10,
     returned_count: 0,
@@ -295,8 +364,11 @@ const briefFixture = {
     trust_confidence_reason: "Memory quality posture is weak.",
     quality_gate_status: "insufficient_sample" as const,
     retrieval_status: "pass" as const,
+    handoff_item_count: 0,
+    handoff_item_order: ["score_desc", "source_order_asc", "source_reference_id_asc"],
+    execution_posture_order: ["approval_bounded_artifact_only"] as const,
   },
-  sources: ["continuity_recall", "memory_trust_dashboard"],
+  sources: ["continuity_recall", "memory_trust_dashboard", "chief_of_staff_action_handoff"],
 };
 
 describe("ChiefOfStaffPreparationPanel", () => {

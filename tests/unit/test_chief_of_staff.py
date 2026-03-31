@@ -336,6 +336,48 @@ def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> N
     assert first["brief"]["priority_learning_summary"]["override_rate"] == 0.5
     assert "Prioritization is reinforcing" in first["brief"]["priority_learning_summary"]["priority_shift_explanation"]
     assert first["brief"]["pattern_drift_summary"]["posture"] == "stable"
+    assert first["brief"]["action_handoff_brief"]["order"] == [
+        "score_desc",
+        "source_order_asc",
+        "source_reference_id_asc",
+    ]
+    assert first["brief"]["action_handoff_brief"]["source_order"] == [
+        "recommended_next_action",
+        "follow_through",
+        "prep_checklist",
+        "weekly_review",
+    ]
+    assert first["brief"]["summary"]["handoff_item_count"] == len(first["brief"]["handoff_items"])
+    assert first["brief"]["summary"]["handoff_item_order"] == [
+        "score_desc",
+        "source_order_asc",
+        "source_reference_id_asc",
+    ]
+    assert first["brief"]["summary"]["execution_posture_order"] == ["approval_bounded_artifact_only"]
+    assert [item["source_kind"] for item in first["brief"]["handoff_items"]] == [
+        "recommended_next_action",
+        "follow_through",
+        "prep_checklist",
+        "weekly_review",
+    ]
+    top_handoff_item = first["brief"]["handoff_items"][0]
+    assert first["brief"]["task_draft"]["source_handoff_item_id"] == top_handoff_item["handoff_item_id"]
+    assert first["brief"]["approval_draft"]["source_handoff_item_id"] == top_handoff_item["handoff_item_id"]
+    assert first["brief"]["task_draft"]["mode"] == "governed_request_draft"
+    assert first["brief"]["task_draft"]["approval_required"] is True
+    assert first["brief"]["task_draft"]["auto_execute"] is False
+    assert first["brief"]["approval_draft"]["mode"] == "approval_request_draft"
+    assert first["brief"]["approval_draft"]["decision"] == "approval_required"
+    assert first["brief"]["approval_draft"]["approval_required"] is True
+    assert first["brief"]["approval_draft"]["auto_submit"] is False
+    assert first["brief"]["execution_posture"]["posture"] == "approval_bounded_artifact_only"
+    assert first["brief"]["execution_posture"]["approval_required"] is True
+    assert first["brief"]["execution_posture"]["autonomous_execution"] is False
+    assert first["brief"]["execution_posture"]["external_side_effects_allowed"] is False
+    assert first["brief"]["execution_posture"]["default_routing_decision"] == "approval_required"
+    assert "No task, approval, connector send, or external side effect is executed" in first["brief"][
+        "execution_posture"
+    ]["non_autonomous_guarantee"]
 
 
 def test_follow_through_item_ranking_is_deterministic_for_ties() -> None:
@@ -501,6 +543,14 @@ def test_priority_brief_downgrades_confidence_when_trust_is_weak(monkeypatch) ->
         recommendation["action"] == "review_scope" and recommendation["provenance_references"]
         for recommendation in payload["brief"]["resumption_supervision"]["recommendations"]
     )
+    assert payload["brief"]["action_handoff_brief"]["confidence_posture"] == "low"
+    assert payload["brief"]["handoff_items"]
+    assert payload["brief"]["task_draft"]["approval_required"] is True
+    assert payload["brief"]["task_draft"]["auto_execute"] is False
+    assert payload["brief"]["approval_draft"]["decision"] == "approval_required"
+    assert payload["brief"]["approval_draft"]["auto_submit"] is False
+    assert payload["brief"]["execution_posture"]["autonomous_execution"] is False
+    assert payload["brief"]["execution_posture"]["external_side_effects_allowed"] is False
 
 
 def test_priority_brief_retrieval_failure_respects_non_healthy_quality_caps(monkeypatch) -> None:
