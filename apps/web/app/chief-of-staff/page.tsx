@@ -1,3 +1,4 @@
+import { ChiefOfStaffFollowThroughPanel } from "../../components/chief-of-staff-follow-through-panel";
 import { ChiefOfStaffPriorityPanel } from "../../components/chief-of-staff-priority-panel";
 import { PageHeader } from "../../components/page-header";
 import { StatusBadge } from "../../components/status-badge";
@@ -138,6 +139,115 @@ const chiefOfStaffFixture: ChiefOfStaffPriorityBrief = {
       },
     },
   ],
+  overdue_items: [
+    {
+      rank: 1,
+      id: "follow-fixture-overdue-1",
+      capture_event_id: "capture-follow-fixture-overdue-1",
+      object_type: "NextAction",
+      status: "active",
+      title: "Next Action: Send partner status follow-up",
+      current_priority_posture: "urgent",
+      follow_through_posture: "overdue",
+      recommendation_action: "escalate",
+      reason:
+        "Execution follow-through is overdue (posture=urgent, age=140.0h), so action 'escalate' is recommended.",
+      age_hours: 140,
+      provenance_references: [
+        {
+          source_kind: "continuity_capture_event",
+          source_id: "capture-follow-fixture-overdue-1",
+        },
+      ],
+      created_at: "2026-03-26T08:00:00Z",
+      updated_at: "2026-03-26T08:00:00Z",
+    },
+  ],
+  stale_waiting_for_items: [
+    {
+      rank: 1,
+      id: "follow-fixture-stale-waiting-1",
+      capture_event_id: "capture-follow-fixture-stale-waiting-1",
+      object_type: "WaitingFor",
+      status: "stale",
+      title: "Waiting For: Procurement approval",
+      current_priority_posture: "stale",
+      follow_through_posture: "stale_waiting_for",
+      recommendation_action: "nudge",
+      reason:
+        "Waiting-for item is stale (status=stale, age=96.0h from latest scoped item), so action 'nudge' is recommended.",
+      age_hours: 96,
+      provenance_references: [
+        {
+          source_kind: "continuity_capture_event",
+          source_id: "capture-follow-fixture-stale-waiting-1",
+        },
+      ],
+      created_at: "2026-03-27T00:00:00Z",
+      updated_at: "2026-03-27T00:00:00Z",
+    },
+  ],
+  slipped_commitments: [
+    {
+      rank: 1,
+      id: "follow-fixture-slipped-commitment-1",
+      capture_event_id: "capture-follow-fixture-slipped-commitment-1",
+      object_type: "Commitment",
+      status: "active",
+      title: "Commitment: Publish weekly status digest",
+      current_priority_posture: "important",
+      follow_through_posture: "slipped_commitment",
+      recommendation_action: "defer",
+      reason:
+        "Commitment is slipping (status=active, age=60.0h from latest scoped item), so action 'defer' is recommended.",
+      age_hours: 60,
+      provenance_references: [
+        {
+          source_kind: "continuity_capture_event",
+          source_id: "capture-follow-fixture-slipped-commitment-1",
+        },
+      ],
+      created_at: "2026-03-28T12:00:00Z",
+      updated_at: "2026-03-28T12:00:00Z",
+    },
+  ],
+  escalation_posture: {
+    posture: "critical",
+    reason: "At least one follow-through item requires escalation.",
+    total_follow_through_count: 3,
+    nudge_count: 1,
+    defer_count: 1,
+    escalate_count: 1,
+    close_loop_candidate_count: 0,
+  },
+  draft_follow_up: {
+    status: "drafted",
+    mode: "draft_only",
+    approval_required: true,
+    auto_send: false,
+    reason: "Highest-severity follow-through item selected deterministically for operator review.",
+    target_metadata: {
+      continuity_object_id: "follow-fixture-overdue-1",
+      capture_event_id: "capture-follow-fixture-overdue-1",
+      object_type: "NextAction",
+      priority_posture: "urgent",
+      follow_through_posture: "overdue",
+      recommendation_action: "escalate",
+      thread_id: "thread-fixture-1",
+    },
+    content: {
+      subject: "Follow-up: Next Action: Send partner status follow-up",
+      body: [
+        "Following up on: Next Action: Send partner status follow-up",
+        "Current follow-through posture: overdue",
+        "Current priority posture: urgent",
+        "Recommended action: escalate",
+        "Reason: Execution follow-through is overdue (posture=urgent, age=140.0h), so action 'escalate' is recommended.",
+        "",
+        "This draft is artifact-only and requires explicit approval before any external send.",
+      ].join("\\n"),
+    },
+  },
   recommended_next_action: {
     action_type: "execute_next_action",
     title: "Next Action: Confirm launch checklist owner",
@@ -159,6 +269,17 @@ const chiefOfStaffFixture: ChiefOfStaffPriorityBrief = {
     total_count: 2,
     posture_order: ["urgent", "important", "waiting", "blocked", "stale", "defer"],
     order: ["score_desc", "created_at_desc", "id_desc"],
+    follow_through_posture_order: ["overdue", "stale_waiting_for", "slipped_commitment"],
+    follow_through_item_order: [
+      "recommendation_action_desc",
+      "age_hours_desc",
+      "created_at_desc",
+      "id_desc",
+    ],
+    follow_through_total_count: 3,
+    overdue_count: 1,
+    stale_waiting_for_count: 1,
+    slipped_commitment_count: 1,
     trust_confidence_posture: "low",
     trust_confidence_reason:
       "Memory quality gate is weak (insufficient sample or degraded), so recommendation confidence is capped at low.",
@@ -225,11 +346,12 @@ export default async function ChiefOfStaffPage({
       <PageHeader
         eyebrow="Phase 7"
         title="Chief-of-staff"
-        description="Deterministic priority ranking with explicit rationale, trust-aware confidence posture, and one recommended next action."
+        description="Deterministic priority ranking and follow-through supervision with explicit rationale, trust-aware confidence posture, and draft-only follow-up artifacts."
         meta={
           <div className="header-meta">
             <span className="subtle-chip">{pageModeLabel(mode)}</span>
             <span className="subtle-chip">{brief.summary.returned_count} ranked priorities</span>
+            <span className="subtle-chip">{brief.summary.follow_through_total_count} follow-through items</span>
             <StatusBadge
               status={brief.summary.trust_confidence_posture}
               label={`${brief.summary.trust_confidence_posture} confidence`}
@@ -239,6 +361,11 @@ export default async function ChiefOfStaffPage({
       />
 
       <ChiefOfStaffPriorityPanel
+        brief={brief}
+        source={briefSource}
+        unavailableReason={briefUnavailableReason}
+      />
+      <ChiefOfStaffFollowThroughPanel
         brief={brief}
         source={briefSource}
         unavailableReason={briefUnavailableReason}

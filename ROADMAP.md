@@ -4,8 +4,8 @@
 
 - The canonical repo baseline remains through Phase 3 Sprint 9.
 - Earlier Phase 4 increments are delivered on top of that baseline: run-aware execution linkage, idempotent replay controls, approval-to-run pause/resume linkage, explicit run transitions/stop reasons, bounded retry posture, explicit failure classes, and deterministic gate runners.
-- Phase 4 Sprint 14 is the active release-control layer for compatibility truth markers and gate ownership continuity.
 - Phase 4 Sprint 14 remains the canonical release-control layer for gate-ownership truth compatibility.
+- Phase 4 Sprint 14 is the active release-control layer for canonical gate ownership truth compatibility.
 - Phase 4 Sprint 14 established the release-control layer: Phase 4 release-control is complete and remains the gate baseline, Phase 4 owns acceptance/readiness/validation semantics directly, canonical magnesium reorder ship-gate evidence is first-class, and compatibility gates stay green.
 - Phase 4 Sprint 15 adds deterministic MVP release-candidate rehearsal orchestration via `python3 scripts/run_phase4_release_candidate.py`, producing `artifacts/release/phase4_rc_summary.json` with explicit per-step evidence and final GO/NO_GO.
 - Phase 4 Sprint 16 adds durable RC evidence retention: each rehearsal run now writes an archive copy plus append-only audit ledger at `artifacts/release/archive/index.json`, while preserving the latest-summary compatibility path.
@@ -21,10 +21,15 @@
 - Phase 6 Sprint 23 adds correction-impact and freshness-hygiene reliability seams, including deterministic weekly review evidence fields for correction recurrence and freshness drift (`correction_recurrence_count`, `freshness_drift_count`) while preserving P6-S21/P6-S22 contracts.
 - Phase 6 Sprint 24 adds trust dashboard and quality release evidence seams: `GET /v0/memories/trust-dashboard`, deterministic evidence generation via `python3 scripts/run_phase6_quality_evidence.py`, and additive quality evidence summary integration in Phase 4 readiness/release/validation reporting paths without changing GO/NO_GO semantics.
 - Phase 6 is complete (`P6-S21` through `P6-S24` shipped).
-- Active post-Phase-6 sprint is Phase 7 Sprint 25: priority engine and chief-of-staff dashboard.
 - Phase 7 Sprint 25 adds deterministic chief-of-staff priority seams:
   - `GET /v0/chief-of-staff` for ranked priorities with explicit posture labels, provenance-backed rationale, trust-aware confidence posture, and deterministic recommended next action.
   - `/chief-of-staff` web dashboard for current priorities, rationale visibility, and explicit low-trust confidence downgrade rendering.
+- Phase 7 Sprint 26 adds deterministic follow-through supervision seams on top of shipped P7-S25:
+  - `GET /v0/chief-of-staff` now includes deterministic `overdue_items`, `stale_waiting_for_items`, `slipped_commitments`, `escalation_posture`, and governed `draft_follow_up` artifact fields.
+  - follow-through recommendation actions are deterministic and explicit (`nudge`, `defer`, `escalate`, `close_loop_candidate`) with rationale per item.
+  - draft follow-ups remain approval-bounded artifacts only (`draft_only`, no autonomous external send).
+  - `/chief-of-staff` web now renders a dedicated follow-through supervision panel alongside the priority panel.
+- Active post-Phase-6 sprint remains Phase 7 Sprint 26 follow-through supervision.
 - The backend baseline now includes continuity APIs, deterministic context compilation, governed request routing, approvals and execution review, typed memory and open-loop seams, deterministic thread resumption brief reads, unified explicit-signal capture seams, explicit task and task-step lifecycle seams, rooted local workspaces and artifact ingestion, artifact retrieval and embeddings, narrow read-only Gmail and Calendar seams with selected-item ingestion, bounded read-only Calendar event discovery for one connected account, and the no-tools assistant-response seam.
 - The frontend baseline is now real product surface, not scaffolding: the Next.js operator shell ships `/`, `/chat`, `/approvals`, `/tasks`, `/artifacts`, `/gmail`, `/calendar`, `/memories`, `/chief-of-staff`, `/entities`, and `/traces`, with live-backend reads when configured and explicit fixture fallback when they are not.
 - `/chat` now uses selected-thread continuity instead of a raw thread-id-first flow, keeps bounded thread review and deterministic resumption brief review visible beside both assistant and governed-request composition, ships thread-linked governed workflow, ordered task-step timeline review, and bounded explain-why trace embedding, and includes manual explicit-signal capture controls for selected `message.user` events.
@@ -69,7 +74,9 @@
   - P6-S22 retrieval-quality calibration is now shipped baseline
   - P6-S23 correction impact and freshness hygiene is now shipped baseline
   - P6-S24 trust dashboard and quality release evidence is now shipped baseline
+  - P7-S25 priority engine and chief-of-staff dashboard is now shipped baseline
   - do not reopen P6-S21/P6-S22/P6-S23/P6-S24 contracts while operating on post-P6-S24 follow-up scope
+  - do not reopen P7-S25 ranking/rationale semantics while executing P7-S26
   - Phase 6 planning anchors are:
     - `docs/phase6-product-spec.md`
     - `docs/phase6-sprint-21-24-plan.md`
