@@ -2,7 +2,7 @@ import React from "react";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ChiefOfStaffPriorityPanel } from "./chief-of-staff-priority-panel";
+import { ChiefOfStaffActionHandoffPanel } from "./chief-of-staff-action-handoff-panel";
 
 const briefFixture = {
   assembly_version: "chief_of_staff_priority_brief_v0",
@@ -11,56 +11,7 @@ const briefFixture = {
     since: null,
     until: null,
   },
-  ranked_items: [
-    {
-      rank: 1,
-      id: "priority-1",
-      capture_event_id: "capture-1",
-      object_type: "NextAction" as const,
-      status: "active",
-      title: "Next Action: Ship dashboard",
-      priority_posture: "urgent" as const,
-      confidence_posture: "low" as const,
-      confidence: 1,
-      score: 640,
-      provenance: {
-        thread_id: "thread-1",
-      },
-      created_at: "2026-03-31T10:00:00Z",
-      updated_at: "2026-03-31T10:00:00Z",
-      rationale: {
-        reasons: [
-          "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
-          "Confidence is explicitly downgraded by current memory trust posture.",
-        ],
-        ranking_inputs: {
-          posture: "urgent" as const,
-          open_loop_posture: "next_action" as const,
-          recency_rank: 1,
-          age_hours_relative_to_latest: 0,
-          recall_relevance: 120,
-          scope_match_count: 1,
-          query_term_match_count: 1,
-          freshness_posture: "fresh" as const,
-          provenance_posture: "strong" as const,
-          supersession_posture: "current" as const,
-        },
-        provenance_references: [
-          {
-            source_kind: "continuity_capture_event",
-            source_id: "capture-1",
-          },
-        ],
-        trust_signals: {
-          quality_gate_status: "insufficient_sample" as const,
-          retrieval_status: "pass" as const,
-          trust_confidence_cap: "low" as const,
-          downgraded_by_trust: true,
-          reason: "Memory quality posture is weak.",
-        },
-      },
-    },
-  ],
+  ranked_items: [],
   overdue_items: [],
   stale_waiting_for_items: [],
   slipped_commitments: [],
@@ -88,10 +39,7 @@ const briefFixture = {
       recommendation_action: null,
       thread_id: "thread-1",
     },
-    content: {
-      subject: "",
-      body: "",
-    },
+    content: { subject: "", body: "" },
   },
   recommended_next_action: {
     action_type: "execute_next_action" as const,
@@ -100,12 +48,7 @@ const briefFixture = {
     priority_posture: "urgent" as const,
     confidence_posture: "low" as const,
     reason: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
-    provenance_references: [
-      {
-        source_kind: "continuity_capture_event",
-        source_id: "capture-1",
-      },
-    ],
+    provenance_references: [],
     deterministic_rank_key: "1:priority-1:640.000000",
   },
   preparation_brief: {
@@ -116,56 +59,31 @@ const briefFixture = {
     next_action: null,
     confidence_posture: "low" as const,
     confidence_reason: "Memory quality posture is weak.",
-    summary: {
-      limit: 6,
-      returned_count: 0,
-      total_count: 0,
-      order: ["rank_asc", "created_at_desc", "id_desc"],
-    },
+    summary: { limit: 6, returned_count: 0, total_count: 0, order: ["rank_asc", "created_at_desc", "id_desc"] },
   },
   what_changed_summary: {
     items: [],
     confidence_posture: "low" as const,
     confidence_reason: "Memory quality posture is weak.",
-    summary: {
-      limit: 6,
-      returned_count: 0,
-      total_count: 0,
-      order: ["rank_asc", "created_at_desc", "id_desc"],
-    },
+    summary: { limit: 6, returned_count: 0, total_count: 0, order: ["rank_asc", "created_at_desc", "id_desc"] },
   },
   prep_checklist: {
     items: [],
     confidence_posture: "low" as const,
     confidence_reason: "Memory quality posture is weak.",
-    summary: {
-      limit: 6,
-      returned_count: 0,
-      total_count: 0,
-      order: ["rank_asc", "created_at_desc", "id_desc"],
-    },
+    summary: { limit: 6, returned_count: 0, total_count: 0, order: ["rank_asc", "created_at_desc", "id_desc"] },
   },
   suggested_talking_points: {
     items: [],
     confidence_posture: "low" as const,
     confidence_reason: "Memory quality posture is weak.",
-    summary: {
-      limit: 6,
-      returned_count: 0,
-      total_count: 0,
-      order: ["rank_asc", "created_at_desc", "id_desc"],
-    },
+    summary: { limit: 6, returned_count: 0, total_count: 0, order: ["rank_asc", "created_at_desc", "id_desc"] },
   },
   resumption_supervision: {
     recommendations: [],
     confidence_posture: "low" as const,
     confidence_reason: "Memory quality posture is weak.",
-    summary: {
-      limit: 3,
-      returned_count: 0,
-      total_count: 0,
-      order: ["rank_asc"],
-    },
+    summary: { limit: 3, returned_count: 0, total_count: 0, order: ["rank_asc"] },
   },
   weekly_review_brief: {
     scope: { thread_id: "thread-1", since: null, until: null },
@@ -215,7 +133,7 @@ const briefFixture = {
   },
   action_handoff_brief: {
     summary:
-      "Prepared 1 deterministic handoff item from recommended_next_action signals. All task and approval drafts remain artifact-only and approval-bounded.",
+      "Prepared 2 deterministic handoff items from recommended_next_action, follow_through signals. All task and approval drafts remain artifact-only and approval-bounded.",
     confidence_posture: "low" as const,
     non_autonomous_guarantee:
       "No task, approval, connector send, or external side effect is executed by this endpoint.",
@@ -223,7 +141,59 @@ const briefFixture = {
     source_order: ["recommended_next_action", "follow_through", "prep_checklist", "weekly_review"] as const,
     provenance_references: [],
   },
-  handoff_items: [],
+  handoff_items: [
+    {
+      rank: 1,
+      handoff_item_id: "handoff-1-recommended_next_action-priority-1",
+      source_kind: "recommended_next_action" as const,
+      source_reference_id: "priority-1",
+      title: "Next Action: Ship dashboard",
+      recommendation_action: "execute_next_action" as const,
+      priority_posture: "urgent" as const,
+      confidence_posture: "low" as const,
+      rationale: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+      provenance_references: [],
+      score: 1650,
+      task_draft: {
+        status: "draft" as const,
+        mode: "governed_request_draft" as const,
+        approval_required: true,
+        auto_execute: false,
+        source_handoff_item_id: "handoff-1-recommended_next_action-priority-1",
+        title: "Next Action: Ship dashboard",
+        summary:
+          "Draft-only governed request assembled from chief-of-staff handoff artifacts; requires explicit approval before any execution.",
+        target: { thread_id: "thread-1", task_id: null, project: null, person: null },
+        request: {
+          action: "execute_next_action",
+          scope: "chief_of_staff_priority",
+          domain_hint: "planning",
+          risk_hint: "governed_handoff",
+          attributes: {},
+        },
+        rationale: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+        provenance_references: [],
+      },
+      approval_draft: {
+        status: "draft_only" as const,
+        mode: "approval_request_draft" as const,
+        decision: "approval_required" as const,
+        approval_required: true,
+        auto_submit: false,
+        source_handoff_item_id: "handoff-1-recommended_next_action-priority-1",
+        request: {
+          action: "execute_next_action",
+          scope: "chief_of_staff_priority",
+          domain_hint: "planning",
+          risk_hint: "governed_handoff",
+          attributes: {},
+        },
+        reason: "Execution remains approval-bounded.",
+        required_checks: ["operator_review_handoff_artifact"],
+        provenance_references: [],
+      },
+    },
+  ],
   task_draft: {
     status: "draft" as const,
     mode: "governed_request_draft" as const,
@@ -283,18 +253,13 @@ const briefFixture = {
     reason: "Chief-of-staff handoff artifacts are deterministic execution-prep only in P8-S29.",
   },
   summary: {
-    limit: 10,
-    returned_count: 1,
-    total_count: 1,
+    limit: 12,
+    returned_count: 0,
+    total_count: 0,
     posture_order: ["urgent", "important", "waiting", "blocked", "stale", "defer"] as const,
     order: ["score_desc", "created_at_desc", "id_desc"],
     follow_through_posture_order: ["overdue", "stale_waiting_for", "slipped_commitment"] as const,
-    follow_through_item_order: [
-      "recommendation_action_desc",
-      "age_hours_desc",
-      "created_at_desc",
-      "id_desc",
-    ],
+    follow_through_item_order: ["recommendation_action_desc", "age_hours_desc", "created_at_desc", "id_desc"],
     follow_through_total_count: 0,
     overdue_count: 0,
     stale_waiting_for_count: 0,
@@ -303,39 +268,36 @@ const briefFixture = {
     trust_confidence_reason: "Memory quality posture is weak.",
     quality_gate_status: "insufficient_sample" as const,
     retrieval_status: "pass" as const,
-    handoff_item_count: 0,
+    handoff_item_count: 1,
     handoff_item_order: ["score_desc", "source_order_asc", "source_reference_id_asc"],
     execution_posture_order: ["approval_bounded_artifact_only"] as const,
   },
   sources: ["continuity_recall", "memory_trust_dashboard", "chief_of_staff_action_handoff"],
 };
 
-describe("ChiefOfStaffPriorityPanel", () => {
+describe("ChiefOfStaffActionHandoffPanel", () => {
   afterEach(() => {
     cleanup();
   });
 
-  it("renders ranked priorities, rationale, and explicit low-trust confidence downgrade", () => {
-    render(<ChiefOfStaffPriorityPanel brief={briefFixture} source="live" />);
+  it("renders deterministic handoff artifacts and approval-bounded execution posture", () => {
+    render(<ChiefOfStaffActionHandoffPanel brief={briefFixture} source="live" />);
 
-    expect(screen.getByText("Live chief-of-staff brief")).toBeInTheDocument();
-    expect(screen.getByText("Recommended next action")).toBeInTheDocument();
-    expect(screen.getAllByText("Next Action: Ship dashboard").length).toBeGreaterThan(0);
-    expect(screen.getByText("Action type: execute_next_action")).toBeInTheDocument();
+    expect(screen.getByText("Live action handoff")).toBeInTheDocument();
+    expect(screen.getByText("Execution posture: approval_bounded_artifact_only")).toBeInTheDocument();
+    expect(screen.getByText("Action handoff brief")).toBeInTheDocument();
+    expect(screen.getByText("Primary task draft")).toBeInTheDocument();
+    expect(screen.getByText("Primary approval draft")).toBeInTheDocument();
+    expect(screen.getByText("Handoff items")).toBeInTheDocument();
+    expect(screen.getAllByText("Request: execute_next_action (chief_of_staff_priority)").length).toBeGreaterThan(0);
     expect(
-      screen.getByText("Confidence is explicitly downgraded because memory trust posture is weak."),
+      screen.getByText("No task, approval, connector send, or external side effect is executed by this endpoint."),
     ).toBeInTheDocument();
-    expect(screen.getByText("Rank #1")).toBeInTheDocument();
-    expect(
-      screen.getAllByText(
-        "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
-      ).length,
-    ).toBeGreaterThan(0);
   });
 
   it("renders explicit fallback when brief payload is absent", () => {
-    render(<ChiefOfStaffPriorityPanel brief={null} source="fixture" />);
+    render(<ChiefOfStaffActionHandoffPanel brief={null} source="fixture" />);
 
-    expect(screen.getByText("Chief-of-staff brief unavailable")).toBeInTheDocument();
+    expect(screen.getByText("Action handoff unavailable")).toBeInTheDocument();
   });
 });

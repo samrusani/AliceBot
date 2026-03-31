@@ -1435,6 +1435,9 @@ export type ChiefOfStaffPrioritySummary = {
   trust_confidence_reason: string;
   quality_gate_status: MemoryQualityGateStatus;
   retrieval_status: RetrievalEvaluationSummary["status"];
+  handoff_item_count: number;
+  handoff_item_order: string[];
+  execution_posture_order: ChiefOfStaffExecutionPosture[];
 };
 
 export type ChiefOfStaffPreparationArtifactItem = {
@@ -1511,6 +1514,22 @@ export type ChiefOfStaffRecommendationOutcome = "accept" | "defer" | "ignore" | 
 export type ChiefOfStaffWeeklyReviewGuidanceAction = "close" | "defer" | "escalate";
 
 export type ChiefOfStaffPatternDriftPosture = "improving" | "stable" | "drifting" | "insufficient_signal";
+export type ChiefOfStaffActionHandoffSourceKind =
+  | "recommended_next_action"
+  | "follow_through"
+  | "prep_checklist"
+  | "weekly_review";
+export type ChiefOfStaffActionHandoffAction =
+  | ChiefOfStaffRecommendedActionType
+  | "nudge"
+  | "defer"
+  | "escalate"
+  | "close_loop_candidate"
+  | "review_scope"
+  | "weekly_review_close"
+  | "weekly_review_defer"
+  | "weekly_review_escalate";
+export type ChiefOfStaffExecutionPosture = "approval_bounded_artifact_only";
 
 export type ChiefOfStaffWeeklyReviewBrief = {
   scope: ContinuityRecallSummary["filters"];
@@ -1576,6 +1595,84 @@ export type ChiefOfStaffPatternDriftSummary = {
   supporting_signals: string[];
 };
 
+export type ChiefOfStaffActionHandoffRequestTarget = {
+  thread_id: string | null;
+  task_id: string | null;
+  project: string | null;
+  person: string | null;
+};
+
+export type ChiefOfStaffActionHandoffRequestDraft = {
+  action: string;
+  scope: string;
+  domain_hint: string | null;
+  risk_hint: string | null;
+  attributes: JsonObject;
+};
+
+export type ChiefOfStaffActionHandoffTaskDraft = {
+  status: "draft";
+  mode: "governed_request_draft";
+  approval_required: boolean;
+  auto_execute: boolean;
+  source_handoff_item_id: string;
+  title: string;
+  summary: string;
+  target: ChiefOfStaffActionHandoffRequestTarget;
+  request: ChiefOfStaffActionHandoffRequestDraft;
+  rationale: string;
+  provenance_references: ContinuityRecallProvenanceReference[];
+};
+
+export type ChiefOfStaffActionHandoffApprovalDraft = {
+  status: "draft_only";
+  mode: "approval_request_draft";
+  decision: "approval_required";
+  approval_required: boolean;
+  auto_submit: boolean;
+  source_handoff_item_id: string;
+  request: ChiefOfStaffActionHandoffRequestDraft;
+  reason: string;
+  required_checks: string[];
+  provenance_references: ContinuityRecallProvenanceReference[];
+};
+
+export type ChiefOfStaffActionHandoffItem = {
+  rank: number;
+  handoff_item_id: string;
+  source_kind: ChiefOfStaffActionHandoffSourceKind;
+  source_reference_id: string | null;
+  title: string;
+  recommendation_action: ChiefOfStaffActionHandoffAction;
+  priority_posture: ChiefOfStaffPriorityPosture | null;
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  rationale: string;
+  provenance_references: ContinuityRecallProvenanceReference[];
+  score: number;
+  task_draft: ChiefOfStaffActionHandoffTaskDraft;
+  approval_draft: ChiefOfStaffActionHandoffApprovalDraft;
+};
+
+export type ChiefOfStaffActionHandoffBrief = {
+  summary: string;
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  non_autonomous_guarantee: string;
+  order: string[];
+  source_order: ChiefOfStaffActionHandoffSourceKind[];
+  provenance_references: ContinuityRecallProvenanceReference[];
+};
+
+export type ChiefOfStaffExecutionPostureRecord = {
+  posture: ChiefOfStaffExecutionPosture;
+  approval_required: boolean;
+  autonomous_execution: boolean;
+  external_side_effects_allowed: boolean;
+  default_routing_decision: "approval_required";
+  required_operator_actions: string[];
+  non_autonomous_guarantee: string;
+  reason: string;
+};
+
 export type ChiefOfStaffPriorityBrief = {
   assembly_version: string;
   scope: ContinuityRecallSummary["filters"];
@@ -1595,6 +1692,11 @@ export type ChiefOfStaffPriorityBrief = {
   recommendation_outcomes: ChiefOfStaffRecommendationOutcomeSection;
   priority_learning_summary: ChiefOfStaffPriorityLearningSummary;
   pattern_drift_summary: ChiefOfStaffPatternDriftSummary;
+  action_handoff_brief: ChiefOfStaffActionHandoffBrief;
+  handoff_items: ChiefOfStaffActionHandoffItem[];
+  task_draft: ChiefOfStaffActionHandoffTaskDraft;
+  approval_draft: ChiefOfStaffActionHandoffApprovalDraft;
+  execution_posture: ChiefOfStaffExecutionPostureRecord;
   summary: ChiefOfStaffPrioritySummary;
   sources: string[];
 };

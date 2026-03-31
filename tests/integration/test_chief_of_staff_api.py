@@ -316,6 +316,40 @@ def test_chief_of_staff_priority_brief_is_deterministic_and_trust_aware(
     assert brief["recommendation_outcomes"]["summary"]["total_count"] == 0
     assert brief["priority_learning_summary"]["total_count"] == 0
     assert brief["pattern_drift_summary"]["posture"] == "insufficient_signal"
+    assert brief["action_handoff_brief"]["order"] == [
+        "score_desc",
+        "source_order_asc",
+        "source_reference_id_asc",
+    ]
+    assert brief["action_handoff_brief"]["source_order"] == [
+        "recommended_next_action",
+        "follow_through",
+        "prep_checklist",
+        "weekly_review",
+    ]
+    assert brief["handoff_items"]
+    assert brief["summary"]["handoff_item_count"] == len(brief["handoff_items"])
+    assert brief["summary"]["handoff_item_order"] == [
+        "score_desc",
+        "source_order_asc",
+        "source_reference_id_asc",
+    ]
+    assert brief["summary"]["execution_posture_order"] == ["approval_bounded_artifact_only"]
+    assert brief["task_draft"]["source_handoff_item_id"] == brief["handoff_items"][0]["handoff_item_id"]
+    assert brief["approval_draft"]["source_handoff_item_id"] == brief["handoff_items"][0]["handoff_item_id"]
+    assert brief["task_draft"]["approval_required"] is True
+    assert brief["task_draft"]["auto_execute"] is False
+    assert brief["approval_draft"]["decision"] == "approval_required"
+    assert brief["approval_draft"]["approval_required"] is True
+    assert brief["approval_draft"]["auto_submit"] is False
+    assert brief["execution_posture"]["posture"] == "approval_bounded_artifact_only"
+    assert brief["execution_posture"]["approval_required"] is True
+    assert brief["execution_posture"]["autonomous_execution"] is False
+    assert brief["execution_posture"]["external_side_effects_allowed"] is False
+    assert brief["execution_posture"]["default_routing_decision"] == "approval_required"
+    assert "No task, approval, connector send, or external side effect is executed" in brief[
+        "execution_posture"
+    ]["non_autonomous_guarantee"]
 
 
 def test_chief_of_staff_recommendation_outcome_capture_is_auditable_and_updates_learning(
