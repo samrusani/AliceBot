@@ -1,98 +1,95 @@
 # BUILD_REPORT.md
 
 ## sprint objective
-Implement Phase 7 Sprint 28 (P7-S28): deterministic weekly review and recommendation outcome-learning seams for chief-of-staff, including auditable outcome capture (`accept`, `defer`, `ignore`, `rewrite`), deterministic learning rollups, visible priority-shift rationale, and `/chief-of-staff` weekly review + outcome controls.
+Implement Phase 8 Sprint 29 (P8-S29): deterministic, provenance-backed, approval-bounded chief-of-staff action handoff artifacts and `/chief-of-staff` handoff visibility, without introducing autonomous execution.
 
 ## completed work
-- Extended chief-of-staff contracts and response shape with P7-S28 fields:
-  - `weekly_review_brief`
-  - `recommendation_outcomes`
-  - `priority_learning_summary`
-  - `pattern_drift_summary`
-- Added deterministic recommendation outcome capture seam:
-  - new endpoint: `POST /v0/chief-of-staff/recommendation-outcomes`
-  - new request/response contracts for outcome capture and returned learning summaries
-  - auditable persistence via continuity capture + continuity note object records (no autonomous external side effects)
-- Added deterministic weekly review synthesis in `compile_chief_of_staff_priority_brief`:
-  - consumes continuity weekly review rollup
-  - computes explicit close/defer/escalate guidance with deterministic ordering and rationale
-- Added deterministic outcome-learning rollups:
-  - outcome counts by type (`accept`, `defer`, `ignore`, `rewrite`)
-  - acceptance and override rates
-  - defer/ignore hotspots (stable count/key ordering)
-  - explicit priority-shift explanation
-  - explicit pattern drift posture (`improving`, `stable`, `drifting`, `insufficient_signal`) with supporting signals
-- Added chief-of-staff weekly review UI panel and controls:
-  - new `ChiefOfStaffWeeklyReviewPanel` component
-  - visible weekly rollup, guidance, outcomes, learning summary, drift summary
-  - outcome-capture controls wired to the new API seam
-- Extended web API client/types for new chief-of-staff fields and outcome capture helper.
-- Updated and expanded unit/integration/web tests for outcome capture, weekly review rendering, and learning rollups.
-- Updated sprint-scoped docs (`README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`) to reflect active P7-S28 scope while preserving Phase 6 completion truth.
+- Added P8-S29 chief-of-staff action-handoff contract fields to the API payload:
+  - `action_handoff_brief`
+  - `handoff_items`
+  - `task_draft`
+  - `approval_draft`
+  - `execution_posture`
+- Added deterministic handoff synthesis in `compile_chief_of_staff_priority_brief`:
+  - selects actionable candidates from shipped priority/follow-through/preparation/weekly-review outputs
+  - normalizes action kinds and source kinds to stable enums
+  - produces stable ordering for handoff items and draft content
+- Added deterministic mapping seams for governed workflows:
+  - task-ready draft structure (`task_draft`)
+  - approval-ready draft structure (`approval_draft`)
+  - explicit rationale/provenance aggregation
+- Added explicit approval-bounded posture metadata:
+  - non-autonomous guarantees
+  - required approval indicator and rationale
+  - deterministic posture ordering metadata
+- Extended priority summary metadata with deterministic handoff/execution ordering fields.
+- Added `/chief-of-staff` action handoff UI panel and page wiring for visible rationale/provenance and draft handoff outputs.
+- Updated chief-of-staff web/API type surfaces and tests to include new handoff artifacts.
+- Updated sprint-scoped docs (`README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`) for active P8-S29 scope while preserving "Phase 7 complete" truth.
 
-## exact weekly-review/outcome contract delta
+## exact action-handoff contract delta
 - `apps/api/src/alicebot_api/contracts.py`
-  - Added literals:
-    - `ChiefOfStaffRecommendationOutcome = Literal["accept", "defer", "ignore", "rewrite"]`
-    - `ChiefOfStaffWeeklyReviewGuidanceAction = Literal["close", "defer", "escalate"]`
-    - `ChiefOfStaffPatternDriftPosture = Literal["improving", "stable", "drifting", "insufficient_signal"]`
-  - Added constants/ordering sets:
-    - `CHIEF_OF_STAFF_RECOMMENDATION_OUTCOMES`
-    - `CHIEF_OF_STAFF_WEEKLY_REVIEW_GUIDANCE_ACTIONS`
-    - `CHIEF_OF_STAFF_RECOMMENDATION_OUTCOME_ORDER`
-    - `CHIEF_OF_STAFF_OUTCOME_HOTSPOT_ORDER`
-  - Added request/response contracts:
-    - `ChiefOfStaffRecommendationOutcomeCaptureInput`
-    - `ChiefOfStaffRecommendationOutcomeCaptureResponse`
-  - Added new chief-of-staff records:
-    - `ChiefOfStaffWeeklyReviewBriefRecord`
-    - `ChiefOfStaffRecommendationOutcomeSection`
-    - `ChiefOfStaffPriorityLearningSummaryRecord`
-    - `ChiefOfStaffPatternDriftSummaryRecord`
-  - Extended `ChiefOfStaffPriorityBriefRecord` with:
-    - `weekly_review_brief`
-    - `recommendation_outcomes`
-    - `priority_learning_summary`
-    - `pattern_drift_summary`
+  - Added literals/constants:
+    - `ChiefOfStaffActionHandoffSourceKind`
+    - `ChiefOfStaffActionHandoffAction`
+    - `ChiefOfStaffExecutionPosture`
+    - `CHIEF_OF_STAFF_ACTION_HANDOFF_SOURCE_ORDER`
+    - `CHIEF_OF_STAFF_ACTION_HANDOFF_ITEM_ORDER`
+    - `CHIEF_OF_STAFF_ACTION_HANDOFF_ACTIONS`
+    - `CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER`
+  - Added typed records:
+    - `ChiefOfStaffActionHandoffRequestTarget`
+    - `ChiefOfStaffActionHandoffRequestDraft`
+    - `ChiefOfStaffActionHandoffTaskDraftRecord`
+    - `ChiefOfStaffActionHandoffApprovalDraftRecord`
+    - `ChiefOfStaffActionHandoffItem`
+    - `ChiefOfStaffActionHandoffBriefRecord`
+    - `ChiefOfStaffExecutionPostureRecord`
+  - Extended `ChiefOfStaffPrioritySummary`:
+    - `handoff_item_count`
+    - `handoff_item_order`
+    - `execution_posture_order`
+  - Extended `ChiefOfStaffPriorityBriefRecord`:
+    - `action_handoff_brief`
+    - `handoff_items`
+    - `task_draft`
+    - `approval_draft`
+    - `execution_posture`
 
-## exact deterministic outcome-capture and learning-summary behavior
-- Outcome capture (`POST /v0/chief-of-staff/recommendation-outcomes`):
-  - validates deterministic outcome/action enums
-  - enforces rewrite-title rule (`rewrite` requires `rewritten_title`; other outcomes reject it)
-  - writes an auditable continuity capture event and continuity note object (`kind=chief_of_staff_recommendation_outcome`)
-  - returns captured outcome plus updated recommendation outcomes + learning summaries for the scoped brief
-- Recommendation outcome aggregation:
-  - parsed only from continuity note records tagged with `kind=chief_of_staff_recommendation_outcome`
-  - deterministic sort order: `created_at_desc`, `id_desc`
-  - deterministic summary counts for all four outcomes
-- Priority learning summary:
-  - deterministic totals/counts
-  - deterministic `acceptance_rate` and `override_rate` (rounded)
-  - deterministic defer/ignore hotspots ordered by `count_desc`, then `key_asc`
-  - explicit `priority_shift_explanation` derived from outcome mix
-- Pattern drift summary:
-  - deterministic posture assignment (`improving`/`stable`/`drifting`/`insufficient_signal`)
-  - explicit reason + stable supporting signal lines
-- Weekly review guidance:
-  - deterministic close/defer/escalate guidance list with stable ranking and signal counts
-  - explicit rationale text per guidance item
+## exact deterministic mapping and execution-posture behavior
+- Deterministic candidate synthesis:
+  - actionable recommendations are normalized into `_ActionHandoffCandidate` structures.
+  - unsupported/unknown action labels are normalized through `_normalize_handoff_action`.
+- Deterministic ordering:
+  - identifiers normalized by `_normalize_identifier_part`.
+  - final ranking uses `_action_handoff_sort_key` and declared order constants.
+- Deterministic draft mapping:
+  - request target mapping via `_build_action_handoff_request_target`.
+  - request draft mapping via `_build_action_handoff_request_draft`.
+  - task draft mapping via `_build_action_handoff_task_draft`.
+  - approval draft mapping via `_build_action_handoff_approval_draft`.
+- Deterministic provenance and posture:
+  - provenance references aggregated via `_aggregate_provenance_references`.
+  - approval-bounded posture built via `_build_execution_posture`.
+  - final handoff artifact assembly via `_build_action_handoff_artifacts`.
+- Non-autonomous guarantee:
+  - payloads remain preparation artifacts only; no direct connector/tool side effects are triggered by handoff synthesis.
 
 ## incomplete work
-- None within P7-S28 scope.
+- None within approved P8-S29 scope.
 
 ## files changed
 - `apps/api/src/alicebot_api/chief_of_staff.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/main.py`
 - `apps/web/lib/api.ts`
-- `apps/web/lib/api.test.ts`
 - `apps/web/app/chief-of-staff/page.tsx`
 - `apps/web/app/chief-of-staff/page.test.tsx`
+- `apps/web/components/chief-of-staff-action-handoff-panel.tsx` (new)
+- `apps/web/components/chief-of-staff-action-handoff-panel.test.tsx` (new)
 - `apps/web/components/chief-of-staff-priority-panel.test.tsx`
 - `apps/web/components/chief-of-staff-follow-through-panel.test.tsx`
 - `apps/web/components/chief-of-staff-preparation-panel.test.tsx`
-- `apps/web/components/chief-of-staff-weekly-review-panel.tsx` (new)
-- `apps/web/components/chief-of-staff-weekly-review-panel.test.tsx` (new)
+- `apps/web/components/chief-of-staff-weekly-review-panel.test.tsx`
 - `tests/unit/test_chief_of_staff.py`
 - `tests/integration/test_chief_of_staff_api.py`
 - `README.md`
@@ -104,16 +101,21 @@ Implement Phase 7 Sprint 28 (P7-S28): deterministic weekly review and recommenda
 ## tests run
 - `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py tests/integration/test_chief_of_staff_api.py -q`
   - PASS (`7 passed`)
-- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-priority-panel.test.tsx components/chief-of-staff-follow-through-panel.test.tsx components/chief-of-staff-preparation-panel.test.tsx components/chief-of-staff-weekly-review-panel.test.tsx lib/api.test.ts`
-  - PASS (`6 files, 46 tests`)
+- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-weekly-review-panel.test.tsx components/chief-of-staff-action-handoff-panel.test.tsx lib/api.test.ts`
+  - PASS (`4 files, 42 tests`)
+- `./.venv/bin/python scripts/check_control_doc_truth.py`
+  - PASS
 - `python3 scripts/run_phase4_validation_matrix.py`
   - PASS (`Phase 4 validation matrix result: PASS`)
 
 ## blockers/issues
 - No unresolved implementation blockers.
-- Intermediate validation runs initially failed due control-doc marker mismatch and sandboxed DB access; resolved by doc synchronization and rerun with local DB access.
+- `run_phase4_validation_matrix.py` requires local Postgres access; sandboxed run failed with socket permission error and was rerun with elevated local access, then passed.
+
+## explicit deferred Phase 8 scope beyond P8-S29
+- autonomous execution or external side effects from handoff artifacts
+- connector/channel/auth/orchestration expansion
+- redesign of shipped P7 ranking/follow-through/preparation/learning semantics
 
 ## recommended next step
-Proceed to merge review for P7-S28 and begin Phase 8 planning from the shipped P7-S25/P7-S26/P7-S27/P7-S28 baseline without reopening prior semantics.
-
-Phase 7 scope is complete after P7-S28.
+Proceed to the next Phase 8 sprint seam on top of this shipped action-handoff artifact baseline, keeping execution approval-gated and non-autonomous.

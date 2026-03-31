@@ -11,7 +11,11 @@ from alicebot_api.continuity_open_loops import (
 from alicebot_api.continuity_recall import query_continuity_recall
 from alicebot_api.continuity_resumption import compile_continuity_resumption_brief
 from alicebot_api.contracts import (
+    CHIEF_OF_STAFF_ACTION_HANDOFF_ACTIONS,
+    CHIEF_OF_STAFF_ACTION_HANDOFF_ITEM_ORDER,
+    CHIEF_OF_STAFF_ACTION_HANDOFF_SOURCE_ORDER,
     CHIEF_OF_STAFF_ESCALATION_POSTURE_ORDER,
+    CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER,
     CHIEF_OF_STAFF_FOLLOW_THROUGH_ITEM_ORDER,
     CHIEF_OF_STAFF_FOLLOW_THROUGH_POSTURE_ORDER,
     CHIEF_OF_STAFF_FOLLOW_THROUGH_RECOMMENDATION_ACTIONS,
@@ -34,9 +38,18 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT,
+    ChiefOfStaffActionHandoffAction,
+    ChiefOfStaffActionHandoffApprovalDraftRecord,
+    ChiefOfStaffActionHandoffBriefRecord,
+    ChiefOfStaffActionHandoffItem,
+    ChiefOfStaffActionHandoffRequestDraft,
+    ChiefOfStaffActionHandoffRequestTarget,
+    ChiefOfStaffActionHandoffSourceKind,
+    ChiefOfStaffActionHandoffTaskDraftRecord,
     ChiefOfStaffDraftFollowUpRecord,
     ChiefOfStaffEscalationPosture,
     ChiefOfStaffEscalationPostureRecord,
+    ChiefOfStaffExecutionPostureRecord,
     ChiefOfStaffFollowThroughItem,
     ChiefOfStaffFollowThroughPosture,
     ChiefOfStaffFollowThroughRecommendationAction,
@@ -95,6 +108,19 @@ class _TrustConfidenceCap:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class _ActionHandoffCandidate:
+    source_kind: ChiefOfStaffActionHandoffSourceKind
+    source_reference_id: str | None
+    title: str
+    recommendation_action: ChiefOfStaffActionHandoffAction
+    priority_posture: ChiefOfStaffPriorityPosture | None
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    rationale: str
+    provenance_references: list[ContinuityRecallProvenanceReference]
+    score: float
+
+
 _ACTIONABLE_OBJECT_TYPES = {"Commitment", "WaitingFor", "Blocker", "NextAction"}
 _CONFIDENCE_ORDER: dict[ChiefOfStaffRecommendationConfidencePosture, int] = {
     "low": 0,
@@ -134,6 +160,22 @@ _RESUMPTION_SUPERVISION_LIMIT = 3
 _OUTCOME_HISTORY_LIMIT = MAX_CONTINUITY_RECALL_LIMIT
 _OUTCOME_HOTSPOT_LIMIT = 3
 _OUTCOME_BODY_KIND = "chief_of_staff_recommendation_outcome"
+_ACTION_HANDOFF_LIMIT = 4
+_ACTION_HANDOFF_SOURCE_WEIGHT: dict[ChiefOfStaffActionHandoffSourceKind, float] = {
+    "recommended_next_action": 1000.0,
+    "follow_through": 900.0,
+    "prep_checklist": 700.0,
+    "weekly_review": 500.0,
+}
+_ACTION_HANDOFF_SOURCE_RANK: dict[ChiefOfStaffActionHandoffSourceKind, int] = {
+    source_kind: index for index, source_kind in enumerate(CHIEF_OF_STAFF_ACTION_HANDOFF_SOURCE_ORDER)
+}
+_ACTION_HANDOFF_ACTION_SCOPE_MAP: dict[ChiefOfStaffActionHandoffSourceKind, str] = {
+    "recommended_next_action": "chief_of_staff_priority",
+    "follow_through": "chief_of_staff_follow_through",
+    "prep_checklist": "chief_of_staff_preparation",
+    "weekly_review": "chief_of_staff_weekly_review",
+}
 
 
 def _is_offset_aware(value: datetime) -> bool:
@@ -1350,6 +1392,383 @@ def _build_weekly_review_brief(
     }
 
 
+def _normalize_handoff_action(
+    *,
+    source_kind: ChiefOfStaffActionHandoffSourceKind,
+    action: str,
+) -> ChiefOfStaffActionHandoffAction:
+    if source_kind == "weekly_review":
+        if action == "close":
+            return "weekly_review_close"
+        if action == "defer":
+            return "weekly_review_defer"
+        if action == "escalate":
+            return "weekly_review_escalate"
+        return "review_scope"
+
+    if action in CHIEF_OF_STAFF_ACTION_HANDOFF_ACTIONS:
+        return action  # type: ignore[return-value]
+    return "review_scope"
+
+
+def _normalize_identifier_part(value: str) -> str:
+    normalized = "".join(ch.lower() if ch.isalnum() else "-" for ch in value.strip())
+    while "--" in normalized:
+        normalized = normalized.replace("--", "-")
+    normalized = normalized.strip("-")
+    return normalized or "none"
+
+
+def _action_handoff_sort_key(candidate: _ActionHandoffCandidate) -> tuple[float, int, str, str]:
+    return (
+        -candidate.score,
+        _ACTION_HANDOFF_SOURCE_RANK[candidate.source_kind],
+        candidate.source_reference_id or "",
+        candidate.title,
+    )
+
+
+def _build_action_handoff_request_target(
+    *,
+    scope: dict[str, object],
+) -> ChiefOfStaffActionHandoffRequestTarget:
+    thread_id = scope.get("thread_id")
+    task_id = scope.get("task_id")
+    project = scope.get("project")
+    person = scope.get("person")
+    return {
+        "thread_id": thread_id if isinstance(thread_id, str) else None,
+        "task_id": task_id if isinstance(task_id, str) else None,
+        "project": project if isinstance(project, str) else None,
+        "person": person if isinstance(person, str) else None,
+    }
+
+
+def _build_action_handoff_request_draft(
+    *,
+    candidate: _ActionHandoffCandidate,
+    handoff_item_id: str,
+) -> ChiefOfStaffActionHandoffRequestDraft:
+    domain_hint = "follow_through" if candidate.source_kind == "follow_through" else "planning"
+    if candidate.source_kind == "weekly_review":
+        domain_hint = "weekly_review"
+
+    return {
+        "action": candidate.recommendation_action,
+        "scope": _ACTION_HANDOFF_ACTION_SCOPE_MAP[candidate.source_kind],
+        "domain_hint": domain_hint,
+        "risk_hint": "governed_handoff",
+        "attributes": {
+            "handoff_item_id": handoff_item_id,
+            "source_kind": candidate.source_kind,
+            "source_reference_id": candidate.source_reference_id,
+            "confidence_posture": candidate.confidence_posture,
+            "priority_posture": candidate.priority_posture,
+            "score": round(candidate.score, 6),
+            "rationale": candidate.rationale,
+        },
+    }
+
+
+def _build_action_handoff_task_draft(
+    *,
+    candidate: _ActionHandoffCandidate,
+    handoff_item_id: str,
+    target: ChiefOfStaffActionHandoffRequestTarget,
+    request_draft: ChiefOfStaffActionHandoffRequestDraft,
+) -> ChiefOfStaffActionHandoffTaskDraftRecord:
+    return {
+        "status": "draft",
+        "mode": "governed_request_draft",
+        "approval_required": True,
+        "auto_execute": False,
+        "source_handoff_item_id": handoff_item_id,
+        "title": candidate.title,
+        "summary": (
+            "Draft-only governed request assembled from chief-of-staff handoff artifacts; "
+            "requires explicit approval before any execution."
+        ),
+        "target": target,
+        "request": request_draft,
+        "rationale": candidate.rationale,
+        "provenance_references": candidate.provenance_references,
+    }
+
+
+def _build_action_handoff_approval_draft(
+    *,
+    candidate: _ActionHandoffCandidate,
+    handoff_item_id: str,
+    request_draft: ChiefOfStaffActionHandoffRequestDraft,
+) -> ChiefOfStaffActionHandoffApprovalDraftRecord:
+    return {
+        "status": "draft_only",
+        "mode": "approval_request_draft",
+        "decision": "approval_required",
+        "approval_required": True,
+        "auto_submit": False,
+        "source_handoff_item_id": handoff_item_id,
+        "request": request_draft,
+        "reason": (
+            "Execution remains approval-bounded. This approval draft is artifact-only and must be "
+            "explicitly submitted and resolved before any side effect."
+        ),
+        "required_checks": [
+            "operator_review_handoff_artifact",
+            "submit_governed_approval_request",
+            "explicit_approval_resolution",
+        ],
+        "provenance_references": candidate.provenance_references,
+    }
+
+
+def _aggregate_provenance_references(
+    handoff_items: list[ChiefOfStaffActionHandoffItem],
+) -> list[ContinuityRecallProvenanceReference]:
+    unique_keys: set[tuple[str, str]] = set()
+    for item in handoff_items:
+        for reference in item["provenance_references"]:
+            unique_keys.add((reference["source_kind"], reference["source_id"]))
+    return [
+        {
+            "source_kind": source_kind,
+            "source_id": source_id,
+        }
+        for source_kind, source_id in sorted(unique_keys)
+    ]
+
+
+def _build_execution_posture() -> ChiefOfStaffExecutionPostureRecord:
+    posture = "approval_bounded_artifact_only"
+    if posture not in CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER:
+        posture = CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER[0]  # type: ignore[index]
+
+    non_autonomous_guarantee = (
+        "No task, approval, connector send, or external side effect is executed by this endpoint."
+    )
+    return {
+        "posture": posture,  # type: ignore[typeddict-item]
+        "approval_required": True,
+        "autonomous_execution": False,
+        "external_side_effects_allowed": False,
+        "default_routing_decision": "approval_required",
+        "required_operator_actions": [
+            "review_handoff_items",
+            "submit_task_or_approval_request",
+            "resolve_approval_before_execution",
+        ],
+        "non_autonomous_guarantee": non_autonomous_guarantee,
+        "reason": "Chief-of-staff handoff artifacts are deterministic execution-prep only in P8-S29.",
+    }
+
+
+def _build_action_handoff_artifacts(
+    *,
+    recommended_next_action: ChiefOfStaffRecommendedNextAction,
+    all_follow_through_items: list[ChiefOfStaffFollowThroughItem],
+    prep_checklist: ChiefOfStaffPrepChecklistRecord,
+    weekly_review_brief: ChiefOfStaffWeeklyReviewBriefRecord,
+    trust_cap: _TrustConfidenceCap,
+    scope: dict[str, object],
+) -> tuple[
+    ChiefOfStaffActionHandoffBriefRecord,
+    list[ChiefOfStaffActionHandoffItem],
+    ChiefOfStaffActionHandoffTaskDraftRecord,
+    ChiefOfStaffActionHandoffApprovalDraftRecord,
+    ChiefOfStaffExecutionPostureRecord,
+]:
+    candidates: list[_ActionHandoffCandidate] = []
+
+    rec_priority = recommended_next_action["priority_posture"]
+    rec_priority_weight = 0.0 if rec_priority is None else _POSTURE_WEIGHT[rec_priority]
+    candidates.append(
+        _ActionHandoffCandidate(
+            source_kind="recommended_next_action",
+            source_reference_id=recommended_next_action["target_priority_id"],
+            title=recommended_next_action["title"],
+            recommendation_action=_normalize_handoff_action(
+                source_kind="recommended_next_action",
+                action=recommended_next_action["action_type"],
+            ),
+            priority_posture=rec_priority,
+            confidence_posture=recommended_next_action["confidence_posture"],
+            rationale=recommended_next_action["reason"],
+            provenance_references=recommended_next_action["provenance_references"],
+            score=round(
+                _ACTION_HANDOFF_SOURCE_WEIGHT["recommended_next_action"]
+                + rec_priority_weight
+                + (_CONFIDENCE_ORDER[recommended_next_action["confidence_posture"]] * 25.0),
+                6,
+            ),
+        )
+    )
+
+    if all_follow_through_items:
+        top_follow_through = all_follow_through_items[0]
+        follow_through_action = _normalize_handoff_action(
+            source_kind="follow_through",
+            action=top_follow_through["recommendation_action"],
+        )
+        candidates.append(
+            _ActionHandoffCandidate(
+                source_kind="follow_through",
+                source_reference_id=top_follow_through["id"],
+                title=f"Follow-through: {top_follow_through['title']}",
+                recommendation_action=follow_through_action,
+                priority_posture=top_follow_through["current_priority_posture"],
+                confidence_posture=trust_cap.posture,
+                rationale=top_follow_through["reason"],
+                provenance_references=top_follow_through["provenance_references"],
+                score=round(
+                    _ACTION_HANDOFF_SOURCE_WEIGHT["follow_through"]
+                    + (_FOLLOW_THROUGH_ACTION_WEIGHT[top_follow_through["recommendation_action"]] * 30.0)
+                    + top_follow_through["age_hours"],
+                    6,
+                ),
+            )
+        )
+
+    if prep_checklist["items"]:
+        top_prep = prep_checklist["items"][0]
+        candidates.append(
+            _ActionHandoffCandidate(
+                source_kind="prep_checklist",
+                source_reference_id=top_prep["id"],
+                title=f"Preparation: {top_prep['title']}",
+                recommendation_action="review_scope",
+                priority_posture=None,
+                confidence_posture=top_prep["confidence_posture"],
+                rationale=top_prep["reason"],
+                provenance_references=top_prep["provenance_references"],
+                score=round(
+                    _ACTION_HANDOFF_SOURCE_WEIGHT["prep_checklist"]
+                    + max(0, _PREP_CHECKLIST_LIMIT - top_prep["rank"]),
+                    6,
+                ),
+            )
+        )
+
+    if weekly_review_brief["guidance"]:
+        top_guidance = weekly_review_brief["guidance"][0]
+        candidates.append(
+            _ActionHandoffCandidate(
+                source_kind="weekly_review",
+                source_reference_id=f"weekly-{top_guidance['action']}",
+                title=f"Weekly review: {top_guidance['action']}",
+                recommendation_action=_normalize_handoff_action(
+                    source_kind="weekly_review",
+                    action=top_guidance["action"],
+                ),
+                priority_posture=None,
+                confidence_posture=trust_cap.posture,
+                rationale=top_guidance["rationale"],
+                provenance_references=_synthetic_provenance_references(
+                    source_kind="continuity_weekly_review",
+                    source_id=f"guidance-{top_guidance['action']}",
+                ),
+                score=round(
+                    _ACTION_HANDOFF_SOURCE_WEIGHT["weekly_review"]
+                    + (float(top_guidance["signal_count"]) * 20.0),
+                    6,
+                ),
+            )
+        )
+
+    sorted_candidates = sorted(candidates, key=_action_handoff_sort_key)
+    selected_candidates = sorted_candidates[:_ACTION_HANDOFF_LIMIT]
+
+    target = _build_action_handoff_request_target(scope=scope)
+    handoff_items: list[ChiefOfStaffActionHandoffItem] = []
+    for rank, candidate in enumerate(selected_candidates, start=1):
+        source_ref = _normalize_identifier_part(candidate.source_reference_id or "none")
+        handoff_item_id = f"handoff-{rank}-{candidate.source_kind}-{source_ref}"
+        request_draft = _build_action_handoff_request_draft(
+            candidate=candidate,
+            handoff_item_id=handoff_item_id,
+        )
+        task_draft = _build_action_handoff_task_draft(
+            candidate=candidate,
+            handoff_item_id=handoff_item_id,
+            target=target,
+            request_draft=request_draft,
+        )
+        approval_draft = _build_action_handoff_approval_draft(
+            candidate=candidate,
+            handoff_item_id=handoff_item_id,
+            request_draft=request_draft,
+        )
+        handoff_items.append(
+            {
+                "rank": rank,
+                "handoff_item_id": handoff_item_id,
+                "source_kind": candidate.source_kind,
+                "source_reference_id": candidate.source_reference_id,
+                "title": candidate.title,
+                "recommendation_action": candidate.recommendation_action,
+                "priority_posture": candidate.priority_posture,
+                "confidence_posture": candidate.confidence_posture,
+                "rationale": candidate.rationale,
+                "provenance_references": candidate.provenance_references,
+                "score": round(candidate.score, 6),
+                "task_draft": task_draft,
+                "approval_draft": approval_draft,
+            }
+        )
+
+    execution_posture = _build_execution_posture()
+    non_autonomous_guarantee = execution_posture["non_autonomous_guarantee"]
+    handoff_provenance = _aggregate_provenance_references(handoff_items=handoff_items)
+    active_sources = ", ".join(item["source_kind"] for item in handoff_items)
+    summary = (
+        f"Prepared {len(handoff_items)} deterministic handoff items from {active_sources} signals. "
+        "All task and approval drafts remain artifact-only and approval-bounded."
+    )
+    action_handoff_brief: ChiefOfStaffActionHandoffBriefRecord = {
+        "summary": summary,
+        "confidence_posture": trust_cap.posture,
+        "non_autonomous_guarantee": non_autonomous_guarantee,
+        "order": list(CHIEF_OF_STAFF_ACTION_HANDOFF_ITEM_ORDER),
+        "source_order": list(CHIEF_OF_STAFF_ACTION_HANDOFF_SOURCE_ORDER),
+        "provenance_references": handoff_provenance,
+    }
+
+    if handoff_items:
+        task_draft = handoff_items[0]["task_draft"]
+        approval_draft = handoff_items[0]["approval_draft"]
+    else:
+        fallback_candidate = _ActionHandoffCandidate(
+            source_kind="recommended_next_action",
+            source_reference_id=None,
+            title="Capture one concrete next action",
+            recommendation_action="capture_new_priority",
+            priority_posture=None,
+            confidence_posture=trust_cap.posture,
+            rationale="No actionable handoff candidates were available in the scoped data.",
+            provenance_references=_synthetic_provenance_references(
+                source_kind="chief_of_staff_synthesis",
+                source_id="action_handoff_empty_fallback",
+            ),
+            score=0.0,
+        )
+        fallback_request = _build_action_handoff_request_draft(
+            candidate=fallback_candidate,
+            handoff_item_id="handoff-fallback",
+        )
+        task_draft = _build_action_handoff_task_draft(
+            candidate=fallback_candidate,
+            handoff_item_id="handoff-fallback",
+            target=target,
+            request_draft=fallback_request,
+        )
+        approval_draft = _build_action_handoff_approval_draft(
+            candidate=fallback_candidate,
+            handoff_item_id="handoff-fallback",
+            request_draft=fallback_request,
+        )
+
+    return action_handoff_brief, handoff_items, task_draft, approval_draft, execution_posture
+
+
 def capture_chief_of_staff_recommendation_outcome(
     store: ContinuityStore,
     *,
@@ -1808,6 +2227,20 @@ def compile_chief_of_staff_priority_brief(
     pattern_drift_summary = _build_pattern_drift_summary(
         learning_summary=priority_learning_summary,
     )
+    (
+        action_handoff_brief,
+        handoff_items,
+        task_draft,
+        approval_draft,
+        execution_posture,
+    ) = _build_action_handoff_artifacts(
+        recommended_next_action=recommended_next_action,
+        all_follow_through_items=all_follow_through_items,
+        prep_checklist=prep_checklist,
+        weekly_review_brief=weekly_review_brief,
+        trust_cap=trust_cap,
+        scope=recall_payload["summary"]["filters"],
+    )
 
     summary: ChiefOfStaffPrioritySummary = {
         "limit": limit,
@@ -1825,6 +2258,9 @@ def compile_chief_of_staff_priority_brief(
         "trust_confidence_reason": trust_cap.reason,
         "quality_gate_status": quality_gate_status,
         "retrieval_status": retrieval_status,
+        "handoff_item_count": len(handoff_items),
+        "handoff_item_order": list(CHIEF_OF_STAFF_ACTION_HANDOFF_ITEM_ORDER),
+        "execution_posture_order": list(CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER),
     }
 
     brief: ChiefOfStaffPriorityBriefRecord = {
@@ -1846,6 +2282,11 @@ def compile_chief_of_staff_priority_brief(
         "recommendation_outcomes": recommendation_outcomes,
         "priority_learning_summary": priority_learning_summary,
         "pattern_drift_summary": pattern_drift_summary,
+        "action_handoff_brief": action_handoff_brief,
+        "handoff_items": handoff_items,
+        "task_draft": task_draft,
+        "approval_draft": approval_draft,
+        "execution_posture": execution_posture,
         "summary": summary,
         "sources": [
             "continuity_recall",
@@ -1853,6 +2294,7 @@ def compile_chief_of_staff_priority_brief(
             "continuity_weekly_review",
             "continuity_resumption_brief",
             "chief_of_staff_recommendation_outcomes",
+            "chief_of_staff_action_handoff",
             "memory_trust_dashboard",
             "memories",
             "memory_review_labels",
