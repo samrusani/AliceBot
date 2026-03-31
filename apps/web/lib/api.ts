@@ -1297,6 +1297,19 @@ export type ChiefOfStaffFollowThroughRecommendationAction =
   | "close_loop_candidate";
 
 export type ChiefOfStaffEscalationPosture = "watch" | "elevated" | "critical";
+export type ChiefOfStaffResumptionRecommendationAction =
+  | "execute_next_action"
+  | "progress_commitment"
+  | "follow_up_waiting_for"
+  | "unblock_blocker"
+  | "refresh_stale_item"
+  | "review_and_defer"
+  | "capture_new_priority"
+  | "nudge"
+  | "defer"
+  | "escalate"
+  | "close_loop_candidate"
+  | "review_scope";
 
 export type ChiefOfStaffPriorityRankingInputs = {
   posture: ChiefOfStaffPriorityPosture;
@@ -1424,6 +1437,75 @@ export type ChiefOfStaffPrioritySummary = {
   retrieval_status: RetrievalEvaluationSummary["status"];
 };
 
+export type ChiefOfStaffPreparationArtifactItem = {
+  rank: number;
+  id: string;
+  capture_event_id: string;
+  object_type: ContinuityObjectType;
+  status: string;
+  title: string;
+  reason: string;
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  provenance_references: ContinuityRecallProvenanceReference[];
+  created_at: string;
+};
+
+export type ChiefOfStaffPreparationSectionSummary = {
+  limit: number;
+  returned_count: number;
+  total_count: number;
+  order: string[];
+};
+
+export type ChiefOfStaffPreparationBrief = {
+  scope: ContinuityRecallSummary["filters"];
+  context_items: ChiefOfStaffPreparationArtifactItem[];
+  last_decision: ChiefOfStaffPreparationArtifactItem | null;
+  open_loops: ChiefOfStaffPreparationArtifactItem[];
+  next_action: ChiefOfStaffPreparationArtifactItem | null;
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  confidence_reason: string;
+  summary: ChiefOfStaffPreparationSectionSummary;
+};
+
+export type ChiefOfStaffWhatChangedSummary = {
+  items: ChiefOfStaffPreparationArtifactItem[];
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  confidence_reason: string;
+  summary: ChiefOfStaffPreparationSectionSummary;
+};
+
+export type ChiefOfStaffPrepChecklist = {
+  items: ChiefOfStaffPreparationArtifactItem[];
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  confidence_reason: string;
+  summary: ChiefOfStaffPreparationSectionSummary;
+};
+
+export type ChiefOfStaffSuggestedTalkingPoints = {
+  items: ChiefOfStaffPreparationArtifactItem[];
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  confidence_reason: string;
+  summary: ChiefOfStaffPreparationSectionSummary;
+};
+
+export type ChiefOfStaffResumptionSupervisionRecommendation = {
+  rank: number;
+  action: ChiefOfStaffResumptionRecommendationAction;
+  title: string;
+  reason: string;
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  target_priority_id: string | null;
+  provenance_references: ContinuityRecallProvenanceReference[];
+};
+
+export type ChiefOfStaffResumptionSupervision = {
+  recommendations: ChiefOfStaffResumptionSupervisionRecommendation[];
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  confidence_reason: string;
+  summary: ChiefOfStaffPreparationSectionSummary;
+};
+
 export type ChiefOfStaffPriorityBrief = {
   assembly_version: string;
   scope: ContinuityRecallSummary["filters"];
@@ -1434,6 +1516,11 @@ export type ChiefOfStaffPriorityBrief = {
   escalation_posture: ChiefOfStaffEscalationPostureRecord;
   draft_follow_up: ChiefOfStaffDraftFollowUp;
   recommended_next_action: ChiefOfStaffRecommendedNextAction;
+  preparation_brief: ChiefOfStaffPreparationBrief;
+  what_changed_summary: ChiefOfStaffWhatChangedSummary;
+  prep_checklist: ChiefOfStaffPrepChecklist;
+  suggested_talking_points: ChiefOfStaffSuggestedTalkingPoints;
+  resumption_supervision: ChiefOfStaffResumptionSupervision;
   summary: ChiefOfStaffPrioritySummary;
   sources: string[];
 };
