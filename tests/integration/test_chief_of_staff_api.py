@@ -183,7 +183,7 @@ def test_chief_of_staff_priority_brief_is_deterministic_and_trust_aware(
     set_continuity_timestamps(
         migrated_database_urls["admin"],
         continuity_object_id=commitment_object["id"],
-        created_at=datetime(2026, 3, 31, 10, 0, tzinfo=UTC),
+        created_at=datetime(2026, 3, 28, 10, 0, tzinfo=UTC),
     )
     set_continuity_timestamps(
         migrated_database_urls["admin"],
@@ -193,12 +193,12 @@ def test_chief_of_staff_priority_brief_is_deterministic_and_trust_aware(
     set_continuity_timestamps(
         migrated_database_urls["admin"],
         continuity_object_id=blocker_object["id"],
-        created_at=datetime(2026, 3, 31, 9, 0, tzinfo=UTC),
+        created_at=datetime(2026, 3, 23, 9, 0, tzinfo=UTC),
     )
     set_continuity_timestamps(
         migrated_database_urls["admin"],
         continuity_object_id=stale_object["id"],
-        created_at=datetime(2026, 3, 31, 8, 30, tzinfo=UTC),
+        created_at=datetime(2026, 3, 27, 8, 30, tzinfo=UTC),
     )
 
     monkeypatch.setattr(
@@ -223,6 +223,17 @@ def test_chief_of_staff_priority_brief_is_deterministic_and_trust_aware(
     brief = payload_one["brief"]
     assert brief["assembly_version"] == "chief_of_staff_priority_brief_v0"
     assert brief["summary"]["posture_order"] == ["urgent", "important", "waiting", "blocked", "stale", "defer"]
+    assert brief["summary"]["follow_through_posture_order"] == [
+        "overdue",
+        "stale_waiting_for",
+        "slipped_commitment",
+    ]
+    assert brief["summary"]["follow_through_item_order"] == [
+        "recommendation_action_desc",
+        "age_hours_desc",
+        "created_at_desc",
+        "id_desc",
+    ]
     assert brief["summary"]["quality_gate_status"] == "insufficient_sample"
     assert brief["summary"]["trust_confidence_posture"] == "low"
 
@@ -235,6 +246,21 @@ def test_chief_of_staff_priority_brief_is_deterministic_and_trust_aware(
     assert ranked[0]["rationale"]["reasons"]
 
     assert {item["priority_posture"] for item in ranked} >= {"urgent", "waiting", "blocked", "stale"}
+    assert brief["summary"]["follow_through_total_count"] >= 3
+    assert brief["summary"]["overdue_count"] >= 1
+    assert brief["summary"]["stale_waiting_for_count"] >= 1
+    assert brief["summary"]["slipped_commitment_count"] >= 1
+    assert brief["overdue_items"]
+    assert brief["overdue_items"][0]["recommendation_action"] == "escalate"
+    assert brief["stale_waiting_for_items"]
+    assert brief["slipped_commitments"]
+    assert brief["escalation_posture"]["posture"] == "critical"
+    assert brief["draft_follow_up"]["status"] == "drafted"
+    assert brief["draft_follow_up"]["mode"] == "draft_only"
+    assert brief["draft_follow_up"]["approval_required"] is True
+    assert brief["draft_follow_up"]["auto_send"] is False
+    assert brief["draft_follow_up"]["target_metadata"]["continuity_object_id"] == brief["overdue_items"][0]["id"]
+    assert "artifact-only" in brief["draft_follow_up"]["content"]["body"]
 
     recommendation = brief["recommended_next_action"]
     assert recommendation["target_priority_id"] == ranked[0]["id"]

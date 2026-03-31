@@ -63,8 +63,10 @@ describe("ChiefOfStaffPage", () => {
     expect(screen.getByText("Fixture-backed")).toBeInTheDocument();
     expect(screen.getByText("Chief-of-staff")).toBeInTheDocument();
     expect(screen.getByText("Fixture chief-of-staff brief")).toBeInTheDocument();
+    expect(screen.getByText("Fixture follow-through")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Confirm launch checklist owner").length).toBeGreaterThan(0);
     expect(screen.getByText("Action type: execute_next_action")).toBeInTheDocument();
+    expect(screen.getByText("Follow-through supervision")).toBeInTheDocument();
     expect(getChiefOfStaffPriorityBriefMock).not.toHaveBeenCalled();
   });
 
@@ -125,6 +127,61 @@ describe("ChiefOfStaffPage", () => {
             },
           },
         ],
+        overdue_items: [
+          {
+            rank: 1,
+            id: "follow-live-overdue-1",
+            capture_event_id: "capture-follow-live-overdue-1",
+            object_type: "NextAction",
+            status: "active",
+            title: "Next Action: Send partner follow-up",
+            current_priority_posture: "urgent",
+            follow_through_posture: "overdue",
+            recommendation_action: "escalate",
+            reason:
+              "Execution follow-through is overdue (posture=urgent, age=140.0h), so action 'escalate' is recommended.",
+            age_hours: 140,
+            provenance_references: [
+              {
+                source_kind: "continuity_capture_event",
+                source_id: "capture-follow-live-overdue-1",
+              },
+            ],
+            created_at: "2026-03-26T08:00:00Z",
+            updated_at: "2026-03-26T08:00:00Z",
+          },
+        ],
+        stale_waiting_for_items: [],
+        slipped_commitments: [],
+        escalation_posture: {
+          posture: "critical",
+          reason: "At least one follow-through item requires escalation.",
+          total_follow_through_count: 1,
+          nudge_count: 0,
+          defer_count: 0,
+          escalate_count: 1,
+          close_loop_candidate_count: 0,
+        },
+        draft_follow_up: {
+          status: "drafted",
+          mode: "draft_only",
+          approval_required: true,
+          auto_send: false,
+          reason: "Highest-severity follow-through item selected deterministically for operator review.",
+          target_metadata: {
+            continuity_object_id: "follow-live-overdue-1",
+            capture_event_id: "capture-follow-live-overdue-1",
+            object_type: "NextAction",
+            priority_posture: "urgent",
+            follow_through_posture: "overdue",
+            recommendation_action: "escalate",
+            thread_id: "thread-1",
+          },
+          content: {
+            subject: "Follow-up: Next Action: Send partner follow-up",
+            body: "This draft is artifact-only and requires explicit approval before any external send.",
+          },
+        },
         recommended_next_action: {
           action_type: "execute_next_action",
           title: "Next Action: Send partner follow-up",
@@ -146,6 +203,17 @@ describe("ChiefOfStaffPage", () => {
           total_count: 1,
           posture_order: ["urgent", "important", "waiting", "blocked", "stale", "defer"],
           order: ["score_desc", "created_at_desc", "id_desc"],
+          follow_through_posture_order: ["overdue", "stale_waiting_for", "slipped_commitment"],
+          follow_through_item_order: [
+            "recommendation_action_desc",
+            "age_hours_desc",
+            "created_at_desc",
+            "id_desc",
+          ],
+          follow_through_total_count: 1,
+          overdue_count: 1,
+          stale_waiting_for_count: 0,
+          slipped_commitment_count: 0,
           trust_confidence_posture: "medium",
           trust_confidence_reason:
             "Memory quality gate needs review, so recommendation confidence is capped at medium.",
@@ -160,6 +228,7 @@ describe("ChiefOfStaffPage", () => {
 
     expect(screen.getByText("Live API")).toBeInTheDocument();
     expect(screen.getByText("Live chief-of-staff brief")).toBeInTheDocument();
+    expect(screen.getByText("Live follow-through")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Send partner follow-up").length).toBeGreaterThan(0);
     expect(getChiefOfStaffPriorityBriefMock).toHaveBeenCalledWith(
       "https://api.example.com",

@@ -67,7 +67,7 @@ def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> N
             object_type="Commitment",
             status="active",
             title="Commitment: Close sprint report",
-            created_at="2026-03-31T09:50:00+00:00",
+            created_at="2026-03-28T09:50:00+00:00",
             confidence=0.9,
         ),
         _recall_item(
@@ -75,7 +75,7 @@ def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> N
             object_type="WaitingFor",
             status="active",
             title="Waiting For: Vendor quote",
-            created_at="2026-03-31T09:00:00+00:00",
+            created_at="2026-03-27T09:00:00+00:00",
             confidence=0.9,
             confirmation_status="unconfirmed",
         ),
@@ -84,7 +84,7 @@ def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> N
             object_type="Blocker",
             status="active",
             title="Blocker: Missing API key",
-            created_at="2026-03-31T08:30:00+00:00",
+            created_at="2026-03-23T08:30:00+00:00",
             confidence=0.95,
             confirmation_status="unconfirmed",
         ),
@@ -190,8 +190,93 @@ def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> N
     assert first["brief"]["recommended_next_action"]["action_type"] == "execute_next_action"
     assert first["brief"]["recommended_next_action"]["target_priority_id"] == "next-1"
     assert first["brief"]["summary"]["trust_confidence_posture"] == "high"
+    assert first["brief"]["summary"]["follow_through_posture_order"] == [
+        "overdue",
+        "stale_waiting_for",
+        "slipped_commitment",
+    ]
+    assert first["brief"]["summary"]["follow_through_item_order"] == [
+        "recommendation_action_desc",
+        "age_hours_desc",
+        "created_at_desc",
+        "id_desc",
+    ]
+    assert first["brief"]["summary"]["follow_through_total_count"] == 3
+    assert first["brief"]["summary"]["overdue_count"] == 1
+    assert first["brief"]["summary"]["stale_waiting_for_count"] == 1
+    assert first["brief"]["summary"]["slipped_commitment_count"] == 1
+    assert first["brief"]["overdue_items"][0]["id"] == "blocker-1"
+    assert first["brief"]["overdue_items"][0]["recommendation_action"] == "escalate"
+    assert first["brief"]["stale_waiting_for_items"][0]["id"] == "waiting-1"
+    assert first["brief"]["slipped_commitments"][0]["id"] == "commitment-1"
+    assert first["brief"]["escalation_posture"]["posture"] == "critical"
+    assert first["brief"]["draft_follow_up"]["status"] == "drafted"
+    assert first["brief"]["draft_follow_up"]["mode"] == "draft_only"
+    assert first["brief"]["draft_follow_up"]["approval_required"] is True
+    assert first["brief"]["draft_follow_up"]["auto_send"] is False
+    assert first["brief"]["draft_follow_up"]["target_metadata"]["continuity_object_id"] == "blocker-1"
+    assert "artifact-only" in first["brief"]["draft_follow_up"]["content"]["body"]
     assert first["brief"]["ranked_items"][0]["rationale"]["provenance_references"]
     assert first["brief"]["ranked_items"][0]["rationale"]["reasons"]
+
+
+def test_follow_through_item_ranking_is_deterministic_for_ties() -> None:
+    def _follow_item(
+        *,
+        item_id: str,
+        recommendation_action: str,
+        age_hours: float,
+        created_at: str,
+    ) -> dict[str, object]:
+        return {
+            "rank": 0,
+            "id": item_id,
+            "capture_event_id": f"capture-{item_id}",
+            "object_type": "NextAction",
+            "status": "active",
+            "title": f"Next Action: {item_id}",
+            "current_priority_posture": "urgent",
+            "follow_through_posture": "overdue",
+            "recommendation_action": recommendation_action,
+            "reason": "deterministic test fixture",
+            "age_hours": age_hours,
+            "provenance_references": [],
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+
+    ranked = chief._rank_follow_through_items(  # type: ignore[attr-defined]
+        [
+            _follow_item(
+                item_id="id-a",
+                recommendation_action="nudge",
+                age_hours=72.0,
+                created_at="2026-03-30T10:00:00+00:00",
+            ),
+            _follow_item(
+                item_id="id-b",
+                recommendation_action="nudge",
+                age_hours=72.0,
+                created_at="2026-03-30T10:00:00+00:00",
+            ),
+            _follow_item(
+                item_id="id-c",
+                recommendation_action="nudge",
+                age_hours=72.0,
+                created_at="2026-03-31T10:00:00+00:00",
+            ),
+            _follow_item(
+                item_id="id-d",
+                recommendation_action="escalate",
+                age_hours=60.0,
+                created_at="2026-03-29T10:00:00+00:00",
+            ),
+        ],
+        limit=10,
+    )
+
+    assert [item["id"] for item in ranked] == ["id-d", "id-c", "id-b", "id-a"]
+    assert [item["rank"] for item in ranked] == [1, 2, 3, 4]
 
 
 def test_priority_brief_downgrades_confidence_when_trust_is_weak(monkeypatch) -> None:
@@ -264,6 +349,8 @@ def test_priority_brief_downgrades_confidence_when_trust_is_weak(monkeypatch) ->
     assert ranked["confidence_posture"] == "low"
     assert ranked["rationale"]["trust_signals"]["downgraded_by_trust"] is True
     assert payload["brief"]["recommended_next_action"]["confidence_posture"] == "low"
+    assert payload["brief"]["escalation_posture"]["posture"] == "watch"
+    assert payload["brief"]["draft_follow_up"]["status"] == "none"
 
 
 def test_priority_brief_retrieval_failure_respects_non_healthy_quality_caps(monkeypatch) -> None:
@@ -347,3 +434,4 @@ def test_priority_brief_retrieval_failure_respects_non_healthy_quality_caps(monk
     assert insufficient_sample_ranked["rationale"]["trust_signals"]["retrieval_status"] == "fail"
     assert insufficient_sample_ranked["rationale"]["trust_signals"]["trust_confidence_cap"] == "low"
     assert "weak" in insufficient_sample_ranked["rationale"]["trust_signals"]["reason"]
+    assert insufficient_sample_payload["brief"]["draft_follow_up"]["status"] == "none"
