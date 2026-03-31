@@ -1,6 +1,7 @@
 import { ChiefOfStaffFollowThroughPanel } from "../../components/chief-of-staff-follow-through-panel";
 import { ChiefOfStaffPreparationPanel } from "../../components/chief-of-staff-preparation-panel";
 import { ChiefOfStaffPriorityPanel } from "../../components/chief-of-staff-priority-panel";
+import { ChiefOfStaffWeeklyReviewPanel } from "../../components/chief-of-staff-weekly-review-panel";
 import { PageHeader } from "../../components/page-header";
 import { StatusBadge } from "../../components/status-badge";
 import type { ApiSource, ChiefOfStaffPriorityBrief } from "../../lib/api";
@@ -461,6 +462,107 @@ const chiefOfStaffFixture: ChiefOfStaffPriorityBrief = {
       order: ["rank_asc"],
     },
   },
+  weekly_review_brief: {
+    scope: {
+      thread_id: "thread-fixture-1",
+      since: null,
+      until: null,
+    },
+    rollup: {
+      total_count: 4,
+      waiting_for_count: 1,
+      blocker_count: 1,
+      stale_count: 1,
+      correction_recurrence_count: 1,
+      freshness_drift_count: 1,
+      next_action_count: 1,
+      posture_order: ["waiting_for", "blocker", "stale", "next_action"],
+    },
+    guidance: [
+      {
+        rank: 1,
+        action: "escalate",
+        signal_count: 2,
+        rationale:
+          "Escalate where blockers (1) and escalate actions (1) indicate execution risk.",
+      },
+      {
+        rank: 2,
+        action: "close",
+        signal_count: 1,
+        rationale:
+          "Close loops where close candidates (0) and actionable next steps (1) support deterministic closure.",
+      },
+      {
+        rank: 3,
+        action: "defer",
+        signal_count: 2,
+        rationale:
+          "Defer or park work where defer actions (1), stale items (1), and waiting-for load (1) are concentrated.",
+      },
+    ],
+    summary: {
+      guidance_order: ["close", "defer", "escalate"],
+      guidance_item_order: ["signal_count_desc", "action_desc"],
+    },
+  },
+  recommendation_outcomes: {
+    items: [
+      {
+        id: "outcome-fixture-1",
+        capture_event_id: "capture-outcome-fixture-1",
+        outcome: "accept",
+        recommendation_action_type: "execute_next_action",
+        recommendation_title: "Next Action: Confirm launch checklist owner",
+        rewritten_title: null,
+        target_priority_id: "priority-fixture-1",
+        rationale: "Accepted in weekly review because blockers were already explicit.",
+        provenance_references: [
+          {
+            source_kind: "continuity_capture_event",
+            source_id: "capture-outcome-fixture-1",
+          },
+        ],
+        created_at: "2026-03-31T12:00:00Z",
+        updated_at: "2026-03-31T12:00:00Z",
+      },
+    ],
+    summary: {
+      returned_count: 1,
+      total_count: 1,
+      outcome_counts: {
+        accept: 1,
+        defer: 0,
+        ignore: 0,
+        rewrite: 0,
+      },
+      order: ["created_at_desc", "id_desc"],
+    },
+  },
+  priority_learning_summary: {
+    total_count: 1,
+    accept_count: 1,
+    defer_count: 0,
+    ignore_count: 0,
+    rewrite_count: 0,
+    acceptance_rate: 1,
+    override_rate: 0,
+    defer_hotspots: [],
+    ignore_hotspots: [],
+    priority_shift_explanation:
+      "Prioritization is reinforcing currently accepted recommendation patterns while tracking defer/override hotspots.",
+    hotspot_order: ["count_desc", "key_asc"],
+  },
+  pattern_drift_summary: {
+    posture: "improving",
+    reason:
+      "Accepted outcomes are leading with bounded defers/overrides, indicating improving recommendation fit.",
+    supporting_signals: [
+      "Outcomes captured: 1",
+      "Accept=1, Defer=0, Ignore=0, Rewrite=0",
+      "Acceptance rate=1.000000, Override rate=0.000000",
+    ],
+  },
   summary: {
     limit: 12,
     returned_count: 2,
@@ -544,7 +646,7 @@ export default async function ChiefOfStaffPage({
       <PageHeader
         eyebrow="Phase 7"
         title="Chief-of-staff"
-        description="Deterministic priority ranking, preparation artifacts, and resumption supervision with explicit rationale, provenance visibility, trust-aware confidence posture, and draft-only follow-up artifacts."
+        description="Deterministic priority ranking, follow-through and preparation supervision, plus weekly review and recommendation outcome-learning signals with explicit rationale."
         meta={
           <div className="header-meta">
             <span className="subtle-chip">{pageModeLabel(mode)}</span>
@@ -570,6 +672,13 @@ export default async function ChiefOfStaffPage({
         unavailableReason={briefUnavailableReason}
       />
       <ChiefOfStaffPreparationPanel
+        brief={brief}
+        source={briefSource}
+        unavailableReason={briefUnavailableReason}
+      />
+      <ChiefOfStaffWeeklyReviewPanel
+        apiBaseUrl={briefSource === "live" ? apiConfig.apiBaseUrl : undefined}
+        userId={briefSource === "live" ? apiConfig.userId : undefined}
         brief={brief}
         source={briefSource}
         unavailableReason={briefUnavailableReason}
