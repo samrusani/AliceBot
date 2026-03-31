@@ -31,6 +31,7 @@ import {
   getThreadEvents,
   getThreadResumptionBrief,
   getContinuityResumptionBrief,
+  getChiefOfStaffPriorityBrief,
   getThreadSessions,
   executeApproval,
   ingestCalendarEvent,
@@ -2682,6 +2683,53 @@ describe("api helpers", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/continuity/resumption-brief?user_id=user-1&thread_id=thread-1&max_recent_changes=4&max_open_loops=3",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+  });
+
+  it("reads chief-of-staff priority briefs with deterministic scope parameters", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          brief: {
+            assembly_version: "chief_of_staff_priority_brief_v0",
+            scope: { thread_id: "thread-1", since: null, until: null },
+            ranked_items: [],
+            recommended_next_action: {
+              action_type: "capture_new_priority",
+              title: "Capture one concrete next action",
+              target_priority_id: null,
+              priority_posture: null,
+              confidence_posture: "low",
+              reason: "No active priority items are present.",
+              provenance_references: [],
+              deterministic_rank_key: "none",
+            },
+            summary: {
+              limit: 7,
+              returned_count: 0,
+              total_count: 0,
+              posture_order: ["urgent", "important", "waiting", "blocked", "stale", "defer"],
+              order: ["score_desc", "created_at_desc", "id_desc"],
+              trust_confidence_posture: "low",
+              trust_confidence_reason: "Memory quality posture is weak.",
+              quality_gate_status: "insufficient_sample",
+              retrieval_status: "pass",
+            },
+            sources: ["continuity_recall", "memory_trust_dashboard"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await getChiefOfStaffPriorityBrief("https://api.example.com", "user-1", {
+      threadId: "thread-1",
+      limit: 7,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/chief-of-staff?user_id=user-1&thread_id=thread-1&limit=7",
       expect.objectContaining({ cache: "no-store" }),
     );
   });

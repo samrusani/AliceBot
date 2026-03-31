@@ -47,6 +47,11 @@ const navigation = [
     caption: "Review memory detail, revisions, and labels",
   },
   {
+    href: "/chief-of-staff",
+    label: "Chief-of-Staff",
+    caption: "Deterministic priorities, rationale, and next action",
+  },
+  {
     href: "/entities",
     label: "Entities",
     caption: "Review entity detail and related edges",
@@ -81,7 +86,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <h1 className="brand-title">Operator shell</h1>
             <p className="brand-description">
               Calm, governed views for requests, approvals, tasks, artifacts, Gmail, Calendar,
-              memories, entities, and explainability.
+              memories, chief-of-staff priorities, entities, and explainability.
             </p>
           </div>
 

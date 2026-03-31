@@ -183,6 +183,17 @@ ContinuityReviewStatus = Literal["active", "stale", "superseded", "deleted"]
 ContinuityReviewStatusFilter = Literal["correction_ready", "active", "stale", "superseded", "deleted", "all"]
 ContinuityOpenLoopPosture = Literal["waiting_for", "blocker", "stale", "next_action"]
 ContinuityOpenLoopReviewAction = Literal["done", "deferred", "still_blocked"]
+ChiefOfStaffPriorityPosture = Literal["urgent", "important", "waiting", "blocked", "stale", "defer"]
+ChiefOfStaffRecommendationConfidencePosture = Literal["high", "medium", "low"]
+ChiefOfStaffRecommendedActionType = Literal[
+    "execute_next_action",
+    "progress_commitment",
+    "follow_up_waiting_for",
+    "unblock_blocker",
+    "refresh_stale_item",
+    "review_and_defer",
+    "capture_new_priority",
+]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -226,6 +237,8 @@ DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT = 3
 MAX_CONTINUITY_DAILY_BRIEF_LIMIT = 20
 DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT = 5
 MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT = 50
+DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT = 12
+MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT = 100
 DEFAULT_CALENDAR_EVENT_LIST_LIMIT = 20
 MAX_CALENDAR_EVENT_LIST_LIMIT = 50
 COMPILER_VERSION_V0 = "continuity_v0"
@@ -244,6 +257,7 @@ RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "resumption_brief_v0"
 CONTINUITY_RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_resumption_brief_v0"
 CONTINUITY_DAILY_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_daily_brief_v0"
 CONTINUITY_WEEKLY_REVIEW_ASSEMBLY_VERSION_V0 = "continuity_weekly_review_v0"
+CHIEF_OF_STAFF_PRIORITY_BRIEF_ASSEMBLY_VERSION_V0 = "chief_of_staff_priority_brief_v0"
 RESUMPTION_BRIEF_CONVERSATION_EVENT_KINDS = ["message.user", "message.assistant"]
 RESUMPTION_BRIEF_CONVERSATION_ORDER = ["sequence_no_asc"]
 RESUMPTION_BRIEF_MEMORY_ORDER = ["updated_at_asc", "created_at_asc", "id_asc"]
@@ -410,6 +424,18 @@ CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_RESUMPTION_OPEN_LOOP_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_OPEN_LOOP_POSTURE_ORDER = ["waiting_for", "blocker", "stale", "next_action"]
 CONTINUITY_OPEN_LOOP_ITEM_ORDER = ["created_at_desc", "id_desc"]
+CHIEF_OF_STAFF_PRIORITY_POSTURE_ORDER = ["urgent", "important", "waiting", "blocked", "stale", "defer"]
+CHIEF_OF_STAFF_PRIORITY_ITEM_ORDER = ["score_desc", "created_at_desc", "id_desc"]
+CHIEF_OF_STAFF_RECOMMENDATION_CONFIDENCE_ORDER = ["high", "medium", "low"]
+CHIEF_OF_STAFF_RECOMMENDED_ACTION_TYPES = [
+    "execute_next_action",
+    "progress_commitment",
+    "follow_up_waiting_for",
+    "unblock_blocker",
+    "refresh_stale_item",
+    "review_and_defer",
+    "capture_new_priority",
+]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -1484,6 +1510,31 @@ class ContinuityWeeklyReviewRequestInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ChiefOfStaffPriorityBriefRequestInput:
+    query: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    limit: int = DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "query": self.query,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+            "limit": self.limit,
+        }
+        payload["since"] = isoformat_or_none(self.since)
+        payload["until"] = isoformat_or_none(self.until)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuityOpenLoopReviewActionInput:
     action: ContinuityOpenLoopReviewAction
     note: str | None = None
@@ -2272,6 +2323,87 @@ class ContinuityWeeklyReviewRecord(TypedDict):
 
 class ContinuityWeeklyReviewResponse(TypedDict):
     review: ContinuityWeeklyReviewRecord
+
+
+class ChiefOfStaffPriorityRankingInputs(TypedDict):
+    posture: ChiefOfStaffPriorityPosture
+    open_loop_posture: ContinuityOpenLoopPosture | None
+    recency_rank: int | None
+    age_hours_relative_to_latest: float
+    recall_relevance: float
+    scope_match_count: int
+    query_term_match_count: int
+    freshness_posture: ContinuityRecallFreshnessPosture
+    provenance_posture: ContinuityRecallProvenancePosture
+    supersession_posture: ContinuityRecallSupersessionPosture
+
+
+class ChiefOfStaffPriorityTrustSignals(TypedDict):
+    quality_gate_status: MemoryQualityGateStatus
+    retrieval_status: RetrievalEvaluationStatus
+    trust_confidence_cap: ChiefOfStaffRecommendationConfidencePosture
+    downgraded_by_trust: bool
+    reason: str
+
+
+class ChiefOfStaffPriorityRationale(TypedDict):
+    reasons: list[str]
+    ranking_inputs: ChiefOfStaffPriorityRankingInputs
+    provenance_references: list[ContinuityRecallProvenanceReference]
+    trust_signals: ChiefOfStaffPriorityTrustSignals
+
+
+class ChiefOfStaffPriorityItem(TypedDict):
+    rank: int
+    id: str
+    capture_event_id: str
+    object_type: ContinuityObjectType
+    status: str
+    title: str
+    priority_posture: ChiefOfStaffPriorityPosture
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    confidence: float
+    score: float
+    provenance: JsonObject
+    created_at: str
+    updated_at: str
+    rationale: ChiefOfStaffPriorityRationale
+
+
+class ChiefOfStaffRecommendedNextAction(TypedDict):
+    action_type: ChiefOfStaffRecommendedActionType
+    title: str
+    target_priority_id: str | None
+    priority_posture: ChiefOfStaffPriorityPosture | None
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    reason: str
+    provenance_references: list[ContinuityRecallProvenanceReference]
+    deterministic_rank_key: str
+
+
+class ChiefOfStaffPrioritySummary(TypedDict):
+    limit: int
+    returned_count: int
+    total_count: int
+    posture_order: list[ChiefOfStaffPriorityPosture]
+    order: list[str]
+    trust_confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    trust_confidence_reason: str
+    quality_gate_status: MemoryQualityGateStatus
+    retrieval_status: RetrievalEvaluationStatus
+
+
+class ChiefOfStaffPriorityBriefRecord(TypedDict):
+    assembly_version: str
+    scope: ContinuityRecallScopeFilters
+    ranked_items: list[ChiefOfStaffPriorityItem]
+    recommended_next_action: ChiefOfStaffRecommendedNextAction
+    summary: ChiefOfStaffPrioritySummary
+    sources: list[str]
+
+
+class ChiefOfStaffPriorityBriefResponse(TypedDict):
+    brief: ChiefOfStaffPriorityBriefRecord
 
 
 class ContinuityOpenLoopReviewActionResponse(TypedDict):
