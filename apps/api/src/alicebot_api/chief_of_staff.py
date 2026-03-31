@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from alicebot_api.continuity_open_loops import compile_continuity_open_loop_dashboard
+from alicebot_api.continuity_open_loops import (
+    compile_continuity_open_loop_dashboard,
+    compile_continuity_weekly_review,
+)
 from alicebot_api.continuity_recall import query_continuity_recall
 from alicebot_api.continuity_resumption import compile_continuity_resumption_brief
 from alicebot_api.contracts import (
@@ -12,13 +15,17 @@ from alicebot_api.contracts import (
     CHIEF_OF_STAFF_FOLLOW_THROUGH_ITEM_ORDER,
     CHIEF_OF_STAFF_FOLLOW_THROUGH_POSTURE_ORDER,
     CHIEF_OF_STAFF_FOLLOW_THROUGH_RECOMMENDATION_ACTIONS,
+    CHIEF_OF_STAFF_OUTCOME_HOTSPOT_ORDER,
     CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER,
     CHIEF_OF_STAFF_PRIORITY_BRIEF_ASSEMBLY_VERSION_V0,
     CHIEF_OF_STAFF_PRIORITY_ITEM_ORDER,
     CHIEF_OF_STAFF_PRIORITY_POSTURE_ORDER,
     CHIEF_OF_STAFF_RECOMMENDED_ACTION_TYPES,
+    CHIEF_OF_STAFF_RECOMMENDATION_OUTCOME_ORDER,
+    CHIEF_OF_STAFF_RECOMMENDATION_OUTCOMES,
     CHIEF_OF_STAFF_RESUMPTION_RECOMMENDATION_ACTIONS,
     CHIEF_OF_STAFF_RESUMPTION_SUPERVISION_ITEM_ORDER,
+    CHIEF_OF_STAFF_WEEKLY_REVIEW_GUIDANCE_ACTIONS,
     CONTINUITY_OPEN_LOOP_POSTURE_ORDER,
     DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT,
     MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
@@ -26,21 +33,32 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT,
     ChiefOfStaffDraftFollowUpRecord,
     ChiefOfStaffEscalationPosture,
     ChiefOfStaffEscalationPostureRecord,
     ChiefOfStaffFollowThroughItem,
     ChiefOfStaffFollowThroughPosture,
     ChiefOfStaffFollowThroughRecommendationAction,
+    ChiefOfStaffOutcomeHotspotRecord,
+    ChiefOfStaffPatternDriftPosture,
+    ChiefOfStaffPatternDriftSummaryRecord,
     ChiefOfStaffPrepChecklistRecord,
     ChiefOfStaffPreparationArtifactItem,
     ChiefOfStaffPreparationBriefRecord,
     ChiefOfStaffPreparationSectionSummary,
+    ChiefOfStaffPriorityLearningSummaryRecord,
     ChiefOfStaffPriorityBriefRecord,
     ChiefOfStaffPriorityBriefRequestInput,
     ChiefOfStaffPriorityBriefResponse,
     ChiefOfStaffPriorityItem,
     ChiefOfStaffPriorityPosture,
+    ChiefOfStaffRecommendationOutcome,
+    ChiefOfStaffRecommendationOutcomeCaptureInput,
+    ChiefOfStaffRecommendationOutcomeCaptureResponse,
+    ChiefOfStaffRecommendationOutcomeRecord,
+    ChiefOfStaffRecommendationOutcomeSection,
+    ChiefOfStaffRecommendationOutcomeSummary,
     ChiefOfStaffRecommendationConfidencePosture,
     ChiefOfStaffRecommendedActionType,
     ChiefOfStaffRecommendedNextAction,
@@ -49,6 +67,10 @@ from alicebot_api.contracts import (
     ChiefOfStaffResumptionSupervisionRecord,
     ChiefOfStaffSuggestedTalkingPointsRecord,
     ChiefOfStaffPrioritySummary,
+    ChiefOfStaffWeeklyReviewBriefRecord,
+    ChiefOfStaffWeeklyReviewBriefSummary,
+    ChiefOfStaffWeeklyReviewGuidanceAction,
+    ChiefOfStaffWeeklyReviewGuidanceItem,
     ChiefOfStaffWhatChangedSummaryRecord,
     ContinuityOpenLoopDashboardQueryInput,
     ContinuityOpenLoopPosture,
@@ -56,6 +78,7 @@ from alicebot_api.contracts import (
     ContinuityRecallQueryInput,
     ContinuityRecallResultRecord,
     ContinuityResumptionBriefRequestInput,
+    ContinuityWeeklyReviewRequestInput,
     MemoryQualityGateStatus,
 )
 from alicebot_api.memory import get_memory_trust_dashboard_summary
@@ -108,6 +131,9 @@ _WHAT_CHANGED_LIMIT = 6
 _PREP_CHECKLIST_LIMIT = 6
 _SUGGESTED_TALKING_POINT_LIMIT = 6
 _RESUMPTION_SUPERVISION_LIMIT = 3
+_OUTCOME_HISTORY_LIMIT = MAX_CONTINUITY_RECALL_LIMIT
+_OUTCOME_HOTSPOT_LIMIT = 3
+_OUTCOME_BODY_KIND = "chief_of_staff_recommendation_outcome"
 
 
 def _is_offset_aware(value: datetime) -> bool:
@@ -1039,6 +1065,403 @@ def _build_resumption_supervision(
     }
 
 
+def _parse_recommendation_outcome_record(
+    item: ContinuityRecallResultRecord,
+) -> ChiefOfStaffRecommendationOutcomeRecord | None:
+    if item["object_type"] != "Note":
+        return None
+
+    body = item["body"]
+    if not isinstance(body, dict):
+        return None
+
+    kind = body.get("kind")
+    if kind != _OUTCOME_BODY_KIND:
+        return None
+
+    raw_outcome = body.get("outcome")
+    if not isinstance(raw_outcome, str) or raw_outcome not in CHIEF_OF_STAFF_RECOMMENDATION_OUTCOMES:
+        return None
+    outcome: ChiefOfStaffRecommendationOutcome = raw_outcome  # type: ignore[assignment]
+
+    raw_action_type = body.get("recommendation_action_type")
+    if not isinstance(raw_action_type, str) or raw_action_type not in CHIEF_OF_STAFF_RECOMMENDED_ACTION_TYPES:
+        return None
+    recommendation_action_type: ChiefOfStaffRecommendedActionType = raw_action_type  # type: ignore[assignment]
+
+    recommendation_title = body.get("recommendation_title")
+    if not isinstance(recommendation_title, str):
+        return None
+
+    rewritten_title = body.get("rewritten_title")
+    rewritten_title_value = rewritten_title if isinstance(rewritten_title, str) else None
+
+    target_priority_id = body.get("target_priority_id")
+    target_priority_id_value = target_priority_id if isinstance(target_priority_id, str) else None
+
+    rationale = body.get("rationale")
+    rationale_value = rationale if isinstance(rationale, str) else None
+
+    return {
+        "id": item["id"],
+        "capture_event_id": item["capture_event_id"],
+        "outcome": outcome,
+        "recommendation_action_type": recommendation_action_type,
+        "recommendation_title": recommendation_title,
+        "rewritten_title": rewritten_title_value,
+        "target_priority_id": target_priority_id_value,
+        "rationale": rationale_value,
+        "provenance_references": item["provenance_references"],
+        "created_at": item["created_at"],
+        "updated_at": item["updated_at"],
+    }
+
+
+def _outcome_sort_key(item: ChiefOfStaffRecommendationOutcomeRecord) -> tuple[str, str]:
+    return (item["created_at"], item["id"])
+
+
+def _outcome_counts(
+    items: list[ChiefOfStaffRecommendationOutcomeRecord],
+) -> dict[ChiefOfStaffRecommendationOutcome, int]:
+    counts: dict[ChiefOfStaffRecommendationOutcome, int] = {
+        "accept": 0,
+        "defer": 0,
+        "ignore": 0,
+        "rewrite": 0,
+    }
+    for item in items:
+        counts[item["outcome"]] += 1
+    return counts
+
+
+def _build_outcome_hotspots(
+    *,
+    items: list[ChiefOfStaffRecommendationOutcomeRecord],
+    outcome: ChiefOfStaffRecommendationOutcome,
+) -> list[ChiefOfStaffOutcomeHotspotRecord]:
+    counts_by_key: dict[str, int] = {}
+    for item in items:
+        if item["outcome"] != outcome:
+            continue
+        hotspot_key = item["target_priority_id"] or item["recommendation_action_type"]
+        counts_by_key[hotspot_key] = counts_by_key.get(hotspot_key, 0) + 1
+
+    hotspots = [
+        {"key": key, "count": count}
+        for key, count in sorted(
+            counts_by_key.items(),
+            key=lambda entry: (-entry[1], entry[0]),
+        )[:_OUTCOME_HOTSPOT_LIMIT]
+    ]
+    return hotspots
+
+
+def _list_recommendation_outcome_records(
+    recall_items: list[ContinuityRecallResultRecord],
+) -> list[ChiefOfStaffRecommendationOutcomeRecord]:
+    all_outcome_items = [
+        parsed
+        for parsed in (
+            _parse_recommendation_outcome_record(item)
+            for item in recall_items
+        )
+        if parsed is not None
+    ]
+    all_outcome_items.sort(key=_outcome_sort_key, reverse=True)
+    return all_outcome_items
+
+
+def _build_recommendation_outcome_section(
+    *,
+    all_outcome_items: list[ChiefOfStaffRecommendationOutcomeRecord],
+    limit: int,
+) -> ChiefOfStaffRecommendationOutcomeSection:
+    selected_items = all_outcome_items[:limit] if limit > 0 else []
+    summary: ChiefOfStaffRecommendationOutcomeSummary = {
+        "returned_count": len(selected_items),
+        "total_count": len(all_outcome_items),
+        "outcome_counts": _outcome_counts(all_outcome_items),
+        "order": list(CHIEF_OF_STAFF_RECOMMENDATION_OUTCOME_ORDER),
+    }
+    return {
+        "items": selected_items,
+        "summary": summary,
+    }
+
+
+def _build_priority_shift_explanation(
+    *,
+    counts: dict[ChiefOfStaffRecommendationOutcome, int],
+) -> str:
+    accept_count = counts["accept"]
+    defer_count = counts["defer"]
+    ignore_count = counts["ignore"]
+    rewrite_count = counts["rewrite"]
+    override_count = ignore_count + rewrite_count
+
+    if accept_count + defer_count + override_count == 0:
+        return (
+            "No recommendation outcomes are captured yet; prioritization remains anchored to "
+            "current continuity and trust signals."
+        )
+    if override_count > accept_count:
+        return (
+            "Prioritization is shifting toward stricter confidence because ignore/rewrite outcomes "
+            "currently exceed accepted recommendations."
+        )
+    if defer_count > 0 and defer_count >= accept_count:
+        return (
+            "Prioritization is shifting toward pacing controls because deferred outcomes are "
+            "comparable to or above accepted recommendations."
+        )
+    return (
+        "Prioritization is reinforcing currently accepted recommendation patterns while tracking "
+        "defer/override hotspots."
+    )
+
+
+def _build_priority_learning_summary(
+    *,
+    all_outcome_items: list[ChiefOfStaffRecommendationOutcomeRecord],
+) -> ChiefOfStaffPriorityLearningSummaryRecord:
+    counts = _outcome_counts(all_outcome_items)
+    total_count = len(all_outcome_items)
+    override_count = counts["ignore"] + counts["rewrite"]
+
+    acceptance_rate = 0.0 if total_count == 0 else counts["accept"] / total_count
+    override_rate = 0.0 if total_count == 0 else override_count / total_count
+
+    return {
+        "total_count": total_count,
+        "accept_count": counts["accept"],
+        "defer_count": counts["defer"],
+        "ignore_count": counts["ignore"],
+        "rewrite_count": counts["rewrite"],
+        "acceptance_rate": round(acceptance_rate, 6),
+        "override_rate": round(override_rate, 6),
+        "defer_hotspots": _build_outcome_hotspots(items=all_outcome_items, outcome="defer"),
+        "ignore_hotspots": _build_outcome_hotspots(items=all_outcome_items, outcome="ignore"),
+        "priority_shift_explanation": _build_priority_shift_explanation(counts=counts),
+        "hotspot_order": list(CHIEF_OF_STAFF_OUTCOME_HOTSPOT_ORDER),
+    }
+
+
+def _build_pattern_drift_summary(
+    *,
+    learning_summary: ChiefOfStaffPriorityLearningSummaryRecord,
+) -> ChiefOfStaffPatternDriftSummaryRecord:
+    total_count = learning_summary["total_count"]
+    override_count = learning_summary["ignore_count"] + learning_summary["rewrite_count"]
+    accept_count = learning_summary["accept_count"]
+    defer_count = learning_summary["defer_count"]
+
+    posture: ChiefOfStaffPatternDriftPosture
+    reason: str
+    if total_count == 0:
+        posture = "insufficient_signal"
+        reason = "No recommendation outcomes are available yet, so drift posture is informational only."
+    elif override_count > accept_count:
+        posture = "drifting"
+        reason = "Overrides are outpacing accepts, so recommendation behavior is drifting and needs inspection."
+    elif accept_count > override_count and defer_count <= accept_count:
+        posture = "improving"
+        reason = "Accepted outcomes are leading with bounded defers/overrides, indicating improving recommendation fit."
+    else:
+        posture = "stable"
+        reason = "Outcome mix is balanced; recommendation behavior is stable with routine monitoring."
+
+    return {
+        "posture": posture,
+        "reason": reason,
+        "supporting_signals": [
+            f"Outcomes captured: {total_count}",
+            f"Accept={accept_count}, Defer={defer_count}, Ignore={learning_summary['ignore_count']}, Rewrite={learning_summary['rewrite_count']}",
+            f"Acceptance rate={learning_summary['acceptance_rate']:.6f}, Override rate={learning_summary['override_rate']:.6f}",
+        ],
+    }
+
+
+def _build_weekly_review_brief(
+    *,
+    scope: dict[str, object],
+    weekly_rollup: dict[str, object],
+    follow_through_items: list[ChiefOfStaffFollowThroughItem],
+) -> ChiefOfStaffWeeklyReviewBriefRecord:
+    action_counts: dict[ChiefOfStaffFollowThroughRecommendationAction, int] = {
+        "nudge": 0,
+        "defer": 0,
+        "escalate": 0,
+        "close_loop_candidate": 0,
+    }
+    for item in follow_through_items:
+        action_counts[item["recommendation_action"]] += 1
+
+    blocker_count = int(weekly_rollup.get("blocker_count", 0))
+    stale_count = int(weekly_rollup.get("stale_count", 0))
+    waiting_for_count = int(weekly_rollup.get("waiting_for_count", 0))
+    next_action_count = int(weekly_rollup.get("next_action_count", 0))
+
+    guidance_candidates: list[ChiefOfStaffWeeklyReviewGuidanceItem] = [
+        {
+            "rank": 0,
+            "action": "escalate",
+            "signal_count": action_counts["escalate"] + blocker_count,
+            "rationale": (
+                f"Escalate where blockers ({blocker_count}) and escalate actions "
+                f"({action_counts['escalate']}) indicate execution risk."
+            ),
+        },
+        {
+            "rank": 0,
+            "action": "close",
+            "signal_count": action_counts["close_loop_candidate"] + next_action_count,
+            "rationale": (
+                f"Close loops where close candidates ({action_counts['close_loop_candidate']}) "
+                f"and actionable next steps ({next_action_count}) support deterministic closure."
+            ),
+        },
+        {
+            "rank": 0,
+            "action": "defer",
+            "signal_count": action_counts["defer"] + stale_count + waiting_for_count,
+            "rationale": (
+                f"Defer or park work where defer actions ({action_counts['defer']}), "
+                f"stale items ({stale_count}), and waiting-for load ({waiting_for_count}) are concentrated."
+            ),
+        },
+    ]
+    guidance_candidates.sort(
+        key=lambda item: (item["signal_count"], item["action"]),
+        reverse=True,
+    )
+    for rank, item in enumerate(guidance_candidates, start=1):
+        item["rank"] = rank
+
+    summary: ChiefOfStaffWeeklyReviewBriefSummary = {
+        "guidance_order": list(CHIEF_OF_STAFF_WEEKLY_REVIEW_GUIDANCE_ACTIONS),
+        "guidance_item_order": ["signal_count_desc", "action_desc"],
+    }
+    return {
+        "scope": scope,  # type: ignore[typeddict-item]
+        "rollup": weekly_rollup,  # type: ignore[typeddict-item]
+        "guidance": guidance_candidates,
+        "summary": summary,
+    }
+
+
+def capture_chief_of_staff_recommendation_outcome(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    request: ChiefOfStaffRecommendationOutcomeCaptureInput,
+) -> ChiefOfStaffRecommendationOutcomeCaptureResponse:
+    outcome = request.outcome
+    if outcome not in CHIEF_OF_STAFF_RECOMMENDATION_OUTCOMES:
+        allowed = ", ".join(CHIEF_OF_STAFF_RECOMMENDATION_OUTCOMES)
+        raise ChiefOfStaffValidationError(f"outcome must be one of: {allowed}")
+
+    recommendation_action_type = request.recommendation_action_type
+    if recommendation_action_type not in CHIEF_OF_STAFF_RECOMMENDED_ACTION_TYPES:
+        allowed = ", ".join(CHIEF_OF_STAFF_RECOMMENDED_ACTION_TYPES)
+        raise ChiefOfStaffValidationError(f"recommendation_action_type must be one of: {allowed}")
+
+    recommendation_title = _normalize_optional_text(request.recommendation_title)
+    if recommendation_title is None:
+        raise ChiefOfStaffValidationError("recommendation_title must not be empty")
+
+    rationale = _normalize_optional_text(request.rationale)
+    rewritten_title = _normalize_optional_text(request.rewritten_title)
+    if outcome == "rewrite" and rewritten_title is None:
+        raise ChiefOfStaffValidationError("rewritten_title is required when outcome is rewrite")
+    if outcome != "rewrite" and rewritten_title is not None:
+        raise ChiefOfStaffValidationError("rewritten_title can only be provided when outcome is rewrite")
+
+    capture_event = store.create_continuity_capture_event(
+        raw_content=f"Chief-of-staff recommendation outcome ({outcome}): {recommendation_title}",
+        explicit_signal="note",
+        admission_posture="TRIAGE",
+        admission_reason="chief_of_staff_recommendation_outcome",
+    )
+
+    target_priority_id = None if request.target_priority_id is None else str(request.target_priority_id)
+    thread_id = None if request.thread_id is None else str(request.thread_id)
+    task_id = None if request.task_id is None else str(request.task_id)
+    project = _normalize_optional_text(request.project)
+    person = _normalize_optional_text(request.person)
+
+    body: dict[str, object] = {
+        "kind": _OUTCOME_BODY_KIND,
+        "outcome": outcome,
+        "recommendation_action_type": recommendation_action_type,
+        "recommendation_title": recommendation_title,
+        "target_priority_id": target_priority_id,
+        "rationale": rationale,
+        "rewritten_title": rewritten_title,
+    }
+    provenance: dict[str, object] = {
+        "thread_id": thread_id,
+        "task_id": task_id,
+        "project": project,
+        "person": person,
+        "source_event_ids": [str(capture_event["id"])],
+        "chief_of_staff_recommendation_outcome": {
+            "outcome": outcome,
+            "recommendation_action_type": recommendation_action_type,
+            "target_priority_id": target_priority_id,
+        },
+    }
+
+    stored = store.create_continuity_object(
+        capture_event_id=capture_event["id"],
+        object_type="Note",
+        status="active",
+        title=f"Recommendation outcome: {outcome} -> {recommendation_title}",
+        body=body,
+        provenance=provenance,
+        confidence=1.0,
+    )
+
+    scope_request = ChiefOfStaffPriorityBriefRequestInput(
+        thread_id=request.thread_id,
+        task_id=request.task_id,
+        project=project,
+        person=person,
+        limit=DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT,
+    )
+    brief_payload = compile_chief_of_staff_priority_brief(
+        store,
+        user_id=user_id,
+        request=scope_request,
+    )["brief"]
+
+    serialized_outcome: ChiefOfStaffRecommendationOutcomeRecord = {
+        "id": str(stored["id"]),
+        "capture_event_id": str(stored["capture_event_id"]),
+        "outcome": outcome,
+        "recommendation_action_type": recommendation_action_type,
+        "recommendation_title": recommendation_title,
+        "rewritten_title": rewritten_title,
+        "target_priority_id": target_priority_id,
+        "rationale": rationale,
+        "provenance_references": [
+            {
+                "source_kind": "continuity_capture_event",
+                "source_id": str(capture_event["id"]),
+            }
+        ],
+        "created_at": stored["created_at"].isoformat(),
+        "updated_at": stored["updated_at"].isoformat(),
+    }
+
+    return {
+        "outcome": serialized_outcome,
+        "recommendation_outcomes": brief_payload["recommendation_outcomes"],
+        "priority_learning_summary": brief_payload["priority_learning_summary"],
+        "pattern_drift_summary": brief_payload["pattern_drift_summary"],
+    }
+
+
 def compile_chief_of_staff_priority_brief(
     store: ContinuityStore,
     *,
@@ -1087,6 +1510,20 @@ def compile_chief_of_staff_priority_brief(
             limit=MAX_CONTINUITY_OPEN_LOOP_LIMIT,
         ),
     )["dashboard"]
+    weekly_review = compile_continuity_weekly_review(
+        store,
+        user_id=user_id,
+        request=ContinuityWeeklyReviewRequestInput(
+            query=normalized_request.query,
+            thread_id=normalized_request.thread_id,
+            task_id=normalized_request.task_id,
+            project=normalized_request.project,
+            person=normalized_request.person,
+            since=normalized_request.since,
+            until=normalized_request.until,
+            limit=min(normalized_request.limit, MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT),
+        ),
+    )["review"]
 
     resumption_brief = compile_continuity_resumption_brief(
         store,
@@ -1355,6 +1792,22 @@ def compile_chief_of_staff_priority_brief(
         follow_through_items=all_follow_through_items,
         trust_cap=trust_cap,
     )
+    weekly_review_brief = _build_weekly_review_brief(
+        scope=weekly_review["scope"],
+        weekly_rollup=weekly_review["rollup"],
+        follow_through_items=all_follow_through_items,
+    )
+    all_outcome_items = _list_recommendation_outcome_records(recall_payload["items"])
+    recommendation_outcomes = _build_recommendation_outcome_section(
+        all_outcome_items=all_outcome_items,
+        limit=min(limit, _OUTCOME_HISTORY_LIMIT),
+    )
+    priority_learning_summary = _build_priority_learning_summary(
+        all_outcome_items=all_outcome_items,
+    )
+    pattern_drift_summary = _build_pattern_drift_summary(
+        learning_summary=priority_learning_summary,
+    )
 
     summary: ChiefOfStaffPrioritySummary = {
         "limit": limit,
@@ -1389,11 +1842,17 @@ def compile_chief_of_staff_priority_brief(
         "prep_checklist": prep_checklist,
         "suggested_talking_points": suggested_talking_points,
         "resumption_supervision": resumption_supervision,
+        "weekly_review_brief": weekly_review_brief,
+        "recommendation_outcomes": recommendation_outcomes,
+        "priority_learning_summary": priority_learning_summary,
+        "pattern_drift_summary": pattern_drift_summary,
         "summary": summary,
         "sources": [
             "continuity_recall",
             "continuity_open_loops",
+            "continuity_weekly_review",
             "continuity_resumption_brief",
+            "chief_of_staff_recommendation_outcomes",
             "memory_trust_dashboard",
             "memories",
             "memory_review_labels",

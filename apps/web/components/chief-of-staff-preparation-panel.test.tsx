@@ -233,6 +233,52 @@ const briefFixture = {
       order: ["rank_asc"],
     },
   },
+  weekly_review_brief: {
+    scope: { thread_id: "thread-1", since: null, until: null },
+    rollup: {
+      total_count: 1,
+      waiting_for_count: 0,
+      blocker_count: 1,
+      stale_count: 0,
+      correction_recurrence_count: 0,
+      freshness_drift_count: 0,
+      next_action_count: 1,
+      posture_order: ["waiting_for", "blocker", "stale", "next_action"] as const,
+    },
+    guidance: [],
+    summary: {
+      guidance_order: ["close", "defer", "escalate"] as const,
+      guidance_item_order: ["signal_count_desc", "action_desc"],
+    },
+  },
+  recommendation_outcomes: {
+    items: [],
+    summary: {
+      returned_count: 0,
+      total_count: 0,
+      outcome_counts: { accept: 0, defer: 0, ignore: 0, rewrite: 0 },
+      order: ["created_at_desc", "id_desc"],
+    },
+  },
+  priority_learning_summary: {
+    total_count: 0,
+    accept_count: 0,
+    defer_count: 0,
+    ignore_count: 0,
+    rewrite_count: 0,
+    acceptance_rate: 0,
+    override_rate: 0,
+    defer_hotspots: [],
+    ignore_hotspots: [],
+    priority_shift_explanation:
+      "No recommendation outcomes are captured yet; prioritization remains anchored to current continuity and trust signals.",
+    hotspot_order: ["count_desc", "key_asc"],
+  },
+  pattern_drift_summary: {
+    posture: "insufficient_signal" as const,
+    reason: "No recommendation outcomes are available yet, so drift posture is informational only.",
+    supporting_signals: [],
+  },
   summary: {
     limit: 10,
     returned_count: 0,

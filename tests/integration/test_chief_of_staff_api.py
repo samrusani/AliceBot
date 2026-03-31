@@ -311,3 +311,85 @@ def test_chief_of_staff_priority_brief_is_deterministic_and_trust_aware(
         recommendation["action"] == "review_scope" and recommendation["provenance_references"]
         for recommendation in brief["resumption_supervision"]["recommendations"]
     )
+    assert brief["weekly_review_brief"]["summary"]["guidance_order"] == ["close", "defer", "escalate"]
+    assert len(brief["weekly_review_brief"]["guidance"]) == 3
+    assert brief["recommendation_outcomes"]["summary"]["total_count"] == 0
+    assert brief["priority_learning_summary"]["total_count"] == 0
+    assert brief["pattern_drift_summary"]["posture"] == "insufficient_signal"
+
+
+def test_chief_of_staff_recommendation_outcome_capture_is_auditable_and_updates_learning(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="chief-of-staff-outcomes@example.com")
+    thread_id = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        next_capture = store.create_continuity_capture_event(
+            raw_content="Next Action: Ship outcome learning panel",
+            explicit_signal="next_action",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_next_action",
+        )
+        next_object = store.create_continuity_object(
+            capture_event_id=next_capture["id"],
+            object_type="NextAction",
+            status="active",
+            title="Next Action: Ship outcome learning panel",
+            body={"action_text": "Ship outcome learning panel"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["event-next"]},
+            confidence=0.95,
+        )
+
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=next_object["id"],
+        created_at=datetime(2026, 3, 31, 10, 0, tzinfo=UTC),
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    capture_payload = {
+        "user_id": str(user_id),
+        "outcome": "accept",
+        "recommendation_action_type": "execute_next_action",
+        "recommendation_title": "Next Action: Ship outcome learning panel",
+        "rationale": "Accepted after weekly review.",
+        "target_priority_id": str(next_object["id"]),
+        "thread_id": str(thread_id),
+    }
+    capture_status, capture_response = invoke_request(
+        "POST",
+        "/v0/chief-of-staff/recommendation-outcomes",
+        payload=capture_payload,
+    )
+
+    assert capture_status == 200
+    assert capture_response["outcome"]["outcome"] == "accept"
+    assert capture_response["outcome"]["recommendation_action_type"] == "execute_next_action"
+    assert capture_response["priority_learning_summary"]["accept_count"] == 1
+    assert capture_response["pattern_drift_summary"]["posture"] == "improving"
+
+    status, brief_payload = invoke_request(
+        "GET",
+        "/v0/chief-of-staff",
+        query_params={
+            "user_id": str(user_id),
+            "thread_id": str(thread_id),
+            "limit": "5",
+        },
+    )
+
+    assert status == 200
+    brief = brief_payload["brief"]
+    assert brief["recommendation_outcomes"]["summary"]["total_count"] >= 1
+    assert brief["recommendation_outcomes"]["summary"]["outcome_counts"]["accept"] >= 1
+    assert brief["priority_learning_summary"]["accept_count"] >= 1
+    assert "Prioritization is" in brief["priority_learning_summary"]["priority_shift_explanation"]
+    assert brief["pattern_drift_summary"]["supporting_signals"]

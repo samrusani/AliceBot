@@ -32,6 +32,7 @@ import {
   getThreadResumptionBrief,
   getContinuityResumptionBrief,
   getChiefOfStaffPriorityBrief,
+  captureChiefOfStaffRecommendationOutcome,
   getThreadSessions,
   executeApproval,
   ingestCalendarEvent,
@@ -2796,6 +2797,73 @@ describe("api helpers", () => {
                 order: ["rank_asc"],
               },
             },
+            weekly_review_brief: {
+              scope: { thread_id: "thread-1", since: null, until: null },
+              rollup: {
+                total_count: 0,
+                waiting_for_count: 0,
+                blocker_count: 0,
+                stale_count: 0,
+                correction_recurrence_count: 0,
+                freshness_drift_count: 0,
+                next_action_count: 0,
+                posture_order: ["waiting_for", "blocker", "stale", "next_action"],
+              },
+              guidance: [
+                {
+                  rank: 1,
+                  action: "escalate",
+                  signal_count: 0,
+                  rationale: "Escalate where blockers (0) and escalate actions (0) indicate execution risk.",
+                },
+                {
+                  rank: 2,
+                  action: "close",
+                  signal_count: 0,
+                  rationale:
+                    "Close loops where close candidates (0) and actionable next steps (0) support deterministic closure.",
+                },
+                {
+                  rank: 3,
+                  action: "defer",
+                  signal_count: 0,
+                  rationale:
+                    "Defer or park work where defer actions (0), stale items (0), and waiting-for load (0) are concentrated.",
+                },
+              ],
+              summary: {
+                guidance_order: ["close", "defer", "escalate"],
+                guidance_item_order: ["signal_count_desc", "action_desc"],
+              },
+            },
+            recommendation_outcomes: {
+              items: [],
+              summary: {
+                returned_count: 0,
+                total_count: 0,
+                outcome_counts: { accept: 0, defer: 0, ignore: 0, rewrite: 0 },
+                order: ["created_at_desc", "id_desc"],
+              },
+            },
+            priority_learning_summary: {
+              total_count: 0,
+              accept_count: 0,
+              defer_count: 0,
+              ignore_count: 0,
+              rewrite_count: 0,
+              acceptance_rate: 0,
+              override_rate: 0,
+              defer_hotspots: [],
+              ignore_hotspots: [],
+              priority_shift_explanation:
+                "No recommendation outcomes are captured yet; prioritization remains anchored to current continuity and trust signals.",
+              hotspot_order: ["count_desc", "key_asc"],
+            },
+            pattern_drift_summary: {
+              posture: "insufficient_signal",
+              reason: "No recommendation outcomes are available yet, so drift posture is informational only.",
+              supporting_signals: [],
+            },
             summary: {
               limit: 7,
               returned_count: 0,
@@ -2833,6 +2901,75 @@ describe("api helpers", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/chief-of-staff?user_id=user-1&thread_id=thread-1&limit=7",
       expect.objectContaining({ cache: "no-store" }),
+    );
+  });
+
+  it("captures chief-of-staff recommendation outcomes through the deterministic seam", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          outcome: {
+            id: "outcome-1",
+            capture_event_id: "capture-outcome-1",
+            outcome: "accept",
+            recommendation_action_type: "execute_next_action",
+            recommendation_title: "Next Action: Ship dashboard",
+            rewritten_title: null,
+            target_priority_id: "priority-1",
+            rationale: "Accepted in weekly review.",
+            provenance_references: [],
+            created_at: "2026-03-31T12:00:00Z",
+            updated_at: "2026-03-31T12:00:00Z",
+          },
+          recommendation_outcomes: {
+            items: [],
+            summary: {
+              returned_count: 0,
+              total_count: 1,
+              outcome_counts: { accept: 1, defer: 0, ignore: 0, rewrite: 0 },
+              order: ["created_at_desc", "id_desc"],
+            },
+          },
+          priority_learning_summary: {
+            total_count: 1,
+            accept_count: 1,
+            defer_count: 0,
+            ignore_count: 0,
+            rewrite_count: 0,
+            acceptance_rate: 1,
+            override_rate: 0,
+            defer_hotspots: [],
+            ignore_hotspots: [],
+            priority_shift_explanation:
+              "Prioritization is reinforcing currently accepted recommendation patterns while tracking defer/override hotspots.",
+            hotspot_order: ["count_desc", "key_asc"],
+          },
+          pattern_drift_summary: {
+            posture: "improving",
+            reason:
+              "Accepted outcomes are leading with bounded defers/overrides, indicating improving recommendation fit.",
+            supporting_signals: [],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await captureChiefOfStaffRecommendationOutcome("https://api.example.com", {
+      user_id: "user-1",
+      outcome: "accept",
+      recommendation_action_type: "execute_next_action",
+      recommendation_title: "Next Action: Ship dashboard",
+      target_priority_id: "priority-1",
+      thread_id: "thread-1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/chief-of-staff/recommendation-outcomes",
+      expect.objectContaining({
+        method: "POST",
+        cache: "no-store",
+      }),
     );
   });
 
