@@ -334,6 +334,34 @@ def test_chief_of_staff_priority_brief_is_deterministic_and_trust_aware(
         "source_order_asc",
         "source_reference_id_asc",
     ]
+    assert brief["handoff_queue_summary"]["state_order"] == [
+        "ready",
+        "pending_approval",
+        "executed",
+        "stale",
+        "expired",
+    ]
+    assert brief["handoff_queue_summary"]["item_order"] == [
+        "queue_rank_asc",
+        "handoff_rank_asc",
+        "score_desc",
+        "handoff_item_id_asc",
+    ]
+    assert brief["summary"]["handoff_queue_total_count"] == len(brief["handoff_items"])
+    assert brief["summary"]["handoff_queue_state_order"] == [
+        "ready",
+        "pending_approval",
+        "executed",
+        "stale",
+        "expired",
+    ]
+    assert brief["summary"]["handoff_queue_item_order"] == [
+        "queue_rank_asc",
+        "handoff_rank_asc",
+        "score_desc",
+        "handoff_item_id_asc",
+    ]
+    assert brief["handoff_review_actions"] == []
     assert brief["summary"]["execution_posture_order"] == ["approval_bounded_artifact_only"]
     assert brief["task_draft"]["source_handoff_item_id"] == brief["handoff_items"][0]["handoff_item_id"]
     assert brief["approval_draft"]["source_handoff_item_id"] == brief["handoff_items"][0]["handoff_item_id"]
@@ -350,6 +378,92 @@ def test_chief_of_staff_priority_brief_is_deterministic_and_trust_aware(
     assert "No task, approval, connector send, or external side effect is executed" in brief[
         "execution_posture"
     ]["non_autonomous_guarantee"]
+
+
+def test_chief_of_staff_handoff_review_action_updates_queue_lifecycle(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="chief-of-staff-queue@example.com")
+    thread_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        capture = store.create_continuity_capture_event(
+            raw_content="Next Action: Queue review validation",
+            explicit_signal="next_action",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_next_action",
+        )
+        continuity_object = store.create_continuity_object(
+            capture_event_id=capture["id"],
+            object_type="NextAction",
+            status="active",
+            title="Next Action: Queue review validation",
+            body={"action_text": "Queue review validation"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["event-next"]},
+            confidence=0.95,
+        )
+
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=continuity_object["id"],
+        created_at=datetime(2026, 3, 31, 10, 0, tzinfo=UTC),
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status, brief_payload = invoke_request(
+        "GET",
+        "/v0/chief-of-staff",
+        query_params={
+            "user_id": str(user_id),
+            "thread_id": str(thread_id),
+            "limit": "5",
+        },
+    )
+    assert status == 200
+    handoff_item_id = brief_payload["brief"]["handoff_items"][0]["handoff_item_id"]
+
+    action_status, action_payload = invoke_request(
+        "POST",
+        "/v0/chief-of-staff/handoff-review-actions",
+        payload={
+            "user_id": str(user_id),
+            "handoff_item_id": handoff_item_id,
+            "review_action": "mark_stale",
+            "thread_id": str(thread_id),
+            "note": "operator review test",
+        },
+    )
+
+    assert action_status == 200
+    assert action_payload["review_action"]["handoff_item_id"] == handoff_item_id
+    assert action_payload["review_action"]["review_action"] == "mark_stale"
+    assert action_payload["review_action"]["next_lifecycle_state"] == "stale"
+    assert action_payload["handoff_queue_summary"]["stale_count"] >= 1
+
+    refreshed_status, refreshed_brief_payload = invoke_request(
+        "GET",
+        "/v0/chief-of-staff",
+        query_params={
+            "user_id": str(user_id),
+            "thread_id": str(thread_id),
+            "limit": "5",
+        },
+    )
+    assert refreshed_status == 200
+    refreshed_brief = refreshed_brief_payload["brief"]
+    assert refreshed_brief["handoff_review_actions"]
+    assert refreshed_brief["handoff_review_actions"][0]["review_action"] == "mark_stale"
+    assert any(
+        item["handoff_item_id"] == handoff_item_id
+        for item in refreshed_brief["handoff_queue_groups"]["stale"]["items"]
+    )
 
 
 def test_chief_of_staff_recommendation_outcome_capture_is_auditable_and_updates_learning(

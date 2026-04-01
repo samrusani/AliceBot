@@ -67,6 +67,7 @@ describe("ChiefOfStaffPage", () => {
     expect(screen.getByText("Fixture preparation brief")).toBeInTheDocument();
     expect(screen.getByText("Fixture weekly review")).toBeInTheDocument();
     expect(screen.getByText("Fixture action handoff")).toBeInTheDocument();
+    expect(screen.getByText("Fixture handoff queue")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Confirm launch checklist owner").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Action type: execute_next_action").length).toBeGreaterThan(0);
     expect(screen.getByText("Follow-through supervision")).toBeInTheDocument();
@@ -539,6 +540,111 @@ describe("ChiefOfStaffPage", () => {
             },
           },
         ],
+        handoff_queue_summary: {
+          total_count: 1,
+          ready_count: 1,
+          pending_approval_count: 0,
+          executed_count: 0,
+          stale_count: 0,
+          expired_count: 0,
+          state_order: ["ready", "pending_approval", "executed", "stale", "expired"],
+          group_order: ["ready", "pending_approval", "executed", "stale", "expired"],
+          item_order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+          review_action_order: ["mark_ready", "mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
+        },
+        handoff_queue_groups: {
+          ready: {
+            items: [
+              {
+                queue_rank: 1,
+                handoff_rank: 1,
+                handoff_item_id: "handoff-1-recommended_next_action-priority-live-1",
+                lifecycle_state: "ready",
+                state_reason: "Handoff item is ready for explicit operator review.",
+                source_kind: "recommended_next_action",
+                source_reference_id: "priority-live-1",
+                title: "Next Action: Send partner follow-up",
+                recommendation_action: "execute_next_action",
+                priority_posture: "urgent",
+                confidence_posture: "medium",
+                score: 1650,
+                age_hours_relative_to_latest: 0,
+                review_action_order: ["mark_ready", "mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
+                available_review_actions: ["mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
+                last_review_action: null,
+                provenance_references: [
+                  {
+                    source_kind: "continuity_capture_event",
+                    source_id: "capture-live-1",
+                  },
+                ],
+              },
+            ],
+            summary: {
+              lifecycle_state: "ready",
+              returned_count: 1,
+              total_count: 1,
+              order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+            },
+            empty_state: {
+              is_empty: false,
+              message: "No ready handoff items for this scope.",
+            },
+          },
+          pending_approval: {
+            items: [],
+            summary: {
+              lifecycle_state: "pending_approval",
+              returned_count: 0,
+              total_count: 0,
+              order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+            },
+            empty_state: {
+              is_empty: true,
+              message: "No handoff items are currently pending approval.",
+            },
+          },
+          executed: {
+            items: [],
+            summary: {
+              lifecycle_state: "executed",
+              returned_count: 0,
+              total_count: 0,
+              order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+            },
+            empty_state: {
+              is_empty: true,
+              message: "No handoff items are currently marked executed.",
+            },
+          },
+          stale: {
+            items: [],
+            summary: {
+              lifecycle_state: "stale",
+              returned_count: 0,
+              total_count: 0,
+              order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+            },
+            empty_state: {
+              is_empty: true,
+              message: "No stale handoff items are currently surfaced.",
+            },
+          },
+          expired: {
+            items: [],
+            summary: {
+              lifecycle_state: "expired",
+              returned_count: 0,
+              total_count: 0,
+              order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+            },
+            empty_state: {
+              is_empty: true,
+              message: "No expired handoff items are currently surfaced.",
+            },
+          },
+        },
+        handoff_review_actions: [],
         task_draft: {
           status: "draft",
           mode: "governed_request_draft",
@@ -632,8 +738,23 @@ describe("ChiefOfStaffPage", () => {
           handoff_item_count: 1,
           handoff_item_order: ["score_desc", "source_order_asc", "source_reference_id_asc"],
           execution_posture_order: ["approval_bounded_artifact_only"],
+          handoff_queue_total_count: 1,
+          handoff_queue_ready_count: 1,
+          handoff_queue_pending_approval_count: 0,
+          handoff_queue_executed_count: 0,
+          handoff_queue_stale_count: 0,
+          handoff_queue_expired_count: 0,
+          handoff_queue_state_order: ["ready", "pending_approval", "executed", "stale", "expired"],
+          handoff_queue_group_order: ["ready", "pending_approval", "executed", "stale", "expired"],
+          handoff_queue_item_order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
         },
-        sources: ["continuity_recall", "memory_trust_dashboard", "chief_of_staff_action_handoff"],
+        sources: [
+          "continuity_recall",
+          "memory_trust_dashboard",
+          "chief_of_staff_action_handoff",
+          "chief_of_staff_handoff_queue",
+          "chief_of_staff_handoff_review_actions",
+        ],
       },
     });
 
@@ -645,6 +766,7 @@ describe("ChiefOfStaffPage", () => {
     expect(screen.getByText("Live preparation brief")).toBeInTheDocument();
     expect(screen.getByText("Live weekly review")).toBeInTheDocument();
     expect(screen.getByText("Live action handoff")).toBeInTheDocument();
+    expect(screen.getByText("Live handoff queue")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Send partner follow-up").length).toBeGreaterThan(0);
     expect(getChiefOfStaffPriorityBriefMock).toHaveBeenCalledWith(
       "https://api.example.com",
