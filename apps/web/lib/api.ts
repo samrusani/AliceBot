@@ -1438,6 +1438,15 @@ export type ChiefOfStaffPrioritySummary = {
   handoff_item_count: number;
   handoff_item_order: string[];
   execution_posture_order: ChiefOfStaffExecutionPosture[];
+  handoff_queue_total_count: number;
+  handoff_queue_ready_count: number;
+  handoff_queue_pending_approval_count: number;
+  handoff_queue_executed_count: number;
+  handoff_queue_stale_count: number;
+  handoff_queue_expired_count: number;
+  handoff_queue_state_order: ChiefOfStaffHandoffQueueLifecycleState[];
+  handoff_queue_group_order: ChiefOfStaffHandoffQueueLifecycleState[];
+  handoff_queue_item_order: string[];
 };
 
 export type ChiefOfStaffPreparationArtifactItem = {
@@ -1530,6 +1539,18 @@ export type ChiefOfStaffActionHandoffAction =
   | "weekly_review_defer"
   | "weekly_review_escalate";
 export type ChiefOfStaffExecutionPosture = "approval_bounded_artifact_only";
+export type ChiefOfStaffHandoffQueueLifecycleState =
+  | "ready"
+  | "pending_approval"
+  | "executed"
+  | "stale"
+  | "expired";
+export type ChiefOfStaffHandoffReviewAction =
+  | "mark_ready"
+  | "mark_pending_approval"
+  | "mark_executed"
+  | "mark_stale"
+  | "mark_expired";
 
 export type ChiefOfStaffWeeklyReviewBrief = {
   scope: ContinuityRecallSummary["filters"];
@@ -1673,6 +1694,75 @@ export type ChiefOfStaffExecutionPostureRecord = {
   reason: string;
 };
 
+export type ChiefOfStaffHandoffReviewActionRecord = {
+  id: string;
+  capture_event_id: string;
+  handoff_item_id: string;
+  review_action: ChiefOfStaffHandoffReviewAction;
+  previous_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState | null;
+  next_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState;
+  reason: string;
+  note: string | null;
+  provenance_references: ContinuityRecallProvenanceReference[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChiefOfStaffHandoffQueueItem = {
+  queue_rank: number;
+  handoff_rank: number;
+  handoff_item_id: string;
+  lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState;
+  state_reason: string;
+  source_kind: ChiefOfStaffActionHandoffSourceKind;
+  source_reference_id: string | null;
+  title: string;
+  recommendation_action: ChiefOfStaffActionHandoffAction;
+  priority_posture: ChiefOfStaffPriorityPosture | null;
+  confidence_posture: ChiefOfStaffRecommendationConfidencePosture;
+  score: number;
+  age_hours_relative_to_latest: number | null;
+  review_action_order: ChiefOfStaffHandoffReviewAction[];
+  available_review_actions: ChiefOfStaffHandoffReviewAction[];
+  last_review_action: ChiefOfStaffHandoffReviewActionRecord | null;
+  provenance_references: ContinuityRecallProvenanceReference[];
+};
+
+export type ChiefOfStaffHandoffQueueGroup = {
+  items: ChiefOfStaffHandoffQueueItem[];
+  summary: {
+    lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState;
+    returned_count: number;
+    total_count: number;
+    order: string[];
+  };
+  empty_state: {
+    is_empty: boolean;
+    message: string;
+  };
+};
+
+export type ChiefOfStaffHandoffQueueGroups = {
+  ready: ChiefOfStaffHandoffQueueGroup;
+  pending_approval: ChiefOfStaffHandoffQueueGroup;
+  executed: ChiefOfStaffHandoffQueueGroup;
+  stale: ChiefOfStaffHandoffQueueGroup;
+  expired: ChiefOfStaffHandoffQueueGroup;
+};
+
+export type ChiefOfStaffHandoffQueueSummary = {
+  total_count: number;
+  ready_count: number;
+  pending_approval_count: number;
+  executed_count: number;
+  stale_count: number;
+  expired_count: number;
+  state_order: ChiefOfStaffHandoffQueueLifecycleState[];
+  group_order: ChiefOfStaffHandoffQueueLifecycleState[];
+  item_order: string[];
+  review_action_order: ChiefOfStaffHandoffReviewAction[];
+};
+
 export type ChiefOfStaffPriorityBrief = {
   assembly_version: string;
   scope: ContinuityRecallSummary["filters"];
@@ -1694,6 +1784,9 @@ export type ChiefOfStaffPriorityBrief = {
   pattern_drift_summary: ChiefOfStaffPatternDriftSummary;
   action_handoff_brief: ChiefOfStaffActionHandoffBrief;
   handoff_items: ChiefOfStaffActionHandoffItem[];
+  handoff_queue_summary: ChiefOfStaffHandoffQueueSummary;
+  handoff_queue_groups: ChiefOfStaffHandoffQueueGroups;
+  handoff_review_actions: ChiefOfStaffHandoffReviewActionRecord[];
   task_draft: ChiefOfStaffActionHandoffTaskDraft;
   approval_draft: ChiefOfStaffActionHandoffApprovalDraft;
   execution_posture: ChiefOfStaffExecutionPostureRecord;
@@ -1720,6 +1813,24 @@ export type ChiefOfStaffRecommendationOutcomeCaptureResult = {
   recommendation_outcomes: ChiefOfStaffRecommendationOutcomeSection;
   priority_learning_summary: ChiefOfStaffPriorityLearningSummary;
   pattern_drift_summary: ChiefOfStaffPatternDriftSummary;
+};
+
+export type ChiefOfStaffHandoffReviewActionCapturePayload = {
+  user_id: string;
+  handoff_item_id: string;
+  review_action: ChiefOfStaffHandoffReviewAction;
+  note?: string | null;
+  thread_id?: string | null;
+  task_id?: string | null;
+  project?: string | null;
+  person?: string | null;
+};
+
+export type ChiefOfStaffHandoffReviewActionCaptureResult = {
+  review_action: ChiefOfStaffHandoffReviewActionRecord;
+  handoff_queue_summary: ChiefOfStaffHandoffQueueSummary;
+  handoff_queue_groups: ChiefOfStaffHandoffQueueGroups;
+  handoff_review_actions: ChiefOfStaffHandoffReviewActionRecord[];
 };
 
 export type ContinuityOpenLoopReviewActionPayload = {
@@ -2349,6 +2460,20 @@ export function captureChiefOfStaffRecommendationOutcome(
   return requestJson<ChiefOfStaffRecommendationOutcomeCaptureResult>(
     apiBaseUrl,
     "/v0/chief-of-staff/recommendation-outcomes",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function captureChiefOfStaffHandoffReviewAction(
+  apiBaseUrl: string,
+  payload: ChiefOfStaffHandoffReviewActionCapturePayload,
+) {
+  return requestJson<ChiefOfStaffHandoffReviewActionCaptureResult>(
+    apiBaseUrl,
+    "/v0/chief-of-staff/handoff-review-actions",
     {
       method: "POST",
       body: JSON.stringify(payload),

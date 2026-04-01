@@ -243,6 +243,20 @@ ChiefOfStaffActionHandoffAction = Literal[
     "weekly_review_escalate",
 ]
 ChiefOfStaffExecutionPosture = Literal["approval_bounded_artifact_only"]
+ChiefOfStaffHandoffQueueLifecycleState = Literal[
+    "ready",
+    "pending_approval",
+    "executed",
+    "stale",
+    "expired",
+]
+ChiefOfStaffHandoffReviewAction = Literal[
+    "mark_ready",
+    "mark_pending_approval",
+    "mark_executed",
+    "mark_stale",
+    "mark_expired",
+]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -548,6 +562,26 @@ CHIEF_OF_STAFF_ACTION_HANDOFF_ACTIONS = [
     "weekly_review_escalate",
 ]
 CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER = ["approval_bounded_artifact_only"]
+CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER = [
+    "ready",
+    "pending_approval",
+    "executed",
+    "stale",
+    "expired",
+]
+CHIEF_OF_STAFF_HANDOFF_QUEUE_ITEM_ORDER = [
+    "queue_rank_asc",
+    "handoff_rank_asc",
+    "score_desc",
+    "handoff_item_id_asc",
+]
+CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS = [
+    "mark_ready",
+    "mark_pending_approval",
+    "mark_executed",
+    "mark_stale",
+    "mark_expired",
+]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -1675,6 +1709,28 @@ class ChiefOfStaffRecommendationOutcomeCaptureInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ChiefOfStaffHandoffReviewActionInput:
+    handoff_item_id: str
+    review_action: ChiefOfStaffHandoffReviewAction
+    note: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "handoff_item_id": self.handoff_item_id,
+            "review_action": self.review_action,
+            "note": self.note,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuityOpenLoopReviewActionInput:
     action: ContinuityOpenLoopReviewAction
     note: str | None = None
@@ -2651,6 +2707,79 @@ class ChiefOfStaffExecutionPostureRecord(TypedDict):
     reason: str
 
 
+class ChiefOfStaffHandoffReviewActionRecord(TypedDict):
+    id: str
+    capture_event_id: str
+    handoff_item_id: str
+    review_action: ChiefOfStaffHandoffReviewAction
+    previous_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState | None
+    next_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState
+    reason: str
+    note: str | None
+    provenance_references: list[ContinuityRecallProvenanceReference]
+    created_at: str
+    updated_at: str
+
+
+class ChiefOfStaffHandoffQueueItem(TypedDict):
+    queue_rank: int
+    handoff_rank: int
+    handoff_item_id: str
+    lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState
+    state_reason: str
+    source_kind: ChiefOfStaffActionHandoffSourceKind
+    source_reference_id: str | None
+    title: str
+    recommendation_action: ChiefOfStaffActionHandoffAction
+    priority_posture: ChiefOfStaffPriorityPosture | None
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    score: float
+    age_hours_relative_to_latest: float | None
+    review_action_order: list[ChiefOfStaffHandoffReviewAction]
+    available_review_actions: list[ChiefOfStaffHandoffReviewAction]
+    last_review_action: ChiefOfStaffHandoffReviewActionRecord | None
+    provenance_references: list[ContinuityRecallProvenanceReference]
+
+
+class ChiefOfStaffHandoffQueueGroupSummary(TypedDict):
+    lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState
+    returned_count: int
+    total_count: int
+    order: list[str]
+
+
+class ChiefOfStaffHandoffQueueGroupEmptyState(TypedDict):
+    is_empty: bool
+    message: str
+
+
+class ChiefOfStaffHandoffQueueGroup(TypedDict):
+    items: list[ChiefOfStaffHandoffQueueItem]
+    summary: ChiefOfStaffHandoffQueueGroupSummary
+    empty_state: ChiefOfStaffHandoffQueueGroupEmptyState
+
+
+class ChiefOfStaffHandoffQueueGroups(TypedDict):
+    ready: ChiefOfStaffHandoffQueueGroup
+    pending_approval: ChiefOfStaffHandoffQueueGroup
+    executed: ChiefOfStaffHandoffQueueGroup
+    stale: ChiefOfStaffHandoffQueueGroup
+    expired: ChiefOfStaffHandoffQueueGroup
+
+
+class ChiefOfStaffHandoffQueueSummary(TypedDict):
+    total_count: int
+    ready_count: int
+    pending_approval_count: int
+    executed_count: int
+    stale_count: int
+    expired_count: int
+    state_order: list[ChiefOfStaffHandoffQueueLifecycleState]
+    group_order: list[ChiefOfStaffHandoffQueueLifecycleState]
+    item_order: list[str]
+    review_action_order: list[ChiefOfStaffHandoffReviewAction]
+
+
 class ChiefOfStaffPrioritySummary(TypedDict):
     limit: int
     returned_count: int
@@ -2670,6 +2799,15 @@ class ChiefOfStaffPrioritySummary(TypedDict):
     handoff_item_count: int
     handoff_item_order: list[str]
     execution_posture_order: list[ChiefOfStaffExecutionPosture]
+    handoff_queue_total_count: int
+    handoff_queue_ready_count: int
+    handoff_queue_pending_approval_count: int
+    handoff_queue_executed_count: int
+    handoff_queue_stale_count: int
+    handoff_queue_expired_count: int
+    handoff_queue_state_order: list[ChiefOfStaffHandoffQueueLifecycleState]
+    handoff_queue_group_order: list[ChiefOfStaffHandoffQueueLifecycleState]
+    handoff_queue_item_order: list[str]
 
 
 class ChiefOfStaffPreparationArtifactItem(TypedDict):
@@ -2832,6 +2970,9 @@ class ChiefOfStaffPriorityBriefRecord(TypedDict):
     pattern_drift_summary: ChiefOfStaffPatternDriftSummaryRecord
     action_handoff_brief: ChiefOfStaffActionHandoffBriefRecord
     handoff_items: list[ChiefOfStaffActionHandoffItem]
+    handoff_queue_summary: ChiefOfStaffHandoffQueueSummary
+    handoff_queue_groups: ChiefOfStaffHandoffQueueGroups
+    handoff_review_actions: list[ChiefOfStaffHandoffReviewActionRecord]
     task_draft: ChiefOfStaffActionHandoffTaskDraftRecord
     approval_draft: ChiefOfStaffActionHandoffApprovalDraftRecord
     execution_posture: ChiefOfStaffExecutionPostureRecord
@@ -2848,6 +2989,13 @@ class ChiefOfStaffRecommendationOutcomeCaptureResponse(TypedDict):
     recommendation_outcomes: ChiefOfStaffRecommendationOutcomeSection
     priority_learning_summary: ChiefOfStaffPriorityLearningSummaryRecord
     pattern_drift_summary: ChiefOfStaffPatternDriftSummaryRecord
+
+
+class ChiefOfStaffHandoffReviewActionCaptureResponse(TypedDict):
+    review_action: ChiefOfStaffHandoffReviewActionRecord
+    handoff_queue_summary: ChiefOfStaffHandoffQueueSummary
+    handoff_queue_groups: ChiefOfStaffHandoffQueueGroups
+    handoff_review_actions: list[ChiefOfStaffHandoffReviewActionRecord]
 
 
 class ContinuityOpenLoopReviewActionResponse(TypedDict):

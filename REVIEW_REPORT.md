@@ -4,34 +4,40 @@
 PASS
 
 ## criteria met
-- P8-S29 acceptance scope is implemented: deterministic chief-of-staff action handoff artifacts (`action_handoff_brief`, `handoff_items`, `task_draft`, `approval_draft`, `execution_posture`) are present in API contracts and brief assembly.
-- Deterministic mapping and ordering are explicit in implementation (`_normalize_handoff_action`, `_action_handoff_sort_key`, declared order constants, deterministic handoff IDs, stable provenance aggregation).
-- Approval-bounded/non-autonomous posture is explicit and enforced in payload semantics (`approval_required=true`, `autonomous_execution=false`, `external_side_effects_allowed=false`, explicit non-autonomous guarantee text).
-- `/chief-of-staff` now includes a dedicated action handoff panel showing posture, draft artifacts, and provenance/rationale visibility.
-- Required test and regression gates pass:
-  - `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py tests/integration/test_chief_of_staff_api.py -q` -> PASS (`7 passed`)
-  - `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-weekly-review-panel.test.tsx components/chief-of-staff-action-handoff-panel.test.tsx lib/api.test.ts` -> PASS (`4 files, 42 tests`)
+- Sprint remained within P8-S30 scope and delivered deterministic handoff queue/review seams on top of shipped P8-S29 artifacts.
+- Queue lifecycle model is explicit and deterministic with required states:
+  - `ready`
+  - `pending_approval`
+  - `executed`
+  - `stale`
+  - `expired`
+- Queue grouping and ordering are deterministic and explicit via contract metadata (`state_order`, `group_order`, `item_order`) and stale/expired items are surfaced (not dropped).
+- Operator review transitions are explicit and auditable through `POST /v0/chief-of-staff/handoff-review-actions`, with immutable continuity-note capture and refreshed queue artifacts.
+- Approval-bounded, non-autonomous posture is preserved (no autonomous execution/connector side effects introduced).
+- Required command evidence is green:
+  - `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py tests/integration/test_chief_of_staff_api.py -q` -> PASS (`11 passed in 1.55s`)
+  - `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-action-handoff-panel.test.tsx components/chief-of-staff-handoff-queue-panel.test.tsx lib/api.test.ts` -> PASS (`4 files, 42 tests`)
   - `python3 scripts/run_phase4_validation_matrix.py` -> PASS (`Phase 4 validation matrix result: PASS`)
-- Required control docs are updated for active P8-S29 scope while preserving “Phase 7 complete” truth (`README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`).
+- Required docs are synchronized with active P8-S30 scope and preserve P8-S29 shipped truth.
 
 ## criteria missed
 - None.
 
 ## quality issues
-- Non-blocking: there is mild scope spill into additional test fixtures (`chief-of-staff-priority/follow-through/preparation panel tests`) not listed in the sprint packet’s exact file list, but these updates are compatibility fixture adjustments and do not change runtime behavior.
+- None blocking or deferred for P8-S30.
 
 ## regression risks
-- Low: handoff ordering depends on explicit enum/order constants. Future action/source additions must update these constants and tests together to avoid contract/order drift.
+- Low residual risk: future queue state/action additions must keep constants + contract metadata + tests synchronized to preserve deterministic ordering guarantees.
 
 ## docs issues
-- Non-blocking: `ARCHITECTURE.md` still describes chief-of-staff as ending at weekly review/outcome-learning (P7), and does not yet mention P8-S29 action-handoff surfaces.
+- None. `README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`, and `ARCHITECTURE.md` are aligned with shipped P8-S30 behavior.
 
 ## should anything be added to RULES.md?
 - No.
 
 ## should anything update ARCHITECTURE.md?
-- Yes. Add P8-S29 chief-of-staff action-handoff API/UI seams and non-autonomous execution-posture truth to keep architecture docs aligned with shipped behavior.
+- Already addressed in this sprint update (P8-S30 queue/review seam and endpoint are now documented).
 
 ## recommended next action
-1. Accept and merge P8-S29.
-2. Land a small follow-up doc sync for `ARCHITECTURE.md` to include the new action-handoff seam.
+1. Merge P8-S30.
+2. Proceed to the next Phase 8 seam while preserving explicit approval-bounded posture and deterministic contracts.
