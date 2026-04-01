@@ -121,6 +121,16 @@ def test_append_event_locks_thread_and_serializes_payload() -> None:
     assert insert_params[4].obj == payload
 
 
+def test_append_event_raises_clear_error_when_returning_row_is_missing() -> None:
+    store = ContinuityStore(RecordingConnection(RecordingCursor(fetchone_results=[])))
+
+    with pytest.raises(
+        ContinuityStoreInvariantError,
+        match="append_event did not return a row",
+    ):
+        store.append_event(uuid4(), uuid4(), "message.user", {"text": "hello"})
+
+
 def test_list_thread_events_returns_all_rows_in_order() -> None:
     thread_id = uuid4()
     events = [
