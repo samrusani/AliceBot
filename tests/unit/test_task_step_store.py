@@ -4,8 +4,9 @@ from typing import Any
 from uuid import uuid4
 
 from psycopg.types.json import Jsonb
+import pytest
 
-from alicebot_api.store import ContinuityStore
+from alicebot_api.store import ContinuityStore, ContinuityStoreInvariantError
 
 
 class RecordingCursor:
@@ -291,3 +292,30 @@ def test_task_step_store_methods_use_expected_queries_and_jsonb_parameters() -> 
     task_update_query, task_update_params = cursor.executed[6]
     assert "UPDATE tasks" in task_update_query
     assert task_update_params == ("approved", None, None, task_id)
+
+
+def test_create_task_step_raises_clear_error_when_returning_row_is_missing() -> None:
+    task_id = uuid4()
+    store = ContinuityStore(RecordingConnection(RecordingCursor(fetchone_results=[])))
+
+    with pytest.raises(
+        ContinuityStoreInvariantError,
+        match="create_task_step did not return a row",
+    ):
+        store.create_task_step(
+            task_id=task_id,
+            sequence_no=1,
+            kind="governed_request",
+            status="created",
+            request={"thread_id": "thread-123", "tool_id": "tool-123"},
+            outcome={
+                "routing_decision": "approval_required",
+                "approval_id": None,
+                "approval_status": None,
+                "execution_id": None,
+                "execution_status": None,
+                "blocked_reason": None,
+            },
+            trace_id=uuid4(),
+            trace_kind="approval.request",
+        )
