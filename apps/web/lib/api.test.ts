@@ -32,6 +32,7 @@ import {
   getThreadResumptionBrief,
   getContinuityResumptionBrief,
   getChiefOfStaffPriorityBrief,
+  captureChiefOfStaffHandoffReviewAction,
   captureChiefOfStaffRecommendationOutcome,
   getThreadSessions,
   executeApproval,
@@ -2966,6 +2967,129 @@ describe("api helpers", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/chief-of-staff/recommendation-outcomes",
+      expect.objectContaining({
+        method: "POST",
+        cache: "no-store",
+      }),
+    );
+  });
+
+  it("captures chief-of-staff handoff queue review actions through the deterministic seam", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          review_action: {
+            id: "review-1",
+            capture_event_id: "capture-review-1",
+            handoff_item_id: "handoff-1",
+            review_action: "mark_stale",
+            previous_lifecycle_state: "ready",
+            next_lifecycle_state: "stale",
+            reason: "Operator review action moved queue posture to stale.",
+            note: null,
+            provenance_references: [],
+            created_at: "2026-04-01T09:00:00Z",
+            updated_at: "2026-04-01T09:00:00Z",
+          },
+          handoff_queue_summary: {
+            total_count: 1,
+            ready_count: 0,
+            pending_approval_count: 0,
+            executed_count: 0,
+            stale_count: 1,
+            expired_count: 0,
+            state_order: ["ready", "pending_approval", "executed", "stale", "expired"],
+            group_order: ["ready", "pending_approval", "executed", "stale", "expired"],
+            item_order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+            review_action_order: ["mark_ready", "mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
+          },
+          handoff_queue_groups: {
+            ready: {
+              items: [],
+              summary: {
+                lifecycle_state: "ready",
+                returned_count: 0,
+                total_count: 0,
+                order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+              },
+              empty_state: { is_empty: true, message: "No ready handoff items for this scope." },
+            },
+            pending_approval: {
+              items: [],
+              summary: {
+                lifecycle_state: "pending_approval",
+                returned_count: 0,
+                total_count: 0,
+                order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+              },
+              empty_state: { is_empty: true, message: "No handoff items are currently pending approval." },
+            },
+            executed: {
+              items: [],
+              summary: {
+                lifecycle_state: "executed",
+                returned_count: 0,
+                total_count: 0,
+                order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+              },
+              empty_state: { is_empty: true, message: "No handoff items are currently marked executed." },
+            },
+            stale: {
+              items: [
+                {
+                  queue_rank: 1,
+                  handoff_rank: 1,
+                  handoff_item_id: "handoff-1",
+                  lifecycle_state: "stale",
+                  state_reason: "Latest operator review action 'mark_stale' set lifecycle state to 'stale'.",
+                  source_kind: "recommended_next_action",
+                  source_reference_id: "priority-1",
+                  title: "Next Action: Ship dashboard",
+                  recommendation_action: "execute_next_action",
+                  priority_posture: "urgent",
+                  confidence_posture: "low",
+                  score: 1650,
+                  age_hours_relative_to_latest: 0,
+                  review_action_order: ["mark_ready", "mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
+                  available_review_actions: ["mark_ready", "mark_pending_approval", "mark_executed", "mark_expired"],
+                  last_review_action: null,
+                  provenance_references: [],
+                },
+              ],
+              summary: {
+                lifecycle_state: "stale",
+                returned_count: 1,
+                total_count: 1,
+                order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+              },
+              empty_state: { is_empty: false, message: "No stale handoff items are currently surfaced." },
+            },
+            expired: {
+              items: [],
+              summary: {
+                lifecycle_state: "expired",
+                returned_count: 0,
+                total_count: 0,
+                order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+              },
+              empty_state: { is_empty: true, message: "No expired handoff items are currently surfaced." },
+            },
+          },
+          handoff_review_actions: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await captureChiefOfStaffHandoffReviewAction("https://api.example.com", {
+      user_id: "user-1",
+      handoff_item_id: "handoff-1",
+      review_action: "mark_stale",
+      thread_id: "thread-1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/chief-of-staff/handoff-review-actions",
       expect.objectContaining({
         method: "POST",
         cache: "no-store",

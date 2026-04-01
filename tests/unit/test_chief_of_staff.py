@@ -5,6 +5,7 @@ from uuid import UUID
 
 import alicebot_api.chief_of_staff as chief
 from alicebot_api.contracts import (
+    ChiefOfStaffHandoffReviewActionInput,
     ChiefOfStaffPriorityBriefRequestInput,
     ChiefOfStaffRecommendationOutcomeCaptureInput,
 )
@@ -353,6 +354,41 @@ def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> N
         "source_order_asc",
         "source_reference_id_asc",
     ]
+    assert first["brief"]["handoff_queue_summary"]["state_order"] == [
+        "ready",
+        "pending_approval",
+        "executed",
+        "stale",
+        "expired",
+    ]
+    assert first["brief"]["handoff_queue_summary"]["item_order"] == [
+        "queue_rank_asc",
+        "handoff_rank_asc",
+        "score_desc",
+        "handoff_item_id_asc",
+    ]
+    assert first["brief"]["handoff_queue_summary"]["total_count"] == len(first["brief"]["handoff_items"])
+    assert first["brief"]["summary"]["handoff_queue_total_count"] == len(first["brief"]["handoff_items"])
+    assert first["brief"]["summary"]["handoff_queue_state_order"] == [
+        "ready",
+        "pending_approval",
+        "executed",
+        "stale",
+        "expired",
+    ]
+    assert first["brief"]["summary"]["handoff_queue_item_order"] == [
+        "queue_rank_asc",
+        "handoff_rank_asc",
+        "score_desc",
+        "handoff_item_id_asc",
+    ]
+    assert first["brief"]["handoff_queue_groups"]["ready"]["summary"]["order"] == [
+        "queue_rank_asc",
+        "handoff_rank_asc",
+        "score_desc",
+        "handoff_item_id_asc",
+    ]
+    assert first["brief"]["handoff_review_actions"] == []
     assert first["brief"]["summary"]["execution_posture_order"] == ["approval_bounded_artifact_only"]
     assert [item["source_kind"] for item in first["brief"]["handoff_items"]] == [
         "recommended_next_action",
@@ -655,6 +691,326 @@ def test_priority_brief_retrieval_failure_respects_non_healthy_quality_caps(monk
     assert "weak" in insufficient_sample_ranked["rationale"]["trust_signals"]["reason"]
     assert insufficient_sample_payload["brief"]["draft_follow_up"]["status"] == "none"
     assert insufficient_sample_payload["brief"]["resumption_supervision"]["confidence_posture"] == "low"
+
+
+def test_capture_handoff_review_action_records_transition_and_returns_updated_queue(monkeypatch) -> None:
+    class _FakeStore:
+        def __init__(self) -> None:
+            self.capture_event_payloads: list[dict[str, object]] = []
+            self.object_payloads: list[dict[str, object]] = []
+
+        def create_continuity_capture_event(
+            self,
+            *,
+            raw_content: str,
+            explicit_signal: str,
+            admission_posture: str,
+            admission_reason: str,
+        ) -> dict[str, object]:
+            self.capture_event_payloads.append(
+                {
+                    "raw_content": raw_content,
+                    "explicit_signal": explicit_signal,
+                    "admission_posture": admission_posture,
+                    "admission_reason": admission_reason,
+                }
+            )
+            return {"id": UUID("11111111-1111-4111-8111-111111111111")}
+
+        def create_continuity_object(
+            self,
+            *,
+            capture_event_id: UUID,
+            object_type: str,
+            status: str,
+            title: str,
+            body: dict[str, object],
+            provenance: dict[str, object],
+            confidence: float,
+        ) -> dict[str, object]:
+            self.object_payloads.append(
+                {
+                    "capture_event_id": capture_event_id,
+                    "object_type": object_type,
+                    "status": status,
+                    "title": title,
+                    "body": body,
+                    "provenance": provenance,
+                    "confidence": confidence,
+                }
+            )
+            return {
+                "id": UUID("22222222-2222-4222-8222-222222222222"),
+                "capture_event_id": capture_event_id,
+                "created_at": datetime(2026, 4, 1, 9, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 4, 1, 9, 0, tzinfo=UTC),
+            }
+
+    first_brief = {
+        "handoff_queue_groups": {
+            "ready": {
+                "items": [
+                    {
+                        "handoff_item_id": "handoff-1",
+                        "lifecycle_state": "ready",
+                    }
+                ]
+            },
+            "pending_approval": {"items": []},
+            "executed": {"items": []},
+            "stale": {"items": []},
+            "expired": {"items": []},
+        }
+    }
+    second_brief = {
+        "handoff_queue_summary": {
+            "total_count": 1,
+            "ready_count": 0,
+            "pending_approval_count": 0,
+            "executed_count": 0,
+            "stale_count": 1,
+            "expired_count": 0,
+            "state_order": ["ready", "pending_approval", "executed", "stale", "expired"],
+            "group_order": ["ready", "pending_approval", "executed", "stale", "expired"],
+            "item_order": ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+            "review_action_order": ["mark_ready", "mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
+        },
+        "handoff_queue_groups": {
+            "ready": {"items": []},
+            "pending_approval": {"items": []},
+            "executed": {"items": []},
+            "stale": {
+                "items": [
+                    {
+                        "handoff_item_id": "handoff-1",
+                        "lifecycle_state": "stale",
+                    }
+                ]
+            },
+            "expired": {"items": []},
+        },
+        "handoff_review_actions": [],
+    }
+
+    compile_calls = {"count": 0}
+
+    def fake_compile(*args, **kwargs):
+        compile_calls["count"] += 1
+        if compile_calls["count"] == 1:
+            return {"brief": first_brief}
+        return {"brief": second_brief}
+
+    monkeypatch.setattr(chief, "compile_chief_of_staff_priority_brief", fake_compile)
+
+    store = _FakeStore()
+    response = chief.capture_chief_of_staff_handoff_review_action(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        request=ChiefOfStaffHandoffReviewActionInput(
+            handoff_item_id="handoff-1",
+            review_action="mark_stale",
+            thread_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        ),
+    )
+
+    assert compile_calls["count"] == 2
+    assert store.capture_event_payloads
+    assert store.object_payloads
+    assert store.object_payloads[0]["body"]["kind"] == "chief_of_staff_handoff_review_action"
+    assert response["review_action"]["handoff_item_id"] == "handoff-1"
+    assert response["review_action"]["review_action"] == "mark_stale"
+    assert response["review_action"]["previous_lifecycle_state"] == "ready"
+    assert response["review_action"]["next_lifecycle_state"] == "stale"
+    assert response["handoff_queue_summary"]["stale_count"] == 1
+
+
+def test_governed_handoff_state_maps_keep_executed_over_pending() -> None:
+    class _FakeStore:
+        def list_approvals(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "status": "pending",
+                    "request": {"attributes": {"handoff_item_id": "handoff-executed"}},
+                },
+                {
+                    "status": "pending",
+                    "request": {"attributes": {"handoff_item_id": "handoff-pending"}},
+                },
+            ]
+
+        def list_tasks(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "status": "executed",
+                    "request": {"attributes": {"handoff_item_id": "handoff-executed"}},
+                },
+                {
+                    "status": "pending_approval",
+                    "request": {"attributes": {"handoff_item_id": "handoff-pending-from-task"}},
+                },
+            ]
+
+    pending_ids, executed_ids = chief._build_governed_handoff_state_maps(  # type: ignore[attr-defined]
+        store=_FakeStore(),  # type: ignore[arg-type]
+    )
+
+    assert executed_ids == {"handoff-executed"}
+    assert pending_ids == {"handoff-pending", "handoff-pending-from-task"}
+    assert "handoff-executed" not in pending_ids
+
+
+def test_handoff_queue_infers_deterministic_governed_and_age_based_states() -> None:
+    class _FakeStore:
+        def list_approvals(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "status": "pending",
+                    "request": {"attributes": {"handoff_item_id": "handoff-pending"}},
+                }
+            ]
+
+        def list_tasks(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "status": "executed",
+                    "request": {"attributes": {"handoff_item_id": "handoff-executed"}},
+                }
+            ]
+
+    handoff_items = [
+        {
+            "rank": 5,
+            "handoff_item_id": "handoff-ready",
+            "source_kind": "recommended_next_action",
+            "source_reference_id": "source-latest",
+            "title": "Next Action: Ready",
+            "recommendation_action": "execute_next_action",
+            "priority_posture": "urgent",
+            "confidence_posture": "high",
+            "score": 1500.0,
+            "provenance_references": [],
+        },
+        {
+            "rank": 1,
+            "handoff_item_id": "handoff-pending",
+            "source_kind": "recommended_next_action",
+            "source_reference_id": "source-pending",
+            "title": "Next Action: Pending",
+            "recommendation_action": "execute_next_action",
+            "priority_posture": "urgent",
+            "confidence_posture": "high",
+            "score": 1400.0,
+            "provenance_references": [],
+        },
+        {
+            "rank": 2,
+            "handoff_item_id": "handoff-executed",
+            "source_kind": "recommended_next_action",
+            "source_reference_id": "source-executed",
+            "title": "Next Action: Executed",
+            "recommendation_action": "execute_next_action",
+            "priority_posture": "urgent",
+            "confidence_posture": "high",
+            "score": 1300.0,
+            "provenance_references": [],
+        },
+        {
+            "rank": 3,
+            "handoff_item_id": "handoff-stale",
+            "source_kind": "recommended_next_action",
+            "source_reference_id": "source-stale",
+            "title": "Next Action: Stale",
+            "recommendation_action": "execute_next_action",
+            "priority_posture": "high",
+            "confidence_posture": "medium",
+            "score": 1200.0,
+            "provenance_references": [],
+        },
+        {
+            "rank": 4,
+            "handoff_item_id": "handoff-expired",
+            "source_kind": "recommended_next_action",
+            "source_reference_id": "source-expired",
+            "title": "Next Action: Expired",
+            "recommendation_action": "execute_next_action",
+            "priority_posture": "high",
+            "confidence_posture": "medium",
+            "score": 1100.0,
+            "provenance_references": [],
+        },
+    ]
+    recall_items = [
+        _recall_item(
+            item_id="source-latest",
+            object_type="NextAction",
+            status="active",
+            title="Latest source",
+            created_at="2026-04-01T12:00:00+00:00",
+        ),
+        _recall_item(
+            item_id="source-pending",
+            object_type="NextAction",
+            status="active",
+            title="Pending source",
+            created_at="2026-04-01T11:00:00+00:00",
+        ),
+        _recall_item(
+            item_id="source-executed",
+            object_type="NextAction",
+            status="active",
+            title="Executed source",
+            created_at="2026-04-01T10:00:00+00:00",
+        ),
+        _recall_item(
+            item_id="source-stale",
+            object_type="NextAction",
+            status="active",
+            title="Stale source",
+            created_at="2026-03-27T11:00:00+00:00",
+        ),
+        _recall_item(
+            item_id="source-expired",
+            object_type="NextAction",
+            status="active",
+            title="Expired source",
+            created_at="2026-03-18T11:00:00+00:00",
+        ),
+    ]
+
+    summary, groups = chief._build_handoff_queue(  # type: ignore[attr-defined]
+        store=_FakeStore(),  # type: ignore[arg-type]
+        handoff_items=handoff_items,  # type: ignore[arg-type]
+        recall_items=recall_items,  # type: ignore[arg-type]
+        all_follow_through_items=[],
+        handoff_review_actions=[],
+    )
+
+    assert summary["total_count"] == 5
+    assert summary["ready_count"] == 1
+    assert summary["pending_approval_count"] == 1
+    assert summary["executed_count"] == 1
+    assert summary["stale_count"] == 1
+    assert summary["expired_count"] == 1
+    assert groups["ready"]["items"][0]["handoff_item_id"] == "handoff-ready"
+    assert groups["pending_approval"]["items"][0]["handoff_item_id"] == "handoff-pending"
+    assert groups["executed"]["items"][0]["handoff_item_id"] == "handoff-executed"
+    assert groups["stale"]["items"][0]["handoff_item_id"] == "handoff-stale"
+    assert groups["expired"]["items"][0]["handoff_item_id"] == "handoff-expired"
+    assert groups["ready"]["items"][0]["queue_rank"] == 1
+    assert groups["pending_approval"]["items"][0]["queue_rank"] == 2
+    assert groups["executed"]["items"][0]["queue_rank"] == 3
+    assert groups["stale"]["items"][0]["queue_rank"] == 4
+    assert groups["expired"]["items"][0]["queue_rank"] == 5
+    assert groups["ready"]["items"][0]["lifecycle_state"] == "ready"
+    assert groups["pending_approval"]["items"][0]["lifecycle_state"] == "pending_approval"
+    assert groups["executed"]["items"][0]["lifecycle_state"] == "executed"
+    assert groups["stale"]["items"][0]["lifecycle_state"] == "stale"
+    assert groups["expired"]["items"][0]["lifecycle_state"] == "expired"
+    assert "mark_ready" not in groups["ready"]["items"][0]["available_review_actions"]
+    assert "mark_pending_approval" not in groups["pending_approval"]["items"][0]["available_review_actions"]
+    assert "mark_executed" not in groups["executed"]["items"][0]["available_review_actions"]
+    assert "mark_stale" not in groups["stale"]["items"][0]["available_review_actions"]
+    assert "mark_expired" not in groups["expired"]["items"][0]["available_review_actions"]
 
 
 def test_capture_recommendation_outcome_creates_auditable_note_and_returns_learning(monkeypatch) -> None:

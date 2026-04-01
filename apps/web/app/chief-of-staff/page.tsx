@@ -1,4 +1,5 @@
 import { ChiefOfStaffActionHandoffPanel } from "../../components/chief-of-staff-action-handoff-panel";
+import { ChiefOfStaffHandoffQueuePanel } from "../../components/chief-of-staff-handoff-queue-panel";
 import { ChiefOfStaffFollowThroughPanel } from "../../components/chief-of-staff-follow-through-panel";
 import { ChiefOfStaffPreparationPanel } from "../../components/chief-of-staff-preparation-panel";
 import { ChiefOfStaffPriorityPanel } from "../../components/chief-of-staff-priority-panel";
@@ -661,6 +662,111 @@ const chiefOfStaffFixture: ChiefOfStaffPriorityBrief = {
       },
     },
   ],
+  handoff_queue_summary: {
+    total_count: 1,
+    ready_count: 1,
+    pending_approval_count: 0,
+    executed_count: 0,
+    stale_count: 0,
+    expired_count: 0,
+    state_order: ["ready", "pending_approval", "executed", "stale", "expired"],
+    group_order: ["ready", "pending_approval", "executed", "stale", "expired"],
+    item_order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+    review_action_order: ["mark_ready", "mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
+  },
+  handoff_queue_groups: {
+    ready: {
+      items: [
+        {
+          queue_rank: 1,
+          handoff_rank: 1,
+          handoff_item_id: "handoff-1-recommended_next_action-priority-fixture-1",
+          lifecycle_state: "ready",
+          state_reason: "Handoff item is ready for explicit operator review.",
+          source_kind: "recommended_next_action",
+          source_reference_id: "priority-fixture-1",
+          title: "Next Action: Confirm launch checklist owner",
+          recommendation_action: "execute_next_action",
+          priority_posture: "urgent",
+          confidence_posture: "low",
+          score: 1650,
+          age_hours_relative_to_latest: 0,
+          review_action_order: ["mark_ready", "mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
+          available_review_actions: ["mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
+          last_review_action: null,
+          provenance_references: [
+            {
+              source_kind: "continuity_capture_event",
+              source_id: "capture-priority-fixture-1",
+            },
+          ],
+        },
+      ],
+      summary: {
+        lifecycle_state: "ready",
+        returned_count: 1,
+        total_count: 1,
+        order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+      },
+      empty_state: {
+        is_empty: false,
+        message: "No ready handoff items for this scope.",
+      },
+    },
+    pending_approval: {
+      items: [],
+      summary: {
+        lifecycle_state: "pending_approval",
+        returned_count: 0,
+        total_count: 0,
+        order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+      },
+      empty_state: {
+        is_empty: true,
+        message: "No handoff items are currently pending approval.",
+      },
+    },
+    executed: {
+      items: [],
+      summary: {
+        lifecycle_state: "executed",
+        returned_count: 0,
+        total_count: 0,
+        order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+      },
+      empty_state: {
+        is_empty: true,
+        message: "No handoff items are currently marked executed.",
+      },
+    },
+    stale: {
+      items: [],
+      summary: {
+        lifecycle_state: "stale",
+        returned_count: 0,
+        total_count: 0,
+        order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+      },
+      empty_state: {
+        is_empty: true,
+        message: "No stale handoff items are currently surfaced.",
+      },
+    },
+    expired: {
+      items: [],
+      summary: {
+        lifecycle_state: "expired",
+        returned_count: 0,
+        total_count: 0,
+        order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+      },
+      empty_state: {
+        is_empty: true,
+        message: "No expired handoff items are currently surfaced.",
+      },
+    },
+  },
+  handoff_review_actions: [],
   task_draft: {
     status: "draft",
     mode: "governed_request_draft",
@@ -759,12 +865,23 @@ const chiefOfStaffFixture: ChiefOfStaffPriorityBrief = {
     handoff_item_count: 1,
     handoff_item_order: ["score_desc", "source_order_asc", "source_reference_id_asc"],
     execution_posture_order: ["approval_bounded_artifact_only"],
+    handoff_queue_total_count: 1,
+    handoff_queue_ready_count: 1,
+    handoff_queue_pending_approval_count: 0,
+    handoff_queue_executed_count: 0,
+    handoff_queue_stale_count: 0,
+    handoff_queue_expired_count: 0,
+    handoff_queue_state_order: ["ready", "pending_approval", "executed", "stale", "expired"],
+    handoff_queue_group_order: ["ready", "pending_approval", "executed", "stale", "expired"],
+    handoff_queue_item_order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
   },
   sources: [
     "continuity_recall",
     "continuity_open_loops",
     "continuity_resumption_brief",
     "chief_of_staff_action_handoff",
+    "chief_of_staff_handoff_queue",
+    "chief_of_staff_handoff_review_actions",
     "memory_trust_dashboard",
   ],
 };
@@ -829,6 +946,7 @@ export default async function ChiefOfStaffPage({
             <span className="subtle-chip">{brief.summary.follow_through_total_count} follow-through items</span>
             <span className="subtle-chip">{brief.prep_checklist.summary.returned_count} prep checklist items</span>
             <span className="subtle-chip">{brief.summary.handoff_item_count} handoff items</span>
+            <span className="subtle-chip">{brief.summary.handoff_queue_ready_count} ready queue items</span>
             <StatusBadge
               status={brief.summary.trust_confidence_posture}
               label={`${brief.summary.trust_confidence_posture} confidence`}
@@ -860,6 +978,13 @@ export default async function ChiefOfStaffPage({
         unavailableReason={briefUnavailableReason}
       />
       <ChiefOfStaffActionHandoffPanel
+        brief={brief}
+        source={briefSource}
+        unavailableReason={briefUnavailableReason}
+      />
+      <ChiefOfStaffHandoffQueuePanel
+        apiBaseUrl={briefSource === "live" ? apiConfig.apiBaseUrl : undefined}
+        userId={briefSource === "live" ? apiConfig.userId : undefined}
         brief={brief}
         source={briefSource}
         unavailableReason={briefUnavailableReason}
