@@ -19,6 +19,9 @@ from alicebot_api.contracts import (
     CHIEF_OF_STAFF_FOLLOW_THROUGH_ITEM_ORDER,
     CHIEF_OF_STAFF_FOLLOW_THROUGH_POSTURE_ORDER,
     CHIEF_OF_STAFF_FOLLOW_THROUGH_RECOMMENDATION_ACTIONS,
+    CHIEF_OF_STAFF_HANDOFF_QUEUE_ITEM_ORDER,
+    CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER,
+    CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS,
     CHIEF_OF_STAFF_OUTCOME_HOTSPOT_ORDER,
     CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER,
     CHIEF_OF_STAFF_PRIORITY_BRIEF_ASSEMBLY_VERSION_V0,
@@ -53,6 +56,14 @@ from alicebot_api.contracts import (
     ChiefOfStaffFollowThroughItem,
     ChiefOfStaffFollowThroughPosture,
     ChiefOfStaffFollowThroughRecommendationAction,
+    ChiefOfStaffHandoffQueueGroups,
+    ChiefOfStaffHandoffQueueItem,
+    ChiefOfStaffHandoffQueueLifecycleState,
+    ChiefOfStaffHandoffQueueSummary,
+    ChiefOfStaffHandoffReviewAction,
+    ChiefOfStaffHandoffReviewActionCaptureResponse,
+    ChiefOfStaffHandoffReviewActionInput,
+    ChiefOfStaffHandoffReviewActionRecord,
     ChiefOfStaffOutcomeHotspotRecord,
     ChiefOfStaffPatternDriftPosture,
     ChiefOfStaffPatternDriftSummaryRecord,
@@ -175,6 +186,26 @@ _ACTION_HANDOFF_ACTION_SCOPE_MAP: dict[ChiefOfStaffActionHandoffSourceKind, str]
     "follow_through": "chief_of_staff_follow_through",
     "prep_checklist": "chief_of_staff_preparation",
     "weekly_review": "chief_of_staff_weekly_review",
+}
+_HANDOFF_QUEUE_STALE_HOURS = 120.0
+_HANDOFF_QUEUE_EXPIRED_HOURS = 336.0
+_HANDOFF_REVIEW_ACTION_BODY_KIND = "chief_of_staff_handoff_review_action"
+_HANDOFF_REVIEW_ACTION_TO_STATE: dict[
+    ChiefOfStaffHandoffReviewAction,
+    ChiefOfStaffHandoffQueueLifecycleState,
+] = {
+    "mark_ready": "ready",
+    "mark_pending_approval": "pending_approval",
+    "mark_executed": "executed",
+    "mark_stale": "stale",
+    "mark_expired": "expired",
+}
+_HANDOFF_QUEUE_STATE_EMPTY_MESSAGE: dict[ChiefOfStaffHandoffQueueLifecycleState, str] = {
+    "ready": "No ready handoff items for this scope.",
+    "pending_approval": "No handoff items are currently pending approval.",
+    "executed": "No handoff items are currently marked executed.",
+    "stale": "No stale handoff items are currently surfaced.",
+    "expired": "No expired handoff items are currently surfaced.",
 }
 
 
@@ -1769,6 +1800,446 @@ def _build_action_handoff_artifacts(
     return action_handoff_brief, handoff_items, task_draft, approval_draft, execution_posture
 
 
+def _handoff_item_id_from_request_payload(request_payload: object) -> str | None:
+    if not isinstance(request_payload, dict):
+        return None
+    attributes = request_payload.get("attributes")
+    if not isinstance(attributes, dict):
+        return None
+    handoff_item_id = attributes.get("handoff_item_id")
+    if not isinstance(handoff_item_id, str):
+        return None
+    normalized = handoff_item_id.strip()
+    return normalized or None
+
+
+def _build_governed_handoff_state_maps(
+    *,
+    store: ContinuityStore,
+) -> tuple[set[str], set[str]]:
+    if not hasattr(store, "list_approvals") or not hasattr(store, "list_tasks"):
+        return set(), set()
+
+    pending_approval_ids: set[str] = set()
+    executed_ids: set[str] = set()
+
+    for approval in store.list_approvals():
+        handoff_item_id = _handoff_item_id_from_request_payload(approval.get("request"))
+        if handoff_item_id is None:
+            continue
+        if approval["status"] == "pending":
+            pending_approval_ids.add(handoff_item_id)
+
+    for task in store.list_tasks():
+        handoff_item_id = _handoff_item_id_from_request_payload(task.get("request"))
+        if handoff_item_id is None:
+            continue
+        if task["status"] == "executed":
+            executed_ids.add(handoff_item_id)
+        elif task["status"] == "pending_approval":
+            pending_approval_ids.add(handoff_item_id)
+
+    pending_approval_ids.difference_update(executed_ids)
+    return pending_approval_ids, executed_ids
+
+
+def _parse_timestamp_optional(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return _parse_timestamp(value)
+    except ValueError:
+        return None
+
+
+def _queue_age_hours(
+    *,
+    source_created_at: datetime | None,
+    latest_source_created_at: datetime | None,
+) -> float | None:
+    if source_created_at is None or latest_source_created_at is None:
+        return None
+    return _age_hours_relative_to_latest(
+        latest_created_at=latest_source_created_at,
+        item_created_at=source_created_at,
+    )
+
+
+def _queue_state_for_age(
+    age_hours: float | None,
+) -> ChiefOfStaffHandoffQueueLifecycleState | None:
+    if age_hours is None:
+        return None
+    if age_hours >= _HANDOFF_QUEUE_EXPIRED_HOURS:
+        return "expired"
+    if age_hours >= _HANDOFF_QUEUE_STALE_HOURS:
+        return "stale"
+    return None
+
+
+def _available_handoff_review_actions(
+    state: ChiefOfStaffHandoffQueueLifecycleState,
+) -> list[ChiefOfStaffHandoffReviewAction]:
+    return [
+        action
+        for action in CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS
+        if _HANDOFF_REVIEW_ACTION_TO_STATE[action] != state
+    ]
+
+
+def _infer_handoff_queue_state(
+    *,
+    handoff_item: ChiefOfStaffActionHandoffItem,
+    pending_approval_ids: set[str],
+    executed_ids: set[str],
+    source_status_by_id: dict[str, str],
+    source_created_at_by_id: dict[str, datetime],
+    latest_source_created_at: datetime | None,
+    follow_through_by_id: dict[str, ChiefOfStaffFollowThroughItem],
+) -> tuple[ChiefOfStaffHandoffQueueLifecycleState, str, float | None]:
+    handoff_item_id = handoff_item["handoff_item_id"]
+    if handoff_item_id in executed_ids:
+        return "executed", "Linked governed task status is executed.", None
+    if handoff_item_id in pending_approval_ids:
+        return "pending_approval", "Linked governed approval/task is currently pending approval.", None
+
+    source_reference_id = handoff_item["source_reference_id"]
+    source_created_at = (
+        None
+        if source_reference_id is None
+        else source_created_at_by_id.get(source_reference_id)
+    )
+    age_hours = _queue_age_hours(
+        source_created_at=source_created_at,
+        latest_source_created_at=latest_source_created_at,
+    )
+
+    if handoff_item["priority_posture"] == "stale":
+        return "stale", "Mapped source priority posture is stale.", age_hours
+
+    if source_reference_id is not None and source_status_by_id.get(source_reference_id) == "stale":
+        return "stale", "Mapped source continuity object status is stale.", age_hours
+
+    follow_through_item = (
+        None
+        if source_reference_id is None
+        else follow_through_by_id.get(source_reference_id)
+    )
+    if follow_through_item is not None:
+        follow_through_age = follow_through_item["age_hours"]
+        age_state = _queue_state_for_age(follow_through_age)
+        if follow_through_item["follow_through_posture"] == "stale_waiting_for":
+            return "stale", "Follow-through source is stale waiting-for and requires review.", follow_through_age
+        if age_state == "expired":
+            return "expired", "Follow-through source age exceeded deterministic expiration threshold.", follow_through_age
+        if age_state == "stale":
+            return "stale", "Follow-through source age exceeded deterministic stale threshold.", follow_through_age
+
+    age_state = _queue_state_for_age(age_hours)
+    if age_state == "expired":
+        return "expired", "Source age exceeded deterministic expiration threshold.", age_hours
+    if age_state == "stale":
+        return "stale", "Source age exceeded deterministic stale threshold.", age_hours
+
+    return "ready", "Handoff item is ready for explicit operator review.", age_hours
+
+
+def _parse_handoff_review_action_record(
+    item: ContinuityRecallResultRecord,
+) -> ChiefOfStaffHandoffReviewActionRecord | None:
+    if item["object_type"] != "Note":
+        return None
+
+    body = item["body"]
+    if not isinstance(body, dict):
+        return None
+
+    if body.get("kind") != _HANDOFF_REVIEW_ACTION_BODY_KIND:
+        return None
+
+    handoff_item_id = body.get("handoff_item_id")
+    if not isinstance(handoff_item_id, str) or not handoff_item_id.strip():
+        return None
+
+    raw_review_action = body.get("review_action")
+    if (
+        not isinstance(raw_review_action, str)
+        or raw_review_action not in CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS
+    ):
+        return None
+    review_action: ChiefOfStaffHandoffReviewAction = raw_review_action  # type: ignore[assignment]
+
+    raw_next_state = body.get("next_lifecycle_state")
+    if (
+        not isinstance(raw_next_state, str)
+        or raw_next_state not in CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER
+    ):
+        return None
+    next_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState = raw_next_state  # type: ignore[assignment]
+
+    raw_previous_state = body.get("previous_lifecycle_state")
+    previous_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState | None
+    if raw_previous_state is None:
+        previous_lifecycle_state = None
+    elif (
+        isinstance(raw_previous_state, str)
+        and raw_previous_state in CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER
+    ):
+        previous_lifecycle_state = raw_previous_state  # type: ignore[assignment]
+    else:
+        return None
+
+    raw_reason = body.get("reason")
+    reason = (
+        raw_reason
+        if isinstance(raw_reason, str) and raw_reason.strip()
+        else "Lifecycle transition captured from explicit operator review action."
+    )
+
+    raw_note = body.get("note")
+    note = raw_note if isinstance(raw_note, str) and raw_note.strip() else None
+
+    return {
+        "id": item["id"],
+        "capture_event_id": item["capture_event_id"],
+        "handoff_item_id": handoff_item_id.strip(),
+        "review_action": review_action,
+        "previous_lifecycle_state": previous_lifecycle_state,
+        "next_lifecycle_state": next_lifecycle_state,
+        "reason": reason,
+        "note": note,
+        "provenance_references": item["provenance_references"],
+        "created_at": item["created_at"],
+        "updated_at": item["updated_at"],
+    }
+
+
+def _handoff_review_action_sort_key(
+    item: ChiefOfStaffHandoffReviewActionRecord,
+) -> tuple[str, str]:
+    return (item["created_at"], item["id"])
+
+
+def _list_handoff_review_action_records(
+    recall_items: list[ContinuityRecallResultRecord],
+) -> list[ChiefOfStaffHandoffReviewActionRecord]:
+    records = [
+        parsed
+        for parsed in (
+            _parse_handoff_review_action_record(item)
+            for item in recall_items
+        )
+        if parsed is not None
+    ]
+    records.sort(key=_handoff_review_action_sort_key, reverse=True)
+    return records
+
+
+def _handoff_queue_item_sort_key(
+    item: ChiefOfStaffHandoffQueueItem,
+) -> tuple[int, float, str]:
+    return (
+        item["handoff_rank"],
+        -item["score"],
+        item["handoff_item_id"],
+    )
+
+
+def _build_handoff_queue(
+    *,
+    store: ContinuityStore,
+    handoff_items: list[ChiefOfStaffActionHandoffItem],
+    recall_items: list[ContinuityRecallResultRecord],
+    all_follow_through_items: list[ChiefOfStaffFollowThroughItem],
+    handoff_review_actions: list[ChiefOfStaffHandoffReviewActionRecord],
+) -> tuple[ChiefOfStaffHandoffQueueSummary, ChiefOfStaffHandoffQueueGroups]:
+    source_status_by_id: dict[str, str] = {}
+    source_created_at_by_id: dict[str, datetime] = {}
+    for item in recall_items:
+        source_status_by_id[item["id"]] = item["status"]
+        parsed_created_at = _parse_timestamp_optional(item["created_at"])
+        if parsed_created_at is not None:
+            source_created_at_by_id[item["id"]] = parsed_created_at
+
+    latest_source_created_at = (
+        max(source_created_at_by_id.values())
+        if source_created_at_by_id
+        else None
+    )
+
+    follow_through_by_id = {
+        item["id"]: item
+        for item in all_follow_through_items
+    }
+    pending_approval_ids, executed_ids = _build_governed_handoff_state_maps(store=store)
+
+    latest_review_action_by_handoff_item_id: dict[str, ChiefOfStaffHandoffReviewActionRecord] = {}
+    for action in handoff_review_actions:
+        handoff_item_id = action["handoff_item_id"]
+        if handoff_item_id not in latest_review_action_by_handoff_item_id:
+            latest_review_action_by_handoff_item_id[handoff_item_id] = action
+
+    grouped_items: dict[ChiefOfStaffHandoffQueueLifecycleState, list[ChiefOfStaffHandoffQueueItem]] = {
+        "ready": [],
+        "pending_approval": [],
+        "executed": [],
+        "stale": [],
+        "expired": [],
+    }
+    for handoff_item in handoff_items:
+        (
+            inferred_state,
+            inferred_reason,
+            age_hours,
+        ) = _infer_handoff_queue_state(
+            handoff_item=handoff_item,
+            pending_approval_ids=pending_approval_ids,
+            executed_ids=executed_ids,
+            source_status_by_id=source_status_by_id,
+            source_created_at_by_id=source_created_at_by_id,
+            latest_source_created_at=latest_source_created_at,
+            follow_through_by_id=follow_through_by_id,
+        )
+
+        state = inferred_state
+        state_reason = inferred_reason
+        last_review_action = latest_review_action_by_handoff_item_id.get(handoff_item["handoff_item_id"])
+        if last_review_action is not None:
+            state = last_review_action["next_lifecycle_state"]
+            state_reason = (
+                f"Latest operator review action '{last_review_action['review_action']}' "
+                f"set lifecycle state to '{state}'."
+            )
+
+        queue_item: ChiefOfStaffHandoffQueueItem = {
+            "queue_rank": 0,
+            "handoff_rank": handoff_item["rank"],
+            "handoff_item_id": handoff_item["handoff_item_id"],
+            "lifecycle_state": state,
+            "state_reason": state_reason,
+            "source_kind": handoff_item["source_kind"],
+            "source_reference_id": handoff_item["source_reference_id"],
+            "title": handoff_item["title"],
+            "recommendation_action": handoff_item["recommendation_action"],
+            "priority_posture": handoff_item["priority_posture"],
+            "confidence_posture": handoff_item["confidence_posture"],
+            "score": handoff_item["score"],
+            "age_hours_relative_to_latest": age_hours,
+            "review_action_order": list(CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS),
+            "available_review_actions": _available_handoff_review_actions(state),
+            "last_review_action": last_review_action,
+            "provenance_references": handoff_item["provenance_references"],
+        }
+        grouped_items[state].append(queue_item)
+
+    queue_rank = 1
+    for lifecycle_state in CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER:
+        items = sorted(grouped_items[lifecycle_state], key=_handoff_queue_item_sort_key)
+        for item in items:
+            item["queue_rank"] = queue_rank
+            queue_rank += 1
+        grouped_items[lifecycle_state] = items
+
+    handoff_queue_summary: ChiefOfStaffHandoffQueueSummary = {
+        "total_count": len(handoff_items),
+        "ready_count": len(grouped_items["ready"]),
+        "pending_approval_count": len(grouped_items["pending_approval"]),
+        "executed_count": len(grouped_items["executed"]),
+        "stale_count": len(grouped_items["stale"]),
+        "expired_count": len(grouped_items["expired"]),
+        "state_order": list(CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER),
+        "group_order": list(CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER),
+        "item_order": list(CHIEF_OF_STAFF_HANDOFF_QUEUE_ITEM_ORDER),
+        "review_action_order": list(CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS),
+    }
+    handoff_queue_groups: ChiefOfStaffHandoffQueueGroups = {
+        "ready": {
+            "items": grouped_items["ready"],
+            "summary": {
+                "lifecycle_state": "ready",
+                "returned_count": len(grouped_items["ready"]),
+                "total_count": len(grouped_items["ready"]),
+                "order": list(CHIEF_OF_STAFF_HANDOFF_QUEUE_ITEM_ORDER),
+            },
+            "empty_state": {
+                "is_empty": len(grouped_items["ready"]) == 0,
+                "message": _HANDOFF_QUEUE_STATE_EMPTY_MESSAGE["ready"],
+            },
+        },
+        "pending_approval": {
+            "items": grouped_items["pending_approval"],
+            "summary": {
+                "lifecycle_state": "pending_approval",
+                "returned_count": len(grouped_items["pending_approval"]),
+                "total_count": len(grouped_items["pending_approval"]),
+                "order": list(CHIEF_OF_STAFF_HANDOFF_QUEUE_ITEM_ORDER),
+            },
+            "empty_state": {
+                "is_empty": len(grouped_items["pending_approval"]) == 0,
+                "message": _HANDOFF_QUEUE_STATE_EMPTY_MESSAGE["pending_approval"],
+            },
+        },
+        "executed": {
+            "items": grouped_items["executed"],
+            "summary": {
+                "lifecycle_state": "executed",
+                "returned_count": len(grouped_items["executed"]),
+                "total_count": len(grouped_items["executed"]),
+                "order": list(CHIEF_OF_STAFF_HANDOFF_QUEUE_ITEM_ORDER),
+            },
+            "empty_state": {
+                "is_empty": len(grouped_items["executed"]) == 0,
+                "message": _HANDOFF_QUEUE_STATE_EMPTY_MESSAGE["executed"],
+            },
+        },
+        "stale": {
+            "items": grouped_items["stale"],
+            "summary": {
+                "lifecycle_state": "stale",
+                "returned_count": len(grouped_items["stale"]),
+                "total_count": len(grouped_items["stale"]),
+                "order": list(CHIEF_OF_STAFF_HANDOFF_QUEUE_ITEM_ORDER),
+            },
+            "empty_state": {
+                "is_empty": len(grouped_items["stale"]) == 0,
+                "message": _HANDOFF_QUEUE_STATE_EMPTY_MESSAGE["stale"],
+            },
+        },
+        "expired": {
+            "items": grouped_items["expired"],
+            "summary": {
+                "lifecycle_state": "expired",
+                "returned_count": len(grouped_items["expired"]),
+                "total_count": len(grouped_items["expired"]),
+                "order": list(CHIEF_OF_STAFF_HANDOFF_QUEUE_ITEM_ORDER),
+            },
+            "empty_state": {
+                "is_empty": len(grouped_items["expired"]) == 0,
+                "message": _HANDOFF_QUEUE_STATE_EMPTY_MESSAGE["expired"],
+            },
+        },
+    }
+    return handoff_queue_summary, handoff_queue_groups
+
+
+def _flatten_handoff_queue_items(
+    *,
+    handoff_queue_groups: ChiefOfStaffHandoffQueueGroups,
+) -> list[ChiefOfStaffHandoffQueueItem]:
+    items: list[ChiefOfStaffHandoffQueueItem] = []
+    for lifecycle_state in CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER:
+        items.extend(handoff_queue_groups[lifecycle_state]["items"])
+    return items
+
+
+def _normalize_handoff_review_action(
+    review_action: str,
+) -> ChiefOfStaffHandoffReviewAction | None:
+    if review_action not in CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS:
+        return None
+    return review_action  # type: ignore[return-value]
+
+
 def capture_chief_of_staff_recommendation_outcome(
     store: ContinuityStore,
     *,
@@ -1878,6 +2349,134 @@ def capture_chief_of_staff_recommendation_outcome(
         "recommendation_outcomes": brief_payload["recommendation_outcomes"],
         "priority_learning_summary": brief_payload["priority_learning_summary"],
         "pattern_drift_summary": brief_payload["pattern_drift_summary"],
+    }
+
+
+def capture_chief_of_staff_handoff_review_action(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    request: ChiefOfStaffHandoffReviewActionInput,
+) -> ChiefOfStaffHandoffReviewActionCaptureResponse:
+    handoff_item_id = _normalize_optional_text(request.handoff_item_id)
+    if handoff_item_id is None:
+        raise ChiefOfStaffValidationError("handoff_item_id must not be empty")
+
+    review_action = _normalize_handoff_review_action(request.review_action)
+    if review_action is None:
+        allowed = ", ".join(CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS)
+        raise ChiefOfStaffValidationError(f"review_action must be one of: {allowed}")
+
+    note = _normalize_optional_text(request.note)
+    project = _normalize_optional_text(request.project)
+    person = _normalize_optional_text(request.person)
+    scope_request = ChiefOfStaffPriorityBriefRequestInput(
+        thread_id=request.thread_id,
+        task_id=request.task_id,
+        project=project,
+        person=person,
+        limit=MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
+    )
+    scoped_brief = compile_chief_of_staff_priority_brief(
+        store,
+        user_id=user_id,
+        request=scope_request,
+    )["brief"]
+    queue_items = _flatten_handoff_queue_items(
+        handoff_queue_groups=scoped_brief["handoff_queue_groups"],
+    )
+    queue_item = next(
+        (item for item in queue_items if item["handoff_item_id"] == handoff_item_id),
+        None,
+    )
+    if queue_item is None:
+        raise ChiefOfStaffValidationError(
+            f"handoff_item_id '{handoff_item_id}' was not found in the scoped deterministic handoff queue"
+        )
+
+    previous_lifecycle_state = queue_item["lifecycle_state"]
+    next_lifecycle_state = _HANDOFF_REVIEW_ACTION_TO_STATE[review_action]
+    transition_reason = (
+        f"Operator review action '{review_action}' moved lifecycle posture from "
+        f"'{previous_lifecycle_state}' to '{next_lifecycle_state}'."
+    )
+
+    capture_event = store.create_continuity_capture_event(
+        raw_content=f"Handoff review action ({review_action}): {handoff_item_id}",
+        explicit_signal="note",
+        admission_posture="TRIAGE",
+        admission_reason="chief_of_staff_handoff_review_action",
+    )
+
+    thread_id = None if request.thread_id is None else str(request.thread_id)
+    task_id = None if request.task_id is None else str(request.task_id)
+    body: dict[str, object] = {
+        "kind": _HANDOFF_REVIEW_ACTION_BODY_KIND,
+        "handoff_item_id": handoff_item_id,
+        "review_action": review_action,
+        "previous_lifecycle_state": previous_lifecycle_state,
+        "next_lifecycle_state": next_lifecycle_state,
+        "reason": transition_reason,
+        "note": note,
+    }
+    provenance: dict[str, object] = {
+        "thread_id": thread_id,
+        "task_id": task_id,
+        "project": project,
+        "person": person,
+        "source_event_ids": [str(capture_event["id"])],
+        "chief_of_staff_handoff_review_action": {
+            "handoff_item_id": handoff_item_id,
+            "review_action": review_action,
+            "previous_lifecycle_state": previous_lifecycle_state,
+            "next_lifecycle_state": next_lifecycle_state,
+        },
+    }
+
+    stored = store.create_continuity_object(
+        capture_event_id=capture_event["id"],
+        object_type="Note",
+        status="active",
+        title=f"Handoff review action: {review_action} ({handoff_item_id})",
+        body=body,
+        provenance=provenance,
+        confidence=1.0,
+    )
+
+    updated_brief = compile_chief_of_staff_priority_brief(
+        store,
+        user_id=user_id,
+        request=scope_request,
+    )["brief"]
+
+    serialized_action: ChiefOfStaffHandoffReviewActionRecord = {
+        "id": str(stored["id"]),
+        "capture_event_id": str(stored["capture_event_id"]),
+        "handoff_item_id": handoff_item_id,
+        "review_action": review_action,
+        "previous_lifecycle_state": previous_lifecycle_state,
+        "next_lifecycle_state": next_lifecycle_state,
+        "reason": transition_reason,
+        "note": note,
+        "provenance_references": [
+            {
+                "source_kind": "continuity_capture_event",
+                "source_id": str(capture_event["id"]),
+            }
+        ],
+        "created_at": stored["created_at"].isoformat(),
+        "updated_at": stored["updated_at"].isoformat(),
+    }
+
+    review_actions = list(updated_brief["handoff_review_actions"])
+    if not any(action["id"] == serialized_action["id"] for action in review_actions):
+        review_actions.insert(0, serialized_action)
+
+    return {
+        "review_action": serialized_action,
+        "handoff_queue_summary": updated_brief["handoff_queue_summary"],
+        "handoff_queue_groups": updated_brief["handoff_queue_groups"],
+        "handoff_review_actions": review_actions,
     }
 
 
@@ -2241,6 +2840,14 @@ def compile_chief_of_staff_priority_brief(
         trust_cap=trust_cap,
         scope=recall_payload["summary"]["filters"],
     )
+    handoff_review_actions = _list_handoff_review_action_records(recall_payload["items"])
+    handoff_queue_summary, handoff_queue_groups = _build_handoff_queue(
+        store=store,
+        handoff_items=handoff_items,
+        recall_items=recall_payload["items"],
+        all_follow_through_items=all_follow_through_items,
+        handoff_review_actions=handoff_review_actions,
+    )
 
     summary: ChiefOfStaffPrioritySummary = {
         "limit": limit,
@@ -2261,6 +2868,15 @@ def compile_chief_of_staff_priority_brief(
         "handoff_item_count": len(handoff_items),
         "handoff_item_order": list(CHIEF_OF_STAFF_ACTION_HANDOFF_ITEM_ORDER),
         "execution_posture_order": list(CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER),
+        "handoff_queue_total_count": handoff_queue_summary["total_count"],
+        "handoff_queue_ready_count": handoff_queue_summary["ready_count"],
+        "handoff_queue_pending_approval_count": handoff_queue_summary["pending_approval_count"],
+        "handoff_queue_executed_count": handoff_queue_summary["executed_count"],
+        "handoff_queue_stale_count": handoff_queue_summary["stale_count"],
+        "handoff_queue_expired_count": handoff_queue_summary["expired_count"],
+        "handoff_queue_state_order": list(handoff_queue_summary["state_order"]),
+        "handoff_queue_group_order": list(handoff_queue_summary["group_order"]),
+        "handoff_queue_item_order": list(handoff_queue_summary["item_order"]),
     }
 
     brief: ChiefOfStaffPriorityBriefRecord = {
@@ -2284,6 +2900,9 @@ def compile_chief_of_staff_priority_brief(
         "pattern_drift_summary": pattern_drift_summary,
         "action_handoff_brief": action_handoff_brief,
         "handoff_items": handoff_items,
+        "handoff_queue_summary": handoff_queue_summary,
+        "handoff_queue_groups": handoff_queue_groups,
+        "handoff_review_actions": handoff_review_actions,
         "task_draft": task_draft,
         "approval_draft": approval_draft,
         "execution_posture": execution_posture,
@@ -2295,6 +2914,8 @@ def compile_chief_of_staff_priority_brief(
             "continuity_resumption_brief",
             "chief_of_staff_recommendation_outcomes",
             "chief_of_staff_action_handoff",
+            "chief_of_staff_handoff_queue",
+            "chief_of_staff_handoff_review_actions",
             "memory_trust_dashboard",
             "memories",
             "memory_review_labels",
