@@ -3853,6 +3853,10 @@ class ContinuityStore:
     def __init__(self, conn: psycopg.Connection):
         self.conn = conn
 
+    def _acquire_advisory_lock(self, lock_query: str, lock_key: UUID) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(lock_query, (str(lock_key),))
+
     def _fetch_one(
         self,
         operation_name: str,
@@ -3860,6 +3864,27 @@ class ContinuityStore:
         params: tuple[object, ...] | None = None,
     ) -> RowT:
         with self.conn.cursor() as cur:
+            cur.execute(query, params)
+            row = cur.fetchone()
+
+        if row is None:
+            raise ContinuityStoreInvariantError(
+                f"{operation_name} did not return a row from the database",
+            )
+
+        return cast(RowT, row)
+
+    def _fetch_one_with_lock(
+        self,
+        *,
+        operation_name: str,
+        lock_query: str,
+        lock_key: UUID,
+        query: str,
+        params: tuple[object, ...] | None = None,
+    ) -> RowT:
+        with self.conn.cursor() as cur:
+            cur.execute(lock_query, (str(lock_key),))
             cur.execute(query, params)
             row = cur.fetchone()
 
@@ -3950,20 +3975,13 @@ class ContinuityStore:
         kind: str,
         payload: JsonObject,
     ) -> EventRow:
-        with self.conn.cursor() as cur:
-            cur.execute(LOCK_THREAD_EVENTS_SQL, (str(thread_id),))
-            cur.execute(
-                INSERT_EVENT_SQL,
-                (thread_id, thread_id, session_id, kind, Jsonb(payload)),
-            )
-            row = cur.fetchone()
-
-        if row is None:
-            raise ContinuityStoreInvariantError(
-                "append_event did not return a row from the database",
-            )
-
-        return cast(EventRow, row)
+        return self._fetch_one_with_lock(
+            operation_name="append_event",
+            lock_query=LOCK_THREAD_EVENTS_SQL,
+            lock_key=thread_id,
+            query=INSERT_EVENT_SQL,
+            params=(thread_id, thread_id, session_id, kind, Jsonb(payload)),
+        )
 
     def list_thread_events(self, thread_id: UUID) -> list[EventRow]:
         return self._fetch_all(LIST_THREAD_EVENTS_SQL, (thread_id,))
@@ -4147,29 +4165,22 @@ class ContinuityStore:
         source_event_ids: list[str],
         candidate: JsonObject,
     ) -> MemoryRevisionRow:
-        with self.conn.cursor() as cur:
-            cur.execute(LOCK_MEMORY_REVISIONS_SQL, (str(memory_id),))
-            cur.execute(
-                INSERT_MEMORY_REVISION_SQL,
-                (
-                    memory_id,
-                    memory_id,
-                    action,
-                    memory_key,
-                    Jsonb(previous_value),
-                    Jsonb(new_value),
-                    Jsonb(source_event_ids),
-                    Jsonb(candidate),
-                ),
-            )
-            row = cur.fetchone()
-
-        if row is None:
-            raise ContinuityStoreInvariantError(
-                "append_memory_revision did not return a row from the database",
-            )
-
-        return cast(MemoryRevisionRow, row)
+        return self._fetch_one_with_lock(
+            operation_name="append_memory_revision",
+            lock_query=LOCK_MEMORY_REVISIONS_SQL,
+            lock_key=memory_id,
+            query=INSERT_MEMORY_REVISION_SQL,
+            params=(
+                memory_id,
+                memory_id,
+                action,
+                memory_key,
+                Jsonb(previous_value),
+                Jsonb(new_value),
+                Jsonb(source_event_ids),
+                Jsonb(candidate),
+            ),
+        )
 
     def count_memory_revisions(self, memory_id: UUID) -> int:
         return self._fetch_count(COUNT_MEMORY_REVISIONS_SQL, (memory_id,))
@@ -5245,8 +5256,7 @@ class ContinuityStore:
         )
 
     def lock_task_steps(self, task_id: UUID) -> None:
-        with self.conn.cursor() as cur:
-            cur.execute(LOCK_TASK_STEPS_SQL, (str(task_id),))
+        self._acquire_advisory_lock(LOCK_TASK_STEPS_SQL, task_id)
 
     def create_task_step(
         self,
@@ -5263,32 +5273,25 @@ class ContinuityStore:
         trace_id: UUID,
         trace_kind: str,
     ) -> TaskStepRow:
-        with self.conn.cursor() as cur:
-            cur.execute(LOCK_TASK_STEPS_SQL, (str(task_id),))
-            cur.execute(
-                INSERT_TASK_STEP_SQL,
-                (
-                    task_id,
-                    sequence_no,
-                    parent_step_id,
-                    source_approval_id,
-                    source_execution_id,
-                    kind,
-                    status,
-                    Jsonb(request),
-                    Jsonb(outcome),
-                    trace_id,
-                    trace_kind,
-                ),
-            )
-            row = cur.fetchone()
-
-        if row is None:
-            raise ContinuityStoreInvariantError(
-                "create_task_step did not return a row from the database",
-            )
-
-        return cast(TaskStepRow, row)
+        return self._fetch_one_with_lock(
+            operation_name="create_task_step",
+            lock_query=LOCK_TASK_STEPS_SQL,
+            lock_key=task_id,
+            query=INSERT_TASK_STEP_SQL,
+            params=(
+                task_id,
+                sequence_no,
+                parent_step_id,
+                source_approval_id,
+                source_execution_id,
+                kind,
+                status,
+                Jsonb(request),
+                Jsonb(outcome),
+                trace_id,
+                trace_kind,
+            ),
+        )
 
     def get_task_step_optional(self, task_step_id: UUID) -> TaskStepRow | None:
         return self._fetch_optional_one(GET_TASK_STEP_SQL, (task_step_id,))
@@ -5350,8 +5353,7 @@ class ContinuityStore:
         )
 
     def lock_task_runs(self, task_id: UUID) -> None:
-        with self.conn.cursor() as cur:
-            cur.execute(LOCK_TASK_RUNS_SQL, (str(task_id),))
+        self._acquire_advisory_lock(LOCK_TASK_RUNS_SQL, task_id)
 
     def create_task_run(
         self,
