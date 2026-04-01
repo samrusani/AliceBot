@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 8 Sprint 29 (P8-S29): Chief-of-Staff Action Handoff Artifacts
+Phase 8 Sprint 30 (P8-S30): Handoff Queue and Operational Review
 
 ## Sprint Type
 
@@ -10,7 +10,7 @@ feature
 
 ## Sprint Reason
 
-Phase 7 is complete through P7-S28. The next non-redundant seam is translating chief-of-staff guidance into deterministic, approval-bounded action handoff artifacts that can be executed through existing governed workflows.
+P8-S29 shipped deterministic chief-of-staff action handoff artifacts and explicit approval-bounded execution posture. The next non-redundant seam is operationalizing those artifacts into a visible deterministic queue with explicit lifecycle states and operator review controls.
 
 Planning anchors:
 
@@ -19,25 +19,25 @@ Planning anchors:
 
 ## Sprint Intent
 
-Ship deterministic action-handoff seams on top of shipped chief-of-staff outputs:
+Ship deterministic queue and review seams on top of shipped P8-S29 handoff artifacts:
 
-- action handoff artifact from priority/follow-through/preparation/weekly-review outputs
-- approval-bounded execution posture metadata
-- deterministic mapping into task/approval-ready draft structures (artifact-only, no autonomous execution)
-- `/chief-of-staff` handoff panel visibility
+- queue lifecycle states for handoff items
+- deterministic queue ordering and grouped posture visibility
+- explicit operator review actions for lifecycle transitions
+- stale and expired handoff surfacing with no silent drops
 
 ## Git Instructions
 
-- Branch Name: `codex/phase8-sprint-29-action-handoff-artifacts`
+- Branch Name: `codex/phase8-sprint-30-handoff-queue-operational-review`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It starts Phase 8 with a clear product step after Phase 7 completion.
-- It reuses shipped chief-of-staff intelligence instead of reopening ranking/learning semantics.
-- It converts recommendations into operationally usable, governable action artifacts.
+- It is the planned next Phase 8 seam after shipped P8-S29 artifacts.
+- It reduces execution friction by making handoff backlog state explicit and actionable.
+- It adds operational control without widening autonomy or connector scope.
 
 ## Redundancy Guard
 
@@ -46,28 +46,30 @@ Ship deterministic action-handoff seams on top of shipped chief-of-staff outputs
   - Phase 5 continuity capture/recall/review/open-loop seams.
   - Phase 6 trust calibration (`P6-S21` through `P6-S24`), complete as of March 31, 2026.
   - Phase 7 chief-of-staff layer complete (`P7-S25` through `P7-S28`).
-- Required now (P8-S29):
-  - deterministic recommendation-to-action handoff artifacts
-  - explicit approval-bounded execution posture
-  - visible and auditable handoff rationale/provenance
-- Explicitly out of P8-S29:
-  - autonomous external side effects
-  - connector/channel/auth/orchestration expansion
-  - redesign of Phase 7 ranking/follow-through/preparation/learning semantics
+  - Phase 8 Sprint 29 (`P8-S29`) deterministic action handoff artifacts and explicit non-autonomous execution posture.
+- Required now (P8-S30):
+  - queue lifecycle model for handoff items (`ready`, `pending_approval`, `executed`, `stale`, `expired`)
+  - deterministic grouped queue visibility and ordering
+  - explicit operator review actions to transition queue posture
+- Explicitly out of P8-S30:
+  - autonomous execution or connector side effects
+  - redesign of P8-S29 handoff generation semantics
+  - broader orchestration/channel/auth expansion
 
 ## Design Truth
 
-- Handoff artifacts must be deterministic for fixed state.
-- Handoff artifacts must remain guidance/execution-prep only, not direct side effects.
-- Trust posture and confidence must remain explicit in handoff outputs.
-- Every handoff recommendation must remain provenance-backed.
+- Queue behavior must be deterministic for fixed state.
+- Queue transitions must be explicit and auditable.
+- Handoff artifacts remain approval-bounded preparation outputs only.
+- Stale and expired handoffs must remain visible, not silently dropped.
 
 ## Exact Surfaces In Scope
 
-- chief-of-staff action-handoff artifact/API seam
-- deterministic mapping to task/approval-ready draft structures
-- `/chief-of-staff` action handoff panel
-- deterministic tests for handoff mapping and approval-bounded posture
+- chief-of-staff handoff queue artifact/API seam
+- deterministic queue grouping and ordering metadata
+- operator review-action transition seam
+- `/chief-of-staff` handoff queue panel
+- deterministic tests for queue ordering and transition behavior
 
 ## Exact Files In Scope
 
@@ -81,10 +83,10 @@ Ship deterministic action-handoff seams on top of shipped chief-of-staff outputs
 - `apps/web/lib/api.test.ts`
 - `apps/web/app/chief-of-staff/page.tsx`
 - `apps/web/app/chief-of-staff/page.test.tsx`
-- `apps/web/components/chief-of-staff-weekly-review-panel.tsx`
-- `apps/web/components/chief-of-staff-weekly-review-panel.test.tsx`
 - `apps/web/components/chief-of-staff-action-handoff-panel.tsx`
 - `apps/web/components/chief-of-staff-action-handoff-panel.test.tsx`
+- `apps/web/components/chief-of-staff-handoff-queue-panel.tsx`
+- `apps/web/components/chief-of-staff-handoff-queue-panel.test.tsx`
 - `tests/unit/test_chief_of_staff.py`
 - `tests/integration/test_chief_of_staff_api.py`
 - `README.md`
@@ -96,53 +98,57 @@ Ship deterministic action-handoff seams on top of shipped chief-of-staff outputs
 
 ## In Scope
 
-- Add deterministic action-handoff artifact/API fields:
-  - `action_handoff_brief`
-  - `handoff_items`
-  - `task_draft`
-  - `approval_draft`
-  - `execution_posture`
-- Add deterministic action handoff generation:
-  - selects top actionable chief-of-staff recommendations
-  - maps each item to task/approval draft structure with explicit rationale
-  - carries trust-aware confidence and required-approval indicators
-- Add `/chief-of-staff` action handoff panel with rationale/provenance visibility.
-- Add deterministic tests for mapping order, execution posture, and no-autonomous-execution guarantees.
+- Add deterministic queue fields on chief-of-staff payloads:
+  - `handoff_queue_summary`
+  - `handoff_queue_groups`
+  - `handoff_review_actions`
+- Add lifecycle state model for handoff items:
+  - `ready`
+  - `pending_approval`
+  - `executed`
+  - `stale`
+  - `expired`
+- Add deterministic queue ordering and posture grouping behavior.
+- Add explicit operator review-action seam for lifecycle transitions.
+- Add `/chief-of-staff` handoff queue panel with grouped visibility and review controls.
+- Add deterministic tests for ordering, grouping, and transition consistency.
 
 ## Out of Scope
 
-- automatic task execution or external sends
+- automatic execution of queue items
 - connector/channel expansion
-- changes to shipped P7 semantics
+- changes to shipped P8-S29 artifact generation semantics
 
 ## Required Deliverables
 
-- action-handoff API/artifact seam
-- deterministic task/approval draft mapping behavior
-- `/chief-of-staff` action handoff UI panel
-- unit/integration/web tests for handoff behavior
+- handoff queue API/artifact seam
+- deterministic queue ordering/grouping behavior
+- operator review-action transition behavior
+- `/chief-of-staff` handoff queue UI panel
+- unit/integration/web tests for queue behavior
 - synced docs and sprint reports
 
 ## Acceptance Criteria
 
-- action handoff outputs are deterministic and provenance-backed for fixed state.
-- handoff payloads include explicit approval-bounded execution posture and non-autonomous guarantees.
-- task/approval draft structures are coherent and directly usable by existing governed workflows.
+- queue states are explicit, deterministic, and auditable for fixed state.
+- queue ordering/grouping is deterministic and surfaces stale/expired items explicitly.
+- operator review actions update queue posture consistently without autonomous side effects.
 - `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py tests/integration/test_chief_of_staff_api.py -q` passes.
-- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-weekly-review-panel.test.tsx components/chief-of-staff-action-handoff-panel.test.tsx lib/api.test.ts` passes.
+- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-action-handoff-panel.test.tsx components/chief-of-staff-handoff-queue-panel.test.tsx lib/api.test.ts` passes.
 - `python3 scripts/run_phase4_validation_matrix.py` remains PASS.
-- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P8-S29 scope and preserve “Phase 7 complete” truth.
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P8-S30 scope and preserve “P8-S29 shipped” truth.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
 - preserve shipped P5/P6/P7 semantics
+- preserve shipped P8-S29 handoff generation semantics
 - keep side effects approval-bounded and explicit
-- keep handoff behavior deterministic and test-backed
+- keep queue behavior deterministic and test-backed
 
 ## Control Tower Task Cards
 
-### Task 1: Handoff Engine + API
+### Task 1: Handoff Queue Engine + API
 
 Owner: tooling operative
 
@@ -157,7 +163,7 @@ Write scope:
 - `tests/unit/test_chief_of_staff.py`
 - `tests/integration/test_chief_of_staff_api.py`
 
-### Task 2: Chief-of-Staff Handoff UI
+### Task 2: Chief-of-Staff Queue UI
 
 Owner: tooling operative
 
@@ -167,10 +173,10 @@ Write scope:
 - `apps/web/lib/api.test.ts`
 - `apps/web/app/chief-of-staff/page.tsx`
 - `apps/web/app/chief-of-staff/page.test.tsx`
-- `apps/web/components/chief-of-staff-weekly-review-panel.tsx`
-- `apps/web/components/chief-of-staff-weekly-review-panel.test.tsx`
 - `apps/web/components/chief-of-staff-action-handoff-panel.tsx`
 - `apps/web/components/chief-of-staff-action-handoff-panel.test.tsx`
+- `apps/web/components/chief-of-staff-handoff-queue-panel.tsx`
+- `apps/web/components/chief-of-staff-handoff-queue-panel.test.tsx`
 
 ### Task 3: Docs + Integration Review
 
@@ -186,8 +192,8 @@ Write scope:
 
 Responsibilities:
 
-- verify no P6/P7 relitigation
-- verify deterministic handoff mapping and approval-bounded posture
+- verify no P6/P7/P8-S29 relitigation
+- verify deterministic queue ordering and transition posture
 - verify no hidden scope expansion
 - verify no Phase 4 regression
 
@@ -195,21 +201,21 @@ Responsibilities:
 
 `BUILD_REPORT.md` must include:
 
-- exact action-handoff contract delta
-- exact deterministic mapping/execution-posture behavior
+- exact handoff-queue contract delta
+- exact deterministic grouping/ordering/transition behavior
 - exact verification command outcomes
-- explicit deferred Phase 8 scope beyond P8-S29
+- explicit deferred Phase 8 scope beyond P8-S30
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
 
-- sprint stayed P8-S29 scoped
-- handoff outputs are deterministic and explainable
-- approval-bounded execution posture is explicit and preserved
+- sprint stayed P8-S30 scoped
+- queue outputs and transitions are deterministic and explainable
+- approval-bounded execution posture remains explicit and preserved
 - no hidden scope expansion
 - Phase 4 validation remains green
 
 ## Exit Condition
 
-This sprint is complete when Alice can produce deterministic, provenance-backed, approval-bounded action handoff artifacts from chief-of-staff recommendations without regressing shipped Phase 4/5/6/7 behavior.
+This sprint is complete when Alice can present and operate a deterministic chief-of-staff handoff queue with explicit lifecycle posture and operator review transitions, without regressing shipped Phase 4/5/6/7 and P8-S29 behavior.

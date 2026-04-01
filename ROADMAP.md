@@ -4,8 +4,8 @@
 
 - The canonical repo baseline remains through Phase 3 Sprint 9.
 - Earlier Phase 4 increments are delivered on top of that baseline: run-aware execution linkage, idempotent replay controls, approval-to-run pause/resume linkage, explicit run transitions/stop reasons, bounded retry posture, explicit failure classes, and deterministic gate runners.
+- Phase 4 Sprint 14 is the active release-control layer.
 - Phase 4 Sprint 14 established the release-control layer: Phase 4 release-control is complete and remains the gate baseline, Phase 4 owns acceptance/readiness/validation semantics directly, canonical magnesium reorder ship-gate evidence is first-class, and compatibility gates stay green.
-- Phase 4 Sprint 14 is the active release-control layer for gate-ownership semantics and compatibility validation commands.
 - Phase 4 Sprint 15 adds deterministic MVP release-candidate rehearsal orchestration via `python3 scripts/run_phase4_release_candidate.py`, producing `artifacts/release/phase4_rc_summary.json` with explicit per-step evidence and final GO/NO_GO.
 - Phase 4 Sprint 16 adds durable RC evidence retention: each rehearsal run now writes an archive copy plus append-only audit ledger at `artifacts/release/archive/index.json`, while preserving the latest-summary compatibility path.
 - Phase 4 Sprint 17 hardens RC archive/index writes for concurrency: deterministic lock path (`artifacts/release/archive/index.lock`), bounded lock-timeout contract, and atomic index replace persistence.
@@ -43,8 +43,14 @@
   - handoff mapping deterministically selects top recommendations from priority/follow-through/preparation/weekly-review signals and emits governed task/approval draft structures with rationale + provenance.
   - execution posture is explicit and non-autonomous (`approval_bounded_artifact_only`, `approval_required=true`, no autonomous side effects).
   - `/chief-of-staff` web now renders an action handoff panel showing posture, primary task/approval drafts, and per-item rationale/provenance.
+- Phase 8 Sprint 30 adds deterministic chief-of-staff handoff queue and operational review seams on top of shipped P8-S29:
+  - `GET /v0/chief-of-staff` now also includes `handoff_queue_summary`, `handoff_queue_groups`, and `handoff_review_actions`.
+  - queue lifecycle posture is explicit (`ready`, `pending_approval`, `executed`, `stale`, `expired`) with deterministic grouped ordering and stale/expired visibility.
+  - `POST /v0/chief-of-staff/handoff-review-actions` captures explicit operator lifecycle transitions as auditable continuity records.
+  - `/chief-of-staff` web now renders a grouped handoff queue panel with explicit review-action controls and review-action history.
 - Phase 7 is complete (`P7-S25` through `P7-S28` shipped).
-- Active post-Phase-7 sprint is Phase 8 Sprint 29: chief-of-staff action handoff artifacts.
+- Phase 8 Sprint 29 is shipped baseline.
+- Active post-Phase-7 sprint is Phase 8 Sprint 30: handoff queue and operational review.
 - Phase 8 planning anchors are:
   - `docs/phase8-product-spec.md`
   - `docs/phase8-sprint-29-32-plan.md`
@@ -96,9 +102,11 @@
   - P7-S26 follow-through supervision is now shipped baseline
   - P7-S27 preparation briefs and resumption supervision is now shipped baseline
   - P7-S28 weekly review and outcome learning is now shipped baseline
-  - active post-Phase-7 packet is P8-S29 chief-of-staff action handoff artifacts
+  - P8-S29 action handoff artifacts are now shipped baseline
+  - active post-Phase-7 packet is P8-S30 handoff queue and operational review
   - do not reopen P6-S21/P6-S22/P6-S23/P6-S24 contracts while operating on post-P6-S24 follow-up scope
-  - do not reopen P7-S25/P7-S26/P7-S27/P7-S28 semantics while executing P8-S29
+  - do not reopen P7-S25/P7-S26/P7-S27/P7-S28 semantics while executing P8-S30
+  - do not reopen P8-S29 handoff-generation semantics while executing P8-S30
   - do not fold post-Phase-5 work back into shipped Sprint 20 seams
 - Keep live docs synchronized with shipped reality so planning does not drift behind the repo again.
 
