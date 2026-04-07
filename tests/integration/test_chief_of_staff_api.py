@@ -362,6 +362,22 @@ def test_chief_of_staff_priority_brief_is_deterministic_and_trust_aware(
         "handoff_item_id_asc",
     ]
     assert brief["handoff_review_actions"] == []
+    assert brief["execution_routing_summary"]["total_handoff_count"] == len(brief["handoff_items"])
+    assert brief["execution_routing_summary"]["routed_handoff_count"] == 0
+    assert brief["execution_routing_summary"]["route_target_order"] == [
+        "task_workflow_draft",
+        "approval_workflow_draft",
+        "follow_up_draft_only",
+    ]
+    assert brief["routed_handoff_items"]
+    assert brief["routed_handoff_items"][0]["routed_targets"] == []
+    assert brief["routing_audit_trail"] == []
+    assert brief["execution_readiness_posture"]["posture"] == "approval_required_draft_only"
+    assert brief["execution_readiness_posture"]["approval_required"] is True
+    assert brief["execution_readiness_posture"]["autonomous_execution"] is False
+    assert brief["execution_readiness_posture"]["external_side_effects_allowed"] is False
+    assert brief["execution_readiness_posture"]["approval_path_visible"] is True
+    assert brief["execution_readiness_posture"]["transition_order"] == ["routed", "reaffirmed"]
     assert brief["summary"]["execution_posture_order"] == ["approval_bounded_artifact_only"]
     assert brief["task_draft"]["source_handoff_item_id"] == brief["handoff_items"][0]["handoff_item_id"]
     assert brief["approval_draft"]["source_handoff_item_id"] == brief["handoff_items"][0]["handoff_item_id"]
@@ -463,6 +479,112 @@ def test_chief_of_staff_handoff_review_action_updates_queue_lifecycle(
     assert any(
         item["handoff_item_id"] == handoff_item_id
         for item in refreshed_brief["handoff_queue_groups"]["stale"]["items"]
+    )
+
+
+def test_chief_of_staff_execution_routing_action_updates_routing_audit(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="chief-of-staff-routing@example.com")
+    thread_id = UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        capture = store.create_continuity_capture_event(
+            raw_content="Next Action: Governed routing validation",
+            explicit_signal="next_action",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_next_action",
+        )
+        continuity_object = store.create_continuity_object(
+            capture_event_id=capture["id"],
+            object_type="NextAction",
+            status="active",
+            title="Next Action: Governed routing validation",
+            body={"action_text": "Governed routing validation"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["event-next"]},
+            confidence=0.95,
+        )
+
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=continuity_object["id"],
+        created_at=datetime(2026, 3, 31, 10, 0, tzinfo=UTC),
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status, brief_payload = invoke_request(
+        "GET",
+        "/v0/chief-of-staff",
+        query_params={
+            "user_id": str(user_id),
+            "thread_id": str(thread_id),
+            "limit": "5",
+        },
+    )
+    assert status == 200
+    handoff_item_id = brief_payload["brief"]["handoff_items"][0]["handoff_item_id"]
+
+    routing_status, routing_payload = invoke_request(
+        "POST",
+        "/v0/chief-of-staff/execution-routing-actions",
+        payload={
+            "user_id": str(user_id),
+            "handoff_item_id": handoff_item_id,
+            "route_target": "task_workflow_draft",
+            "thread_id": str(thread_id),
+            "note": "operator routing test",
+        },
+    )
+
+    assert routing_status == 200
+    assert routing_payload["routing_action"]["handoff_item_id"] == handoff_item_id
+    assert routing_payload["routing_action"]["route_target"] == "task_workflow_draft"
+    assert routing_payload["routing_action"]["transition"] == "routed"
+    assert routing_payload["execution_routing_summary"]["routed_handoff_count"] >= 1
+    assert any(
+        item["handoff_item_id"] == handoff_item_id and "task_workflow_draft" in item["routed_targets"]
+        for item in routing_payload["routed_handoff_items"]
+    )
+    assert routing_payload["execution_readiness_posture"]["approval_required"] is True
+
+    reaffirm_status, reaffirm_payload = invoke_request(
+        "POST",
+        "/v0/chief-of-staff/execution-routing-actions",
+        payload={
+            "user_id": str(user_id),
+            "handoff_item_id": handoff_item_id,
+            "route_target": "task_workflow_draft",
+            "thread_id": str(thread_id),
+            "note": "operator reaffirm test",
+        },
+    )
+    assert reaffirm_status == 200
+    assert reaffirm_payload["routing_action"]["transition"] == "reaffirmed"
+    assert reaffirm_payload["routing_action"]["previously_routed"] is True
+
+    refreshed_status, refreshed_brief_payload = invoke_request(
+        "GET",
+        "/v0/chief-of-staff",
+        query_params={
+            "user_id": str(user_id),
+            "thread_id": str(thread_id),
+            "limit": "5",
+        },
+    )
+    assert refreshed_status == 200
+    refreshed_brief = refreshed_brief_payload["brief"]
+    assert refreshed_brief["routing_audit_trail"]
+    assert refreshed_brief["routing_audit_trail"][0]["route_target"] == "task_workflow_draft"
+    assert any(
+        item["handoff_item_id"] == handoff_item_id and "task_workflow_draft" in item["routed_targets"]
+        for item in refreshed_brief["routed_handoff_items"]
     )
 
 

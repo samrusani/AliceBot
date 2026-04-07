@@ -32,6 +32,7 @@ import {
   getThreadResumptionBrief,
   getContinuityResumptionBrief,
   getChiefOfStaffPriorityBrief,
+  captureChiefOfStaffExecutionRoutingAction,
   captureChiefOfStaffHandoffReviewAction,
   captureChiefOfStaffRecommendationOutcome,
   getThreadSessions,
@@ -3090,6 +3091,76 @@ describe("api helpers", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/chief-of-staff/handoff-review-actions",
+      expect.objectContaining({
+        method: "POST",
+        cache: "no-store",
+      }),
+    );
+  });
+
+  it("captures chief-of-staff execution routing actions through the deterministic seam", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          routing_action: {
+            id: "routing-1",
+            capture_event_id: "capture-routing-1",
+            handoff_item_id: "handoff-1",
+            route_target: "task_workflow_draft",
+            transition: "routed",
+            previously_routed: false,
+            route_state: true,
+            reason: "Operator routed handoff 'handoff-1' to 'task_workflow_draft'.",
+            note: null,
+            provenance_references: [],
+            created_at: "2026-04-01T09:30:00Z",
+            updated_at: "2026-04-01T09:30:00Z",
+          },
+          execution_routing_summary: {
+            total_handoff_count: 1,
+            routed_handoff_count: 1,
+            unrouted_handoff_count: 0,
+            task_workflow_draft_count: 1,
+            approval_workflow_draft_count: 0,
+            follow_up_draft_only_count: 0,
+            route_target_order: ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+            routed_item_order: ["handoff_rank_asc", "handoff_item_id_asc"],
+            audit_order: ["created_at_desc", "id_desc"],
+            transition_order: ["routed", "reaffirmed"],
+            approval_required: true,
+            non_autonomous_guarantee:
+              "No task, approval, connector send, or external side effect is executed by this endpoint.",
+            reason: "Routing transitions are explicit and auditable.",
+          },
+          routed_handoff_items: [],
+          routing_audit_trail: [],
+          execution_readiness_posture: {
+            posture: "approval_required_draft_only",
+            approval_required: true,
+            autonomous_execution: false,
+            external_side_effects_allowed: false,
+            approval_path_visible: true,
+            route_target_order: ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+            required_route_targets: ["task_workflow_draft", "approval_workflow_draft"],
+            transition_order: ["routed", "reaffirmed"],
+            non_autonomous_guarantee:
+              "No task, approval, connector send, or external side effect is executed by this endpoint.",
+            reason: "Execution routing remains draft-only.",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await captureChiefOfStaffExecutionRoutingAction("https://api.example.com", {
+      user_id: "user-1",
+      handoff_item_id: "handoff-1",
+      route_target: "task_workflow_draft",
+      thread_id: "thread-1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/chief-of-staff/execution-routing-actions",
       expect.objectContaining({
         method: "POST",
         cache: "no-store",
