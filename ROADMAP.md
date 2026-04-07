@@ -38,13 +38,13 @@ Success condition:
 - terminal commands for capture, recall, resume, open loops, review, correction, and status
 - deterministic terminal formatting with provenance snippets
 
-### P9-S35: MCP Server (next active seam)
+### P9-S35: MCP Server (shipped baseline)
 
 - small stable MCP tool surface
 - local interop examples for compatible clients
 - deterministic tool contracts
 
-### P9-S36: OpenClaw Adapter
+### P9-S36: OpenClaw Adapter (next active seam)
 
 - import path for OpenClaw durable memory/workspace data
 - Alice MCP augmentation mode for OpenClaw-style workflows
@@ -80,6 +80,7 @@ Success condition:
 
 - Phase 8 delivered operational chief-of-staff handoffs, routing, outcome learning, and closure quality.
 - `P9-S33` delivered the public-safe `alice-core` boundary, canonical local startup path, and deterministic sample-data proof.
+- `P9-S34` delivered the shipped local CLI continuity contract that `P9-S35` should mirror through MCP.
 
 ## Legacy Compatibility Markers
 

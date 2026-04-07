@@ -22,6 +22,7 @@ dev = [
 
 [project.scripts]
 alicebot = "alicebot_api.cli:main"
+alicebot-mcp = "alicebot_api.mcp_server:main"
 
 [tool.setuptools.package-dir]
 "" = "."

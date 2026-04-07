@@ -20,7 +20,7 @@
 
 ## Incomplete / At-Risk Areas
 
-- no published MCP server surface exists yet
+- no external adapter/importer interop has shipped yet beyond local MCP
 - importer and adapter story is not yet public-ready
 - OSS license finalization is still open
 
@@ -30,7 +30,7 @@ Phase 9: Alice Public Core and Agent Interop
 
 ## Latest State Summary
 
-`P9-S33` and `P9-S34` are now shipped baselines:
+`P9-S33`, `P9-S34`, and `P9-S35` are now shipped baselines:
 
 - package boundary is documented around `alice-core`
 - canonical local startup path is documented and script-backed
@@ -39,12 +39,27 @@ Phase 9: Alice Public Core and Agent Interop
 - packaged CLI entrypoint exists at `python -m alicebot_api` (optional console script `alicebot`)
 - continuity command coverage exists for capture, recall, resume, open-loops, review queue/show/apply, and status
 - correction flow through CLI now deterministically changes later recall/resume outputs
+- local MCP server entrypoint exists at `python -m alicebot_api.mcp_server` (optional console script `alicebot-mcp`)
+- ADR-003 MCP tools are wired to shipped continuity seams:
+  - `alice_capture`
+  - `alice_recall`
+  - `alice_resume`
+  - `alice_open_loops`
+  - `alice_recent_decisions`
+  - `alice_recent_changes`
+  - `alice_memory_review`
+  - `alice_memory_correct`
+  - `alice_context_pack`
+- MCP interoperability proof is now covered by integration tests for:
+  - successful `alice_recall` and `alice_resume` calls
+  - correction via `alice_memory_correct` changing subsequent retrieval deterministically
+  - structured parity against shipped CLI/core behavior
 
-The next active seam is `P9-S35`:
+The next active seam is `P9-S36`:
 
-- mirror the shipped CLI continuity contract via MCP tool transport
-- keep parity strict with existing deterministic CLI semantics
-- avoid reopening continuity behavior in transport work
+- implement OpenClaw adapter boundary on top of shipped CLI/MCP continuity contract
+- keep parity strict with existing deterministic continuity semantics
+- avoid widening MCP transport semantics while adapter boundary is established
 
 ## Critical Constraints
 
@@ -55,11 +70,11 @@ The next active seam is `P9-S35`:
 
 ## Immediate Next Move
 
-Execute `P9-S35` on top of the `P9-S33`/`P9-S34` boundary:
+Execute `P9-S36` on top of the `P9-S33`/`P9-S34`/`P9-S35` boundary:
 
-- map MCP tools directly to the shipped CLI behavior contract
-- preserve deterministic output semantics for parity tests
-- keep startup/sample-data path unchanged while MCP is introduced
+- build the first OpenClaw adapter using the shipped MCP wedge
+- preserve deterministic continuity output semantics and correction parity
+- keep startup/sample-data path unchanged while adapter support is added
 
 ## Legacy Compatibility Markers
 
