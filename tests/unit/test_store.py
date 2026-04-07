@@ -47,7 +47,7 @@ def test_create_methods_return_cursor_rows_and_use_expected_parameters() -> None
     cursor = RecordingCursor(
         fetchone_results=[
             {"id": user_id, "email": "owner@example.com", "display_name": "Owner"},
-            {"id": thread_id, "title": "Starter thread"},
+            {"id": thread_id, "title": "Starter thread", "agent_profile_id": "assistant_default"},
             {"id": uuid4(), "thread_id": thread_id, "status": "active"},
         ]
     )
@@ -71,11 +71,11 @@ def test_create_methods_return_cursor_rows_and_use_expected_parameters() -> None
         ),
         (
             """
-                INSERT INTO threads (user_id, title)
-                VALUES (app.current_user_id(), %s)
-                RETURNING id, user_id, title, created_at, updated_at
+                INSERT INTO threads (user_id, title, agent_profile_id)
+                VALUES (app.current_user_id(), %s, %s)
+                RETURNING id, user_id, title, agent_profile_id, created_at, updated_at
                 """,
-            ("Starter thread",),
+            ("Starter thread", "assistant_default"),
         ),
         (
             """

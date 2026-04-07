@@ -1,41 +1,50 @@
 # Rules
 
-## Truth And Scope
+## Product / Scope Rules
 
-- The active sprint packet is the top scope boundary for implementation work.
-- Treat `.ai/active/SPRINT_PACKET.md` as an input/control artifact: do not edit it during implementation unless Control Tower explicitly changes the sprint.
-- Never describe planned behavior as already implemented.
-- Keep canonical truth files concise, current, and durable.
-- Shared runbooks and canonical docs must use machine-independent commands and links; do not use local user-home absolute paths.
-- When a sprint changes the operating baseline, update canonical truth docs in the same sprint before handoff.
-- Archive stale planning or history material instead of deleting it when traceability still matters.
-- Do not widen product scope without an explicit roadmap or sprint change.
+- Treat Alice as a memory and continuity layer first, not a broad autonomous agent platform.
+- Do not widen channels, deep automation, or connector write breadth without an explicit roadmap change.
+- Keep the public v0.1 contract focused on capture, recall, resume, correction, and open loops.
+- Do not block Phase 9 on hosted SaaS, Telegram, WhatsApp, or deep vertical workflows.
 
-## Product And Safety
+## Architecture Rules
 
-- Never execute a consequential external action without explicit user approval.
-- Treat explainability as a product feature, not an internal debugging aid.
-- Treat the repeat magnesium reorder as the v1 release-readiness validation scenario.
-- Do not add proactive automation, write-capable connectors, voice, or browser automation without an explicit roadmap change.
+- Preserve shipped P5/P6/P7/P8 semantics while packaging for Phase 9.
+- Keep public interop surfaces narrow and deterministic before broadening them.
+- Always compile context from durable sources, not transcript replay.
+- Treat Postgres as the primary system of record unless a measured decision changes it.
+- Keep MCP tools small, stable, and schema-driven.
 
-## Architecture And Data
+## Coding Rules
 
-- Treat the immutable event store as ground truth; downstream memories, tasks, and summaries are derived or governed views.
-- Always compile context per invocation from durable sources.
-- Keep prompt assembly, tool schemas, and serialized context ordering deterministic.
-- Treat Postgres as the v1 system of record unless measured constraints justify a change.
-- Task-step lineage and execution linkage must stay explicit; do not reconstruct them heuristically from broader task history.
-- Enforce row-level security on every user-owned table.
-- Connector secrets must not be stored on normal metadata tables or exposed on read surfaces; they must use a dedicated protected storage seam.
-- Default memory admission to `NOOP`; promote only evidence-backed changes and preserve revision history for non-`NOOP` updates.
-- Apply domain and sensitivity filters before semantic retrieval.
+- Build public packaging on top of existing seams instead of reimplementing continuity behavior.
+- Keep CLI, MCP, importer, and adapter code module-scoped and test-backed.
+- Prefer deterministic outputs and explicit provenance in public-facing commands and tools.
+- Do not introduce public packaging shortcuts that bypass trust or approval boundaries.
 
-## Delivery And Testing
+## Data / Schema Rules
 
-- Build against typed contracts and migration-backed schemas first.
-- Keep changes small, module-scoped, and test-backed.
-- Never bypass policy, approval, or proxy boundaries to introduce side effects.
-- Schema changes are not complete without forward and rollback coverage.
-- Every module needs unit tests and at least one integration boundary test.
-- Approval boundaries, row-level security, audit logging, and lineage changes require adversarial tests.
-- Do not make memory-quality or retrieval-quality release claims without labeled evaluation evidence.
+- Preserve append-only continuity, correction, and revision history.
+- Keep imported data provenance explicit.
+- Default memory admission to conservative behavior; do not loosen admission discipline for launch convenience.
+- Do not silently overwrite stale or superseded truth.
+
+## Deployment / Ops Rules
+
+- Support one documented local startup path before adding alternative runtimes.
+- For `P9-S33`, canonical startup is: `docker compose up -d` -> `./scripts/migrate.sh` -> `./scripts/load_sample_data.sh` -> `./scripts/api_dev.sh`.
+- Public docs must match real install behavior on a clean machine.
+- Keep machine-independent commands and links in canonical docs and runbooks.
+- Archive obsolete planning or bootstrap material instead of deleting it when traceability matters.
+
+## Testing Rules
+
+- New public surfaces require install or smoke validation, not just unit tests.
+- CLI commands need deterministic golden-output tests.
+- MCP tools need stable contract tests.
+- Importers need fixture-backed success, dedupe, and failure-path tests.
+- Do not make public memory-quality or recall-quality claims without evaluation evidence.
+
+## Legacy Compatibility Marker
+
+Historical continuity keeps the v1 release-readiness validation scenario available for baseline evidence.

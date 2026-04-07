@@ -209,6 +209,7 @@ def test_extract_explicit_preferences_endpoint_admits_supported_candidates_and_p
     assert [revision["action"] for revision in revisions] == ["ADD", "UPDATE"]
     assert revisions[0]["candidate"] == {
         "memory_key": memory_key,
+        "agent_profile_id": "assistant_default",
         "value": {
             "kind": "explicit_preference",
             "preference": "like",
@@ -219,6 +220,7 @@ def test_extract_explicit_preferences_endpoint_admits_supported_candidates_and_p
     }
     assert revisions[1]["candidate"] == {
         "memory_key": memory_key,
+        "agent_profile_id": "assistant_default",
         "value": {
             "kind": "explicit_preference",
             "preference": "dislike",

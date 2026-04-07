@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "alicebot-foundation"
+name = "alice-core"
 version = "0.1.0"
-description = "Foundation scaffold for the AliceBot modular monolith."
+description = "Public-safe Alice core package for local memory and continuity workflows."
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.14,<2.0",
@@ -29,4 +29,3 @@ where = ["apps/api/src", "workers"]
 [tool.pytest.ini_options]
 pythonpath = ["apps/api/src", "workers"]
 testpaths = ["tests"]
-
