@@ -25,19 +25,20 @@ Success condition:
 
 ## Next Milestones
 
-### P9-S33: Public Core Packaging (current delivery)
+### P9-S33: Public Core Packaging (shipped baseline)
 
 - public-safe package boundary
 - documented local startup path
 - sample dataset (`fixtures/public_sample_data/continuity_v1.json`)
 - initial public README and OSS boundary decisions
 
-### P9-S34: CLI and Continuity UX
+### P9-S34: CLI and Continuity UX (shipped baseline)
 
-- terminal commands for import, capture, recall, resume, open loops, review, correction, and status
+- packaged local CLI entrypoint (`python -m alicebot_api`, optional `alicebot`)
+- terminal commands for capture, recall, resume, open loops, review, correction, and status
 - deterministic terminal formatting with provenance snippets
 
-### P9-S35: MCP Server
+### P9-S35: MCP Server (next active seam)
 
 - small stable MCP tool surface
 - local interop examples for compatible clients
@@ -78,7 +79,7 @@ Success condition:
 ## Recently Completed
 
 - Phase 8 delivered operational chief-of-staff handoffs, routing, outcome learning, and closure quality.
-- The core internal product is ready to be packaged and exposed publicly.
+- `P9-S33` delivered the public-safe `alice-core` boundary, canonical local startup path, and deterministic sample-data proof.
 
 ## Legacy Compatibility Markers
 

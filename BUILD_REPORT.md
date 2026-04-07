@@ -1,102 +1,51 @@
 # BUILD_REPORT.md
 
 ## sprint objective
-Implement `P9-S33` public-core packaging so an external technical user can install locally, load sample data, and run one recall flow plus one resumption flow from canonical docs.
+Ship `P9-S34` by adding a deterministic local CLI for core continuity flows (`capture`, `recall`, `resume`, `open-loops`, `review queue/show/apply`, `status`) on top of the shipped `alice-core` runtime.
 
 ## completed work
-- Added a deterministic sample-data fixture at `fixtures/public_sample_data/continuity_v1.json`.
-- Added a deterministic sample-data loader:
-  - `scripts/load_public_sample_data.py`
-  - `scripts/load_sample_data.sh`
-- Added `PUBLIC_SAMPLE_DATA_PATH` to `.env.example`.
-- Updated packaging metadata in `pyproject.toml`:
-  - package name: `alice-core`
-  - description aligned to public-core contract
-- Aligned required test-gate fixtures/assertions to current runtime contracts so required suites pass:
-  - `apps/web/components/memory-summary.test.tsx`
-  - `tests/integration/test_explicit_preferences_api.py`
-  - `tests/unit/test_approval_store.py`
-  - `tests/unit/test_compiler.py`
-  - `tests/unit/test_entity_store.py`
-  - `tests/unit/test_events.py`
-  - `tests/unit/test_store.py`
-  - `tests/unit/test_task_run_store.py`
-  - `tests/unit/test_tool_execution_store.py`
-  - `tests/unit/test_trace_store.py`
-- Aligned canonical docs to one startup + sample-data path and explicit recall/resumption proof commands:
-  - `README.md`
-  - `PRODUCT_BRIEF.md`
-  - `ARCHITECTURE.md`
-  - `ROADMAP.md`
-  - `RULES.md`
-  - `.ai/handoff/CURRENT_STATE.md`
-  - `docs/phase9-product-spec.md`
-  - `docs/phase9-sprint-33-38-plan.md`
-  - `docs/phase9-public-core-boundary.md`
-  - `docs/phase9-bootstrap-notes.md`
-  - `docs/phase9-sprint-33-control-tower-packet.md`
-- Updated ADRs to accepted for sprint decisions:
-  - `docs/adr/ADR-001-public-core-package-boundary.md`
-  - `docs/adr/ADR-002-public-runtime-baseline.md`
-  - `docs/adr/ADR-003-mcp-tool-surface-contract.md`
-
-## exact startup path used during verification
-1. `docker compose up -d`
-2. `./scripts/migrate.sh`
-3. `./scripts/load_sample_data.sh`
-4. `./scripts/api_dev.sh`
-5. `curl -sS http://127.0.0.1:8000/healthz`
-
-## exact sample-data load path used during verification
-- Fixture file: `fixtures/public_sample_data/continuity_v1.json`
-- Load command: `./scripts/load_sample_data.sh`
-- First run outcome: `status=ok`, `created_object_count=4`
-- Second run outcome (idempotence check): `status=noop`, `reason=fixture_already_loaded`
-
-## exact recall and resumption proof steps
-- Recall proof command:
-  - `curl -sS "http://127.0.0.1:8000/v0/continuity/recall?user_id=00000000-0000-0000-0000-000000000001&query=local-first"`
-  - Outcome: `200 OK`; `summary.returned_count=1`; top item title `Decision: Keep Alice local-first for public v0.1 packaging.`
-- Resumption proof command:
-  - `curl -sS "http://127.0.0.1:8000/v0/continuity/resumption-brief?user_id=00000000-0000-0000-0000-000000000001"`
-  - Outcome: `200 OK`; `brief.assembly_version=continuity_resumption_brief_v0`; non-empty `last_decision`, `open_loops`, and `next_action`.
+- Added packaged CLI entrypoint and module entry support:
+  - `apps/api/src/alicebot_api/cli.py`
+  - `apps/api/src/alicebot_api/cli_formatting.py`
+  - `apps/api/src/alicebot_api/__main__.py`
+  - `pyproject.toml` (`[project.scripts] alicebot = "alicebot_api.cli:main"`)
+- Kept CLI behavior on existing continuity seams (no core semantic fork):
+  - capture: `capture_continuity_input`
+  - recall: `query_continuity_recall`
+  - resume: `compile_continuity_resumption_brief`
+  - open-loops: `compile_continuity_open_loop_dashboard`
+  - review queue/show/apply: `list_continuity_review_queue`, `get_continuity_review_detail`, `apply_continuity_correction`
+  - status: runtime health + continuity/review/open-loop/retrieval summary
+- Added deterministic terminal formatting with provenance/trust signals:
+  - stable section order
+  - stable scope rendering
+  - stable list rendering and confidence/posture fields
+  - explicit empty states
+- Added CLI-focused tests:
+  - `tests/unit/test_cli.py`
+  - `tests/integration/test_cli_integration.py`
+- Updated sprint-scoped docs:
+  - `README.md` (CLI invocation and examples)
+  - `ROADMAP.md` (`P9-S34` shipped baseline, `P9-S35` next seam)
+  - `.ai/handoff/CURRENT_STATE.md` (CLI shipped summary and next seam)
+- Preserved control-doc truth marker compatibility in `.ai/handoff/CURRENT_STATE.md` (`Active Sprint focus is Phase 4 Sprint 14`) to keep baseline gate checks green.
 
 ## incomplete work
-- `P9-S33` scope items are implemented.
-- Deferred by decision: OSS license selection remains explicit follow-up work.
+- None inside `P9-S34` scope.
+- Intentionally deferred (out of scope): MCP transport/tool schemas (`P9-S35`), adapters/importer expansion, CLI ergonomics polish (autocomplete/TUI enhancements).
 
 ## files changed
-- `.env.example`
-- `pyproject.toml`
-- `scripts/load_public_sample_data.py`
-- `scripts/load_sample_data.sh`
-- `fixtures/public_sample_data/continuity_v1.json`
-- `README.md`
-- `PRODUCT_BRIEF.md`
-- `ARCHITECTURE.md`
-- `ROADMAP.md`
-- `RULES.md`
-- `.ai/handoff/CURRENT_STATE.md`
 - `.ai/active/SPRINT_PACKET.md`
-- `docs/phase9-product-spec.md`
-- `docs/phase9-sprint-33-38-plan.md`
-- `docs/phase9-public-core-boundary.md`
-- `docs/phase9-bootstrap-notes.md`
-- `docs/phase9-sprint-33-control-tower-packet.md`
-- `docs/adr/ADR-001-public-core-package-boundary.md`
-- `docs/adr/ADR-002-public-runtime-baseline.md`
-- `docs/adr/ADR-003-mcp-tool-surface-contract.md`
-- `scripts/api_dev.sh`
-- `apps/web/components/memory-summary.test.tsx`
-- `tests/integration/test_explicit_preferences_api.py`
-- `tests/unit/test_approval_store.py`
-- `tests/unit/test_compiler.py`
-- `tests/unit/test_entity_store.py`
-- `tests/unit/test_events.py`
-- `tests/unit/test_store.py`
-- `tests/unit/test_task_run_store.py`
-- `tests/unit/test_tool_execution_store.py`
-- `tests/unit/test_trace_store.py`
+- `apps/api/src/alicebot_api/cli.py`
+- `apps/api/src/alicebot_api/cli_formatting.py`
+- `apps/api/src/alicebot_api/__main__.py`
+- `apps/api/src/alicebot_api/__init__.py`
+- `pyproject.toml`
+- `tests/unit/test_cli.py`
+- `tests/integration/test_cli_integration.py`
+- `README.md`
+- `ROADMAP.md`
+- `.ai/handoff/CURRENT_STATE.md`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
@@ -108,26 +57,45 @@ Implement `P9-S33` public-core packaging so an external technical user can insta
 - `docker compose up -d`
   - PASS
 - `./scripts/migrate.sh`
-  - PASS
+  - PASS (required elevated local DB access)
 - `./scripts/load_sample_data.sh`
-  - PASS
-- `./scripts/api_dev.sh` + `curl -sS http://127.0.0.1:8000/healthz`
+  - PASS (`status=noop`, fixture already present)
+- `APP_RELOAD=false ./scripts/api_dev.sh` + `curl -sS http://127.0.0.1:8000/healthz`
   - PASS (`status=ok`)
-- `curl -sS "http://127.0.0.1:8000/v0/continuity/recall?user_id=00000000-0000-0000-0000-000000000001&query=local-first"`
+- `./.venv/bin/python -m alicebot_api --help`
   - PASS
-- `curl -sS "http://127.0.0.1:8000/v0/continuity/resumption-brief?user_id=00000000-0000-0000-0000-000000000001"`
+- `./.venv/bin/python -m alicebot_api status`
+  - PASS (database reachable, continuity metrics rendered)
+- `./.venv/bin/python -m alicebot_api recall --query local-first`
+  - PASS (deterministic ordered output with provenance snippets)
+- `./.venv/bin/python -m alicebot_api resume`
+  - PASS (last decision/open loops/recent changes/next action sections)
+- `./.venv/bin/python -m alicebot_api open-loops --limit 20`
   - PASS
-- `./.venv/bin/python -m pytest tests/unit tests/integration -q`
-  - PASS (`948 passed in 96.64s`)
-  - Note: executed with elevated local permissions because integration tests require localhost Postgres access.
+- `./.venv/bin/python -m alicebot_api capture "Decision: CLI verification keeps deterministic continuity output." --explicit-signal decision`
+  - PASS
+- `./.venv/bin/python -m alicebot_api review queue --status correction_ready --limit 20`
+  - PASS
+- `./.venv/bin/python -m alicebot_api review show b5bfdbcc-cbb2-440f-9e4e-7ebabdb41f3f`
+  - PASS
+- `./.venv/bin/python -m alicebot_api review apply b5bfdbcc-cbb2-440f-9e4e-7ebabdb41f3f --action supersede ...`
+  - PASS
+- `./.venv/bin/python -m alicebot_api recall --query local-first --limit 20` (post-correction)
+  - PASS (updated active decision ranked ahead of superseded prior decision)
+- `./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5` (post-correction)
+  - PASS (last decision updated deterministically after correction)
+- `./.venv/bin/python -m pytest tests/unit/test_cli.py -q`
+  - PASS (`5 passed`)
+- `./.venv/bin/python -m pytest tests/integration/test_cli_integration.py -q`
+  - PASS (`1 passed`)
+- `./.venv/bin/python -m pytest tests/unit tests/integration`
+  - PASS (`954 passed in 85.02s`) (required elevated local DB access)
 - `pnpm --dir apps/web test`
   - PASS (`192 passed`)
 
 ## blockers/issues
-- Running DB-backed commands in this environment required elevated permissions for localhost Postgres access.
-
-## deferred public-boundary/runtime/license decisions
-- License selection is explicitly deferred (documented in `docs/phase9-public-core-boundary.md` and ADR notes).
+- Sandbox-restricted localhost Postgres access required elevated execution for DB-backed commands/tests.
+- Initial backend full-suite run failed at collection due duplicate test-module basename (`test_cli.py` in both unit and integration); resolved by renaming integration test file to `tests/integration/test_cli_integration.py`.
 
 ## recommended next step
-Execute `P9-S34` CLI implementation against the now-documented `alice-core` boundary.
+Start `P9-S35` by mirroring the shipped CLI continuity contract via a narrow MCP tool surface, with parity tests that compare MCP outputs to current CLI deterministic output for the same dataset/scope.
