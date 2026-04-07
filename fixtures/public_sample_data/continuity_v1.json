@@ -1,0 +1,94 @@
+{
+  "fixture_id": "public-core-s33-continuity-v1",
+  "description": "Deterministic continuity fixture for public-core quickstart recall and resumption checks.",
+  "user": {
+    "email": "public-sample@example.com",
+    "display_name": "Public Sample User"
+  },
+  "objects": [
+    {
+      "raw_content": "Decision: Keep Alice local-first for public v0.1 packaging.",
+      "explicit_signal": "decision",
+      "object_type": "Decision",
+      "status": "active",
+      "title": "Decision: Keep Alice local-first for public v0.1 packaging.",
+      "body": {
+        "decision_text": "Keep Alice local-first for public v0.1 packaging."
+      },
+      "confidence": 0.98,
+      "provenance": {
+        "thread_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "project": "Alice Public Core",
+        "person": "Platform Team",
+        "source_event_ids": [
+          "sample-event-0001"
+        ],
+        "confirmation_status": "confirmed"
+      }
+    },
+    {
+      "raw_content": "Task: Publish public-core packaging docs and startup path.",
+      "explicit_signal": "task",
+      "object_type": "NextAction",
+      "status": "active",
+      "title": "Next Action: Publish public-core packaging docs and startup path.",
+      "body": {
+        "action_text": "Publish public-core packaging docs and startup path."
+      },
+      "confidence": 0.94,
+      "provenance": {
+        "thread_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "project": "Alice Public Core",
+        "person": "Docs Owner",
+        "source_event_ids": [
+          "sample-event-0002"
+        ],
+        "confirmation_status": "confirmed"
+      }
+    },
+    {
+      "raw_content": "Waiting for: reviewer PASS and merge approval from Control Tower.",
+      "explicit_signal": "waiting_for",
+      "object_type": "WaitingFor",
+      "status": "active",
+      "title": "Waiting For: reviewer PASS and merge approval from Control Tower.",
+      "body": {
+        "waiting_for_text": "Reviewer PASS and merge approval from Control Tower."
+      },
+      "confidence": 0.91,
+      "provenance": {
+        "thread_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "project": "Alice Public Core",
+        "person": "Control Tower",
+        "source_event_ids": [
+          "sample-event-0003"
+        ],
+        "confirmation_status": "unconfirmed"
+      }
+    },
+    {
+      "raw_content": "Commitment: publish the public-core bootstrap packet.",
+      "explicit_signal": "commitment",
+      "object_type": "Commitment",
+      "status": "completed",
+      "title": "Commitment: Publish the public-core bootstrap packet.",
+      "body": {
+        "commitment_text": "Publish the public-core bootstrap packet."
+      },
+      "confidence": 0.88,
+      "provenance": {
+        "thread_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "project": "Alice Public Core",
+        "person": "Program Lead",
+        "source_event_ids": [
+          "sample-event-0004"
+        ],
+        "confirmation_status": "confirmed"
+      }
+    }
+  ]
+}

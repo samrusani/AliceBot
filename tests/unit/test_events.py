@@ -16,6 +16,15 @@ class ContinuityApiStoreStub:
     def __init__(self, *, current_user_id: UUID) -> None:
         self.current_user_id = current_user_id
         self.base_time = datetime(2026, 3, 17, 9, 0, tzinfo=UTC)
+        self.agent_profiles = [
+            {
+                "id": "assistant_default",
+                "name": "Assistant Default",
+                "description": "Default profile for tests",
+                "model_provider": None,
+                "model_name": None,
+            }
+        ]
         self.threads: list[dict[str, object]] = []
         self.sessions: list[dict[str, object]] = []
         self.events: list[dict[str, object]] = []
@@ -26,6 +35,7 @@ class ContinuityApiStoreStub:
         thread_id: UUID,
         user_id: UUID,
         title: str,
+        agent_profile_id: str = "assistant_default",
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
     ) -> dict[str, object]:
@@ -33,6 +43,7 @@ class ContinuityApiStoreStub:
             "id": thread_id,
             "user_id": user_id,
             "title": title,
+            "agent_profile_id": agent_profile_id,
             "created_at": created_at or self.base_time,
             "updated_at": updated_at or created_at or self.base_time,
         }
@@ -87,12 +98,13 @@ class ContinuityApiStoreStub:
         self.events.append(event)
         return event
 
-    def create_thread(self, title: str) -> dict[str, object]:
+    def create_thread(self, title: str, agent_profile_id: str = "assistant_default") -> dict[str, object]:
         created_at = self.base_time + timedelta(minutes=len(self.threads))
         return self.add_thread(
             thread_id=uuid4(),
             user_id=self.current_user_id,
             title=title,
+            agent_profile_id=agent_profile_id,
             created_at=created_at,
             updated_at=created_at,
         )
@@ -105,6 +117,15 @@ class ContinuityApiStoreStub:
 
     def get_thread_optional(self, thread_id: UUID) -> dict[str, object] | None:
         return next((thread for thread in self.list_threads() if thread["id"] == thread_id), None)
+
+    def list_agent_profiles(self) -> list[dict[str, object]]:
+        return list(self.agent_profiles)
+
+    def get_agent_profile_optional(self, profile_id: str) -> dict[str, object] | None:
+        return next(
+            (profile for profile in self.agent_profiles if profile["id"] == profile_id),
+            None,
+        )
 
     def list_thread_sessions(self, thread_id: UUID) -> list[dict[str, object]]:
         visible_sessions = [
@@ -180,6 +201,7 @@ def test_thread_create_endpoint_persists_one_visible_thread(monkeypatch: pytest.
         "thread": {
             "id": json.loads(response.body)["thread"]["id"],
             "title": "Operator Inbox",
+            "agent_profile_id": "assistant_default",
             "created_at": "2026-03-17T09:00:00+00:00",
             "updated_at": "2026-03-17T09:00:00+00:00",
         }
@@ -268,12 +290,14 @@ def test_thread_review_endpoints_preserve_shape_order_and_user_isolation(
             {
                 "id": str(second_thread["id"]),
                 "title": "Beta thread",
+                "agent_profile_id": "assistant_default",
                 "created_at": shared_created_at.isoformat(),
                 "updated_at": shared_created_at.isoformat(),
             },
             {
                 "id": str(first_thread["id"]),
                 "title": "Alpha thread",
+                "agent_profile_id": "assistant_default",
                 "created_at": shared_created_at.isoformat(),
                 "updated_at": shared_created_at.isoformat(),
             },
@@ -287,6 +311,7 @@ def test_thread_review_endpoints_preserve_shape_order_and_user_isolation(
         "thread": {
             "id": str(second_thread["id"]),
             "title": "Beta thread",
+            "agent_profile_id": "assistant_default",
             "created_at": shared_created_at.isoformat(),
             "updated_at": shared_created_at.isoformat(),
         }
