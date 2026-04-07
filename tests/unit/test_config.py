@@ -26,6 +26,9 @@ def test_settings_defaults(monkeypatch):
         "TASK_WORKSPACE_ROOT",
         "GMAIL_SECRET_MANAGER_URL",
         "CALENDAR_SECRET_MANAGER_URL",
+        "ALICEBOT_AUTH_USER_ID",
+        "RESPONSE_RATE_LIMIT_WINDOW_SECONDS",
+        "RESPONSE_RATE_LIMIT_MAX_REQUESTS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -43,6 +46,9 @@ def test_settings_defaults(monkeypatch):
     assert settings.task_workspace_root == "/tmp/alicebot/task-workspaces"
     assert settings.gmail_secret_manager_url == ""
     assert settings.calendar_secret_manager_url == ""
+    assert settings.auth_user_id == ""
+    assert settings.response_rate_limit_window_seconds == 60
+    assert settings.response_rate_limit_max_requests == 20
 
 
 def test_settings_honor_environment_overrides(monkeypatch):
@@ -56,6 +62,9 @@ def test_settings_honor_environment_overrides(monkeypatch):
     monkeypatch.setenv("TASK_WORKSPACE_ROOT", "/tmp/custom-workspaces")
     monkeypatch.setenv("GMAIL_SECRET_MANAGER_URL", "file:///tmp/custom-gmail-secrets")
     monkeypatch.setenv("CALENDAR_SECRET_MANAGER_URL", "file:///tmp/custom-calendar-secrets")
+    monkeypatch.setenv("ALICEBOT_AUTH_USER_ID", "00000000-0000-0000-0000-000000000001")
+    monkeypatch.setenv("RESPONSE_RATE_LIMIT_WINDOW_SECONDS", "120")
+    monkeypatch.setenv("RESPONSE_RATE_LIMIT_MAX_REQUESTS", "30")
 
     settings = Settings.from_env()
 
@@ -69,6 +78,9 @@ def test_settings_honor_environment_overrides(monkeypatch):
     assert settings.task_workspace_root == "/tmp/custom-workspaces"
     assert settings.gmail_secret_manager_url == "file:///tmp/custom-gmail-secrets"
     assert settings.calendar_secret_manager_url == "file:///tmp/custom-calendar-secrets"
+    assert settings.auth_user_id == "00000000-0000-0000-0000-000000000001"
+    assert settings.response_rate_limit_window_seconds == 120
+    assert settings.response_rate_limit_max_requests == 30
 
 
 def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
@@ -82,6 +94,9 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
             "TASK_WORKSPACE_ROOT": "/tmp/mapped-workspaces",
             "GMAIL_SECRET_MANAGER_URL": "file:///tmp/mapped-gmail-secrets",
             "CALENDAR_SECRET_MANAGER_URL": "file:///tmp/mapped-calendar-secrets",
+            "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001",
+            "RESPONSE_RATE_LIMIT_WINDOW_SECONDS": "75",
+            "RESPONSE_RATE_LIMIT_MAX_REQUESTS": "10",
         }
     )
 
@@ -93,6 +108,9 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
     assert settings.task_workspace_root == "/tmp/mapped-workspaces"
     assert settings.gmail_secret_manager_url == "file:///tmp/mapped-gmail-secrets"
     assert settings.calendar_secret_manager_url == "file:///tmp/mapped-calendar-secrets"
+    assert settings.auth_user_id == "00000000-0000-0000-0000-000000000001"
+    assert settings.response_rate_limit_window_seconds == 75
+    assert settings.response_rate_limit_max_requests == 10
 
 
 def test_settings_raise_clear_error_for_invalid_integer_values() -> None:
@@ -101,3 +119,41 @@ def test_settings_raise_clear_error_for_invalid_integer_values() -> None:
 
     with pytest.raises(ValueError, match="MODEL_TIMEOUT_SECONDS must be an integer"):
         Settings.from_env({"MODEL_TIMEOUT_SECONDS": "not-an-integer"})
+
+    with pytest.raises(ValueError, match="RESPONSE_RATE_LIMIT_MAX_REQUESTS must be an integer"):
+        Settings.from_env({"RESPONSE_RATE_LIMIT_MAX_REQUESTS": "not-an-integer"})
+
+
+def test_settings_reject_invalid_auth_user_id() -> None:
+    with pytest.raises(ValueError, match="ALICEBOT_AUTH_USER_ID must be a valid UUID"):
+        Settings.from_env({"ALICEBOT_AUTH_USER_ID": "not-a-uuid"})
+
+
+def test_settings_reject_non_positive_rate_limit_values() -> None:
+    with pytest.raises(
+        ValueError,
+        match="RESPONSE_RATE_LIMIT_WINDOW_SECONDS must be a positive integer",
+    ):
+        Settings.from_env({"RESPONSE_RATE_LIMIT_WINDOW_SECONDS": "0"})
+
+    with pytest.raises(
+        ValueError,
+        match="RESPONSE_RATE_LIMIT_MAX_REQUESTS must be a positive integer",
+    ):
+        Settings.from_env({"RESPONSE_RATE_LIMIT_MAX_REQUESTS": "0"})
+
+
+def test_settings_require_hardened_non_dev_configuration() -> None:
+    with pytest.raises(
+        ValueError,
+        match="ALICEBOT_AUTH_USER_ID must be configured outside development/test environments",
+    ):
+        Settings.from_env({"APP_ENV": "staging"})
+
+    with pytest.raises(ValueError, match="DATABASE_URL must be overridden outside development/test environments"):
+        Settings.from_env(
+            {
+                "APP_ENV": "staging",
+                "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001",
+            }
+        )
