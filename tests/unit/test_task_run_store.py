@@ -52,7 +52,12 @@ def test_task_run_store_methods_use_expected_queries_and_jsonb_parameters() -> N
         "tick_count": 0,
         "step_count": 0,
         "max_ticks": 2,
+        "retry_count": 0,
+        "retry_cap": 3,
+        "retry_posture": "none",
+        "failure_class": None,
         "stop_reason": None,
+        "last_transitioned_at": "2026-03-27T10:00:00+00:00",
         "created_at": "2026-03-27T10:00:00+00:00",
         "updated_at": "2026-03-27T10:00:00+00:00",
     }
@@ -74,6 +79,10 @@ def test_task_run_store_methods_use_expected_queries_and_jsonb_parameters() -> N
         tick_count=0,
         step_count=0,
         max_ticks=2,
+        retry_count=0,
+        retry_cap=3,
+        retry_posture="none",
+        failure_class=None,
         stop_reason=None,
     )
     fetched = store.get_task_run_optional(task_run_id)
@@ -84,6 +93,10 @@ def test_task_run_store_methods_use_expected_queries_and_jsonb_parameters() -> N
         checkpoint={"cursor": 1, "target_steps": 2, "wait_for_signal": False},
         tick_count=1,
         step_count=1,
+        retry_count=0,
+        retry_cap=3,
+        retry_posture="none",
+        failure_class=None,
         stop_reason=None,
     )
     acquired = store.acquire_next_task_run_optional()
@@ -104,7 +117,7 @@ def test_task_run_store_methods_use_expected_queries_and_jsonb_parameters() -> N
     assert create_params[1] == "queued"
     assert isinstance(create_params[2], Jsonb)
     assert create_params[2].obj == {"cursor": 0, "target_steps": 2, "wait_for_signal": False}
-    assert create_params[3:] == (0, 0, 2, None)
+    assert create_params[3:] == (0, 0, 2, 0, 3, "none", None, None)
 
     assert "FROM task_runs" in cursor.executed[1][0]
     assert "ORDER BY created_at ASC, id ASC" in cursor.executed[2][0]
@@ -115,7 +128,7 @@ def test_task_run_store_methods_use_expected_queries_and_jsonb_parameters() -> N
     assert update_params[0] == "running"
     assert isinstance(update_params[1], Jsonb)
     assert update_params[1].obj == {"cursor": 1, "target_steps": 2, "wait_for_signal": False}
-    assert update_params[2:] == (1, 1, None, task_run_id)
+    assert update_params[2:] == (1, 1, 0, 3, "none", None, None, task_run_id)
 
     acquire_query, acquire_params = cursor.executed[4]
     assert "WITH candidate AS" in acquire_query

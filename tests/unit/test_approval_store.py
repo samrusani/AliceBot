@@ -44,6 +44,7 @@ def test_approval_store_methods_use_expected_queries_and_jsonb_parameters() -> N
     approval_id = uuid4()
     thread_id = uuid4()
     tool_id = uuid4()
+    task_run_id = None
     task_step_id = uuid4()
     routing_trace_id = uuid4()
     resolved_by_user_id = uuid4()
@@ -53,6 +54,7 @@ def test_approval_store_methods_use_expected_queries_and_jsonb_parameters() -> N
                 "id": approval_id,
                 "thread_id": thread_id,
                 "tool_id": tool_id,
+                "task_run_id": task_run_id,
                 "task_step_id": task_step_id,
                 "status": "pending",
                 "request": {"thread_id": str(thread_id), "tool_id": str(tool_id)},
@@ -66,6 +68,7 @@ def test_approval_store_methods_use_expected_queries_and_jsonb_parameters() -> N
                 "id": approval_id,
                 "thread_id": thread_id,
                 "tool_id": tool_id,
+                "task_run_id": task_run_id,
                 "task_step_id": task_step_id,
                 "status": "pending",
                 "request": {"thread_id": str(thread_id), "tool_id": str(tool_id)},
@@ -79,6 +82,7 @@ def test_approval_store_methods_use_expected_queries_and_jsonb_parameters() -> N
                 "id": approval_id,
                 "thread_id": thread_id,
                 "tool_id": tool_id,
+                "task_run_id": task_run_id,
                 "task_step_id": task_step_id,
                 "status": "approved",
                 "request": {"thread_id": str(thread_id), "tool_id": str(tool_id)},
@@ -94,6 +98,7 @@ def test_approval_store_methods_use_expected_queries_and_jsonb_parameters() -> N
                 "id": approval_id,
                 "thread_id": thread_id,
                 "tool_id": tool_id,
+                "task_run_id": task_run_id,
                 "task_step_id": task_step_id,
                 "status": "pending",
                 "request": {"thread_id": str(thread_id), "tool_id": str(tool_id)},
@@ -131,17 +136,17 @@ def test_approval_store_methods_use_expected_queries_and_jsonb_parameters() -> N
     create_query, create_params = cursor.executed[0]
     assert "INSERT INTO approvals" in create_query
     assert create_params is not None
-    assert create_params[:4] == (thread_id, tool_id, task_step_id, "pending")
-    assert isinstance(create_params[4], Jsonb)
-    assert create_params[4].obj == {"thread_id": str(thread_id), "tool_id": str(tool_id)}
+    assert create_params[:5] == (thread_id, tool_id, task_run_id, task_step_id, "pending")
     assert isinstance(create_params[5], Jsonb)
-    assert create_params[5].obj == {"id": str(tool_id), "tool_key": "shell.exec"}
+    assert create_params[5].obj == {"thread_id": str(thread_id), "tool_id": str(tool_id)}
     assert isinstance(create_params[6], Jsonb)
-    assert create_params[6].obj == {
+    assert create_params[6].obj == {"id": str(tool_id), "tool_key": "shell.exec"}
+    assert isinstance(create_params[7], Jsonb)
+    assert create_params[7].obj == {
         "decision": "approval_required",
         "trace": {"trace_id": str(routing_trace_id)},
     }
-    assert create_params[7] == routing_trace_id
+    assert create_params[8] == routing_trace_id
     assert "resolved_at" in cursor.executed[1][0]
     assert "ORDER BY created_at ASC, id ASC" in cursor.executed[2][0]
 

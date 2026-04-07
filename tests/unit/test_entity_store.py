@@ -94,6 +94,7 @@ def test_entity_methods_use_expected_queries_and_deterministic_order() -> None:
                 SELECT
                   id,
                   user_id,
+                  agent_profile_id,
                   memory_key,
                   value,
                   status,

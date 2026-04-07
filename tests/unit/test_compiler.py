@@ -1319,6 +1319,7 @@ def test_compile_memory_section_orders_limits_and_excludes_deleted() -> None:
     memory_section = _compile_memory_section(
         store,  # type: ignore[arg-type]
         memories=[deleted_memory],
+        agent_profile_id="assistant_default",
         limits=ContextCompilerLimits(max_memories=1),
         semantic_retrieval=CompileContextSemanticRetrievalInput(
             embedding_config_id=store.config_id,
