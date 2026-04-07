@@ -10,7 +10,7 @@ Sprint IDs in this document are Phase 9-local (`P9-S33` to `P9-S38`) to avoid am
 
 Ship Alice as a public memory and continuity engine that technical users can install and connect to external agents quickly.
 
-## Sprint 33 (P9-S33)
+## Sprint 33 (P9-S33) (shipped baseline)
 
 ### Title
 
@@ -54,7 +54,7 @@ Turn the current internal system into a public-safe, installable core with one d
 - MCP interoperability
 - broad importer set
 
-## Sprint 34 (P9-S34)
+## Sprint 34 (P9-S34) (shipped baseline)
 
 ### Title
 
@@ -96,7 +96,7 @@ Make Alice useful without requiring the internal operator shell.
 - MCP server
 - external integrations
 
-## Sprint 35 (P9-S35)
+## Sprint 35 (P9-S35) (shipped baseline)
 
 ### Title
 
@@ -141,7 +141,7 @@ Make Alice usable immediately by external assistants through a stable small tool
 - broad tool surface expansion
 - remote hosted auth systems
 
-## Sprint 36 (P9-S36)
+## Sprint 36 (P9-S36) (current delivery)
 
 ### Title
 
