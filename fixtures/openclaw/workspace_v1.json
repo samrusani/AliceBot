@@ -1,0 +1,88 @@
+{
+  "fixture_id": "openclaw-s36-workspace-v1",
+  "workspace": {
+    "id": "openclaw-workspace-demo-001",
+    "name": "OpenClaw Interop Demo"
+  },
+  "durable_memory": [
+    {
+      "id": "oc-memory-001",
+      "type": "decision",
+      "status": "active",
+      "content": "Keep MCP tool surface narrow during Phase 9 interop rollout.",
+      "thread_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "task_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "project": "Alice Public Core",
+      "person": "Interop Owner",
+      "source_event_ids": [
+        "openclaw-event-0001"
+      ],
+      "confirmation_status": "confirmed",
+      "confidence": 0.97,
+      "tags": [
+        "release",
+        "interop"
+      ]
+    },
+    {
+      "id": "oc-memory-002",
+      "type": "next_action",
+      "status": "active",
+      "content": "Run OpenClaw fixture import before CLI recall and resume checks.",
+      "thread_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "task_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "project": "Alice Public Core",
+      "person": "Build Engineer",
+      "source_event_ids": [
+        "openclaw-event-0002"
+      ],
+      "confirmation_status": "confirmed",
+      "confidence": 0.93
+    },
+    {
+      "id": "oc-memory-003",
+      "type": "waiting_for",
+      "status": "active",
+      "content": "Wait for reviewer PASS after OpenClaw adapter verification.",
+      "thread_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "task_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "project": "Alice Public Core",
+      "person": "Control Tower",
+      "source_event_ids": [
+        "openclaw-event-0003"
+      ],
+      "confirmation_status": "unconfirmed",
+      "confidence": 0.9
+    },
+    {
+      "id": "oc-memory-004",
+      "type": "commitment",
+      "status": "completed",
+      "content": "Document the import boundary in ADR-004.",
+      "thread_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "task_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "project": "Alice Public Core",
+      "person": "Docs Owner",
+      "source_event_ids": [
+        "openclaw-event-0004"
+      ],
+      "confirmation_status": "confirmed",
+      "confidence": 0.91
+    },
+    {
+      "id": "oc-memory-004",
+      "type": "commitment",
+      "status": "completed",
+      "content": "Document the import boundary in ADR-004.",
+      "thread_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "task_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "project": "Alice Public Core",
+      "person": "Docs Owner",
+      "source_event_ids": [
+        "openclaw-event-0004"
+      ],
+      "confirmation_status": "confirmed",
+      "confidence": 0.91
+    }
+  ]
+}
