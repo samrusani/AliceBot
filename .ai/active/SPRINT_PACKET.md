@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 9 Sprint 34 (P9-S34): CLI and Continuity UX
+Phase 9 Sprint 35 (P9-S35): MCP Server
 
 ## Sprint Type
 
@@ -10,7 +10,7 @@ feature
 
 ## Sprint Reason
 
-`P9-S33` established the public-safe `alice-core` package boundary, one canonical local startup path, and deterministic sample data. The next non-redundant seam is a real local CLI so technical users can use Alice without the internal operator shell.
+`P9-S33` established the public-safe `alice-core` package boundary and startup path. `P9-S34` established the deterministic local CLI contract. The next non-redundant seam is exposing that same continuity contract through a narrow MCP server so external assistants can use Alice without reopening core behavior.
 
 ## Planning Anchors
 
@@ -24,20 +24,20 @@ feature
 
 ## Sprint Objective
 
-Ship a deterministic local CLI for core continuity flows so an external technical user can run capture, recall, resume, open-loop review, correction, and status commands directly against the shipped `alice-core` runtime.
+Ship a small deterministic MCP server for Alice continuity flows so one external MCP-capable client can call capture, recall, resume, open-loop, review, correction, and context-pack tools against the shipped local `alice-core` runtime.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase9-sprint-34-cli-and-continuity-ux`
+- Branch Name: `codex/phase9-sprint-35-mcp-server`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint Matters
 
-- It is the first real user-facing runtime surface on top of the public core.
-- It proves `alice-core` can be used directly by technical users before MCP arrives.
-- It gives `P9-S35` a stable behavior contract to mirror instead of inventing a second UX path.
+- It is the first real interop transport for external assistants.
+- It should inherit the already-shipped `P9-S34` CLI semantics instead of inventing a second behavior model.
+- It turns Alice from a local tool into a reusable memory layer for external agent clients.
 
 ## Redundancy Guard
 
@@ -48,33 +48,35 @@ Ship a deterministic local CLI for core continuity flows so an external technica
   - Phase 7 chief-of-staff guidance layer.
   - Phase 8 operational chief-of-staff handoff, queue, routing, and outcome-learning seams.
   - `P9-S33` public-safe packaging, startup path, and sample-data baseline.
-- Required now (`P9-S34`):
-  - deterministic CLI entrypoint for local Alice usage
-  - continuity command surface for capture/recall/resume/open loops/review/correction/status
-  - terminal-friendly output with provenance-backed summaries
-  - doc-matched CLI examples against the `P9-S33` local runtime path
-- Explicitly out of `P9-S34`:
-  - MCP server implementation
+  - `P9-S34` deterministic local CLI contract for continuity workflows.
+- Required now (`P9-S35`):
+  - narrow MCP transport for the shipped continuity contract
+  - deterministic tool schemas and serialization
+  - one local client interoperability proof
+  - parity tests between MCP outputs and shipped CLI/core behavior where relevant
+- Explicitly out of `P9-S35`:
   - OpenClaw adapter implementation
-  - importer expansion beyond the shipped sample-data path
-  - hosted SaaS, remote auth, or unsafe autonomous execution
-  - reworking `P9-S33` packaging/runtime contracts unless required for CLI correctness
+  - importer expansion
+  - hosted auth or remote deployment systems
+  - widening the tool surface beyond the ADR-defined initial wedge
+  - reopening `P9-S33` packaging or `P9-S34` CLI semantics unless transport parity exposes a real defect
 
 ## Design Truth
 
-- Alice remains a local-first memory and continuity engine first.
-- The CLI should reuse shipped core semantics, not fork or reinterpret them.
-- CLI output should be deterministic, readable, and provenance-backed.
-- The CLI is the reference human-operated interface for `P9-S35` MCP parity, not a one-off wrapper.
+- MCP is a transport layer over the shipped Alice continuity contract, not a new product surface with different semantics.
+- Tool outputs must stay deterministic, provenance-backed, and narrowly scoped.
+- External clients should get the same essential behavior as the local CLI for the same dataset and scope.
+- The first MCP release should privilege stability and auditability over breadth.
 
 ## Exact Surfaces In Scope
 
-- one installable CLI entrypoint under the `alice-core` package
-- local commands for capture, recall, resume, open loops, review queue/detail, correction, and status
-- deterministic terminal formatting for summary and detail views
-- provenance snippets and clear empty states in CLI output
-- doc updates for CLI installation and usage against the shipped local runtime
-- tests covering command routing, output contracts, and correction/resumption behavior
+- local MCP server entrypoint and runtime wiring
+- deterministic tool schemas for the initial ADR-backed tool set
+- transport wrappers for shipped continuity flows
+- context-pack output where it can be defined directly from shipped continuity seams
+- local auth/config model for MCP use on the documented startup path
+- docs and examples for one compatible MCP client
+- parity and transport tests for the scoped tool set
 
 ## Exact Files In Scope
 
@@ -84,63 +86,65 @@ Ship a deterministic local CLI for core continuity flows so an external technica
 - `ROADMAP.md`
 - `pyproject.toml`
 - `apps/api/src/alicebot_api/__init__.py`
-- `apps/api/src/alicebot_api/__main__.py` if introduced
-- `apps/api/src/alicebot_api/cli.py` if introduced
-- `apps/api/src/alicebot_api/cli_formatting.py` if introduced
-- `apps/api/src/alicebot_api/config.py` if CLI config hooks are needed
+- `apps/api/src/alicebot_api/config.py`
+- `apps/api/src/alicebot_api/mcp_server.py` if introduced
+- `apps/api/src/alicebot_api/mcp_tools.py` if introduced
+- `apps/api/src/alicebot_api/mcp_models.py` if introduced
+- `apps/api/src/alicebot_api/cli.py` if parity-alignment fixes are required
+- `apps/api/src/alicebot_api/cli_formatting.py` if parity-alignment fixes are required
 - `apps/api/src/alicebot_api/continuity_capture.py`
 - `apps/api/src/alicebot_api/continuity_recall.py`
 - `apps/api/src/alicebot_api/continuity_resumption.py`
 - `apps/api/src/alicebot_api/continuity_open_loops.py`
 - `apps/api/src/alicebot_api/continuity_review.py`
-- `apps/api/src/alicebot_api/store.py`
-- `scripts/load_sample_data.sh` if CLI smoke setup needs alignment
-- `tests/unit/test_cli.py` if introduced
-- `tests/integration/test_cli_integration.py` if introduced
+- `apps/api/src/alicebot_api/chief_of_staff.py` if `alice_context_pack` is implemented through existing brief assembly
+- `tests/unit/test_mcp.py` if introduced
+- `tests/integration/test_mcp_server.py` if introduced
+- `tests/integration/test_mcp_cli_parity.py` if introduced
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## In Scope
 
-- add a packaged CLI entrypoint that works from the documented local install
-- support command coverage for:
-  - `capture`
-  - `recall`
-  - `resume`
-  - `open-loops`
-  - `review queue`
-  - `review show`
-  - `review apply`
-  - `status`
-- keep terminal output deterministic enough for stable review and MCP follow-on mapping
-- show provenance/confidence/status where it materially affects trust
-- document exact command examples using the `P9-S33` sample dataset
+- support an initial MCP tool set aligned to ADR-003:
+  - `alice_capture`
+  - `alice_recall`
+  - `alice_resume`
+  - `alice_open_loops`
+  - `alice_recent_decisions`
+  - `alice_recent_changes`
+  - `alice_memory_review`
+  - `alice_memory_correct`
+  - `alice_context_pack`
+- define deterministic request/response shapes for those tools
+- make one local MCP client call recall and resume successfully
+- prove correction via MCP changes later retrieval behavior deterministically
+- document exact local MCP startup/use path without changing the canonical `P9-S33` runtime flow
 
 ## Out Of Scope
 
-- MCP transport or tool schemas
-- OpenClaw or other external adapters
-- broad repo packaging cleanup already handled in `P9-S33`
-- broad TUI work or shell auto-completion polish
-- any execution-autonomy expansion
+- OpenClaw or other adapters
+- broad tool-surface expansion beyond the ADR
+- hosted or remote auth systems
+- general-purpose agent execution tools
+- broad repo restructuring
+- replacing CLI as the reference behavior contract
 
 ## Required Deliverables
 
-- packaged CLI entrypoint callable from a local install
-- command coverage for core continuity flows
-- deterministic text output for recall and resumption
-- correction flow through CLI that updates later retrieval deterministically
-- synced CLI docs and sprint reports
+- packaged or runnable local MCP server entrypoint
+- deterministic initial tool schemas and handlers
+- one compatibility example for a real MCP client
+- parity evidence showing MCP reflects shipped Alice continuity behavior
+- synced docs and sprint reports
 
 ## Acceptance Criteria
 
-- fresh local install can invoke the CLI from the documented path
-- capture command writes a continuity event against real local data
-- recall command returns deterministic ordered output with provenance snippets
-- resume command returns recent decision, open loops, recent changes, and next action in terminal-friendly form
-- open-loop and review commands expose correction-ready items without needing the internal web shell
-- applying a correction via CLI changes later recall/resume behavior deterministically
-- the CLI contract is narrow and stable enough for `P9-S35` MCP mirroring without reopening core UX semantics
+- one MCP-capable client can call `alice_recall` successfully against the local runtime
+- one MCP-capable client can call `alice_resume` successfully against the local runtime
+- correction through `alice_memory_correct` changes a later retrieval/result deterministically
+- MCP outputs remain narrow, deterministic, and provenance-backed
+- the MCP tool contract is stable enough that `P9-S36` and `P9-S37` can build on it without reopening transport semantics
 
 ## Required Commands
 
@@ -153,75 +157,72 @@ docker compose up -d
 ./scripts/api_dev.sh
 curl -sS http://127.0.0.1:8000/healthz
 ./.venv/bin/python -m alicebot_api --help
-./.venv/bin/python -m alicebot_api status
-./.venv/bin/python -m alicebot_api recall --query local-first
-./.venv/bin/python -m alicebot_api resume
 ./.venv/bin/python -m pytest tests/unit tests/integration
 pnpm --dir apps/web test
 ```
 
-If the CLI is exposed through a console script instead of `python -m alicebot_api`, both invocation forms should be documented and at least one must be included in review evidence.
+If a dedicated MCP server entrypoint or local MCP smoke command is introduced this sprint, it must be run and included in review evidence alongside one real client interoperability proof.
 
 ## Required Acceptance Evidence
 
-- exact CLI install/invocation path used during verification
-- one successful capture example
-- one successful recall example
-- one successful resumption example
-- one successful review/correction example that changes a later retrieval result
-- note of any deferred CLI ergonomics intentionally left for later phases
+- exact MCP startup path used during verification
+- exact client/config used for interoperability proof
+- one successful `alice_recall` tool call
+- one successful `alice_resume` tool call
+- one successful correction flow showing later retrieval changed deterministically
+- note of any intentionally deferred MCP ergonomics or auth concerns
 
 ## Implementation Constraints
 
-- preserve shipped P5/P6/P7/P8/P9-S33 semantics
-- do not require the internal web shell for the scoped flows
-- keep CLI output deterministic and reviewable
-- prefer stdlib CLI plumbing over new heavyweight dependencies unless clearly necessary
-- do not widen the public surface beyond what `P9-S35` should inherit
+- preserve shipped P5/P6/P7/P8/P9-S33/P9-S34 semantics
+- keep the MCP surface narrow and ADR-aligned
+- keep transport payloads deterministic and easily diffable
+- do not introduce unsafe autonomous side effects
+- prefer parity with shipped CLI/core behavior over transport cleverness
 
 ## Control Tower Task Cards
 
-### Task 1: CLI Entry and Packaging
+### Task 1: MCP Entry and Schemas
 
-Owner: platform/package owner
+Owner: platform/interop owner
 
 Write scope:
 
 - `pyproject.toml`
 - `apps/api/src/alicebot_api/__init__.py`
-- `apps/api/src/alicebot_api/__main__.py`
-- `apps/api/src/alicebot_api/cli.py`
-- `apps/api/src/alicebot_api/cli_formatting.py`
+- `apps/api/src/alicebot_api/mcp_server.py`
+- `apps/api/src/alicebot_api/mcp_tools.py`
+- `apps/api/src/alicebot_api/mcp_models.py`
 
 Responsibilities:
 
-- define the packaged CLI entrypoint
-- keep invocation local-install friendly
-- keep command tree narrow and deterministic
-- ensure output contracts are stable enough for follow-on MCP mapping
+- define the runnable MCP server entrypoint
+- keep the tool surface narrow and stable
+- keep schema names and payloads deterministic
+- avoid leaking internal-only helper seams
 
-### Task 2: Continuity Command Wiring
+### Task 2: Continuity Transport Wiring
 
 Owner: backend/runtime owner
 
 Write scope:
 
+- `apps/api/src/alicebot_api/config.py`
 - `apps/api/src/alicebot_api/continuity_capture.py`
 - `apps/api/src/alicebot_api/continuity_recall.py`
 - `apps/api/src/alicebot_api/continuity_resumption.py`
 - `apps/api/src/alicebot_api/continuity_open_loops.py`
 - `apps/api/src/alicebot_api/continuity_review.py`
-- `apps/api/src/alicebot_api/store.py`
-- `apps/api/src/alicebot_api/config.py`
+- `apps/api/src/alicebot_api/chief_of_staff.py`
 
 Responsibilities:
 
-- wire core continuity functions into CLI-safe calls
-- preserve deterministic ordering and validation behavior
-- expose provenance/trust signals where needed
-- ensure correction flows update later recall and resumption behavior
+- map tool calls directly onto shipped continuity behavior
+- expose provenance/trust signals consistently
+- keep context-pack behavior grounded in shipped brief assembly
+- fix only true parity gaps exposed during transport integration
 
-### Task 3: Docs and Examples
+### Task 3: Docs and Interop Example
 
 Owner: docs/integration owner
 
@@ -233,33 +234,34 @@ Write scope:
 
 Responsibilities:
 
-- document exact CLI invocation path
-- add example commands against the shipped sample data
-- keep docs aligned with the `P9-S33` startup path instead of reopening packaging guidance
-- make the next seam toward MCP explicit
+- document exact MCP startup path
+- document one compatible local client example
+- keep startup/sample-data instructions unchanged from `P9-S33`
+- make the next seam toward adapters/importers explicit
 
-### Task 4: Verification and Reports
+### Task 4: Verification and Parity
 
 Owner: sprint integrator
 
 Write scope:
 
-- `tests/unit/test_cli.py`
-- `tests/integration/test_cli_integration.py`
+- `tests/unit/test_mcp.py`
+- `tests/integration/test_mcp_server.py`
+- `tests/integration/test_mcp_cli_parity.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 Responsibilities:
 
-- prove command coverage against the shipped local runtime
-- keep CLI output assertions stable and narrow
-- document exact acceptance evidence and any deferred ergonomics
-- keep scope hygiene explicit if any supporting files are touched
+- prove recall/resume work through a real MCP client path
+- prove correction changes later retrieval deterministically
+- keep parity evidence explicit against shipped CLI/core behavior
+- keep scope hygiene explicit if support files are touched
 
 ## Definition Of Done
 
-- `P9-S34` CLI entrypoint exists and is callable from a documented local install
-- core continuity flows are usable from the terminal without the internal shell
-- command output is deterministic enough for review and future MCP parity
+- `P9-S35` MCP server exists and is runnable from the documented local install
+- the initial ADR-backed tool surface is implemented and deterministic
+- one real client interoperability proof exists for recall and resume
 - docs, tests, build report, and review report are aligned
-- no `P9-S35` MCP work or `P9-S36` adapter work leaks into the sprint
+- no adapter or importer work leaks into the sprint

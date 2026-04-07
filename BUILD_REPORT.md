@@ -1,48 +1,57 @@
 # BUILD_REPORT.md
 
 ## sprint objective
-Ship `P9-S34` by adding a deterministic local CLI for core continuity flows (`capture`, `recall`, `resume`, `open-loops`, `review queue/show/apply`, `status`) on top of the shipped `alice-core` runtime.
+Ship `P9-S35` by adding a deterministic local MCP server that exposes the ADR-003 continuity tool surface (`alice_capture`, `alice_recall`, `alice_resume`, `alice_open_loops`, `alice_recent_decisions`, `alice_recent_changes`, `alice_memory_review`, `alice_memory_correct`, `alice_context_pack`) over the shipped `alice-core` runtime without changing `P9-S33` startup flow or `P9-S34` semantics.
 
 ## completed work
-- Added packaged CLI entrypoint and module entry support:
-  - `apps/api/src/alicebot_api/cli.py`
-  - `apps/api/src/alicebot_api/cli_formatting.py`
-  - `apps/api/src/alicebot_api/__main__.py`
-  - `pyproject.toml` (`[project.scripts] alicebot = "alicebot_api.cli:main"`)
-- Kept CLI behavior on existing continuity seams (no core semantic fork):
-  - capture: `capture_continuity_input`
-  - recall: `query_continuity_recall`
-  - resume: `compile_continuity_resumption_brief`
-  - open-loops: `compile_continuity_open_loop_dashboard`
-  - review queue/show/apply: `list_continuity_review_queue`, `get_continuity_review_detail`, `apply_continuity_correction`
-  - status: runtime health + continuity/review/open-loop/retrieval summary
-- Added deterministic terminal formatting with provenance/trust signals:
-  - stable section order
-  - stable scope rendering
-  - stable list rendering and confidence/posture fields
-  - explicit empty states
-- Added CLI-focused tests:
-  - `tests/unit/test_cli.py`
-  - `tests/integration/test_cli_integration.py`
+- Added runnable MCP transport entrypoint:
+  - `apps/api/src/alicebot_api/mcp_server.py`
+  - stdio JSON-RPC loop with deterministic framing
+  - supported methods: `initialize`, `ping`, `tools/list`, `tools/call`
+- Added deterministic MCP tool layer:
+  - `apps/api/src/alicebot_api/mcp_tools.py`
+  - static deterministic tool schemas (ADR-003 tool names in fixed order)
+  - direct mapping to shipped continuity seams (capture/recall/resume/open-loops/review/correction)
+  - deterministic structured serialization and narrow error envelopes
+- Added package script entrypoint:
+  - `pyproject.toml`: `alicebot-mcp = "alicebot_api.mcp_server:main"`
+- Added MCP unit and integration verification:
+  - `tests/unit/test_mcp.py`
+  - `tests/integration/test_mcp_server.py`
+  - `tests/integration/test_mcp_cli_parity.py`
+- Added interoperability evidence for a real MCP client path (stdio JSON-RPC client subprocess):
+  - successful `alice_recall`
+  - successful `alice_resume`
+  - successful `alice_memory_correct` (`supersede`) with deterministic change in later recall/resume result
+- Captured required acceptance evidence details:
+  - exact MCP startup path used: `./.venv/bin/python -m alicebot_api.mcp_server`
+  - exact local client/config used for proof:
+    - client type: stdio JSON-RPC MCP client subprocess
+    - transport command: `python -m alicebot_api.mcp_server`
+    - env: `DATABASE_URL=postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot`
+    - env: `ALICEBOT_AUTH_USER_ID=00000000-0000-0000-0000-000000000001`
+  - intentionally deferred concern: no hosted/remote auth layer (local process + local user scope only)
 - Updated sprint-scoped docs:
-  - `README.md` (CLI invocation and examples)
-  - `ROADMAP.md` (`P9-S34` shipped baseline, `P9-S35` next seam)
-  - `.ai/handoff/CURRENT_STATE.md` (CLI shipped summary and next seam)
-- Preserved control-doc truth marker compatibility in `.ai/handoff/CURRENT_STATE.md` (`Active Sprint focus is Phase 4 Sprint 14`) to keep baseline gate checks green.
+  - `README.md` with exact MCP startup path and compatible local client config example
+  - `ROADMAP.md` marking `P9-S35` shipped baseline
+  - `.ai/handoff/CURRENT_STATE.md` with MCP shipped baseline and `P9-S36` next seam
 
 ## incomplete work
-- None inside `P9-S34` scope.
-- Intentionally deferred (out of scope): MCP transport/tool schemas (`P9-S35`), adapters/importer expansion, CLI ergonomics polish (autocomplete/TUI enhancements).
+- None inside `P9-S35` scope.
+- Intentionally deferred (out of scope):
+  - OpenClaw adapter implementation (`P9-S36`)
+  - importer expansion
+  - hosted/remote auth systems
+  - MCP ergonomics beyond the initial narrow wedge (pagination/advanced discovery ergonomics)
 
 ## files changed
 - `.ai/active/SPRINT_PACKET.md`
-- `apps/api/src/alicebot_api/cli.py`
-- `apps/api/src/alicebot_api/cli_formatting.py`
-- `apps/api/src/alicebot_api/__main__.py`
-- `apps/api/src/alicebot_api/__init__.py`
+- `apps/api/src/alicebot_api/mcp_server.py`
+- `apps/api/src/alicebot_api/mcp_tools.py`
 - `pyproject.toml`
-- `tests/unit/test_cli.py`
-- `tests/integration/test_cli_integration.py`
+- `tests/unit/test_mcp.py`
+- `tests/integration/test_mcp_server.py`
+- `tests/integration/test_mcp_cli_parity.py`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
@@ -59,43 +68,39 @@ Ship `P9-S34` by adding a deterministic local CLI for core continuity flows (`ca
 - `./scripts/migrate.sh`
   - PASS (required elevated local DB access)
 - `./scripts/load_sample_data.sh`
-  - PASS (`status=noop`, fixture already present)
-- `APP_RELOAD=false ./scripts/api_dev.sh` + `curl -sS http://127.0.0.1:8000/healthz`
-  - PASS (`status=ok`)
+  - PASS (`status=noop`, fixture already loaded)
+- `APP_RELOAD=false ./scripts/api_dev.sh`
+  - PASS (server started on `http://127.0.0.1:8000`)
+- `curl -sS http://127.0.0.1:8000/healthz`
+  - PASS (`status":"ok"`)
 - `./.venv/bin/python -m alicebot_api --help`
   - PASS
-- `./.venv/bin/python -m alicebot_api status`
-  - PASS (database reachable, continuity metrics rendered)
-- `./.venv/bin/python -m alicebot_api recall --query local-first`
-  - PASS (deterministic ordered output with provenance snippets)
-- `./.venv/bin/python -m alicebot_api resume`
-  - PASS (last decision/open loops/recent changes/next action sections)
-- `./.venv/bin/python -m alicebot_api open-loops --limit 20`
+- `./.venv/bin/python -m alicebot_api.mcp_server --help`
   - PASS
-- `./.venv/bin/python -m alicebot_api capture "Decision: CLI verification keeps deterministic continuity output." --explicit-signal decision`
-  - PASS
-- `./.venv/bin/python -m alicebot_api review queue --status correction_ready --limit 20`
-  - PASS
-- `./.venv/bin/python -m alicebot_api review show b5bfdbcc-cbb2-440f-9e4e-7ebabdb41f3f`
-  - PASS
-- `./.venv/bin/python -m alicebot_api review apply b5bfdbcc-cbb2-440f-9e4e-7ebabdb41f3f --action supersede ...`
-  - PASS
-- `./.venv/bin/python -m alicebot_api recall --query local-first --limit 20` (post-correction)
-  - PASS (updated active decision ranked ahead of superseded prior decision)
-- `./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5` (post-correction)
-  - PASS (last decision updated deterministically after correction)
-- `./.venv/bin/python -m pytest tests/unit/test_cli.py -q`
+- `./.venv/bin/python -m pytest tests/unit/test_mcp.py -q`
   - PASS (`5 passed`)
-- `./.venv/bin/python -m pytest tests/integration/test_cli_integration.py -q`
+- `./.venv/bin/python -m pytest tests/integration/test_mcp_server.py -q`
   - PASS (`1 passed`)
+- `./.venv/bin/python -m pytest tests/integration/test_mcp_cli_parity.py -q`
+  - PASS (`1 passed`)
+- `./.venv/bin/python -m pytest tests/unit/test_mcp.py tests/integration/test_mcp_server.py tests/integration/test_mcp_cli_parity.py -q`
+  - PASS (`7 passed`)
 - `./.venv/bin/python -m pytest tests/unit tests/integration`
-  - PASS (`954 passed in 85.02s`) (required elevated local DB access)
+  - PASS (`961 passed in 97.32s`) (required elevated local DB access)
 - `pnpm --dir apps/web test`
-  - PASS (`192 passed`)
+  - PASS (`57 files, 192 tests`)
+- MCP smoke client against new entrypoint (`python -m alicebot_api.mcp_server`)
+  - PASS
+  - initialize protocol: `2024-11-05`
+  - `alice_recall`: `isError=false`, returned count `3`
+  - `alice_resume`: `isError=false`, last decision present
 
 ## blockers/issues
-- Sandbox-restricted localhost Postgres access required elevated execution for DB-backed commands/tests.
-- Initial backend full-suite run failed at collection due duplicate test-module basename (`test_cli.py` in both unit and integration); resolved by renaming integration test file to `tests/integration/test_cli_integration.py`.
+- Sandbox restrictions required elevated execution for localhost Postgres connections and binding to localhost `:8000`.
+- Initial MCP integration test failure due missing `if __name__ == "__main__":` in `mcp_server.py`; fixed by adding module entry invocation.
+- Remaining non-sprint workspace artifacts are limited to untracked local archive directories:
+  - `.ai/archive/`
+  - `docs/archive/planning/`
 
 ## recommended next step
-Start `P9-S35` by mirroring the shipped CLI continuity contract via a narrow MCP tool surface, with parity tests that compare MCP outputs to current CLI deterministic output for the same dataset/scope.
+Start `P9-S36` by implementing the OpenClaw adapter against the now-stable MCP tool contract, keeping strict parity checks so adapter integration does not reopen continuity transport semantics.
