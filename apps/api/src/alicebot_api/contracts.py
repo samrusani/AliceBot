@@ -264,6 +264,16 @@ ChiefOfStaffHandoffReviewAction = Literal[
     "mark_stale",
     "mark_expired",
 ]
+ChiefOfStaffHandoffOutcomeStatus = Literal[
+    "reviewed",
+    "approved",
+    "rejected",
+    "rewritten",
+    "executed",
+    "ignored",
+    "expired",
+]
+ChiefOfStaffClosureQualityPosture = Literal["insufficient_signal", "healthy", "watch", "critical"]
 ExplicitCommitmentOpenLoopDecision = Literal[
     "CREATED",
     "NOOP_ACTIVE_EXISTS",
@@ -598,6 +608,16 @@ CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS = [
     "mark_stale",
     "mark_expired",
 ]
+CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES = [
+    "reviewed",
+    "approved",
+    "rejected",
+    "rewritten",
+    "executed",
+    "ignored",
+    "expired",
+]
+CHIEF_OF_STAFF_HANDOFF_OUTCOME_ORDER = ["created_at_desc", "id_desc"]
 TASK_WORKSPACE_STATUSES = ["active"]
 TASK_ARTIFACT_STATUSES = ["registered"]
 TASK_ARTIFACT_INGESTION_STATUSES = ["pending", "ingested"]
@@ -1769,6 +1789,28 @@ class ChiefOfStaffExecutionRoutingActionInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ChiefOfStaffHandoffOutcomeCaptureInput:
+    handoff_item_id: str
+    outcome_status: ChiefOfStaffHandoffOutcomeStatus
+    note: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "handoff_item_id": self.handoff_item_id,
+            "outcome_status": self.outcome_status,
+            "note": self.note,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuityOpenLoopReviewActionInput:
     action: ContinuityOpenLoopReviewAction
     note: str | None = None
@@ -2823,6 +2865,69 @@ class ChiefOfStaffHandoffReviewActionRecord(TypedDict):
     updated_at: str
 
 
+class ChiefOfStaffHandoffOutcomeRecord(TypedDict):
+    id: str
+    capture_event_id: str
+    handoff_item_id: str
+    outcome_status: ChiefOfStaffHandoffOutcomeStatus
+    previous_outcome_status: ChiefOfStaffHandoffOutcomeStatus | None
+    is_latest_outcome: bool
+    reason: str
+    note: str | None
+    provenance_references: list[ContinuityRecallProvenanceReference]
+    created_at: str
+    updated_at: str
+
+
+class ChiefOfStaffHandoffOutcomeSummary(TypedDict):
+    returned_count: int
+    total_count: int
+    latest_total_count: int
+    status_counts: dict[ChiefOfStaffHandoffOutcomeStatus, int]
+    latest_status_counts: dict[ChiefOfStaffHandoffOutcomeStatus, int]
+    status_order: list[ChiefOfStaffHandoffOutcomeStatus]
+    order: list[str]
+
+
+class ChiefOfStaffClosureQualitySummaryRecord(TypedDict):
+    posture: ChiefOfStaffClosureQualityPosture
+    reason: str
+    closed_loop_count: int
+    unresolved_count: int
+    rejected_count: int
+    ignored_count: int
+    expired_count: int
+    closure_rate: float
+    explanation: str
+
+
+class ChiefOfStaffConversionSignalSummaryRecord(TypedDict):
+    total_handoff_count: int
+    latest_outcome_count: int
+    executed_count: int
+    approved_count: int
+    reviewed_count: int
+    rewritten_count: int
+    rejected_count: int
+    ignored_count: int
+    expired_count: int
+    recommendation_to_execution_conversion_rate: float
+    recommendation_to_closure_conversion_rate: float
+    capture_coverage_rate: float
+    explanation: str
+
+
+class ChiefOfStaffStaleIgnoredEscalationPostureRecord(TypedDict):
+    posture: ChiefOfStaffEscalationPosture
+    reason: str
+    stale_queue_count: int
+    ignored_count: int
+    expired_count: int
+    trigger_count: int
+    guidance_posture_explanation: str
+    supporting_signals: list[str]
+
+
 class ChiefOfStaffHandoffQueueItem(TypedDict):
     queue_rank: int
     handoff_rank: int
@@ -2910,6 +3015,12 @@ class ChiefOfStaffPrioritySummary(TypedDict):
     handoff_queue_state_order: list[ChiefOfStaffHandoffQueueLifecycleState]
     handoff_queue_group_order: list[ChiefOfStaffHandoffQueueLifecycleState]
     handoff_queue_item_order: list[str]
+    handoff_outcome_total_count: int
+    handoff_outcome_latest_count: int
+    handoff_outcome_executed_count: int
+    handoff_outcome_ignored_count: int
+    closure_quality_posture: ChiefOfStaffClosureQualityPosture
+    stale_ignored_escalation_posture: ChiefOfStaffEscalationPosture
 
 
 class ChiefOfStaffPreparationArtifactItem(TypedDict):
@@ -3075,6 +3186,11 @@ class ChiefOfStaffPriorityBriefRecord(TypedDict):
     handoff_queue_summary: ChiefOfStaffHandoffQueueSummary
     handoff_queue_groups: ChiefOfStaffHandoffQueueGroups
     handoff_review_actions: list[ChiefOfStaffHandoffReviewActionRecord]
+    handoff_outcome_summary: ChiefOfStaffHandoffOutcomeSummary
+    handoff_outcomes: list[ChiefOfStaffHandoffOutcomeRecord]
+    closure_quality_summary: ChiefOfStaffClosureQualitySummaryRecord
+    conversion_signal_summary: ChiefOfStaffConversionSignalSummaryRecord
+    stale_ignored_escalation_posture: ChiefOfStaffStaleIgnoredEscalationPostureRecord
     execution_routing_summary: ChiefOfStaffExecutionRoutingSummary
     routed_handoff_items: list[ChiefOfStaffRoutedHandoffItemRecord]
     routing_audit_trail: list[ChiefOfStaffExecutionRoutingAuditRecord]
@@ -3110,6 +3226,15 @@ class ChiefOfStaffExecutionRoutingActionCaptureResponse(TypedDict):
     routed_handoff_items: list[ChiefOfStaffRoutedHandoffItemRecord]
     routing_audit_trail: list[ChiefOfStaffExecutionRoutingAuditRecord]
     execution_readiness_posture: ChiefOfStaffExecutionReadinessPostureRecord
+
+
+class ChiefOfStaffHandoffOutcomeCaptureResponse(TypedDict):
+    handoff_outcome: ChiefOfStaffHandoffOutcomeRecord
+    handoff_outcome_summary: ChiefOfStaffHandoffOutcomeSummary
+    handoff_outcomes: list[ChiefOfStaffHandoffOutcomeRecord]
+    closure_quality_summary: ChiefOfStaffClosureQualitySummaryRecord
+    conversion_signal_summary: ChiefOfStaffConversionSignalSummaryRecord
+    stale_ignored_escalation_posture: ChiefOfStaffStaleIgnoredEscalationPostureRecord
 
 
 class ContinuityOpenLoopReviewActionResponse(TypedDict):

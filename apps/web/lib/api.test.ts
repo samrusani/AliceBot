@@ -33,6 +33,7 @@ import {
   getContinuityResumptionBrief,
   getChiefOfStaffPriorityBrief,
   captureChiefOfStaffExecutionRoutingAction,
+  captureChiefOfStaffHandoffOutcome,
   captureChiefOfStaffHandoffReviewAction,
   captureChiefOfStaffRecommendationOutcome,
   getThreadSessions,
@@ -3161,6 +3162,107 @@ describe("api helpers", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.com/v0/chief-of-staff/execution-routing-actions",
+      expect.objectContaining({
+        method: "POST",
+        cache: "no-store",
+      }),
+    );
+  });
+
+  it("captures chief-of-staff handoff outcomes through the deterministic seam", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          handoff_outcome: {
+            id: "handoff-outcome-1",
+            capture_event_id: "capture-handoff-outcome-1",
+            handoff_item_id: "handoff-1",
+            outcome_status: "executed",
+            previous_outcome_status: null,
+            is_latest_outcome: true,
+            reason: "Operator captured routed handoff outcome 'executed' for 'handoff-1'.",
+            note: null,
+            provenance_references: [],
+            created_at: "2026-04-07T09:30:00Z",
+            updated_at: "2026-04-07T09:30:00Z",
+          },
+          handoff_outcome_summary: {
+            returned_count: 1,
+            total_count: 1,
+            latest_total_count: 1,
+            status_counts: {
+              reviewed: 0,
+              approved: 0,
+              rejected: 0,
+              rewritten: 0,
+              executed: 1,
+              ignored: 0,
+              expired: 0,
+            },
+            latest_status_counts: {
+              reviewed: 0,
+              approved: 0,
+              rejected: 0,
+              rewritten: 0,
+              executed: 1,
+              ignored: 0,
+              expired: 0,
+            },
+            status_order: ["reviewed", "approved", "rejected", "rewritten", "executed", "ignored", "expired"],
+            order: ["created_at_desc", "id_desc"],
+          },
+          handoff_outcomes: [],
+          closure_quality_summary: {
+            posture: "healthy",
+            reason: "Closed-loop outcomes are leading with bounded unresolved and ignored outcomes.",
+            closed_loop_count: 1,
+            unresolved_count: 0,
+            rejected_count: 0,
+            ignored_count: 0,
+            expired_count: 0,
+            closure_rate: 1,
+            explanation: "Closure quality uses latest immutable outcomes.",
+          },
+          conversion_signal_summary: {
+            total_handoff_count: 1,
+            latest_outcome_count: 1,
+            executed_count: 1,
+            approved_count: 0,
+            reviewed_count: 0,
+            rewritten_count: 0,
+            rejected_count: 0,
+            ignored_count: 0,
+            expired_count: 0,
+            recommendation_to_execution_conversion_rate: 1,
+            recommendation_to_closure_conversion_rate: 1,
+            capture_coverage_rate: 1,
+            explanation: "Conversion signals are derived from latest immutable outcomes.",
+          },
+          stale_ignored_escalation_posture: {
+            posture: "watch",
+            reason: "No stale queue pressure or ignored/expired latest outcomes are currently detected.",
+            stale_queue_count: 0,
+            ignored_count: 0,
+            expired_count: 0,
+            trigger_count: 0,
+            guidance_posture_explanation:
+              "Guidance posture is derived from stale queue load plus ignored/expired latest outcome counts.",
+            supporting_signals: ["stale_queue_count=0", "ignored_count=0", "expired_count=0", "trigger_count=0"],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await captureChiefOfStaffHandoffOutcome("https://api.example.com", {
+      user_id: "user-1",
+      handoff_item_id: "handoff-1",
+      outcome_status: "executed",
+      thread_id: "thread-1",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/v0/chief-of-staff/handoff-outcomes",
       expect.objectContaining({
         method: "POST",
         cache: "no-store",
