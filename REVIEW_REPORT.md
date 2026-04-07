@@ -4,40 +4,35 @@
 PASS
 
 ## criteria met
-- Sprint remained within P8-S30 scope and delivered deterministic handoff queue/review seams on top of shipped P8-S29 artifacts.
-- Queue lifecycle model is explicit and deterministic with required states:
-  - `ready`
-  - `pending_approval`
-  - `executed`
-  - `stale`
-  - `expired`
-- Queue grouping and ordering are deterministic and explicit via contract metadata (`state_order`, `group_order`, `item_order`) and stale/expired items are surfaced (not dropped).
-- Operator review transitions are explicit and auditable through `POST /v0/chief-of-staff/handoff-review-actions`, with immutable continuity-note capture and refreshed queue artifacts.
-- Approval-bounded, non-autonomous posture is preserved (no autonomous execution/connector side effects introduced).
-- Required command evidence is green:
-  - `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py tests/integration/test_chief_of_staff_api.py -q` -> PASS (`11 passed in 1.55s`)
-  - `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-action-handoff-panel.test.tsx components/chief-of-staff-handoff-queue-panel.test.tsx lib/api.test.ts` -> PASS (`4 files, 42 tests`)
+- Sprint remained within P8-S31 scope and preserved shipped P8-S29/P8-S30 semantics.
+- Governed execution routing seam is present and deterministic:
+  - `GET /v0/chief-of-staff` returns `execution_routing_summary`, `routed_handoff_items`, `routing_audit_trail`, and `execution_readiness_posture`.
+  - `POST /v0/chief-of-staff/execution-routing-actions` captures explicit `routed`/`reaffirmed` transitions.
+- Approval-bounded, non-autonomous draft-only posture is explicit and preserved.
+- `/chief-of-staff` execution routing panel is implemented with posture visibility, route controls, and audit trail visibility.
+- Required verification commands are green:
+  - `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py tests/integration/test_chief_of_staff_api.py -q` -> PASS (`13 passed`)
+  - `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-action-handoff-panel.test.tsx components/chief-of-staff-handoff-queue-panel.test.tsx components/chief-of-staff-execution-routing-panel.test.tsx lib/api.test.ts` -> PASS (`5 files`, `45 tests`)
   - `python3 scripts/run_phase4_validation_matrix.py` -> PASS (`Phase 4 validation matrix result: PASS`)
-- Required docs are synchronized with active P8-S30 scope and preserve P8-S29 shipped truth.
+- Required docs are aligned to active P8-S31 truth (`README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`).
 
 ## criteria missed
 - None.
 
 ## quality issues
-- None blocking or deferred for P8-S30.
+- None blocking. Routing transition semantics are now explicit and test-backed for both first-route (`routed`) and repeat-route (`reaffirmed`) behavior.
 
 ## regression risks
-- Low residual risk: future queue state/action additions must keep constants + contract metadata + tests synchronized to preserve deterministic ordering guarantees.
+- Low. Primary sprint gates and compatibility chains are green in this environment.
 
 ## docs issues
-- None. `README.md`, `ROADMAP.md`, `.ai/handoff/CURRENT_STATE.md`, and `ARCHITECTURE.md` are aligned with shipped P8-S30 behavior.
+- None identified for sprint gating.
 
 ## should anything be added to RULES.md?
-- No.
+- No required change for this sprint.
 
 ## should anything update ARCHITECTURE.md?
-- Already addressed in this sprint update (P8-S30 queue/review seam and endpoint are now documented).
+- No required architecture update for this sprint packet.
 
 ## recommended next action
-1. Merge P8-S30.
-2. Proceed to the next Phase 8 seam while preserving explicit approval-bounded posture and deterministic contracts.
+1. Proceed to P8-S32 outcome-learning and closure-quality seam while preserving current P8-S31 routing/posture contracts.

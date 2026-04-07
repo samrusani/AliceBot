@@ -243,6 +243,13 @@ ChiefOfStaffActionHandoffAction = Literal[
     "weekly_review_escalate",
 ]
 ChiefOfStaffExecutionPosture = Literal["approval_bounded_artifact_only"]
+ChiefOfStaffExecutionReadinessPosture = Literal["approval_required_draft_only"]
+ChiefOfStaffExecutionRouteTarget = Literal[
+    "task_workflow_draft",
+    "approval_workflow_draft",
+    "follow_up_draft_only",
+]
+ChiefOfStaffExecutionRoutingTransition = Literal["routed", "reaffirmed"]
 ChiefOfStaffHandoffQueueLifecycleState = Literal[
     "ready",
     "pending_approval",
@@ -562,6 +569,15 @@ CHIEF_OF_STAFF_ACTION_HANDOFF_ACTIONS = [
     "weekly_review_escalate",
 ]
 CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER = ["approval_bounded_artifact_only"]
+CHIEF_OF_STAFF_EXECUTION_READINESS_POSTURE_ORDER = ["approval_required_draft_only"]
+CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER = [
+    "task_workflow_draft",
+    "approval_workflow_draft",
+    "follow_up_draft_only",
+]
+CHIEF_OF_STAFF_EXECUTION_ROUTED_ITEM_ORDER = ["handoff_rank_asc", "handoff_item_id_asc"]
+CHIEF_OF_STAFF_EXECUTION_ROUTING_AUDIT_ORDER = ["created_at_desc", "id_desc"]
+CHIEF_OF_STAFF_EXECUTION_ROUTING_TRANSITIONS = ["routed", "reaffirmed"]
 CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER = [
     "ready",
     "pending_approval",
@@ -1731,6 +1747,28 @@ class ChiefOfStaffHandoffReviewActionInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ChiefOfStaffExecutionRoutingActionInput:
+    handoff_item_id: str
+    route_target: ChiefOfStaffExecutionRouteTarget
+    note: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "handoff_item_id": self.handoff_item_id,
+            "route_target": self.route_target,
+            "note": self.note,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuityOpenLoopReviewActionInput:
     action: ContinuityOpenLoopReviewAction
     note: str | None = None
@@ -2707,6 +2745,70 @@ class ChiefOfStaffExecutionPostureRecord(TypedDict):
     reason: str
 
 
+class ChiefOfStaffExecutionReadinessPostureRecord(TypedDict):
+    posture: ChiefOfStaffExecutionReadinessPosture
+    approval_required: bool
+    autonomous_execution: bool
+    external_side_effects_allowed: bool
+    approval_path_visible: bool
+    route_target_order: list[ChiefOfStaffExecutionRouteTarget]
+    required_route_targets: list[ChiefOfStaffExecutionRouteTarget]
+    transition_order: list[ChiefOfStaffExecutionRoutingTransition]
+    non_autonomous_guarantee: str
+    reason: str
+
+
+class ChiefOfStaffExecutionRoutingAuditRecord(TypedDict):
+    id: str
+    capture_event_id: str
+    handoff_item_id: str
+    route_target: ChiefOfStaffExecutionRouteTarget
+    transition: ChiefOfStaffExecutionRoutingTransition
+    previously_routed: bool
+    route_state: bool
+    reason: str
+    note: str | None
+    provenance_references: list[ContinuityRecallProvenanceReference]
+    created_at: str
+    updated_at: str
+
+
+class ChiefOfStaffRoutedHandoffItemRecord(TypedDict):
+    handoff_rank: int
+    handoff_item_id: str
+    title: str
+    source_kind: ChiefOfStaffActionHandoffSourceKind
+    recommendation_action: ChiefOfStaffActionHandoffAction
+    route_target_order: list[ChiefOfStaffExecutionRouteTarget]
+    available_route_targets: list[ChiefOfStaffExecutionRouteTarget]
+    routed_targets: list[ChiefOfStaffExecutionRouteTarget]
+    is_routed: bool
+    task_workflow_draft_routed: bool
+    approval_workflow_draft_routed: bool
+    follow_up_draft_only_routed: bool
+    follow_up_draft_only_applicable: bool
+    task_draft: ChiefOfStaffActionHandoffTaskDraftRecord
+    approval_draft: ChiefOfStaffActionHandoffApprovalDraftRecord
+    follow_up_draft: NotRequired[ChiefOfStaffDraftFollowUpRecord]
+    last_routing_transition: ChiefOfStaffExecutionRoutingAuditRecord | None
+
+
+class ChiefOfStaffExecutionRoutingSummary(TypedDict):
+    total_handoff_count: int
+    routed_handoff_count: int
+    unrouted_handoff_count: int
+    task_workflow_draft_count: int
+    approval_workflow_draft_count: int
+    follow_up_draft_only_count: int
+    route_target_order: list[ChiefOfStaffExecutionRouteTarget]
+    routed_item_order: list[str]
+    audit_order: list[str]
+    transition_order: list[ChiefOfStaffExecutionRoutingTransition]
+    approval_required: bool
+    non_autonomous_guarantee: str
+    reason: str
+
+
 class ChiefOfStaffHandoffReviewActionRecord(TypedDict):
     id: str
     capture_event_id: str
@@ -2973,6 +3075,10 @@ class ChiefOfStaffPriorityBriefRecord(TypedDict):
     handoff_queue_summary: ChiefOfStaffHandoffQueueSummary
     handoff_queue_groups: ChiefOfStaffHandoffQueueGroups
     handoff_review_actions: list[ChiefOfStaffHandoffReviewActionRecord]
+    execution_routing_summary: ChiefOfStaffExecutionRoutingSummary
+    routed_handoff_items: list[ChiefOfStaffRoutedHandoffItemRecord]
+    routing_audit_trail: list[ChiefOfStaffExecutionRoutingAuditRecord]
+    execution_readiness_posture: ChiefOfStaffExecutionReadinessPostureRecord
     task_draft: ChiefOfStaffActionHandoffTaskDraftRecord
     approval_draft: ChiefOfStaffActionHandoffApprovalDraftRecord
     execution_posture: ChiefOfStaffExecutionPostureRecord
@@ -2996,6 +3102,14 @@ class ChiefOfStaffHandoffReviewActionCaptureResponse(TypedDict):
     handoff_queue_summary: ChiefOfStaffHandoffQueueSummary
     handoff_queue_groups: ChiefOfStaffHandoffQueueGroups
     handoff_review_actions: list[ChiefOfStaffHandoffReviewActionRecord]
+
+
+class ChiefOfStaffExecutionRoutingActionCaptureResponse(TypedDict):
+    routing_action: ChiefOfStaffExecutionRoutingAuditRecord
+    execution_routing_summary: ChiefOfStaffExecutionRoutingSummary
+    routed_handoff_items: list[ChiefOfStaffRoutedHandoffItemRecord]
+    routing_audit_trail: list[ChiefOfStaffExecutionRoutingAuditRecord]
+    execution_readiness_posture: ChiefOfStaffExecutionReadinessPostureRecord
 
 
 class ContinuityOpenLoopReviewActionResponse(TypedDict):

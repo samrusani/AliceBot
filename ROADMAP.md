@@ -48,9 +48,15 @@
   - queue lifecycle posture is explicit (`ready`, `pending_approval`, `executed`, `stale`, `expired`) with deterministic grouped ordering and stale/expired visibility.
   - `POST /v0/chief-of-staff/handoff-review-actions` captures explicit operator lifecycle transitions as auditable continuity records.
   - `/chief-of-staff` web now renders a grouped handoff queue panel with explicit review-action controls and review-action history.
+- Phase 8 Sprint 31 adds deterministic governed execution routing seams on top of shipped P8-S29/P8-S30:
+  - `GET /v0/chief-of-staff` now also includes `execution_routing_summary`, `routed_handoff_items`, `routing_audit_trail`, and `execution_readiness_posture`.
+  - `POST /v0/chief-of-staff/execution-routing-actions` captures explicit routing transitions into governed draft targets (`task_workflow_draft`, `approval_workflow_draft`, `follow_up_draft_only`).
+  - routing transitions are explicit and auditable (`routed`, `reaffirmed`) while preserving approval-required, draft-only non-autonomous execution posture.
+  - `/chief-of-staff` web now renders an execution routing panel with readiness posture visibility, route controls, and transition history.
 - Phase 7 is complete (`P7-S25` through `P7-S28` shipped).
 - Phase 8 Sprint 29 is shipped baseline.
-- Active post-Phase-7 sprint is Phase 8 Sprint 30: handoff queue and operational review.
+- Phase 8 Sprint 30 is shipped baseline.
+- Active post-Phase-7 sprint is Phase 8 Sprint 31: governed execution routing.
 - Phase 8 planning anchors are:
   - `docs/phase8-product-spec.md`
   - `docs/phase8-sprint-29-32-plan.md`
@@ -103,10 +109,12 @@
   - P7-S27 preparation briefs and resumption supervision is now shipped baseline
   - P7-S28 weekly review and outcome learning is now shipped baseline
   - P8-S29 action handoff artifacts are now shipped baseline
-  - active post-Phase-7 packet is P8-S30 handoff queue and operational review
+  - P8-S30 handoff queue and operational review is now shipped baseline
+  - active post-Phase-7 packet is P8-S31 governed execution routing
   - do not reopen P6-S21/P6-S22/P6-S23/P6-S24 contracts while operating on post-P6-S24 follow-up scope
-  - do not reopen P7-S25/P7-S26/P7-S27/P7-S28 semantics while executing P8-S30
-  - do not reopen P8-S29 handoff-generation semantics while executing P8-S30
+  - do not reopen P7-S25/P7-S26/P7-S27/P7-S28 semantics while executing P8-S31
+  - do not reopen P8-S29 handoff-generation semantics while executing P8-S31
+  - do not reopen P8-S30 queue/review semantics while executing P8-S31
   - do not fold post-Phase-5 work back into shipped Sprint 20 seams
 - Keep live docs synchronized with shipped reality so planning does not drift behind the repo again.
 

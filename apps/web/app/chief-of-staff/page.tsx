@@ -1,4 +1,5 @@
 import { ChiefOfStaffActionHandoffPanel } from "../../components/chief-of-staff-action-handoff-panel";
+import { ChiefOfStaffExecutionRoutingPanel } from "../../components/chief-of-staff-execution-routing-panel";
 import { ChiefOfStaffHandoffQueuePanel } from "../../components/chief-of-staff-handoff-queue-panel";
 import { ChiefOfStaffFollowThroughPanel } from "../../components/chief-of-staff-follow-through-panel";
 import { ChiefOfStaffPreparationPanel } from "../../components/chief-of-staff-preparation-panel";
@@ -767,6 +768,114 @@ const chiefOfStaffFixture: ChiefOfStaffPriorityBrief = {
     },
   },
   handoff_review_actions: [],
+  execution_routing_summary: {
+    total_handoff_count: 1,
+    routed_handoff_count: 0,
+    unrouted_handoff_count: 1,
+    task_workflow_draft_count: 0,
+    approval_workflow_draft_count: 0,
+    follow_up_draft_only_count: 0,
+    route_target_order: ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+    routed_item_order: ["handoff_rank_asc", "handoff_item_id_asc"],
+    audit_order: ["created_at_desc", "id_desc"],
+    transition_order: ["routed", "reaffirmed"],
+    approval_required: true,
+    non_autonomous_guarantee:
+      "No task, approval, connector send, or external side effect is executed by this endpoint.",
+    reason:
+      "Routing transitions are explicit and auditable; task/approval/follow-up routes remain draft-only until separately submitted through governed workflows.",
+  },
+  routed_handoff_items: [
+    {
+      handoff_rank: 1,
+      handoff_item_id: "handoff-1-recommended_next_action-priority-fixture-1",
+      title: "Next Action: Confirm launch checklist owner",
+      source_kind: "recommended_next_action",
+      recommendation_action: "execute_next_action",
+      route_target_order: ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+      available_route_targets: ["task_workflow_draft", "approval_workflow_draft"],
+      routed_targets: [],
+      is_routed: false,
+      task_workflow_draft_routed: false,
+      approval_workflow_draft_routed: false,
+      follow_up_draft_only_routed: false,
+      follow_up_draft_only_applicable: false,
+      task_draft: {
+        status: "draft",
+        mode: "governed_request_draft",
+        approval_required: true,
+        auto_execute: false,
+        source_handoff_item_id: "handoff-1-recommended_next_action-priority-fixture-1",
+        title: "Next Action: Confirm launch checklist owner",
+        summary:
+          "Draft-only governed request assembled from chief-of-staff handoff artifacts; requires explicit approval before any execution.",
+        target: {
+          thread_id: "thread-fixture-1",
+          task_id: null,
+          project: null,
+          person: null,
+        },
+        request: {
+          action: "execute_next_action",
+          scope: "chief_of_staff_priority",
+          domain_hint: "planning",
+          risk_hint: "governed_handoff",
+          attributes: {},
+        },
+        rationale: "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+        provenance_references: [
+          {
+            source_kind: "continuity_capture_event",
+            source_id: "capture-priority-fixture-1",
+          },
+        ],
+      },
+      approval_draft: {
+        status: "draft_only",
+        mode: "approval_request_draft",
+        decision: "approval_required",
+        approval_required: true,
+        auto_submit: false,
+        source_handoff_item_id: "handoff-1-recommended_next_action-priority-fixture-1",
+        request: {
+          action: "execute_next_action",
+          scope: "chief_of_staff_priority",
+          domain_hint: "planning",
+          risk_hint: "governed_handoff",
+          attributes: {},
+        },
+        reason:
+          "Execution remains approval-bounded. This approval draft is artifact-only and must be explicitly submitted and resolved before any side effect.",
+        required_checks: [
+          "operator_review_handoff_artifact",
+          "submit_governed_approval_request",
+          "explicit_approval_resolution",
+        ],
+        provenance_references: [
+          {
+            source_kind: "continuity_capture_event",
+            source_id: "capture-priority-fixture-1",
+          },
+        ],
+      },
+      last_routing_transition: null,
+    },
+  ],
+  routing_audit_trail: [],
+  execution_readiness_posture: {
+    posture: "approval_required_draft_only",
+    approval_required: true,
+    autonomous_execution: false,
+    external_side_effects_allowed: false,
+    approval_path_visible: true,
+    route_target_order: ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+    required_route_targets: ["task_workflow_draft", "approval_workflow_draft"],
+    transition_order: ["routed", "reaffirmed"],
+    non_autonomous_guarantee:
+      "No task, approval, connector send, or external side effect is executed by this endpoint.",
+    reason:
+      "Execution routing remains draft-only and approval-bounded; operators can explicitly route handoff items into governed task/approval drafts with auditable transitions.",
+  },
   task_draft: {
     status: "draft",
     mode: "governed_request_draft",
@@ -882,6 +991,7 @@ const chiefOfStaffFixture: ChiefOfStaffPriorityBrief = {
     "chief_of_staff_action_handoff",
     "chief_of_staff_handoff_queue",
     "chief_of_staff_handoff_review_actions",
+    "chief_of_staff_execution_routing",
     "memory_trust_dashboard",
   ],
 };
@@ -983,6 +1093,13 @@ export default async function ChiefOfStaffPage({
         unavailableReason={briefUnavailableReason}
       />
       <ChiefOfStaffHandoffQueuePanel
+        apiBaseUrl={briefSource === "live" ? apiConfig.apiBaseUrl : undefined}
+        userId={briefSource === "live" ? apiConfig.userId : undefined}
+        brief={brief}
+        source={briefSource}
+        unavailableReason={briefUnavailableReason}
+      />
+      <ChiefOfStaffExecutionRoutingPanel
         apiBaseUrl={briefSource === "live" ? apiConfig.apiBaseUrl : undefined}
         userId={briefSource === "live" ? apiConfig.userId : undefined}
         brief={brief}

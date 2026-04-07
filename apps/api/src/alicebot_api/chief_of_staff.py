@@ -14,6 +14,11 @@ from alicebot_api.contracts import (
     CHIEF_OF_STAFF_ACTION_HANDOFF_ACTIONS,
     CHIEF_OF_STAFF_ACTION_HANDOFF_ITEM_ORDER,
     CHIEF_OF_STAFF_ACTION_HANDOFF_SOURCE_ORDER,
+    CHIEF_OF_STAFF_EXECUTION_READINESS_POSTURE_ORDER,
+    CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER,
+    CHIEF_OF_STAFF_EXECUTION_ROUTED_ITEM_ORDER,
+    CHIEF_OF_STAFF_EXECUTION_ROUTING_AUDIT_ORDER,
+    CHIEF_OF_STAFF_EXECUTION_ROUTING_TRANSITIONS,
     CHIEF_OF_STAFF_ESCALATION_POSTURE_ORDER,
     CHIEF_OF_STAFF_EXECUTION_POSTURE_ORDER,
     CHIEF_OF_STAFF_FOLLOW_THROUGH_ITEM_ORDER,
@@ -53,6 +58,13 @@ from alicebot_api.contracts import (
     ChiefOfStaffEscalationPosture,
     ChiefOfStaffEscalationPostureRecord,
     ChiefOfStaffExecutionPostureRecord,
+    ChiefOfStaffExecutionReadinessPostureRecord,
+    ChiefOfStaffExecutionRouteTarget,
+    ChiefOfStaffExecutionRoutingActionCaptureResponse,
+    ChiefOfStaffExecutionRoutingActionInput,
+    ChiefOfStaffExecutionRoutingAuditRecord,
+    ChiefOfStaffExecutionRoutingSummary,
+    ChiefOfStaffExecutionRoutingTransition,
     ChiefOfStaffFollowThroughItem,
     ChiefOfStaffFollowThroughPosture,
     ChiefOfStaffFollowThroughRecommendationAction,
@@ -86,6 +98,7 @@ from alicebot_api.contracts import (
     ChiefOfStaffRecommendationConfidencePosture,
     ChiefOfStaffRecommendedActionType,
     ChiefOfStaffRecommendedNextAction,
+    ChiefOfStaffRoutedHandoffItemRecord,
     ChiefOfStaffResumptionRecommendationAction,
     ChiefOfStaffResumptionSupervisionRecommendation,
     ChiefOfStaffResumptionSupervisionRecord,
@@ -190,6 +203,16 @@ _ACTION_HANDOFF_ACTION_SCOPE_MAP: dict[ChiefOfStaffActionHandoffSourceKind, str]
 _HANDOFF_QUEUE_STALE_HOURS = 120.0
 _HANDOFF_QUEUE_EXPIRED_HOURS = 336.0
 _HANDOFF_REVIEW_ACTION_BODY_KIND = "chief_of_staff_handoff_review_action"
+_EXECUTION_ROUTING_ACTION_BODY_KIND = "chief_of_staff_execution_routing_action"
+_FOLLOW_UP_ELIGIBLE_SOURCE_KINDS: set[ChiefOfStaffActionHandoffSourceKind] = {
+    "follow_through",
+    "weekly_review",
+}
+_ROUTE_TARGET_TO_FIELD: dict[ChiefOfStaffExecutionRouteTarget, str] = {
+    "task_workflow_draft": "task_workflow_draft_routed",
+    "approval_workflow_draft": "approval_workflow_draft_routed",
+    "follow_up_draft_only": "follow_up_draft_only_routed",
+}
 _HANDOFF_REVIEW_ACTION_TO_STATE: dict[
     ChiefOfStaffHandoffReviewAction,
     ChiefOfStaffHandoffQueueLifecycleState,
@@ -1589,7 +1612,7 @@ def _build_execution_posture() -> ChiefOfStaffExecutionPostureRecord:
             "resolve_approval_before_execution",
         ],
         "non_autonomous_guarantee": non_autonomous_guarantee,
-        "reason": "Chief-of-staff handoff artifacts are deterministic execution-prep only in P8-S29.",
+        "reason": "Chief-of-staff execution routing remains deterministic draft-only prep in P8-S31.",
     }
 
 
@@ -2035,6 +2058,215 @@ def _list_handoff_review_action_records(
     return records
 
 
+def _parse_execution_routing_audit_record(
+    item: ContinuityRecallResultRecord,
+) -> ChiefOfStaffExecutionRoutingAuditRecord | None:
+    if item["object_type"] != "Note":
+        return None
+
+    body = item["body"]
+    if not isinstance(body, dict):
+        return None
+
+    if body.get("kind") != _EXECUTION_ROUTING_ACTION_BODY_KIND:
+        return None
+
+    handoff_item_id = body.get("handoff_item_id")
+    if not isinstance(handoff_item_id, str) or not handoff_item_id.strip():
+        return None
+
+    raw_route_target = body.get("route_target")
+    if (
+        not isinstance(raw_route_target, str)
+        or raw_route_target not in CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER
+    ):
+        return None
+    route_target: ChiefOfStaffExecutionRouteTarget = raw_route_target  # type: ignore[assignment]
+
+    raw_transition = body.get("transition")
+    if (
+        not isinstance(raw_transition, str)
+        or raw_transition not in CHIEF_OF_STAFF_EXECUTION_ROUTING_TRANSITIONS
+    ):
+        return None
+    transition: ChiefOfStaffExecutionRoutingTransition = raw_transition  # type: ignore[assignment]
+
+    previously_routed = bool(body.get("previously_routed", False))
+    route_state = bool(body.get("route_state", True))
+
+    raw_reason = body.get("reason")
+    reason = (
+        raw_reason
+        if isinstance(raw_reason, str) and raw_reason.strip()
+        else "Governed execution routing transition captured with draft-only posture."
+    )
+    raw_note = body.get("note")
+    note = raw_note if isinstance(raw_note, str) and raw_note.strip() else None
+
+    return {
+        "id": item["id"],
+        "capture_event_id": item["capture_event_id"],
+        "handoff_item_id": handoff_item_id.strip(),
+        "route_target": route_target,
+        "transition": transition,
+        "previously_routed": previously_routed,
+        "route_state": route_state,
+        "reason": reason,
+        "note": note,
+        "provenance_references": item["provenance_references"],
+        "created_at": item["created_at"],
+        "updated_at": item["updated_at"],
+    }
+
+
+def _execution_routing_audit_sort_key(
+    item: ChiefOfStaffExecutionRoutingAuditRecord,
+) -> tuple[str, str]:
+    return (item["created_at"], item["id"])
+
+
+def _list_execution_routing_audit_records(
+    recall_items: list[ContinuityRecallResultRecord],
+) -> list[ChiefOfStaffExecutionRoutingAuditRecord]:
+    records = [
+        parsed
+        for parsed in (
+            _parse_execution_routing_audit_record(item)
+            for item in recall_items
+        )
+        if parsed is not None
+    ]
+    records.sort(key=_execution_routing_audit_sort_key, reverse=True)
+    return records
+
+
+def _build_execution_readiness_posture(
+    *,
+    execution_posture: ChiefOfStaffExecutionPostureRecord,
+) -> ChiefOfStaffExecutionReadinessPostureRecord:
+    return {
+        "posture": CHIEF_OF_STAFF_EXECUTION_READINESS_POSTURE_ORDER[0],  # type: ignore[index]
+        "approval_required": execution_posture["approval_required"],
+        "autonomous_execution": execution_posture["autonomous_execution"],
+        "external_side_effects_allowed": execution_posture["external_side_effects_allowed"],
+        "approval_path_visible": True,
+        "route_target_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER),
+        "required_route_targets": [
+            "task_workflow_draft",
+            "approval_workflow_draft",
+        ],
+        "transition_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTING_TRANSITIONS),
+        "non_autonomous_guarantee": execution_posture["non_autonomous_guarantee"],
+        "reason": (
+            "Execution routing remains draft-only and approval-bounded; operators can explicitly route "
+            "handoff items into governed task/approval drafts with auditable transitions."
+        ),
+    }
+
+
+def _build_execution_routing_artifacts(
+    *,
+    handoff_items: list[ChiefOfStaffActionHandoffItem],
+    routing_audit_trail: list[ChiefOfStaffExecutionRoutingAuditRecord],
+    draft_follow_up: ChiefOfStaffDraftFollowUpRecord,
+    execution_posture: ChiefOfStaffExecutionPostureRecord,
+) -> tuple[
+    ChiefOfStaffExecutionRoutingSummary,
+    list[ChiefOfStaffRoutedHandoffItemRecord],
+    ChiefOfStaffExecutionReadinessPostureRecord,
+]:
+    latest_by_item_target: dict[tuple[str, ChiefOfStaffExecutionRouteTarget], ChiefOfStaffExecutionRoutingAuditRecord] = {}
+    latest_by_item: dict[str, ChiefOfStaffExecutionRoutingAuditRecord] = {}
+    for transition in routing_audit_trail:
+        item_id = transition["handoff_item_id"]
+        route_target = transition["route_target"]
+        key = (item_id, route_target)
+        if key not in latest_by_item_target:
+            latest_by_item_target[key] = transition
+        if item_id not in latest_by_item:
+            latest_by_item[item_id] = transition
+
+    routed_handoff_items: list[ChiefOfStaffRoutedHandoffItemRecord] = []
+    task_routed_count = 0
+    approval_routed_count = 0
+    follow_up_routed_count = 0
+
+    sorted_handoffs = sorted(
+        handoff_items,
+        key=lambda item: (item["rank"], item["handoff_item_id"]),
+    )
+    for handoff_item in sorted_handoffs:
+        handoff_item_id = handoff_item["handoff_item_id"]
+        follow_up_applicable = handoff_item["source_kind"] in _FOLLOW_UP_ELIGIBLE_SOURCE_KINDS
+        available_targets: list[ChiefOfStaffExecutionRouteTarget] = [
+            "task_workflow_draft",
+            "approval_workflow_draft",
+        ]
+        if follow_up_applicable:
+            available_targets.append("follow_up_draft_only")
+
+        routed_targets: list[ChiefOfStaffExecutionRouteTarget] = []
+        for route_target in CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER:
+            if route_target not in available_targets:
+                continue
+            transition = latest_by_item_target.get((handoff_item_id, route_target))
+            if transition is not None and transition["route_state"]:
+                routed_targets.append(route_target)
+
+        task_routed = "task_workflow_draft" in routed_targets
+        approval_routed = "approval_workflow_draft" in routed_targets
+        follow_up_routed = "follow_up_draft_only" in routed_targets
+        task_routed_count += int(task_routed)
+        approval_routed_count += int(approval_routed)
+        follow_up_routed_count += int(follow_up_routed)
+
+        routed_item: ChiefOfStaffRoutedHandoffItemRecord = {
+            "handoff_rank": handoff_item["rank"],
+            "handoff_item_id": handoff_item_id,
+            "title": handoff_item["title"],
+            "source_kind": handoff_item["source_kind"],
+            "recommendation_action": handoff_item["recommendation_action"],
+            "route_target_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER),
+            "available_route_targets": available_targets,
+            "routed_targets": routed_targets,
+            "is_routed": len(routed_targets) > 0,
+            "task_workflow_draft_routed": task_routed,
+            "approval_workflow_draft_routed": approval_routed,
+            "follow_up_draft_only_routed": follow_up_routed,
+            "follow_up_draft_only_applicable": follow_up_applicable,
+            "task_draft": handoff_item["task_draft"],
+            "approval_draft": handoff_item["approval_draft"],
+            "last_routing_transition": latest_by_item.get(handoff_item_id),
+        }
+        if follow_up_applicable:
+            routed_item["follow_up_draft"] = draft_follow_up
+        routed_handoff_items.append(routed_item)
+
+    routed_handoff_count = sum(1 for item in routed_handoff_items if item["is_routed"])
+    execution_routing_summary: ChiefOfStaffExecutionRoutingSummary = {
+        "total_handoff_count": len(routed_handoff_items),
+        "routed_handoff_count": routed_handoff_count,
+        "unrouted_handoff_count": len(routed_handoff_items) - routed_handoff_count,
+        "task_workflow_draft_count": task_routed_count,
+        "approval_workflow_draft_count": approval_routed_count,
+        "follow_up_draft_only_count": follow_up_routed_count,
+        "route_target_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER),
+        "routed_item_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTED_ITEM_ORDER),
+        "audit_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTING_AUDIT_ORDER),
+        "transition_order": list(CHIEF_OF_STAFF_EXECUTION_ROUTING_TRANSITIONS),
+        "approval_required": execution_posture["approval_required"],
+        "non_autonomous_guarantee": execution_posture["non_autonomous_guarantee"],
+        "reason": (
+            "Routing transitions are explicit and auditable; task/approval/follow-up routes remain "
+            "draft-only until separately submitted through governed workflows."
+        ),
+    }
+    execution_readiness_posture = _build_execution_readiness_posture(
+        execution_posture=execution_posture,
+    )
+    return execution_routing_summary, routed_handoff_items, execution_readiness_posture
+
+
 def _handoff_queue_item_sort_key(
     item: ChiefOfStaffHandoffQueueItem,
 ) -> tuple[int, float, str]:
@@ -2238,6 +2470,14 @@ def _normalize_handoff_review_action(
     if review_action not in CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS:
         return None
     return review_action  # type: ignore[return-value]
+
+
+def _normalize_execution_route_target(
+    route_target: str,
+) -> ChiefOfStaffExecutionRouteTarget | None:
+    if route_target not in CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER:
+        return None
+    return route_target  # type: ignore[return-value]
 
 
 def capture_chief_of_staff_recommendation_outcome(
@@ -2477,6 +2717,144 @@ def capture_chief_of_staff_handoff_review_action(
         "handoff_queue_summary": updated_brief["handoff_queue_summary"],
         "handoff_queue_groups": updated_brief["handoff_queue_groups"],
         "handoff_review_actions": review_actions,
+    }
+
+
+def capture_chief_of_staff_execution_routing_action(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    request: ChiefOfStaffExecutionRoutingActionInput,
+) -> ChiefOfStaffExecutionRoutingActionCaptureResponse:
+    handoff_item_id = _normalize_optional_text(request.handoff_item_id)
+    if handoff_item_id is None:
+        raise ChiefOfStaffValidationError("handoff_item_id must not be empty")
+
+    route_target = _normalize_execution_route_target(request.route_target)
+    if route_target is None:
+        allowed = ", ".join(CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER)
+        raise ChiefOfStaffValidationError(f"route_target must be one of: {allowed}")
+
+    note = _normalize_optional_text(request.note)
+    project = _normalize_optional_text(request.project)
+    person = _normalize_optional_text(request.person)
+    scope_request = ChiefOfStaffPriorityBriefRequestInput(
+        thread_id=request.thread_id,
+        task_id=request.task_id,
+        project=project,
+        person=person,
+        limit=MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
+    )
+    scoped_brief = compile_chief_of_staff_priority_brief(
+        store,
+        user_id=user_id,
+        request=scope_request,
+    )["brief"]
+    routed_item = next(
+        (
+            item
+            for item in scoped_brief["routed_handoff_items"]
+            if item["handoff_item_id"] == handoff_item_id
+        ),
+        None,
+    )
+    if routed_item is None:
+        raise ChiefOfStaffValidationError(
+            f"handoff_item_id '{handoff_item_id}' was not found in the scoped deterministic routing list"
+        )
+    if route_target not in routed_item["available_route_targets"]:
+        allowed = ", ".join(routed_item["available_route_targets"])
+        raise ChiefOfStaffValidationError(
+            f"route_target '{route_target}' is not applicable for handoff_item_id '{handoff_item_id}'. "
+            f"Allowed targets: {allowed}"
+        )
+
+    previously_routed = route_target in routed_item["routed_targets"]
+    transition: ChiefOfStaffExecutionRoutingTransition = "reaffirmed" if previously_routed else "routed"
+    transition_reason = (
+        f"Operator routed handoff '{handoff_item_id}' to '{route_target}' as governed draft-only execution prep; "
+        "explicit approval is still required before any execution."
+    )
+
+    capture_event = store.create_continuity_capture_event(
+        raw_content=f"Execution routing action ({route_target}): {handoff_item_id}",
+        explicit_signal="note",
+        admission_posture="TRIAGE",
+        admission_reason="chief_of_staff_execution_routing_action",
+    )
+
+    thread_id = None if request.thread_id is None else str(request.thread_id)
+    task_id = None if request.task_id is None else str(request.task_id)
+    body: dict[str, object] = {
+        "kind": _EXECUTION_ROUTING_ACTION_BODY_KIND,
+        "handoff_item_id": handoff_item_id,
+        "route_target": route_target,
+        "transition": transition,
+        "previously_routed": previously_routed,
+        "route_state": True,
+        "reason": transition_reason,
+        "note": note,
+    }
+    provenance: dict[str, object] = {
+        "thread_id": thread_id,
+        "task_id": task_id,
+        "project": project,
+        "person": person,
+        "source_event_ids": [str(capture_event["id"])],
+        "chief_of_staff_execution_routing_action": {
+            "handoff_item_id": handoff_item_id,
+            "route_target": route_target,
+            "transition": transition,
+            "previously_routed": previously_routed,
+        },
+    }
+
+    stored = store.create_continuity_object(
+        capture_event_id=capture_event["id"],
+        object_type="Note",
+        status="active",
+        title=f"Execution routing action: {route_target} ({handoff_item_id})",
+        body=body,
+        provenance=provenance,
+        confidence=1.0,
+    )
+
+    updated_brief = compile_chief_of_staff_priority_brief(
+        store,
+        user_id=user_id,
+        request=scope_request,
+    )["brief"]
+
+    serialized_action: ChiefOfStaffExecutionRoutingAuditRecord = {
+        "id": str(stored["id"]),
+        "capture_event_id": str(stored["capture_event_id"]),
+        "handoff_item_id": handoff_item_id,
+        "route_target": route_target,
+        "transition": transition,
+        "previously_routed": previously_routed,
+        "route_state": True,
+        "reason": transition_reason,
+        "note": note,
+        "provenance_references": [
+            {
+                "source_kind": "continuity_capture_event",
+                "source_id": str(capture_event["id"]),
+            }
+        ],
+        "created_at": stored["created_at"].isoformat(),
+        "updated_at": stored["updated_at"].isoformat(),
+    }
+
+    routing_audit_trail = list(updated_brief["routing_audit_trail"])
+    if not any(action["id"] == serialized_action["id"] for action in routing_audit_trail):
+        routing_audit_trail.insert(0, serialized_action)
+
+    return {
+        "routing_action": serialized_action,
+        "execution_routing_summary": updated_brief["execution_routing_summary"],
+        "routed_handoff_items": updated_brief["routed_handoff_items"],
+        "routing_audit_trail": routing_audit_trail,
+        "execution_readiness_posture": updated_brief["execution_readiness_posture"],
     }
 
 
@@ -2848,6 +3226,17 @@ def compile_chief_of_staff_priority_brief(
         all_follow_through_items=all_follow_through_items,
         handoff_review_actions=handoff_review_actions,
     )
+    routing_audit_trail = _list_execution_routing_audit_records(recall_payload["items"])
+    (
+        execution_routing_summary,
+        routed_handoff_items,
+        execution_readiness_posture,
+    ) = _build_execution_routing_artifacts(
+        handoff_items=handoff_items,
+        routing_audit_trail=routing_audit_trail,
+        draft_follow_up=draft_follow_up,
+        execution_posture=execution_posture,
+    )
 
     summary: ChiefOfStaffPrioritySummary = {
         "limit": limit,
@@ -2903,6 +3292,10 @@ def compile_chief_of_staff_priority_brief(
         "handoff_queue_summary": handoff_queue_summary,
         "handoff_queue_groups": handoff_queue_groups,
         "handoff_review_actions": handoff_review_actions,
+        "execution_routing_summary": execution_routing_summary,
+        "routed_handoff_items": routed_handoff_items,
+        "routing_audit_trail": routing_audit_trail,
+        "execution_readiness_posture": execution_readiness_posture,
         "task_draft": task_draft,
         "approval_draft": approval_draft,
         "execution_posture": execution_posture,
@@ -2916,6 +3309,7 @@ def compile_chief_of_staff_priority_brief(
             "chief_of_staff_action_handoff",
             "chief_of_staff_handoff_queue",
             "chief_of_staff_handoff_review_actions",
+            "chief_of_staff_execution_routing",
             "memory_trust_dashboard",
             "memories",
             "memory_review_labels",

@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 8 Sprint 30 (P8-S30): Handoff Queue and Operational Review
+Phase 8 Sprint 31 (P8-S31): Governed Execution Routing
 
 ## Sprint Type
 
@@ -10,7 +10,7 @@ feature
 
 ## Sprint Reason
 
-P8-S29 shipped deterministic chief-of-staff action handoff artifacts and explicit approval-bounded execution posture. The next non-redundant seam is operationalizing those artifacts into a visible deterministic queue with explicit lifecycle states and operator review controls.
+P8-S30 shipped deterministic handoff queue and operational review seams on top of P8-S29 artifacts. The next non-redundant seam is routing high-value handoffs into existing governed task/approval workflows with explicit execution-readiness posture and auditable transition history.
 
 Planning anchors:
 
@@ -19,25 +19,25 @@ Planning anchors:
 
 ## Sprint Intent
 
-Ship deterministic queue and review seams on top of shipped P8-S29 handoff artifacts:
+Ship deterministic governed-routing seams on top of shipped P8-S29/P8-S30:
 
-- queue lifecycle states for handoff items
-- deterministic queue ordering and grouped posture visibility
-- explicit operator review actions for lifecycle transitions
-- stale and expired handoff surfacing with no silent drops
+- route selected handoff items into existing task/approval workflow drafts
+- add explicit execution-readiness and approval-required visibility
+- preserve draft-only, approval-bounded posture with no autonomous side effects
+- expose routing transition audit trail in API and `/chief-of-staff`
 
 ## Git Instructions
 
-- Branch Name: `codex/phase8-sprint-30-handoff-queue-operational-review`
+- Branch Name: `codex/phase8-sprint-31-governed-execution-routing`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint
 
-- It is the planned next Phase 8 seam after shipped P8-S29 artifacts.
-- It reduces execution friction by making handoff backlog state explicit and actionable.
-- It adds operational control without widening autonomy or connector scope.
+- It is the planned next Phase 8 seam after shipped P8-S30 queue/review.
+- It turns queueed handoffs into governed workflow transitions without widening autonomy.
+- It establishes a deterministic execution bridge before outcome-learning work in P8-S32.
 
 ## Redundancy Guard
 
@@ -46,30 +46,32 @@ Ship deterministic queue and review seams on top of shipped P8-S29 handoff artif
   - Phase 5 continuity capture/recall/review/open-loop seams.
   - Phase 6 trust calibration (`P6-S21` through `P6-S24`), complete as of March 31, 2026.
   - Phase 7 chief-of-staff layer complete (`P7-S25` through `P7-S28`).
-  - Phase 8 Sprint 29 (`P8-S29`) deterministic action handoff artifacts and explicit non-autonomous execution posture.
-- Required now (P8-S30):
-  - queue lifecycle model for handoff items (`ready`, `pending_approval`, `executed`, `stale`, `expired`)
-  - deterministic grouped queue visibility and ordering
-  - explicit operator review actions to transition queue posture
-- Explicitly out of P8-S30:
-  - autonomous execution or connector side effects
+  - Phase 8 Sprint 29 (`P8-S29`) action handoff artifacts and explicit non-autonomous execution posture.
+  - Phase 8 Sprint 30 (`P8-S30`) handoff queue lifecycle and operator review transitions.
+- Required now (P8-S31):
+  - deterministic routing of selected handoff items into existing task/approval workflow drafts
+  - explicit execution-readiness posture and approval-required path visibility
+  - auditable routing transition history from handoff queue toward governed execution
+- Explicitly out of P8-S31:
+  - autonomous execution or external connector side effects
   - redesign of P8-S29 handoff generation semantics
-  - broader orchestration/channel/auth expansion
+  - redesign of P8-S30 queue lifecycle semantics
+  - connector/channel/auth/orchestration expansion
 
 ## Design Truth
 
-- Queue behavior must be deterministic for fixed state.
-- Queue transitions must be explicit and auditable.
-- Handoff artifacts remain approval-bounded preparation outputs only.
-- Stale and expired handoffs must remain visible, not silently dropped.
+- Routing behavior must be deterministic for fixed state.
+- Routing must stay approval-bounded and draft-first.
+- Every routing transition must be explicit and auditable.
+- Existing governance and policy boundaries remain authoritative.
 
 ## Exact Surfaces In Scope
 
-- chief-of-staff handoff queue artifact/API seam
-- deterministic queue grouping and ordering metadata
-- operator review-action transition seam
-- `/chief-of-staff` handoff queue panel
-- deterministic tests for queue ordering and transition behavior
+- chief-of-staff governed-routing artifact/API seam
+- execution-readiness posture and approval-path visibility
+- routing transition audit trail seam
+- `/chief-of-staff` execution routing panel
+- deterministic tests for routing behavior and posture preservation
 
 ## Exact Files In Scope
 
@@ -87,6 +89,8 @@ Ship deterministic queue and review seams on top of shipped P8-S29 handoff artif
 - `apps/web/components/chief-of-staff-action-handoff-panel.test.tsx`
 - `apps/web/components/chief-of-staff-handoff-queue-panel.tsx`
 - `apps/web/components/chief-of-staff-handoff-queue-panel.test.tsx`
+- `apps/web/components/chief-of-staff-execution-routing-panel.tsx`
+- `apps/web/components/chief-of-staff-execution-routing-panel.test.tsx`
 - `tests/unit/test_chief_of_staff.py`
 - `tests/integration/test_chief_of_staff_api.py`
 - `README.md`
@@ -98,57 +102,60 @@ Ship deterministic queue and review seams on top of shipped P8-S29 handoff artif
 
 ## In Scope
 
-- Add deterministic queue fields on chief-of-staff payloads:
-  - `handoff_queue_summary`
-  - `handoff_queue_groups`
-  - `handoff_review_actions`
-- Add lifecycle state model for handoff items:
-  - `ready`
-  - `pending_approval`
-  - `executed`
-  - `stale`
-  - `expired`
-- Add deterministic queue ordering and posture grouping behavior.
-- Add explicit operator review-action seam for lifecycle transitions.
-- Add `/chief-of-staff` handoff queue panel with grouped visibility and review controls.
-- Add deterministic tests for ordering, grouping, and transition consistency.
+- Add deterministic routing fields on chief-of-staff payloads:
+  - `execution_routing_summary`
+  - `routed_handoff_items`
+  - `routing_audit_trail`
+  - `execution_readiness_posture`
+- Add explicit governed routing seam for selected handoff items:
+  - task-workflow draft routing
+  - approval-workflow draft routing
+  - draft-only follow-up routing where applicable
+- Add deterministic routing posture behavior:
+  - approval-required path visibility
+  - explicit non-autonomous guarantees
+  - deterministic transition ordering metadata
+- Add `/chief-of-staff` execution routing panel with posture, route controls, and transition history.
+- Add deterministic tests for routing transitions, approval posture preservation, and no-autonomous-side-effect guarantees.
 
 ## Out of Scope
 
-- automatic execution of queue items
+- automatic execution of routed items
 - connector/channel expansion
-- changes to shipped P8-S29 artifact generation semantics
+- changes to shipped P8-S29 generation semantics
+- changes to shipped P8-S30 queue lifecycle semantics
 
 ## Required Deliverables
 
-- handoff queue API/artifact seam
-- deterministic queue ordering/grouping behavior
-- operator review-action transition behavior
-- `/chief-of-staff` handoff queue UI panel
-- unit/integration/web tests for queue behavior
+- governed execution routing API/artifact seam
+- deterministic routing transition behavior
+- execution-readiness and approval-path visibility
+- `/chief-of-staff` execution routing UI panel
+- unit/integration/web tests for routing behavior
 - synced docs and sprint reports
 
 ## Acceptance Criteria
 
-- queue states are explicit, deterministic, and auditable for fixed state.
-- queue ordering/grouping is deterministic and surfaces stale/expired items explicitly.
-- operator review actions update queue posture consistently without autonomous side effects.
+- selected handoff items can be routed into existing governed task/approval draft flows without manual reconstruction.
+- routing transitions are deterministic, explicit, and auditable for fixed state.
+- approval-required and non-autonomous posture remains explicit and preserved.
 - `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py tests/integration/test_chief_of_staff_api.py -q` passes.
-- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-action-handoff-panel.test.tsx components/chief-of-staff-handoff-queue-panel.test.tsx lib/api.test.ts` passes.
+- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-action-handoff-panel.test.tsx components/chief-of-staff-handoff-queue-panel.test.tsx components/chief-of-staff-execution-routing-panel.test.tsx lib/api.test.ts` passes.
 - `python3 scripts/run_phase4_validation_matrix.py` remains PASS.
-- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P8-S30 scope and preserve “P8-S29 shipped” truth.
+- `README.md`, `ROADMAP.md`, and `.ai/handoff/CURRENT_STATE.md` reflect active P8-S31 scope and preserve “P8-S29/P8-S30 shipped” truth.
 
 ## Implementation Constraints
 
 - do not introduce new dependencies
 - preserve shipped P5/P6/P7 semantics
-- preserve shipped P8-S29 handoff generation semantics
+- preserve shipped P8-S29 handoff-generation semantics
+- preserve shipped P8-S30 queue/review semantics
 - keep side effects approval-bounded and explicit
-- keep queue behavior deterministic and test-backed
+- keep routing behavior deterministic and test-backed
 
 ## Control Tower Task Cards
 
-### Task 1: Handoff Queue Engine + API
+### Task 1: Governed Routing Engine + API
 
 Owner: tooling operative
 
@@ -163,7 +170,7 @@ Write scope:
 - `tests/unit/test_chief_of_staff.py`
 - `tests/integration/test_chief_of_staff_api.py`
 
-### Task 2: Chief-of-Staff Queue UI
+### Task 2: Chief-of-Staff Routing UI
 
 Owner: tooling operative
 
@@ -177,6 +184,8 @@ Write scope:
 - `apps/web/components/chief-of-staff-action-handoff-panel.test.tsx`
 - `apps/web/components/chief-of-staff-handoff-queue-panel.tsx`
 - `apps/web/components/chief-of-staff-handoff-queue-panel.test.tsx`
+- `apps/web/components/chief-of-staff-execution-routing-panel.tsx`
+- `apps/web/components/chief-of-staff-execution-routing-panel.test.tsx`
 
 ### Task 3: Docs + Integration Review
 
@@ -192,8 +201,8 @@ Write scope:
 
 Responsibilities:
 
-- verify no P6/P7/P8-S29 relitigation
-- verify deterministic queue ordering and transition posture
+- verify no P6/P7/P8-S29/P8-S30 relitigation
+- verify deterministic routing transitions and posture guarantees
 - verify no hidden scope expansion
 - verify no Phase 4 regression
 
@@ -201,21 +210,21 @@ Responsibilities:
 
 `BUILD_REPORT.md` must include:
 
-- exact handoff-queue contract delta
-- exact deterministic grouping/ordering/transition behavior
+- exact governed-routing contract delta
+- exact deterministic routing/execution-readiness behavior
 - exact verification command outcomes
-- explicit deferred Phase 8 scope beyond P8-S30
+- explicit deferred Phase 8 scope beyond P8-S31
 
 ## Review Focus
 
 `REVIEW_REPORT.md` should verify:
 
-- sprint stayed P8-S30 scoped
-- queue outputs and transitions are deterministic and explainable
-- approval-bounded execution posture remains explicit and preserved
+- sprint stayed P8-S31 scoped
+- routing outputs/transitions are deterministic and explainable
+- approval-bounded execution posture is explicit and preserved
 - no hidden scope expansion
 - Phase 4 validation remains green
 
 ## Exit Condition
 
-This sprint is complete when Alice can present and operate a deterministic chief-of-staff handoff queue with explicit lifecycle posture and operator review transitions, without regressing shipped Phase 4/5/6/7 and P8-S29 behavior.
+This sprint is complete when Alice can deterministically route selected chief-of-staff handoff items into existing governed task/approval draft workflows with explicit execution-readiness posture and auditable transition history, without regressing shipped Phase 4/5/6/7 and P8-S29/P8-S30 behavior.
