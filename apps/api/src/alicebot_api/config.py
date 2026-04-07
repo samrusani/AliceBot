@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 import os
+from uuid import UUID
 
 DEFAULT_APP_ENV = "development"
 DEFAULT_APP_HOST = "127.0.0.1"
@@ -33,6 +34,9 @@ DEFAULT_MODEL_TIMEOUT_SECONDS = 30
 DEFAULT_TASK_WORKSPACE_ROOT = "/tmp/alicebot/task-workspaces"
 DEFAULT_GMAIL_SECRET_MANAGER_URL = ""
 DEFAULT_CALENDAR_SECRET_MANAGER_URL = ""
+DEFAULT_AUTH_USER_ID = ""
+DEFAULT_RESPONSE_RATE_LIMIT_WINDOW_SECONDS = 60
+DEFAULT_RESPONSE_RATE_LIMIT_MAX_REQUESTS = 20
 
 Environment = Mapping[str, str]
 
@@ -73,11 +77,14 @@ class Settings:
     task_workspace_root: str = DEFAULT_TASK_WORKSPACE_ROOT
     gmail_secret_manager_url: str = DEFAULT_GMAIL_SECRET_MANAGER_URL
     calendar_secret_manager_url: str = DEFAULT_CALENDAR_SECRET_MANAGER_URL
+    auth_user_id: str = DEFAULT_AUTH_USER_ID
+    response_rate_limit_window_seconds: int = DEFAULT_RESPONSE_RATE_LIMIT_WINDOW_SECONDS
+    response_rate_limit_max_requests: int = DEFAULT_RESPONSE_RATE_LIMIT_MAX_REQUESTS
 
     @classmethod
     def from_env(cls, env: Environment | None = None) -> "Settings":
         current_env = os.environ if env is None else env
-        return cls(
+        settings = cls(
             app_env=_get_env_value(current_env, "APP_ENV", cls.app_env),
             app_host=_get_env_value(current_env, "APP_HOST", cls.app_host),
             app_port=_get_env_int(current_env, "APP_PORT", cls.app_port),
@@ -125,7 +132,50 @@ class Settings:
                 "CALENDAR_SECRET_MANAGER_URL",
                 cls.calendar_secret_manager_url,
             ),
+            auth_user_id=_get_env_value(current_env, "ALICEBOT_AUTH_USER_ID", cls.auth_user_id).strip(),
+            response_rate_limit_window_seconds=_get_env_int(
+                current_env,
+                "RESPONSE_RATE_LIMIT_WINDOW_SECONDS",
+                cls.response_rate_limit_window_seconds,
+            ),
+            response_rate_limit_max_requests=_get_env_int(
+                current_env,
+                "RESPONSE_RATE_LIMIT_MAX_REQUESTS",
+                cls.response_rate_limit_max_requests,
+            ),
         )
+        return _validate_settings(settings)
+
+
+def _validate_settings(settings: Settings) -> Settings:
+    if settings.auth_user_id != "":
+        try:
+            UUID(settings.auth_user_id)
+        except ValueError as exc:
+            raise ValueError("ALICEBOT_AUTH_USER_ID must be a valid UUID") from exc
+
+    if settings.response_rate_limit_window_seconds <= 0:
+        raise ValueError("RESPONSE_RATE_LIMIT_WINDOW_SECONDS must be a positive integer")
+    if settings.response_rate_limit_max_requests <= 0:
+        raise ValueError("RESPONSE_RATE_LIMIT_MAX_REQUESTS must be a positive integer")
+
+    if settings.app_env not in {"development", "test"}:
+        if settings.auth_user_id == "":
+            raise ValueError(
+                "ALICEBOT_AUTH_USER_ID must be configured outside development/test environments"
+            )
+        if settings.database_url == DEFAULT_DATABASE_URL:
+            raise ValueError("DATABASE_URL must be overridden outside development/test environments")
+        if settings.database_admin_url == DEFAULT_DATABASE_ADMIN_URL:
+            raise ValueError(
+                "DATABASE_ADMIN_URL must be overridden outside development/test environments"
+            )
+        if settings.s3_access_key == DEFAULT_S3_ACCESS_KEY:
+            raise ValueError("S3_ACCESS_KEY must be overridden outside development/test environments")
+        if settings.s3_secret_key == DEFAULT_S3_SECRET_KEY:
+            raise ValueError("S3_SECRET_KEY must be overridden outside development/test environments")
+
+    return settings
 
 
 @lru_cache(maxsize=1)

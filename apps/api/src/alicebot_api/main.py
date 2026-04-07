@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from datetime import datetime
-from typing import Annotated, Callable, Literal, TypedDict
+import json
+import threading
+import time
+from typing import Annotated, Awaitable, Callable, Literal, TypedDict
 from uuid import UUID
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fastapi.responses import JSONResponse
 import psycopg
 from psycopg.rows import dict_row
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from alicebot_api.compiler import compile_and_persist_trace, compile_resumption_brief
 from alicebot_api.config import Settings, get_settings
@@ -470,6 +474,106 @@ class HealthcheckPayload(TypedDict):
     status: HealthStatus
     environment: str
     services: HealthServicesPayload
+
+
+AUTH_USER_HEADER = "X-AliceBot-User-Id"
+
+
+class ResponseRateLimiter:
+    def __init__(self) -> None:
+        self._events_by_key: dict[str, deque[float]] = defaultdict(deque)
+        self._lock = threading.Lock()
+
+    def allow(self, *, key: str, max_requests: int, window_seconds: int) -> tuple[bool, int]:
+        now = time.monotonic()
+
+        with self._lock:
+            events = self._events_by_key[key]
+            cutoff = now - window_seconds
+            while events and events[0] <= cutoff:
+                events.popleft()
+
+            if len(events) >= max_requests:
+                retry_after_seconds = max(1, int(events[0] + window_seconds - now))
+                return False, retry_after_seconds
+
+            events.append(now)
+            return True, 0
+
+    def reset(self) -> None:
+        with self._lock:
+            self._events_by_key.clear()
+
+
+response_rate_limiter = ResponseRateLimiter()
+
+
+def _resolve_authenticated_user_id(settings: Settings, request: Request) -> UUID | None:
+    if settings.auth_user_id != "":
+        return UUID(settings.auth_user_id)
+
+    header_value = request.headers.get(AUTH_USER_HEADER)
+    if header_value is None or header_value.strip() == "":
+        if settings.app_env in {"development", "test"}:
+            return None
+        raise ValueError(
+            "request authentication is not configured; set ALICEBOT_AUTH_USER_ID "
+            "or provide X-AliceBot-User-Id"
+        )
+
+    try:
+        return UUID(header_value)
+    except ValueError as exc:
+        raise ValueError("X-AliceBot-User-Id must be a valid UUID") from exc
+
+
+def _rewrite_user_id_query_param(request: Request, authenticated_user_id: UUID) -> None:
+    raw_query = request.scope.get("query_string", b"")
+    query_items = parse_qsl(raw_query.decode("utf-8"), keep_blank_values=True)
+    expected_user_id = str(authenticated_user_id)
+    for key, value in query_items:
+        if key == "user_id" and value != expected_user_id:
+            raise ValueError("query user_id does not match authenticated user")
+    rewritten_items = [(key, value) for key, value in query_items if key != "user_id"]
+    rewritten_items.append(("user_id", expected_user_id))
+    request.scope["query_string"] = urlencode(rewritten_items, doseq=True).encode("utf-8")
+
+
+async def _rewrite_user_id_json_body(request: Request, authenticated_user_id: UUID) -> Request:
+    if request.method.upper() not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return request
+
+    content_type = request.headers.get("content-type", "").lower()
+    if "application/json" not in content_type:
+        return request
+
+    raw_body = await request.body()
+    if raw_body == b"":
+        return request
+
+    try:
+        parsed_body = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return request
+
+    if not isinstance(parsed_body, dict):
+        return request
+
+    expected_user_id = str(authenticated_user_id)
+    existing_user_id = parsed_body.get("user_id")
+    if existing_user_id is not None and str(existing_user_id) != expected_user_id:
+        raise ValueError("request user_id does not match authenticated user")
+    parsed_body["user_id"] = expected_user_id
+    rewritten_body = json.dumps(parsed_body, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+    async def receive() -> dict[str, object]:
+        return {
+            "type": "http.request",
+            "body": rewritten_body,
+            "more_body": False,
+        }
+
+    return Request(request.scope, receive)
 
 
 class CompileContextSemanticRequest(BaseModel):
@@ -1083,6 +1187,65 @@ def build_healthcheck_payload(settings: Settings, database_ok: bool) -> Healthch
     }
 
 
+def _response_rate_limit_error(
+    *,
+    max_requests: int,
+    window_seconds: int,
+    retry_after_seconds: int,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        headers={"Retry-After": str(retry_after_seconds)},
+        content={
+            "detail": {
+                "code": "response_rate_limit_exceeded",
+                "message": (
+                    "response generation rate limit exceeded; "
+                    f"max {max_requests} requests per {window_seconds} seconds"
+                ),
+                "retry_after_seconds": retry_after_seconds,
+            }
+        },
+    )
+
+
+def _enforce_response_rate_limit(settings: Settings, user_id: UUID) -> JSONResponse | None:
+    allowed, retry_after_seconds = response_rate_limiter.allow(
+        key=f"responses:{user_id}",
+        max_requests=settings.response_rate_limit_max_requests,
+        window_seconds=settings.response_rate_limit_window_seconds,
+    )
+    if allowed:
+        return None
+    return _response_rate_limit_error(
+        max_requests=settings.response_rate_limit_max_requests,
+        window_seconds=settings.response_rate_limit_window_seconds,
+        retry_after_seconds=retry_after_seconds,
+    )
+
+
+@app.middleware("http")
+async def enforce_authenticated_user_identity(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[JSONResponse]],
+):
+    if not request.url.path.startswith("/v0/"):
+        return await call_next(request)
+
+    settings = get_settings()
+
+    try:
+        authenticated_user_id = _resolve_authenticated_user_id(settings, request)
+        if authenticated_user_id is not None:
+            request.scope.setdefault("state", {})["authenticated_user_id"] = str(authenticated_user_id)
+            _rewrite_user_id_query_param(request, authenticated_user_id)
+            request = await _rewrite_user_id_json_body(request, authenticated_user_id)
+    except ValueError as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    return await call_next(request)
+
+
 @app.get("/healthz")
 def healthcheck() -> JSONResponse:
     settings = get_settings()
@@ -1214,6 +1377,9 @@ def compile_context(request: CompileContextRequest) -> JSONResponse:
 @app.post("/v0/responses")
 def generate_assistant_response(request: GenerateResponseRequest) -> JSONResponse:
     settings = get_settings()
+    rate_limit_error = _enforce_response_rate_limit(settings, request.user_id)
+    if rate_limit_error is not None:
+        return rate_limit_error
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:

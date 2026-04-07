@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import contextmanager
 from datetime import datetime
 from uuid import uuid4
 
 import pytest
+from fastapi import Request
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.artifacts import TaskArtifactNotFoundError
@@ -192,6 +194,121 @@ def test_build_healthcheck_payload_keeps_boundary_statuses_consistent() -> None:
     assert main_module.build_healthcheck_payload(settings, database_ok=False)["services"][
         "database"
     ] == {"status": "unreachable"}
+
+
+def _build_request(
+    *,
+    method: str,
+    path: str,
+    query_string: str = "",
+    body: bytes = b"",
+    headers: dict[str, str] | None = None,
+) -> Request:
+    encoded_headers = [
+        (key.lower().encode("utf-8"), value.encode("utf-8"))
+        for key, value in (headers or {}).items()
+    ]
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": method,
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("utf-8"),
+            "query_string": query_string.encode("utf-8"),
+            "headers": encoded_headers,
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+        },
+        receive,
+    )
+
+
+def test_resolve_authenticated_user_id_prefers_configured_identity() -> None:
+    configured_user_id = uuid4()
+    request = _build_request(
+        method="GET",
+        path="/v0/threads",
+        headers={"x-alicebot-user-id": str(uuid4())},
+    )
+
+    resolved = main_module._resolve_authenticated_user_id(
+        Settings(app_env="test", auth_user_id=str(configured_user_id)),
+        request,
+    )
+
+    assert resolved == configured_user_id
+
+
+def test_resolve_authenticated_user_id_allows_dev_without_header() -> None:
+    request = _build_request(method="GET", path="/v0/threads")
+
+    resolved = main_module._resolve_authenticated_user_id(
+        Settings(app_env="test", auth_user_id=""),
+        request,
+    )
+
+    assert resolved is None
+
+
+def test_rewrite_user_id_query_param_rejects_mismatch() -> None:
+    request = _build_request(
+        method="GET",
+        path="/v0/threads",
+        query_string="user_id=00000000-0000-0000-0000-000000000002",
+    )
+
+    with pytest.raises(ValueError, match="query user_id does not match authenticated user"):
+        main_module._rewrite_user_id_query_param(
+            request,
+            uuid4(),
+        )
+
+
+def test_rewrite_user_id_json_body_injects_missing_user_id() -> None:
+    authenticated_user_id = uuid4()
+    thread_id = uuid4()
+    request = _build_request(
+        method="POST",
+        path="/v0/responses",
+        body=json.dumps({"thread_id": str(thread_id), "message": "hello"}).encode("utf-8"),
+        headers={"content-type": "application/json"},
+    )
+
+    rewritten_request = asyncio.run(
+        main_module._rewrite_user_id_json_body(request, authenticated_user_id)
+    )
+    rewritten_body = asyncio.run(rewritten_request.body())
+
+    assert json.loads(rewritten_body) == {
+        "thread_id": str(thread_id),
+        "message": "hello",
+        "user_id": str(authenticated_user_id),
+    }
+
+
+def test_rewrite_user_id_json_body_rejects_mismatch() -> None:
+    request = _build_request(
+        method="POST",
+        path="/v0/responses",
+        body=json.dumps(
+            {
+                "user_id": "00000000-0000-0000-0000-000000000001",
+                "thread_id": str(uuid4()),
+                "message": "hello",
+            }
+        ).encode("utf-8"),
+        headers={"content-type": "application/json"},
+    )
+
+    with pytest.raises(ValueError, match="request user_id does not match authenticated user"):
+        asyncio.run(main_module._rewrite_user_id_json_body(request, uuid4()))
 
 
 def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
@@ -1086,6 +1203,84 @@ def test_generate_assistant_response_returns_502_with_trace_when_model_invocatio
         "metadata": {
             "agent_profile_id": "assistant_default",
         },
+    }
+
+
+def test_generate_assistant_response_enforces_rate_limit(monkeypatch) -> None:
+    user_id = uuid4()
+    thread_id = uuid4()
+    settings = Settings(
+        app_env="test",
+        database_url="postgresql://app",
+        response_rate_limit_max_requests=1,
+        response_rate_limit_window_seconds=60,
+    )
+
+    @contextmanager
+    def fake_user_connection(_database_url: str, _current_user_id):
+        yield object()
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module.ContinuityStore,
+        "get_thread",
+        lambda _self, thread_id: {
+            "id": thread_id,
+            "user_id": user_id,
+            "title": "Thread",
+            "agent_profile_id": "assistant_default",
+            "created_at": datetime.now(),
+            "updated_at": datetime.now(),
+        },
+    )
+    monkeypatch.setattr(
+        main_module,
+        "generate_response",
+        lambda *_args, **_kwargs: {
+            "assistant": {
+                "event_id": "assistant-event-123",
+                "sequence_no": 5,
+                "text": "Hello back.",
+                "model_provider": "openai_responses",
+                "model": "gpt-5-mini",
+            },
+            "trace": {
+                "compile_trace_id": "compile-trace-123",
+                "compile_trace_event_count": 11,
+                "response_trace_id": "response-trace-123",
+                "response_trace_event_count": 2,
+            },
+        },
+    )
+    main_module.response_rate_limiter.reset()
+
+    first_response = main_module.generate_assistant_response(
+        main_module.GenerateResponseRequest(
+            user_id=user_id,
+            thread_id=thread_id,
+            message="Hello?",
+        )
+    )
+    second_response = main_module.generate_assistant_response(
+        main_module.GenerateResponseRequest(
+            user_id=user_id,
+            thread_id=thread_id,
+            message="Hello again?",
+        )
+    )
+    main_module.response_rate_limiter.reset()
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 429
+    retry_after = int(second_response.headers["Retry-After"])
+    assert 1 <= retry_after <= 60
+    assert json.loads(second_response.body) == {
+        "detail": {
+            "code": "response_rate_limit_exceeded",
+            "message": "response generation rate limit exceeded; max 1 requests per 60 seconds",
+            "retry_after_seconds": retry_after,
+        }
     }
 
 
