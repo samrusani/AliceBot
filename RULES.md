@@ -26,6 +26,7 @@
 
 - Preserve append-only continuity, correction, and revision history.
 - Keep imported data provenance explicit.
+- Importers must explicitly map or reject unknown external lifecycle/status values; do not silently coerce them to `active`.
 - Default memory admission to conservative behavior; do not loosen admission discipline for launch convenience.
 - Do not silently overwrite stale or superseded truth.
 

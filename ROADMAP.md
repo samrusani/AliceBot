@@ -44,12 +44,12 @@ Success condition:
 - local interop examples for compatible clients
 - deterministic tool contracts
 
-### P9-S36: OpenClaw Adapter (next active seam)
+### P9-S36: OpenClaw Adapter (shipped baseline)
 
 - import path for OpenClaw durable memory/workspace data
 - Alice MCP augmentation mode for OpenClaw-style workflows
 
-### P9-S37: Importers and Evaluation Harness
+### P9-S37: Importers and Evaluation Harness (current seam)
 
 - at least three production-usable importers
 - local benchmark and baseline report generation
@@ -81,6 +81,7 @@ Success condition:
 - Phase 8 delivered operational chief-of-staff handoffs, routing, outcome learning, and closure quality.
 - `P9-S33` delivered the public-safe `alice-core` boundary, canonical local startup path, and deterministic sample-data proof.
 - `P9-S34` delivered the shipped local CLI continuity contract that `P9-S35` should mirror through MCP.
+- `P9-S35` delivered the shipped local MCP contract that `P9-S36` should consume without widening.
 
 ## Legacy Compatibility Markers
 

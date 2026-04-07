@@ -2,7 +2,7 @@
 
 Alice is a local-first memory and continuity engine for AI agents.
 
-`P9-S33` shipped the public-core baseline. `P9-S34` shipped the deterministic local CLI for continuity flows on top of that baseline. `P9-S35` now ships a narrow MCP transport for the same continuity contract.
+`P9-S33` shipped the public-core baseline. `P9-S34` shipped the deterministic local CLI for continuity flows on top of that baseline. `P9-S35` shipped a narrow MCP transport for the same continuity contract. `P9-S36` ships the first OpenClaw adapter/import path on top of those shipped surfaces.
 
 ## Canonical Local Startup Path (`P9-S33`)
 
@@ -88,6 +88,30 @@ Initial ADR-003 MCP tools:
 - `alice_memory_correct`
 - `alice_context_pack`
 
+## OpenClaw Adapter Path (`P9-S36`)
+
+`P9-S36` delivers the first OpenClaw adapter path:
+
+- import one sample or real OpenClaw workspace / durable-memory export
+- preserve import provenance and dedupe posture
+- prove Alice recall and resumption over imported OpenClaw material
+- optionally prove shipped MCP tools working over that imported data
+
+Run the local OpenClaw sample import:
+
+```bash
+./scripts/load_openclaw_sample_data.sh --source fixtures/openclaw/workspace_v1.json
+```
+
+Sample proof commands against imported scope:
+
+```bash
+./.venv/bin/python -m alicebot_api recall --thread-id cccccccc-cccc-4ccc-8ccc-cccccccccccc --project "Alice Public Core" --query "MCP tool surface" --limit 5
+./.venv/bin/python -m alicebot_api resume --thread-id cccccccc-cccc-4ccc-8ccc-cccccccccccc --max-recent-changes 5 --max-open-loops 5
+```
+
+Dedupe posture is deterministic: re-running the same import returns `status=noop` with `skipped_duplicates=5`.
+
 ### Compatible Client Example (Claude Desktop MCP)
 
 `claude_desktop_config.json` example:
@@ -119,6 +143,7 @@ Initial ADR-003 MCP tools:
 - `apps/api`: FastAPI runtime and continuity core seams
 - `apps/web`: operator shell
 - `fixtures/public_sample_data`: deterministic public-core sample dataset
+- `fixtures/openclaw`: deterministic OpenClaw adapter fixture dataset
 - `scripts`: startup, migration, and sample-data load scripts
 - `docs`: product, architecture, ADRs, and Phase 9 planning docs
 
@@ -134,6 +159,7 @@ Initial ADR-003 MCP tools:
 - [docs/phase9-sprint-33-38-plan.md](docs/phase9-sprint-33-38-plan.md)
 - [docs/phase9-public-core-boundary.md](docs/phase9-public-core-boundary.md)
 - [docs/phase9-bootstrap-notes.md](docs/phase9-bootstrap-notes.md)
+- [docs/adr/ADR-004-openclaw-integration-boundary.md](docs/adr/ADR-004-openclaw-integration-boundary.md)
 
 ## Legacy Compatibility Marker
 

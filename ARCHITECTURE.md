@@ -13,7 +13,12 @@ The current implementation already includes:
 
 Phase 9 does not replace that architecture. It packages and exposes it through public-safe boundaries.
 
-Current public-core packaging state is defined in `P9-S33`: one install path, one runtime baseline, and one deterministic sample-data fixture for recall and resumption verification.
+Current public packaging baseline now spans `P9-S33` through `P9-S36`:
+
+- `P9-S33`: public-safe core boundary and canonical local startup
+- `P9-S34`: deterministic local CLI continuity contract
+- `P9-S35`: narrow deterministic MCP transport contract
+- `P9-S36`: first OpenClaw adapter/import boundary with provenance + dedupe posture
 
 ## Technical Stack
 
@@ -23,13 +28,14 @@ Current public-core packaging state is defined in `P9-S33`: one install path, on
 - Vector support: `pgvector`
 - Local infrastructure: Docker Compose, Redis, MinIO
 - Testing: pytest, Vitest
-- Packaging target for `P9-S33`:
+- Shipped packaging/runtime baseline (`P9-S33` to `P9-S36`):
   - `alice-core` (published package name in `pyproject.toml`)
   - deterministic fixture loader (`scripts/load_sample_data.sh`)
-- Deferred packaging targets (`P9-S34+`):
-  - `apps/cli`
-  - `apps/mcp-server`
-  - importer/adapter packages
+  - deterministic local CLI contract (`python -m alicebot_api ...`)
+  - deterministic local MCP transport (`python -m alicebot_api.mcp_server`)
+  - OpenClaw import loader and fixture path (`scripts/load_openclaw_sample_data.sh`)
+- Deferred/next packaging targets (`P9-S37+`):
+  - broader importer set and evaluation harness outputs
 
 ## High-Level Architecture
 
@@ -50,13 +56,13 @@ Current public-core packaging state is defined in `P9-S33`: one install path, on
    - resumption
    - open-loop retrieval
    - correction-aware memory behavior
-2. `alice-cli` (deferred)
+2. `alice-cli` (shipped baseline in `P9-S34`, module-scoped runtime)
    - terminal access to public core flows
-3. `alice-mcp-server` (deferred)
+3. `alice-mcp-server` (shipped baseline in `P9-S35`, narrow tool contract)
    - stable MCP tool surface for external assistants
-4. `alice-importers` (deferred)
+4. `alice-importers` (next seam in `P9-S37`)
    - markdown, chat export, CSV, and adapter-backed imports
-5. `alice-openclaw` (deferred)
+5. `alice-openclaw` (shipped baseline in `P9-S36`, adapter-scoped import path)
    - OpenClaw-specific ingestion and interop mapping
 
 ## Module Boundaries
