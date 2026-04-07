@@ -5,6 +5,7 @@ from uuid import UUID
 
 import alicebot_api.chief_of_staff as chief
 from alicebot_api.contracts import (
+    ChiefOfStaffHandoffOutcomeCaptureInput,
     ChiefOfStaffHandoffReviewActionInput,
     ChiefOfStaffPriorityBriefRequestInput,
     ChiefOfStaffRecommendationOutcomeCaptureInput,
@@ -84,6 +85,34 @@ def _outcome_recall_item(
         "target_priority_id": target_priority_id,
         "rationale": rationale,
         "rewritten_title": None,
+    }
+    return item
+
+
+def _handoff_outcome_recall_item(
+    *,
+    item_id: str,
+    handoff_item_id: str,
+    created_at: str,
+    outcome_status: str,
+    previous_outcome_status: str | None = None,
+) -> dict[str, object]:
+    item = _recall_item(
+        item_id=item_id,
+        object_type="Note",
+        status="active",
+        title=f"Handoff outcome: {outcome_status} ({handoff_item_id})",
+        created_at=created_at,
+        confidence=1.0,
+        confirmation_status="confirmed",
+    )
+    item["body"] = {
+        "kind": "chief_of_staff_handoff_outcome",
+        "handoff_item_id": handoff_item_id,
+        "outcome_status": outcome_status,
+        "previous_outcome_status": previous_outcome_status,
+        "reason": f"Outcome {outcome_status} captured for {handoff_item_id}",
+        "note": None,
     }
     return item
 
@@ -1354,3 +1383,300 @@ def test_capture_recommendation_outcome_creates_auditable_note_and_returns_learn
     assert response["recommendation_outcomes"]["summary"]["outcome_counts"]["accept"] == 1
     assert response["priority_learning_summary"]["acceptance_rate"] == 1.0
     assert response["pattern_drift_summary"]["posture"] == "improving"
+
+
+def test_handoff_outcome_rollups_are_deterministic_and_latest_state_driven() -> None:
+    recall_items = [
+        _handoff_outcome_recall_item(
+            item_id="handoff-outcome-1",
+            handoff_item_id="handoff-1",
+            created_at="2026-04-07T09:00:00+00:00",
+            outcome_status="reviewed",
+            previous_outcome_status=None,
+        ),
+        _handoff_outcome_recall_item(
+            item_id="handoff-outcome-2",
+            handoff_item_id="handoff-1",
+            created_at="2026-04-07T09:15:00+00:00",
+            outcome_status="executed",
+            previous_outcome_status="reviewed",
+        ),
+        _handoff_outcome_recall_item(
+            item_id="handoff-outcome-3",
+            handoff_item_id="handoff-2",
+            created_at="2026-04-07T09:10:00+00:00",
+            outcome_status="ignored",
+            previous_outcome_status=None,
+        ),
+    ]
+
+    all_outcomes = chief._list_handoff_outcome_records(  # type: ignore[attr-defined]
+        recall_items,  # type: ignore[arg-type]
+    )
+
+    assert [item["id"] for item in all_outcomes] == [
+        "handoff-outcome-2",
+        "handoff-outcome-3",
+        "handoff-outcome-1",
+    ]
+    assert all_outcomes[0]["is_latest_outcome"] is True
+    assert all_outcomes[1]["is_latest_outcome"] is True
+    assert all_outcomes[2]["is_latest_outcome"] is False
+
+    summary, selected, latest_counts = chief._build_handoff_outcome_artifacts(  # type: ignore[attr-defined]
+        all_handoff_outcomes=all_outcomes,  # type: ignore[arg-type]
+        limit=10,
+    )
+    assert summary["total_count"] == 3
+    assert summary["latest_total_count"] == 2
+    assert summary["status_counts"]["reviewed"] == 1
+    assert summary["status_counts"]["executed"] == 1
+    assert summary["status_counts"]["ignored"] == 1
+    assert summary["latest_status_counts"]["reviewed"] == 0
+    assert summary["latest_status_counts"]["executed"] == 1
+    assert summary["latest_status_counts"]["ignored"] == 1
+    assert selected[0]["id"] == "handoff-outcome-2"
+    assert latest_counts["executed"] == 1
+    assert latest_counts["ignored"] == 1
+
+    closure_quality = chief._build_closure_quality_summary(  # type: ignore[attr-defined]
+        handoff_outcome_summary=summary,
+        latest_status_counts=latest_counts,
+    )
+    conversion = chief._build_conversion_signal_summary(  # type: ignore[attr-defined]
+        total_handoff_count=3,
+        handoff_outcome_summary=summary,
+        latest_status_counts=latest_counts,
+    )
+    escalation = chief._build_stale_ignored_escalation_posture(  # type: ignore[attr-defined]
+        handoff_queue_summary={
+            "total_count": 3,
+            "ready_count": 1,
+            "pending_approval_count": 0,
+            "executed_count": 1,
+            "stale_count": 1,
+            "expired_count": 0,
+            "state_order": ["ready", "pending_approval", "executed", "stale", "expired"],
+            "group_order": ["ready", "pending_approval", "executed", "stale", "expired"],
+            "item_order": ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+            "review_action_order": ["mark_ready", "mark_pending_approval", "mark_executed", "mark_stale", "mark_expired"],
+        },  # type: ignore[arg-type]
+        latest_status_counts=latest_counts,
+    )
+
+    assert closure_quality["posture"] == "watch"
+    assert closure_quality["closed_loop_count"] == 1
+    assert closure_quality["ignored_count"] == 1
+    assert conversion["recommendation_to_execution_conversion_rate"] == 0.333333
+    assert conversion["recommendation_to_closure_conversion_rate"] == 0.333333
+    assert conversion["capture_coverage_rate"] == 0.666667
+    assert escalation["posture"] in {"elevated", "critical"}
+    assert escalation["trigger_count"] == 2
+
+
+def test_capture_handoff_outcome_records_event_and_returns_updated_learning(monkeypatch) -> None:
+    class _FakeStore:
+        def __init__(self) -> None:
+            self.capture_event_payloads: list[dict[str, object]] = []
+            self.object_payloads: list[dict[str, object]] = []
+
+        def create_continuity_capture_event(
+            self,
+            *,
+            raw_content: str,
+            explicit_signal: str,
+            admission_posture: str,
+            admission_reason: str,
+        ) -> dict[str, object]:
+            self.capture_event_payloads.append(
+                {
+                    "raw_content": raw_content,
+                    "explicit_signal": explicit_signal,
+                    "admission_posture": admission_posture,
+                    "admission_reason": admission_reason,
+                }
+            )
+            return {"id": UUID("11111111-1111-4111-8111-111111111111")}
+
+        def create_continuity_object(
+            self,
+            *,
+            capture_event_id: UUID,
+            object_type: str,
+            status: str,
+            title: str,
+            body: dict[str, object],
+            provenance: dict[str, object],
+            confidence: float,
+        ) -> dict[str, object]:
+            self.object_payloads.append(
+                {
+                    "capture_event_id": capture_event_id,
+                    "object_type": object_type,
+                    "status": status,
+                    "title": title,
+                    "body": body,
+                    "provenance": provenance,
+                    "confidence": confidence,
+                }
+            )
+            return {
+                "id": UUID("44444444-4444-4444-8444-444444444444"),
+                "capture_event_id": capture_event_id,
+                "created_at": datetime(2026, 4, 7, 9, 30, tzinfo=UTC),
+                "updated_at": datetime(2026, 4, 7, 9, 30, tzinfo=UTC),
+            }
+
+    first_brief = {
+        "routed_handoff_items": [
+            {
+                "handoff_rank": 1,
+                "handoff_item_id": "handoff-1",
+                "title": "Next Action: Ship dashboard",
+                "source_kind": "recommended_next_action",
+                "recommendation_action": "execute_next_action",
+                "route_target_order": ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+                "available_route_targets": ["task_workflow_draft", "approval_workflow_draft"],
+                "routed_targets": ["task_workflow_draft"],
+                "is_routed": True,
+                "task_workflow_draft_routed": True,
+                "approval_workflow_draft_routed": False,
+                "follow_up_draft_only_routed": False,
+                "follow_up_draft_only_applicable": False,
+                "task_draft": {
+                    "status": "draft",
+                    "mode": "governed_request_draft",
+                    "approval_required": True,
+                    "auto_execute": False,
+                    "source_handoff_item_id": "handoff-1",
+                    "title": "Next Action: Ship dashboard",
+                    "summary": "Draft-only governed request.",
+                    "target": {"thread_id": "thread-1", "task_id": None, "project": None, "person": None},
+                    "request": {
+                        "action": "execute_next_action",
+                        "scope": "chief_of_staff_priority",
+                        "domain_hint": "planning",
+                        "risk_hint": "governed_handoff",
+                        "attributes": {},
+                    },
+                    "rationale": "fixture rationale",
+                    "provenance_references": [],
+                },
+                "approval_draft": {
+                    "status": "draft_only",
+                    "mode": "approval_request_draft",
+                    "decision": "approval_required",
+                    "approval_required": True,
+                    "auto_submit": False,
+                    "source_handoff_item_id": "handoff-1",
+                    "request": {
+                        "action": "execute_next_action",
+                        "scope": "chief_of_staff_priority",
+                        "domain_hint": "planning",
+                        "risk_hint": "governed_handoff",
+                        "attributes": {},
+                    },
+                    "reason": "approval required",
+                    "required_checks": ["operator_review_handoff_artifact"],
+                    "provenance_references": [],
+                },
+                "last_routing_transition": None,
+            }
+        ],
+        "handoff_outcomes": [],
+    }
+    second_brief = {
+        "handoff_outcome_summary": {
+            "returned_count": 1,
+            "total_count": 1,
+            "latest_total_count": 1,
+            "status_counts": {
+                "reviewed": 0,
+                "approved": 0,
+                "rejected": 0,
+                "rewritten": 0,
+                "executed": 1,
+                "ignored": 0,
+                "expired": 0,
+            },
+            "latest_status_counts": {
+                "reviewed": 0,
+                "approved": 0,
+                "rejected": 0,
+                "rewritten": 0,
+                "executed": 1,
+                "ignored": 0,
+                "expired": 0,
+            },
+            "status_order": ["reviewed", "approved", "rejected", "rewritten", "executed", "ignored", "expired"],
+            "order": ["created_at_desc", "id_desc"],
+        },
+        "handoff_outcomes": [],
+        "closure_quality_summary": {
+            "posture": "healthy",
+            "reason": "Closed-loop outcomes are leading with bounded unresolved and ignored outcomes.",
+            "closed_loop_count": 1,
+            "unresolved_count": 0,
+            "rejected_count": 0,
+            "ignored_count": 0,
+            "expired_count": 0,
+            "closure_rate": 1.0,
+            "explanation": "Closure quality uses latest immutable outcomes.",
+        },
+        "conversion_signal_summary": {
+            "total_handoff_count": 1,
+            "latest_outcome_count": 1,
+            "executed_count": 1,
+            "approved_count": 0,
+            "reviewed_count": 0,
+            "rewritten_count": 0,
+            "rejected_count": 0,
+            "ignored_count": 0,
+            "expired_count": 0,
+            "recommendation_to_execution_conversion_rate": 1.0,
+            "recommendation_to_closure_conversion_rate": 1.0,
+            "capture_coverage_rate": 1.0,
+            "explanation": "Conversion signals are derived from latest immutable outcomes.",
+        },
+        "stale_ignored_escalation_posture": {
+            "posture": "watch",
+            "reason": "No stale queue pressure or ignored/expired latest outcomes are currently detected.",
+            "stale_queue_count": 0,
+            "ignored_count": 0,
+            "expired_count": 0,
+            "trigger_count": 0,
+            "guidance_posture_explanation": "Guidance posture is derived from stale queue load.",
+            "supporting_signals": [],
+        },
+    }
+
+    compile_calls = {"count": 0}
+
+    def fake_compile(*args, **kwargs):
+        compile_calls["count"] += 1
+        if compile_calls["count"] == 1:
+            return {"brief": first_brief}
+        return {"brief": second_brief}
+
+    monkeypatch.setattr(chief, "compile_chief_of_staff_priority_brief", fake_compile)
+
+    store = _FakeStore()
+    response = chief.capture_chief_of_staff_handoff_outcome(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        request=ChiefOfStaffHandoffOutcomeCaptureInput(
+            handoff_item_id="handoff-1",
+            outcome_status="executed",
+            thread_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        ),
+    )
+
+    assert compile_calls["count"] == 2
+    assert store.capture_event_payloads
+    assert store.object_payloads
+    assert store.object_payloads[0]["body"]["kind"] == "chief_of_staff_handoff_outcome"
+    assert response["handoff_outcome"]["handoff_item_id"] == "handoff-1"
+    assert response["handoff_outcome"]["outcome_status"] == "executed"
+    assert response["handoff_outcome_summary"]["latest_status_counts"]["executed"] == 1
+    assert response["closure_quality_summary"]["posture"] == "healthy"
+    assert response["conversion_signal_summary"]["recommendation_to_execution_conversion_rate"] == 1.0

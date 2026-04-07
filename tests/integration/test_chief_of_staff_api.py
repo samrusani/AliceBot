@@ -362,6 +362,14 @@ def test_chief_of_staff_priority_brief_is_deterministic_and_trust_aware(
         "handoff_item_id_asc",
     ]
     assert brief["handoff_review_actions"] == []
+    assert brief["handoff_outcome_summary"]["total_count"] == 0
+    assert brief["handoff_outcome_summary"]["latest_total_count"] == 0
+    assert brief["closure_quality_summary"]["posture"] == "insufficient_signal"
+    assert brief["conversion_signal_summary"]["total_handoff_count"] == len(brief["handoff_items"])
+    assert brief["conversion_signal_summary"]["latest_outcome_count"] == 0
+    assert brief["stale_ignored_escalation_posture"]["supporting_signals"]
+    assert brief["summary"]["handoff_outcome_total_count"] == 0
+    assert brief["summary"]["handoff_outcome_latest_count"] == 0
     assert brief["execution_routing_summary"]["total_handoff_count"] == len(brief["handoff_items"])
     assert brief["execution_routing_summary"]["routed_handoff_count"] == 0
     assert brief["execution_routing_summary"]["route_target_order"] == [
@@ -586,6 +594,197 @@ def test_chief_of_staff_execution_routing_action_updates_routing_audit(
         item["handoff_item_id"] == handoff_item_id and "task_workflow_draft" in item["routed_targets"]
         for item in refreshed_brief["routed_handoff_items"]
     )
+
+
+def test_chief_of_staff_handoff_outcome_capture_updates_closure_and_conversion_rollups(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="chief-of-staff-handoff-outcomes@example.com")
+    thread_id = UUID("f1f1f1f1-f1f1-4f1f-8f1f-f1f1f1f1f1f1")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        capture = store.create_continuity_capture_event(
+            raw_content="Next Action: Outcome seam validation",
+            explicit_signal="next_action",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_next_action",
+        )
+        continuity_object = store.create_continuity_object(
+            capture_event_id=capture["id"],
+            object_type="NextAction",
+            status="active",
+            title="Next Action: Outcome seam validation",
+            body={"action_text": "Outcome seam validation"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["event-next"]},
+            confidence=0.95,
+        )
+
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=continuity_object["id"],
+        created_at=datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    brief_status, brief_payload = invoke_request(
+        "GET",
+        "/v0/chief-of-staff",
+        query_params={
+            "user_id": str(user_id),
+            "thread_id": str(thread_id),
+            "limit": "5",
+        },
+    )
+    assert brief_status == 200
+    handoff_item_id = brief_payload["brief"]["handoff_items"][0]["handoff_item_id"]
+
+    routing_status, _routing_payload = invoke_request(
+        "POST",
+        "/v0/chief-of-staff/execution-routing-actions",
+        payload={
+            "user_id": str(user_id),
+            "handoff_item_id": handoff_item_id,
+            "route_target": "task_workflow_draft",
+            "thread_id": str(thread_id),
+            "note": "route for outcome capture test",
+        },
+    )
+    assert routing_status == 200
+
+    outcome_status, outcome_payload = invoke_request(
+        "POST",
+        "/v0/chief-of-staff/handoff-outcomes",
+        payload={
+            "user_id": str(user_id),
+            "handoff_item_id": handoff_item_id,
+            "outcome_status": "executed",
+            "thread_id": str(thread_id),
+            "note": "explicit execution outcome",
+        },
+    )
+    assert outcome_status == 200
+    assert outcome_payload["handoff_outcome"]["handoff_item_id"] == handoff_item_id
+    assert outcome_payload["handoff_outcome"]["outcome_status"] == "executed"
+    assert outcome_payload["handoff_outcome_summary"]["latest_status_counts"]["executed"] >= 1
+    assert outcome_payload["closure_quality_summary"]["closed_loop_count"] >= 1
+    assert outcome_payload["conversion_signal_summary"]["executed_count"] >= 1
+    assert outcome_payload["conversion_signal_summary"]["recommendation_to_execution_conversion_rate"] >= 0.0
+    assert outcome_payload["stale_ignored_escalation_posture"]["supporting_signals"]
+
+    refreshed_status, refreshed_brief_payload = invoke_request(
+        "GET",
+        "/v0/chief-of-staff",
+        query_params={
+            "user_id": str(user_id),
+            "thread_id": str(thread_id),
+            "limit": "5",
+        },
+    )
+    assert refreshed_status == 200
+    refreshed_brief = refreshed_brief_payload["brief"]
+    assert refreshed_brief["handoff_outcomes"]
+    assert refreshed_brief["handoff_outcomes"][0]["handoff_item_id"] == handoff_item_id
+    assert refreshed_brief["handoff_outcome_summary"]["latest_status_counts"]["executed"] >= 1
+    assert refreshed_brief["conversion_signal_summary"]["executed_count"] >= 1
+
+
+def test_chief_of_staff_handoff_outcome_capture_rejects_invalid_and_unrouted_or_out_of_scope_items(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="chief-of-staff-handoff-outcomes-negative@example.com")
+    thread_id = UUID("a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        capture = store.create_continuity_capture_event(
+            raw_content="Next Action: Outcome validation negative-path coverage",
+            explicit_signal="next_action",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_next_action",
+        )
+        continuity_object = store.create_continuity_object(
+            capture_event_id=capture["id"],
+            object_type="NextAction",
+            status="active",
+            title="Next Action: Outcome validation negative-path coverage",
+            body={"action_text": "Outcome validation negative-path coverage"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["event-next-negative"]},
+            confidence=0.95,
+        )
+
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=continuity_object["id"],
+        created_at=datetime(2026, 4, 1, 11, 0, tzinfo=UTC),
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    brief_status, brief_payload = invoke_request(
+        "GET",
+        "/v0/chief-of-staff",
+        query_params={
+            "user_id": str(user_id),
+            "thread_id": str(thread_id),
+            "limit": "5",
+        },
+    )
+    assert brief_status == 200
+    handoff_item_id = brief_payload["brief"]["handoff_items"][0]["handoff_item_id"]
+
+    invalid_status_code, invalid_status_payload = invoke_request(
+        "POST",
+        "/v0/chief-of-staff/handoff-outcomes",
+        payload={
+            "user_id": str(user_id),
+            "handoff_item_id": handoff_item_id,
+            "outcome_status": "invalid_status",
+            "thread_id": str(thread_id),
+            "note": "invalid status should fail",
+        },
+    )
+    assert invalid_status_code == 400
+    assert "outcome_status must be one of" in invalid_status_payload["detail"]
+
+    unrouted_status_code, unrouted_status_payload = invoke_request(
+        "POST",
+        "/v0/chief-of-staff/handoff-outcomes",
+        payload={
+            "user_id": str(user_id),
+            "handoff_item_id": handoff_item_id,
+            "outcome_status": "executed",
+            "thread_id": str(thread_id),
+            "note": "unrouted handoff should fail",
+        },
+    )
+    assert unrouted_status_code == 400
+    assert "has no routed targets yet" in unrouted_status_payload["detail"]
+
+    out_of_scope_status_code, out_of_scope_status_payload = invoke_request(
+        "POST",
+        "/v0/chief-of-staff/handoff-outcomes",
+        payload={
+            "user_id": str(user_id),
+            "handoff_item_id": "handoff-item-outside-scope",
+            "outcome_status": "executed",
+            "thread_id": str(thread_id),
+            "note": "out-of-scope handoff should fail",
+        },
+    )
+    assert out_of_scope_status_code == 400
+    assert "was not found in the scoped deterministic routed handoff list" in out_of_scope_status_payload["detail"]
 
 
 def test_chief_of_staff_recommendation_outcome_capture_is_auditable_and_updates_learning(

@@ -1447,6 +1447,12 @@ export type ChiefOfStaffPrioritySummary = {
   handoff_queue_state_order: ChiefOfStaffHandoffQueueLifecycleState[];
   handoff_queue_group_order: ChiefOfStaffHandoffQueueLifecycleState[];
   handoff_queue_item_order: string[];
+  handoff_outcome_total_count: number;
+  handoff_outcome_latest_count: number;
+  handoff_outcome_executed_count: number;
+  handoff_outcome_ignored_count: number;
+  closure_quality_posture: ChiefOfStaffClosureQualityPosture;
+  stale_ignored_escalation_posture: ChiefOfStaffEscalationPosture;
 };
 
 export type ChiefOfStaffPreparationArtifactItem = {
@@ -1551,6 +1557,15 @@ export type ChiefOfStaffHandoffReviewAction =
   | "mark_executed"
   | "mark_stale"
   | "mark_expired";
+export type ChiefOfStaffHandoffOutcomeStatus =
+  | "reviewed"
+  | "approved"
+  | "rejected"
+  | "rewritten"
+  | "executed"
+  | "ignored"
+  | "expired";
+export type ChiefOfStaffClosureQualityPosture = "insufficient_signal" | "healthy" | "watch" | "critical";
 
 export type ChiefOfStaffWeeklyReviewBrief = {
   scope: ContinuityRecallSummary["filters"];
@@ -1834,6 +1849,69 @@ export type ChiefOfStaffHandoffQueueSummary = {
   review_action_order: ChiefOfStaffHandoffReviewAction[];
 };
 
+export type ChiefOfStaffHandoffOutcomeRecord = {
+  id: string;
+  capture_event_id: string;
+  handoff_item_id: string;
+  outcome_status: ChiefOfStaffHandoffOutcomeStatus;
+  previous_outcome_status: ChiefOfStaffHandoffOutcomeStatus | null;
+  is_latest_outcome: boolean;
+  reason: string;
+  note: string | null;
+  provenance_references: ContinuityRecallProvenanceReference[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChiefOfStaffHandoffOutcomeSummary = {
+  returned_count: number;
+  total_count: number;
+  latest_total_count: number;
+  status_counts: Record<ChiefOfStaffHandoffOutcomeStatus, number>;
+  latest_status_counts: Record<ChiefOfStaffHandoffOutcomeStatus, number>;
+  status_order: ChiefOfStaffHandoffOutcomeStatus[];
+  order: string[];
+};
+
+export type ChiefOfStaffClosureQualitySummary = {
+  posture: ChiefOfStaffClosureQualityPosture;
+  reason: string;
+  closed_loop_count: number;
+  unresolved_count: number;
+  rejected_count: number;
+  ignored_count: number;
+  expired_count: number;
+  closure_rate: number;
+  explanation: string;
+};
+
+export type ChiefOfStaffConversionSignalSummary = {
+  total_handoff_count: number;
+  latest_outcome_count: number;
+  executed_count: number;
+  approved_count: number;
+  reviewed_count: number;
+  rewritten_count: number;
+  rejected_count: number;
+  ignored_count: number;
+  expired_count: number;
+  recommendation_to_execution_conversion_rate: number;
+  recommendation_to_closure_conversion_rate: number;
+  capture_coverage_rate: number;
+  explanation: string;
+};
+
+export type ChiefOfStaffStaleIgnoredEscalationPosture = {
+  posture: ChiefOfStaffEscalationPosture;
+  reason: string;
+  stale_queue_count: number;
+  ignored_count: number;
+  expired_count: number;
+  trigger_count: number;
+  guidance_posture_explanation: string;
+  supporting_signals: string[];
+};
+
 export type ChiefOfStaffPriorityBrief = {
   assembly_version: string;
   scope: ContinuityRecallSummary["filters"];
@@ -1858,6 +1936,11 @@ export type ChiefOfStaffPriorityBrief = {
   handoff_queue_summary: ChiefOfStaffHandoffQueueSummary;
   handoff_queue_groups: ChiefOfStaffHandoffQueueGroups;
   handoff_review_actions: ChiefOfStaffHandoffReviewActionRecord[];
+  handoff_outcome_summary: ChiefOfStaffHandoffOutcomeSummary;
+  handoff_outcomes: ChiefOfStaffHandoffOutcomeRecord[];
+  closure_quality_summary: ChiefOfStaffClosureQualitySummary;
+  conversion_signal_summary: ChiefOfStaffConversionSignalSummary;
+  stale_ignored_escalation_posture: ChiefOfStaffStaleIgnoredEscalationPosture;
   execution_routing_summary: ChiefOfStaffExecutionRoutingSummary;
   routed_handoff_items: ChiefOfStaffRoutedHandoffItem[];
   routing_audit_trail: ChiefOfStaffExecutionRoutingAuditRecord[];
@@ -1925,6 +2008,26 @@ export type ChiefOfStaffExecutionRoutingActionCaptureResult = {
   routed_handoff_items: ChiefOfStaffRoutedHandoffItem[];
   routing_audit_trail: ChiefOfStaffExecutionRoutingAuditRecord[];
   execution_readiness_posture: ChiefOfStaffExecutionReadinessPosture;
+};
+
+export type ChiefOfStaffHandoffOutcomeCapturePayload = {
+  user_id: string;
+  handoff_item_id: string;
+  outcome_status: ChiefOfStaffHandoffOutcomeStatus;
+  note?: string | null;
+  thread_id?: string | null;
+  task_id?: string | null;
+  project?: string | null;
+  person?: string | null;
+};
+
+export type ChiefOfStaffHandoffOutcomeCaptureResult = {
+  handoff_outcome: ChiefOfStaffHandoffOutcomeRecord;
+  handoff_outcome_summary: ChiefOfStaffHandoffOutcomeSummary;
+  handoff_outcomes: ChiefOfStaffHandoffOutcomeRecord[];
+  closure_quality_summary: ChiefOfStaffClosureQualitySummary;
+  conversion_signal_summary: ChiefOfStaffConversionSignalSummary;
+  stale_ignored_escalation_posture: ChiefOfStaffStaleIgnoredEscalationPosture;
 };
 
 export type ContinuityOpenLoopReviewActionPayload = {
@@ -2582,6 +2685,20 @@ export function captureChiefOfStaffExecutionRoutingAction(
   return requestJson<ChiefOfStaffExecutionRoutingActionCaptureResult>(
     apiBaseUrl,
     "/v0/chief-of-staff/execution-routing-actions",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function captureChiefOfStaffHandoffOutcome(
+  apiBaseUrl: string,
+  payload: ChiefOfStaffHandoffOutcomeCapturePayload,
+) {
+  return requestJson<ChiefOfStaffHandoffOutcomeCaptureResult>(
+    apiBaseUrl,
+    "/v0/chief-of-staff/handoff-outcomes",
     {
       method: "POST",
       body: JSON.stringify(payload),

@@ -5,13 +5,15 @@
 - The canonical baseline remains through Phase 3 Sprint 9.
 - Phase 4 release-control layer remains the canonical gate ownership compatibility baseline.
 - Active Sprint focus is Phase 4 Sprint 14.
-- Active sprint focus is Phase 8 Sprint 31 governed execution routing.
+- Active sprint focus is Phase 8 Sprint 32 outcome learning and closure quality.
 - Earlier Phase 4 work is already delivered: task-run linkage to approvals/executions, idempotent proxy execution replay guards, approval pause/resume continuity for linked runs, run transition observability, explicit stop reasons, bounded retries with persisted posture, explicit failure classes, and deterministic Phase 4 gate runners.
 - Phase 4 Sprint 14-19 release-control/sign-off delivery is shipped baseline, and Phase 5 Sprint 17-20 continuity delivery is shipped baseline.
 - Latest shipped post-Phase-5 packet is P6-S24 trust dashboard and quality release evidence.
 - P8-S29 chief-of-staff action handoff artifacts are shipped baseline.
 - P8-S30 chief-of-staff handoff queue and operational review is shipped baseline.
-- Active post-Phase-7 packet is P8-S31 governed execution routing.
+- P8-S31 chief-of-staff governed execution routing is shipped baseline.
+- P8-S32 chief-of-staff outcome learning and closure quality implementation is now in place for the active sprint packet.
+- Active post-Phase-7 packet is P8-S32 outcome learning and closure quality.
 - Phase 8 planning anchors are:
   - `docs/phase8-product-spec.md`
   - `docs/phase8-sprint-29-32-plan.md`
@@ -60,6 +62,11 @@
   - `POST /v0/chief-of-staff/execution-routing-actions` captures explicit routing transitions into governed draft targets (`task_workflow_draft`, `approval_workflow_draft`, `follow_up_draft_only`).
   - routing transitions are explicit and auditable (`routed`, `reaffirmed`) while preserving approval-required draft-only posture.
   - `/chief-of-staff` now includes a dedicated execution routing panel with readiness posture visibility, route controls, and auditable transition history.
+- Phase 8 Sprint 32 chief-of-staff outcome-learning and closure-quality implementation is now in place:
+  - `GET /v0/chief-of-staff` now also returns deterministic `handoff_outcome_summary`, `handoff_outcomes`, `closure_quality_summary`, `conversion_signal_summary`, and `stale_ignored_escalation_posture`.
+  - `POST /v0/chief-of-staff/handoff-outcomes` captures explicit routed-handoff outcomes (`reviewed`, `approved`, `rejected`, `rewritten`, `executed`, `ignored`, `expired`) as immutable continuity records.
+  - outcome rollups are deterministic and latest-state driven per handoff item, with explicit closure-quality, conversion-signal, and stale/ignored escalation posture explanations.
+  - `/chief-of-staff` now includes a dedicated outcome-learning panel with explicit outcome-capture controls and closure/conversion/escalation visibility.
 - Phase 5 Sprint 17 adds typed continuity capture seams:
   - `POST /v0/continuity/captures` always appends an immutable capture event and conservatively admits typed durable objects.
   - `GET /v0/continuity/captures` returns inbox rows with admission posture (`DERIVED`/`TRIAGE`) and optional derived object summary.
@@ -138,7 +145,8 @@
   - P7-S28 weekly review and outcome learning is shipped baseline.
   - P8-S29 chief-of-staff action handoff artifacts are shipped baseline.
   - P8-S30 chief-of-staff handoff queue and operational review is shipped baseline.
-  - active post-P7 scope is P8-S31 governed execution routing.
+  - P8-S31 chief-of-staff governed execution routing is shipped baseline.
+  - active post-P7 scope is P8-S32 outcome learning and closure quality.
 
 ## Repo Evidence To Trust
 
