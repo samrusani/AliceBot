@@ -49,7 +49,7 @@ def test_trace_methods_use_expected_queries_and_payload_serialization() -> None:
     cursor = RecordingCursor(
         fetchone_results=[
             {"id": user_id, "email": "owner@example.com", "display_name": "Owner"},
-            {"id": thread_id, "user_id": user_id, "title": "Thread"},
+            {"id": thread_id, "user_id": user_id, "title": "Thread", "agent_profile_id": "assistant_default"},
             {"id": trace_id, "user_id": user_id, "thread_id": thread_id, "kind": "context.compile"},
             {
                 "id": uuid4(),
@@ -100,7 +100,7 @@ def test_trace_methods_use_expected_queries_and_payload_serialization() -> None:
     )
     assert cursor.executed[1] == (
         """
-                SELECT id, user_id, title, created_at, updated_at
+                SELECT id, user_id, title, agent_profile_id, created_at, updated_at
                 FROM threads
                 WHERE id = %s
                 """,

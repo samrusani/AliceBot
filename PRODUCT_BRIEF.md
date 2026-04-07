@@ -2,76 +2,82 @@
 
 ## Product Summary
 
-AliceBot is a private, permissioned personal AI operating system for a single primary user. It is designed to preserve durable personal context, retrieve the right context at the right time, and move safely from conversation to action without hiding why it acted.
+Alice is a local-first memory and continuity layer for AI agents. It preserves durable context, compiles useful working context on demand, and improves future recall when corrected.
 
 ## Problem
 
-General-purpose assistants forget preferences, prior decisions, and relationships across sessions. They also make it difficult to audit why they answered a certain way or whether a tool action was properly governed. The result is low trust, repeated user effort, and unsafe action handling.
+General-purpose assistants and agent stacks are still poor at long-horizon continuity. They forget decisions, lose open loops, require repeated context restatement, and often treat correction as transient instead of durable.
 
 ## Target Users
 
-- Primary v1 user: one power user with recurring life and work workflows.
-- Delivery model: a human lead working with AI builders and reviewers.
-- Architectural assumption: v1 UX is single-user, but the data model must support strict per-user isolation from day one.
+- Technical individual users who want a local memory and continuity engine.
+- Developers and agent builders who need better recall, resumption, and correction-aware memory.
+- Users with existing notes, chat exports, or agent workspaces they want to import into a durable continuity layer.
 
 ## Core Value Proposition
 
-- Durable memory for preferences, relationships, prior decisions, and recurring tasks.
-- Deterministic context compilation instead of ad hoc prompt stuffing.
-- Safe action orchestration with policy checks, approvals, and budgets.
-- Clear explainability through traces, memory evidence, and tool history.
+- Durable memory and continuity across sessions.
+- Deterministic recall and resumption briefs.
+- Open-loop visibility for blocked, waiting, and next-action states.
+- Correction-aware retrieval that improves after edits.
+- Interoperability through CLI, MCP, and external adapters instead of closed-product lock-in.
 
-## V1 Scope
+## Phase 9 Scope Staging
 
-- Web-based chat and task orchestration.
-- Immutable thread and session continuity.
-- Structured memory with admission controls, revision history, and user review.
-- Entity and relationship tracking for people, merchants, products, projects, and routines.
-- Hybrid retrieval across memories, entities, relationships, and documents.
-- Policy engine, tool proxy, approval workflows, and task budgets.
-- Scoped task workspaces and artifact storage.
-- Read-only document ingestion plus read-only Gmail and Calendar connectors.
-- Hot consolidation for immediate truth updates and cold consolidation for cleanup and summarization.
-- Explain-why views for important responses and actions.
+### `P9-S33` (current sprint objective)
+
+- public-safe `alice-core` package boundary
+- one canonical local startup flow
+- deterministic sample-data load path
+- documented proof for one recall call and one resumption call from public docs
+
+### Follow-on (`P9-S34` to `P9-S38`)
+
+- CLI commands
+- MCP server
+- external adapter and broader importer set
+- evaluation harness expansion and launch assets
 
 ## Non-Goals
 
-- Autonomous side effects without user approval.
-- Multi-user collaboration UX in v1.
-- Mobile-first delivery.
-- Dedicated graph or vector infrastructure in v1.
-- Browser automation, write-capable connectors, proactive automations, and voice at launch.
+- Telegram or WhatsApp channels
+- hosted SaaS as a launch dependency
+- vertical-agent expansion
+- deep browser automation
+- autonomous external side effects without approval
+- broad connector write actions
+- enterprise platform expansion in v0.1
 
 ## Key User Journeys
 
-1. Ask a question that depends on prior preferences, purchases, or relationships and get a context-aware answer without restating history.
-2. Correct a preference or fact and have the next turn reflect the new truth immediately.
-3. Inspect why the system answered or proposed an action by reviewing memories, retrieval choices, and tool traces.
-4. Run a repeat-purchase workflow that gathers prior context, proposes the order, pauses for approval, and records the outcome.
-5. Retrieve relevant context from documents, Gmail, or Calendar without granting write access.
+1. Install Alice locally and run a first recall query in under 30 minutes.
+2. Load sample data and generate a useful resumption brief.
+3. Correct a memory once and verify future retrieval uses the new truth.
+4. Inspect open loops and recent decisions without re-reading raw history.
 
 ## Constraints
 
-- Single-user product experience, multi-tenant-safe architecture.
-- Web-first v1.
-- Explicit approval for consequential actions.
-- Operational simplicity beats platform sprawl in v1.
-- Memory quality, retrieval quality, and explainability are ship-gating concerns.
+- Local-first deployment for v0.1.
+- Deterministic, provenance-backed outputs.
+- Correction must update future behavior.
+- Consequential execution remains approval-bounded.
+- Public interop surface must stay small and stable before broadening.
 
 ## Success Criteria
 
-- The system recalls relevant preferences, past purchases, relationships, and prior decisions without repeated user restatement.
-- The repeat magnesium reorder workflow succeeds end to end with approval gating and memory write-back.
-- Every consequential action is explainable through trace, memory, rule, and tool evidence.
-- Purchases, emails, bookings, and other side effects never occur without explicit approval.
-- Standard retrieval-plus-response interactions reach p95 latency under 5 seconds.
-- Prompt and cache reuse exceeds 70% on repeated patterns.
-- Memory extraction precision exceeds 80% at ship.
+- A technical user can install Alice locally in under 30 minutes from docs.
+- Sample data can be loaded from one deterministic command path.
+- One recall call and one resumption call work end to end from documented setup.
+- Public boundaries are explicit enough that CLI and MCP layers can build without reopening package ambiguity.
 
 ## Product Non-Negotiables
 
-- The user stays in control of consequential actions.
-- Durable context must come from governed storage, not raw transcript stuffing.
-- Explainability is a product requirement, not a debugging feature.
-- Preference contradictions must be reflected immediately.
-- The repeat magnesium reorder scenario is the canonical v1 release-readiness validation scenario.
+- Durable context must come from governed storage, not transcript stuffing.
+- Corrections must improve future output.
+- Provenance must remain visible for recall and resumption outputs.
+- Public launch must not depend on unsafe autonomy or broad connector side effects.
+- Alice should remain useful as a standalone local continuity engine even when no external agent is attached.
+
+## Legacy Compatibility Marker
+
+This repo retains the canonical v1 release-readiness validation scenario for historical quality traceability.
