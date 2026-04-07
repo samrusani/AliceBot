@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 9 Sprint 35 (P9-S35): MCP Server
+Phase 9 Sprint 36 (P9-S36): OpenClaw Adapter
 
 ## Sprint Type
 
@@ -10,7 +10,7 @@ feature
 
 ## Sprint Reason
 
-`P9-S33` established the public-safe `alice-core` package boundary and startup path. `P9-S34` established the deterministic local CLI contract. The next non-redundant seam is exposing that same continuity contract through a narrow MCP server so external assistants can use Alice without reopening core behavior.
+`P9-S33` shipped the public-safe `alice-core` boundary and startup path. `P9-S34` shipped the deterministic local CLI contract. `P9-S35` shipped the narrow MCP transport. The next non-redundant seam is proving Alice is agent-agnostic by wiring one concrete external adapter against the already-shipped CLI/MCP continuity contract.
 
 ## Planning Anchors
 
@@ -21,23 +21,24 @@ feature
 - `docs/adr/ADR-001-public-core-package-boundary.md`
 - `docs/adr/ADR-002-public-runtime-baseline.md`
 - `docs/adr/ADR-003-mcp-tool-surface-contract.md`
+- `docs/adr/ADR-004-openclaw-integration-boundary.md` if introduced
 
 ## Sprint Objective
 
-Ship a small deterministic MCP server for Alice continuity flows so one external MCP-capable client can call capture, recall, resume, open-loop, review, correction, and context-pack tools against the shipped local `alice-core` runtime.
+Ship the first OpenClaw adapter path so a sample or real OpenClaw workspace can be imported into Alice, queried through Alice recall/resumption, and optionally consumed through the shipped MCP wedge without changing Alice continuity semantics.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase9-sprint-35-mcp-server`
+- Branch Name: `codex/phase9-sprint-36-openclaw-adapter`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint Matters
 
-- It is the first real interop transport for external assistants.
-- It should inherit the already-shipped `P9-S34` CLI semantics instead of inventing a second behavior model.
-- It turns Alice from a local tool into a reusable memory layer for external agent clients.
+- It is the first proof that Alice works as an interoperable memory layer, not just a standalone local tool.
+- It validates the Phase 9 thesis using one real external agent stack instead of abstract compatibility claims.
+- It sets the adapter/import boundary ahead of broader importer work in `P9-S37`.
 
 ## Redundancy Guard
 
@@ -49,102 +50,101 @@ Ship a small deterministic MCP server for Alice continuity flows so one external
   - Phase 8 operational chief-of-staff handoff, queue, routing, and outcome-learning seams.
   - `P9-S33` public-safe packaging, startup path, and sample-data baseline.
   - `P9-S34` deterministic local CLI contract for continuity workflows.
-- Required now (`P9-S35`):
-  - narrow MCP transport for the shipped continuity contract
-  - deterministic tool schemas and serialization
-  - one local client interoperability proof
-  - parity tests between MCP outputs and shipped CLI/core behavior where relevant
-- Explicitly out of `P9-S35`:
-  - OpenClaw adapter implementation
-  - importer expansion
-  - hosted auth or remote deployment systems
-  - widening the tool surface beyond the ADR-defined initial wedge
-  - reopening `P9-S33` packaging or `P9-S34` CLI semantics unless transport parity exposes a real defect
+  - `P9-S35` deterministic MCP transport for the shipped continuity contract.
+- Required now (`P9-S36`):
+  - OpenClaw adapter/import boundary
+  - file-based import path for OpenClaw workspace or durable memory data
+  - imported provenance tagging and dedupe stance
+  - recall/resumption proof on imported OpenClaw material
+  - optional MCP augmentation proof using imported data through the shipped tool surface
+- Explicitly out of `P9-S36`:
+  - broad importer set beyond the OpenClaw adapter path
+  - widening the MCP tool surface
+  - hosted deployment or remote auth work
+  - launch assets / public release polish
+  - reopening CLI or MCP semantics unless adapter integration exposes a real parity defect
 
 ## Design Truth
 
-- MCP is a transport layer over the shipped Alice continuity contract, not a new product surface with different semantics.
-- Tool outputs must stay deterministic, provenance-backed, and narrowly scoped.
-- External clients should get the same essential behavior as the local CLI for the same dataset and scope.
-- The first MCP release should privilege stability and auditability over breadth.
+- OpenClaw integration should prove Alice can augment an external agent stack without becoming a generic platform wrapper.
+- The adapter should map external state into shipped Alice continuity objects with explicit provenance, not bypass Alice’s trust and correction model.
+- Imported material should remain queryable through the same recall/resumption semantics as native Alice data.
+- The adapter boundary should stay narrow enough that later importer work can generalize from it.
 
 ## Exact Surfaces In Scope
 
-- local MCP server entrypoint and runtime wiring
-- deterministic tool schemas for the initial ADR-backed tool set
-- transport wrappers for shipped continuity flows
-- context-pack output where it can be defined directly from shipped continuity seams
-- local auth/config model for MCP use on the documented startup path
-- docs and examples for one compatible MCP client
-- parity and transport tests for the scoped tool set
+- OpenClaw import/adapter module(s)
+- file-based input contract for OpenClaw workspace or durable memory export
+- import mapping into shipped Alice continuity objects
+- provenance tagging and dedupe behavior for imported material
+- one documented local demo path for import -> recall/resume
+- optional MCP augmentation proof against imported data
+- tests and fixtures for the adapter path
 
 ## Exact Files In Scope
 
 - `.ai/active/SPRINT_PACKET.md`
 - `.ai/handoff/CURRENT_STATE.md`
+- `ARCHITECTURE.md`
 - `README.md`
 - `ROADMAP.md`
-- `pyproject.toml`
-- `apps/api/src/alicebot_api/__init__.py`
-- `apps/api/src/alicebot_api/config.py`
-- `apps/api/src/alicebot_api/mcp_server.py` if introduced
-- `apps/api/src/alicebot_api/mcp_tools.py` if introduced
-- `apps/api/src/alicebot_api/mcp_models.py` if introduced
-- `apps/api/src/alicebot_api/cli.py` if parity-alignment fixes are required
-- `apps/api/src/alicebot_api/cli_formatting.py` if parity-alignment fixes are required
-- `apps/api/src/alicebot_api/continuity_capture.py`
-- `apps/api/src/alicebot_api/continuity_recall.py`
-- `apps/api/src/alicebot_api/continuity_resumption.py`
-- `apps/api/src/alicebot_api/continuity_open_loops.py`
-- `apps/api/src/alicebot_api/continuity_review.py`
-- `apps/api/src/alicebot_api/chief_of_staff.py` if `alice_context_pack` is implemented through existing brief assembly
-- `tests/unit/test_mcp.py` if introduced
-- `tests/integration/test_mcp_server.py` if introduced
-- `tests/integration/test_mcp_cli_parity.py` if introduced
+- `RULES.md`
+- `docs/phase9-sprint-33-38-plan.md`
+- `pyproject.toml` if adapter packaging entrypoints are introduced
+- `apps/api/src/alicebot_api/openclaw_adapter.py` if introduced
+- `apps/api/src/alicebot_api/openclaw_models.py` if introduced
+- `apps/api/src/alicebot_api/openclaw_import.py` if introduced
+- `apps/api/src/alicebot_api/mcp_tools.py` if parity-alignment is required
+- `apps/api/src/alicebot_api/continuity_capture.py` if adapter ingestion reuses capture helpers
+- `apps/api/src/alicebot_api/continuity_recall.py` if import parity fixes are required
+- `apps/api/src/alicebot_api/continuity_resumption.py` if import parity fixes are required
+- `apps/api/src/alicebot_api/store.py`
+- `scripts/load_openclaw_sample_data.py` if introduced
+- `scripts/load_openclaw_sample_data.sh` if introduced
+- `fixtures/openclaw/` if introduced
+- `docs/adr/ADR-004-openclaw-integration-boundary.md` if introduced
+- `.ai/archive/planning/2026-04-07-phase9-bootstrap/` if bootstrap planning state is archived for traceability
+- `docs/archive/planning/2026-04-07-phase9-bootstrap/` if canonical planning docs are archived for traceability
+- `tests/unit/test_openclaw_adapter.py` if introduced
+- `tests/integration/test_openclaw_import.py` if introduced
+- `tests/integration/test_openclaw_mcp_integration.py` if introduced
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## In Scope
 
-- support an initial MCP tool set aligned to ADR-003:
-  - `alice_capture`
-  - `alice_recall`
-  - `alice_resume`
-  - `alice_open_loops`
-  - `alice_recent_decisions`
-  - `alice_recent_changes`
-  - `alice_memory_review`
-  - `alice_memory_correct`
-  - `alice_context_pack`
-- define deterministic request/response shapes for those tools
-- make one local MCP client call recall and resume successfully
-- prove correction via MCP changes later retrieval behavior deterministically
-- document exact local MCP startup/use path without changing the canonical `P9-S33` runtime flow
+- define the first-class OpenClaw adapter boundary
+- import a sample or real OpenClaw workspace / durable memory export into Alice
+- preserve source provenance on imported material
+- make imported memory visible through Alice recall and resumption
+- document exact local import and demo steps
+- keep MCP augmentation proof limited to using the already-shipped tool surface on imported data
 
 ## Out Of Scope
 
-- OpenClaw or other adapters
-- broad tool-surface expansion beyond the ADR
-- hosted or remote auth systems
-- general-purpose agent execution tools
-- broad repo restructuring
-- replacing CLI as the reference behavior contract
+- generic importer framework for all sources
+- ChatGPT/Claude/markdown/CSV importer bundle
+- MCP tool-surface expansion
+- hosted adapter services
+- broad repo packaging changes
+- public launch polish and release assets
 
 ## Required Deliverables
 
-- packaged or runnable local MCP server entrypoint
-- deterministic initial tool schemas and handlers
-- one compatibility example for a real MCP client
-- parity evidence showing MCP reflects shipped Alice continuity behavior
-- synced docs and sprint reports
+- runnable OpenClaw adapter/import path
+- sample or documented real OpenClaw fixture path
+- provenance-preserving import mapping
+- recall/resumption proof against imported data
+- optional MCP proof against imported data if used to validate augmentation mode
+- synced docs, reports, and any new ADR boundary needed for the adapter
 
 ## Acceptance Criteria
 
-- one MCP-capable client can call `alice_recall` successfully against the local runtime
-- one MCP-capable client can call `alice_resume` successfully against the local runtime
-- correction through `alice_memory_correct` changes a later retrieval/result deterministically
-- MCP outputs remain narrow, deterministic, and provenance-backed
-- the MCP tool contract is stable enough that `P9-S36` and `P9-S37` can build on it without reopening transport semantics
+- a sample or real OpenClaw workspace can be imported through the documented path
+- imported material becomes queryable via Alice recall
+- imported material contributes useful output to Alice resumption briefs
+- imported provenance is explicit enough to distinguish adapter-ingested material from native Alice capture
+- if MCP augmentation is exercised, one shipped MCP tool path works successfully against imported data without widening the tool contract
 
 ## Required Commands
 
@@ -156,112 +156,115 @@ docker compose up -d
 ./scripts/load_sample_data.sh
 ./scripts/api_dev.sh
 curl -sS http://127.0.0.1:8000/healthz
-./.venv/bin/python -m alicebot_api --help
 ./.venv/bin/python -m pytest tests/unit tests/integration
 pnpm --dir apps/web test
 ```
 
-If a dedicated MCP server entrypoint or local MCP smoke command is introduced this sprint, it must be run and included in review evidence alongside one real client interoperability proof.
+If a dedicated OpenClaw import command or adapter loader is introduced this sprint, it must be run and included in review evidence together with at least one recall and one resumption proof against imported data.
 
 ## Required Acceptance Evidence
 
-- exact MCP startup path used during verification
-- exact client/config used for interoperability proof
-- one successful `alice_recall` tool call
-- one successful `alice_resume` tool call
-- one successful correction flow showing later retrieval changed deterministically
-- note of any intentionally deferred MCP ergonomics or auth concerns
+- exact OpenClaw input fixture or workspace path used during verification
+- exact import command/path used during verification
+- one successful recall example against imported data
+- one successful resumption example against imported data
+- note of import provenance and dedupe posture actually observed
+- if used, one successful shipped MCP tool call against imported data
 
 ## Implementation Constraints
 
-- preserve shipped P5/P6/P7/P8/P9-S33/P9-S34 semantics
-- keep the MCP surface narrow and ADR-aligned
-- keep transport payloads deterministic and easily diffable
-- do not introduce unsafe autonomous side effects
-- prefer parity with shipped CLI/core behavior over transport cleverness
+- preserve shipped P5/P6/P7/P8/P9-S33/P9-S34/P9-S35 semantics
+- do not bypass Alice continuity objects or correction semantics for imported data
+- keep the adapter narrow and specific to OpenClaw in this sprint
+- keep provenance explicit and deterministic
+- prefer an auditable import path over a “magic sync” abstraction
 
 ## Control Tower Task Cards
 
-### Task 1: MCP Entry and Schemas
+### Task 1: Adapter Boundary and Models
 
-Owner: platform/interop owner
+Owner: interop/adapter owner
 
 Write scope:
 
-- `pyproject.toml`
-- `apps/api/src/alicebot_api/__init__.py`
-- `apps/api/src/alicebot_api/mcp_server.py`
-- `apps/api/src/alicebot_api/mcp_tools.py`
-- `apps/api/src/alicebot_api/mcp_models.py`
+- `apps/api/src/alicebot_api/openclaw_adapter.py`
+- `apps/api/src/alicebot_api/openclaw_models.py`
+- `apps/api/src/alicebot_api/openclaw_import.py`
+- `docs/adr/ADR-004-openclaw-integration-boundary.md`
 
 Responsibilities:
 
-- define the runnable MCP server entrypoint
-- keep the tool surface narrow and stable
-- keep schema names and payloads deterministic
-- avoid leaking internal-only helper seams
+- define the OpenClaw import boundary
+- define supported file/input shapes for the first adapter pass
+- keep provenance and dedupe rules explicit
+- avoid drifting into generic importer-framework work
 
-### Task 2: Continuity Transport Wiring
+### Task 2: Continuity Mapping and Storage
 
 Owner: backend/runtime owner
 
 Write scope:
 
-- `apps/api/src/alicebot_api/config.py`
+- `apps/api/src/alicebot_api/store.py`
 - `apps/api/src/alicebot_api/continuity_capture.py`
 - `apps/api/src/alicebot_api/continuity_recall.py`
 - `apps/api/src/alicebot_api/continuity_resumption.py`
-- `apps/api/src/alicebot_api/continuity_open_loops.py`
-- `apps/api/src/alicebot_api/continuity_review.py`
-- `apps/api/src/alicebot_api/chief_of_staff.py`
+- `apps/api/src/alicebot_api/mcp_tools.py`
 
 Responsibilities:
 
-- map tool calls directly onto shipped continuity behavior
-- expose provenance/trust signals consistently
-- keep context-pack behavior grounded in shipped brief assembly
-- fix only true parity gaps exposed during transport integration
+- map imported OpenClaw material into shipped Alice continuity semantics
+- preserve deterministic retrieval/resumption behavior
+- expose imported provenance through recall/resumption/MCP where relevant
+- fix only true parity gaps exposed by the adapter
 
-### Task 3: Docs and Interop Example
+### Task 3: Fixtures, Demo Path, and Docs
 
 Owner: docs/integration owner
 
 Write scope:
 
+- `ARCHITECTURE.md`
 - `README.md`
 - `ROADMAP.md`
+- `RULES.md`
 - `.ai/handoff/CURRENT_STATE.md`
+- `docs/phase9-sprint-33-38-plan.md`
+- `fixtures/openclaw/`
+- `scripts/load_openclaw_sample_data.py`
+- `scripts/load_openclaw_sample_data.sh`
 
 Responsibilities:
 
-- document exact MCP startup path
-- document one compatible local client example
-- keep startup/sample-data instructions unchanged from `P9-S33`
-- make the next seam toward adapters/importers explicit
+- provide one reproducible local OpenClaw demo path
+- document exact import steps and expected outcomes
+- keep startup/sample-data guidance from `P9-S33` unchanged
+- keep architecture/rules/planning docs aligned with the shipped adapter boundary and importer posture
+- make the next seam toward broader importers/eval explicit
 
-### Task 4: Verification and Parity
+### Task 4: Verification and Interop Proof
 
 Owner: sprint integrator
 
 Write scope:
 
-- `tests/unit/test_mcp.py`
-- `tests/integration/test_mcp_server.py`
-- `tests/integration/test_mcp_cli_parity.py`
+- `tests/unit/test_openclaw_adapter.py`
+- `tests/integration/test_openclaw_import.py`
+- `tests/integration/test_openclaw_mcp_integration.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 Responsibilities:
 
-- prove recall/resume work through a real MCP client path
-- prove correction changes later retrieval deterministically
-- keep parity evidence explicit against shipped CLI/core behavior
-- keep scope hygiene explicit if support files are touched
+- prove import works against the documented fixture/workspace shape
+- prove recall/resumption work against imported data
+- prove any MCP augmentation path stays within the shipped tool contract
+- keep scope hygiene explicit if supporting files are touched
 
 ## Definition Of Done
 
-- `P9-S35` MCP server exists and is runnable from the documented local install
-- the initial ADR-backed tool surface is implemented and deterministic
-- one real client interoperability proof exists for recall and resume
+- `P9-S36` OpenClaw adapter/import path exists and is runnable from the documented local install
+- imported OpenClaw data is queryable through shipped Alice recall/resumption semantics
+- provenance and dedupe posture are explicit and reviewable
 - docs, tests, build report, and review report are aligned
-- no adapter or importer work leaks into the sprint
+- no broad importer-bundle or launch-polish work leaks into the sprint

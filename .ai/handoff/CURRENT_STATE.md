@@ -20,8 +20,8 @@
 
 ## Incomplete / At-Risk Areas
 
-- no external adapter/importer interop has shipped yet beyond local MCP
-- importer and adapter story is not yet public-ready
+- importer coverage is still limited to one shipped adapter path (OpenClaw)
+- broader importer story is not yet public-ready
 - OSS license finalization is still open
 
 ## Current Milestone
@@ -30,7 +30,7 @@ Phase 9: Alice Public Core and Agent Interop
 
 ## Latest State Summary
 
-`P9-S33`, `P9-S34`, and `P9-S35` are now shipped baselines:
+`P9-S33`, `P9-S34`, `P9-S35`, and `P9-S36` are now shipped baselines:
 
 - package boundary is documented around `alice-core`
 - canonical local startup path is documented and script-backed
@@ -54,12 +54,22 @@ Phase 9: Alice Public Core and Agent Interop
   - successful `alice_recall` and `alice_resume` calls
   - correction via `alice_memory_correct` changing subsequent retrieval deterministically
   - structured parity against shipped CLI/core behavior
+- OpenClaw adapter/import path exists for file-based workspace/export input:
+  - adapter modules: `openclaw_adapter.py`, `openclaw_models.py`, `openclaw_import.py`
+  - loader scripts: `./scripts/load_openclaw_sample_data.sh` and `load_openclaw_sample_data.py`
+  - deterministic fixture path: `fixtures/openclaw/workspace_v1.json`
+  - deterministic dedupe posture: workspace+payload fingerprint (repeat import returns noop duplicates)
+  - imported provenance is explicit via `source_kind=openclaw_import` and OpenClaw source metadata
+- OpenClaw interop proof is covered by tests for:
+  - import -> recall/resumption behavior on imported scope
+  - shipped MCP `alice_recall`/`alice_resume` usage over imported data without MCP surface expansion
+- ADR-004 defines the accepted OpenClaw integration boundary and scope constraints.
 
-The next active seam is `P9-S36`:
+The next active seam is `P9-S37`:
 
-- implement OpenClaw adapter boundary on top of shipped CLI/MCP continuity contract
+- expand from single-adapter proof to broader importer coverage and evaluation harness work
 - keep parity strict with existing deterministic continuity semantics
-- avoid widening MCP transport semantics while adapter boundary is established
+- avoid widening MCP transport semantics unless parity defects are found
 
 ## Critical Constraints
 
@@ -70,11 +80,11 @@ The next active seam is `P9-S36`:
 
 ## Immediate Next Move
 
-Execute `P9-S36` on top of the `P9-S33`/`P9-S34`/`P9-S35` boundary:
+Execute `P9-S37` on top of the shipped `P9-S36` boundary:
 
-- build the first OpenClaw adapter using the shipped MCP wedge
-- preserve deterministic continuity output semantics and correction parity
-- keep startup/sample-data path unchanged while adapter support is added
+- broaden importer coverage beyond OpenClaw using the same explicit provenance posture
+- add benchmark/evaluation harness evidence for import quality and correction-aware continuity outcomes
+- preserve startup/sample-data path and avoid MCP contract expansion unless needed for parity fixes
 
 ## Legacy Compatibility Markers
 
