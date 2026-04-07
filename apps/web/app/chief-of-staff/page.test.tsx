@@ -68,6 +68,7 @@ describe("ChiefOfStaffPage", () => {
     expect(screen.getByText("Fixture weekly review")).toBeInTheDocument();
     expect(screen.getByText("Fixture action handoff")).toBeInTheDocument();
     expect(screen.getByText("Fixture handoff queue")).toBeInTheDocument();
+    expect(screen.getByText("Fixture execution routing")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Confirm launch checklist owner").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Action type: execute_next_action").length).toBeGreaterThan(0);
     expect(screen.getByText("Follow-through supervision")).toBeInTheDocument();
@@ -645,6 +646,110 @@ describe("ChiefOfStaffPage", () => {
           },
         },
         handoff_review_actions: [],
+        execution_routing_summary: {
+          total_handoff_count: 1,
+          routed_handoff_count: 0,
+          unrouted_handoff_count: 1,
+          task_workflow_draft_count: 0,
+          approval_workflow_draft_count: 0,
+          follow_up_draft_only_count: 0,
+          route_target_order: ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+          routed_item_order: ["handoff_rank_asc", "handoff_item_id_asc"],
+          audit_order: ["created_at_desc", "id_desc"],
+          transition_order: ["routed", "reaffirmed"],
+          approval_required: true,
+          non_autonomous_guarantee:
+            "No task, approval, connector send, or external side effect is executed by this endpoint.",
+          reason:
+            "Routing transitions are explicit and auditable; task/approval/follow-up routes remain draft-only until separately submitted through governed workflows.",
+        },
+        routed_handoff_items: [
+          {
+            handoff_rank: 1,
+            handoff_item_id: "handoff-1-recommended_next_action-priority-live-1",
+            title: "Next Action: Send partner follow-up",
+            source_kind: "recommended_next_action",
+            recommendation_action: "execute_next_action",
+            route_target_order: ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+            available_route_targets: ["task_workflow_draft", "approval_workflow_draft"],
+            routed_targets: [],
+            is_routed: false,
+            task_workflow_draft_routed: false,
+            approval_workflow_draft_routed: false,
+            follow_up_draft_only_routed: false,
+            follow_up_draft_only_applicable: false,
+            task_draft: {
+              status: "draft",
+              mode: "governed_request_draft",
+              approval_required: true,
+              auto_execute: false,
+              source_handoff_item_id: "handoff-1-recommended_next_action-priority-live-1",
+              title: "Next Action: Send partner follow-up",
+              summary:
+                "Draft-only governed request assembled from chief-of-staff handoff artifacts; requires explicit approval before any execution.",
+              target: { thread_id: "thread-1", task_id: null, project: null, person: null },
+              request: {
+                action: "execute_next_action",
+                scope: "chief_of_staff_priority",
+                domain_hint: "planning",
+                risk_hint: "governed_handoff",
+                attributes: {},
+              },
+              rationale:
+                "Marked urgent because this item is a deterministic immediate focus from resumption signals.",
+              provenance_references: [
+                {
+                  source_kind: "continuity_capture_event",
+                  source_id: "capture-live-1",
+                },
+              ],
+            },
+            approval_draft: {
+              status: "draft_only",
+              mode: "approval_request_draft",
+              decision: "approval_required",
+              approval_required: true,
+              auto_submit: false,
+              source_handoff_item_id: "handoff-1-recommended_next_action-priority-live-1",
+              request: {
+                action: "execute_next_action",
+                scope: "chief_of_staff_priority",
+                domain_hint: "planning",
+                risk_hint: "governed_handoff",
+                attributes: {},
+              },
+              reason:
+                "Execution remains approval-bounded. This approval draft is artifact-only and must be explicitly submitted and resolved before any side effect.",
+              required_checks: [
+                "operator_review_handoff_artifact",
+                "submit_governed_approval_request",
+                "explicit_approval_resolution",
+              ],
+              provenance_references: [
+                {
+                  source_kind: "continuity_capture_event",
+                  source_id: "capture-live-1",
+                },
+              ],
+            },
+            last_routing_transition: null,
+          },
+        ],
+        routing_audit_trail: [],
+        execution_readiness_posture: {
+          posture: "approval_required_draft_only",
+          approval_required: true,
+          autonomous_execution: false,
+          external_side_effects_allowed: false,
+          approval_path_visible: true,
+          route_target_order: ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+          required_route_targets: ["task_workflow_draft", "approval_workflow_draft"],
+          transition_order: ["routed", "reaffirmed"],
+          non_autonomous_guarantee:
+            "No task, approval, connector send, or external side effect is executed by this endpoint.",
+          reason:
+            "Execution routing remains draft-only and approval-bounded; operators can explicitly route handoff items into governed task/approval drafts with auditable transitions.",
+        },
         task_draft: {
           status: "draft",
           mode: "governed_request_draft",
@@ -767,6 +872,7 @@ describe("ChiefOfStaffPage", () => {
     expect(screen.getByText("Live weekly review")).toBeInTheDocument();
     expect(screen.getByText("Live action handoff")).toBeInTheDocument();
     expect(screen.getByText("Live handoff queue")).toBeInTheDocument();
+    expect(screen.getByText("Live execution routing")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Send partner follow-up").length).toBeGreaterThan(0);
     expect(getChiefOfStaffPriorityBriefMock).toHaveBeenCalledWith(
       "https://api.example.com",

@@ -1694,6 +1694,77 @@ export type ChiefOfStaffExecutionPostureRecord = {
   reason: string;
 };
 
+export type ChiefOfStaffExecutionRouteTarget =
+  | "task_workflow_draft"
+  | "approval_workflow_draft"
+  | "follow_up_draft_only";
+
+export type ChiefOfStaffExecutionRoutingTransition = "routed" | "reaffirmed";
+
+export type ChiefOfStaffExecutionRoutingAuditRecord = {
+  id: string;
+  capture_event_id: string;
+  handoff_item_id: string;
+  route_target: ChiefOfStaffExecutionRouteTarget;
+  transition: ChiefOfStaffExecutionRoutingTransition;
+  previously_routed: boolean;
+  route_state: boolean;
+  reason: string;
+  note: string | null;
+  provenance_references: ContinuityRecallProvenanceReference[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChiefOfStaffRoutedHandoffItem = {
+  handoff_rank: number;
+  handoff_item_id: string;
+  title: string;
+  source_kind: ChiefOfStaffActionHandoffSourceKind;
+  recommendation_action: ChiefOfStaffActionHandoffAction;
+  route_target_order: ChiefOfStaffExecutionRouteTarget[];
+  available_route_targets: ChiefOfStaffExecutionRouteTarget[];
+  routed_targets: ChiefOfStaffExecutionRouteTarget[];
+  is_routed: boolean;
+  task_workflow_draft_routed: boolean;
+  approval_workflow_draft_routed: boolean;
+  follow_up_draft_only_routed: boolean;
+  follow_up_draft_only_applicable: boolean;
+  task_draft: ChiefOfStaffActionHandoffTaskDraft;
+  approval_draft: ChiefOfStaffActionHandoffApprovalDraft;
+  follow_up_draft?: ChiefOfStaffDraftFollowUp;
+  last_routing_transition: ChiefOfStaffExecutionRoutingAuditRecord | null;
+};
+
+export type ChiefOfStaffExecutionRoutingSummary = {
+  total_handoff_count: number;
+  routed_handoff_count: number;
+  unrouted_handoff_count: number;
+  task_workflow_draft_count: number;
+  approval_workflow_draft_count: number;
+  follow_up_draft_only_count: number;
+  route_target_order: ChiefOfStaffExecutionRouteTarget[];
+  routed_item_order: string[];
+  audit_order: string[];
+  transition_order: ChiefOfStaffExecutionRoutingTransition[];
+  approval_required: boolean;
+  non_autonomous_guarantee: string;
+  reason: string;
+};
+
+export type ChiefOfStaffExecutionReadinessPosture = {
+  posture: "approval_required_draft_only";
+  approval_required: boolean;
+  autonomous_execution: boolean;
+  external_side_effects_allowed: boolean;
+  approval_path_visible: boolean;
+  route_target_order: ChiefOfStaffExecutionRouteTarget[];
+  required_route_targets: ChiefOfStaffExecutionRouteTarget[];
+  transition_order: ChiefOfStaffExecutionRoutingTransition[];
+  non_autonomous_guarantee: string;
+  reason: string;
+};
+
 export type ChiefOfStaffHandoffReviewActionRecord = {
   id: string;
   capture_event_id: string;
@@ -1787,6 +1858,10 @@ export type ChiefOfStaffPriorityBrief = {
   handoff_queue_summary: ChiefOfStaffHandoffQueueSummary;
   handoff_queue_groups: ChiefOfStaffHandoffQueueGroups;
   handoff_review_actions: ChiefOfStaffHandoffReviewActionRecord[];
+  execution_routing_summary: ChiefOfStaffExecutionRoutingSummary;
+  routed_handoff_items: ChiefOfStaffRoutedHandoffItem[];
+  routing_audit_trail: ChiefOfStaffExecutionRoutingAuditRecord[];
+  execution_readiness_posture: ChiefOfStaffExecutionReadinessPosture;
   task_draft: ChiefOfStaffActionHandoffTaskDraft;
   approval_draft: ChiefOfStaffActionHandoffApprovalDraft;
   execution_posture: ChiefOfStaffExecutionPostureRecord;
@@ -1831,6 +1906,25 @@ export type ChiefOfStaffHandoffReviewActionCaptureResult = {
   handoff_queue_summary: ChiefOfStaffHandoffQueueSummary;
   handoff_queue_groups: ChiefOfStaffHandoffQueueGroups;
   handoff_review_actions: ChiefOfStaffHandoffReviewActionRecord[];
+};
+
+export type ChiefOfStaffExecutionRoutingActionCapturePayload = {
+  user_id: string;
+  handoff_item_id: string;
+  route_target: ChiefOfStaffExecutionRouteTarget;
+  note?: string | null;
+  thread_id?: string | null;
+  task_id?: string | null;
+  project?: string | null;
+  person?: string | null;
+};
+
+export type ChiefOfStaffExecutionRoutingActionCaptureResult = {
+  routing_action: ChiefOfStaffExecutionRoutingAuditRecord;
+  execution_routing_summary: ChiefOfStaffExecutionRoutingSummary;
+  routed_handoff_items: ChiefOfStaffRoutedHandoffItem[];
+  routing_audit_trail: ChiefOfStaffExecutionRoutingAuditRecord[];
+  execution_readiness_posture: ChiefOfStaffExecutionReadinessPosture;
 };
 
 export type ContinuityOpenLoopReviewActionPayload = {
@@ -2474,6 +2568,20 @@ export function captureChiefOfStaffHandoffReviewAction(
   return requestJson<ChiefOfStaffHandoffReviewActionCaptureResult>(
     apiBaseUrl,
     "/v0/chief-of-staff/handoff-review-actions",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function captureChiefOfStaffExecutionRoutingAction(
+  apiBaseUrl: string,
+  payload: ChiefOfStaffExecutionRoutingActionCapturePayload,
+) {
+  return requestJson<ChiefOfStaffExecutionRoutingActionCaptureResult>(
+    apiBaseUrl,
+    "/v0/chief-of-staff/execution-routing-actions",
     {
       method: "POST",
       body: JSON.stringify(payload),
