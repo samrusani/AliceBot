@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Callable, Literal, TypedDict
 from uuid import UUID
 from fastapi import FastAPI, Query
 from fastapi.encoders import jsonable_encoder
@@ -2177,16 +2177,24 @@ def get_task_run(task_run_id: UUID, user_id: UUID) -> JSONResponse:
     )
 
 
-@app.post("/v0/task-runs/{task_run_id}/tick")
-def tick_task_run(task_run_id: UUID, request: MutateTaskRunRequest) -> JSONResponse:
+def _mutate_task_run(
+    *,
+    task_run_id: UUID,
+    request: MutateTaskRunRequest,
+    mutation_handler: Callable[..., object],
+    mutation_input_model: type[TaskRunTickInput]
+    | type[TaskRunPauseInput]
+    | type[TaskRunResumeInput]
+    | type[TaskRunCancelInput],
+) -> JSONResponse:
     settings = get_settings()
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
-            payload = tick_task_run_record(
+            payload = mutation_handler(
                 ContinuityStore(conn),
                 user_id=request.user_id,
-                request=TaskRunTickInput(task_run_id=task_run_id),
+                request=mutation_input_model(task_run_id=task_run_id),
             )
     except TaskRunValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -2198,78 +2206,46 @@ def tick_task_run(task_run_id: UUID, request: MutateTaskRunRequest) -> JSONRespo
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/task-runs/{task_run_id}/tick")
+def tick_task_run(task_run_id: UUID, request: MutateTaskRunRequest) -> JSONResponse:
+    return _mutate_task_run(
+        task_run_id=task_run_id,
+        request=request,
+        mutation_handler=tick_task_run_record,
+        mutation_input_model=TaskRunTickInput,
     )
 
 
 @app.post("/v0/task-runs/{task_run_id}/pause")
 def pause_task_run(task_run_id: UUID, request: MutateTaskRunRequest) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        with user_connection(settings.database_url, request.user_id) as conn:
-            payload = pause_task_run_record(
-                ContinuityStore(conn),
-                user_id=request.user_id,
-                request=TaskRunPauseInput(task_run_id=task_run_id),
-            )
-    except TaskRunValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-    except TaskRunNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TaskRunTransitionError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(payload),
+    return _mutate_task_run(
+        task_run_id=task_run_id,
+        request=request,
+        mutation_handler=pause_task_run_record,
+        mutation_input_model=TaskRunPauseInput,
     )
 
 
 @app.post("/v0/task-runs/{task_run_id}/resume")
 def resume_task_run(task_run_id: UUID, request: MutateTaskRunRequest) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        with user_connection(settings.database_url, request.user_id) as conn:
-            payload = resume_task_run_record(
-                ContinuityStore(conn),
-                user_id=request.user_id,
-                request=TaskRunResumeInput(task_run_id=task_run_id),
-            )
-    except TaskRunValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-    except TaskRunNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TaskRunTransitionError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(payload),
+    return _mutate_task_run(
+        task_run_id=task_run_id,
+        request=request,
+        mutation_handler=resume_task_run_record,
+        mutation_input_model=TaskRunResumeInput,
     )
 
 
 @app.post("/v0/task-runs/{task_run_id}/cancel")
 def cancel_task_run(task_run_id: UUID, request: MutateTaskRunRequest) -> JSONResponse:
-    settings = get_settings()
-
-    try:
-        with user_connection(settings.database_url, request.user_id) as conn:
-            payload = cancel_task_run_record(
-                ContinuityStore(conn),
-                user_id=request.user_id,
-                request=TaskRunCancelInput(task_run_id=task_run_id),
-            )
-    except TaskRunValidationError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-    except TaskRunNotFoundError as exc:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
-    except TaskRunTransitionError as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-
-    return JSONResponse(
-        status_code=200,
-        content=jsonable_encoder(payload),
+    return _mutate_task_run(
+        task_run_id=task_run_id,
+        request=request,
+        mutation_handler=cancel_task_run_record,
+        mutation_input_model=TaskRunCancelInput,
     )
 
 
