@@ -69,6 +69,7 @@ describe("ChiefOfStaffPage", () => {
     expect(screen.getByText("Fixture action handoff")).toBeInTheDocument();
     expect(screen.getByText("Fixture handoff queue")).toBeInTheDocument();
     expect(screen.getByText("Fixture execution routing")).toBeInTheDocument();
+    expect(screen.getByText("Fixture outcome learning")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Confirm launch checklist owner").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Action type: execute_next_action").length).toBeGreaterThan(0);
     expect(screen.getByText("Follow-through supervision")).toBeInTheDocument();
@@ -646,6 +647,74 @@ describe("ChiefOfStaffPage", () => {
           },
         },
         handoff_review_actions: [],
+        handoff_outcome_summary: {
+          returned_count: 0,
+          total_count: 0,
+          latest_total_count: 0,
+          status_counts: {
+            reviewed: 0,
+            approved: 0,
+            rejected: 0,
+            rewritten: 0,
+            executed: 0,
+            ignored: 0,
+            expired: 0,
+          },
+          latest_status_counts: {
+            reviewed: 0,
+            approved: 0,
+            rejected: 0,
+            rewritten: 0,
+            executed: 0,
+            ignored: 0,
+            expired: 0,
+          },
+          status_order: ["reviewed", "approved", "rejected", "rewritten", "executed", "ignored", "expired"],
+          order: ["created_at_desc", "id_desc"],
+        },
+        handoff_outcomes: [],
+        closure_quality_summary: {
+          posture: "insufficient_signal",
+          reason: "No handoff outcomes are captured yet, so closure quality remains informational.",
+          closed_loop_count: 0,
+          unresolved_count: 0,
+          rejected_count: 0,
+          ignored_count: 0,
+          expired_count: 0,
+          closure_rate: 0,
+          explanation: "Closure quality uses the latest immutable outcome per handoff item.",
+        },
+        conversion_signal_summary: {
+          total_handoff_count: 1,
+          latest_outcome_count: 0,
+          executed_count: 0,
+          approved_count: 0,
+          reviewed_count: 0,
+          rewritten_count: 0,
+          rejected_count: 0,
+          ignored_count: 0,
+          expired_count: 0,
+          recommendation_to_execution_conversion_rate: 0,
+          recommendation_to_closure_conversion_rate: 0,
+          capture_coverage_rate: 0,
+          explanation: "Conversion signals are derived from latest immutable outcomes.",
+        },
+        stale_ignored_escalation_posture: {
+          posture: "watch",
+          reason: "No stale queue pressure or ignored/expired latest outcomes are currently detected.",
+          stale_queue_count: 0,
+          ignored_count: 0,
+          expired_count: 0,
+          trigger_count: 0,
+          guidance_posture_explanation:
+            "Guidance posture is derived from stale queue load plus ignored/expired latest outcome counts.",
+          supporting_signals: [
+            "stale_queue_count=0",
+            "ignored_count=0",
+            "expired_count=0",
+            "trigger_count=0",
+          ],
+        },
         execution_routing_summary: {
           total_handoff_count: 1,
           routed_handoff_count: 0,
@@ -852,6 +921,12 @@ describe("ChiefOfStaffPage", () => {
           handoff_queue_state_order: ["ready", "pending_approval", "executed", "stale", "expired"],
           handoff_queue_group_order: ["ready", "pending_approval", "executed", "stale", "expired"],
           handoff_queue_item_order: ["queue_rank_asc", "handoff_rank_asc", "score_desc", "handoff_item_id_asc"],
+          handoff_outcome_total_count: 0,
+          handoff_outcome_latest_count: 0,
+          handoff_outcome_executed_count: 0,
+          handoff_outcome_ignored_count: 0,
+          closure_quality_posture: "insufficient_signal",
+          stale_ignored_escalation_posture: "watch",
         },
         sources: [
           "continuity_recall",
@@ -859,6 +934,7 @@ describe("ChiefOfStaffPage", () => {
           "chief_of_staff_action_handoff",
           "chief_of_staff_handoff_queue",
           "chief_of_staff_handoff_review_actions",
+          "chief_of_staff_handoff_outcomes",
         ],
       },
     });
@@ -873,6 +949,7 @@ describe("ChiefOfStaffPage", () => {
     expect(screen.getByText("Live action handoff")).toBeInTheDocument();
     expect(screen.getByText("Live handoff queue")).toBeInTheDocument();
     expect(screen.getByText("Live execution routing")).toBeInTheDocument();
+    expect(screen.getByText("Live outcome learning")).toBeInTheDocument();
     expect(screen.getAllByText("Next Action: Send partner follow-up").length).toBeGreaterThan(0);
     expect(getChiefOfStaffPriorityBriefMock).toHaveBeenCalledWith(
       "https://api.example.com",

@@ -90,6 +90,8 @@ from alicebot_api.contracts import (
     ChiefOfStaffPriorityBriefResponse,
     ChiefOfStaffExecutionRoutingActionInput,
     ChiefOfStaffExecutionRoutingActionCaptureResponse,
+    ChiefOfStaffHandoffOutcomeCaptureInput,
+    ChiefOfStaffHandoffOutcomeCaptureResponse,
     ChiefOfStaffHandoffReviewActionInput,
     ChiefOfStaffHandoffReviewActionCaptureResponse,
     ChiefOfStaffRecommendationOutcomeCaptureInput,
@@ -351,6 +353,7 @@ from alicebot_api.continuity_resumption import (
 from alicebot_api.chief_of_staff import (
     ChiefOfStaffValidationError,
     capture_chief_of_staff_execution_routing_action,
+    capture_chief_of_staff_handoff_outcome,
     capture_chief_of_staff_handoff_review_action,
     capture_chief_of_staff_recommendation_outcome,
     compile_chief_of_staff_priority_brief,
@@ -677,6 +680,17 @@ class ChiefOfStaffExecutionRoutingActionCaptureRequest(BaseModel):
     user_id: UUID
     handoff_item_id: str = Field(min_length=1, max_length=200)
     route_target: str = Field(min_length=1, max_length=80)
+    note: str | None = Field(default=None, min_length=1, max_length=500)
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = Field(default=None, min_length=1, max_length=200)
+    person: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class ChiefOfStaffHandoffOutcomeCaptureRequest(BaseModel):
+    user_id: UUID
+    handoff_item_id: str = Field(min_length=1, max_length=200)
+    outcome_status: str = Field(min_length=1, max_length=60)
     note: str | None = Field(default=None, min_length=1, max_length=500)
     thread_id: UUID | None = None
     task_id: UUID | None = None
@@ -3747,6 +3761,38 @@ def capture_chief_of_staff_execution_routing_action_endpoint(
                     request=ChiefOfStaffExecutionRoutingActionInput(
                         handoff_item_id=request.handoff_item_id,
                         route_target=request.route_target,  # type: ignore[arg-type]
+                        note=request.note,
+                        thread_id=request.thread_id,
+                        task_id=request.task_id,
+                        project=request.project,
+                        person=request.person,
+                    ),
+                )
+            )
+    except ChiefOfStaffValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/chief-of-staff/handoff-outcomes")
+def capture_chief_of_staff_handoff_outcome_endpoint(
+    request: ChiefOfStaffHandoffOutcomeCaptureRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload: ChiefOfStaffHandoffOutcomeCaptureResponse = (
+                capture_chief_of_staff_handoff_outcome(
+                    ContinuityStore(conn),
+                    user_id=request.user_id,
+                    request=ChiefOfStaffHandoffOutcomeCaptureInput(
+                        handoff_item_id=request.handoff_item_id,
+                        outcome_status=request.outcome_status,  # type: ignore[arg-type]
                         note=request.note,
                         thread_id=request.thread_id,
                         task_id=request.task_id,
