@@ -2,7 +2,7 @@
 
 Alice is a local-first memory and continuity engine for AI agents.
 
-Phase 9 Sprint 33 (`P9-S33`) defines one public-core path: install locally, load deterministic sample data, run recall, and run resumption from documented commands.
+`P9-S33` shipped the public-core baseline. `P9-S34` ships a deterministic local CLI for continuity flows on top of that baseline.
 
 ## Canonical Local Startup Path (`P9-S33`)
 
@@ -21,16 +21,38 @@ Phase 9 Sprint 33 (`P9-S33`) defines one public-core path: install locally, load
 
 The sample fixture path is `fixtures/public_sample_data/continuity_v1.json` and defaults through `PUBLIC_SAMPLE_DATA_PATH`.
 
-## Recall And Resumption Proof Commands
+## CLI Invocation Path (`P9-S34`)
 
-Run these after `./scripts/api_dev.sh` is serving on `127.0.0.1:8000`.
+CLI works from the local editable install:
 
 ```bash
-curl -sS "http://127.0.0.1:8000/v0/continuity/recall?user_id=00000000-0000-0000-0000-000000000001&query=local-first"
-curl -sS "http://127.0.0.1:8000/v0/continuity/resumption-brief?user_id=00000000-0000-0000-0000-000000000001"
+./.venv/bin/python -m alicebot_api --help
 ```
 
-If `ALICEBOT_AUTH_USER_ID` is set in `.env`, the middleware rewrites `user_id` automatically and these query parameters can be omitted.
+Optional console-script entrypoint (after editable install):
+
+```bash
+alicebot --help
+```
+
+If `ALICEBOT_AUTH_USER_ID` is set (default in `.env.example`), CLI commands run in that user scope. Otherwise CLI defaults to `00000000-0000-0000-0000-000000000001`.
+
+## CLI Continuity Commands
+
+Run these against the `P9-S33` sample dataset after startup:
+
+```bash
+./.venv/bin/python -m alicebot_api status
+./.venv/bin/python -m alicebot_api capture "Decision: Keep Alice local-first for CLI verification." --explicit-signal decision
+./.venv/bin/python -m alicebot_api recall --query local-first
+./.venv/bin/python -m alicebot_api resume
+./.venv/bin/python -m alicebot_api open-loops
+./.venv/bin/python -m alicebot_api review queue --status correction_ready --limit 20
+./.venv/bin/python -m alicebot_api review show <continuity_object_id>
+./.venv/bin/python -m alicebot_api review apply <continuity_object_id> --action supersede --replacement-title "Decision: Updated title" --replacement-body-json '{"decision_text":"Updated title"}' --replacement-provenance-json '{"thread_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}' --replacement-confidence 0.97
+```
+
+The CLI output is deterministic text (stable section order and provenance snippets) to support `P9-S35` MCP parity.
 
 ## Essential Verification Commands
 

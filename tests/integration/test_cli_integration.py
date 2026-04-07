@@ -1,0 +1,222 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+from uuid import UUID, uuid4
+
+from alicebot_api.db import user_connection
+from alicebot_api.store import ContinuityStore
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def seed_user(database_url: str, *, email: str) -> UUID:
+    user_id = uuid4()
+    with user_connection(database_url, user_id) as conn:
+        ContinuityStore(conn).create_user(user_id, email, email.split("@", 1)[0].title())
+    return user_id
+
+
+def build_cli_env(*, database_url: str, user_id: UUID) -> dict[str, str]:
+    env = os.environ.copy()
+    env["DATABASE_URL"] = database_url
+    env["ALICEBOT_AUTH_USER_ID"] = str(user_id)
+
+    pythonpath_entries = [str(REPO_ROOT / "apps" / "api" / "src"), str(REPO_ROOT / "workers")]
+    existing_pythonpath = env.get("PYTHONPATH")
+    if existing_pythonpath:
+        pythonpath_entries.append(existing_pythonpath)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
+    return env
+
+
+def run_cli(args: list[str], *, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "alicebot_api", *args],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_cli_command_surface_and_correction_flow(migrated_database_urls) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="cli-user@example.com")
+    thread_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+
+        legacy_capture = store.create_continuity_capture_event(
+            raw_content="Decision: Legacy rollout plan",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        legacy_decision = store.create_continuity_object(
+            capture_event_id=legacy_capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: Legacy rollout plan",
+            body={"decision_text": "Legacy rollout plan"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["cli-seed-1"]},
+            confidence=0.91,
+            last_confirmed_at=datetime(2026, 3, 30, 9, 0, tzinfo=UTC),
+        )
+
+        waiting_capture = store.create_continuity_capture_event(
+            raw_content="Waiting For: Reviewer PASS",
+            explicit_signal="waiting_for",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_waiting_for",
+        )
+        waiting_for = store.create_continuity_object(
+            capture_event_id=waiting_capture["id"],
+            object_type="WaitingFor",
+            status="active",
+            title="Waiting For: Reviewer PASS",
+            body={"waiting_for_text": "Reviewer PASS"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["cli-seed-2"]},
+            confidence=0.9,
+        )
+
+    env = build_cli_env(database_url=migrated_database_urls["app"], user_id=user_id)
+
+    help_result = run_cli(["--help"], env=env)
+    assert help_result.returncode == 0
+    assert "capture" in help_result.stdout
+    assert "review" in help_result.stdout
+    assert "status" in help_result.stdout
+
+    status_result = run_cli(["status"], env=env)
+    assert status_result.returncode == 0
+    assert "database: reachable" in status_result.stdout
+    assert "continuity_capture_events: 2" in status_result.stdout
+
+    capture_result = run_cli(
+        [
+            "capture",
+            "Task: Publish CLI usage docs",
+            "--explicit-signal",
+            "task",
+        ],
+        env=env,
+    )
+    assert capture_result.returncode == 0
+    assert "capture_event_id:" in capture_result.stdout
+    assert "derived_object_type: NextAction" in capture_result.stdout
+
+    recall_before = run_cli(
+        [
+            "recall",
+            "--query",
+            "rollout",
+            "--thread-id",
+            str(thread_id),
+            "--limit",
+            "20",
+        ],
+        env=env,
+    )
+    assert recall_before.returncode == 0
+    assert "Decision: Legacy rollout plan" in recall_before.stdout
+
+    resume_before = run_cli(
+        [
+            "resume",
+            "--thread-id",
+            str(thread_id),
+            "--max-recent-changes",
+            "5",
+            "--max-open-loops",
+            "5",
+        ],
+        env=env,
+    )
+    assert resume_before.returncode == 0
+    assert "last_decision:" in resume_before.stdout
+    assert "Decision: Legacy rollout plan" in resume_before.stdout
+
+    open_loops_result = run_cli(
+        ["open-loops", "--thread-id", str(thread_id), "--limit", "20"],
+        env=env,
+    )
+    assert open_loops_result.returncode == 0
+    assert "waiting_for (returned=1 total=1 limit=20)" in open_loops_result.stdout
+    assert waiting_for["title"] in open_loops_result.stdout
+
+    review_queue_result = run_cli(
+        ["review", "queue", "--status", "correction_ready", "--limit", "20"],
+        env=env,
+    )
+    assert review_queue_result.returncode == 0
+    assert str(legacy_decision["id"]) in review_queue_result.stdout
+
+    review_show_result = run_cli(
+        ["review", "show", str(legacy_decision["id"])],
+        env=env,
+    )
+    assert review_show_result.returncode == 0
+    assert f"continuity_object_id: {legacy_decision['id']}" in review_show_result.stdout
+
+    replacement_provenance = json.dumps({"thread_id": str(thread_id), "source_event_ids": ["cli-correction-1"]})
+    review_apply_result = run_cli(
+        [
+            "review",
+            "apply",
+            str(legacy_decision["id"]),
+            "--action",
+            "supersede",
+            "--reason",
+            "Latest decision supersedes legacy plan",
+            "--replacement-title",
+            "Decision: Updated rollout plan",
+            "--replacement-body-json",
+            '{"decision_text":"Updated rollout plan"}',
+            "--replacement-provenance-json",
+            replacement_provenance,
+            "--replacement-confidence",
+            "0.97",
+        ],
+        env=env,
+    )
+    assert review_apply_result.returncode == 0
+    assert "replacement_object_id: " in review_apply_result.stdout
+    assert "replacement_object_id: none" not in review_apply_result.stdout
+
+    recall_after = run_cli(
+        [
+            "recall",
+            "--thread-id",
+            str(thread_id),
+            "--query",
+            "rollout",
+            "--limit",
+            "20",
+        ],
+        env=env,
+    )
+    assert recall_after.returncode == 0
+    assert "Decision: Updated rollout plan" in recall_after.stdout
+
+    resume_after = run_cli(
+        [
+            "resume",
+            "--thread-id",
+            str(thread_id),
+            "--max-recent-changes",
+            "5",
+            "--max-open-loops",
+            "5",
+        ],
+        env=env,
+    )
+    assert resume_after.returncode == 0
+    assert "Decision: Updated rollout plan" in resume_after.stdout
+
