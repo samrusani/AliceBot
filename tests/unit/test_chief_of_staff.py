@@ -389,6 +389,36 @@ def test_priority_brief_is_deterministic_and_provenance_backed(monkeypatch) -> N
         "handoff_item_id_asc",
     ]
     assert first["brief"]["handoff_review_actions"] == []
+    assert first["brief"]["execution_routing_summary"]["total_handoff_count"] == len(first["brief"]["handoff_items"])
+    assert first["brief"]["execution_routing_summary"]["routed_handoff_count"] == 0
+    assert first["brief"]["execution_routing_summary"]["unrouted_handoff_count"] == len(
+        first["brief"]["handoff_items"]
+    )
+    assert first["brief"]["execution_routing_summary"]["route_target_order"] == [
+        "task_workflow_draft",
+        "approval_workflow_draft",
+        "follow_up_draft_only",
+    ]
+    assert first["brief"]["execution_routing_summary"]["routed_item_order"] == [
+        "handoff_rank_asc",
+        "handoff_item_id_asc",
+    ]
+    assert first["brief"]["execution_routing_summary"]["audit_order"] == [
+        "created_at_desc",
+        "id_desc",
+    ]
+    assert first["brief"]["routed_handoff_items"]
+    assert first["brief"]["routed_handoff_items"][0]["routed_targets"] == []
+    assert first["brief"]["routing_audit_trail"] == []
+    assert first["brief"]["execution_readiness_posture"]["posture"] == "approval_required_draft_only"
+    assert first["brief"]["execution_readiness_posture"]["approval_required"] is True
+    assert first["brief"]["execution_readiness_posture"]["autonomous_execution"] is False
+    assert first["brief"]["execution_readiness_posture"]["external_side_effects_allowed"] is False
+    assert first["brief"]["execution_readiness_posture"]["approval_path_visible"] is True
+    assert first["brief"]["execution_readiness_posture"]["transition_order"] == [
+        "routed",
+        "reaffirmed",
+    ]
     assert first["brief"]["summary"]["execution_posture_order"] == ["approval_bounded_artifact_only"]
     assert [item["source_kind"] for item in first["brief"]["handoff_items"]] == [
         "recommended_next_action",
@@ -587,6 +617,9 @@ def test_priority_brief_downgrades_confidence_when_trust_is_weak(monkeypatch) ->
     assert payload["brief"]["approval_draft"]["auto_submit"] is False
     assert payload["brief"]["execution_posture"]["autonomous_execution"] is False
     assert payload["brief"]["execution_posture"]["external_side_effects_allowed"] is False
+    assert payload["brief"]["execution_routing_summary"]["routed_handoff_count"] == 0
+    assert payload["brief"]["routing_audit_trail"] == []
+    assert payload["brief"]["execution_readiness_posture"]["approval_required"] is True
 
 
 def test_priority_brief_retrieval_failure_respects_non_healthy_quality_caps(monkeypatch) -> None:
@@ -822,6 +855,202 @@ def test_capture_handoff_review_action_records_transition_and_returns_updated_qu
     assert response["review_action"]["previous_lifecycle_state"] == "ready"
     assert response["review_action"]["next_lifecycle_state"] == "stale"
     assert response["handoff_queue_summary"]["stale_count"] == 1
+
+
+def test_capture_execution_routing_action_records_transition_and_returns_updated_routing(monkeypatch) -> None:
+    class _FakeStore:
+        def __init__(self) -> None:
+            self.capture_event_payloads: list[dict[str, object]] = []
+            self.object_payloads: list[dict[str, object]] = []
+
+        def create_continuity_capture_event(
+            self,
+            *,
+            raw_content: str,
+            explicit_signal: str,
+            admission_posture: str,
+            admission_reason: str,
+        ) -> dict[str, object]:
+            self.capture_event_payloads.append(
+                {
+                    "raw_content": raw_content,
+                    "explicit_signal": explicit_signal,
+                    "admission_posture": admission_posture,
+                    "admission_reason": admission_reason,
+                }
+            )
+            return {"id": UUID("11111111-1111-4111-8111-111111111111")}
+
+        def create_continuity_object(
+            self,
+            *,
+            capture_event_id: UUID,
+            object_type: str,
+            status: str,
+            title: str,
+            body: dict[str, object],
+            provenance: dict[str, object],
+            confidence: float,
+        ) -> dict[str, object]:
+            self.object_payloads.append(
+                {
+                    "capture_event_id": capture_event_id,
+                    "object_type": object_type,
+                    "status": status,
+                    "title": title,
+                    "body": body,
+                    "provenance": provenance,
+                    "confidence": confidence,
+                }
+            )
+            return {
+                "id": UUID("33333333-3333-4333-8333-333333333333"),
+                "capture_event_id": capture_event_id,
+                "created_at": datetime(2026, 4, 1, 9, 30, tzinfo=UTC),
+                "updated_at": datetime(2026, 4, 1, 9, 30, tzinfo=UTC),
+            }
+
+    first_brief = {
+        "routed_handoff_items": [
+            {
+                "handoff_rank": 1,
+                "handoff_item_id": "handoff-1",
+                "title": "Next Action: Ship dashboard",
+                "source_kind": "recommended_next_action",
+                "recommendation_action": "execute_next_action",
+                "route_target_order": ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+                "available_route_targets": ["task_workflow_draft", "approval_workflow_draft"],
+                "routed_targets": [],
+                "is_routed": False,
+                "task_workflow_draft_routed": False,
+                "approval_workflow_draft_routed": False,
+                "follow_up_draft_only_routed": False,
+                "follow_up_draft_only_applicable": False,
+                "task_draft": {
+                    "status": "draft",
+                    "mode": "governed_request_draft",
+                    "approval_required": True,
+                    "auto_execute": False,
+                    "source_handoff_item_id": "handoff-1",
+                    "title": "Next Action: Ship dashboard",
+                    "summary": "Draft-only governed request.",
+                    "target": {"thread_id": "thread-1", "task_id": None, "project": None, "person": None},
+                    "request": {
+                        "action": "execute_next_action",
+                        "scope": "chief_of_staff_priority",
+                        "domain_hint": "planning",
+                        "risk_hint": "governed_handoff",
+                        "attributes": {"handoff_item_id": "handoff-1"},
+                    },
+                    "rationale": "deterministic fixture",
+                    "provenance_references": [],
+                },
+                "approval_draft": {
+                    "status": "draft_only",
+                    "mode": "approval_request_draft",
+                    "decision": "approval_required",
+                    "approval_required": True,
+                    "auto_submit": False,
+                    "source_handoff_item_id": "handoff-1",
+                    "request": {
+                        "action": "execute_next_action",
+                        "scope": "chief_of_staff_priority",
+                        "domain_hint": "planning",
+                        "risk_hint": "governed_handoff",
+                        "attributes": {"handoff_item_id": "handoff-1"},
+                    },
+                    "reason": "approval required",
+                    "required_checks": ["operator_review_handoff_artifact"],
+                    "provenance_references": [],
+                },
+                "last_routing_transition": None,
+            }
+        ]
+    }
+    second_brief = {
+        "execution_routing_summary": {
+            "total_handoff_count": 1,
+            "routed_handoff_count": 1,
+            "unrouted_handoff_count": 0,
+            "task_workflow_draft_count": 1,
+            "approval_workflow_draft_count": 0,
+            "follow_up_draft_only_count": 0,
+            "route_target_order": ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+            "routed_item_order": ["handoff_rank_asc", "handoff_item_id_asc"],
+            "audit_order": ["created_at_desc", "id_desc"],
+            "transition_order": ["routed", "reaffirmed"],
+            "approval_required": True,
+            "non_autonomous_guarantee": "No task, approval, connector send, or external side effect is executed by this endpoint.",
+            "reason": "Routing transitions are explicit and auditable.",
+        },
+        "routed_handoff_items": [
+            {
+                **first_brief["routed_handoff_items"][0],
+                "routed_targets": ["task_workflow_draft"],
+                "is_routed": True,
+                "task_workflow_draft_routed": True,
+                "last_routing_transition": {
+                    "id": "route-1",
+                    "capture_event_id": "capture-route-1",
+                    "handoff_item_id": "handoff-1",
+                    "route_target": "task_workflow_draft",
+                    "transition": "routed",
+                    "previously_routed": False,
+                    "route_state": True,
+                    "reason": "Operator routed handoff.",
+                    "note": None,
+                    "provenance_references": [],
+                    "created_at": "2026-04-01T09:30:00+00:00",
+                    "updated_at": "2026-04-01T09:30:00+00:00",
+                },
+            }
+        ],
+        "routing_audit_trail": [],
+        "execution_readiness_posture": {
+            "posture": "approval_required_draft_only",
+            "approval_required": True,
+            "autonomous_execution": False,
+            "external_side_effects_allowed": False,
+            "approval_path_visible": True,
+            "route_target_order": ["task_workflow_draft", "approval_workflow_draft", "follow_up_draft_only"],
+            "required_route_targets": ["task_workflow_draft", "approval_workflow_draft"],
+            "transition_order": ["routed", "reaffirmed"],
+            "non_autonomous_guarantee": "No task, approval, connector send, or external side effect is executed by this endpoint.",
+            "reason": "draft-only",
+        },
+    }
+
+    compile_calls = {"count": 0}
+
+    def fake_compile(*args, **kwargs):
+        compile_calls["count"] += 1
+        if compile_calls["count"] == 1:
+            return {"brief": first_brief}
+        return {"brief": second_brief}
+
+    monkeypatch.setattr(chief, "compile_chief_of_staff_priority_brief", fake_compile)
+
+    store = _FakeStore()
+    response = chief.capture_chief_of_staff_execution_routing_action(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        request=chief.ChiefOfStaffExecutionRoutingActionInput(
+            handoff_item_id="handoff-1",
+            route_target="task_workflow_draft",
+            thread_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+        ),
+    )
+
+    assert compile_calls["count"] == 2
+    assert store.capture_event_payloads
+    assert store.object_payloads
+    assert store.object_payloads[0]["body"]["kind"] == "chief_of_staff_execution_routing_action"
+    assert response["routing_action"]["handoff_item_id"] == "handoff-1"
+    assert response["routing_action"]["route_target"] == "task_workflow_draft"
+    assert response["routing_action"]["transition"] == "routed"
+    assert response["execution_routing_summary"]["routed_handoff_count"] == 1
+    assert response["routed_handoff_items"][0]["task_workflow_draft_routed"] is True
+    assert response["execution_readiness_posture"]["approval_required"] is True
 
 
 def test_governed_handoff_state_maps_keep_executed_over_pending() -> None:
