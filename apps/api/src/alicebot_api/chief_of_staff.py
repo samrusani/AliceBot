@@ -26,6 +26,8 @@ from alicebot_api.contracts import (
     CHIEF_OF_STAFF_FOLLOW_THROUGH_RECOMMENDATION_ACTIONS,
     CHIEF_OF_STAFF_HANDOFF_QUEUE_ITEM_ORDER,
     CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER,
+    CHIEF_OF_STAFF_HANDOFF_OUTCOME_ORDER,
+    CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES,
     CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS,
     CHIEF_OF_STAFF_OUTCOME_HOTSPOT_ORDER,
     CHIEF_OF_STAFF_PREPARATION_ITEM_ORDER,
@@ -72,10 +74,18 @@ from alicebot_api.contracts import (
     ChiefOfStaffHandoffQueueItem,
     ChiefOfStaffHandoffQueueLifecycleState,
     ChiefOfStaffHandoffQueueSummary,
+    ChiefOfStaffHandoffOutcomeCaptureInput,
+    ChiefOfStaffHandoffOutcomeCaptureResponse,
+    ChiefOfStaffHandoffOutcomeRecord,
+    ChiefOfStaffHandoffOutcomeStatus,
+    ChiefOfStaffHandoffOutcomeSummary,
     ChiefOfStaffHandoffReviewAction,
     ChiefOfStaffHandoffReviewActionCaptureResponse,
     ChiefOfStaffHandoffReviewActionInput,
     ChiefOfStaffHandoffReviewActionRecord,
+    ChiefOfStaffClosureQualityPosture,
+    ChiefOfStaffClosureQualitySummaryRecord,
+    ChiefOfStaffConversionSignalSummaryRecord,
     ChiefOfStaffOutcomeHotspotRecord,
     ChiefOfStaffPatternDriftPosture,
     ChiefOfStaffPatternDriftSummaryRecord,
@@ -99,6 +109,7 @@ from alicebot_api.contracts import (
     ChiefOfStaffRecommendedActionType,
     ChiefOfStaffRecommendedNextAction,
     ChiefOfStaffRoutedHandoffItemRecord,
+    ChiefOfStaffStaleIgnoredEscalationPostureRecord,
     ChiefOfStaffResumptionRecommendationAction,
     ChiefOfStaffResumptionSupervisionRecommendation,
     ChiefOfStaffResumptionSupervisionRecord,
@@ -204,6 +215,7 @@ _HANDOFF_QUEUE_STALE_HOURS = 120.0
 _HANDOFF_QUEUE_EXPIRED_HOURS = 336.0
 _HANDOFF_REVIEW_ACTION_BODY_KIND = "chief_of_staff_handoff_review_action"
 _EXECUTION_ROUTING_ACTION_BODY_KIND = "chief_of_staff_execution_routing_action"
+_HANDOFF_OUTCOME_BODY_KIND = "chief_of_staff_handoff_outcome"
 _FOLLOW_UP_ELIGIBLE_SOURCE_KINDS: set[ChiefOfStaffActionHandoffSourceKind] = {
     "follow_through",
     "weekly_review",
@@ -2058,6 +2070,288 @@ def _list_handoff_review_action_records(
     return records
 
 
+def _empty_handoff_outcome_counts() -> dict[ChiefOfStaffHandoffOutcomeStatus, int]:
+    return {
+        "reviewed": 0,
+        "approved": 0,
+        "rejected": 0,
+        "rewritten": 0,
+        "executed": 0,
+        "ignored": 0,
+        "expired": 0,
+    }
+
+
+def _parse_handoff_outcome_record(
+    item: ContinuityRecallResultRecord,
+) -> ChiefOfStaffHandoffOutcomeRecord | None:
+    if item["object_type"] != "Note":
+        return None
+
+    body = item["body"]
+    if not isinstance(body, dict):
+        return None
+
+    if body.get("kind") != _HANDOFF_OUTCOME_BODY_KIND:
+        return None
+
+    handoff_item_id = body.get("handoff_item_id")
+    if not isinstance(handoff_item_id, str) or not handoff_item_id.strip():
+        return None
+
+    raw_outcome_status = body.get("outcome_status")
+    if (
+        not isinstance(raw_outcome_status, str)
+        or raw_outcome_status not in CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES
+    ):
+        return None
+    outcome_status: ChiefOfStaffHandoffOutcomeStatus = raw_outcome_status  # type: ignore[assignment]
+
+    raw_previous_outcome_status = body.get("previous_outcome_status")
+    previous_outcome_status: ChiefOfStaffHandoffOutcomeStatus | None
+    if raw_previous_outcome_status is None:
+        previous_outcome_status = None
+    elif (
+        isinstance(raw_previous_outcome_status, str)
+        and raw_previous_outcome_status in CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES
+    ):
+        previous_outcome_status = raw_previous_outcome_status  # type: ignore[assignment]
+    else:
+        return None
+
+    raw_reason = body.get("reason")
+    reason = (
+        raw_reason
+        if isinstance(raw_reason, str) and raw_reason.strip()
+        else "Routed handoff outcome captured as an explicit operator-authored immutable event."
+    )
+
+    raw_note = body.get("note")
+    note = raw_note if isinstance(raw_note, str) and raw_note.strip() else None
+
+    return {
+        "id": item["id"],
+        "capture_event_id": item["capture_event_id"],
+        "handoff_item_id": handoff_item_id.strip(),
+        "outcome_status": outcome_status,
+        "previous_outcome_status": previous_outcome_status,
+        "is_latest_outcome": False,
+        "reason": reason,
+        "note": note,
+        "provenance_references": item["provenance_references"],
+        "created_at": item["created_at"],
+        "updated_at": item["updated_at"],
+    }
+
+
+def _handoff_outcome_sort_key(item: ChiefOfStaffHandoffOutcomeRecord) -> tuple[str, str]:
+    return (item["created_at"], item["id"])
+
+
+def _list_handoff_outcome_records(
+    recall_items: list[ContinuityRecallResultRecord],
+) -> list[ChiefOfStaffHandoffOutcomeRecord]:
+    parsed_records = [
+        parsed
+        for parsed in (
+            _parse_handoff_outcome_record(item)
+            for item in recall_items
+        )
+        if parsed is not None
+    ]
+    parsed_records.sort(key=_handoff_outcome_sort_key, reverse=True)
+
+    latest_by_handoff_item_id: set[str] = set()
+    records: list[ChiefOfStaffHandoffOutcomeRecord] = []
+    for record in parsed_records:
+        materialized = dict(record)
+        handoff_item_id = record["handoff_item_id"]
+        materialized["is_latest_outcome"] = handoff_item_id not in latest_by_handoff_item_id
+        latest_by_handoff_item_id.add(handoff_item_id)
+        records.append(materialized)  # type: ignore[arg-type]
+    return records
+
+
+def _build_handoff_outcome_artifacts(
+    *,
+    all_handoff_outcomes: list[ChiefOfStaffHandoffOutcomeRecord],
+    limit: int,
+) -> tuple[
+    ChiefOfStaffHandoffOutcomeSummary,
+    list[ChiefOfStaffHandoffOutcomeRecord],
+    dict[ChiefOfStaffHandoffOutcomeStatus, int],
+]:
+    selected_outcomes = all_handoff_outcomes[:limit] if limit > 0 else []
+    status_counts = _empty_handoff_outcome_counts()
+    latest_status_counts = _empty_handoff_outcome_counts()
+    latest_total_count = 0
+
+    for record in all_handoff_outcomes:
+        status_counts[record["outcome_status"]] += 1
+        if record["is_latest_outcome"]:
+            latest_status_counts[record["outcome_status"]] += 1
+            latest_total_count += 1
+
+    summary: ChiefOfStaffHandoffOutcomeSummary = {
+        "returned_count": len(selected_outcomes),
+        "total_count": len(all_handoff_outcomes),
+        "latest_total_count": latest_total_count,
+        "status_counts": status_counts,
+        "latest_status_counts": latest_status_counts,
+        "status_order": list(CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES),
+        "order": list(CHIEF_OF_STAFF_HANDOFF_OUTCOME_ORDER),
+    }
+    return summary, selected_outcomes, latest_status_counts
+
+
+def _safe_rate(
+    *,
+    numerator: int,
+    denominator: int,
+) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(numerator / denominator, 6)
+
+
+def _build_conversion_signal_summary(
+    *,
+    total_handoff_count: int,
+    handoff_outcome_summary: ChiefOfStaffHandoffOutcomeSummary,
+    latest_status_counts: dict[ChiefOfStaffHandoffOutcomeStatus, int],
+) -> ChiefOfStaffConversionSignalSummaryRecord:
+    latest_outcome_count = handoff_outcome_summary["latest_total_count"]
+    executed_count = latest_status_counts["executed"]
+    approved_count = latest_status_counts["approved"]
+    reviewed_count = latest_status_counts["reviewed"]
+    rewritten_count = latest_status_counts["rewritten"]
+    rejected_count = latest_status_counts["rejected"]
+    ignored_count = latest_status_counts["ignored"]
+    expired_count = latest_status_counts["expired"]
+    closed_loop_count = approved_count + executed_count
+
+    return {
+        "total_handoff_count": total_handoff_count,
+        "latest_outcome_count": latest_outcome_count,
+        "executed_count": executed_count,
+        "approved_count": approved_count,
+        "reviewed_count": reviewed_count,
+        "rewritten_count": rewritten_count,
+        "rejected_count": rejected_count,
+        "ignored_count": ignored_count,
+        "expired_count": expired_count,
+        "recommendation_to_execution_conversion_rate": _safe_rate(
+            numerator=executed_count,
+            denominator=total_handoff_count,
+        ),
+        "recommendation_to_closure_conversion_rate": _safe_rate(
+            numerator=closed_loop_count,
+            denominator=total_handoff_count,
+        ),
+        "capture_coverage_rate": _safe_rate(
+            numerator=latest_outcome_count,
+            denominator=total_handoff_count,
+        ),
+        "explanation": (
+            "Conversion signals are derived from latest immutable handoff outcomes per handoff item: "
+            f"executed={executed_count}, approved={approved_count}, reviewed={reviewed_count}, "
+            f"rewritten={rewritten_count}, rejected={rejected_count}, ignored={ignored_count}, "
+            f"expired={expired_count} over total_handoff_count={total_handoff_count}."
+        ),
+    }
+
+
+def _build_closure_quality_summary(
+    *,
+    handoff_outcome_summary: ChiefOfStaffHandoffOutcomeSummary,
+    latest_status_counts: dict[ChiefOfStaffHandoffOutcomeStatus, int],
+) -> ChiefOfStaffClosureQualitySummaryRecord:
+    latest_total_count = handoff_outcome_summary["latest_total_count"]
+    closed_loop_count = latest_status_counts["approved"] + latest_status_counts["executed"]
+    unresolved_count = latest_status_counts["reviewed"] + latest_status_counts["rewritten"]
+    rejected_count = latest_status_counts["rejected"]
+    ignored_count = latest_status_counts["ignored"]
+    expired_count = latest_status_counts["expired"]
+    negative_count = rejected_count + ignored_count + expired_count
+
+    posture: ChiefOfStaffClosureQualityPosture
+    reason: str
+    if latest_total_count == 0:
+        posture = "insufficient_signal"
+        reason = "No handoff outcomes are captured yet, so closure quality remains informational."
+    elif negative_count > closed_loop_count:
+        posture = "critical"
+        reason = "Rejected/ignored/expired outcomes are currently outpacing closed-loop outcomes."
+    elif unresolved_count >= closed_loop_count or ignored_count > 0 or expired_count > 0:
+        posture = "watch"
+        reason = "Closure quality needs monitoring because unresolved, ignored, or expired outcomes are present."
+    else:
+        posture = "healthy"
+        reason = "Closed-loop outcomes are leading with bounded unresolved and ignored outcomes."
+
+    return {
+        "posture": posture,
+        "reason": reason,
+        "closed_loop_count": closed_loop_count,
+        "unresolved_count": unresolved_count,
+        "rejected_count": rejected_count,
+        "ignored_count": ignored_count,
+        "expired_count": expired_count,
+        "closure_rate": _safe_rate(
+            numerator=closed_loop_count,
+            denominator=latest_total_count,
+        ),
+        "explanation": (
+            "Closure quality uses the latest immutable outcome per handoff item; "
+            f"closure_rate={_safe_rate(numerator=closed_loop_count, denominator=latest_total_count):.6f} "
+            f"with closed_loop={closed_loop_count}, unresolved={unresolved_count}, "
+            f"rejected={rejected_count}, ignored={ignored_count}, expired={expired_count}."
+        ),
+    }
+
+
+def _build_stale_ignored_escalation_posture(
+    *,
+    handoff_queue_summary: ChiefOfStaffHandoffQueueSummary,
+    latest_status_counts: dict[ChiefOfStaffHandoffOutcomeStatus, int],
+) -> ChiefOfStaffStaleIgnoredEscalationPostureRecord:
+    stale_queue_count = handoff_queue_summary["stale_count"] + handoff_queue_summary["expired_count"]
+    ignored_count = latest_status_counts["ignored"]
+    expired_count = latest_status_counts["expired"]
+    trigger_count = stale_queue_count + ignored_count + expired_count
+
+    posture: ChiefOfStaffEscalationPosture
+    reason: str
+    if trigger_count == 0:
+        posture = "watch"
+        reason = "No stale queue pressure or ignored/expired latest outcomes are currently detected."
+    elif trigger_count >= 3 or ignored_count + expired_count >= 2:
+        posture = "critical"
+        reason = "Stale queue pressure and ignored/expired outcomes are elevated and require immediate review."
+    else:
+        posture = "elevated"
+        reason = "Stale queue pressure or ignored/expired outcomes are present and should be reviewed."
+
+    return {
+        "posture": posture,
+        "reason": reason,
+        "stale_queue_count": stale_queue_count,
+        "ignored_count": ignored_count,
+        "expired_count": expired_count,
+        "trigger_count": trigger_count,
+        "guidance_posture_explanation": (
+            "Guidance posture is derived from stale queue load plus ignored/expired latest outcome counts so "
+            "operators can explicitly rebalance routing and follow-through focus."
+        ),
+        "supporting_signals": [
+            f"stale_queue_count={stale_queue_count}",
+            f"ignored_count={ignored_count}",
+            f"expired_count={expired_count}",
+            f"trigger_count={trigger_count}",
+        ],
+    }
+
+
 def _parse_execution_routing_audit_record(
     item: ContinuityRecallResultRecord,
 ) -> ChiefOfStaffExecutionRoutingAuditRecord | None:
@@ -2480,6 +2774,14 @@ def _normalize_execution_route_target(
     return route_target  # type: ignore[return-value]
 
 
+def _normalize_handoff_outcome_status(
+    outcome_status: str,
+) -> ChiefOfStaffHandoffOutcomeStatus | None:
+    if outcome_status not in CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES:
+        return None
+    return outcome_status  # type: ignore[return-value]
+
+
 def capture_chief_of_staff_recommendation_outcome(
     store: ContinuityStore,
     *,
@@ -2858,6 +3160,153 @@ def capture_chief_of_staff_execution_routing_action(
     }
 
 
+def capture_chief_of_staff_handoff_outcome(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    request: ChiefOfStaffHandoffOutcomeCaptureInput,
+) -> ChiefOfStaffHandoffOutcomeCaptureResponse:
+    handoff_item_id = _normalize_optional_text(request.handoff_item_id)
+    if handoff_item_id is None:
+        raise ChiefOfStaffValidationError("handoff_item_id must not be empty")
+
+    outcome_status = _normalize_handoff_outcome_status(request.outcome_status)
+    if outcome_status is None:
+        allowed = ", ".join(CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES)
+        raise ChiefOfStaffValidationError(f"outcome_status must be one of: {allowed}")
+
+    note = _normalize_optional_text(request.note)
+    project = _normalize_optional_text(request.project)
+    person = _normalize_optional_text(request.person)
+    scope_request = ChiefOfStaffPriorityBriefRequestInput(
+        thread_id=request.thread_id,
+        task_id=request.task_id,
+        project=project,
+        person=person,
+        limit=MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
+    )
+    scoped_brief = compile_chief_of_staff_priority_brief(
+        store,
+        user_id=user_id,
+        request=scope_request,
+    )["brief"]
+
+    routed_item = next(
+        (
+            item
+            for item in scoped_brief["routed_handoff_items"]
+            if item["handoff_item_id"] == handoff_item_id
+        ),
+        None,
+    )
+    if routed_item is None:
+        raise ChiefOfStaffValidationError(
+            f"handoff_item_id '{handoff_item_id}' was not found in the scoped deterministic routed handoff list"
+        )
+    if not routed_item["is_routed"]:
+        raise ChiefOfStaffValidationError(
+            f"handoff_item_id '{handoff_item_id}' has no routed targets yet; capture an explicit routing transition first"
+        )
+
+    previous_outcome = next(
+        (
+            record
+            for record in scoped_brief["handoff_outcomes"]
+            if record["handoff_item_id"] == handoff_item_id and record["is_latest_outcome"]
+        ),
+        None,
+    )
+    previous_outcome_status = (
+        None
+        if previous_outcome is None
+        else previous_outcome["outcome_status"]
+    )
+
+    transition_reason = (
+        f"Operator captured routed handoff outcome '{outcome_status}' for '{handoff_item_id}' "
+        "as an immutable closure-learning event."
+    )
+
+    capture_event = store.create_continuity_capture_event(
+        raw_content=f"Handoff outcome ({outcome_status}): {handoff_item_id}",
+        explicit_signal="note",
+        admission_posture="TRIAGE",
+        admission_reason="chief_of_staff_handoff_outcome",
+    )
+
+    thread_id = None if request.thread_id is None else str(request.thread_id)
+    task_id = None if request.task_id is None else str(request.task_id)
+    body: dict[str, object] = {
+        "kind": _HANDOFF_OUTCOME_BODY_KIND,
+        "handoff_item_id": handoff_item_id,
+        "outcome_status": outcome_status,
+        "previous_outcome_status": previous_outcome_status,
+        "reason": transition_reason,
+        "note": note,
+    }
+    provenance: dict[str, object] = {
+        "thread_id": thread_id,
+        "task_id": task_id,
+        "project": project,
+        "person": person,
+        "source_event_ids": [str(capture_event["id"])],
+        "chief_of_staff_handoff_outcome": {
+            "handoff_item_id": handoff_item_id,
+            "outcome_status": outcome_status,
+            "previous_outcome_status": previous_outcome_status,
+            "routed_targets": list(routed_item["routed_targets"]),
+        },
+    }
+
+    stored = store.create_continuity_object(
+        capture_event_id=capture_event["id"],
+        object_type="Note",
+        status="active",
+        title=f"Handoff outcome: {outcome_status} ({handoff_item_id})",
+        body=body,
+        provenance=provenance,
+        confidence=1.0,
+    )
+
+    updated_brief = compile_chief_of_staff_priority_brief(
+        store,
+        user_id=user_id,
+        request=scope_request,
+    )["brief"]
+
+    serialized_outcome: ChiefOfStaffHandoffOutcomeRecord = {
+        "id": str(stored["id"]),
+        "capture_event_id": str(stored["capture_event_id"]),
+        "handoff_item_id": handoff_item_id,
+        "outcome_status": outcome_status,
+        "previous_outcome_status": previous_outcome_status,
+        "is_latest_outcome": True,
+        "reason": transition_reason,
+        "note": note,
+        "provenance_references": [
+            {
+                "source_kind": "continuity_capture_event",
+                "source_id": str(capture_event["id"]),
+            }
+        ],
+        "created_at": stored["created_at"].isoformat(),
+        "updated_at": stored["updated_at"].isoformat(),
+    }
+
+    handoff_outcomes = list(updated_brief["handoff_outcomes"])
+    if not any(record["id"] == serialized_outcome["id"] for record in handoff_outcomes):
+        handoff_outcomes.insert(0, serialized_outcome)
+
+    return {
+        "handoff_outcome": serialized_outcome,
+        "handoff_outcome_summary": updated_brief["handoff_outcome_summary"],
+        "handoff_outcomes": handoff_outcomes,
+        "closure_quality_summary": updated_brief["closure_quality_summary"],
+        "conversion_signal_summary": updated_brief["conversion_signal_summary"],
+        "stale_ignored_escalation_posture": updated_brief["stale_ignored_escalation_posture"],
+    }
+
+
 def compile_chief_of_staff_priority_brief(
     store: ContinuityStore,
     *,
@@ -3226,6 +3675,28 @@ def compile_chief_of_staff_priority_brief(
         all_follow_through_items=all_follow_through_items,
         handoff_review_actions=handoff_review_actions,
     )
+    all_handoff_outcomes = _list_handoff_outcome_records(recall_payload["items"])
+    (
+        handoff_outcome_summary,
+        handoff_outcomes,
+        latest_handoff_outcome_status_counts,
+    ) = _build_handoff_outcome_artifacts(
+        all_handoff_outcomes=all_handoff_outcomes,
+        limit=min(limit, _OUTCOME_HISTORY_LIMIT),
+    )
+    closure_quality_summary = _build_closure_quality_summary(
+        handoff_outcome_summary=handoff_outcome_summary,
+        latest_status_counts=latest_handoff_outcome_status_counts,
+    )
+    conversion_signal_summary = _build_conversion_signal_summary(
+        total_handoff_count=len(handoff_items),
+        handoff_outcome_summary=handoff_outcome_summary,
+        latest_status_counts=latest_handoff_outcome_status_counts,
+    )
+    stale_ignored_escalation_posture = _build_stale_ignored_escalation_posture(
+        handoff_queue_summary=handoff_queue_summary,
+        latest_status_counts=latest_handoff_outcome_status_counts,
+    )
     routing_audit_trail = _list_execution_routing_audit_records(recall_payload["items"])
     (
         execution_routing_summary,
@@ -3266,6 +3737,12 @@ def compile_chief_of_staff_priority_brief(
         "handoff_queue_state_order": list(handoff_queue_summary["state_order"]),
         "handoff_queue_group_order": list(handoff_queue_summary["group_order"]),
         "handoff_queue_item_order": list(handoff_queue_summary["item_order"]),
+        "handoff_outcome_total_count": handoff_outcome_summary["total_count"],
+        "handoff_outcome_latest_count": handoff_outcome_summary["latest_total_count"],
+        "handoff_outcome_executed_count": handoff_outcome_summary["latest_status_counts"]["executed"],
+        "handoff_outcome_ignored_count": handoff_outcome_summary["latest_status_counts"]["ignored"],
+        "closure_quality_posture": closure_quality_summary["posture"],
+        "stale_ignored_escalation_posture": stale_ignored_escalation_posture["posture"],
     }
 
     brief: ChiefOfStaffPriorityBriefRecord = {
@@ -3292,6 +3769,11 @@ def compile_chief_of_staff_priority_brief(
         "handoff_queue_summary": handoff_queue_summary,
         "handoff_queue_groups": handoff_queue_groups,
         "handoff_review_actions": handoff_review_actions,
+        "handoff_outcome_summary": handoff_outcome_summary,
+        "handoff_outcomes": handoff_outcomes,
+        "closure_quality_summary": closure_quality_summary,
+        "conversion_signal_summary": conversion_signal_summary,
+        "stale_ignored_escalation_posture": stale_ignored_escalation_posture,
         "execution_routing_summary": execution_routing_summary,
         "routed_handoff_items": routed_handoff_items,
         "routing_audit_trail": routing_audit_trail,
@@ -3309,6 +3791,7 @@ def compile_chief_of_staff_priority_brief(
             "chief_of_staff_action_handoff",
             "chief_of_staff_handoff_queue",
             "chief_of_staff_handoff_review_actions",
+            "chief_of_staff_handoff_outcomes",
             "chief_of_staff_execution_routing",
             "memory_trust_dashboard",
             "memories",

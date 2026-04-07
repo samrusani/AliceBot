@@ -1,79 +1,97 @@
 # BUILD_REPORT.md
 
 ## sprint objective
-Implement Phase 8 Sprint 31 (P8-S31): deterministic governed execution routing for chief-of-staff handoff items, with explicit execution-readiness posture, auditable routing transitions, and draft-only approval-bounded behavior.
+Implement Phase 8 Sprint 32 (P8-S32): deterministic chief-of-staff outcome learning and closure quality on top of shipped P8-S29/P8-S30/P8-S31 seams, without widening autonomy.
 
 ## completed work
-- Added governed execution routing contract fields on `GET /v0/chief-of-staff`:
-  - `execution_routing_summary`
-  - `routed_handoff_items`
-  - `routing_audit_trail`
-  - `execution_readiness_posture`
-- Added governed execution routing capture seam:
-  - endpoint `POST /v0/chief-of-staff/execution-routing-actions`
-  - explicit route targets: `task_workflow_draft`, `approval_workflow_draft`, `follow_up_draft_only`
-  - explicit transitions: `routed`, `reaffirmed`
-  - immutable continuity-note capture (`kind=chief_of_staff_execution_routing_action`)
-- Added deterministic routing artifact assembly in chief-of-staff brief compilation:
-  - deterministic routed-item ordering (`handoff_rank_asc`, `handoff_item_id_asc`)
-  - deterministic routing audit ordering (`created_at_desc`, `id_desc`)
-  - explicit approval-required non-autonomous readiness posture
-- Added `/chief-of-staff` execution routing panel:
-  - readiness posture visibility
-  - live route controls for allowed targets
-  - auditable routing transition history
-- Added deterministic backend/web tests for routing seam and payload propagation.
-- Tightened routing contract/test semantics:
-  - execution-readiness `transition_order` now uses transition vocabulary (`routed`, `reaffirmed`)
-  - routing integration test now asserts first transition is `routed` and repeat transition is `reaffirmed`
-- Updated required docs for active sprint truth:
+- Added routed-handoff outcome capture seam:
+  - `POST /v0/chief-of-staff/handoff-outcomes`
+  - explicit status vocabulary: `reviewed`, `approved`, `rejected`, `rewritten`, `executed`, `ignored`, `expired`
+  - immutable continuity note records with `kind=chief_of_staff_handoff_outcome`
+  - capture validation requires handoff item to exist in scoped routed handoff list and be explicitly routed first.
+- Extended `GET /v0/chief-of-staff` with deterministic outcome-learning artifacts:
+  - `handoff_outcome_summary`
+  - `handoff_outcomes`
+  - `closure_quality_summary`
+  - `conversion_signal_summary`
+  - `stale_ignored_escalation_posture`
+- Extended chief-of-staff brief summary counters/postures:
+  - `handoff_outcome_total_count`
+  - `handoff_outcome_latest_count`
+  - `handoff_outcome_executed_count`
+  - `handoff_outcome_ignored_count`
+  - `closure_quality_posture`
+  - `stale_ignored_escalation_posture`
+- Added `/chief-of-staff` outcome-learning UI panel with:
+  - explicit per-item outcome capture controls for routed handoff items
+  - closure-quality visibility
+  - conversion-signal visibility
+  - stale/ignored escalation posture visibility
+  - fixture + live-mode support.
+- Added deterministic backend/web test coverage for:
+  - latest-state outcome rollups
+  - outcome capture auditability
+  - outcome capture negative-path validation (`invalid outcome_status`, `unrouted handoff_item_id`, `out-of-scope handoff_item_id`)
+  - closure/conversion/escalation summaries
+  - API client capture helper
+  - chief-of-staff page and outcome-learning panel rendering/capture flow.
+- Updated required sprint docs:
   - `README.md`
   - `ROADMAP.md`
   - `.ai/handoff/CURRENT_STATE.md`
+  - `.ai/active/SPRINT_PACKET.md`
+  - `BUILD_REPORT.md`
+  - `REVIEW_REPORT.md`
 
-## exact governed-routing contract delta
+## exact outcome-learning contract delta
 - `apps/api/src/alicebot_api/contracts.py`
-  - Added literals/constants:
-    - `ChiefOfStaffExecutionReadinessPosture = "approval_required_draft_only"`
-    - `ChiefOfStaffExecutionRouteTarget`
-    - `ChiefOfStaffExecutionRoutingTransition`
-    - `CHIEF_OF_STAFF_EXECUTION_READINESS_POSTURE_ORDER`
-    - `CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER`
-    - `CHIEF_OF_STAFF_EXECUTION_ROUTED_ITEM_ORDER`
-    - `CHIEF_OF_STAFF_EXECUTION_ROUTING_AUDIT_ORDER`
-    - `CHIEF_OF_STAFF_EXECUTION_ROUTING_TRANSITIONS`
-  - Added request input:
-    - `ChiefOfStaffExecutionRoutingActionInput`
-  - Added response/data records:
-    - `ChiefOfStaffExecutionReadinessPostureRecord`
-    - `ChiefOfStaffExecutionRoutingAuditRecord`
-    - `ChiefOfStaffRoutedHandoffItemRecord`
-    - `ChiefOfStaffExecutionRoutingSummary`
-    - `ChiefOfStaffExecutionRoutingActionCaptureResponse`
-  - Extended `ChiefOfStaffPriorityBriefRecord` with new routing/readiness fields.
+  - Added:
+    - `ChiefOfStaffHandoffOutcomeStatus`
+    - `ChiefOfStaffClosureQualityPosture`
+    - `CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES`
+    - `CHIEF_OF_STAFF_HANDOFF_OUTCOME_ORDER`
+    - `ChiefOfStaffHandoffOutcomeCaptureInput`
+    - `ChiefOfStaffHandoffOutcomeRecord`
+    - `ChiefOfStaffHandoffOutcomeSummary`
+    - `ChiefOfStaffClosureQualitySummaryRecord`
+    - `ChiefOfStaffConversionSignalSummaryRecord`
+    - `ChiefOfStaffStaleIgnoredEscalationPostureRecord`
+    - `ChiefOfStaffHandoffOutcomeCaptureResponse`
+  - Extended `ChiefOfStaffPriorityBriefRecord` with outcome-learning payload fields.
+  - Extended `ChiefOfStaffPrioritySummary` with outcome-learning summary counters/postures.
 - `apps/api/src/alicebot_api/chief_of_staff.py`
-  - Added deterministic routing audit parse/list helpers and routing artifact builder.
-  - Added `capture_chief_of_staff_execution_routing_action(...)`.
-  - Extended `compile_chief_of_staff_priority_brief(...)` to emit routing/readiness artifacts.
+  - Added deterministic parse/list/build helpers for handoff outcomes and rollups.
+  - Added `capture_chief_of_staff_handoff_outcome(...)` seam.
+  - Extended `compile_chief_of_staff_priority_brief(...)` to emit all new outcome-learning fields.
 - `apps/api/src/alicebot_api/main.py`
-  - Added request model `ChiefOfStaffExecutionRoutingActionCaptureRequest`.
-  - Added endpoint `POST /v0/chief-of-staff/execution-routing-actions`.
+  - Added request model `ChiefOfStaffHandoffOutcomeCaptureRequest`.
+  - Added endpoint `POST /v0/chief-of-staff/handoff-outcomes`.
 - `apps/web/lib/api.ts`
-  - Added routing/readiness types and action capture payload/result types.
-  - Added `captureChiefOfStaffExecutionRoutingAction(...)`.
+  - Added TS types for all new outcome-learning contracts.
+  - Added `captureChiefOfStaffHandoffOutcome(...)` helper.
+  - Extended `ChiefOfStaffPriorityBrief` and `ChiefOfStaffPrioritySummary` types with new fields.
 
-## exact deterministic routing/execution-readiness behavior
-- Routing actions are explicit operator actions only; no autonomous execution is introduced.
-- For each handoff item, available route targets are deterministic by source kind.
-- Routing status is inferred deterministically from latest routing transition per `(handoff_item_id, route_target)`.
-- Routing transitions are auditable and deterministic for fixed state:
-  - sorted by `created_at_desc`, then `id_desc`
-  - transition vocabulary constrained to `routed`/`reaffirmed`
-- Execution-readiness posture remains explicit and approval-required:
-  - draft-only
-  - no autonomous execution
-  - no external side effects
-  - approval path explicitly visible
+## exact deterministic outcome/closure summary behavior
+- Outcome history parsing is deterministic and status-constrained.
+- Outcome ordering is deterministic (`created_at_desc`, `id_desc`).
+- Latest-state derivation is deterministic per `handoff_item_id`.
+- `handoff_outcome_summary` reports:
+  - total history counts
+  - latest-state counts
+  - deterministic status/order metadata
+- `conversion_signal_summary` is latest-state driven and deterministic:
+  - executed/approved/reviewed/rewritten/rejected/ignored/expired latest counts
+  - recommendation-to-execution conversion rate
+  - recommendation-to-closure conversion rate
+  - capture coverage rate
+- `closure_quality_summary` is deterministic posture logic over latest-state outcomes:
+  - `insufficient_signal`, `critical`, `watch`, `healthy`
+  - explicit reason + closure/unresolved/rejected/ignored/expired counts + closure rate
+- `stale_ignored_escalation_posture` is deterministic posture logic from:
+  - queue stale/expired pressure
+  - latest ignored/expired outcome counts
+  - explicit reason, trigger count, and supporting signals.
+- Execution posture remains approval-bounded and non-autonomous; no auto-execution side effects were introduced.
 
 ## incomplete work
 - None.
@@ -86,13 +104,10 @@ Implement Phase 8 Sprint 31 (P8-S31): deterministic governed execution routing f
 - `apps/web/lib/api.test.ts`
 - `apps/web/app/chief-of-staff/page.tsx`
 - `apps/web/app/chief-of-staff/page.test.tsx`
-- `apps/web/components/chief-of-staff-action-handoff-panel.test.tsx`
-- `apps/web/components/chief-of-staff-execution-routing-panel.tsx`
-- `apps/web/components/chief-of-staff-execution-routing-panel.test.tsx`
+- `apps/web/components/chief-of-staff-outcome-learning-panel.tsx`
+- `apps/web/components/chief-of-staff-outcome-learning-panel.test.tsx`
 - `tests/unit/test_chief_of_staff.py`
 - `tests/integration/test_chief_of_staff_api.py`
-- `docs/phase8-product-spec.md`
-- `docs/phase8-sprint-29-32-plan.md`
 - `README.md`
 - `ROADMAP.md`
 - `.ai/handoff/CURRENT_STATE.md`
@@ -101,24 +116,23 @@ Implement Phase 8 Sprint 31 (P8-S31): deterministic governed execution routing f
 - `REVIEW_REPORT.md`
 
 ## tests run
-- `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py -q`
-  - PASS (`9 passed`)
 - `./.venv/bin/python -m pytest tests/unit/test_chief_of_staff.py tests/integration/test_chief_of_staff_api.py -q`
-  - PASS (`13 passed`)
-- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-action-handoff-panel.test.tsx components/chief-of-staff-handoff-queue-panel.test.tsx components/chief-of-staff-execution-routing-panel.test.tsx lib/api.test.ts`
-  - PASS (`5 files`, `45 tests`)
+  - PASS (`17 passed`)
+- `pnpm --dir apps/web test -- app/chief-of-staff/page.test.tsx components/chief-of-staff-execution-routing-panel.test.tsx components/chief-of-staff-outcome-learning-panel.test.tsx lib/api.test.ts`
+  - PASS (`4 files`, `44 tests`)
 - `python3 scripts/run_phase4_validation_matrix.py`
   - PASS (`Phase 4 validation matrix result: PASS`)
 
 ## blockers/issues
-- None.
+- No sprint-scope product blockers.
+- Note: backend/matrix commands require local Postgres access; in this sandboxed environment they initially failed with `Operation not permitted` to `localhost:5432` and were re-run successfully with elevated permissions.
 
-## explicit deferred phase 8 scope beyond P8-S31
-- autonomous execution of routed items
+## explicit deferred phase 8 follow-up scope after P8-S32
+- autonomous execution from chief-of-staff outcomes
 - connector/channel/auth/orchestration expansion
-- redesign of shipped P8-S29 handoff generation semantics
-- redesign of shipped P8-S30 queue/review lifecycle semantics
-- outcome-learning seam planned for P8-S32
+- redesign of shipped P8-S29 handoff-generation semantics
+- redesign of shipped P8-S30 queue/review semantics
+- redesign of shipped P8-S31 routing semantics
 
 ## recommended next step
-Proceed to P8-S32 outcome-learning seam on top of the now-green P8-S31 verification gates.
+Define the next Phase 8 packet that consumes P8-S32 learning signals for operator-facing prioritization guidance only, while keeping approval-bounded non-autonomous execution posture unchanged.
