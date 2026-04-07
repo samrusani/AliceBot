@@ -17,7 +17,8 @@ This scenario is first-class in Phase 4 gates via:
 ## Preconditions
 
 - API is running and reachable by `apps/web`.
-- `NEXT_PUBLIC_ALICEBOT_API_BASE_URL` and `NEXT_PUBLIC_ALICEBOT_USER_ID` are set.
+- `NEXT_PUBLIC_ALICEBOT_API_BASE_URL` is set for `apps/web`.
+- API is configured with `ALICEBOT_AUTH_USER_ID` so `/v0/*` requests are server-bound to one authenticated user identity.
 - One tool/policy path exists that routes magnesium reorder requests through approval and `proxy.echo` execution.
 
 ## Manual Verification: `/approvals`
