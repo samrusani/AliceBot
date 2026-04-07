@@ -52,6 +52,7 @@ def test_tool_execution_store_methods_use_expected_queries_and_jsonb_parameters(
     row = {
         "id": execution_id,
         "approval_id": approval_id,
+        "task_run_id": None,
         "task_step_id": task_step_id,
         "thread_id": thread_id,
         "tool_id": tool_id,
@@ -60,6 +61,7 @@ def test_tool_execution_store_methods_use_expected_queries_and_jsonb_parameters(
         "result_event_id": result_event_id,
         "status": "completed",
         "handler_key": "proxy.echo",
+        "idempotency_key": None,
         "request": {"thread_id": str(thread_id), "tool_id": str(tool_id)},
         "tool": {"id": str(tool_id), "tool_key": "proxy.echo"},
         "result": {"handler_key": "proxy.echo", "status": "completed", "output": {"mode": "no_side_effect"}, "reason": None},
@@ -96,8 +98,9 @@ def test_tool_execution_store_methods_use_expected_queries_and_jsonb_parameters(
     create_query, create_params = cursor.executed[0]
     assert "INSERT INTO tool_executions" in create_query
     assert create_params is not None
-    assert create_params[:9] == (
+    assert create_params[:11] == (
         approval_id,
+        None,
         task_step_id,
         thread_id,
         tool_id,
@@ -106,13 +109,14 @@ def test_tool_execution_store_methods_use_expected_queries_and_jsonb_parameters(
         result_event_id,
         "completed",
         "proxy.echo",
+        None,
     )
-    assert isinstance(create_params[9], Jsonb)
-    assert create_params[9].obj == {"thread_id": str(thread_id), "tool_id": str(tool_id)}
-    assert isinstance(create_params[10], Jsonb)
-    assert create_params[10].obj == {"id": str(tool_id), "tool_key": "proxy.echo"}
     assert isinstance(create_params[11], Jsonb)
-    assert create_params[11].obj == {
+    assert create_params[11].obj == {"thread_id": str(thread_id), "tool_id": str(tool_id)}
+    assert isinstance(create_params[12], Jsonb)
+    assert create_params[12].obj == {"id": str(tool_id), "tool_key": "proxy.echo"}
+    assert isinstance(create_params[13], Jsonb)
+    assert create_params[13].obj == {
         "handler_key": "proxy.echo",
         "status": "completed",
         "output": {"mode": "no_side_effect"},
@@ -134,6 +138,7 @@ def test_create_tool_execution_accepts_blocked_attempt_without_event_ids() -> No
             {
                 "id": execution_id,
                 "approval_id": approval_id,
+                "task_run_id": None,
                 "task_step_id": task_step_id,
                 "thread_id": thread_id,
                 "tool_id": tool_id,
@@ -142,6 +147,7 @@ def test_create_tool_execution_accepts_blocked_attempt_without_event_ids() -> No
                 "result_event_id": None,
                 "status": "blocked",
                 "handler_key": None,
+                "idempotency_key": None,
                 "request": {"thread_id": str(thread_id), "tool_id": str(tool_id)},
                 "tool": {"id": str(tool_id), "tool_key": "proxy.missing"},
                 "result": {
@@ -180,6 +186,7 @@ def test_create_tool_execution_accepts_blocked_attempt_without_event_ids() -> No
     create_query, create_params = cursor.executed[0]
     assert "INSERT INTO tool_executions" in create_query
     assert create_params is not None
-    assert create_params[5] is None
+    assert create_params[1] is None
     assert create_params[6] is None
-    assert create_params[8] is None
+    assert create_params[7] is None
+    assert create_params[9] is None
