@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import stat
+
 import pytest
 
 from alicebot_api.gmail_secret_manager import (
@@ -29,6 +31,9 @@ def test_file_gmail_secret_manager_round_trips_secret_payload(tmp_path) -> None:
     manager.write_secret(secret_ref=secret_ref, payload=payload)
 
     assert manager.load_secret(secret_ref=secret_ref) == payload
+    secret_path = tmp_path / secret_ref
+    assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(secret_path.parent.stat().st_mode) == 0o700
 
 
 def test_file_gmail_secret_manager_rejects_missing_or_escaped_refs(tmp_path) -> None:

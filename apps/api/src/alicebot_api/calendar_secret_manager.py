@@ -8,6 +8,8 @@ from urllib.parse import unquote, urlparse
 from alicebot_api.store import JsonObject
 
 CALENDAR_SECRET_MANAGER_KIND_FILE_V1 = "file_v1"
+SECRET_DIRECTORY_MODE = 0o700
+SECRET_FILE_MODE = 0o600
 
 
 class CalendarSecretManagerError(RuntimeError):
@@ -32,6 +34,11 @@ class FileCalendarSecretManager(CalendarSecretManager):
 
     def __init__(self, *, root: Path) -> None:
         self._root = root.expanduser().resolve()
+        try:
+            self._root.mkdir(parents=True, exist_ok=True, mode=SECRET_DIRECTORY_MODE)
+            self._root.chmod(SECRET_DIRECTORY_MODE)
+        except OSError as exc:
+            raise CalendarSecretManagerError("calendar secret manager root is not writable") from exc
 
     def load_secret(self, *, secret_ref: str) -> JsonObject:
         path = self._resolve_secret_path(secret_ref)
@@ -47,11 +54,18 @@ class FileCalendarSecretManager(CalendarSecretManager):
 
     def write_secret(self, *, secret_ref: str, payload: JsonObject) -> None:
         path = self._resolve_secret_path(secret_ref)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_private_directory(path.parent)
         temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         try:
-            temp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            with os.fdopen(
+                os.open(temp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, SECRET_FILE_MODE),
+                "w",
+                encoding="utf-8",
+            ) as secret_file:
+                secret_file.write(json.dumps(payload, sort_keys=True))
+            temp_path.chmod(SECRET_FILE_MODE)
             temp_path.replace(path)
+            path.chmod(SECRET_FILE_MODE)
         except OSError as exc:
             try:
                 temp_path.unlink(missing_ok=True)
@@ -75,6 +89,15 @@ class FileCalendarSecretManager(CalendarSecretManager):
                 f"calendar secret {secret_ref} is outside the configured root"
             ) from exc
         return candidate
+
+    def _ensure_private_directory(self, directory: Path) -> None:
+        try:
+            directory.mkdir(parents=True, exist_ok=True, mode=SECRET_DIRECTORY_MODE)
+            directory.chmod(SECRET_DIRECTORY_MODE)
+        except OSError as exc:
+            raise CalendarSecretManagerError(
+                "calendar secret directory permissions could not be secured"
+            ) from exc
 
 
 def build_calendar_secret_manager(secret_manager_url: str) -> CalendarSecretManager:
