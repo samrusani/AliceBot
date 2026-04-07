@@ -2,7 +2,7 @@
 
 Alice is a local-first memory and continuity engine for AI agents.
 
-`P9-S33` shipped the public-core baseline. `P9-S34` ships a deterministic local CLI for continuity flows on top of that baseline.
+`P9-S33` shipped the public-core baseline. `P9-S34` shipped the deterministic local CLI for continuity flows on top of that baseline. `P9-S35` now ships a narrow MCP transport for the same continuity contract.
 
 ## Canonical Local Startup Path (`P9-S33`)
 
@@ -53,6 +53,60 @@ Run these against the `P9-S33` sample dataset after startup:
 ```
 
 The CLI output is deterministic text (stable section order and provenance snippets) to support `P9-S35` MCP parity.
+
+## MCP Invocation Path (`P9-S35`)
+
+Run the MCP server from the same local runtime used by CLI:
+
+```bash
+./.venv/bin/python -m alicebot_api.mcp_server --help
+./.venv/bin/python -m alicebot_api.mcp_server
+```
+
+Optional console-script entrypoint (after editable install):
+
+```bash
+alicebot-mcp --help
+alicebot-mcp
+```
+
+MCP uses the same local auth/config scope as CLI:
+
+- `DATABASE_URL` selects the local database
+- `ALICEBOT_AUTH_USER_ID` selects the user scope (or `--user-id`)
+- if unset, scope defaults to `00000000-0000-0000-0000-000000000001`
+
+Initial ADR-003 MCP tools:
+
+- `alice_capture`
+- `alice_recall`
+- `alice_resume`
+- `alice_open_loops`
+- `alice_recent_decisions`
+- `alice_recent_changes`
+- `alice_memory_review`
+- `alice_memory_correct`
+- `alice_context_pack`
+
+### Compatible Client Example (Claude Desktop MCP)
+
+`claude_desktop_config.json` example:
+
+```json
+{
+  "mcpServers": {
+    "alice-core": {
+      "command": "/ABSOLUTE/PATH/TO/AliceBot/.venv/bin/python",
+      "args": ["-m", "alicebot_api.mcp_server"],
+      "cwd": "/ABSOLUTE/PATH/TO/AliceBot",
+      "env": {
+        "DATABASE_URL": "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot",
+        "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001"
+      }
+    }
+  }
+}
+```
 
 ## Essential Verification Commands
 
