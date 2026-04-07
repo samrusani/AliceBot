@@ -20,6 +20,9 @@ dev = [
   "pytest>=8.3,<9.0",
 ]
 
+[project.scripts]
+alicebot = "alicebot_api.cli:main"
+
 [tool.setuptools.package-dir]
 "" = "."
 

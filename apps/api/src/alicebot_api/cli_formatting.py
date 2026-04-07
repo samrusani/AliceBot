@@ -1,0 +1,358 @@
+from __future__ import annotations
+
+import json
+from typing import Mapping, Sequence
+
+from alicebot_api.contracts import (
+    ContinuityCaptureCreateResponse,
+    ContinuityCorrectionApplyResponse,
+    ContinuityOpenLoopDashboardResponse,
+    ContinuityRecallResultRecord,
+    ContinuityRecallResponse,
+    ContinuityResumptionBriefResponse,
+    ContinuityReviewDetailResponse,
+    ContinuityReviewQueueResponse,
+)
+
+
+_SCOPE_KEY_ORDER = ("thread_id", "task_id", "project", "person", "since", "until")
+_RECALL_ITEM_PREFIX = "  "
+
+
+def _format_float(value: float) -> str:
+    return f"{value:.3f}"
+
+
+def _format_scope(scope: Mapping[str, object]) -> str:
+    rendered: list[str] = []
+    for key in _SCOPE_KEY_ORDER:
+        if key not in scope:
+            continue
+        value = scope[key]
+        if value is None:
+            continue
+        rendered.append(f"{key}={value}")
+    if not rendered:
+        return "(none)"
+    return ", ".join(rendered)
+
+
+def _format_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _format_provenance_refs(item: ContinuityRecallResultRecord) -> str:
+    refs = item["provenance_references"]
+    if len(refs) == 0:
+        return "(none)"
+    return "; ".join(f"{ref['source_kind']}:{ref['source_id']}" for ref in refs)
+
+
+def _render_recall_item(
+    item: ContinuityRecallResultRecord,
+    *,
+    index: int | None = None,
+    prefix: str = _RECALL_ITEM_PREFIX,
+) -> list[str]:
+    marker = "-" if index is None else f"{index}."
+    lines = [
+        f"{prefix}{marker} [{item['object_type']}|{item['status']}] {item['title']}",
+        f"{prefix}  id={item['id']} capture_event_id={item['capture_event_id']}",
+        (
+            f"{prefix}  confidence={_format_float(item['confidence'])} "
+            f"relevance={_format_float(item['relevance'])} "
+            f"confirmation={item['confirmation_status']}"
+        ),
+        (
+            f"{prefix}  freshness={item['ordering']['freshness_posture']} "
+            f"provenance={item['ordering']['provenance_posture']} "
+            f"supersession={item['ordering']['supersession_posture']}"
+        ),
+        f"{prefix}  provenance_refs={_format_provenance_refs(item)}",
+    ]
+    return lines
+
+
+def _render_recall_list_section(
+    *,
+    title: str,
+    items: Sequence[ContinuityRecallResultRecord],
+    limit: int,
+    total_count: int,
+    order: Sequence[str],
+    empty_message: str,
+) -> list[str]:
+    lines = [
+        f"{title} (returned={len(items)} total={total_count} limit={limit})",
+        f"order: {', '.join(order)}",
+    ]
+    if len(items) == 0:
+        lines.append(f"empty: {empty_message}")
+        return lines
+
+    for index, item in enumerate(items, start=1):
+        lines.extend(_render_recall_item(item, index=index))
+    return lines
+
+
+def format_capture_output(payload: ContinuityCaptureCreateResponse) -> str:
+    capture = payload["capture"]["capture_event"]
+    derived = payload["capture"]["derived_object"]
+
+    lines = [
+        "capture result",
+        f"capture_event_id: {capture['id']}",
+        f"created_at: {capture['created_at']}",
+        f"admission_posture: {capture['admission_posture']}",
+        f"admission_reason: {capture['admission_reason']}",
+        f"explicit_signal: {capture['explicit_signal']}",
+    ]
+
+    if derived is None:
+        lines.append("derived_object: none")
+    else:
+        lines.extend(
+            [
+                f"derived_object_id: {derived['id']}",
+                f"derived_object_type: {derived['object_type']}",
+                f"derived_object_status: {derived['status']}",
+                f"derived_confidence: {_format_float(derived['confidence'])}",
+                f"derived_title: {derived['title']}",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def format_recall_output(payload: ContinuityRecallResponse) -> str:
+    summary = payload["summary"]
+    lines = [
+        "recall summary",
+        f"query: {summary['query']}",
+        f"filters: {_format_scope(summary['filters'])}",
+        (
+            f"returned: {summary['returned_count']}/{summary['total_count']} "
+            f"(limit={summary['limit']})"
+        ),
+        f"order: {', '.join(summary['order'])}",
+    ]
+
+    items = payload["items"]
+    if len(items) == 0:
+        lines.append("empty: no continuity results in requested scope.")
+        return "\n".join(lines)
+
+    lines.append("items:")
+    for index, item in enumerate(items, start=1):
+        lines.extend(_render_recall_item(item, index=index))
+    return "\n".join(lines)
+
+
+def format_resume_output(payload: ContinuityResumptionBriefResponse) -> str:
+    brief = payload["brief"]
+    lines = [
+        "resumption brief",
+        f"assembly_version: {brief['assembly_version']}",
+        f"scope: {_format_scope(brief['scope'])}",
+        f"sources: {', '.join(brief['sources'])}",
+    ]
+
+    lines.append("last_decision:")
+    last_decision = brief["last_decision"]
+    if last_decision["item"] is None:
+        lines.append(f"  empty: {last_decision['empty_state']['message']}")
+    else:
+        lines.extend(_render_recall_item(last_decision["item"]))
+
+    lines.extend(
+        _render_recall_list_section(
+            title="open_loops",
+            items=brief["open_loops"]["items"],
+            limit=brief["open_loops"]["summary"]["limit"],
+            total_count=brief["open_loops"]["summary"]["total_count"],
+            order=brief["open_loops"]["summary"]["order"],
+            empty_message=brief["open_loops"]["empty_state"]["message"],
+        )
+    )
+    lines.extend(
+        _render_recall_list_section(
+            title="recent_changes",
+            items=brief["recent_changes"]["items"],
+            limit=brief["recent_changes"]["summary"]["limit"],
+            total_count=brief["recent_changes"]["summary"]["total_count"],
+            order=brief["recent_changes"]["summary"]["order"],
+            empty_message=brief["recent_changes"]["empty_state"]["message"],
+        )
+    )
+
+    lines.append("next_action:")
+    next_action = brief["next_action"]
+    if next_action["item"] is None:
+        lines.append(f"  empty: {next_action['empty_state']['message']}")
+    else:
+        lines.extend(_render_recall_item(next_action["item"]))
+
+    return "\n".join(lines)
+
+
+def format_open_loops_output(payload: ContinuityOpenLoopDashboardResponse) -> str:
+    dashboard = payload["dashboard"]
+    summary = dashboard["summary"]
+    lines = [
+        "open loops dashboard",
+        f"scope: {_format_scope(dashboard['scope'])}",
+        f"sources: {', '.join(dashboard['sources'])}",
+        (
+            f"summary: total={summary['total_count']} "
+            f"limit={summary['limit']} "
+            f"posture_order={','.join(summary['posture_order'])}"
+        ),
+    ]
+
+    for posture in ("waiting_for", "blocker", "stale", "next_action"):
+        section = dashboard[posture]
+        lines.extend(
+            _render_recall_list_section(
+                title=posture,
+                items=section["items"],
+                limit=section["summary"]["limit"],
+                total_count=section["summary"]["total_count"],
+                order=section["summary"]["order"],
+                empty_message=section["empty_state"]["message"],
+            )
+        )
+
+    return "\n".join(lines)
+
+
+def format_review_queue_output(payload: ContinuityReviewQueueResponse) -> str:
+    summary = payload["summary"]
+    lines = [
+        "review queue",
+        (
+            f"status={summary['status']} "
+            f"returned={summary['returned_count']}/{summary['total_count']} "
+            f"limit={summary['limit']}"
+        ),
+        f"order: {', '.join(summary['order'])}",
+    ]
+
+    items = payload["items"]
+    if len(items) == 0:
+        lines.append("empty: no review items in requested status.")
+        return "\n".join(lines)
+
+    for index, item in enumerate(items, start=1):
+        lines.extend(
+            [
+                f"{index}. [{item['object_type']}|{item['status']}] {item['title']}",
+                f"   id={item['id']} capture_event_id={item['capture_event_id']}",
+                f"   confidence={_format_float(item['confidence'])} last_confirmed_at={item['last_confirmed_at']}",
+                f"   provenance={_format_json(item['provenance'])}",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def format_review_detail_output(payload: ContinuityReviewDetailResponse) -> str:
+    review = payload["review"]
+    continuity_object = review["continuity_object"]
+    supersession = review["supersession_chain"]
+
+    lines = [
+        "review detail",
+        f"continuity_object_id: {continuity_object['id']}",
+        f"type: {continuity_object['object_type']}",
+        f"status: {continuity_object['status']}",
+        f"title: {continuity_object['title']}",
+        f"confidence: {_format_float(continuity_object['confidence'])}",
+        f"last_confirmed_at: {continuity_object['last_confirmed_at']}",
+        f"body: {_format_json(continuity_object['body'])}",
+        f"provenance: {_format_json(continuity_object['provenance'])}",
+        (
+            "supersession_chain: "
+            f"supersedes={None if supersession['supersedes'] is None else supersession['supersedes']['id']} "
+            f"superseded_by={None if supersession['superseded_by'] is None else supersession['superseded_by']['id']}"
+        ),
+        f"correction_event_count: {len(review['correction_events'])}",
+    ]
+
+    for index, event in enumerate(review["correction_events"], start=1):
+        lines.append(
+            f"event {index}: id={event['id']} action={event['action']} "
+            f"reason={event['reason']} created_at={event['created_at']}"
+        )
+
+    return "\n".join(lines)
+
+
+def format_review_apply_output(payload: ContinuityCorrectionApplyResponse) -> str:
+    continuity_object = payload["continuity_object"]
+    correction_event = payload["correction_event"]
+    replacement_object = payload["replacement_object"]
+
+    lines = [
+        "review apply result",
+        f"continuity_object_id: {continuity_object['id']}",
+        f"continuity_object_status: {continuity_object['status']}",
+        f"continuity_object_title: {continuity_object['title']}",
+        f"correction_event_id: {correction_event['id']}",
+        f"correction_action: {correction_event['action']}",
+        f"correction_reason: {correction_event['reason']}",
+        f"correction_created_at: {correction_event['created_at']}",
+    ]
+
+    if replacement_object is None:
+        lines.append("replacement_object_id: none")
+    else:
+        lines.extend(
+            [
+                f"replacement_object_id: {replacement_object['id']}",
+                f"replacement_status: {replacement_object['status']}",
+                f"replacement_title: {replacement_object['title']}",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def format_status_output(status: Mapping[str, object]) -> str:
+    lines = [
+        "alice-core status",
+        f"user_id: {status['user_id']}",
+        f"database: {status['database_status']}",
+        f"continuity_capture_events: {status['continuity_capture_events']}",
+        f"continuity_objects_total: {status['continuity_objects_total']}",
+        (
+            "continuity_object_statuses: "
+            f"active={status['continuity_objects_active']} "
+            f"stale={status['continuity_objects_stale']} "
+            f"superseded={status['continuity_objects_superseded']} "
+            f"deleted={status['continuity_objects_deleted']}"
+        ),
+        (
+            "review_queue: "
+            f"correction_ready={status['review_correction_ready']} "
+            f"active={status['review_active']} "
+            f"stale={status['review_stale']} "
+            f"superseded={status['review_superseded']} "
+            f"deleted={status['review_deleted']}"
+        ),
+        (
+            "open_loops: "
+            f"total={status['open_loops_total']} "
+            f"waiting_for={status['open_loops_waiting_for']} "
+            f"blocker={status['open_loops_blocker']} "
+            f"stale={status['open_loops_stale']} "
+            f"next_action={status['open_loops_next_action']}"
+        ),
+        (
+            "retrieval_eval: "
+            f"status={status['retrieval_eval_status']} "
+            f"precision_at_k_mean={status['retrieval_precision_at_k_mean']} "
+            f"precision_at_1_mean={status['retrieval_precision_at_1_mean']}"
+        ),
+    ]
+    return "\n".join(lines)
+
