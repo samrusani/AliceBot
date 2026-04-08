@@ -303,6 +303,15 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
+def _public_source_path(source_path: Path) -> str:
+    resolved = source_path.expanduser().resolve()
+    repo_root = _repo_root()
+    try:
+        return resolved.relative_to(repo_root).as_posix()
+    except ValueError:
+        return f"external/{resolved.name}"
+
+
 def _as_int(value: object) -> int:
     if isinstance(value, bool):
         return int(value)
@@ -411,7 +420,7 @@ def _run_phase9_importer_evidence(
             {
                 "importer": definition.importer_name,
                 "source_kind": definition.source_kind,
-                "source_path": str(definition.source_path.expanduser().resolve()),
+                "source_path": _public_source_path(definition.source_path),
                 "first_run": first_run,
                 "second_run": second_run,
                 "import_success": import_success,

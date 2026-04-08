@@ -28,7 +28,7 @@
         ],
         "provenance_source_kind": "openclaw_import",
         "skipped_duplicates": 1,
-        "source_path": "/Users/samirusani/Desktop/Codex/AliceBot/fixtures/openclaw/workspace_v1.json",
+        "source_path": "fixtures/openclaw/workspace_v1.json",
         "status": "ok",
         "total_candidates": 5,
         "workspace_id": "openclaw-workspace-demo-001",
@@ -44,14 +44,14 @@
         "imported_object_ids": [],
         "provenance_source_kind": "openclaw_import",
         "skipped_duplicates": 5,
-        "source_path": "/Users/samirusani/Desktop/Codex/AliceBot/fixtures/openclaw/workspace_v1.json",
+        "source_path": "fixtures/openclaw/workspace_v1.json",
         "status": "noop",
         "total_candidates": 5,
         "workspace_id": "openclaw-workspace-demo-001",
         "workspace_name": "OpenClaw Interop Demo"
       },
       "source_kind": "openclaw_import",
-      "source_path": "/Users/samirusani/Desktop/Codex/AliceBot/fixtures/openclaw/workspace_v1.json"
+      "source_path": "fixtures/openclaw/workspace_v1.json"
     },
     {
       "duplicate_posture_ok": true,
@@ -73,7 +73,7 @@
         ],
         "provenance_source_kind": "markdown_import",
         "skipped_duplicates": 1,
-        "source_path": "/Users/samirusani/Desktop/Codex/AliceBot/fixtures/importers/markdown/workspace_v1.md",
+        "source_path": "fixtures/importers/markdown/workspace_v1.md",
         "status": "ok",
         "total_candidates": 5,
         "workspace_id": "markdown-workspace-demo-001",
@@ -89,14 +89,14 @@
         "imported_object_ids": [],
         "provenance_source_kind": "markdown_import",
         "skipped_duplicates": 5,
-        "source_path": "/Users/samirusani/Desktop/Codex/AliceBot/fixtures/importers/markdown/workspace_v1.md",
+        "source_path": "fixtures/importers/markdown/workspace_v1.md",
         "status": "noop",
         "total_candidates": 5,
         "workspace_id": "markdown-workspace-demo-001",
         "workspace_name": "Markdown Import Demo"
       },
       "source_kind": "markdown_import",
-      "source_path": "/Users/samirusani/Desktop/Codex/AliceBot/fixtures/importers/markdown/workspace_v1.md"
+      "source_path": "fixtures/importers/markdown/workspace_v1.md"
     },
     {
       "duplicate_posture_ok": true,
@@ -118,7 +118,7 @@
         ],
         "provenance_source_kind": "chatgpt_import",
         "skipped_duplicates": 1,
-        "source_path": "/Users/samirusani/Desktop/Codex/AliceBot/fixtures/importers/chatgpt/workspace_v1.json",
+        "source_path": "fixtures/importers/chatgpt/workspace_v1.json",
         "status": "ok",
         "total_candidates": 5,
         "workspace_id": "chatgpt-workspace-demo-001",
@@ -134,14 +134,14 @@
         "imported_object_ids": [],
         "provenance_source_kind": "chatgpt_import",
         "skipped_duplicates": 5,
-        "source_path": "/Users/samirusani/Desktop/Codex/AliceBot/fixtures/importers/chatgpt/workspace_v1.json",
+        "source_path": "fixtures/importers/chatgpt/workspace_v1.json",
         "status": "noop",
         "total_candidates": 5,
         "workspace_id": "chatgpt-workspace-demo-001",
         "workspace_name": "ChatGPT Import Demo"
       },
       "source_kind": "chatgpt_import",
-      "source_path": "/Users/samirusani/Desktop/Codex/AliceBot/fixtures/importers/chatgpt/workspace_v1.json"
+      "source_path": "fixtures/importers/chatgpt/workspace_v1.json"
     }
   ],
   "recall_precision_checks": [

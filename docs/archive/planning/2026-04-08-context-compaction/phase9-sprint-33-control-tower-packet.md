@@ -16,15 +16,15 @@ Package the existing internal Alice substrate so an external technical user can 
 
 ## Required Planning Inputs
 
-- [PRODUCT_BRIEF.md](/Users/samirusani/Desktop/Codex/AliceBot/PRODUCT_BRIEF.md)
-- [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md)
-- [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md)
-- [RULES.md](/Users/samirusani/Desktop/Codex/AliceBot/RULES.md)
-- [.ai/handoff/CURRENT_STATE.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/handoff/CURRENT_STATE.md)
-- [.ai/active/SPRINT_PACKET.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/active/SPRINT_PACKET.md)
-- [phase9-product-spec.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/archive/planning/2026-04-08-context-compaction/phase9-product-spec.md)
-- [phase9-sprint-33-38-plan.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/archive/planning/2026-04-08-context-compaction/phase9-sprint-33-38-plan.md)
-- [phase9-public-core-boundary.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/phase9-public-core-boundary.md)
+- [PRODUCT_BRIEF.md](../../../../PRODUCT_BRIEF.md)
+- [ARCHITECTURE.md](../../../../ARCHITECTURE.md)
+- [ROADMAP.md](../../../../ROADMAP.md)
+- [RULES.md](../../../../RULES.md)
+- [.ai/handoff/CURRENT_STATE.md](../../../../.ai/handoff/CURRENT_STATE.md)
+- [.ai/active/SPRINT_PACKET.md](../../../../.ai/active/SPRINT_PACKET.md)
+- [phase9-product-spec.md](phase9-product-spec.md)
+- [phase9-sprint-33-38-plan.md](phase9-sprint-33-38-plan.md)
+- [phase9-public-core-boundary.md](../../../phase9-public-core-boundary.md)
 
 ## Scope
 
@@ -57,13 +57,13 @@ Primary outcome:
 - public-facing package boundary is explicit enough that later CLI and MCP work can target stable seams
 
 Likely files:
-- [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md)
-- [PRODUCT_BRIEF.md](/Users/samirusani/Desktop/Codex/AliceBot/PRODUCT_BRIEF.md)
-- [README.md](/Users/samirusani/Desktop/Codex/AliceBot/README.md)
-- [pyproject.toml](/Users/samirusani/Desktop/Codex/AliceBot/pyproject.toml)
-- [docker-compose.yml](/Users/samirusani/Desktop/Codex/AliceBot/docker-compose.yml)
-- [LICENSE](/Users/samirusani/Desktop/Codex/AliceBot/LICENSE)
-- [docs/phase9-public-core-boundary.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/phase9-public-core-boundary.md)
+- [ARCHITECTURE.md](../../../../ARCHITECTURE.md)
+- [PRODUCT_BRIEF.md](../../../../PRODUCT_BRIEF.md)
+- [README.md](../../../../README.md)
+- [pyproject.toml](../../../../pyproject.toml)
+- [docker-compose.yml](../../../../docker-compose.yml)
+- [LICENSE](../../../../LICENSE)
+- [docs/phase9-public-core-boundary.md](../../../phase9-public-core-boundary.md)
 
 Tasks:
 - define what is in `alice-core` versus still internal
@@ -85,10 +85,10 @@ Primary outcome:
 - external user can stand up the system from scratch and load usable sample data
 
 Likely files:
-- [.env.example](/Users/samirusani/Desktop/Codex/AliceBot/.env.example)
-- [scripts/migrate.sh](/Users/samirusani/Desktop/Codex/AliceBot/scripts/migrate.sh)
-- [scripts/api_dev.sh](/Users/samirusani/Desktop/Codex/AliceBot/scripts/api_dev.sh)
-- [scripts/dev_up.sh](/Users/samirusani/Desktop/Codex/AliceBot/scripts/dev_up.sh)
+- [.env.example](../../../../.env.example)
+- [scripts/migrate.sh](../../../../scripts/migrate.sh)
+- [scripts/api_dev.sh](../../../../scripts/api_dev.sh)
+- [scripts/dev_up.sh](../../../../scripts/dev_up.sh)
 - `fixtures/` or equivalent sample-data location
 - relevant API bootstrap/seed helpers under `apps/api` or `scripts`
 
@@ -112,9 +112,9 @@ Primary outcome:
 - repo onboarding works for an external technical user without prior Alice context
 
 Likely files:
-- [README.md](/Users/samirusani/Desktop/Codex/AliceBot/README.md)
-- [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md)
-- [.ai/handoff/CURRENT_STATE.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/handoff/CURRENT_STATE.md)
+- [README.md](../../../../README.md)
+- [ROADMAP.md](../../../../ROADMAP.md)
+- [.ai/handoff/CURRENT_STATE.md](../../../../.ai/handoff/CURRENT_STATE.md)
 - new quickstart docs if introduced under `docs/quickstart/`
 
 Tasks:
@@ -178,10 +178,10 @@ If a dedicated sample-data or smoke command is added this sprint, include it in 
 
 ## Docs To Update
 
-- [README.md](/Users/samirusani/Desktop/Codex/AliceBot/README.md)
-- [ARCHITECTURE.md](/Users/samirusani/Desktop/Codex/AliceBot/ARCHITECTURE.md)
-- [ROADMAP.md](/Users/samirusani/Desktop/Codex/AliceBot/ROADMAP.md)
-- [.ai/handoff/CURRENT_STATE.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/handoff/CURRENT_STATE.md)
+- [README.md](../../../../README.md)
+- [ARCHITECTURE.md](../../../../ARCHITECTURE.md)
+- [ROADMAP.md](../../../../ROADMAP.md)
+- [.ai/handoff/CURRENT_STATE.md](../../../../.ai/handoff/CURRENT_STATE.md)
 - any new quickstart or packaging docs introduced in-sprint
 - ADRs for blocking packaging decisions
 

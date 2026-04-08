@@ -128,7 +128,7 @@ def seed_entities(
         store = ContinuityStore(conn)
         person = store.create_entity(
             entity_type="person",
-            name="Samir",
+            name="Alex",
             source_memory_ids=[str(memory_ids[2])],
         )
         merchant = store.create_entity(
