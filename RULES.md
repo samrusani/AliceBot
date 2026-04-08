@@ -26,6 +26,7 @@
 
 - Preserve append-only continuity, correction, and revision history.
 - Keep imported data provenance explicit.
+- Every shipped importer must persist a source-specific deterministic dedupe key in provenance (for example `<source>_dedupe_key`) and keep `source_kind` explicit.
 - Importers must explicitly map or reject unknown external lifecycle/status values; do not silently coerce them to `active`.
 - Default memory admission to conservative behavior; do not loosen admission discipline for launch convenience.
 - Do not silently overwrite stale or superseded truth.
@@ -44,6 +45,7 @@
 - CLI commands need deterministic golden-output tests.
 - MCP tools need stable contract tests.
 - Importers need fixture-backed success, dedupe, and failure-path tests.
+- Phase 9 importer/evaluation claims must be reproducible from `./scripts/run_phase9_eval.sh` and repo-local fixtures.
 - Do not make public memory-quality or recall-quality claims without evaluation evidence.
 
 ## Legacy Compatibility Marker

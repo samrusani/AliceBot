@@ -185,8 +185,10 @@ describe("ContinuityOpenLoopsPanel", () => {
       );
     });
 
-    expect(refreshMock).toHaveBeenCalled();
-    expect(screen.getByText(/Lifecycle is now completed/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(refreshMock).toHaveBeenCalled();
+    });
+    expect(await screen.findByText(/Lifecycle is now completed/i)).toBeInTheDocument();
   });
 
   it("renders explicit fallback when dashboard payload is absent", () => {
