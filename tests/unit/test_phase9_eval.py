@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from alicebot_api.retrieval_evaluation import calculate_phase9_metric_ratio, write_phase9_evaluation_report
+from alicebot_api.retrieval_evaluation import (
+    _public_source_path,
+    calculate_phase9_metric_ratio,
+    write_phase9_evaluation_report,
+)
 
 
 def test_phase9_ratio_handles_zero_total() -> None:
@@ -31,3 +35,14 @@ def test_phase9_report_writer_persists_json(tmp_path: Path) -> None:
     assert output_path.exists()
     saved = json.loads(output_path.read_text(encoding="utf-8"))
     assert saved == report
+
+
+def test_public_source_path_uses_repo_relative_path_for_repo_files() -> None:
+    repo_fixture = Path("fixtures/openclaw/workspace_v1.json").resolve()
+    assert _public_source_path(repo_fixture) == "fixtures/openclaw/workspace_v1.json"
+
+
+def test_public_source_path_redacts_external_paths(tmp_path: Path) -> None:
+    external = tmp_path / "sensitive-source.json"
+    external.write_text("{}", encoding="utf-8")
+    assert _public_source_path(external) == "external/sensitive-source.json"

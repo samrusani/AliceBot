@@ -3489,7 +3489,7 @@ def test_create_entity_returns_bad_request_when_source_memory_validation_fails(m
         main_module.CreateEntityRequest(
             user_id=uuid4(),
             entity_type="person",
-            name="Samir",
+            name="Alex",
             source_memory_ids=[uuid4()],
         )
     )
@@ -3769,7 +3769,7 @@ def test_get_entity_returns_detail_payload(monkeypatch) -> None:
             "entity": {
                 "id": str(entity_id),
                 "entity_type": "person",
-                "name": "Samir",
+                "name": "Alex",
                 "source_memory_ids": ["memory-1"],
                 "created_at": "2026-03-12T10:00:00+00:00",
             }
@@ -3786,7 +3786,7 @@ def test_get_entity_returns_detail_payload(monkeypatch) -> None:
         "entity": {
             "id": str(entity_id),
             "entity_type": "person",
-            "name": "Samir",
+            "name": "Alex",
             "source_memory_ids": ["memory-1"],
             "created_at": "2026-03-12T10:00:00+00:00",
         }

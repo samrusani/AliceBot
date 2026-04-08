@@ -73,7 +73,7 @@ def test_create_entity_record_rejects_empty_source_memory_ids() -> None:
             user_id=uuid4(),
             entity=EntityCreateInput(
                 entity_type="person",
-                name="Samir",
+                name="Alex",
                 source_memory_ids=(),
             ),
         )
@@ -123,7 +123,7 @@ def test_list_entity_records_returns_deterministic_shape() -> None:
     second_memory_id = seed_memory(store)
     first_entity = store.create_entity(
         entity_type="person",
-        name="Samir",
+        name="Alex",
         source_memory_ids=[str(first_memory_id)],
     )
     second_entity = store.create_entity(
@@ -142,7 +142,7 @@ def test_list_entity_records_returns_deterministic_shape() -> None:
             {
                 "id": str(first_entity["id"]),
                 "entity_type": "person",
-                "name": "Samir",
+                "name": "Alex",
                 "source_memory_ids": [str(first_memory_id)],
                 "created_at": first_entity["created_at"].isoformat(),
             },
