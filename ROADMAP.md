@@ -4,90 +4,79 @@
 
 - Phase 4 is complete as the release-control and qualification baseline.
 - Phase 5 is complete as the daily continuity baseline.
-- Phase 6 is complete as the memory trust-calibration baseline.
+- Phase 6 is complete as the trust-calibrated memory baseline.
 - Phase 7 is complete as the chief-of-staff guidance baseline.
 - Phase 8 is complete as the operational chief-of-staff baseline.
-- The current milestone is Phase 9: Alice Public Core and Agent Interop.
+- Phase 9 is the public-core and interop milestone.
 
 ## Current Milestone
 
-### Phase 9
+### Phase 9: Alice Public Core and Agent Interop
 
-Ship Alice as a public, installable memory and continuity engine that technical users and external assistants can adopt quickly.
+Goal: ship Alice as an installable local continuity engine with deterministic CLI/MCP interop, importer coverage, and reproducible evaluation evidence.
 
 Success condition:
 
-- install locally
-- import existing context
-- run capture/recall/resume/open-loop flows
-- connect via MCP
-- verify correction-aware improvement
+- local install works from docs
+- CLI continuity commands work deterministically
+- MCP surface is stable and narrow
+- shipped importer paths are reproducible
+- evaluation report is generated from local fixtures
 
-## Next Milestones
+## Phase 9 Sprint Sequence
 
-### P9-S33: Public Core Packaging (shipped baseline)
+### `P9-S33` (shipped)
 
 - public-safe package boundary
-- documented local startup path
-- sample dataset (`fixtures/public_sample_data/continuity_v1.json`)
-- initial public README and OSS boundary decisions
+- canonical local startup path
+- deterministic sample data path
 
-### P9-S34: CLI and Continuity UX (shipped baseline)
+### `P9-S34` (shipped)
 
-- packaged local CLI entrypoint (`python -m alicebot_api`, optional `alicebot`)
-- terminal commands for capture, recall, resume, open loops, review, correction, and status
-- deterministic terminal formatting with provenance snippets
+- local CLI continuity contract
+- deterministic terminal output with provenance snippets
 
-### P9-S35: MCP Server (shipped baseline)
+### `P9-S35` (shipped)
 
-- small stable MCP tool surface
-- local interop examples for compatible clients
-- deterministic tool contracts
+- narrow MCP tool surface
+- deterministic contract parity with shipped continuity behavior
 
-### P9-S36: OpenClaw Adapter (shipped baseline)
+### `P9-S36` (shipped)
 
-- import path for OpenClaw durable memory/workspace data
-- Alice MCP augmentation mode for OpenClaw-style workflows
+- OpenClaw adapter/import path
+- deterministic dedupe + provenance posture
 
-### P9-S37: Importers and Evaluation Harness (shipped baseline)
+### `P9-S37` (shipped)
 
-- three production-usable importers are now shipped:
-  - OpenClaw
-  - Markdown
-  - ChatGPT export
-- deterministic importer provenance + dedupe policy is generalized across importers
-- local evaluation harness command is shipped (`./scripts/run_phase9_eval.sh`)
-- baseline evidence report is now generated and checked in (`eval/baselines/phase9_s37_baseline.json`)
+- markdown and ChatGPT importers
+- reproducible local eval harness
+- baseline evidence (`eval/baselines/phase9_s37_baseline.json`)
 
-### P9-S38: Docs, Launch Assets, and Public Release (current delivery seam)
+### `P9-S38` (current delivery seam)
 
-- public quickstart
-- integration docs
-- launch checklist
-- first public version tag
+- polished public README and quickstart
+- integration docs for CLI/MCP/importers/eval
+- release checklist and runbook
+- first public version tag plan/assets
 
 ## Dependencies
 
-- Phase 9 packaging must preserve shipped P5/P6/P7/P8 semantics.
-- CLI and MCP should both build on the same public core boundary.
-- Importers should reuse current continuity and correction semantics.
-- Launch docs should reflect the actual install/runtime path, not intended future structure.
+- Preserve shipped P5/P6/P7/P8 semantics.
+- Keep CLI and MCP behavior aligned to the same core seams.
+- Keep import and dedupe behavior explicit and deterministic.
+- Keep launch docs constrained to shipped command paths and evidence.
 
-## Blockers and Risks
+## Risks
 
-- Packaging boundaries may require repo cleanup before public release.
-- Import quality and dedupe behavior can become the main public trust risk.
-- MCP surface must stay narrow to avoid unstable contracts.
-- Launch quality depends heavily on quickstart reliability and docs accuracy.
-- OSS boundary and license decisions must be made before public release work finalizes.
+- Docs drift from runnable command paths.
+- Release assets claim behavior not covered by tests/evidence.
+- Launch sprint accidentally expands MCP or importer scope.
+- OSS licensing/security docs remain ambiguous before tag cut.
 
 ## Recently Completed
 
-- Phase 8 delivered operational chief-of-staff handoffs, routing, outcome learning, and closure quality.
-- `P9-S33` delivered the public-safe `alice-core` boundary, canonical local startup path, and deterministic sample-data proof.
-- `P9-S34` delivered the shipped local CLI continuity contract that `P9-S35` should mirror through MCP.
-- `P9-S35` delivered the shipped local MCP contract that `P9-S36` should consume without widening.
-- `P9-S36` delivered the shipped OpenClaw adapter baseline that `P9-S37` should generalize without reopening transport semantics.
+- `P9-S33` through `P9-S37` shipped the public runtime, CLI, MCP, OpenClaw adapter, broader importer coverage, and evaluation harness.
+- `P9-S38` is focused on launch packaging and public release readiness for those already-shipped seams.
 
 ## Legacy Compatibility Markers
 

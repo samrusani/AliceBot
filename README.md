@@ -2,178 +2,92 @@
 
 Alice is a local-first memory and continuity engine for AI agents.
 
-`P9-S33` shipped the public-core baseline. `P9-S34` shipped the deterministic local CLI for continuity flows on top of that baseline. `P9-S35` shipped a narrow MCP transport for the same continuity contract. `P9-S36` shipped the first OpenClaw adapter/import path on top of those shipped surfaces. `P9-S37` is now shipped with broader importer coverage and a reproducible local evaluation harness.
+`P9-S33` through `P9-S37` shipped the public core, deterministic CLI, deterministic MCP transport, OpenClaw adapter path, broader importer coverage, and reproducible local evaluation harness. `P9-S38` packages those shipped surfaces into launch-ready docs and release assets without widening product scope.
 
-## Canonical Local Startup Path (`P9-S33`)
+## What v0.1 Ships
 
-1. Copy environment defaults:
-   `cp .env.example .env`
-2. Create a virtualenv and install dependencies:
-   `python3 -m venv .venv && ./.venv/bin/python -m pip install -e '.[dev]'`
-3. Start local infrastructure:
-   `docker compose up -d`
-4. Apply migrations:
-   `./scripts/migrate.sh`
-5. Load deterministic sample data:
-   `./scripts/load_sample_data.sh`
-6. Start the API:
-   `./scripts/api_dev.sh`
+- local-first runtime (`docker compose`, Postgres, API)
+- continuity CLI (`python -m alicebot_api` / `alicebot`)
+- MCP server (`python -m alicebot_api.mcp_server` / `alicebot-mcp`)
+- shipped importer paths:
+  - OpenClaw (`openclaw_import`)
+  - Markdown (`markdown_import`)
+  - ChatGPT export (`chatgpt_import`)
+- reproducible evaluation harness (`./scripts/run_phase9_eval.sh`)
 
-The sample fixture path is `fixtures/public_sample_data/continuity_v1.json` and defaults through `PUBLIC_SAMPLE_DATA_PATH`.
+## Quickstart: First Useful Result
 
-## CLI Invocation Path (`P9-S34`)
-
-CLI works from the local editable install:
+Run this exact path on a clean checkout:
 
 ```bash
-./.venv/bin/python -m alicebot_api --help
+cp .env.example .env
+python3 -m venv .venv
+./.venv/bin/python -m pip install -e '.[dev]'
+docker compose up -d
+./scripts/migrate.sh
+./scripts/load_sample_data.sh
 ```
 
-Optional console-script entrypoint (after editable install):
+Start the API:
 
 ```bash
-alicebot --help
+APP_RELOAD=false ./scripts/api_dev.sh
 ```
 
-If `ALICEBOT_AUTH_USER_ID` is set (default in `.env.example`), CLI commands run in that user scope. Otherwise CLI defaults to `00000000-0000-0000-0000-000000000001`.
-
-## CLI Continuity Commands
-
-Run these against the `P9-S33` sample dataset after startup:
+In another terminal, verify health and run continuity commands:
 
 ```bash
+curl -sS http://127.0.0.1:8000/healthz
 ./.venv/bin/python -m alicebot_api status
-./.venv/bin/python -m alicebot_api capture "Decision: Keep Alice local-first for CLI verification." --explicit-signal decision
-./.venv/bin/python -m alicebot_api recall --query local-first
-./.venv/bin/python -m alicebot_api resume
-./.venv/bin/python -m alicebot_api open-loops
-./.venv/bin/python -m alicebot_api review queue --status correction_ready --limit 20
-./.venv/bin/python -m alicebot_api review show <continuity_object_id>
-./.venv/bin/python -m alicebot_api review apply <continuity_object_id> --action supersede --replacement-title "Decision: Updated title" --replacement-body-json '{"decision_text":"Updated title"}' --replacement-provenance-json '{"thread_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}' --replacement-confidence 0.97
+./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
+./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
 ```
 
-The CLI output is deterministic text (stable section order and provenance snippets) to support `P9-S35` MCP parity.
+This is the canonical quickstart used for launch docs and release verification.
 
-## MCP Invocation Path (`P9-S35`)
+Detailed guide: [docs/quickstart/local-setup-and-first-result.md](docs/quickstart/local-setup-and-first-result.md)
 
-Run the MCP server from the same local runtime used by CLI:
+## Integration Docs
+
+- CLI: [docs/integrations/cli.md](docs/integrations/cli.md)
+- MCP: [docs/integrations/mcp.md](docs/integrations/mcp.md)
+- Importers: [docs/integrations/importers.md](docs/integrations/importers.md)
+- Command walkthrough examples: [docs/examples/phase9-command-walkthrough.md](docs/examples/phase9-command-walkthrough.md)
+
+## Evaluation Evidence
+
+Run the shipped harness:
 
 ```bash
-./.venv/bin/python -m alicebot_api.mcp_server --help
-./.venv/bin/python -m alicebot_api.mcp_server
+EVAL_USER_ID="$(./.venv/bin/python -c 'import uuid; print(uuid.uuid4())')"
+EVAL_USER_EMAIL="phase9-eval-${EVAL_USER_ID}@example.com"
+./scripts/run_phase9_eval.sh --user-id "${EVAL_USER_ID}" --user-email "${EVAL_USER_EMAIL}" --display-name "Phase9 Eval" --report-path eval/reports/phase9_eval_latest.json
 ```
 
-Optional console-script entrypoint (after editable install):
+Evidence artifacts:
 
-```bash
-alicebot-mcp --help
-alicebot-mcp
-```
+- baseline: `eval/baselines/phase9_s37_baseline.json`
+- latest report path: `eval/reports/phase9_eval_latest.json`
 
-MCP uses the same local auth/config scope as CLI:
+## Release Assets
 
-- `DATABASE_URL` selects the local database
-- `ALICEBOT_AUTH_USER_ID` selects the user scope (or `--user-id`)
-- if unset, scope defaults to `00000000-0000-0000-0000-000000000001`
-
-Initial ADR-003 MCP tools:
-
-- `alice_capture`
-- `alice_recall`
-- `alice_resume`
-- `alice_open_loops`
-- `alice_recent_decisions`
-- `alice_recent_changes`
-- `alice_memory_review`
-- `alice_memory_correct`
-- `alice_context_pack`
-
-## OpenClaw Adapter Path (`P9-S36`)
-
-`P9-S36` delivers the first OpenClaw adapter path:
-
-- import one sample or real OpenClaw workspace / durable-memory export
-- preserve import provenance and dedupe posture
-- prove Alice recall and resumption over imported OpenClaw material
-- optionally prove shipped MCP tools working over that imported data
-
-Run the local OpenClaw sample import:
-
-```bash
-./scripts/load_openclaw_sample_data.sh --source fixtures/openclaw/workspace_v1.json
-```
-
-Sample proof commands against imported scope:
-
-```bash
-./.venv/bin/python -m alicebot_api recall --thread-id cccccccc-cccc-4ccc-8ccc-cccccccccccc --project "Alice Public Core" --query "MCP tool surface" --limit 5
-./.venv/bin/python -m alicebot_api resume --thread-id cccccccc-cccc-4ccc-8ccc-cccccccccccc --max-recent-changes 5 --max-open-loops 5
-```
-
-Dedupe posture is deterministic: re-running the same import returns `status=noop` with `skipped_duplicates=5`.
-
-## Importers and Eval Harness (`P9-S37`)
-
-`P9-S37` delivers three production-usable importers in total:
-
-- OpenClaw (`openclaw_import`)
-- Markdown (`markdown_import`)
-- ChatGPT export (`chatgpt_import`)
-
-Run the deterministic importer loaders:
-
-```bash
-./scripts/load_openclaw_sample_data.sh --source fixtures/openclaw/workspace_v1.json
-./scripts/load_markdown_sample_data.sh --source fixtures/importers/markdown/workspace_v1.md
-./scripts/load_chatgpt_sample_data.sh --source fixtures/importers/chatgpt/workspace_v1.json
-```
-
-Run the local Phase 9 evaluation harness and write a report:
-
-```bash
-./scripts/run_phase9_eval.sh --user-id 00000000-0000-0000-0000-000000000037 --report-path eval/reports/phase9_eval_latest.json
-```
-
-Committed baseline sample report path:
-
-- `eval/baselines/phase9_s37_baseline.json`
-
-### Compatible Client Example (Claude Desktop MCP)
-
-`claude_desktop_config.json` example:
-
-```json
-{
-  "mcpServers": {
-    "alice-core": {
-      "command": "/ABSOLUTE/PATH/TO/AliceBot/.venv/bin/python",
-      "args": ["-m", "alicebot_api.mcp_server"],
-      "cwd": "/ABSOLUTE/PATH/TO/AliceBot",
-      "env": {
-        "DATABASE_URL": "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot",
-        "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001"
-      }
-    }
-  }
-}
-```
-
-## Essential Verification Commands
-
-- API health: `curl -sS http://127.0.0.1:8000/healthz`
-- Backend tests: `./.venv/bin/python -m pytest tests/unit tests/integration`
-- Web tests: `pnpm --dir apps/web test`
+- release checklist: [docs/release/v0.1.0-release-checklist.md](docs/release/v0.1.0-release-checklist.md)
+- release tag plan: [docs/release/v0.1.0-tag-plan.md](docs/release/v0.1.0-tag-plan.md)
+- release runbook: [docs/runbooks/phase9-public-release-runbook.md](docs/runbooks/phase9-public-release-runbook.md)
+- contribution policy: [CONTRIBUTING.md](CONTRIBUTING.md)
+- security policy: [SECURITY.md](SECURITY.md)
+- license: [LICENSE](LICENSE)
 
 ## Repo Structure
 
 - `apps/api`: FastAPI runtime and continuity core seams
 - `apps/web`: operator shell
 - `fixtures/public_sample_data`: deterministic public-core sample dataset
-- `fixtures/openclaw`: deterministic OpenClaw adapter fixture dataset
+- `fixtures/openclaw`: deterministic OpenClaw fixture dataset
 - `fixtures/importers`: deterministic markdown/chatgpt importer fixtures
 - `eval`: Phase 9 evaluation reports and baselines
-- `scripts`: startup, migration, and sample-data load scripts
-- `docs`: product, architecture, ADRs, and Phase 9 planning docs
+- `scripts`: startup, migration, import, and evaluation command paths
+- `docs`: quickstart, integrations, architecture, runbooks, and release assets
 
 ## Canonical Docs
 
@@ -187,6 +101,7 @@ Committed baseline sample report path:
 - [docs/phase9-sprint-33-38-plan.md](docs/phase9-sprint-33-38-plan.md)
 - [docs/phase9-public-core-boundary.md](docs/phase9-public-core-boundary.md)
 - [docs/phase9-bootstrap-notes.md](docs/phase9-bootstrap-notes.md)
+- [docs/adr/ADR-003-mcp-tool-surface-contract.md](docs/adr/ADR-003-mcp-tool-surface-contract.md)
 - [docs/adr/ADR-004-openclaw-integration-boundary.md](docs/adr/ADR-004-openclaw-integration-boundary.md)
 - [docs/adr/ADR-005-import-provenance-and-dedupe-strategy.md](docs/adr/ADR-005-import-provenance-and-dedupe-strategy.md)
 - [docs/adr/ADR-007-public-evaluation-harness-scope.md](docs/adr/ADR-007-public-evaluation-harness-scope.md)
