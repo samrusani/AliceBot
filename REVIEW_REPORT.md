@@ -4,58 +4,55 @@
 PASS
 
 ## criteria met
-- Hosted Telegram control flow is now actionable in settings UI (not copy-only):
-  - Start link challenge
-  - Confirm link challenge
-  - Load status
-  - Unlink
-  - Load messages/threads/receipts
-- Full in-scope P10-S2 endpoint surface remains implemented and exercised:
-  - `POST /v1/channels/telegram/link/start`
-  - `POST /v1/channels/telegram/link/confirm`
-  - `POST /v1/channels/telegram/unlink`
-  - `GET /v1/channels/telegram/status`
-  - `POST /v1/channels/telegram/webhook`
-  - `GET /v1/channels/telegram/messages`
-  - `GET /v1/channels/telegram/threads`
-  - `POST /v1/channels/telegram/messages/{message_id}/dispatch`
-  - `GET /v1/channels/telegram/delivery-receipts`
-- Duplicate inbound webhook idempotency remains correct.
-- Inbound normalization/routing remains stable and now has stronger safety coverage.
-- Outbound dispatch continues to persist deterministic receipt posture.
-- P10-S1 identity/bootstrap seams are reused (not replaced) and Telegram boundary language still avoids continuity claims.
-- Control docs are aligned to an active `P10-S2` execution sprint and baseline-shipped `P10-S1` state:
+- All `P10-S3` in-scope Telegram continuity/approval endpoints are implemented and exercised:
+  - `POST /v1/channels/telegram/messages/{message_id}/handle`
+  - `GET /v1/channels/telegram/messages/{message_id}/result`
+  - `GET /v1/channels/telegram/recall`
+  - `GET /v1/channels/telegram/resume`
+  - `GET /v1/channels/telegram/open-loops`
+  - `POST /v1/channels/telegram/open-loops/{open_loop_id}/review-action`
+  - `GET /v1/channels/telegram/approvals`
+  - `POST /v1/channels/telegram/approvals/{approval_id}/approve`
+  - `POST /v1/channels/telegram/approvals/{approval_id}/reject`
+- Sprint data additions are present and wired:
+  - `approval_challenges`
+  - `open_loop_reviews`
+  - additive `chat_intents` result fields (`intent_payload`, `result_payload`, `handled_at`).
+- Deterministic routing and chat-native behavior for capture, recall, resume, correction, open-loop review, approvals, approve, and reject are implemented on top of shipped P10-S2 transport seams.
+- Provenance/correction discipline is preserved through existing continuity/approval modules (no parallel semantics stack).
+- Previously identified optional-field coercion defect is fixed in `telegram_continuity.py` (no `None` -> `'None'` conversion on intent payload fields).
+- Regression coverage added for:
+  - queryless `/resume` behavior returning handled brief context,
+  - `/recall` without query failing with explicit validation detail,
+  - `/approve` and `/reject` without IDs failing with explicit "requires approval id" details.
+- Control docs are aligned to an active `P10-S3` execution sprint and baseline-shipped `P10-S1` / `P10-S2` state:
   - `.ai/active/SPRINT_PACKET.md`
   - `.ai/handoff/CURRENT_STATE.md`
   - `README.md`
-- Required verification commands passed in this re-review:
+- Required verification commands pass in this re-review:
   - `python3 scripts/check_control_doc_truth.py` -> PASS
-  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> `1003 passed`
-  - `pnpm --dir apps/web test` -> `60 passed` test files, `196 passed` tests
+  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> PASS (`1014 passed`)
+  - `pnpm --dir apps/web test` -> PASS (`60 files`, `196 tests`)
 
 ## criteria missed
 - None.
 
 ## quality issues
-- Previously flagged blockers were fixed:
-  - Confirmed link-code replay from a different chat no longer reuses identity routing context.
-  - Active linked-chat uniqueness now enforces non-ambiguous identity binding at DB level and runtime conflict handling.
-  - Hosted `telegram_state` marker is updated to P10-S2 transport availability semantics.
-- No new blocking quality defects identified in sprint-owned changes.
+- No blocking quality issues found in sprint-owned changes after fixes.
 
 ## regression risks
 - Low.
-- Residual operational risk: hosted settings currently requires a valid session token input; if hosted auth UX changes, this panel should stay aligned with session handling conventions.
+- Residual product risk is standard heuristic-classification ambiguity in free-form chat intent detection, but implemented fail-safe behavior is deterministic and auditable.
 
 ## docs issues
-- No blocking docs issues for P10-S2 acceptance.
+- No blocking documentation issues for `P10-S3` acceptance.
 
 ## should anything be added to RULES.md?
-- Optional hardening addition: keep an explicit invariant that active external chat identity bindings must be unambiguous per channel transport.
+- Not required for this sprint pass.
 
 ## should anything update ARCHITECTURE.md?
-- Optional refinement: document finalized Telegram link conflict semantics (`identity_conflict`) and replay handling posture for consumed/confirmed link codes.
+- Optional only: document that Telegram continuity handling now persists intent outcomes plus approval/open-loop review audit artifacts for hosted control-plane traceability.
 
 ## recommended next action
 1. Ready for Control Tower merge approval under policy.
-2. After merge, open `P10-S3` only for chat-native continuity behavior on top of these transport seams.
+2. After merge, open `P10-S4` only for daily brief and notification work on top of these continuity and approval seams.

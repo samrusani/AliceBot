@@ -411,6 +411,17 @@ from alicebot_api.telegram_channels import (
     start_telegram_link_challenge,
     unlink_telegram_identity,
 )
+from alicebot_api.telegram_continuity import (
+    HostedUserAccountNotFoundError,
+    TelegramMessageResultNotFoundError,
+    apply_telegram_open_loop_review_with_log,
+    approve_telegram_approval,
+    get_telegram_message_result,
+    handle_telegram_message,
+    list_telegram_approvals,
+    prepare_telegram_continuity_context,
+    reject_telegram_approval,
+)
 from alicebot_api.continuity_review import (
     ContinuityReviewNotFoundError,
     ContinuityReviewValidationError,
@@ -1386,6 +1397,25 @@ class TelegramDispatchRequest(BaseModel):
 
     text: str = Field(min_length=1, max_length=4096)
     idempotency_key: str | None = Field(default=None, min_length=16, max_length=160)
+
+
+class TelegramMessageHandleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    intent_hint: str | None = Field(default=None, min_length=1, max_length=40)
+
+
+class TelegramOpenLoopReviewActionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: str = Field(min_length=1, max_length=40)
+    note: str | None = Field(default=None, min_length=1, max_length=500)
+
+
+class TelegramApprovalResolveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str | None = Field(default=None, min_length=1, max_length=500)
 
 
 def _extract_bearer_token(request: Request) -> str:
@@ -5534,3 +5564,497 @@ def list_v1_telegram_delivery_receipts(
             }
         ),
     )
+
+
+@app.post("/v1/channels/telegram/messages/{message_id}/handle")
+def handle_v1_telegram_message(
+    message_id: UUID,
+    request: Request,
+    body: TelegramMessageHandleRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
+                payload = handle_telegram_message(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                    message_id=message_id,
+                    bot_token=settings.telegram_bot_token,
+                    intent_hint=body.intent_hint,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedUserAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TelegramMessageNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TelegramRoutingError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v1/channels/telegram/messages/{message_id}/result")
+def get_v1_telegram_message_result(
+    message_id: UUID,
+    request: Request,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
+                payload = get_telegram_message_result(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                    message_id=message_id,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedUserAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TelegramMessageResultNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v1/channels/telegram/recall")
+def list_v1_telegram_recall(
+    request: Request,
+    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
+    thread_id: UUID | None = None,
+    task_id: UUID | None = None,
+    project: str | None = Query(default=None, min_length=1, max_length=200),
+    person: str | None = Query(default=None, min_length=1, max_length=200),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(
+        default=DEFAULT_CONTINUITY_RECALL_LIMIT,
+        ge=1,
+        le=MAX_CONTINUITY_RECALL_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
+                payload = query_continuity_recall(
+                    ContinuityStore(conn),
+                    user_id=user_account_id,
+                    request=ContinuityRecallQueryInput(
+                        query=query_text,
+                        thread_id=thread_id,
+                        task_id=task_id,
+                        project=project,
+                        person=person,
+                        since=since,
+                        until=until,
+                        limit=limit,
+                    ),
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedUserAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "workspace_id": str(workspace["id"]),
+                "recall": payload,
+            }
+        ),
+    )
+
+
+@app.get("/v1/channels/telegram/resume")
+def get_v1_telegram_resumption_brief(
+    request: Request,
+    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
+    thread_id: UUID | None = None,
+    task_id: UUID | None = None,
+    project: str | None = Query(default=None, min_length=1, max_length=200),
+    person: str | None = Query(default=None, min_length=1, max_length=200),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    max_recent_changes: int = Query(
+        default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    ),
+    max_open_loops: int = Query(
+        default=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
+                payload = compile_continuity_resumption_brief(
+                    ContinuityStore(conn),
+                    user_id=user_account_id,
+                    request=ContinuityResumptionBriefRequestInput(
+                        query=query_text,
+                        thread_id=thread_id,
+                        task_id=task_id,
+                        project=project,
+                        person=person,
+                        since=since,
+                        until=until,
+                        max_recent_changes=max_recent_changes,
+                        max_open_loops=max_open_loops,
+                    ),
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedUserAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ContinuityResumptionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "workspace_id": str(workspace["id"]),
+                "resume": payload,
+            }
+        ),
+    )
+
+
+@app.get("/v1/channels/telegram/open-loops")
+def get_v1_telegram_open_loops(
+    request: Request,
+    query_text: str | None = Query(default=None, alias="query", min_length=1, max_length=4000),
+    thread_id: UUID | None = None,
+    task_id: UUID | None = None,
+    project: str | None = Query(default=None, min_length=1, max_length=200),
+    person: str | None = Query(default=None, min_length=1, max_length=200),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(
+        default=DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_OPEN_LOOP_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
+                payload = compile_continuity_open_loop_dashboard(
+                    ContinuityStore(conn),
+                    user_id=user_account_id,
+                    request=ContinuityOpenLoopDashboardQueryInput(
+                        query=query_text,
+                        thread_id=thread_id,
+                        task_id=task_id,
+                        project=project,
+                        person=person,
+                        since=since,
+                        until=until,
+                        limit=limit,
+                    ),
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedUserAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ContinuityOpenLoopValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "workspace_id": str(workspace["id"]),
+                "open_loops": payload,
+            }
+        ),
+    )
+
+
+@app.post("/v1/channels/telegram/open-loops/{open_loop_id}/review-action")
+def review_action_v1_telegram_open_loop(
+    open_loop_id: UUID,
+    request: Request,
+    body: TelegramOpenLoopReviewActionBody,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
+                payload = apply_telegram_open_loop_review_with_log(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                    continuity_object_id=open_loop_id,
+                    action=body.action,
+                    note=body.note,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedUserAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ContinuityOpenLoopNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ContinuityOpenLoopValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v1/channels/telegram/approvals")
+def list_v1_telegram_approvals(
+    request: Request,
+    status: str = Query(default="pending", min_length=1, max_length=20),
+) -> JSONResponse:
+    settings = get_settings()
+    status_filter = status.casefold().strip()
+    if status_filter not in {"pending", "all"}:
+        return JSONResponse(status_code=400, content={"detail": "status must be one of: pending, all"})
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
+                payload = list_telegram_approvals(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                    status_filter=status_filter,  # type: ignore[arg-type]
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedUserAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v1/channels/telegram/approvals/{approval_id}/approve")
+def approve_v1_telegram_approval(
+    approval_id: UUID,
+    request: Request,
+    body: TelegramApprovalResolveBody | None = None,
+) -> JSONResponse:
+    del body
+    settings = get_settings()
+    resolution_error: (
+        ApprovalResolutionConflictError | TaskStepApprovalLinkageError | TaskStepLifecycleBoundaryError | None
+    ) = None
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
+                try:
+                    payload = approve_telegram_approval(
+                        conn,
+                        user_account_id=user_account_id,
+                        workspace_id=workspace["id"],
+                        approval_id=approval_id,
+                    )
+                except (
+                    ApprovalResolutionConflictError,
+                    TaskStepApprovalLinkageError,
+                    TaskStepLifecycleBoundaryError,
+                ) as exc:
+                    resolution_error = exc
+                    payload = None
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedUserAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ApprovalNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    if resolution_error is not None:
+        return JSONResponse(status_code=409, content={"detail": str(resolution_error)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v1/channels/telegram/approvals/{approval_id}/reject")
+def reject_v1_telegram_approval(
+    approval_id: UUID,
+    request: Request,
+    body: TelegramApprovalResolveBody | None = None,
+) -> JSONResponse:
+    del body
+    settings = get_settings()
+    resolution_error: (
+        ApprovalResolutionConflictError | TaskStepApprovalLinkageError | TaskStepLifecycleBoundaryError | None
+    ) = None
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
+                try:
+                    payload = reject_telegram_approval(
+                        conn,
+                        user_account_id=user_account_id,
+                        workspace_id=workspace["id"],
+                        approval_id=approval_id,
+                    )
+                except (
+                    ApprovalResolutionConflictError,
+                    TaskStepApprovalLinkageError,
+                    TaskStepLifecycleBoundaryError,
+                ) as exc:
+                    resolution_error = exc
+                    payload = None
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedUserAccountNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ApprovalNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    if resolution_error is not None:
+        return JSONResponse(status_code=409, content={"detail": str(resolution_error)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
