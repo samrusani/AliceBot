@@ -17,6 +17,6 @@ describe("SettingsPage", () => {
     expect(
       screen.getByText("Issue a deterministic link challenge bound to the active hosted workspace."),
     ).toBeInTheDocument();
-    expect(screen.getByText(/does not claim Telegram continuity capture/i)).toBeInTheDocument();
+    expect(screen.getByText(/does not claim beta admin dashboards/i)).toBeInTheDocument();
   });
 });

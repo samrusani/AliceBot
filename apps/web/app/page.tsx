@@ -41,7 +41,7 @@ const routeCards = [
     href: "/settings",
     title: "Hosted Settings",
     description:
-      "Persist timezone, brief-policy inputs, quiet hours, and linked-device visibility without scheduler execution.",
+      "Persist Telegram notification posture, quiet hours, daily brief delivery state, and scheduler job visibility.",
     status: "active",
   },
   {
