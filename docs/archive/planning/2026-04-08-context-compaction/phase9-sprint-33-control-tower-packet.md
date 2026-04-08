@@ -22,8 +22,8 @@ Package the existing internal Alice substrate so an external technical user can 
 - [RULES.md](/Users/samirusani/Desktop/Codex/AliceBot/RULES.md)
 - [.ai/handoff/CURRENT_STATE.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/handoff/CURRENT_STATE.md)
 - [.ai/active/SPRINT_PACKET.md](/Users/samirusani/Desktop/Codex/AliceBot/.ai/active/SPRINT_PACKET.md)
-- [phase9-product-spec.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/phase9-product-spec.md)
-- [phase9-sprint-33-38-plan.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/phase9-sprint-33-38-plan.md)
+- [phase9-product-spec.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/archive/planning/2026-04-08-context-compaction/phase9-product-spec.md)
+- [phase9-sprint-33-38-plan.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/archive/planning/2026-04-08-context-compaction/phase9-sprint-33-38-plan.md)
 - [phase9-public-core-boundary.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/phase9-public-core-boundary.md)
 
 ## Scope
