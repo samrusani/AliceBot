@@ -8,8 +8,9 @@
 - `P10-S1` (Identity + Workspace Bootstrap) is shipped.
 - `P10-S2` (Telegram Transport + Message Normalization) is shipped.
 - `P10-S3` (Chat-Native Continuity + Approvals) is shipped.
-- `P10-S4` (Daily Brief + Notifications + Scheduled Open-Loop Review) is the active execution sprint packet.
-- No scheduled daily-brief and notification loop is shipped yet.
+- `P10-S4` (Daily Brief + Notifications + Scheduled Open-Loop Review) is shipped.
+- `P10-S5` (Beta Hardening + Launch Readiness) is the active execution sprint packet.
+- No launch-ready beta hardening surface is shipped yet.
 
 ## Canonical Baseline
 
@@ -31,8 +32,8 @@
 - `P10-S1` shipped the hosted account/session foundations, workspace bootstrap, device management, preferences, and beta controls.
 - `P10-S2` shipped Telegram transport, link/unlink flow, message normalization, routing, and delivery receipts.
 - `P10-S3` shipped chat-native continuity behavior and approval handling on top of the shipped Telegram transport.
-- `P10-S4` covers daily brief delivery, notification policy, quiet hours, and scheduled waiting-for / stale-item prompts.
-- Launch hardening is the later Phase 10 milestone.
+- `P10-S4` shipped daily brief delivery, notification policy, quiet hours, and scheduled waiting-for / stale-item prompts.
+- `P10-S5` covers beta onboarding hardening, support/admin visibility, analytics/observability, rollout/rate-limit controls, and launch-facing product clarity.
 - Phase 9 shipped scope is baseline truth and must not be reopened as sprint work.
 
 ## Active Constraints

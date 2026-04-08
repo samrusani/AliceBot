@@ -5,6 +5,7 @@ const readinessChecklist = [
   "Create one hosted workspace and pin it as current.",
   "Run workspace bootstrap and confirm readiness for next-phase Telegram linkage.",
   "Set timezone and brief/quiet-hour preference scaffolding for future scheduling.",
+  "Escalate onboarding failures through hosted admin incident visibility instead of direct database inspection.",
 ];
 
 export function HostedOnboardingPanel() {
@@ -31,6 +32,17 @@ export function HostedOnboardingPanel() {
           Telegram channel linkage is <strong>not available in P10-S1</strong>. This screen only
           confirms that hosted identity, workspace bootstrap, devices, and preferences are ready for
           a later Telegram sprint.
+        </p>
+      </SectionCard>
+
+      <SectionCard
+        eyebrow="Support Posture"
+        title="Onboarding Failure Visibility"
+        description="P10-S5 keeps onboarding failures visible for support without reopening bootstrap semantics."
+      >
+        <p className="muted-copy">
+          When onboarding fails, operators should inspect hosted admin incidents and workspace support
+          posture before retrying. This keeps support workflows explicit and deterministic.
         </p>
       </SectionCard>
     </div>
