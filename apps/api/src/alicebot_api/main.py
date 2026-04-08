@@ -387,6 +387,23 @@ from alicebot_api.hosted_workspace import (
     serialize_workspace,
     set_session_workspace,
 )
+from alicebot_api.hosted_rollout import (
+    list_rollout_flags_for_admin,
+    patch_rollout_flags,
+    resolve_rollout_flag,
+)
+from alicebot_api.hosted_telemetry import (
+    aggregate_chat_telemetry,
+    record_chat_telemetry,
+)
+from alicebot_api.hosted_rate_limits import evaluate_hosted_flow_limits
+from alicebot_api.hosted_admin import (
+    get_hosted_overview_for_admin,
+    get_hosted_rate_limits_for_admin,
+    list_hosted_delivery_receipts_for_admin,
+    list_hosted_incidents_for_admin,
+    list_hosted_workspaces_for_admin,
+)
 from alicebot_api.telegram_channels import (
     TelegramIdentityNotFoundError,
     TelegramLinkPendingError,
@@ -1451,6 +1468,21 @@ class TelegramScheduledDeliveryRequest(BaseModel):
     idempotency_key: str | None = Field(default=None, min_length=8, max_length=200)
 
 
+class HostedRolloutFlagPatchItemRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    flag_key: str = Field(min_length=1, max_length=120)
+    enabled: bool
+    cohort_key: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, min_length=1, max_length=500)
+
+
+class HostedRolloutFlagsPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    updates: list[HostedRolloutFlagPatchItemRequest] = Field(min_length=1, max_length=100)
+
+
 def _extract_bearer_token(request: Request) -> str:
     raw_authorization = request.headers.get("authorization", "").strip()
     if raw_authorization == "":
@@ -1520,6 +1552,101 @@ def _resolve_workspace_for_hosted_channel_request(
             workspace_id=workspace["id"],
         )
     return workspace
+
+
+def _ensure_hosted_admin_access(conn, *, user_account_id: UUID) -> None:
+    enabled_flags = set(list_feature_flags_for_user(conn, user_account_id=user_account_id))
+    required_flags = {"hosted_admin_read", "hosted_admin_operator"}
+    missing_flags = sorted(required_flags - enabled_flags)
+    if missing_flags:
+        raise PermissionError(
+            "hosted admin access requires hosted_admin_read and hosted_admin_operator flags"
+        )
+
+
+def _record_workspace_onboarding_failure(
+    conn,
+    *,
+    workspace_id: UUID,
+    error_code: str,
+    error_detail: str,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE workspaces
+            SET support_status = CASE WHEN support_status = 'blocked' THEN support_status ELSE 'needs_attention' END,
+                onboarding_last_error_code = %s,
+                onboarding_last_error_detail = %s,
+                onboarding_last_error_at = clock_timestamp(),
+                onboarding_error_count = onboarding_error_count + 1,
+                support_notes = COALESCE(support_notes, '{}'::jsonb) || jsonb_build_object(
+                    'last_onboarding_error_code', %s::text,
+                    'last_onboarding_error_detail', %s::text,
+                    'last_onboarding_error_at', clock_timestamp()
+                ),
+                incident_evidence = COALESCE(incident_evidence, '{}'::jsonb) || jsonb_build_object(
+                    'last_onboarding_error_code', %s::text,
+                    'last_onboarding_error_detail', %s::text
+                )
+            WHERE id = %s
+            """,
+            (
+                error_code,
+                error_detail,
+                error_code,
+                error_detail,
+                error_code,
+                error_detail,
+                workspace_id,
+            ),
+        )
+
+
+def _hosted_rollout_block_error(
+    *,
+    flag_key: str,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=403,
+        content={
+            "detail": {
+                "code": "hosted_rollout_blocked",
+                "message": f"hosted flow is blocked by rollout flag {flag_key}",
+                "flag_key": flag_key,
+            }
+        },
+    )
+
+
+def _hosted_rate_limit_error(
+    *,
+    detail_code: str,
+    message: str,
+    retry_after_seconds: int,
+    rate_limit_key: str,
+    window_seconds: int,
+    max_requests: int,
+    observed_requests: int,
+    abuse_signal: str | None,
+) -> JSONResponse:
+    payload: dict[str, object] = {
+        "code": detail_code,
+        "message": message,
+        "retry_after_seconds": retry_after_seconds,
+        "rate_limit_key": rate_limit_key,
+        "window_seconds": window_seconds,
+        "max_requests": max_requests,
+        "observed_requests": observed_requests,
+    }
+    if abuse_signal is not None:
+        payload["abuse_signal"] = abuse_signal
+
+    return JSONResponse(
+        status_code=429,
+        headers={"Retry-After": str(retry_after_seconds)},
+        content={"detail": payload},
+    )
 
 
 @app.get("/healthz")
@@ -4939,6 +5066,7 @@ def bootstrap_v1_workspace(
     body: HostedWorkspaceBootstrapRequest,
 ) -> JSONResponse:
     settings = get_settings()
+    resolved_workspace_id: UUID | None = None
 
     try:
         session_token = _extract_bearer_token(request)
@@ -4955,6 +5083,7 @@ def bootstrap_v1_workspace(
                     )
                     if workspace is None:
                         raise HostedWorkspaceNotFoundError(f"workspace {body.workspace_id} was not found")
+                    resolved_workspace_id = workspace["id"]
                     set_session_workspace(
                         conn,
                         session_id=resolution["session"]["id"],
@@ -4967,6 +5096,8 @@ def bootstrap_v1_workspace(
                         user_account_id=user_account_id,
                         preferred_workspace_id=resolution["session"]["workspace_id"],
                     )
+                    if workspace is not None:
+                        resolved_workspace_id = workspace["id"]
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
 
@@ -4985,8 +5116,26 @@ def bootstrap_v1_workspace(
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
     except HostedWorkspaceNotFoundError as exc:
+        if resolved_workspace_id is not None:
+            with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+                with conn.transaction():
+                    _record_workspace_onboarding_failure(
+                        conn,
+                        workspace_id=resolved_workspace_id,
+                        error_code="workspace_not_found",
+                        error_detail=str(exc),
+                    )
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except HostedWorkspaceBootstrapConflictError as exc:
+        if resolved_workspace_id is not None:
+            with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+                with conn.transaction():
+                    _record_workspace_onboarding_failure(
+                        conn,
+                        workspace_id=resolved_workspace_id,
+                        error_code="bootstrap_conflict",
+                        error_detail=str(exc),
+                    )
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     return JSONResponse(
@@ -5223,6 +5372,285 @@ def patch_v1_preferences(
         status_code=200,
         content=jsonable_encoder({"preferences": serialize_user_preferences(preferences)}),
     )
+
+
+@app.get("/v1/admin/hosted/overview")
+def get_v1_admin_hosted_overview(
+    request: Request,
+    window_hours: int = Query(default=24, ge=1, le=168),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                payload = get_hosted_overview_for_admin(conn, window_hours=window_hours)
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v1/admin/hosted/workspaces")
+def get_v1_admin_hosted_workspaces(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                items = list_hosted_workspaces_for_admin(conn, limit=limit)
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "items": items,
+                "summary": {
+                    "total_count": len(items),
+                    "returned_count": len(items),
+                    "order": ["updated_at_desc", "id_desc"],
+                },
+            }
+        ),
+    )
+
+
+@app.get("/v1/admin/hosted/delivery-receipts")
+def get_v1_admin_hosted_delivery_receipts(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=400),
+    workspace_id: UUID | None = None,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                items = list_hosted_delivery_receipts_for_admin(
+                    conn,
+                    limit=limit,
+                    workspace_id=workspace_id,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "items": items,
+                "summary": {
+                    "total_count": len(items),
+                    "returned_count": len(items),
+                    "order": ["recorded_at_desc", "id_desc"],
+                },
+            }
+        ),
+    )
+
+
+@app.get("/v1/admin/hosted/incidents")
+def get_v1_admin_hosted_incidents(
+    request: Request,
+    status: str = Query(default="open", min_length=1, max_length=20),
+    limit: int = Query(default=100, ge=1, le=500),
+    workspace_id: UUID | None = None,
+) -> JSONResponse:
+    settings = get_settings()
+    normalized_status = status.strip().casefold()
+    if normalized_status not in {"open", "resolved", "all"}:
+        return JSONResponse(status_code=400, content={"detail": "status must be one of: open, resolved, all"})
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                items = list_hosted_incidents_for_admin(
+                    conn,
+                    limit=limit,
+                    status_filter=normalized_status,  # type: ignore[arg-type]
+                    workspace_id=workspace_id,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "items": items,
+                "summary": {
+                    "total_count": len(items),
+                    "returned_count": len(items),
+                    "status_filter": normalized_status,
+                    "order": ["occurred_at_desc", "incident_id_desc"],
+                },
+            }
+        ),
+    )
+
+
+@app.get("/v1/admin/hosted/rollout-flags")
+def get_v1_admin_hosted_rollout_flags(request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                flags = list_rollout_flags_for_admin(conn, user_account_id=user_account_id)
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "items": flags,
+                "summary": {
+                    "total_count": len(flags),
+                    "enabled_count": sum(1 for flag in flags if flag["enabled"]),
+                    "disabled_count": sum(1 for flag in flags if not flag["enabled"]),
+                    "order": ["flag_key_asc"],
+                },
+            }
+        ),
+    )
+
+
+@app.patch("/v1/admin/hosted/rollout-flags")
+def patch_v1_admin_hosted_rollout_flags(
+    request: Request,
+    body: HostedRolloutFlagsPatchRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                updated_flags = patch_rollout_flags(
+                    conn,
+                    patches=[
+                        {
+                            "flag_key": item.flag_key,
+                            "enabled": item.enabled,
+                            "cohort_key": item.cohort_key,
+                            "description": item.description,
+                        }
+                        for item in body.updates
+                    ],
+                    allowed_cohort_key=resolution["user_account"]["beta_cohort_key"],
+                )
+                flags = list_rollout_flags_for_admin(conn, user_account_id=user_account_id)
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "updated": updated_flags,
+                "items": flags,
+                "summary": {
+                    "total_count": len(flags),
+                    "enabled_count": sum(1 for flag in flags if flag["enabled"]),
+                    "disabled_count": sum(1 for flag in flags if not flag["enabled"]),
+                },
+            }
+        ),
+    )
+
+
+@app.get("/v1/admin/hosted/analytics")
+def get_v1_admin_hosted_analytics(
+    request: Request,
+    window_hours: int = Query(default=24, ge=1, le=168),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                telemetry = aggregate_chat_telemetry(conn, window_hours=window_hours)
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder({"analytics": telemetry}))
+
+
+@app.get("/v1/admin/hosted/rate-limits")
+def get_v1_admin_hosted_rate_limits(
+    request: Request,
+    window_hours: int = Query(default=24, ge=1, le=168),
+    limit: int = Query(default=100, ge=1, le=200),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                payload = get_hosted_rate_limits_for_admin(
+                    conn,
+                    window_hours=window_hours,
+                    limit=limit,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
 @app.post("/v1/channels/telegram/link/start")
@@ -5741,6 +6169,107 @@ def post_v1_telegram_daily_brief_deliver(
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
 
+                rollout_resolution = resolve_rollout_flag(
+                    conn,
+                    user_account_id=user_account_id,
+                    flag_key="hosted_scheduler_delivery_enabled",
+                )
+                if not rollout_resolution["enabled"]:
+                    record_chat_telemetry(
+                        conn,
+                        user_account_id=user_account_id,
+                        workspace_id=workspace["id"],
+                        flow_kind="scheduler_daily_brief",
+                        event_kind="rollout_block",
+                        status="blocked_rollout",
+                        route_path="/v1/channels/telegram/daily-brief/deliver",
+                        rollout_flag_key=rollout_resolution["flag_key"],
+                        rollout_flag_state="blocked",
+                        evidence={
+                            "force": body.force,
+                            "idempotency_key": body.idempotency_key,
+                        },
+                    )
+                    return _hosted_rollout_block_error(flag_key=rollout_resolution["flag_key"])
+
+                rate_limit_rollout = resolve_rollout_flag(
+                    conn,
+                    user_account_id=user_account_id,
+                    flag_key="hosted_rate_limits_enabled",
+                )
+                abuse_rollout = resolve_rollout_flag(
+                    conn,
+                    user_account_id=user_account_id,
+                    flag_key="hosted_abuse_controls_enabled",
+                )
+                if rate_limit_rollout["enabled"]:
+                    decision = evaluate_hosted_flow_limits(
+                        conn,
+                        settings=settings,
+                        user_account_id=user_account_id,
+                        workspace_id=workspace["id"],
+                        flow_kind="scheduler_daily_brief",
+                    )
+                    if decision["code"] == "hosted_abuse_limit_exceeded" and not abuse_rollout["enabled"]:
+                        decision = {
+                            **decision,
+                            "allowed": True,
+                            "code": None,
+                            "message": "abuse controls disabled by rollout",
+                            "retry_after_seconds": 0,
+                            "abuse_signal": None,
+                        }
+
+                    if not decision["allowed"]:
+                        blocked_status = "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
+                        blocked_event = "abuse_block" if blocked_status == "abuse_blocked" else "rate_limited"
+                        record_chat_telemetry(
+                            conn,
+                            user_account_id=user_account_id,
+                            workspace_id=workspace["id"],
+                            flow_kind="scheduler_daily_brief",
+                            event_kind=blocked_event,  # type: ignore[arg-type]
+                            status=blocked_status,  # type: ignore[arg-type]
+                            route_path="/v1/channels/telegram/daily-brief/deliver",
+                            rollout_flag_key=rate_limit_rollout["flag_key"],
+                            rollout_flag_state="enabled",
+                            rate_limit_key=decision["rate_limit_key"],
+                            rate_limit_window_seconds=decision["window_seconds"],
+                            rate_limit_max_requests=decision["max_requests"],
+                            retry_after_seconds=decision["retry_after_seconds"],
+                            abuse_signal=decision["abuse_signal"],
+                            evidence={
+                                "force": body.force,
+                                "idempotency_key": body.idempotency_key,
+                            },
+                        )
+                        return _hosted_rate_limit_error(
+                            detail_code=decision["code"] or "hosted_rate_limit_exceeded",
+                            message=decision["message"],
+                            retry_after_seconds=decision["retry_after_seconds"],
+                            rate_limit_key=decision["rate_limit_key"],
+                            window_seconds=decision["window_seconds"],
+                            max_requests=decision["max_requests"],
+                            observed_requests=decision["observed_requests"],
+                            abuse_signal=decision["abuse_signal"],
+                        )
+
+                record_chat_telemetry(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                    flow_kind="scheduler_daily_brief",
+                    event_kind="attempt",
+                    status="ok",
+                    route_path="/v1/channels/telegram/daily-brief/deliver",
+                    rollout_flag_key=rollout_resolution["flag_key"],
+                    rollout_flag_state="enabled",
+                    evidence={
+                        "force": body.force,
+                        "idempotency_key": body.idempotency_key,
+                    },
+                )
+
                 payload = deliver_workspace_daily_brief(
                     conn,
                     user_account_id=user_account_id,
@@ -5748,6 +6277,36 @@ def post_v1_telegram_daily_brief_deliver(
                     bot_token=settings.telegram_bot_token,
                     force=body.force,
                     idempotency_key=body.idempotency_key,
+                )
+                delivery_receipt = payload.get("delivery_receipt")
+                delivery_receipt_id: UUID | None = None
+                if isinstance(delivery_receipt, dict) and isinstance(delivery_receipt.get("id"), str):
+                    delivery_receipt_id = UUID(delivery_receipt["id"])
+
+                status_value: str = "ok"
+                if isinstance(payload.get("job"), dict):
+                    job_status = str(payload["job"].get("status", "ok"))
+                    if job_status in {"failed"}:
+                        status_value = "failed"
+                    elif job_status.startswith("suppressed"):
+                        status_value = "suppressed"
+                    elif job_status in {"simulated", "delivered"}:
+                        status_value = job_status
+                record_chat_telemetry(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                    flow_kind="scheduler_daily_brief",
+                    event_kind="result",
+                    status=status_value,  # type: ignore[arg-type]
+                    route_path="/v1/channels/telegram/daily-brief/deliver",
+                    rollout_flag_key=rollout_resolution["flag_key"],
+                    rollout_flag_state="enabled",
+                    delivery_receipt_id=delivery_receipt_id,
+                    evidence={
+                        "idempotent_replay": bool(payload.get("idempotent_replay")),
+                        "force": body.force,
+                    },
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
@@ -5823,6 +6382,110 @@ def post_v1_telegram_open_loop_prompt_deliver(
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
 
+                rollout_resolution = resolve_rollout_flag(
+                    conn,
+                    user_account_id=user_account_id,
+                    flag_key="hosted_scheduler_delivery_enabled",
+                )
+                if not rollout_resolution["enabled"]:
+                    record_chat_telemetry(
+                        conn,
+                        user_account_id=user_account_id,
+                        workspace_id=workspace["id"],
+                        flow_kind="scheduler_open_loop_prompt",
+                        event_kind="rollout_block",
+                        status="blocked_rollout",
+                        route_path=f"/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver",
+                        rollout_flag_key=rollout_resolution["flag_key"],
+                        rollout_flag_state="blocked",
+                        evidence={
+                            "prompt_id": prompt_id,
+                            "force": body.force,
+                            "idempotency_key": body.idempotency_key,
+                        },
+                    )
+                    return _hosted_rollout_block_error(flag_key=rollout_resolution["flag_key"])
+
+                rate_limit_rollout = resolve_rollout_flag(
+                    conn,
+                    user_account_id=user_account_id,
+                    flag_key="hosted_rate_limits_enabled",
+                )
+                abuse_rollout = resolve_rollout_flag(
+                    conn,
+                    user_account_id=user_account_id,
+                    flag_key="hosted_abuse_controls_enabled",
+                )
+                if rate_limit_rollout["enabled"]:
+                    decision = evaluate_hosted_flow_limits(
+                        conn,
+                        settings=settings,
+                        user_account_id=user_account_id,
+                        workspace_id=workspace["id"],
+                        flow_kind="scheduler_open_loop_prompt",
+                    )
+                    if decision["code"] == "hosted_abuse_limit_exceeded" and not abuse_rollout["enabled"]:
+                        decision = {
+                            **decision,
+                            "allowed": True,
+                            "code": None,
+                            "message": "abuse controls disabled by rollout",
+                            "retry_after_seconds": 0,
+                            "abuse_signal": None,
+                        }
+
+                    if not decision["allowed"]:
+                        blocked_status = "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
+                        blocked_event = "abuse_block" if blocked_status == "abuse_blocked" else "rate_limited"
+                        record_chat_telemetry(
+                            conn,
+                            user_account_id=user_account_id,
+                            workspace_id=workspace["id"],
+                            flow_kind="scheduler_open_loop_prompt",
+                            event_kind=blocked_event,  # type: ignore[arg-type]
+                            status=blocked_status,  # type: ignore[arg-type]
+                            route_path=f"/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver",
+                            rollout_flag_key=rate_limit_rollout["flag_key"],
+                            rollout_flag_state="enabled",
+                            rate_limit_key=decision["rate_limit_key"],
+                            rate_limit_window_seconds=decision["window_seconds"],
+                            rate_limit_max_requests=decision["max_requests"],
+                            retry_after_seconds=decision["retry_after_seconds"],
+                            abuse_signal=decision["abuse_signal"],
+                            evidence={
+                                "prompt_id": prompt_id,
+                                "force": body.force,
+                                "idempotency_key": body.idempotency_key,
+                            },
+                        )
+                        return _hosted_rate_limit_error(
+                            detail_code=decision["code"] or "hosted_rate_limit_exceeded",
+                            message=decision["message"],
+                            retry_after_seconds=decision["retry_after_seconds"],
+                            rate_limit_key=decision["rate_limit_key"],
+                            window_seconds=decision["window_seconds"],
+                            max_requests=decision["max_requests"],
+                            observed_requests=decision["observed_requests"],
+                            abuse_signal=decision["abuse_signal"],
+                        )
+
+                record_chat_telemetry(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                    flow_kind="scheduler_open_loop_prompt",
+                    event_kind="attempt",
+                    status="ok",
+                    route_path=f"/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver",
+                    rollout_flag_key=rollout_resolution["flag_key"],
+                    rollout_flag_state="enabled",
+                    evidence={
+                        "prompt_id": prompt_id,
+                        "force": body.force,
+                        "idempotency_key": body.idempotency_key,
+                    },
+                )
+
                 payload = deliver_workspace_open_loop_prompt(
                     conn,
                     user_account_id=user_account_id,
@@ -5831,6 +6494,37 @@ def post_v1_telegram_open_loop_prompt_deliver(
                     bot_token=settings.telegram_bot_token,
                     force=body.force,
                     idempotency_key=body.idempotency_key,
+                )
+                delivery_receipt = payload.get("delivery_receipt")
+                delivery_receipt_id: UUID | None = None
+                if isinstance(delivery_receipt, dict) and isinstance(delivery_receipt.get("id"), str):
+                    delivery_receipt_id = UUID(delivery_receipt["id"])
+
+                status_value: str = "ok"
+                if isinstance(payload.get("job"), dict):
+                    job_status = str(payload["job"].get("status", "ok"))
+                    if job_status in {"failed"}:
+                        status_value = "failed"
+                    elif job_status.startswith("suppressed"):
+                        status_value = "suppressed"
+                    elif job_status in {"simulated", "delivered"}:
+                        status_value = job_status
+                record_chat_telemetry(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                    flow_kind="scheduler_open_loop_prompt",
+                    event_kind="result",
+                    status=status_value,  # type: ignore[arg-type]
+                    route_path=f"/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver",
+                    rollout_flag_key=rollout_resolution["flag_key"],
+                    rollout_flag_state="enabled",
+                    delivery_receipt_id=delivery_receipt_id,
+                    evidence={
+                        "idempotent_replay": bool(payload.get("idempotent_replay")),
+                        "prompt_id": prompt_id,
+                        "force": body.force,
+                    },
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
@@ -5908,6 +6602,101 @@ def handle_v1_telegram_message(
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
 
+                rollout_resolution = resolve_rollout_flag(
+                    conn,
+                    user_account_id=user_account_id,
+                    flag_key="hosted_chat_handle_enabled",
+                )
+                if not rollout_resolution["enabled"]:
+                    record_chat_telemetry(
+                        conn,
+                        user_account_id=user_account_id,
+                        workspace_id=workspace["id"],
+                        flow_kind="chat_handle",
+                        event_kind="rollout_block",
+                        status="blocked_rollout",
+                        route_path="/v1/channels/telegram/messages/{message_id}/handle",
+                        channel_message_id=message_id,
+                        rollout_flag_key=rollout_resolution["flag_key"],
+                        rollout_flag_state="blocked",
+                        evidence={"intent_hint": body.intent_hint},
+                    )
+                    return _hosted_rollout_block_error(flag_key=rollout_resolution["flag_key"])
+
+                rate_limit_rollout = resolve_rollout_flag(
+                    conn,
+                    user_account_id=user_account_id,
+                    flag_key="hosted_rate_limits_enabled",
+                )
+                abuse_rollout = resolve_rollout_flag(
+                    conn,
+                    user_account_id=user_account_id,
+                    flag_key="hosted_abuse_controls_enabled",
+                )
+                if rate_limit_rollout["enabled"]:
+                    decision = evaluate_hosted_flow_limits(
+                        conn,
+                        settings=settings,
+                        user_account_id=user_account_id,
+                        workspace_id=workspace["id"],
+                        flow_kind="chat_handle",
+                    )
+                    if decision["code"] == "hosted_abuse_limit_exceeded" and not abuse_rollout["enabled"]:
+                        decision = {
+                            **decision,
+                            "allowed": True,
+                            "code": None,
+                            "message": "abuse controls disabled by rollout",
+                            "retry_after_seconds": 0,
+                            "abuse_signal": None,
+                        }
+
+                    if not decision["allowed"]:
+                        blocked_status = "abuse_blocked" if decision["code"] == "hosted_abuse_limit_exceeded" else "rate_limited"
+                        blocked_event = "abuse_block" if blocked_status == "abuse_blocked" else "rate_limited"
+                        record_chat_telemetry(
+                            conn,
+                            user_account_id=user_account_id,
+                            workspace_id=workspace["id"],
+                            flow_kind="chat_handle",
+                            event_kind=blocked_event,  # type: ignore[arg-type]
+                            status=blocked_status,  # type: ignore[arg-type]
+                            route_path="/v1/channels/telegram/messages/{message_id}/handle",
+                            channel_message_id=message_id,
+                            rollout_flag_key=rate_limit_rollout["flag_key"],
+                            rollout_flag_state="enabled",
+                            rate_limit_key=decision["rate_limit_key"],
+                            rate_limit_window_seconds=decision["window_seconds"],
+                            rate_limit_max_requests=decision["max_requests"],
+                            retry_after_seconds=decision["retry_after_seconds"],
+                            abuse_signal=decision["abuse_signal"],
+                            evidence={"intent_hint": body.intent_hint},
+                        )
+                        return _hosted_rate_limit_error(
+                            detail_code=decision["code"] or "hosted_rate_limit_exceeded",
+                            message=decision["message"],
+                            retry_after_seconds=decision["retry_after_seconds"],
+                            rate_limit_key=decision["rate_limit_key"],
+                            window_seconds=decision["window_seconds"],
+                            max_requests=decision["max_requests"],
+                            observed_requests=decision["observed_requests"],
+                            abuse_signal=decision["abuse_signal"],
+                        )
+
+                record_chat_telemetry(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                    flow_kind="chat_handle",
+                    event_kind="attempt",
+                    status="ok",
+                    route_path="/v1/channels/telegram/messages/{message_id}/handle",
+                    channel_message_id=message_id,
+                    rollout_flag_key=rollout_resolution["flag_key"],
+                    rollout_flag_state="enabled",
+                    evidence={"intent_hint": body.intent_hint},
+                )
+
                 prepare_telegram_continuity_context(conn, user_account_id=user_account_id)
                 payload = handle_telegram_message(
                     conn,
@@ -5916,6 +6705,29 @@ def handle_v1_telegram_message(
                     message_id=message_id,
                     bot_token=settings.telegram_bot_token,
                     intent_hint=body.intent_hint,
+                )
+                intent_status = str(payload["intent"].get("status", "handled"))
+                telemetry_status = "ok" if intent_status == "handled" else "failed"
+                delivery_receipt = payload.get("delivery_receipt")
+                delivery_receipt_id: UUID | None = None
+                if isinstance(delivery_receipt, dict) and isinstance(delivery_receipt.get("id"), str):
+                    delivery_receipt_id = UUID(delivery_receipt["id"])
+                record_chat_telemetry(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                    flow_kind="chat_handle",
+                    event_kind="result",
+                    status=telemetry_status,  # type: ignore[arg-type]
+                    route_path="/v1/channels/telegram/messages/{message_id}/handle",
+                    channel_message_id=message_id,
+                    delivery_receipt_id=delivery_receipt_id,
+                    rollout_flag_key=rollout_resolution["flag_key"],
+                    rollout_flag_state="enabled",
+                    evidence={
+                        "intent_status": intent_status,
+                        "intent_kind": payload["intent"].get("intent_kind"),
+                    },
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})

@@ -128,6 +128,10 @@ class TelegramDeliveryReceiptRow(TypedDict):
     scheduled_for: datetime | None
     schedule_slot: str | None
     notification_policy: dict[str, Any]
+    rollout_flag_state: str
+    support_evidence: dict[str, Any]
+    rate_limit_evidence: dict[str, Any]
+    incident_evidence: dict[str, Any]
     recorded_at: datetime
     created_at: datetime
 
@@ -1104,6 +1108,10 @@ def dispatch_telegram_message(
     text: str,
     dispatch_idempotency_key: str | None,
     bot_token: str,
+    rollout_flag_state: str = "enabled",
+    support_evidence: dict[str, Any] | None = None,
+    rate_limit_evidence: dict[str, Any] | None = None,
+    incident_evidence: dict[str, Any] | None = None,
 ) -> tuple[TelegramChannelMessageRow, TelegramDeliveryReceiptRow]:
     normalized_text = text.strip()
     if normalized_text == "":
@@ -1252,19 +1260,28 @@ def dispatch_telegram_message(
               provider_receipt_id,
               failure_code,
               failure_detail,
+              rollout_flag_state,
+              support_evidence,
+              rate_limit_evidence,
+              incident_evidence,
               recorded_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (channel_message_id) DO UPDATE
             SET status = EXCLUDED.status,
                 provider_receipt_id = EXCLUDED.provider_receipt_id,
                 failure_code = EXCLUDED.failure_code,
                 failure_detail = EXCLUDED.failure_detail,
+                rollout_flag_state = EXCLUDED.rollout_flag_state,
+                support_evidence = EXCLUDED.support_evidence,
+                rate_limit_evidence = EXCLUDED.rate_limit_evidence,
+                incident_evidence = EXCLUDED.incident_evidence,
                 recorded_at = EXCLUDED.recorded_at
             RETURNING id, workspace_id, channel_message_id, channel_type,
                       status, provider_receipt_id, failure_code, failure_detail,
                       scheduled_job_id, scheduler_job_kind, scheduled_for, schedule_slot,
-                      notification_policy, recorded_at, created_at
+                      notification_policy, rollout_flag_state, support_evidence,
+                      rate_limit_evidence, incident_evidence, recorded_at, created_at
             """,
             (
                 workspace_id,
@@ -1274,6 +1291,10 @@ def dispatch_telegram_message(
                 provider_receipt_id,
                 failure_code,
                 failure_detail,
+                rollout_flag_state,
+                Jsonb(support_evidence or {}),
+                Jsonb(rate_limit_evidence or {}),
+                Jsonb(incident_evidence or {}),
                 utc_now(),
             ),
         )
@@ -1302,6 +1323,10 @@ def dispatch_telegram_workspace_message(
     scheduled_for: datetime | None = None,
     schedule_slot: str | None = None,
     notification_policy: dict[str, Any] | None = None,
+    rollout_flag_state: str = "enabled",
+    support_evidence: dict[str, Any] | None = None,
+    rate_limit_evidence: dict[str, Any] | None = None,
+    incident_evidence: dict[str, Any] | None = None,
 ) -> tuple[TelegramChannelMessageRow, TelegramDeliveryReceiptRow]:
     normalized_text = text.strip()
     if normalized_text == "":
@@ -1463,9 +1488,13 @@ def dispatch_telegram_workspace_message(
               scheduled_for,
               schedule_slot,
               notification_policy,
+              rollout_flag_state,
+              support_evidence,
+              rate_limit_evidence,
+              incident_evidence,
               recorded_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (channel_message_id) DO UPDATE
             SET status = EXCLUDED.status,
                 provider_receipt_id = EXCLUDED.provider_receipt_id,
@@ -1476,11 +1505,16 @@ def dispatch_telegram_workspace_message(
                 scheduled_for = EXCLUDED.scheduled_for,
                 schedule_slot = EXCLUDED.schedule_slot,
                 notification_policy = EXCLUDED.notification_policy,
+                rollout_flag_state = EXCLUDED.rollout_flag_state,
+                support_evidence = EXCLUDED.support_evidence,
+                rate_limit_evidence = EXCLUDED.rate_limit_evidence,
+                incident_evidence = EXCLUDED.incident_evidence,
                 recorded_at = EXCLUDED.recorded_at
             RETURNING id, workspace_id, channel_message_id, channel_type,
                       status, provider_receipt_id, failure_code, failure_detail,
                       scheduled_job_id, scheduler_job_kind, scheduled_for, schedule_slot,
-                      notification_policy, recorded_at, created_at
+                      notification_policy, rollout_flag_state, support_evidence,
+                      rate_limit_evidence, incident_evidence, recorded_at, created_at
             """,
             (
                 workspace_id,
@@ -1495,6 +1529,10 @@ def dispatch_telegram_workspace_message(
                 scheduled_for,
                 schedule_slot,
                 Jsonb(notification_policy or {}),
+                rollout_flag_state,
+                Jsonb(support_evidence or {}),
+                Jsonb(rate_limit_evidence or {}),
+                Jsonb(incident_evidence or {}),
                 utc_now(),
             ),
         )
@@ -1529,6 +1567,10 @@ def list_workspace_telegram_delivery_receipts(
                    r.scheduled_for,
                    r.schedule_slot,
                    r.notification_policy,
+                   r.rollout_flag_state,
+                   r.support_evidence,
+                   r.rate_limit_evidence,
+                   r.incident_evidence,
                    r.recorded_at,
                    r.created_at
             FROM channel_delivery_receipts AS r
@@ -1652,6 +1694,10 @@ def serialize_delivery_receipt(receipt: TelegramDeliveryReceiptRow) -> dict[str,
         "scheduled_for": None if receipt["scheduled_for"] is None else receipt["scheduled_for"].isoformat(),
         "schedule_slot": receipt["schedule_slot"],
         "notification_policy": receipt["notification_policy"],
+        "rollout_flag_state": receipt["rollout_flag_state"],
+        "support_evidence": receipt["support_evidence"],
+        "rate_limit_evidence": receipt["rate_limit_evidence"],
+        "incident_evidence": receipt["incident_evidence"],
         "recorded_at": receipt["recorded_at"].isoformat(),
         "created_at": receipt["created_at"].isoformat(),
     }

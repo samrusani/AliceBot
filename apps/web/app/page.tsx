@@ -6,10 +6,10 @@ import { StatusBadge } from "../components/status-badge";
 
 const summaryCards = [
   {
-    value: "12",
+    value: "13",
     label: "Operator views",
     detail:
-      "Home, hosted onboarding/settings, request composition, approvals, task inspection, artifact review, Gmail review, Calendar review, memory review, entity review, and explainability are all exposed in one bounded shell.",
+      "Home, hosted onboarding/settings/admin, request composition, approvals, task inspection, artifact review, Gmail review, Calendar review, memory review, entity review, and explainability are all exposed in one bounded shell.",
   },
   {
     value: "8",
@@ -42,6 +42,13 @@ const routeCards = [
     title: "Hosted Settings",
     description:
       "Persist Telegram notification posture, quiet hours, daily brief delivery state, and scheduler job visibility.",
+    status: "active",
+  },
+  {
+    href: "/admin",
+    title: "Hosted Admin",
+    description:
+      "Inspect hosted workspace posture, delivery receipts, incidents, rollout flags, analytics, and rate-limit evidence.",
     status: "active",
   },
   {
@@ -106,6 +113,7 @@ const shellNotes = [
   "Stable navigation with obvious current location and restrained emphasis.",
   "Cards and lists sized for readable density rather than dashboard clutter.",
   "Responsive stacking that protects text containment on tablet and mobile widths.",
+  "Clear OSS-versus-hosted boundary: Alice Core remains local-first while Alice Connect beta operations stay explicit.",
 ];
 
 export default function HomePage() {

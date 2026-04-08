@@ -4,58 +4,57 @@
 PASS
 
 ## criteria met
-- `P10-S4` API scope is implemented and routed in `apps/api/src/alicebot_api/main.py`:
-  - `GET /v1/channels/telegram/daily-brief`
-  - `POST /v1/channels/telegram/daily-brief/deliver`
-  - `GET /v1/channels/telegram/notification-preferences`
-  - `PATCH /v1/channels/telegram/notification-preferences`
-  - `GET /v1/channels/telegram/open-loop-prompts`
-  - `POST /v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver`
-  - `GET /v1/channels/telegram/scheduler/jobs`
-- In-scope persistence additions are present:
-  - `notification_subscriptions`
-  - `continuity_briefs`
-  - `daily_brief_jobs`
-  - additive scheduler metadata on `channel_delivery_receipts`
-- Daily brief generation is built from durable continuity/chief-of-staff state and delivered through Telegram delivery seams.
-- Quiet-hours and notification preference gates deterministically suppress or allow delivery (`suppressed_disabled`, `suppressed_quiet_hours`, `suppressed_outside_window`, etc.).
-- Waiting-for and stale open-loop prompts are generated and delivered as scheduled nudges without reimplementing `P10-S3` generic review semantics.
-- Job + receipt evidence is persisted with deterministic status and metadata.
-- Blocking idempotency isolation defect identified in prior review is fixed:
-  - internal idempotency keys are workspace-scoped for client-supplied values
-  - job lookup/upsert is workspace/channel scoped
-  - fallback outbound-message idempotency reads are workspace scoped
-  - migration enforces workspace/channel/idempotency uniqueness for `daily_brief_jobs`
-- Regression coverage added for cross-workspace reuse of the same custom idempotency key (`tests/integration/test_phase10_daily_brief_notifications_api.py`).
-- Control docs are aligned to an active `P10-S4` execution sprint and baseline-shipped `P10-S1` through `P10-S3` state:
+- Hosted admin/support visibility for `P10-S5` is implemented with all in-scope endpoints in [`apps/api/src/alicebot_api/main.py`](apps/api/src/alicebot_api/main.py):
+  - `GET /v1/admin/hosted/overview`
+  - `GET /v1/admin/hosted/workspaces`
+  - `GET /v1/admin/hosted/delivery-receipts`
+  - `GET /v1/admin/hosted/incidents`
+  - `GET /v1/admin/hosted/rollout-flags`
+  - `PATCH /v1/admin/hosted/rollout-flags`
+  - `GET /v1/admin/hosted/analytics`
+  - `GET /v1/admin/hosted/rate-limits`
+- In-scope data additions are present in [`apps/api/alembic/versions/20260409_0047_phase10_beta_hardening_launch.py`](apps/api/alembic/versions/20260409_0047_phase10_beta_hardening_launch.py), including `chat_telemetry` plus additive rollout/support/rate-limit/incident evidence fields.
+- Hosted chat and scheduled-delivery paths enforce deterministic rollout and abuse/rate-limit controls with telemetry evidence.
+- Onboarding failure-state visibility is hardened and now avoids cross-tenant side effects:
+  - admin access requires explicit operator authorization (`hosted_admin_read` + `hosted_admin_operator`) in [`apps/api/src/alicebot_api/main.py:1557`](apps/api/src/alicebot_api/main.py:1557).
+  - bootstrap failure recording only occurs after a resolved member workspace (`resolved_workspace_id` no longer trusts request input) in [`apps/api/src/alicebot_api/main.py:5069`](apps/api/src/alicebot_api/main.py:5069).
+- Rollout patch scope is constrained to hosted flags and caller cohort:
+  - hosted-only key guard in [`apps/api/src/alicebot_api/hosted_rollout.py:55`](apps/api/src/alicebot_api/hosted_rollout.py:55).
+  - caller-cohort enforcement in [`apps/api/src/alicebot_api/hosted_rollout.py:221`](apps/api/src/alicebot_api/hosted_rollout.py:221) and [`apps/api/src/alicebot_api/main.py:5568`](apps/api/src/alicebot_api/main.py:5568).
+- Launch-facing OSS-vs-hosted clarity updates are present in sprint-owned web/docs surfaces (`README`, admin/onboarding/home shell copy).
+- `P10-S1` through `P10-S4` behavior remains baseline truth; `P10-S5` changes are additive hardening/control-plane seams.
+- Control docs are aligned to an active `P10-S5` execution sprint and baseline-shipped `P10-S1` through `P10-S4` state:
   - `.ai/active/SPRINT_PACKET.md`
   - `.ai/handoff/CURRENT_STATE.md`
   - `README.md`
 - Required verification commands were rerun and pass:
   - `python3 scripts/check_control_doc_truth.py` -> PASS
-  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> `1025 passed`
-  - `pnpm --dir apps/web test` -> `60 passed files`, `196 passed tests`
+  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> `1045 passed`
+  - `pnpm --dir apps/web test` -> `62 passed files`, `199 passed tests`
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking quality issues found in sprint-owned implementation after the idempotency scoping fix.
+- No blocking quality issues found in current sprint-owned implementation.
+- Previously identified admin/tenancy/scope issues are fixed and covered by tests.
 
 ## regression risks
 - Low.
-- Residual risk is mainly operational (scheduler volume/throughput behavior under larger datasets), not correctness of the `P10-S4` contracts.
+- Residual operational risk remains around production-scale telemetry/admin query volume, not correctness of `P10-S5` contracts.
 
 ## docs issues
-- No blocking docs issues.
-- `BUILD_REPORT.md` now reflects the idempotency fix and latest verification totals.
+- None blocking.
+- `BUILD_REPORT.md` has been aligned with the reviewer-driven fixes and latest verification totals.
 
 ## should anything be added to RULES.md?
-- Optional: add an explicit durable rule that hosted/channel idempotency must be tenant/workspace scoped for lookup and uniqueness.
+- Yes (recommended): codify that hosted admin/control-plane routes must require explicit operator authorization beyond cohort membership.
+- Yes (recommended): codify that request-supplied resource IDs that fail auth/membership checks must not drive side-effect writes.
+- Yes (recommended): codify that hosted rollout patch APIs must be constrained to hosted-prefixed keys and authorized cohort scope.
 
 ## should anything update ARCHITECTURE.md?
-- Optional: add a short security invariant under hosted control-plane boundaries that dedupe/idempotency keys are tenant-scoped.
+- Yes (recommended): add a short hosted control-plane security invariant section covering operator authorization boundaries and tenant-safe failure evidence rules.
 
 ## recommended next action
 1. Ready for Control Tower merge approval under policy.
-2. After merge, open `P10-S5` only for beta hardening and launch-readiness work on top of these scheduled-delivery seams.
+2. After merge, Phase 10 execution scope is complete and follow-on work should start from the launch/beta baseline rather than reopening shipped Phase 10 seams.
