@@ -22,6 +22,11 @@ const navigation = [
     caption: "Hosted preferences and device visibility",
   },
   {
+    href: "/admin",
+    label: "Admin",
+    caption: "Hosted workspace, delivery, rollout, and incident visibility",
+  },
+  {
     href: "/chat",
     label: "Requests",
     caption: "Compose bounded operator requests",
@@ -96,8 +101,8 @@ export function AppShell({ children }: { children: ReactNode }) {
             <h1 className="brand-title">Operator shell</h1>
             <p className="brand-description">
               Calm, governed views for hosted onboarding/settings plus requests, approvals, tasks,
-              artifacts, Gmail, Calendar, memories, chief-of-staff priorities, entities, and
-              explainability.
+              hosted admin operations, artifacts, Gmail, Calendar, memories, chief-of-staff
+              priorities, entities, and explainability.
             </p>
           </div>
 

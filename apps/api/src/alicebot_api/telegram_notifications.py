@@ -116,6 +116,10 @@ class DailyBriefJobRow(TypedDict):
     delivery_receipt_id: UUID | None
     payload: dict[str, Any]
     result_payload: dict[str, Any]
+    rollout_flag_state: str
+    support_evidence: dict[str, Any]
+    rate_limit_evidence: dict[str, Any]
+    incident_evidence: dict[str, Any]
     attempted_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
@@ -237,8 +241,9 @@ def _job_columns_sql() -> str:
     return (
         "id, workspace_id, channel_type, channel_identity_id, job_kind, prompt_kind, prompt_id, "
         "continuity_object_id, continuity_brief_id, schedule_slot, idempotency_key, due_at, status, "
-        "suppression_reason, attempt_count, delivery_receipt_id, payload, result_payload, attempted_at, "
-        "completed_at, created_at, updated_at"
+        "suppression_reason, attempt_count, delivery_receipt_id, payload, result_payload, "
+        "rollout_flag_state, support_evidence, rate_limit_evidence, incident_evidence, "
+        "attempted_at, completed_at, created_at, updated_at"
     )
 
 
@@ -246,7 +251,8 @@ def _receipt_columns_sql() -> str:
     return (
         "id, workspace_id, channel_message_id, channel_type, status, provider_receipt_id, failure_code, "
         "failure_detail, scheduled_job_id, scheduler_job_kind, scheduled_for, schedule_slot, "
-        "notification_policy, recorded_at, created_at"
+        "notification_policy, rollout_flag_state, support_evidence, rate_limit_evidence, "
+        "incident_evidence, recorded_at, created_at"
     )
 
 
@@ -722,6 +728,10 @@ def _serialize_job(
         else str(row["delivery_receipt_id"]),
         "payload": row["payload"],
         "result_payload": row["result_payload"],
+        "rollout_flag_state": row["rollout_flag_state"],
+        "support_evidence": row["support_evidence"],
+        "rate_limit_evidence": row["rate_limit_evidence"],
+        "incident_evidence": row["incident_evidence"],
         "attempted_at": None if row["attempted_at"] is None else row["attempted_at"].isoformat(),
         "completed_at": None if row["completed_at"] is None else row["completed_at"].isoformat(),
         "created_at": row["created_at"].isoformat(),

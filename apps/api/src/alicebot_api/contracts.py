@@ -5148,6 +5148,15 @@ class HostedWorkspaceRecord(TypedDict):
     name: str
     bootstrap_status: HostedWorkspaceBootstrapStatus
     bootstrapped_at: str | None
+    support_status: Literal["healthy", "needs_attention", "blocked"]
+    support_notes: JsonObject
+    onboarding_last_error_code: str | None
+    onboarding_last_error_detail: str | None
+    onboarding_last_error_at: str | None
+    onboarding_error_count: int
+    rollout_evidence: JsonObject
+    rate_limit_evidence: JsonObject
+    incident_evidence: JsonObject
     created_at: str
     updated_at: str
 
@@ -5302,6 +5311,10 @@ class ChannelDeliveryReceiptRecord(TypedDict):
     scheduled_for: str | None
     schedule_slot: str | None
     notification_policy: JsonObject
+    rollout_flag_state: Literal["enabled", "blocked"]
+    support_evidence: JsonObject
+    rate_limit_evidence: JsonObject
+    incident_evidence: JsonObject
     recorded_at: str
     created_at: str
 
@@ -5339,10 +5352,45 @@ class TelegramDailyBriefJobRecord(TypedDict):
     delivery_receipt_id: str | None
     payload: JsonObject
     result_payload: JsonObject
+    rollout_flag_state: Literal["enabled", "blocked"]
+    support_evidence: JsonObject
+    rate_limit_evidence: JsonObject
+    incident_evidence: JsonObject
     attempted_at: str | None
     completed_at: str | None
     created_at: str
     updated_at: str
+
+
+class ChatTelemetryRecord(TypedDict):
+    id: str
+    user_account_id: str
+    workspace_id: str | None
+    channel_message_id: str | None
+    daily_brief_job_id: str | None
+    delivery_receipt_id: str | None
+    flow_kind: Literal["chat_handle", "scheduler_daily_brief", "scheduler_open_loop_prompt"]
+    event_kind: Literal["attempt", "result", "rollout_block", "rate_limited", "abuse_block", "incident"]
+    status: Literal[
+        "ok",
+        "failed",
+        "blocked_rollout",
+        "rate_limited",
+        "abuse_blocked",
+        "suppressed",
+        "simulated",
+        "delivered",
+    ]
+    route_path: str
+    rollout_flag_key: str | None
+    rollout_flag_state: str | None
+    rate_limit_key: str | None
+    rate_limit_window_seconds: int | None
+    rate_limit_max_requests: int | None
+    retry_after_seconds: int | None
+    abuse_signal: str | None
+    evidence: JsonObject
+    created_at: str
 
 
 class ApprovalChallengeRecord(TypedDict):
