@@ -33,6 +33,14 @@ def test_settings_defaults(monkeypatch):
         "TELEGRAM_BOT_USERNAME",
         "TELEGRAM_WEBHOOK_SECRET",
         "TELEGRAM_BOT_TOKEN",
+        "HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS",
+        "HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS",
+        "HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS",
+        "HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS",
+        "HOSTED_ABUSE_WINDOW_SECONDS",
+        "HOSTED_ABUSE_BLOCK_THRESHOLD",
+        "HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT",
+        "HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -57,6 +65,14 @@ def test_settings_defaults(monkeypatch):
     assert settings.telegram_bot_username == "alicebot"
     assert settings.telegram_webhook_secret == ""
     assert settings.telegram_bot_token == ""
+    assert settings.hosted_chat_rate_limit_window_seconds == 60
+    assert settings.hosted_chat_rate_limit_max_requests == 20
+    assert settings.hosted_scheduler_rate_limit_window_seconds == 300
+    assert settings.hosted_scheduler_rate_limit_max_requests == 20
+    assert settings.hosted_abuse_window_seconds == 600
+    assert settings.hosted_abuse_block_threshold == 5
+    assert settings.hosted_rate_limits_enabled_by_default is True
+    assert settings.hosted_abuse_controls_enabled_by_default is True
 
 
 def test_settings_honor_environment_overrides(monkeypatch):
@@ -77,6 +93,14 @@ def test_settings_honor_environment_overrides(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_USERNAME", "alicebuilder_bot")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "phase10-secret")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-bot-token")
+    monkeypatch.setenv("HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS", "75")
+    monkeypatch.setenv("HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS", "7")
+    monkeypatch.setenv("HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS", "900")
+    monkeypatch.setenv("HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS", "12")
+    monkeypatch.setenv("HOSTED_ABUSE_WINDOW_SECONDS", "1800")
+    monkeypatch.setenv("HOSTED_ABUSE_BLOCK_THRESHOLD", "6")
+    monkeypatch.setenv("HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT", "false")
+    monkeypatch.setenv("HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT", "false")
 
     settings = Settings.from_env()
 
@@ -97,6 +121,14 @@ def test_settings_honor_environment_overrides(monkeypatch):
     assert settings.telegram_bot_username == "alicebuilder_bot"
     assert settings.telegram_webhook_secret == "phase10-secret"
     assert settings.telegram_bot_token == "test-bot-token"
+    assert settings.hosted_chat_rate_limit_window_seconds == 75
+    assert settings.hosted_chat_rate_limit_max_requests == 7
+    assert settings.hosted_scheduler_rate_limit_window_seconds == 900
+    assert settings.hosted_scheduler_rate_limit_max_requests == 12
+    assert settings.hosted_abuse_window_seconds == 1800
+    assert settings.hosted_abuse_block_threshold == 6
+    assert settings.hosted_rate_limits_enabled_by_default is False
+    assert settings.hosted_abuse_controls_enabled_by_default is False
 
 
 def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
@@ -117,6 +149,14 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
             "TELEGRAM_BOT_USERNAME": "alicebot_phase10",
             "TELEGRAM_WEBHOOK_SECRET": "secret-value",
             "TELEGRAM_BOT_TOKEN": "bot-token",
+            "HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS": "90",
+            "HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS": "9",
+            "HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS": "600",
+            "HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS": "14",
+            "HOSTED_ABUSE_WINDOW_SECONDS": "1200",
+            "HOSTED_ABUSE_BLOCK_THRESHOLD": "4",
+            "HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT": "true",
+            "HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT": "true",
         }
     )
 
@@ -135,6 +175,14 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
     assert settings.telegram_bot_username == "alicebot_phase10"
     assert settings.telegram_webhook_secret == "secret-value"
     assert settings.telegram_bot_token == "bot-token"
+    assert settings.hosted_chat_rate_limit_window_seconds == 90
+    assert settings.hosted_chat_rate_limit_max_requests == 9
+    assert settings.hosted_scheduler_rate_limit_window_seconds == 600
+    assert settings.hosted_scheduler_rate_limit_max_requests == 14
+    assert settings.hosted_abuse_window_seconds == 1200
+    assert settings.hosted_abuse_block_threshold == 4
+    assert settings.hosted_rate_limits_enabled_by_default is True
+    assert settings.hosted_abuse_controls_enabled_by_default is True
 
 
 def test_settings_raise_clear_error_for_invalid_integer_values() -> None:
@@ -174,6 +222,42 @@ def test_settings_reject_non_positive_rate_limit_values() -> None:
 
     with pytest.raises(ValueError, match="TELEGRAM_BOT_USERNAME must be provided"):
         Settings.from_env({"TELEGRAM_BOT_USERNAME": "   "})
+
+    with pytest.raises(
+        ValueError,
+        match="HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS must be a positive integer",
+    ):
+        Settings.from_env({"HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS": "0"})
+
+    with pytest.raises(
+        ValueError,
+        match="HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS must be a positive integer",
+    ):
+        Settings.from_env({"HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS": "0"})
+
+    with pytest.raises(
+        ValueError,
+        match="HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS must be a positive integer",
+    ):
+        Settings.from_env({"HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS": "0"})
+
+    with pytest.raises(
+        ValueError,
+        match="HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS must be a positive integer",
+    ):
+        Settings.from_env({"HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS": "0"})
+
+    with pytest.raises(
+        ValueError,
+        match="HOSTED_ABUSE_WINDOW_SECONDS must be a positive integer",
+    ):
+        Settings.from_env({"HOSTED_ABUSE_WINDOW_SECONDS": "0"})
+
+    with pytest.raises(
+        ValueError,
+        match="HOSTED_ABUSE_BLOCK_THRESHOLD must be a positive integer",
+    ):
+        Settings.from_env({"HOSTED_ABUSE_BLOCK_THRESHOLD": "0"})
 
 
 def test_settings_require_hardened_non_dev_configuration() -> None:

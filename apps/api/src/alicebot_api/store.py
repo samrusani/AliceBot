@@ -490,6 +490,10 @@ class ChannelDeliveryReceiptRow(TypedDict):
     scheduled_for: datetime | None
     schedule_slot: str | None
     notification_policy: JsonObject
+    rollout_flag_state: str
+    support_evidence: JsonObject
+    rate_limit_evidence: JsonObject
+    incident_evidence: JsonObject
     recorded_at: datetime
     created_at: datetime
 
@@ -570,10 +574,36 @@ class DailyBriefJobRow(TypedDict):
     delivery_receipt_id: UUID | None
     payload: JsonObject
     result_payload: JsonObject
+    rollout_flag_state: str
+    support_evidence: JsonObject
+    rate_limit_evidence: JsonObject
+    incident_evidence: JsonObject
     attempted_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class ChatTelemetryRow(TypedDict):
+    id: UUID
+    user_account_id: UUID
+    workspace_id: UUID | None
+    channel_message_id: UUID | None
+    daily_brief_job_id: UUID | None
+    delivery_receipt_id: UUID | None
+    flow_kind: str
+    event_kind: str
+    status: str
+    route_path: str
+    rollout_flag_key: str | None
+    rollout_flag_state: str | None
+    rate_limit_key: str | None
+    rate_limit_window_seconds: int | None
+    rate_limit_max_requests: int | None
+    retry_after_seconds: int | None
+    abuse_signal: str | None
+    evidence: JsonObject
+    created_at: datetime
 
 
 class TaskArtifactRow(TypedDict):
