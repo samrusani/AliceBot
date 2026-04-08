@@ -387,6 +387,30 @@ from alicebot_api.hosted_workspace import (
     serialize_workspace,
     set_session_workspace,
 )
+from alicebot_api.telegram_channels import (
+    TelegramIdentityNotFoundError,
+    TelegramLinkPendingError,
+    TelegramLinkTokenExpiredError,
+    TelegramLinkTokenInvalidError,
+    TelegramMessageNotFoundError,
+    TelegramRoutingError,
+    TelegramWebhookValidationError,
+    confirm_telegram_link_challenge,
+    dispatch_telegram_message,
+    get_telegram_link_status,
+    ingest_telegram_webhook,
+    list_workspace_telegram_delivery_receipts,
+    list_workspace_telegram_messages,
+    list_workspace_telegram_threads,
+    serialize_channel_identity,
+    serialize_channel_link_challenge,
+    serialize_channel_message,
+    serialize_channel_thread,
+    serialize_delivery_receipt,
+    serialize_webhook_ingest_result,
+    start_telegram_link_challenge,
+    unlink_telegram_identity,
+)
 from alicebot_api.continuity_review import (
     ContinuityReviewNotFoundError,
     ContinuityReviewValidationError,
@@ -1339,6 +1363,31 @@ class HostedPreferencesPatchRequest(BaseModel):
     quiet_hours: dict[str, object] | None = None
 
 
+class TelegramLinkStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: UUID | None = None
+
+
+class TelegramLinkConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_token: str = Field(min_length=16, max_length=256)
+
+
+class TelegramUnlinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: UUID | None = None
+
+
+class TelegramDispatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=4096)
+    idempotency_key: str | None = Field(default=None, min_length=16, max_length=160)
+
+
 def _extract_bearer_token(request: Request) -> str:
     raw_authorization = request.headers.get("authorization", "").strip()
     if raw_authorization == "":
@@ -1364,8 +1413,50 @@ def _serialize_hosted_session_payload(
         "workspace": workspace,
         "preferences": preferences,
         "feature_flags": feature_flags,
-        "telegram_state": "not_available_in_p10_s1",
+        "telegram_state": "available_in_p10_s2_transport",
     }
+
+
+def _resolve_workspace_for_hosted_channel_request(
+    conn,
+    *,
+    user_account_id: UUID,
+    session_id: UUID,
+    preferred_workspace_id: UUID | None,
+    requested_workspace_id: UUID | None,
+):
+    if requested_workspace_id is not None:
+        workspace = get_workspace_for_member(
+            conn,
+            workspace_id=requested_workspace_id,
+            user_account_id=user_account_id,
+        )
+        if workspace is None:
+            raise HostedWorkspaceNotFoundError(f"workspace {requested_workspace_id} was not found")
+        if preferred_workspace_id != workspace["id"]:
+            set_session_workspace(
+                conn,
+                session_id=session_id,
+                user_account_id=user_account_id,
+                workspace_id=workspace["id"],
+            )
+        return workspace
+
+    workspace = get_current_workspace(
+        conn,
+        user_account_id=user_account_id,
+        preferred_workspace_id=preferred_workspace_id,
+    )
+    if workspace is None:
+        return None
+    if preferred_workspace_id != workspace["id"]:
+        set_session_workspace(
+            conn,
+            session_id=session_id,
+            user_account_id=user_account_id,
+            workspace_id=workspace["id"],
+        )
+    return workspace
 
 
 @app.get("/healthz")
@@ -4843,7 +4934,7 @@ def bootstrap_v1_workspace(
                 "bootstrap": status_payload,
                 "preferences": serialize_user_preferences(preferences),
                 "feature_flags": feature_flags,
-                "telegram_state": "not_available_in_p10_s1",
+                "telegram_state": "available_in_p10_s2_transport",
             }
         ),
     )
@@ -4886,7 +4977,7 @@ def get_v1_workspace_bootstrap_status(request: Request) -> JSONResponse:
                 "workspace": serialize_workspace(workspace),
                 "bootstrap": status_payload,
                 "feature_flags": feature_flags,
-                "telegram_state": "not_available_in_p10_s1",
+                "telegram_state": "available_in_p10_s2_transport",
             }
         ),
     )
@@ -5068,4 +5159,378 @@ def patch_v1_preferences(
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder({"preferences": serialize_user_preferences(preferences)}),
+    )
+
+
+@app.post("/v1/channels/telegram/link/start")
+def start_v1_telegram_link(request: Request, body: TelegramLinkStartRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=body.workspace_id,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                challenge = start_telegram_link_challenge(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                    ttl_seconds=settings.telegram_link_ttl_seconds,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    payload = {
+        "workspace_id": str(workspace["id"]),
+        "challenge": serialize_channel_link_challenge(challenge, include_token=True),
+        "instructions": {
+            "bot_username": settings.telegram_bot_username,
+            "command": f"/link {challenge['link_code']}",
+            "posture": "send the link code to the configured telegram bot, then confirm in hosted settings",
+        },
+    }
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v1/channels/telegram/link/confirm")
+def confirm_v1_telegram_link(request: Request, body: TelegramLinkConfirmRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                challenge, identity = confirm_telegram_link_challenge(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    challenge_token=body.challenge_token,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except TelegramLinkPendingError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+    except TelegramLinkTokenExpiredError as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except TelegramLinkTokenInvalidError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(
+            {
+                "identity": serialize_channel_identity(identity),
+                "challenge": serialize_channel_link_challenge(challenge, include_token=False),
+            }
+        ),
+    )
+
+
+@app.post("/v1/channels/telegram/unlink")
+def unlink_v1_telegram(request: Request, body: TelegramUnlinkRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=body.workspace_id,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                identity = unlink_telegram_identity(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TelegramIdentityNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder({"identity": serialize_channel_identity(identity)}))
+
+
+@app.get("/v1/channels/telegram/status")
+def get_v1_telegram_status(
+    request: Request,
+    workspace_id: UUID | None = None,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=user_account_id,
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=workspace_id,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                payload = get_telegram_link_status(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace["id"],
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v1/channels/telegram/webhook")
+async def ingest_v1_telegram_webhook(request: Request) -> JSONResponse:
+    settings = get_settings()
+    if settings.telegram_webhook_secret != "":
+        header_secret = request.headers.get("x-telegram-bot-api-secret-token", "").strip()
+        if header_secret != settings.telegram_webhook_secret:
+            return JSONResponse(status_code=401, content={"detail": "telegram webhook secret is invalid"})
+
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "telegram webhook payload must be valid json"})
+
+    if not isinstance(payload, dict):
+        return JSONResponse(status_code=400, content={"detail": "telegram webhook payload must be an object"})
+
+    try:
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                ingest_result = ingest_telegram_webhook(
+                    conn,
+                    payload=payload,
+                    bot_username=settings.telegram_bot_username,
+                )
+    except TelegramWebhookValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "status": "accepted",
+                "ingest": serialize_webhook_ingest_result(ingest_result),
+            }
+        ),
+    )
+
+
+@app.get("/v1/channels/telegram/messages")
+def list_v1_telegram_messages(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                rows = list_workspace_telegram_messages(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    workspace_id=workspace["id"],
+                    limit=limit,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    items = [serialize_channel_message(row) for row in rows]
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "items": items,
+                "summary": {
+                    "workspace_id": str(workspace["id"]),
+                    "total_count": len(items),
+                    "order": ["created_at_desc", "id_desc"],
+                },
+            }
+        ),
+    )
+
+
+@app.get("/v1/channels/telegram/threads")
+def list_v1_telegram_threads(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                rows = list_workspace_telegram_threads(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    workspace_id=workspace["id"],
+                    limit=limit,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    items = [serialize_channel_thread(row) for row in rows]
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "items": items,
+                "summary": {
+                    "workspace_id": str(workspace["id"]),
+                    "total_count": len(items),
+                    "order": ["last_message_at_desc", "id_desc"],
+                },
+            }
+        ),
+    )
+
+
+@app.post("/v1/channels/telegram/messages/{message_id}/dispatch")
+def dispatch_v1_telegram_message(
+    message_id: UUID,
+    request: Request,
+    body: TelegramDispatchRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                outbound_message, receipt = dispatch_telegram_message(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    workspace_id=workspace["id"],
+                    source_message_id=message_id,
+                    text=body.text,
+                    dispatch_idempotency_key=body.idempotency_key,
+                    bot_token=settings.telegram_bot_token,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except TelegramMessageNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except TelegramRoutingError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(
+            {
+                "message": serialize_channel_message(outbound_message),
+                "receipt": serialize_delivery_receipt(receipt),
+            }
+        ),
+    )
+
+
+@app.get("/v1/channels/telegram/delivery-receipts")
+def list_v1_telegram_delivery_receipts(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = _resolve_workspace_for_hosted_channel_request(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    session_id=resolution["session"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                    requested_workspace_id=None,
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                rows = list_workspace_telegram_delivery_receipts(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    workspace_id=workspace["id"],
+                    limit=limit,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    items = [serialize_delivery_receipt(row) for row in rows]
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "items": items,
+                "summary": {
+                    "workspace_id": str(workspace["id"]),
+                    "total_count": len(items),
+                    "order": ["recorded_at_desc", "id_desc"],
+                },
+            }
+        ),
     )

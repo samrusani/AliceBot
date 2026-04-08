@@ -253,7 +253,7 @@ def get_bootstrap_status(
         if workspace["bootstrapped_at"] is None
         else workspace["bootstrapped_at"].isoformat(),
         "ready_for_next_phase_telegram_linkage": workspace["bootstrap_status"] == "ready",
-        "telegram_state": "not_available_in_p10_s1",
+        "telegram_state": "available_in_p10_s2_transport",
     }
 
 
