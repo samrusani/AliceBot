@@ -1,99 +1,87 @@
 # BUILD_REPORT.md
 
 ## sprint objective
-Ship `P9-S38` by producing launch-ready public docs, quickstart/integration documentation, release checklist/runbook, and first public release-tag assets for Alice v0.1, strictly grounded in shipped `P9-S33` to `P9-S37` command paths and evidence.
+
+Compact the repo's live operating docs so `README.md`, `ROADMAP.md`, `RULES.md`, and `.ai/handoff/CURRENT_STATE.md` hold only current, durable Phase 9 truth while superseded planning and control material is preserved in archive.
 
 ## completed work
-- Reworked launch-facing canonical docs to reflect shipped product truth and `P9-S38` scope:
-  - `README.md`
-  - `PRODUCT_BRIEF.md`
-  - `ARCHITECTURE.md`
-  - `ROADMAP.md`
-  - `RULES.md`
-  - `.ai/handoff/CURRENT_STATE.md`
-  - `docs/phase9-sprint-33-38-plan.md`
-- Added public quickstart and integration docs:
-  - `docs/quickstart/local-setup-and-first-result.md`
-  - `docs/integrations/cli.md`
-  - `docs/integrations/mcp.md`
-  - `docs/integrations/importers.md`
-  - `docs/examples/phase9-command-walkthrough.md`
-- Added release assets required for first public version prep:
-  - `docs/release/v0.1.0-release-checklist.md`
-  - `docs/release/v0.1.0-tag-plan.md`
-  - `docs/runbooks/phase9-public-release-runbook.md`
-- Added repo readiness docs for public release:
-  - `CONTRIBUTING.md`
-  - `SECURITY.md`
-  - `LICENSE` (MIT)
-- Updated release metadata/reporting surfaces:
-  - `CHANGELOG.md` (`2026-04-08` entry for `P9-S38`)
-  - `REVIEW_REPORT.md` (updated to `PASS` after review)
-  - `eval/reports/phase9_eval_latest.json` refreshed by eval harness runs
-- Verified control-doc truth marker requirements remain valid via `scripts/check_control_doc_truth.py`.
+
+- Rewrote the live control docs to reflect the correct idle state:
+  - Phase 9 is complete
+  - no active build sprint is open
+  - Phase 10 planning docs are not defined yet
+- Replaced `.ai/active/SPRINT_PACKET.md` with an explicit idle-state placeholder so the active control path matches the repo's no-active-sprint truth.
+- Slimmed `README.md` to onboarding, shipped-product truth, and canonical doc pointers.
+- Rewrote `ROADMAP.md` to be future-facing instead of a sprint ledger.
+- Pruned `RULES.md` down to durable reusable rules.
+- Compacted `.ai/handoff/CURRENT_STATE.md` into current-state truth plus next control move.
+- Pruned `PRODUCT_BRIEF.md` and `ARCHITECTURE.md` to remove stale sprint-ledger and legacy-marker language from canonical docs.
+- Slimmed `CHANGELOG.md` to short release-facing history.
+- Archived superseded Phase 9 planning/history docs under `docs/archive/planning/2026-04-08-context-compaction/`:
+  - `phase9-product-spec.md`
+  - `phase9-sprint-33-38-plan.md`
+  - `phase9-sprint-33-control-tower-packet.md`
+  - `phase9-bootstrap-notes.md`
+- Preserved pre-compaction snapshots of the live docs in the same archive folder:
+  - `README.pre-compaction.md`
+  - `ROADMAP.pre-compaction.md`
+  - `RULES.pre-compaction.md`
+- Preserved superseded control snapshots under `.ai/archive/planning/2026-04-08-context-compaction/`:
+  - `CURRENT_STATE.pre-compaction.md`
+  - `SPRINT_PACKET.context-compaction-01.md`
+- Added `docs/archive/planning/2026-04-08-context-compaction/README.md` as the canonical archive index for this compaction pass.
+- Repaired archived snapshot links where moving the file would otherwise leave dead relative references.
+- Updated the existing control-doc validation script and its unit test so repo validation matches the compacted control truth, including the idle active-sprint placeholder.
 
 ## incomplete work
-- Public tag creation (`v0.1.0`) is intentionally deferred until reviewer `PASS` and explicit Control Tower approval.
-- Intentionally out of scope and still deferred:
-  - new importer families
-  - MCP tool-surface expansion
-  - hosted deployment/remote auth
-  - screenshot/demo media requiring new UI work
+
+- No broader historical docs outside the moved Phase 9 planning/control set were archived in this sprint.
 
 ## files changed
-- `.ai/active/SPRINT_PACKET.md` (pre-existing sprint-38 packet update present on branch)
+
 - `.ai/handoff/CURRENT_STATE.md`
+- `.ai/active/SPRINT_PACKET.md`
 - `README.md`
-- `PRODUCT_BRIEF.md`
-- `ARCHITECTURE.md`
 - `ROADMAP.md`
 - `RULES.md`
+- `PRODUCT_BRIEF.md`
+- `ARCHITECTURE.md`
 - `CHANGELOG.md`
-- `CONTRIBUTING.md`
-- `SECURITY.md`
-- `LICENSE`
-- `docs/phase9-sprint-33-38-plan.md`
-- `docs/quickstart/local-setup-and-first-result.md`
-- `docs/integrations/cli.md`
-- `docs/integrations/mcp.md`
-- `docs/integrations/importers.md`
-- `docs/examples/phase9-command-walkthrough.md`
-- `docs/release/v0.1.0-release-checklist.md`
-- `docs/release/v0.1.0-tag-plan.md`
-- `docs/runbooks/phase9-public-release-runbook.md`
-- `eval/reports/phase9_eval_latest.json`
+- `docs/archive/planning/2026-04-08-context-compaction/README.md`
+- `docs/archive/planning/2026-04-08-context-compaction/README.pre-compaction.md`
+- `docs/archive/planning/2026-04-08-context-compaction/ROADMAP.pre-compaction.md`
+- `docs/archive/planning/2026-04-08-context-compaction/RULES.pre-compaction.md`
+- `docs/archive/planning/2026-04-08-context-compaction/phase9-product-spec.md`
+- `docs/archive/planning/2026-04-08-context-compaction/phase9-sprint-33-38-plan.md`
+- `docs/archive/planning/2026-04-08-context-compaction/phase9-sprint-33-control-tower-packet.md`
+- `docs/archive/planning/2026-04-08-context-compaction/phase9-bootstrap-notes.md`
+- `.ai/archive/planning/2026-04-08-context-compaction/CURRENT_STATE.pre-compaction.md`
+- `.ai/archive/planning/2026-04-08-context-compaction/SPRINT_PACKET.context-compaction-01.md`
+- `scripts/check_control_doc_truth.py`
+- `tests/unit/test_control_doc_truth.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## tests run
-- `docker compose up -d`
-  - PASS (containers already running)
-- `./scripts/migrate.sh`
-  - PASS
-- `./scripts/load_sample_data.sh`
-  - PASS (`status=noop`, fixture already loaded)
-- `APP_RELOAD=false ./scripts/api_dev.sh`
-  - PASS (uvicorn started on `127.0.0.1:8000`)
-- `curl -sS http://127.0.0.1:8000/healthz`
-  - PASS (`status=ok`)
-- `./.venv/bin/python -m pytest tests/unit tests/integration`
-  - PASS (`978 passed`)
-- `pnpm --dir apps/web test`
-  - PASS (`57` files, `192` tests)
-- `./scripts/run_phase9_eval.sh --report-path eval/reports/phase9_eval_latest.json`
-  - PASS (command executed)
-  - RESULT 1: `status=fail` under default user scope due pre-existing imported state affecting importer-success metrics
-- `./scripts/run_phase9_eval.sh --user-id 00000000-0000-0000-0000-000000000938 --user-email phase9-eval-938@example.com --display-name "Phase9 Eval 938" --report-path eval/reports/phase9_eval_latest.json`
-  - PASS
-  - RESULT 2: `status=pass` (`importer_success_rate=1.0`, `recall_precision_at_1=1.0`, `resumption_usefulness_rate=1.0`, `correction_effectiveness_rate=1.0`, `duplicate_posture_rate=1.0`)
+
+- Manual review of `README.md`, `ROADMAP.md`, `RULES.md`, `.ai/handoff/CURRENT_STATE.md`, and `CHANGELOG.md` for duplication and stale control language.
+- `rg -n "through Phase 3 Sprint 9|Active Sprint focus is Phase 4 Sprint 14|Gate ownership is canonicalized to Phase 4 runner scripts|Gate ownership is canonicalized to Phase 4 runner script names|Legacy Compatibility Markers|Phase 9 Sprint Sequence" README.md ROADMAP.md RULES.md .ai/handoff/CURRENT_STATE.md`
+  - PASS (no stale live-control markers)
+- `rg -n "docs/phase9-product-spec.md|docs/phase9-sprint-33-38-plan.md|docs/phase9-sprint-33-control-tower-packet.md|docs/phase9-bootstrap-notes.md" README.md CHANGELOG.md ROADMAP.md RULES.md .ai/handoff/CURRENT_STATE.md docs scripts tests .ai`
+  - PASS (no stale references from canonical/live surfaces)
+- `rg --pcre2 -n "\\]\\((?!https?://|/)[^)]+\\)" docs/archive/planning/2026-04-08-context-compaction .ai/archive/planning/2026-04-08-context-compaction`
+  - PASS after link normalization review for archived snapshots
 - `./.venv/bin/python scripts/check_control_doc_truth.py`
   - PASS
-- internal markdown link existence check across new `P9-S38` docs
-  - PASS (no missing local targets)
+- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
+  - PASS (`5 passed`)
+- `git diff --name-only`
+  - PASS for scope review: only docs plus doc-validation tooling/tests changed; no product-behavior files were modified in this sprint work
 
 ## blockers/issues
-- `./scripts/run_phase9_eval.sh` initially failed inside sandbox with DB access denied (`Operation not permitted` to localhost Postgres); reran with escalation and succeeded.
-- Default-user eval run returned `status=fail` because prior state in the shared default user scope degraded importer-success metrics; rerunning with a fresh eval user produced a passing report.
+
+- No remaining functional blockers in branch scope.
 
 ## recommended next step
-Seek explicit Control Tower merge approval for `P9-S38`, then execute `docs/release/v0.1.0-release-checklist.md` and tag via `docs/release/v0.1.0-tag-plan.md` only after approval.
+
+Seek explicit Control Tower merge approval for this compaction branch, then proceed to Phase 10 planning document creation only after the Phase 9 release checklist/runbook gates are complete.

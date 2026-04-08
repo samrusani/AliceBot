@@ -4,48 +4,50 @@
 PASS
 
 ## criteria met
-- Acceptance criterion met: an external technical tester can reach first useful result from documented local setup.
-  - Verified runtime path commands and health check:
-    - `docker compose up -d` -> PASS
-    - `./scripts/migrate.sh` -> PASS
-    - `./scripts/load_sample_data.sh` -> PASS (`status=noop` expected on replay)
-    - `APP_RELOAD=false ./scripts/api_dev.sh` -> PASS (API served on `127.0.0.1:8000`)
-    - `curl -sS http://127.0.0.1:8000/healthz` -> PASS (`status=ok`)
-- Acceptance criterion met: public docs reflect shipped CLI/MCP/importer/eval surfaces.
-  - CLI/MCP/importer commands and flags in docs match runnable entrypoints and script `--help` output.
-  - MCP tool list in docs matches `tests/unit/test_mcp.py`.
-- Acceptance criterion met: required verification suites are green.
-  - `./.venv/bin/python -m pytest tests/unit tests/integration` -> PASS (`978 passed`)
-  - `pnpm --dir apps/web test` -> PASS (`57 files`, `192 tests`)
-  - `./.venv/bin/python scripts/check_control_doc_truth.py` -> PASS
-- Acceptance criterion met: release checklist/tag-plan/runbook assets exist and are scoped to `P9-S38` launch packaging.
-- Acceptance criterion met: eval gating path is now deterministic in docs/runbooks/checklist via explicit fresh eval-user scope.
-  - Verified updated command path (fresh user) -> PASS:
-    - `./scripts/run_phase9_eval.sh --user-id <fresh-uuid> --user-email <fresh-email> --display-name "Phase9 Eval" --report-path eval/reports/phase9_eval_latest.json`
-- Acceptance criterion met: no evidence of product-scope overreach (no new runtime features, adapters, or MCP tool expansion added).
+- Live operating docs now reflect the correct idle post-Phase-9 state:
+  - no active build sprint is open
+  - Phase 9 remains the current shipped truth
+  - Phase 10 planning is explicitly not defined yet
+- Superseded Phase 9 planning/control material is preserved in archive rather than deleted:
+  - `docs/archive/planning/2026-04-08-context-compaction/`
+  - `.ai/archive/planning/2026-04-08-context-compaction/`
+- Canonical live surfaces are materially smaller and more trustworthy after compaction:
+  - `README.md`
+  - `ROADMAP.md`
+  - `RULES.md`
+  - `.ai/handoff/CURRENT_STATE.md`
+  - `.ai/active/SPRINT_PACKET.md`
+- Scope stayed doc/control-only apart from the required validation guardrail updates:
+  - `scripts/check_control_doc_truth.py`
+  - `tests/unit/test_control_doc_truth.py`
+- Validation evidence is clean:
+  - stale live-control markers removed from canonical files
+  - stale references to moved Phase 9 planning docs removed from canonical/live surfaces
+  - archived snapshot links reviewed and normalized
+  - control-doc validation script passes
+  - control-doc unit test passes
 
 ## criteria missed
-- None in current pass.
+- None.
 
 ## quality issues
 - No blocking quality issues found in current pass.
+- Archive preservation is explicit, and no product-behavior files were changed by this branch beyond doc-validation tooling/tests.
 
 ## regression risks
-- Low runtime regression risk: this sprint is docs/release-asset heavy with no observed core runtime feature changes.
-- Low release-process risk after fix: fresh user-scope eval command is now documented for deterministic gating.
+- Low.
+- Main residual risk is future tooling or docs assuming the old live Phase 9 planning paths still exist; the updated validation script and archive index reduce that risk.
 
 ## docs issues
-- Fixed in current pass:
-  - release-facing docs now require fresh eval user scope for deterministic eval gating
-  - quickstart/runbook/checklist now align on `APP_RELOAD=false ./scripts/api_dev.sh` for verification path consistency
+- No blocking docs issues remain for this branch.
+- The live repo now presents a clean waiting state for Phase 10 rather than stale active-sprint/project-history clutter.
 
 ## should anything be added to RULES.md?
-- Already added in current pass:
-  - release-gating commands that are stateful by user scope must document deterministic execution preconditions.
+- No further rule update is required from review; the compacted rules file already retains the durable guidance.
 
 ## should anything update ARCHITECTURE.md?
-- No architecture update is required from this review. Architecture claims remain within shipped Phase 9 boundaries.
+- No further architecture update is required from review; the compaction removed stale sprint-ledger material without changing architectural claims.
 
 ## recommended next action
 1. Ready for Control Tower merge approval under policy.
-2. Run the release checklist end-to-end one final time on the approved merge head before tag cut.
+2. After merge, run the Phase 9 release checklist/runbook and then add canonical Phase 10 planning docs before opening another sprint branch.

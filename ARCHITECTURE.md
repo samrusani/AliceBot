@@ -4,14 +4,13 @@
 
 Alice is a local-first continuity system built around durable events, typed continuity objects, correction-aware retrieval, and deterministic recall/resumption compilation.
 
-Phase 9 packaging did not redesign core semantics. It exposed already-shipped seams through a public-safe contract:
+The public v0.1 surface exposes already-shipped seams through a narrow local-first contract:
 
-- `P9-S33`: local runtime and public package boundary
-- `P9-S34`: deterministic CLI continuity contract
-- `P9-S35`: deterministic MCP transport with a narrow tool surface
-- `P9-S36`: OpenClaw import adapter path
-- `P9-S37`: Markdown + ChatGPT importers and reproducible evaluation harness
-- `P9-S38`: launch docs and release assets grounded in those shipped paths
+- local runtime and package boundary
+- deterministic CLI continuity contract
+- deterministic MCP transport with a narrow tool surface
+- OpenClaw, Markdown, and ChatGPT import adapters
+- a reproducible evaluation harness and launch docs grounded in those shipped paths
 
 ## Technical Stack
 
@@ -85,7 +84,7 @@ Canonical startup path:
 docker compose up -d
 ./scripts/migrate.sh
 ./scripts/load_sample_data.sh
-./scripts/api_dev.sh
+APP_RELOAD=false ./scripts/api_dev.sh
 ```
 
 Health check:
@@ -112,10 +111,10 @@ Evidence artifacts:
 ## Architecture Constraints
 
 - Preserve shipped P5/P6/P7/P8 semantics.
-- Do not expand MCP tool surface in launch sprint.
-- Do not add importer families beyond shipped OpenClaw/Markdown/ChatGPT paths.
-- Keep launch docs aligned to real command paths and committed evidence.
+- Do not expand the MCP tool surface without an explicit planning update.
+- Do not add importer families beyond shipped OpenClaw/Markdown/ChatGPT paths without roadmap approval.
+- Keep public docs aligned to real command paths and committed evidence.
 
-## Legacy Compatibility Marker
+## Historical Traceability
 
-Documentation lineage remains continuous through Phase 3 Sprint 9.
+Superseded rollout planning and control snapshots live under `docs/archive/planning/2026-04-08-context-compaction/README.md`.

@@ -22,22 +22,16 @@ General-purpose assistants and agent stacks still lose long-horizon continuity. 
 - Correction-aware retrieval that updates future output.
 - Interoperability via CLI and MCP with a deliberately narrow contract.
 
-## Phase 9 Delivered Surface
+## Current Shipped Surface
 
-`P9-S33` through `P9-S37` are shipped and form the v0.1 product wedge:
+The shipped v0.1 wedge includes:
 
-- public-safe local runtime boundary
-- deterministic local CLI continuity commands
-- deterministic MCP tool transport
-- OpenClaw import path
-- Markdown + ChatGPT import paths
-- reproducible local evaluation harness and baseline evidence
-
-`P9-S38` delivery scope is launch packaging only:
-
-- quickstart and integration docs
-- architecture/repo docs synced to shipped behavior
-- release checklist, runbook, and version-tag assets
+- a local-first runtime boundary
+- deterministic CLI continuity commands
+- deterministic MCP transport with a narrow tool surface
+- OpenClaw, Markdown, and ChatGPT import paths
+- a reproducible local evaluation harness and baseline evidence
+- quickstart, integration, release, and runbook docs grounded in those shipped paths
 
 ## Non-Goals (v0.1)
 
@@ -77,6 +71,6 @@ General-purpose assistants and agent stacks still lose long-horizon continuity. 
 - Public launch must not depend on unsafe autonomy or broad connector side effects.
 - Alice must remain useful as a standalone local continuity engine.
 
-## Legacy Compatibility Marker
+## Historical Traceability
 
-This repo retains the canonical v1 release-readiness validation scenario for historical quality traceability.
+Superseded rollout plans and control snapshots live under `docs/archive/planning/2026-04-08-context-compaction/README.md`.
