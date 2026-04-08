@@ -49,12 +49,17 @@ Success condition:
 - import path for OpenClaw durable memory/workspace data
 - Alice MCP augmentation mode for OpenClaw-style workflows
 
-### P9-S37: Importers and Evaluation Harness (current seam)
+### P9-S37: Importers and Evaluation Harness (shipped baseline)
 
-- at least three production-usable importers
-- local benchmark and baseline report generation
+- three production-usable importers are now shipped:
+  - OpenClaw
+  - Markdown
+  - ChatGPT export
+- deterministic importer provenance + dedupe policy is generalized across importers
+- local evaluation harness command is shipped (`./scripts/run_phase9_eval.sh`)
+- baseline evidence report is now generated and checked in (`eval/baselines/phase9_s37_baseline.json`)
 
-### P9-S38: Docs, Launch Assets, and Public Release
+### P9-S38: Docs, Launch Assets, and Public Release (current delivery seam)
 
 - public quickstart
 - integration docs
@@ -82,6 +87,7 @@ Success condition:
 - `P9-S33` delivered the public-safe `alice-core` boundary, canonical local startup path, and deterministic sample-data proof.
 - `P9-S34` delivered the shipped local CLI continuity contract that `P9-S35` should mirror through MCP.
 - `P9-S35` delivered the shipped local MCP contract that `P9-S36` should consume without widening.
+- `P9-S36` delivered the shipped OpenClaw adapter baseline that `P9-S37` should generalize without reopening transport semantics.
 
 ## Legacy Compatibility Markers
 

@@ -95,10 +95,6 @@ export function WorkflowMemoryWritebackForm({
   );
 
   useEffect(() => {
-    if (isSubmitting) {
-      return;
-    }
-
     setStatusTone("info");
     setStatusText(
       defaultStatusText({
@@ -108,7 +104,7 @@ export function WorkflowMemoryWritebackForm({
         hasPreview: Boolean(preview),
       }),
     );
-  }, [evidenceEventIds.length, isSubmitting, liveModeReady, preview, source]);
+  }, [evidenceEventIds.length, liveModeReady, preview, source]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

@@ -188,7 +188,7 @@ describe("ApprovalDetail", () => {
     });
 
     expect(refreshMock).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("ADD persisted at revision 1.")).toBeInTheDocument();
+    expect(await screen.findByText("ADD persisted at revision 1.")).toBeInTheDocument();
   });
 
   it("shows validation feedback for invalid JSON before submitting", () => {

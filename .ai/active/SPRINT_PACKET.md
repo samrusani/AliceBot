@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 9 Sprint 36 (P9-S36): OpenClaw Adapter
+Phase 9 Sprint 37 (P9-S37): Importers and Evaluation Harness
 
 ## Sprint Type
 
@@ -10,7 +10,7 @@ feature
 
 ## Sprint Reason
 
-`P9-S33` shipped the public-safe `alice-core` boundary and startup path. `P9-S34` shipped the deterministic local CLI contract. `P9-S35` shipped the narrow MCP transport. The next non-redundant seam is proving Alice is agent-agnostic by wiring one concrete external adapter against the already-shipped CLI/MCP continuity contract.
+`P9-S33` shipped the public-safe `alice-core` boundary and startup path. `P9-S34` shipped the deterministic local CLI contract. `P9-S35` shipped the narrow MCP transport. `P9-S36` shipped the first concrete external adapter via OpenClaw. The next non-redundant seam is broadening importer coverage and generating reproducible evidence that imported memory improves recall, resumption, and correction-aware continuity quality.
 
 ## Planning Anchors
 
@@ -21,24 +21,26 @@ feature
 - `docs/adr/ADR-001-public-core-package-boundary.md`
 - `docs/adr/ADR-002-public-runtime-baseline.md`
 - `docs/adr/ADR-003-mcp-tool-surface-contract.md`
-- `docs/adr/ADR-004-openclaw-integration-boundary.md` if introduced
+- `docs/adr/ADR-004-openclaw-integration-boundary.md`
+- `docs/adr/ADR-005-import-provenance-and-dedupe-strategy.md` if introduced
+- `docs/adr/ADR-007-public-evaluation-harness-scope.md` if introduced
 
 ## Sprint Objective
 
-Ship the first OpenClaw adapter path so a sample or real OpenClaw workspace can be imported into Alice, queried through Alice recall/resumption, and optionally consumed through the shipped MCP wedge without changing Alice continuity semantics.
+Ship broader importer coverage plus a reproducible local evaluation harness so Alice can ingest at least three production-usable sources in total and generate baseline evidence for recall precision, resumption usefulness, correction effectiveness, and duplicate-memory posture.
 
 ## Git Instructions
 
-- Branch Name: `codex/phase9-sprint-36-openclaw-adapter`
+- Branch Name: `codex/phase9-sprint-37-importers-eval-harness`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after reviewer `PASS` and explicit Control Tower merge approval
 
 ## Why This Sprint Matters
 
-- It is the first proof that Alice works as an interoperable memory layer, not just a standalone local tool.
-- It validates the Phase 9 thesis using one real external agent stack instead of abstract compatibility claims.
-- It sets the adapter/import boundary ahead of broader importer work in `P9-S37`.
+- It moves Alice from a single-adapter proof to a credible public import story.
+- It makes quality claims reproducible instead of anecdotal.
+- It sets the evidence baseline that `P9-S38` launch docs and release claims must reflect.
 
 ## Redundancy Guard
 
@@ -51,100 +53,125 @@ Ship the first OpenClaw adapter path so a sample or real OpenClaw workspace can 
   - `P9-S33` public-safe packaging, startup path, and sample-data baseline.
   - `P9-S34` deterministic local CLI contract for continuity workflows.
   - `P9-S35` deterministic MCP transport for the shipped continuity contract.
-- Required now (`P9-S36`):
-  - OpenClaw adapter/import boundary
-  - file-based import path for OpenClaw workspace or durable memory data
-  - imported provenance tagging and dedupe stance
-  - recall/resumption proof on imported OpenClaw material
-  - optional MCP augmentation proof using imported data through the shipped tool surface
-- Explicitly out of `P9-S36`:
-  - broad importer set beyond the OpenClaw adapter path
+  - `P9-S36` OpenClaw adapter/import boundary with deterministic provenance and dedupe posture.
+- Required now (`P9-S37`):
+  - broader importer coverage beyond OpenClaw
+  - at least three production-usable importers in total across shipped Phase 9 surfaces
+  - reproducible benchmark/evaluation harness
+  - baseline report generation from local fixtures and documented commands
+- Explicitly out of `P9-S37`:
+  - launch narrative polish or release assets
+  - public release tagging and distribution work
   - widening the MCP tool surface
   - hosted deployment or remote auth work
-  - launch assets / public release polish
-  - reopening CLI or MCP semantics unless adapter integration exposes a real parity defect
+  - reopening OpenClaw adapter semantics except for truly shared importer fixes
 
 ## Design Truth
 
-- OpenClaw integration should prove Alice can augment an external agent stack without becoming a generic platform wrapper.
-- The adapter should map external state into shipped Alice continuity objects with explicit provenance, not bypass Alice’s trust and correction model.
-- Imported material should remain queryable through the same recall/resumption semantics as native Alice data.
-- The adapter boundary should stay narrow enough that later importer work can generalize from it.
+- Importers should map outside data into the same shipped Alice continuity model, not create source-specific behavior islands.
+- Provenance and dedupe posture must stay explicit across every importer, not only OpenClaw.
+- Evaluation should measure useful continuity outcomes, not generic benchmark theatre.
+- `P9-S37` should leave `P9-S38` with evidence to publish, not more product ambiguity.
 
 ## Exact Surfaces In Scope
 
-- OpenClaw import/adapter module(s)
-- file-based input contract for OpenClaw workspace or durable memory export
-- import mapping into shipped Alice continuity objects
-- provenance tagging and dedupe behavior for imported material
-- one documented local demo path for import -> recall/resume
-- optional MCP augmentation proof against imported data
-- tests and fixtures for the adapter path
+- at least two additional importer paths beyond OpenClaw, bringing shipped total importer coverage to at least three
+- importer provenance and dedupe policy generalization
+- reproducible fixtures for each newly shipped importer
+- local evaluation harness and baseline report generation
+- docs for importer usage and evaluation commands
+- tests covering import success, dedupe posture, and evaluation script/report generation
 
 ## Exact Files In Scope
 
 - `.ai/active/SPRINT_PACKET.md`
 - `.ai/handoff/CURRENT_STATE.md`
-- `ARCHITECTURE.md`
 - `README.md`
 - `ROADMAP.md`
-- `RULES.md`
+- `ARCHITECTURE.md` if importer/eval architecture notes need syncing
+- `RULES.md` if importer/eval discipline needs canonization
 - `docs/phase9-sprint-33-38-plan.md`
-- `pyproject.toml` if adapter packaging entrypoints are introduced
-- `apps/api/src/alicebot_api/openclaw_adapter.py` if introduced
-- `apps/api/src/alicebot_api/openclaw_models.py` if introduced
-- `apps/api/src/alicebot_api/openclaw_import.py` if introduced
-- `apps/api/src/alicebot_api/mcp_tools.py` if parity-alignment is required
-- `apps/api/src/alicebot_api/continuity_capture.py` if adapter ingestion reuses capture helpers
-- `apps/api/src/alicebot_api/continuity_recall.py` if import parity fixes are required
-- `apps/api/src/alicebot_api/continuity_resumption.py` if import parity fixes are required
+- `docs/adr/ADR-005-import-provenance-and-dedupe-strategy.md` if introduced
+- `docs/adr/ADR-007-public-evaluation-harness-scope.md` if introduced
+- `apps/api/src/alicebot_api/openclaw_import.py` if shared importer abstractions are factored carefully
+- `apps/api/src/alicebot_api/openclaw_adapter.py` if shared importer fixes are required
+- `apps/api/src/alicebot_api/importers/` if introduced
+- `apps/api/src/alicebot_api/markdown_import.py` if introduced
+- `apps/api/src/alicebot_api/chatgpt_import.py` if introduced
+- `apps/api/src/alicebot_api/claude_import.py` if introduced
+- `apps/api/src/alicebot_api/csv_import.py` if introduced
+- `apps/api/src/alicebot_api/importer_models.py` if introduced
+- `apps/api/src/alicebot_api/retrieval_evaluation.py`
+- `apps/api/src/alicebot_api/continuity_recall.py` if eval parity fixes are required
+- `apps/api/src/alicebot_api/continuity_resumption.py` if eval parity fixes are required
 - `apps/api/src/alicebot_api/store.py`
-- `scripts/load_openclaw_sample_data.py` if introduced
-- `scripts/load_openclaw_sample_data.sh` if introduced
-- `fixtures/openclaw/` if introduced
-- `docs/adr/ADR-004-openclaw-integration-boundary.md` if introduced
-- `.ai/archive/planning/2026-04-07-phase9-bootstrap/` if bootstrap planning state is archived for traceability
-- `docs/archive/planning/2026-04-07-phase9-bootstrap/` if canonical planning docs are archived for traceability
-- `tests/unit/test_openclaw_adapter.py` if introduced
-- `tests/integration/test_openclaw_import.py` if introduced
-- `tests/integration/test_openclaw_mcp_integration.py` if introduced
+- `apps/web/components/approval-detail.test.tsx` if required to keep the mandated web suite stable
+- `apps/web/components/continuity-open-loops-panel.test.tsx` if required to keep the mandated web suite stable
+- `apps/web/components/workflow-memory-writeback-form.tsx` if required to keep importer/eval-related submit state stable
+- `scripts/load_markdown_sample_data.py` if introduced
+- `scripts/load_markdown_sample_data.sh` if introduced
+- `scripts/load_chatgpt_sample_data.py` if introduced
+- `scripts/load_chatgpt_sample_data.sh` if introduced
+- `scripts/load_claude_sample_data.py` if introduced
+- `scripts/load_claude_sample_data.sh` if introduced
+- `scripts/load_csv_sample_data.py` if introduced
+- `scripts/load_csv_sample_data.sh` if introduced
+- `scripts/run_phase9_eval.py` if introduced
+- `scripts/run_phase9_eval.sh` if introduced
+- `fixtures/importers/` if introduced
+- `eval/` if introduced for reports/baselines/fixtures
+- `tests/__init__.py` if introduced for package import stability
+- `tests/unit/__init__.py` if introduced for package import stability
+- `tests/integration/__init__.py` if introduced for package import stability
+- `tests/unit/test_importers.py` if introduced
+- `tests/unit/test_phase9_eval.py` if introduced
+- `tests/integration/test_markdown_import.py` if introduced
+- `tests/integration/test_chatgpt_import.py` if introduced
+- `tests/integration/test_claude_import.py` if introduced
+- `tests/integration/test_csv_import.py` if introduced
+- `tests/integration/test_phase9_eval.py` if introduced
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 ## In Scope
 
-- define the first-class OpenClaw adapter boundary
-- import a sample or real OpenClaw workspace / durable memory export into Alice
-- preserve source provenance on imported material
-- make imported memory visible through Alice recall and resumption
-- document exact local import and demo steps
-- keep MCP augmentation proof limited to using the already-shipped tool surface on imported data
+- ship at least two additional importer paths beyond OpenClaw
+- reach at least three production-usable importers total by end of sprint
+- preserve explicit provenance and deterministic dedupe posture across importers
+- generate a reproducible local evaluation/baseline report
+- keep the mandated backend/web verification suites stable when importer/eval changes expose adjacent regressions
+- measure at minimum:
+  - recall precision
+  - resumption usefulness
+  - correction effectiveness
+  - importer success and duplicate-memory posture
+- document exact importer and evaluation commands
 
 ## Out Of Scope
 
-- generic importer framework for all sources
-- ChatGPT/Claude/markdown/CSV importer bundle
-- MCP tool-surface expansion
-- hosted adapter services
-- broad repo packaging changes
-- public launch polish and release assets
+- launch polish, screenshots, comparison pages, or public release tag work
+- broad UI work
+- MCP transport expansion
+- generic plugin/SDK ecosystem work
+- hosted ingestion services
 
 ## Required Deliverables
 
-- runnable OpenClaw adapter/import path
-- sample or documented real OpenClaw fixture path
-- provenance-preserving import mapping
-- recall/resumption proof against imported data
-- optional MCP proof against imported data if used to validate augmentation mode
-- synced docs, reports, and any new ADR boundary needed for the adapter
+- at least three production-usable importers total across shipped Phase 9 work
+- reproducible fixtures and loader paths for the newly added importers
+- explicit importer provenance/dedupe policy if generalized beyond OpenClaw
+- local evaluation harness command(s)
+- sample baseline report generated from repo-local fixtures
+- synced docs, reports, and any needed ADRs
 
 ## Acceptance Criteria
 
-- a sample or real OpenClaw workspace can be imported through the documented path
-- imported material becomes queryable via Alice recall
-- imported material contributes useful output to Alice resumption briefs
-- imported provenance is explicit enough to distinguish adapter-ingested material from native Alice capture
-- if MCP augmentation is exercised, one shipped MCP tool path works successfully against imported data without widening the tool contract
+- at least three production-usable importers exist by the end of `P9-S37`
+- newly added imported sources become queryable through Alice recall
+- newly added imported sources contribute useful output to Alice resumption
+- duplicate-memory posture is measurable and deterministic for every shipped importer
+- a local evaluation script runs successfully and produces a baseline report from repo fixtures
+- correction-aware behavior is represented in the baseline evidence, not just import-success metrics
 
 ## Required Commands
 
@@ -160,111 +187,126 @@ curl -sS http://127.0.0.1:8000/healthz
 pnpm --dir apps/web test
 ```
 
-If a dedicated OpenClaw import command or adapter loader is introduced this sprint, it must be run and included in review evidence together with at least one recall and one resumption proof against imported data.
+If dedicated importer loaders or evaluation commands are introduced this sprint, they must be run and included in review evidence together with at least one generated baseline report path.
 
 ## Required Acceptance Evidence
 
-- exact OpenClaw input fixture or workspace path used during verification
-- exact import command/path used during verification
-- one successful recall example against imported data
-- one successful resumption example against imported data
-- note of import provenance and dedupe posture actually observed
-- if used, one successful shipped MCP tool call against imported data
+- exact importer fixture paths and commands used during verification
+- proof that at least three production-usable importers are working in total
+- one successful recall example from at least one newly added importer
+- one successful resumption example from at least one newly added importer
+- one generated evaluation/baseline report path and summary
+- measured duplicate-memory posture and correction-aware outcome evidence
 
 ## Implementation Constraints
 
-- preserve shipped P5/P6/P7/P8/P9-S33/P9-S34/P9-S35 semantics
-- do not bypass Alice continuity objects or correction semantics for imported data
-- keep the adapter narrow and specific to OpenClaw in this sprint
-- keep provenance explicit and deterministic
-- prefer an auditable import path over a “magic sync” abstraction
+- preserve shipped P5/P6/P7/P8/P9-S33/P9-S34/P9-S35/P9-S36 semantics
+- keep provenance explicit and deterministic for every importer
+- do not invent source-specific retrieval semantics
+- prefer a narrow shared importer discipline over an over-abstracted framework
+- ensure evaluation claims are reproducible from repo-local commands and fixtures
 
 ## Control Tower Task Cards
 
-### Task 1: Adapter Boundary and Models
+### Task 1: Importer Expansion
 
-Owner: interop/adapter owner
+Owner: import/interop owner
 
 Write scope:
 
-- `apps/api/src/alicebot_api/openclaw_adapter.py`
-- `apps/api/src/alicebot_api/openclaw_models.py`
+- `apps/api/src/alicebot_api/importers/`
+- `apps/api/src/alicebot_api/markdown_import.py`
+- `apps/api/src/alicebot_api/chatgpt_import.py`
+- `apps/api/src/alicebot_api/claude_import.py`
+- `apps/api/src/alicebot_api/csv_import.py`
+- `apps/api/src/alicebot_api/importer_models.py`
 - `apps/api/src/alicebot_api/openclaw_import.py`
-- `docs/adr/ADR-004-openclaw-integration-boundary.md`
 
 Responsibilities:
 
-- define the OpenClaw import boundary
-- define supported file/input shapes for the first adapter pass
-- keep provenance and dedupe rules explicit
-- avoid drifting into generic importer-framework work
+- add at least two additional production-usable importers beyond OpenClaw
+- keep provenance and dedupe posture explicit and source-aware
+- share only the abstractions that are truly common across importers
+- avoid widening into launch-polish or generic platform work
 
-### Task 2: Continuity Mapping and Storage
+### Task 2: Continuity and Evaluation Wiring
 
 Owner: backend/runtime owner
 
 Write scope:
 
 - `apps/api/src/alicebot_api/store.py`
-- `apps/api/src/alicebot_api/continuity_capture.py`
+- `apps/api/src/alicebot_api/retrieval_evaluation.py`
 - `apps/api/src/alicebot_api/continuity_recall.py`
 - `apps/api/src/alicebot_api/continuity_resumption.py`
-- `apps/api/src/alicebot_api/mcp_tools.py`
+- `scripts/run_phase9_eval.py`
+- `scripts/run_phase9_eval.sh`
 
 Responsibilities:
 
-- map imported OpenClaw material into shipped Alice continuity semantics
-- preserve deterministic retrieval/resumption behavior
-- expose imported provenance through recall/resumption/MCP where relevant
-- fix only true parity gaps exposed by the adapter
+- ensure imported data behaves consistently through shipped recall/resumption semantics
+- implement the local evaluation harness and baseline report generation
+- keep metrics narrow, reproducible, and tied to actual continuity outcomes
+- fix only true shared importer/eval defects
 
-### Task 3: Fixtures, Demo Path, and Docs
+### Task 3: Fixtures, Docs, and Policy
 
 Owner: docs/integration owner
 
 Write scope:
 
-- `ARCHITECTURE.md`
 - `README.md`
 - `ROADMAP.md`
+- `ARCHITECTURE.md`
 - `RULES.md`
 - `.ai/handoff/CURRENT_STATE.md`
 - `docs/phase9-sprint-33-38-plan.md`
-- `fixtures/openclaw/`
-- `scripts/load_openclaw_sample_data.py`
-- `scripts/load_openclaw_sample_data.sh`
+- `docs/adr/ADR-005-import-provenance-and-dedupe-strategy.md`
+- `docs/adr/ADR-007-public-evaluation-harness-scope.md`
+- `fixtures/importers/`
+- `eval/`
 
 Responsibilities:
 
-- provide one reproducible local OpenClaw demo path
-- document exact import steps and expected outcomes
-- keep startup/sample-data guidance from `P9-S33` unchanged
-- keep architecture/rules/planning docs aligned with the shipped adapter boundary and importer posture
-- make the next seam toward broader importers/eval explicit
+- document exact importer and evaluation paths
+- keep provenance/dedupe rules explicit in canonical docs
+- keep Phase 9 sequencing factual and non-redundant
+- leave `P9-S38` with evidence-backed documentation inputs rather than open product questions
 
-### Task 4: Verification and Interop Proof
+### Task 4: Verification and Evidence
 
 Owner: sprint integrator
 
 Write scope:
 
-- `tests/unit/test_openclaw_adapter.py`
-- `tests/integration/test_openclaw_import.py`
-- `tests/integration/test_openclaw_mcp_integration.py`
+- `tests/unit/test_importers.py`
+- `tests/unit/test_phase9_eval.py`
+- `tests/__init__.py`
+- `tests/unit/__init__.py`
+- `tests/integration/__init__.py`
+- `tests/integration/test_markdown_import.py`
+- `tests/integration/test_chatgpt_import.py`
+- `tests/integration/test_claude_import.py`
+- `tests/integration/test_csv_import.py`
+- `tests/integration/test_phase9_eval.py`
+- `apps/web/components/approval-detail.test.tsx`
+- `apps/web/components/continuity-open-loops-panel.test.tsx`
+- `apps/web/components/workflow-memory-writeback-form.tsx`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
 
 Responsibilities:
 
-- prove import works against the documented fixture/workspace shape
-- prove recall/resumption work against imported data
-- prove any MCP augmentation path stays within the shipped tool contract
-- keep scope hygiene explicit if supporting files are touched
+- prove the newly added importers work against documented fixtures
+- prove dedupe and provenance behavior are deterministic
+- prove the evaluation harness runs and generates a baseline report
+- land only the minimum adjacent verification fixes needed to keep required suites green
+- keep scope hygiene explicit if support files are touched
 
 ## Definition Of Done
 
-- `P9-S36` OpenClaw adapter/import path exists and is runnable from the documented local install
-- imported OpenClaw data is queryable through shipped Alice recall/resumption semantics
-- provenance and dedupe posture are explicit and reviewable
+- `P9-S37` ships at least three production-usable importers in total
+- local evaluation harness exists and generates a reproducible baseline report
+- imported data from newly added sources behaves correctly through shipped Alice recall/resumption semantics
 - docs, tests, build report, and review report are aligned
-- no broad importer-bundle or launch-polish work leaks into the sprint
+- no launch-polish or release-tag work leaks into the sprint
