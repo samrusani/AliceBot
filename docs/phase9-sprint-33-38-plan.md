@@ -236,30 +236,32 @@ Make the repo feel launch-ready for external technical users.
 - quickstart docs
 - architecture overview
 - integration docs
-- launch assets
+- release assets grounded in shipped evidence
 - contribution and security docs
-- first public version tag
+- first public version tag plan
 
 ### Deliverables
 
 - public quickstart flow
 - architecture and integration docs
-- comparison positioning page
-- screenshots and demo media
+- importer/MCP/eval command-path docs
 - launch checklist and runbook
-- `v0.1` release tag
+- first public version tag plan/assets (`v0.1.0`)
 
 ### Acceptance Criteria
 
 - external tester can complete quickstart without handholding
-- public repo passes install, test, and demo path
-- launch materials match the actual product wedge
-- first public release is cut consistently
+- public docs accurately describe shipped CLI/MCP/importer/eval behavior
+- launch materials match shipped product wedge and committed evidence
+- release checklist/runbook is complete enough to cut first public release
 
 ### Out Of Scope
 
 - hosted SaaS launch
 - post-v0.1 vertical expansion
+- screenshots/demo media generation requiring new UI work
+- MCP tool-surface expansion
+- new importer implementation beyond shipped `P9-S37` scope
 
 ## Cross-Sprint Requirements
 
