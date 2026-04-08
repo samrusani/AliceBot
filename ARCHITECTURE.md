@@ -2,65 +2,86 @@
 
 ## System Overview
 
-Alice is a local-first continuity system built around durable events, typed continuity objects, correction-aware retrieval, and deterministic recall/resumption compilation.
-
-The public v0.1 surface exposes already-shipped seams through a narrow local-first contract:
-
-- local runtime and package boundary
-- deterministic CLI continuity contract
-- deterministic MCP transport with a narrow tool surface
-- OpenClaw, Markdown, and ChatGPT import adapters
-- a reproducible evaluation harness and launch docs grounded in those shipped paths
+Phase 10 keeps the shipped Phase 9 modular monolith and adds a hosted product layer on top of the same continuity core. Alice Core remains authoritative for continuity objects, recall, resume, corrections, approvals, and provenance-backed retrieval. Hosted identity, Telegram, and scheduling orchestrate access to that core; they do not create a second semantics stack.
 
 ## Technical Stack
 
-- Backend: Python + FastAPI
-- Web shell: Next.js + React
-- Data store: Postgres (`pgvector` enabled)
-- Local infra: Docker Compose, Redis, MinIO
-- Test stack: pytest + Vitest
-- Public package metadata: `pyproject.toml` (`alice-core` version `0.1.0`)
+- API and core runtime: Python 3.12 + FastAPI under `apps/api/src/alicebot_api`
+- Web app: Next.js 15 + React 19 under `apps/web`
+- Background/task surface: `workers`
+- Primary data store: Postgres with `pgvector`
+- Local support services: Redis and MinIO via `docker-compose.yml`
+- Packaging: `alice-core` in `pyproject.toml`
+- Test surface: pytest, Vitest, and the Phase 9 evaluation harness
 
-## Runtime Layers
+## Runtime Boundaries
 
-1. Continuity capture and revision/event persistence
-2. Recall and resumption compilation layer
-3. Trust and memory-quality posture
-4. CLI and MCP transport surface
-5. Import adapters with deterministic provenance/dedupe
-6. Evaluation harness and evidence outputs
+### Core Data Plane
 
-## Public Interface Boundaries
+Owns:
 
-### CLI (`P9-S34`)
+- continuity capture and revision persistence
+- typed continuity objects and memory revisions
+- recall and resumption compilation
+- entities, edges, and open loops
+- approvals and audit traces
+- CLI and MCP semantics
+- importer provenance and deterministic dedupe
 
-- entrypoints: `python -m alicebot_api` and optional `alicebot`
-- commands: `status`, `capture`, `recall`, `resume`, `open-loops`, `review *`
-- output posture: deterministic formatting with provenance snippets
+### Hosted Control Plane
 
-### MCP (`P9-S35`)
+Owns:
 
-- entrypoints: `python -m alicebot_api.mcp_server` and optional `alicebot-mcp`
-- intentionally narrow tools:
-  - `alice_capture`
-  - `alice_recall`
-  - `alice_resume`
-  - `alice_open_loops`
-  - `alice_recent_decisions`
-  - `alice_recent_changes`
-  - `alice_memory_review`
-  - `alice_memory_correct`
-  - `alice_context_pack`
+- user accounts and auth sessions
+- devices and trust levels
+- workspaces and bootstrap state
+- channel bindings
+- user preferences and notification policy
+- beta cohorts and feature flags
+- telemetry and support tooling
 
-### Importers (`P9-S36` / `P9-S37`)
+### Surface Layer
 
-- `openclaw_import`
-- `markdown_import`
-- `chatgpt_import`
+- local API and CLI
+- MCP server
+- Telegram adapter and chat routing layer
+- web onboarding/settings/admin surfaces
+- brief and notification scheduler
 
-All importers keep source-specific provenance fields and deterministic dedupe keys.
+## Phase 10 Core Flows
 
-## Core Data Objects
+### Onboarding
+
+1. User authenticates with a hosted session.
+2. User creates or boots a workspace.
+3. Device and channel bindings are established.
+4. Preferences and import choices are stored.
+5. Alice generates a first brief against the existing continuity core.
+
+### Inbound Chat
+
+1. Telegram webhook receives an inbound message.
+2. The message is normalized into a common channel message contract.
+3. Routing resolves workspace, actor, and best-fit continuity context.
+4. Core capture/recall/resume/correction logic executes.
+5. A reply is dispatched back through the same channel thread.
+
+### Approval
+
+1. Core logic emits an approval request.
+2. Chat surface presents approve/reject/context actions.
+3. Approval resolution writes back to the same approval and audit objects used by other surfaces.
+
+### Daily Brief
+
+1. Scheduler selects workspaces due for delivery.
+2. Brief compiler builds a deterministic summary from continuity state.
+3. Notification policy and quiet hours are applied.
+4. Delivery receipts and failures are recorded for support tooling.
+
+## Data Model Summary
+
+### Existing Baseline Objects
 
 - continuity capture events
 - typed continuity objects
@@ -68,17 +89,47 @@ All importers keep source-specific provenance fields and deterministic dedupe ke
 - open loops and brief-ready summaries
 - import provenance with explicit `source_kind`
 
-## Security and Governance Posture
+### Phase 10 Additions
+
+Control-plane tables:
+
+- `user_accounts`
+- `auth_sessions`
+- `devices`
+- `workspaces`
+- `workspace_members`
+- `user_preferences`
+- `beta_cohorts`
+- `feature_flags`
+
+Channel and scheduler tables:
+
+- `channel_identities`
+- `channel_messages`
+- `channel_threads`
+- `channel_delivery_receipts`
+- `chat_intents`
+- `continuity_briefs`
+- `approval_challenges`
+- `daily_brief_jobs`
+- `notification_subscriptions`
+- `open_loop_reviews`
+- `chat_telemetry`
+
+## Security and Governance
 
 - Postgres remains the system of record.
-- User-owned tables remain RLS-governed.
-- Append-only event/revision semantics are preserved.
-- Public surfaces do not bypass trust/provenance discipline.
-- Consequential actions remain approval-bounded.
+- Hosted identity and channel access add to, but do not bypass, existing approval and provenance discipline.
+- Append-only continuity and correction history stay intact.
+- Device linking, channel binding, and session expiry are explicit control-plane concerns.
+- Consequential actions remain approval-bounded even when initiated from chat.
+- Opt-in backup/sync must preserve user isolation and encryption boundaries.
 
-## Local Deployment Model
+## Deployment
 
-Canonical startup path:
+### Shipped Baseline
+
+Canonical local startup path remains:
 
 ```bash
 docker compose up -d
@@ -87,15 +138,16 @@ docker compose up -d
 APP_RELOAD=false ./scripts/api_dev.sh
 ```
 
-Health check:
+### Phase 10 Production Additions
 
-```bash
-curl -sS http://127.0.0.1:8000/healthz
-```
+- hosted auth/session endpoints
+- public webhook ingress for Telegram
+- scheduler/worker execution for briefs and notifications
+- support/admin visibility for beta operations
 
-## Evidence and Test Surface
+## Testing
 
-Required verification commands for launch docs and release assets:
+Existing quality gates remain:
 
 ```bash
 ./.venv/bin/python -m pytest tests/unit tests/integration
@@ -103,17 +155,22 @@ pnpm --dir apps/web test
 ./scripts/run_phase9_eval.sh --report-path eval/reports/phase9_eval_latest.json
 ```
 
-Evidence artifacts:
+Phase 10 adds targeted verification for:
 
-- `eval/baselines/phase9_s37_baseline.json`
-- `eval/reports/phase9_eval_latest.json`
+- auth and workspace bootstrap
+- device and channel linking
+- idempotent webhook ingest and outbound delivery
+- cross-surface parity between local, CLI, MCP, and Telegram
+- daily brief scheduling, quiet hours, and failure handling
+- support telemetry and rollout controls
 
 ## Architecture Constraints
 
-- Preserve shipped P5/P6/P7/P8 semantics.
-- Do not expand the MCP tool surface without an explicit planning update.
-- Do not add importer families beyond shipped OpenClaw/Markdown/ChatGPT paths without roadmap approval.
-- Keep public docs aligned to real command paths and committed evidence.
+- Phase 10 must not fork semantics between local, CLI, MCP, and Telegram.
+- Telegram is another surface on the same core objects, not a separate assistant stack.
+- Control-plane additions must not rewrite shipped Alice Core contracts.
+- Do not expand connector breadth beyond Telegram in Phase 10 without an explicit roadmap change.
+- Keep docs clear about what is shipped OSS baseline versus planned beta surface.
 
 ## Historical Traceability
 

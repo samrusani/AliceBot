@@ -2,75 +2,88 @@
 
 ## Product Summary
 
-Alice is a local-first memory and continuity layer for AI agents. It persists durable context, compiles useful working context on demand, and improves future retrieval when users apply corrections.
+Alice Connect is the Phase 10 product layer on top of shipped Phase 9 Alice Core. Alice Core remains the open-source local-first continuity engine; Alice Connect adds hosted identity, workspace bootstrap, Telegram-first access, chat-native continuity actions, and a daily brief loop for non-developer beta users.
 
 ## Problem
 
-General-purpose assistants and agent stacks still lose long-horizon continuity. They forget decisions, drop open loops, and require repeated context restatement.
+Phase 9 proved Alice can be installed, interoperate, remember, and resume deterministically. It does not yet make Alice usable every day for someone who will not touch a repo, CLI, or MCP setup.
 
 ## Target Users
 
-- Technical individual users who want a local continuity engine.
-- Developers and agent builders who need durable recall, resumption, and correction-aware memory.
-- Users with existing workspace/chat/note exports they want to import into one governed continuity store.
+- Non-developer beta users who want a personal continuity assistant in chat.
+- Individual professionals who need capture, recall, resume, open-loop review, and lightweight approvals in Telegram.
+- OSS adopters who start local-first and may later opt into a hosted product layer.
 
-## Core Value Proposition
+## Why It Matters
 
-- Durable memory and continuity across sessions.
-- Deterministic recall and resumption output.
-- Open-loop visibility (blocked, waiting, next action).
-- Correction-aware retrieval that updates future output.
-- Interoperability via CLI and MCP with a deliberately narrow contract.
+- turns continuity from a technical engine into a daily habit
+- makes chat the default interface without forking core semantics
+- creates a clear OSS-to-product path instead of a separate product rewrite
 
-## Current Shipped Surface
+## Shipped Baseline
 
-The shipped v0.1 wedge includes:
+Phase 9 is complete and shipped. Baseline truth is:
 
-- a local-first runtime boundary
+- Alice Core local-first runtime
 - deterministic CLI continuity commands
 - deterministic MCP transport with a narrow tool surface
-- OpenClaw, Markdown, and ChatGPT import paths
-- a reproducible local evaluation harness and baseline evidence
-- quickstart, integration, release, and runbook docs grounded in those shipped paths
+- OpenClaw, Markdown, and ChatGPT importers
+- continuity engine, approvals, and evaluation harness
+- public quickstart, integration, release, and runbook docs for the OSS wedge
 
-## Non-Goals (v0.1)
+## V1 Scope (Phase 10)
 
-- hosted SaaS dependency for initial launch
-- broad connector write actions
-- Telegram/WhatsApp channel expansion
-- deep browser automation
-- enterprise platform expansion in v0.1
+### Open Source Surface
 
-## Key User Journeys
+- Alice Core
+- CLI
+- MCP
+- importers
+- OpenClaw adapter
 
-1. Install Alice locally and get a first useful recall result in under 30 minutes.
-2. Load deterministic sample data and generate a resumption brief.
-3. Import external context from OpenClaw, Markdown, or ChatGPT export.
-4. Run correction flow and verify future retrieval follows corrected truth.
+### Product / Beta Surface
 
-## Constraints
+- Alice Connect account
+- hosted workspace bootstrap
+- device and channel linking
+- Telegram access
+- chat-native capture, recall, resume, correction, and open-loop review
+- approvals in chat
+- daily brief and notification loop
+- opt-in encrypted backup/sync metadata path
+- beta onboarding, cohort gating, and support tooling
 
-- Local-first deployment for v0.1.
-- Deterministic, provenance-backed outputs.
-- Corrections must influence future behavior.
-- Public docs must only claim shipped command paths and evidence.
-- Consequential execution remains approval-bounded.
+## Non-Goals
+
+- WhatsApp or broad channel expansion
+- browser automation
+- high-risk autonomous execution
+- enterprise collaboration features
+- new vertical agents
+- reopening more core release-control work as Phase 10 scope
 
 ## Success Criteria
 
-- External technical users can follow docs from install to first useful result without handholding.
-- Shipped CLI/MCP/importer paths are reproducible from documented commands.
-- Evaluation evidence is reproducible from `./scripts/run_phase9_eval.sh`.
-- Release assets are sufficient to cut v0.1 without reopening product semantics.
+At the end of Phase 10, a non-developer beta user can:
+
+- create an account
+- link Telegram
+- import initial data or skip import
+- capture things naturally in chat
+- ask recall questions
+- get resume briefs
+- review open loops
+- approve simple actions in chat
+- receive a useful daily brief
 
 ## Product Non-Negotiables
 
-- Durable context must come from governed storage, not transcript stuffing.
-- Corrections must improve later retrieval/resumption.
-- Provenance must remain visible.
-- Public launch must not depend on unsafe autonomy or broad connector side effects.
-- Alice must remain useful as a standalone local continuity engine.
+- Alice Core remains the baseline truth; Phase 10 builds on it rather than replacing it.
+- Telegram is a product surface on top of the same continuity semantics as local, CLI, and MCP.
+- Durable answers remain provenance-backed and correction-aware.
+- Consequential actions remain approval-bounded.
+- Hosted product docs must clearly distinguish OSS surface from beta product surface.
 
 ## Historical Traceability
 
-Superseded rollout plans and control snapshots live under `docs/archive/planning/2026-04-08-context-compaction/README.md`.
+Superseded planning and control material lives under `docs/archive/planning/2026-04-08-context-compaction/README.md`.
