@@ -1,58 +1,61 @@
-# REVIEW_REPORT
+# REVIEW_REPORT.md
 
 ## verdict
 PASS
 
 ## criteria met
-- All `P10-S3` in-scope Telegram continuity/approval endpoints are implemented and exercised:
-  - `POST /v1/channels/telegram/messages/{message_id}/handle`
-  - `GET /v1/channels/telegram/messages/{message_id}/result`
-  - `GET /v1/channels/telegram/recall`
-  - `GET /v1/channels/telegram/resume`
-  - `GET /v1/channels/telegram/open-loops`
-  - `POST /v1/channels/telegram/open-loops/{open_loop_id}/review-action`
-  - `GET /v1/channels/telegram/approvals`
-  - `POST /v1/channels/telegram/approvals/{approval_id}/approve`
-  - `POST /v1/channels/telegram/approvals/{approval_id}/reject`
-- Sprint data additions are present and wired:
-  - `approval_challenges`
-  - `open_loop_reviews`
-  - additive `chat_intents` result fields (`intent_payload`, `result_payload`, `handled_at`).
-- Deterministic routing and chat-native behavior for capture, recall, resume, correction, open-loop review, approvals, approve, and reject are implemented on top of shipped P10-S2 transport seams.
-- Provenance/correction discipline is preserved through existing continuity/approval modules (no parallel semantics stack).
-- Previously identified optional-field coercion defect is fixed in `telegram_continuity.py` (no `None` -> `'None'` conversion on intent payload fields).
-- Regression coverage added for:
-  - queryless `/resume` behavior returning handled brief context,
-  - `/recall` without query failing with explicit validation detail,
-  - `/approve` and `/reject` without IDs failing with explicit "requires approval id" details.
-- Control docs are aligned to an active `P10-S3` execution sprint and baseline-shipped `P10-S1` / `P10-S2` state:
+- `P10-S4` API scope is implemented and routed in `apps/api/src/alicebot_api/main.py`:
+  - `GET /v1/channels/telegram/daily-brief`
+  - `POST /v1/channels/telegram/daily-brief/deliver`
+  - `GET /v1/channels/telegram/notification-preferences`
+  - `PATCH /v1/channels/telegram/notification-preferences`
+  - `GET /v1/channels/telegram/open-loop-prompts`
+  - `POST /v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver`
+  - `GET /v1/channels/telegram/scheduler/jobs`
+- In-scope persistence additions are present:
+  - `notification_subscriptions`
+  - `continuity_briefs`
+  - `daily_brief_jobs`
+  - additive scheduler metadata on `channel_delivery_receipts`
+- Daily brief generation is built from durable continuity/chief-of-staff state and delivered through Telegram delivery seams.
+- Quiet-hours and notification preference gates deterministically suppress or allow delivery (`suppressed_disabled`, `suppressed_quiet_hours`, `suppressed_outside_window`, etc.).
+- Waiting-for and stale open-loop prompts are generated and delivered as scheduled nudges without reimplementing `P10-S3` generic review semantics.
+- Job + receipt evidence is persisted with deterministic status and metadata.
+- Blocking idempotency isolation defect identified in prior review is fixed:
+  - internal idempotency keys are workspace-scoped for client-supplied values
+  - job lookup/upsert is workspace/channel scoped
+  - fallback outbound-message idempotency reads are workspace scoped
+  - migration enforces workspace/channel/idempotency uniqueness for `daily_brief_jobs`
+- Regression coverage added for cross-workspace reuse of the same custom idempotency key (`tests/integration/test_phase10_daily_brief_notifications_api.py`).
+- Control docs are aligned to an active `P10-S4` execution sprint and baseline-shipped `P10-S1` through `P10-S3` state:
   - `.ai/active/SPRINT_PACKET.md`
   - `.ai/handoff/CURRENT_STATE.md`
   - `README.md`
-- Required verification commands pass in this re-review:
+- Required verification commands were rerun and pass:
   - `python3 scripts/check_control_doc_truth.py` -> PASS
-  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> PASS (`1014 passed`)
-  - `pnpm --dir apps/web test` -> PASS (`60 files`, `196 tests`)
+  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> `1025 passed`
+  - `pnpm --dir apps/web test` -> `60 passed files`, `196 passed tests`
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking quality issues found in sprint-owned changes after fixes.
+- No blocking quality issues found in sprint-owned implementation after the idempotency scoping fix.
 
 ## regression risks
 - Low.
-- Residual product risk is standard heuristic-classification ambiguity in free-form chat intent detection, but implemented fail-safe behavior is deterministic and auditable.
+- Residual risk is mainly operational (scheduler volume/throughput behavior under larger datasets), not correctness of the `P10-S4` contracts.
 
 ## docs issues
-- No blocking documentation issues for `P10-S3` acceptance.
+- No blocking docs issues.
+- `BUILD_REPORT.md` now reflects the idempotency fix and latest verification totals.
 
 ## should anything be added to RULES.md?
-- Not required for this sprint pass.
+- Optional: add an explicit durable rule that hosted/channel idempotency must be tenant/workspace scoped for lookup and uniqueness.
 
 ## should anything update ARCHITECTURE.md?
-- Optional only: document that Telegram continuity handling now persists intent outcomes plus approval/open-loop review audit artifacts for hosted control-plane traceability.
+- Optional: add a short security invariant under hosted control-plane boundaries that dedupe/idempotency keys are tenant-scoped.
 
 ## recommended next action
 1. Ready for Control Tower merge approval under policy.
-2. After merge, open `P10-S4` only for daily brief and notification work on top of these continuity and approval seams.
+2. After merge, open `P10-S5` only for beta hardening and launch-readiness work on top of these scheduled-delivery seams.

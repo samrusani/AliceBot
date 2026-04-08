@@ -2,7 +2,7 @@
 
 Alice is a local-first memory and continuity engine for AI agents.
 
-Phase 9 is complete. Alice Connect is the planned Phase 10 product layer on top of that shipped core, `P10-S1` and `P10-S2` are shipped, and `P10-S3` is the active execution sprint.
+Phase 9 is complete. Alice Connect is the planned Phase 10 product layer on top of that shipped core, `P10-S1` through `P10-S3` are shipped, and `P10-S4` is the active execution sprint.
 
 ## What v0.1 Ships
 
