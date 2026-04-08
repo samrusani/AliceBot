@@ -154,7 +154,7 @@ def test_compile_continuity_context_is_deterministic_and_stably_ordered() -> Non
             "id": entity_ids[0],
             "user_id": user_id,
             "entity_type": "person",
-            "name": "Samir",
+            "name": "Alex",
             "source_memory_ids": [str(memory_ids[0])],
             "created_at": base_time,
         },
@@ -479,7 +479,7 @@ def test_compile_continuity_context_records_included_and_excluded_reasons() -> N
                 "id": dropped_entity_id,
                 "user_id": user_id,
                 "entity_type": "person",
-                "name": "Samir",
+                "name": "Alex",
                 "source_memory_ids": [str(dropped_by_memory_limit_id)],
                 "created_at": base_time,
             },
@@ -573,7 +573,7 @@ def test_compile_continuity_context_records_included_and_excluded_reasons() -> N
         "reason": "entity_limit_exceeded",
         "position": 1,
         "record_entity_type": "person",
-        "name": "Samir",
+        "name": "Alex",
         "source_memory_ids": [str(dropped_by_memory_limit_id)],
     } in trace_payloads
     assert {
