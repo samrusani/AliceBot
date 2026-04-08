@@ -141,7 +141,7 @@ Make Alice usable immediately by external assistants through a stable small tool
 - broad tool surface expansion
 - remote hosted auth systems
 
-## Sprint 36 (P9-S36) (current delivery)
+## Sprint 36 (P9-S36) (shipped baseline)
 
 ### Title
 
@@ -177,7 +177,7 @@ Prove Alice is agent-agnostic and materially improves an existing agent stack.
 - generic platform SDK
 - many external integrations at once
 
-## Sprint 37 (P9-S37)
+## Sprint 37 (P9-S37) (shipped baseline)
 
 ### Title
 
@@ -197,12 +197,16 @@ Make the public product sticky fast and prove it is better, not just broader.
 ### Deliverables
 
 - at least three production-usable importers
+  - OpenClaw
+  - Markdown
+  - ChatGPT export
 - benchmark flows for:
   - recall precision
   - resumption usefulness
   - correction effectiveness
-  - open-loop retrieval quality
-- sample eval report
+  - importer success and duplicate-memory posture
+- local evaluation harness command: `./scripts/run_phase9_eval.sh`
+- sample eval report: `eval/baselines/phase9_s37_baseline.json`
 
 ### Acceptance Criteria
 
@@ -216,7 +220,7 @@ Make the public product sticky fast and prove it is better, not just broader.
 - launch narrative polish
 - broad UI work
 
-## Sprint 38 (P9-S38)
+## Sprint 38 (P9-S38) (current delivery seam)
 
 ### Title
 

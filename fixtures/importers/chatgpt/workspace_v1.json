@@ -1,0 +1,52 @@
+{
+  "fixture_id": "chatgpt-s37-workspace-v1",
+  "workspace": {
+    "id": "chatgpt-workspace-demo-001",
+    "name": "ChatGPT Import Demo"
+  },
+  "conversations": [
+    {
+      "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "title": "Phase 9 Import Plan",
+      "project": "ChatGPT Import Project",
+      "person": "Interop Owner",
+      "messages": [
+        {
+          "id": "cgpt-msg-001",
+          "role": "assistant",
+          "text": "Decision: Keep ChatGPT import provenance explicit for every message.",
+          "status": "active",
+          "confidence": 0.95
+        },
+        {
+          "id": "cgpt-msg-002",
+          "role": "assistant",
+          "text": "Next Action: Run ChatGPT fixture import before phase9 evaluation.",
+          "status": "active",
+          "confidence": 0.92
+        },
+        {
+          "id": "cgpt-msg-003",
+          "role": "assistant",
+          "text": "Blocker: Need reviewer confirmation on dedupe posture.",
+          "status": "active",
+          "confidence": 0.90
+        },
+        {
+          "id": "cgpt-msg-004",
+          "role": "assistant",
+          "text": "Commitment: Capture correction outcome evidence in eval report.",
+          "status": "completed",
+          "confidence": 0.91
+        },
+        {
+          "id": "cgpt-msg-004",
+          "role": "assistant",
+          "text": "Commitment: Capture correction outcome evidence in eval report.",
+          "status": "completed",
+          "confidence": 0.91
+        }
+      ]
+    }
+  ]
+}

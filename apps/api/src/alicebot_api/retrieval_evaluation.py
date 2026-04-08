@@ -2,20 +2,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import json
+from pathlib import Path
+from typing import Callable
 from uuid import UUID
 
+from alicebot_api.continuity_resumption import compile_continuity_resumption_brief
+from alicebot_api.continuity_review import apply_continuity_correction
 from alicebot_api.continuity_recall import query_continuity_recall
 from alicebot_api.contracts import (
     RETRIEVAL_EVALUATION_FIXTURE_ORDER,
     RETRIEVAL_EVALUATION_RESULT_ORDER,
+    ContinuityCorrectionInput,
     ContinuityRecallQueryInput,
+    ContinuityResumptionBriefRequestInput,
     RetrievalEvaluationStatus,
     RetrievalEvaluationFixtureResult,
     RetrievalEvaluationResponse,
     RetrievalEvaluationSummary,
 )
 from alicebot_api.semantic_retrieval import calculate_mean_precision, calculate_precision_at_k
-from alicebot_api.store import ContinuityRecallCandidateRow, ContinuityStore
+from alicebot_api.store import ContinuityRecallCandidateRow, ContinuityStore, JsonObject
 
 RETRIEVAL_EVALUATION_PRECISION_TARGET = 0.8
 
@@ -275,3 +282,420 @@ def get_retrieval_evaluation_summary(
         "fixtures": evaluated_results,
         "summary": summary,
     }
+
+
+PHASE9_EVALUATION_SCHEMA_VERSION = "phase9_eval_v1"
+PHASE9_EVALUATION_PASS_THRESHOLD = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class Phase9ImporterDefinition:
+    importer_name: str
+    source_kind: str
+    source_path: Path
+    project: str
+    thread_id: UUID | None
+    recall_query: str
+    import_fn: Callable[[ContinuityStore, UUID, Path], JsonObject]
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
+def _as_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return 0
+    return 0
+
+
+def calculate_phase9_metric_ratio(*, passed_count: int, total_count: int) -> float:
+    if total_count <= 0:
+        return 0.0
+    return passed_count / total_count
+
+
+def _build_phase9_importer_definitions(
+    *,
+    openclaw_source: str | Path | None,
+    markdown_source: str | Path | None,
+    chatgpt_source: str | Path | None,
+) -> tuple[Phase9ImporterDefinition, ...]:
+    from alicebot_api.chatgpt_import import import_chatgpt_source
+    from alicebot_api.markdown_import import import_markdown_source
+    from alicebot_api.openclaw_import import import_openclaw_source
+
+    repo_root = _repo_root()
+    resolved_openclaw = Path(openclaw_source) if openclaw_source is not None else (
+        repo_root / "fixtures" / "openclaw" / "workspace_v1.json"
+    )
+    resolved_markdown = Path(markdown_source) if markdown_source is not None else (
+        repo_root / "fixtures" / "importers" / "markdown" / "workspace_v1.md"
+    )
+    resolved_chatgpt = Path(chatgpt_source) if chatgpt_source is not None else (
+        repo_root / "fixtures" / "importers" / "chatgpt" / "workspace_v1.json"
+    )
+
+    return (
+        Phase9ImporterDefinition(
+            importer_name="openclaw",
+            source_kind="openclaw_import",
+            source_path=resolved_openclaw,
+            project="Alice Public Core",
+            thread_id=UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+            recall_query="MCP tool surface",
+            import_fn=lambda store, user_id, path: import_openclaw_source(
+                store,
+                user_id=user_id,
+                source=path,
+            ),
+        ),
+        Phase9ImporterDefinition(
+            importer_name="markdown",
+            source_kind="markdown_import",
+            source_path=resolved_markdown,
+            project="Markdown Import Project",
+            thread_id=UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
+            recall_query="markdown importer deterministic",
+            import_fn=lambda store, user_id, path: import_markdown_source(
+                store,
+                user_id=user_id,
+                source=path,
+            ),
+        ),
+        Phase9ImporterDefinition(
+            importer_name="chatgpt",
+            source_kind="chatgpt_import",
+            source_path=resolved_chatgpt,
+            project="ChatGPT Import Project",
+            thread_id=UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            recall_query="ChatGPT import provenance explicit",
+            import_fn=lambda store, user_id, path: import_chatgpt_source(
+                store,
+                user_id=user_id,
+                source=path,
+            ),
+        ),
+    )
+
+
+def _run_phase9_importer_evidence(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    definitions: tuple[Phase9ImporterDefinition, ...],
+) -> list[JsonObject]:
+    evidence: list[JsonObject] = []
+    for definition in definitions:
+        first_run = definition.import_fn(store, user_id, definition.source_path)
+        second_run = definition.import_fn(store, user_id, definition.source_path)
+
+        import_success = (
+            first_run.get("status") == "ok"
+            and _as_int(first_run.get("imported_count")) > 0
+        )
+        duplicate_posture_ok = (
+            second_run.get("status") == "noop"
+            and _as_int(second_run.get("skipped_duplicates")) == _as_int(first_run.get("total_candidates"))
+        )
+        evidence.append(
+            {
+                "importer": definition.importer_name,
+                "source_kind": definition.source_kind,
+                "source_path": str(definition.source_path.expanduser().resolve()),
+                "first_run": first_run,
+                "second_run": second_run,
+                "import_success": import_success,
+                "duplicate_posture_ok": duplicate_posture_ok,
+            }
+        )
+    return evidence
+
+
+def _run_phase9_recall_precision(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    definitions: tuple[Phase9ImporterDefinition, ...],
+) -> tuple[list[JsonObject], float]:
+    checks: list[JsonObject] = []
+    hit_count = 0
+
+    for definition in definitions:
+        payload = query_continuity_recall(
+            store,
+            user_id=user_id,
+            request=ContinuityRecallQueryInput(
+                query=definition.recall_query,
+                thread_id=definition.thread_id,
+                project=definition.project,
+                limit=5,
+            ),
+        )
+        top_item = payload["items"][0] if payload["items"] else None
+        top_source_kind = None
+        if top_item is not None and isinstance(top_item.get("provenance"), dict):
+            top_source_kind = top_item["provenance"].get("source_kind")
+
+        hit = top_source_kind == definition.source_kind
+        if hit:
+            hit_count += 1
+
+        checks.append(
+            {
+                "importer": definition.importer_name,
+                "query": definition.recall_query,
+                "expected_source_kind": definition.source_kind,
+                "top_source_kind": top_source_kind,
+                "returned_count": payload["summary"]["returned_count"],
+                "hit": hit,
+            }
+        )
+
+    precision = calculate_phase9_metric_ratio(
+        passed_count=hit_count,
+        total_count=len(definitions),
+    )
+    return checks, precision
+
+
+def _run_phase9_resumption_usefulness(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    definitions: tuple[Phase9ImporterDefinition, ...],
+) -> tuple[list[JsonObject], float]:
+    checks: list[JsonObject] = []
+    useful_count = 0
+
+    for definition in definitions:
+        payload = compile_continuity_resumption_brief(
+            store,
+            user_id=user_id,
+            request=ContinuityResumptionBriefRequestInput(
+                query=None,
+                thread_id=definition.thread_id,
+                project=definition.project,
+                max_recent_changes=5,
+                max_open_loops=5,
+            ),
+        )
+        brief = payload["brief"]
+        last_decision = brief["last_decision"]["item"]
+        next_action = brief["next_action"]["item"]
+        last_source_kind = (
+            None
+            if last_decision is None
+            else last_decision["provenance"].get("source_kind")
+        )
+        next_source_kind = (
+            None
+            if next_action is None
+            else next_action["provenance"].get("source_kind")
+        )
+        useful = (
+            last_decision is not None
+            and next_action is not None
+            and last_source_kind == definition.source_kind
+            and next_source_kind == definition.source_kind
+        )
+        if useful:
+            useful_count += 1
+        checks.append(
+            {
+                "importer": definition.importer_name,
+                "expected_source_kind": definition.source_kind,
+                "last_decision_source_kind": last_source_kind,
+                "next_action_source_kind": next_source_kind,
+                "useful": useful,
+            }
+        )
+
+    usefulness_rate = calculate_phase9_metric_ratio(
+        passed_count=useful_count,
+        total_count=len(definitions),
+    )
+    return checks, usefulness_rate
+
+
+def _run_phase9_correction_effectiveness(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    target_definition: Phase9ImporterDefinition,
+) -> JsonObject:
+    before = query_continuity_recall(
+        store,
+        user_id=user_id,
+        request=ContinuityRecallQueryInput(
+            query=target_definition.recall_query,
+            thread_id=target_definition.thread_id,
+            project=target_definition.project,
+            limit=5,
+        ),
+    )
+    if not before["items"]:
+        return {
+            "target_importer": target_definition.importer_name,
+            "effective": False,
+            "reason": "no_recall_items_before_correction",
+        }
+
+    before_top = before["items"][0]
+    before_top_id = str(before_top["id"])
+    before_provenance = before_top.get("provenance")
+    replacement_provenance = (
+        dict(before_provenance)
+        if isinstance(before_provenance, dict)
+        else {}
+    )
+    replacement_provenance["phase9_eval_correction"] = "supersede_verification"
+
+    correction = apply_continuity_correction(
+        store,
+        user_id=user_id,
+        continuity_object_id=UUID(before_top_id),
+        request=ContinuityCorrectionInput(
+            action="supersede",
+            reason="phase9_eval_correction_effectiveness",
+            replacement_title="Decision: Keep MCP tool surface narrow after correction verification.",
+            replacement_body={
+                "decision_text": "Keep MCP tool surface narrow after correction verification.",
+            },
+            replacement_provenance=replacement_provenance,
+            replacement_confidence=0.99,
+        ),
+    )
+
+    replacement_object = correction["replacement_object"]
+    replacement_id = None if replacement_object is None else replacement_object["id"]
+
+    after = query_continuity_recall(
+        store,
+        user_id=user_id,
+        request=ContinuityRecallQueryInput(
+            query=target_definition.recall_query,
+            thread_id=target_definition.thread_id,
+            project=target_definition.project,
+            limit=5,
+        ),
+    )
+    after_top_id = None if not after["items"] else str(after["items"][0]["id"])
+    effective = (
+        replacement_id is not None
+        and after_top_id == replacement_id
+        and after_top_id != before_top_id
+    )
+
+    return {
+        "target_importer": target_definition.importer_name,
+        "before_top_id": before_top_id,
+        "replacement_id": replacement_id,
+        "after_top_id": after_top_id,
+        "effective": effective,
+    }
+
+
+def run_phase9_evaluation(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    openclaw_source: str | Path | None = None,
+    markdown_source: str | Path | None = None,
+    chatgpt_source: str | Path | None = None,
+) -> JsonObject:
+    definitions = _build_phase9_importer_definitions(
+        openclaw_source=openclaw_source,
+        markdown_source=markdown_source,
+        chatgpt_source=chatgpt_source,
+    )
+
+    importer_runs = _run_phase9_importer_evidence(
+        store,
+        user_id=user_id,
+        definitions=definitions,
+    )
+    recall_checks, recall_precision = _run_phase9_recall_precision(
+        store,
+        user_id=user_id,
+        definitions=definitions,
+    )
+    resumption_checks, resumption_usefulness = _run_phase9_resumption_usefulness(
+        store,
+        user_id=user_id,
+        definitions=definitions,
+    )
+    correction_check = _run_phase9_correction_effectiveness(
+        store,
+        user_id=user_id,
+        target_definition=definitions[0],
+    )
+
+    importer_success_count = sum(1 for run in importer_runs if run["import_success"] is True)
+    duplicate_posture_count = sum(1 for run in importer_runs if run["duplicate_posture_ok"] is True)
+    importer_total = len(importer_runs)
+
+    importer_success_rate = calculate_phase9_metric_ratio(
+        passed_count=importer_success_count,
+        total_count=importer_total,
+    )
+    duplicate_posture_rate = calculate_phase9_metric_ratio(
+        passed_count=duplicate_posture_count,
+        total_count=importer_total,
+    )
+    correction_effectiveness_rate = 1.0 if correction_check["effective"] is True else 0.0
+
+    threshold = PHASE9_EVALUATION_PASS_THRESHOLD
+    status = (
+        "pass"
+        if (
+            importer_success_rate >= threshold
+            and duplicate_posture_rate >= threshold
+            and recall_precision >= threshold
+            and resumption_usefulness >= threshold
+            and correction_effectiveness_rate >= threshold
+        )
+        else "fail"
+    )
+
+    return {
+        "schema_version": PHASE9_EVALUATION_SCHEMA_VERSION,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "summary": {
+            "status": status,
+            "importer_count": importer_total,
+            "importer_success_rate": importer_success_rate,
+            "duplicate_posture_rate": duplicate_posture_rate,
+            "recall_precision_at_1": recall_precision,
+            "resumption_usefulness_rate": resumption_usefulness,
+            "correction_effectiveness_rate": correction_effectiveness_rate,
+            "pass_threshold": threshold,
+        },
+        "importer_runs": importer_runs,
+        "recall_precision_checks": recall_checks,
+        "resumption_usefulness_checks": resumption_checks,
+        "correction_effectiveness": correction_check,
+    }
+
+
+def write_phase9_evaluation_report(
+    *,
+    report: JsonObject,
+    report_path: str | Path,
+) -> Path:
+    output_path = Path(report_path).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return output_path

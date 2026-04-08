@@ -20,8 +20,8 @@
 
 ## Incomplete / At-Risk Areas
 
-- importer coverage is still limited to one shipped adapter path (OpenClaw)
-- broader importer story is not yet public-ready
+- importer coverage is now broader but still file-import scoped (OpenClaw + Markdown + ChatGPT)
+- evaluation harness is local and fixture-backed; hosted/remote benchmarking is still intentionally out of scope
 - OSS license finalization is still open
 
 ## Current Milestone
@@ -30,7 +30,7 @@ Phase 9: Alice Public Core and Agent Interop
 
 ## Latest State Summary
 
-`P9-S33`, `P9-S34`, `P9-S35`, and `P9-S36` are now shipped baselines:
+`P9-S33`, `P9-S34`, `P9-S35`, `P9-S36`, and `P9-S37` are now shipped baselines:
 
 - package boundary is documented around `alice-core`
 - canonical local startup path is documented and script-backed
@@ -64,12 +64,17 @@ Phase 9: Alice Public Core and Agent Interop
   - import -> recall/resumption behavior on imported scope
   - shipped MCP `alice_recall`/`alice_resume` usage over imported data without MCP surface expansion
 - ADR-004 defines the accepted OpenClaw integration boundary and scope constraints.
-
-The next active seam is `P9-S37`:
-
-- expand from single-adapter proof to broader importer coverage and evaluation harness work
-- keep parity strict with existing deterministic continuity semantics
-- avoid widening MCP transport semantics unless parity defects are found
+- Additional importer paths now exist and are shipped:
+  - markdown importer: `markdown_import.py` plus `./scripts/load_markdown_sample_data.sh`
+  - ChatGPT importer: `chatgpt_import.py` plus `./scripts/load_chatgpt_sample_data.sh`
+- Shared importer provenance/dedupe persistence now uses one deterministic policy seam:
+  - `apps/api/src/alicebot_api/importers/common.py`
+  - importer-typed provenance fields with source-specific dedupe keys
+- Local Phase 9 evaluation harness is now shipped:
+  - command: `./scripts/run_phase9_eval.sh`
+  - generated report path: `eval/reports/phase9_eval_latest.json`
+  - committed baseline report path: `eval/baselines/phase9_s37_baseline.json`
+- ADR-005 and ADR-007 now define the accepted importer provenance/dedupe and evaluation-harness boundaries.
 
 ## Critical Constraints
 
@@ -80,11 +85,11 @@ The next active seam is `P9-S37`:
 
 ## Immediate Next Move
 
-Execute `P9-S37` on top of the shipped `P9-S36` boundary:
+Execute `P9-S38` on top of the shipped `P9-S37` boundary:
 
-- broaden importer coverage beyond OpenClaw using the same explicit provenance posture
-- add benchmark/evaluation harness evidence for import quality and correction-aware continuity outcomes
-- preserve startup/sample-data path and avoid MCP contract expansion unless needed for parity fixes
+- convert shipped `P9-S37` evidence and commands into launch-quality public docs
+- keep claims anchored to reproducible local importer/evaluation evidence
+- preserve startup/sample-data/runtime determinism and avoid MCP contract expansion unless parity defects are found
 
 ## Legacy Compatibility Markers
 
