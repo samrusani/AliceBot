@@ -97,8 +97,20 @@ ChannelIdentityStatus = Literal["linked", "unlinked"]
 ChannelLinkChallengeStatus = Literal["pending", "confirmed", "expired", "cancelled"]
 ChannelMessageDirection = Literal["inbound", "outbound"]
 ChannelMessageRouteStatus = Literal["resolved", "unresolved"]
-ChatIntentKind = Literal["inbound_message"]
-ChatIntentStatus = Literal["pending", "recorded"]
+ChatIntentKind = Literal[
+    "inbound_message",
+    "capture",
+    "recall",
+    "resume",
+    "correction",
+    "open_loops",
+    "open_loop_review",
+    "approvals",
+    "approval_approve",
+    "approval_reject",
+    "unknown",
+]
+ChatIntentStatus = Literal["pending", "recorded", "handled", "failed"]
 ChannelDeliveryReceiptStatus = Literal["delivered", "failed", "simulated"]
 TaskArtifactStatus = Literal["registered"]
 TaskArtifactIngestionStatus = Literal["pending", "ingested"]
@@ -5240,6 +5252,9 @@ class ChatIntentRecord(TypedDict):
     channel_thread_id: str | None
     intent_kind: ChatIntentKind
     status: ChatIntentStatus
+    intent_payload: JsonObject
+    result_payload: JsonObject
+    handled_at: str | None
     created_at: str
 
 
@@ -5253,4 +5268,28 @@ class ChannelDeliveryReceiptRecord(TypedDict):
     failure_code: str | None
     failure_detail: str | None
     recorded_at: str
+    created_at: str
+
+
+class ApprovalChallengeRecord(TypedDict):
+    id: str
+    workspace_id: str
+    approval_id: str
+    channel_message_id: str | None
+    status: Literal["pending", "approved", "rejected", "dismissed"]
+    challenge_prompt: str
+    challenge_payload: JsonObject
+    resolved_at: str | None
+    created_at: str
+    updated_at: str
+
+
+class OpenLoopReviewRecord(TypedDict):
+    id: str
+    workspace_id: str
+    continuity_object_id: str
+    channel_message_id: str | None
+    correction_event_id: str | None
+    review_action: ContinuityOpenLoopReviewAction
+    note: str | None
     created_at: str

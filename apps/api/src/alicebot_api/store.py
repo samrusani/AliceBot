@@ -470,6 +470,9 @@ class ChatIntentRow(TypedDict):
     channel_thread_id: UUID | None
     intent_kind: str
     status: str
+    intent_payload: JsonObject
+    result_payload: JsonObject
+    handled_at: datetime | None
     created_at: datetime
 
 
@@ -483,6 +486,30 @@ class ChannelDeliveryReceiptRow(TypedDict):
     failure_code: str | None
     failure_detail: str | None
     recorded_at: datetime
+    created_at: datetime
+
+
+class ApprovalChallengeRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    approval_id: UUID
+    channel_message_id: UUID | None
+    status: str
+    challenge_prompt: str
+    challenge_payload: JsonObject
+    resolved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class OpenLoopReviewRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    continuity_object_id: UUID
+    channel_message_id: UUID | None
+    correction_event_id: UUID | None
+    review_action: str
+    note: str | None
     created_at: datetime
 
 

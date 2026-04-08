@@ -4,10 +4,11 @@
 
 - Phase 9 is complete and shipped.
 - Phase 10 planning is defined as Alice Connect.
-- `P10-S1` (Identity + Workspace Bootstrap) is shipped.
 - P10-S1 (Identity + Workspace Bootstrap) is the first execution sprint packet.
-- `P10-S2` (Telegram Transport + Message Normalization) is the active execution sprint packet.
-- No Telegram-based Phase 10 product surface is shipped yet.
+- `P10-S1` (Identity + Workspace Bootstrap) is shipped.
+- `P10-S2` (Telegram Transport + Message Normalization) is shipped.
+- `P10-S3` (Chat-Native Continuity + Approvals) is the active execution sprint packet.
+- No chat-native Phase 10 continuity surface is shipped yet.
 
 ## Canonical Baseline
 
@@ -27,8 +28,9 @@
 ## Active Sprint Focus
 
 - `P10-S1` shipped the hosted account/session foundations, workspace bootstrap, device management, preferences, and beta controls.
-- `P10-S2` covers Telegram transport, link/unlink flow, message normalization, routing, and delivery receipts.
-- Chat-native continuity, daily briefs, and launch hardening are later Phase 10 milestones.
+- `P10-S2` shipped Telegram transport, link/unlink flow, message normalization, routing, and delivery receipts.
+- `P10-S3` covers chat-native continuity behavior and approval handling on top of the shipped Telegram transport.
+- Daily briefs and launch hardening are later Phase 10 milestones.
 - Phase 9 shipped scope is baseline truth and must not be reopened as sprint work.
 
 ## Active Constraints
