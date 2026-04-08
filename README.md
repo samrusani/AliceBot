@@ -2,7 +2,7 @@
 
 Alice is a local-first memory and continuity engine for AI agents.
 
-`P9-S33` shipped the public-core baseline. `P9-S34` shipped the deterministic local CLI for continuity flows on top of that baseline. `P9-S35` shipped a narrow MCP transport for the same continuity contract. `P9-S36` ships the first OpenClaw adapter/import path on top of those shipped surfaces.
+`P9-S33` shipped the public-core baseline. `P9-S34` shipped the deterministic local CLI for continuity flows on top of that baseline. `P9-S35` shipped a narrow MCP transport for the same continuity contract. `P9-S36` shipped the first OpenClaw adapter/import path on top of those shipped surfaces. `P9-S37` is now shipped with broader importer coverage and a reproducible local evaluation harness.
 
 ## Canonical Local Startup Path (`P9-S33`)
 
@@ -112,6 +112,32 @@ Sample proof commands against imported scope:
 
 Dedupe posture is deterministic: re-running the same import returns `status=noop` with `skipped_duplicates=5`.
 
+## Importers and Eval Harness (`P9-S37`)
+
+`P9-S37` delivers three production-usable importers in total:
+
+- OpenClaw (`openclaw_import`)
+- Markdown (`markdown_import`)
+- ChatGPT export (`chatgpt_import`)
+
+Run the deterministic importer loaders:
+
+```bash
+./scripts/load_openclaw_sample_data.sh --source fixtures/openclaw/workspace_v1.json
+./scripts/load_markdown_sample_data.sh --source fixtures/importers/markdown/workspace_v1.md
+./scripts/load_chatgpt_sample_data.sh --source fixtures/importers/chatgpt/workspace_v1.json
+```
+
+Run the local Phase 9 evaluation harness and write a report:
+
+```bash
+./scripts/run_phase9_eval.sh --user-id 00000000-0000-0000-0000-000000000037 --report-path eval/reports/phase9_eval_latest.json
+```
+
+Committed baseline sample report path:
+
+- `eval/baselines/phase9_s37_baseline.json`
+
 ### Compatible Client Example (Claude Desktop MCP)
 
 `claude_desktop_config.json` example:
@@ -144,6 +170,8 @@ Dedupe posture is deterministic: re-running the same import returns `status=noop
 - `apps/web`: operator shell
 - `fixtures/public_sample_data`: deterministic public-core sample dataset
 - `fixtures/openclaw`: deterministic OpenClaw adapter fixture dataset
+- `fixtures/importers`: deterministic markdown/chatgpt importer fixtures
+- `eval`: Phase 9 evaluation reports and baselines
 - `scripts`: startup, migration, and sample-data load scripts
 - `docs`: product, architecture, ADRs, and Phase 9 planning docs
 
@@ -160,6 +188,8 @@ Dedupe posture is deterministic: re-running the same import returns `status=noop
 - [docs/phase9-public-core-boundary.md](docs/phase9-public-core-boundary.md)
 - [docs/phase9-bootstrap-notes.md](docs/phase9-bootstrap-notes.md)
 - [docs/adr/ADR-004-openclaw-integration-boundary.md](docs/adr/ADR-004-openclaw-integration-boundary.md)
+- [docs/adr/ADR-005-import-provenance-and-dedupe-strategy.md](docs/adr/ADR-005-import-provenance-and-dedupe-strategy.md)
+- [docs/adr/ADR-007-public-evaluation-harness-scope.md](docs/adr/ADR-007-public-evaluation-harness-scope.md)
 
 ## Legacy Compatibility Marker
 

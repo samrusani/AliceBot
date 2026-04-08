@@ -1,0 +1,207 @@
+{
+  "correction_effectiveness": {
+    "after_top_id": "26ef8d40-cd74-4b6a-a40f-4e1140b50482",
+    "before_top_id": "7c19aeb1-74c0-432d-afef-ac116eefcc27",
+    "effective": true,
+    "replacement_id": "26ef8d40-cd74-4b6a-a40f-4e1140b50482",
+    "target_importer": "openclaw"
+  },
+  "generated_at": "2026-04-08T08:22:21.423211+00:00",
+  "importer_runs": [
+    {
+      "duplicate_posture_ok": true,
+      "first_run": {
+        "dedupe_posture": "workspace_and_payload_fingerprint",
+        "fixture_id": "openclaw-s36-workspace-v1",
+        "imported_capture_event_ids": [
+          "1925f916-0926-45bd-ad3b-0408c368ea68",
+          "57037b66-34b2-47d3-8ee3-502a1241dd89",
+          "c3146467-ad33-4e2f-a75f-793a54ee2bd3",
+          "069a479b-a502-420e-bf19-7eeadb8bb6c1"
+        ],
+        "imported_count": 4,
+        "imported_object_ids": [
+          "7c19aeb1-74c0-432d-afef-ac116eefcc27",
+          "563f57c4-2227-4cb8-ab6e-e9b8da8ce9aa",
+          "5813abf4-fe88-48cc-9fb2-56956aff7a3e",
+          "094013b0-697c-4ac4-a1ce-18efcc4f25d5"
+        ],
+        "provenance_source_kind": "openclaw_import",
+        "skipped_duplicates": 1,
+        "source_path": "fixtures/openclaw/workspace_v1.json",
+        "status": "ok",
+        "total_candidates": 5,
+        "workspace_id": "openclaw-workspace-demo-001",
+        "workspace_name": "OpenClaw Interop Demo"
+      },
+      "import_success": true,
+      "importer": "openclaw",
+      "second_run": {
+        "dedupe_posture": "workspace_and_payload_fingerprint",
+        "fixture_id": "openclaw-s36-workspace-v1",
+        "imported_capture_event_ids": [],
+        "imported_count": 0,
+        "imported_object_ids": [],
+        "provenance_source_kind": "openclaw_import",
+        "skipped_duplicates": 5,
+        "source_path": "fixtures/openclaw/workspace_v1.json",
+        "status": "noop",
+        "total_candidates": 5,
+        "workspace_id": "openclaw-workspace-demo-001",
+        "workspace_name": "OpenClaw Interop Demo"
+      },
+      "source_kind": "openclaw_import",
+      "source_path": "fixtures/openclaw/workspace_v1.json"
+    },
+    {
+      "duplicate_posture_ok": true,
+      "first_run": {
+        "dedupe_posture": "workspace_and_line_fingerprint",
+        "fixture_id": "markdown-s37-workspace-v1",
+        "imported_capture_event_ids": [
+          "7d643a3d-0ca1-476a-b505-f5e7ca2f7cda",
+          "716c19f5-6065-4380-9581-22a0e0e9b7f7",
+          "c8745899-7c27-44bf-bf5e-b0f0582cb2b1",
+          "e7a43dd0-dbb1-44ca-a1e5-9a07a7a2ba06"
+        ],
+        "imported_count": 4,
+        "imported_object_ids": [
+          "dc742ed2-1ba8-4de5-84d1-ece333faab13",
+          "72123f2d-a870-4592-b585-04d2705722c0",
+          "c4a317b6-7400-4526-b554-e8a6af1c2c8f",
+          "fcfc9203-1d86-4e7d-85cd-5e89af03a5ad"
+        ],
+        "provenance_source_kind": "markdown_import",
+        "skipped_duplicates": 1,
+        "source_path": "fixtures/importers/markdown/workspace_v1.md",
+        "status": "ok",
+        "total_candidates": 5,
+        "workspace_id": "markdown-workspace-demo-001",
+        "workspace_name": "Markdown Import Demo"
+      },
+      "import_success": true,
+      "importer": "markdown",
+      "second_run": {
+        "dedupe_posture": "workspace_and_line_fingerprint",
+        "fixture_id": "markdown-s37-workspace-v1",
+        "imported_capture_event_ids": [],
+        "imported_count": 0,
+        "imported_object_ids": [],
+        "provenance_source_kind": "markdown_import",
+        "skipped_duplicates": 5,
+        "source_path": "fixtures/importers/markdown/workspace_v1.md",
+        "status": "noop",
+        "total_candidates": 5,
+        "workspace_id": "markdown-workspace-demo-001",
+        "workspace_name": "Markdown Import Demo"
+      },
+      "source_kind": "markdown_import",
+      "source_path": "fixtures/importers/markdown/workspace_v1.md"
+    },
+    {
+      "duplicate_posture_ok": true,
+      "first_run": {
+        "dedupe_posture": "workspace_conversation_message_fingerprint",
+        "fixture_id": "chatgpt-s37-workspace-v1",
+        "imported_capture_event_ids": [
+          "a6fc88a5-5fb0-4f21-a243-1ddb964ca07b",
+          "f1f9fd8e-ad40-4d5d-ac52-784200cab2e9",
+          "dac1accf-256f-4985-8edd-29803fa56744",
+          "45df5b84-765b-4d34-bc60-50210d1b2d9a"
+        ],
+        "imported_count": 4,
+        "imported_object_ids": [
+          "114e5abb-3715-40fb-90b3-7acabd2c63f4",
+          "316172c4-fce1-4940-a087-7c5e54518a9d",
+          "98e4ed19-d664-4aad-84dc-91e7c93bb6b2",
+          "e9b21c9a-7f35-4138-87a1-0b3f9dc6ee73"
+        ],
+        "provenance_source_kind": "chatgpt_import",
+        "skipped_duplicates": 1,
+        "source_path": "fixtures/importers/chatgpt/workspace_v1.json",
+        "status": "ok",
+        "total_candidates": 5,
+        "workspace_id": "chatgpt-workspace-demo-001",
+        "workspace_name": "ChatGPT Import Demo"
+      },
+      "import_success": true,
+      "importer": "chatgpt",
+      "second_run": {
+        "dedupe_posture": "workspace_conversation_message_fingerprint",
+        "fixture_id": "chatgpt-s37-workspace-v1",
+        "imported_capture_event_ids": [],
+        "imported_count": 0,
+        "imported_object_ids": [],
+        "provenance_source_kind": "chatgpt_import",
+        "skipped_duplicates": 5,
+        "source_path": "fixtures/importers/chatgpt/workspace_v1.json",
+        "status": "noop",
+        "total_candidates": 5,
+        "workspace_id": "chatgpt-workspace-demo-001",
+        "workspace_name": "ChatGPT Import Demo"
+      },
+      "source_kind": "chatgpt_import",
+      "source_path": "fixtures/importers/chatgpt/workspace_v1.json"
+    }
+  ],
+  "recall_precision_checks": [
+    {
+      "expected_source_kind": "openclaw_import",
+      "hit": true,
+      "importer": "openclaw",
+      "query": "MCP tool surface",
+      "returned_count": 1,
+      "top_source_kind": "openclaw_import"
+    },
+    {
+      "expected_source_kind": "markdown_import",
+      "hit": true,
+      "importer": "markdown",
+      "query": "markdown importer deterministic",
+      "returned_count": 4,
+      "top_source_kind": "markdown_import"
+    },
+    {
+      "expected_source_kind": "chatgpt_import",
+      "hit": true,
+      "importer": "chatgpt",
+      "query": "ChatGPT import provenance explicit",
+      "returned_count": 4,
+      "top_source_kind": "chatgpt_import"
+    }
+  ],
+  "resumption_usefulness_checks": [
+    {
+      "expected_source_kind": "openclaw_import",
+      "importer": "openclaw",
+      "last_decision_source_kind": "openclaw_import",
+      "next_action_source_kind": "openclaw_import",
+      "useful": true
+    },
+    {
+      "expected_source_kind": "markdown_import",
+      "importer": "markdown",
+      "last_decision_source_kind": "markdown_import",
+      "next_action_source_kind": "markdown_import",
+      "useful": true
+    },
+    {
+      "expected_source_kind": "chatgpt_import",
+      "importer": "chatgpt",
+      "last_decision_source_kind": "chatgpt_import",
+      "next_action_source_kind": "chatgpt_import",
+      "useful": true
+    }
+  ],
+  "schema_version": "phase9_eval_v1",
+  "summary": {
+    "correction_effectiveness_rate": 1.0,
+    "duplicate_posture_rate": 1.0,
+    "importer_count": 3,
+    "importer_success_rate": 1.0,
+    "pass_threshold": 1.0,
+    "recall_precision_at_1": 1.0,
+    "resumption_usefulness_rate": 1.0,
+    "status": "pass"
+  }
+}
