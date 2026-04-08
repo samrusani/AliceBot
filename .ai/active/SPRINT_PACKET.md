@@ -2,7 +2,7 @@
 
 ## Sprint Title
 
-Phase 10 Sprint 1 (P10-S1): Identity + Workspace Bootstrap
+Phase 10 Sprint 2 (P10-S2): Telegram Transport + Message Normalization
 
 ## Sprint Type
 
@@ -10,20 +10,22 @@ feature
 
 ## Sprint Reason
 
-Phase 9 proved Alice can be installed, interoperate, remember, and resume deterministically. Phase 10 must make Alice usable without local-only developer setup. `P10-S1` establishes the hosted identity and workspace foundations required before Telegram, chat-native continuity, and scheduled briefs can ship.
+`P10-S1` established hosted identity, workspace bootstrap, device management, and preference foundations. `P10-S2` now adds the first chat surface by wiring Telegram transport, channel linking, normalized inbound message handling, deterministic workspace routing, and outbound delivery receipts on top of those shipped hosted-control seams.
+
+Reference baseline marker: Phase 10 Sprint 1 (P10-S1): Identity + Workspace Bootstrap.
 
 ## Sprint Intent
 
-- hosted account and session model
-- magic-link authentication only for the first hosted entry path
-- workspace creation and bootstrap flow
-- deterministic device linking and device management
-- preferences and hosted settings foundation for timezone and future brief policy inputs
-- beta cohort and feature-flag support
+- Telegram bot and webhook ingress
+- Telegram link and unlink flow bound to hosted workspaces
+- normalized inbound Telegram message contract
+- deterministic workspace and thread routing for Telegram traffic
+- outbound dispatcher and delivery receipts
+- auditable idempotent message handling without widening into chat-native continuity behavior
 
 ## Git Instructions
 
-- Branch Name: `codex/phase10-sprint-1-identity-workspace-bootstrap`
+- Branch Name: `codex/phase10-sprint-2-telegram-transport-normalization`
 - Base Branch: `main`
 - PR Strategy: one sprint branch, one PR
 - Merge Policy: squash merge only after review `PASS` and explicit approval
@@ -36,50 +38,42 @@ Phase 9 proved Alice can be installed, interoperate, remember, and resume determ
   - deterministic MCP transport
   - OpenClaw, Markdown, and ChatGPT importers
   - continuity engine, approvals, and eval harness
+  - `P10-S1` hosted auth, workspace bootstrap, device management, preferences, beta cohorts, and feature flags
+  - Phase 9 shipped scope is baseline truth, not sprint work
 - Required now:
-  - hosted identity, sessions, and device trust model
-  - workspace bootstrap and preferences model
-  - onboarding/settings foundations that later sprints can attach Telegram to
-- Explicitly out of `P10-S1`:
-  - passkeys or alternate auth methods beyond magic-link
-  - Telegram transport
-  - Telegram link/unlink UX
-  - chat-native continuity flows
-  - daily brief delivery
-  - scheduler execution
-  - backup or sync payload movement
-  - admin/support dashboards
+  - Telegram channel identity model and hosted link/unlink lifecycle
+  - normalized inbound message shape shared by later chat continuity work
+  - deterministic workspace and thread routing for Telegram traffic
+  - outbound delivery dispatch with receipt recording
+- Explicitly out of `P10-S2`:
+  - changes to magic-link or hosted auth semantics beyond what Telegram linking requires to consume
+  - new workspace bootstrap flows
+  - chat-native capture, recall, resume, correction, or approval resolution behavior
+  - daily brief generation or scheduler execution
+  - support/admin dashboards
+  - broad channel expansion beyond Telegram
   - launch hardening
 
 ## Exact APIs In Scope
 
-- `POST /v1/auth/magic-link/start`
-- `POST /v1/auth/magic-link/verify`
-- `POST /v1/auth/logout`
-- `GET /v1/auth/session`
-- `POST /v1/workspaces`
-- `GET /v1/workspaces/current`
-- `POST /v1/workspaces/bootstrap`
-- `GET /v1/workspaces/bootstrap/status`
-- `POST /v1/devices/link/start`
-- `POST /v1/devices/link/confirm`
-- `GET /v1/devices`
-- `DELETE /v1/devices/{device_id}`
-- `GET /v1/preferences`
-- `PATCH /v1/preferences`
+- `POST /v1/channels/telegram/link/start`
+- `POST /v1/channels/telegram/link/confirm`
+- `POST /v1/channels/telegram/unlink`
+- `GET /v1/channels/telegram/status`
+- `POST /v1/channels/telegram/webhook`
+- `GET /v1/channels/telegram/messages`
+- `GET /v1/channels/telegram/threads`
+- `POST /v1/channels/telegram/messages/{message_id}/dispatch`
+- `GET /v1/channels/telegram/delivery-receipts`
 
 ## Exact Data Additions In Scope
 
-- `user_accounts`
-- `auth_sessions`
-- `magic_link_challenges`
-- `devices`
-- `device_link_challenges`
-- `workspaces`
-- `workspace_members`
-- `user_preferences`
-- `beta_cohorts`
-- `feature_flags`
+- `channel_identities`
+- `channel_link_challenges`
+- `channel_messages`
+- `channel_threads`
+- `channel_delivery_receipts`
+- `chat_intents`
 
 ## Exact Files And Modules In Scope
 
@@ -87,9 +81,9 @@ Phase 9 proved Alice can be installed, interoperate, remember, and resume determ
 - `apps/api/src/alicebot_api/config.py`
 - `apps/api/src/alicebot_api/contracts.py`
 - `apps/api/src/alicebot_api/store.py`
-- new hosted auth / workspace bootstrap / device / preferences modules under `apps/api/src/alicebot_api/`
+- new Telegram transport / channel routing / outbound delivery modules under `apps/api/src/alicebot_api/`
 - API migrations under `apps/api/alembic/versions/`
-- hosted onboarding/settings pages and supporting UI under `apps/web/app/` and `apps/web/components/`
+- hosted Telegram-link and transport-status pages/components under `apps/web/app/` and `apps/web/components/`
 - sprint-owned unit, integration, and web tests under `tests/` and `apps/web/app/**/*.test.tsx`
 - sprint-owned documentation updates required to keep active control truth aligned
 
@@ -97,42 +91,41 @@ Phase 9 proved Alice can be installed, interoperate, remember, and resume determ
 
 ### API And Persistence
 
-- add hosted account, session, workspace, device, and preference contracts
-- add magic-link challenge lifecycle and authenticated session resolution
-- add workspace bootstrap state and feature-flag visibility needed by hosted onboarding
-- keep hosted identity/workspace records mapped cleanly onto the shipped Alice Core user/workspace semantics
+- add Telegram channel identity, link challenge, message, thread, intent, and delivery-receipt contracts
+- add webhook normalization and idempotency enforcement for inbound Telegram events
+- add deterministic workspace resolution using shipped hosted user/workspace identity from `P10-S1`
+- keep channel records additive to the hosted control plane and separate from continuity-object semantics
 
 ### Hosted UX
 
-- add the minimal hosted web flow needed to sign in, create or bootstrap a workspace, manage linked devices, and update preferences
-- keep the surface narrow and utilitarian; this sprint is foundation, not launch polish
-- show hosted bootstrap readiness only; do not imply Telegram is available yet
+- add the minimal hosted settings flow needed to start, confirm, inspect, and remove Telegram linkage
+- expose Telegram transport readiness and recent transport state only; do not imply chat continuity answers exist yet
+- keep the surface narrow and operational, not launch-polish or support-dashboard work
 
 ### Verification
 
-- add unit coverage for auth, session, device, workspace bootstrap, and preference logic
-- add integration coverage for all `P10-S1` endpoints, including invalid token, expired token, duplicate bootstrap, and revoked-device paths
-- add web tests for the hosted onboarding/settings slice
+- add unit coverage for Telegram normalization, idempotency, link lifecycle, and routing helpers
+- add integration coverage for all `P10-S2` endpoints, including duplicate webhook delivery, invalid link tokens, unlink/relink, and unknown-chat routing failures
+- add web tests for Telegram link/status UX
 - keep control-doc truth checks passing after packet and current-state updates
 
 ## Required Deliverables
 
-- hosted account model
-- magic-link auth
-- device linking
-- workspace bootstrap flow
-- hosted settings page for timezone, brief-preference inputs, quiet-hours inputs, and device visibility
-- beta cohort and feature-flag support
+- Telegram bot/webhook ingress
+- Telegram link/unlink flow
+- normalized inbound Telegram message contract
+- deterministic workspace and thread routing
+- outbound delivery dispatcher and receipt persistence
+- hosted Telegram status/settings page
 
 ## Acceptance Criteria
 
-- a new user can create a workspace without touching a repo
-- a returning user can log in securely
-- device linking works deterministically
-- preferences persist and are exposed in hosted bootstrap/settings responses for later brief scheduling
-- Phase 9 shipped scope is baseline truth, not sprint work
-- hosted identity does not diverge from local workspace semantics
-- no `P10-S1` screen or API claims that Telegram is already linked or available
+- a hosted user with a `P10-S1` workspace can initiate and confirm Telegram linking without touching local tooling
+- duplicate inbound Telegram webhook deliveries are handled idempotently
+- inbound Telegram events are normalized into a stable internal contract with explicit workspace and thread routing
+- outbound Telegram dispatch persists delivery receipts and failure posture deterministically
+- `P10-S1` hosted identity/bootstrap semantics remain baseline truth and are not reopened as sprint work
+- no `P10-S2` endpoint or screen claims that continuity capture/recall/approvals already operate in Telegram
 
 ## Required Verification Commands
 
@@ -143,7 +136,7 @@ Phase 9 proved Alice can be installed, interoperate, remember, and resume determ
 ## Review Evidence Requirements
 
 - `BUILD_REPORT.md` must list the exact sprint-owned files changed and the exact command results above
-- `REVIEW_REPORT.md` must grade against `P10-S1` specifically, not generic Phase 10 planning
+- `REVIEW_REPORT.md` must grade against `P10-S2` specifically, not generic Phase 10 planning
 - if local archive paths remain dirty, they must be called out explicitly as excluded from sprint merge scope
 
 ## Implementation Constraints
@@ -151,11 +144,11 @@ Phase 9 proved Alice can be installed, interoperate, remember, and resume determ
 - do not fork continuity semantics between hosted surfaces and Alice Core
 - keep OSS versus product boundaries explicit in docs and API naming
 - preserve existing approval, provenance, and correction discipline
-- do not widen Phase 10 scope to Telegram or notifications inside this sprint
-- do not ship a scheduler in `P10-S1`; preference storage is enough
-- do not represent Telegram channel state before `P10-S2`
+- do not widen `P10-S2` into chat-native continuity or notifications
+- do not ship a scheduler in `P10-S2`
+- reuse the shipped `P10-S1` session/workspace/device foundations instead of duplicating identity state
 - prefer additive hosted-control-plane seams over invasive rewrites of shipped Phase 9 paths
 
 ## Exit Condition
 
-`P10-S1` is complete when a user can authenticate by magic link, create or bootstrap a workspace, link and revoke devices, persist hosted preferences, and land in a hosted bootstrap state that is explicitly ready for later Telegram linkage without reopening shipped Phase 9 scope.
+`P10-S2` is complete when a hosted user can link Telegram to a shipped `P10-S1` workspace, Telegram inbound events are normalized and routed idempotently, outbound dispatches record delivery receipts, and the system is explicitly ready for `P10-S3` chat-native continuity work without reopening hosted identity/bootstrap scope.

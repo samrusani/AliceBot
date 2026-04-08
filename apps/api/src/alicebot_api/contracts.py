@@ -92,6 +92,14 @@ HostedDeviceLinkChallengeStatus = Literal["pending", "confirmed", "expired"]
 HostedDeviceStatus = Literal["active", "revoked"]
 HostedWorkspaceBootstrapStatus = Literal["pending", "ready"]
 HostedWorkspaceMemberRole = Literal["owner", "member"]
+ChannelTransportType = Literal["telegram"]
+ChannelIdentityStatus = Literal["linked", "unlinked"]
+ChannelLinkChallengeStatus = Literal["pending", "confirmed", "expired", "cancelled"]
+ChannelMessageDirection = Literal["inbound", "outbound"]
+ChannelMessageRouteStatus = Literal["resolved", "unresolved"]
+ChatIntentKind = Literal["inbound_message"]
+ChatIntentStatus = Literal["pending", "recorded"]
+ChannelDeliveryReceiptStatus = Literal["delivered", "failed", "simulated"]
 TaskArtifactStatus = Literal["registered"]
 TaskArtifactIngestionStatus = Literal["pending", "ingested"]
 TaskArtifactChunkRetrievalScopeKind = Literal["task", "artifact"]
@@ -327,6 +335,8 @@ DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT = 12
 MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT = 100
 DEFAULT_CALENDAR_EVENT_LIST_LIMIT = 20
 MAX_CALENDAR_EVENT_LIST_LIMIT = 50
+DEFAULT_CHANNEL_MESSAGE_LIMIT = 50
+MAX_CHANNEL_MESSAGE_LIMIT = 200
 COMPILER_VERSION_V0 = "continuity_v0"
 PROMPT_ASSEMBLY_VERSION_V0 = "prompt_assembly_v0"
 RESPONSE_GENERATION_VERSION_V0 = "response_generation_v0"
@@ -442,6 +452,11 @@ TASK_WORKSPACE_LIST_ORDER = ["created_at_asc", "id_asc"]
 GMAIL_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]
 CALENDAR_ACCOUNT_LIST_ORDER = ["created_at_asc", "id_asc"]
 CALENDAR_EVENT_LIST_ORDER = ["start_time_asc", "provider_event_id_asc"]
+CHANNEL_IDENTITY_LIST_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
+CHANNEL_LINK_CHALLENGE_LIST_ORDER = ["created_at_desc", "id_desc"]
+CHANNEL_THREAD_LIST_ORDER = ["last_message_at_desc", "id_desc"]
+CHANNEL_MESSAGE_LIST_ORDER = ["created_at_desc", "id_desc"]
+CHANNEL_DELIVERY_RECEIPT_LIST_ORDER = ["recorded_at_desc", "id_desc"]
 TASK_ARTIFACT_LIST_ORDER = ["created_at_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_LIST_ORDER = ["sequence_no_asc", "id_asc"]
 TASK_ARTIFACT_CHUNK_EMBEDDING_LIST_ORDER = [
@@ -5119,7 +5134,7 @@ class HostedBootstrapStatusRecord(TypedDict):
     status: HostedWorkspaceBootstrapStatus
     bootstrapped_at: str | None
     ready_for_next_phase_telegram_linkage: bool
-    telegram_state: Literal["not_available_in_p10_s1"]
+    telegram_state: Literal["available_in_p10_s2_transport"]
 
 
 class HostedDeviceRecord(TypedDict):
@@ -5157,3 +5172,85 @@ class HostedUserPreferencesRecord(TypedDict):
     quiet_hours: JsonObject
     created_at: str
     updated_at: str
+
+
+class ChannelIdentityRecord(TypedDict):
+    id: str
+    user_account_id: str
+    workspace_id: str
+    channel_type: ChannelTransportType
+    external_user_id: str
+    external_chat_id: str
+    external_username: str | None
+    status: ChannelIdentityStatus
+    linked_at: str
+    unlinked_at: str | None
+    created_at: str
+    updated_at: str
+
+
+class ChannelLinkChallengeRecord(TypedDict):
+    id: str
+    user_account_id: str
+    workspace_id: str
+    channel_type: ChannelTransportType
+    link_code: str
+    status: ChannelLinkChallengeStatus
+    expires_at: str
+    confirmed_at: str | None
+    channel_identity_id: str | None
+    created_at: str
+    challenge_token: NotRequired[str]
+
+
+class ChannelThreadRecord(TypedDict):
+    id: str
+    workspace_id: str
+    channel_type: ChannelTransportType
+    external_thread_key: str
+    channel_identity_id: str | None
+    last_message_at: str | None
+    created_at: str
+    updated_at: str
+
+
+class ChannelMessageRecord(TypedDict):
+    id: str
+    workspace_id: str | None
+    channel_thread_id: str | None
+    channel_identity_id: str | None
+    channel_type: ChannelTransportType
+    direction: ChannelMessageDirection
+    provider_update_id: str | None
+    provider_message_id: str | None
+    external_chat_id: str | None
+    external_user_id: str | None
+    message_text: str | None
+    normalized_payload: JsonObject
+    route_status: ChannelMessageRouteStatus
+    idempotency_key: str
+    created_at: str
+    received_at: str
+
+
+class ChatIntentRecord(TypedDict):
+    id: str
+    workspace_id: str
+    channel_message_id: str
+    channel_thread_id: str | None
+    intent_kind: ChatIntentKind
+    status: ChatIntentStatus
+    created_at: str
+
+
+class ChannelDeliveryReceiptRecord(TypedDict):
+    id: str
+    workspace_id: str
+    channel_message_id: str
+    channel_type: ChannelTransportType
+    status: ChannelDeliveryReceiptStatus
+    provider_receipt_id: str | None
+    failure_code: str | None
+    failure_detail: str | None
+    recorded_at: str
+    created_at: str

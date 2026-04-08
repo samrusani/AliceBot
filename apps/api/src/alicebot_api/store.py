@@ -404,6 +404,88 @@ class ProtectedCalendarCredentialRow(TypedDict):
     updated_at: datetime
 
 
+class ChannelIdentityRow(TypedDict):
+    id: UUID
+    user_account_id: UUID
+    workspace_id: UUID
+    channel_type: str
+    external_user_id: str
+    external_chat_id: str
+    external_username: str | None
+    status: str
+    linked_at: datetime
+    unlinked_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChannelLinkChallengeRow(TypedDict):
+    id: UUID
+    user_account_id: UUID
+    workspace_id: UUID
+    channel_type: str
+    challenge_token_hash: str
+    link_code: str
+    status: str
+    expires_at: datetime
+    confirmed_at: datetime | None
+    channel_identity_id: UUID | None
+    created_at: datetime
+
+
+class ChannelThreadRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    channel_type: str
+    external_thread_key: str
+    channel_identity_id: UUID | None
+    last_message_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChannelMessageRow(TypedDict):
+    id: UUID
+    workspace_id: UUID | None
+    channel_thread_id: UUID | None
+    channel_identity_id: UUID | None
+    channel_type: str
+    direction: str
+    provider_update_id: str | None
+    provider_message_id: str | None
+    external_chat_id: str | None
+    external_user_id: str | None
+    message_text: str | None
+    normalized_payload: JsonObject
+    route_status: str
+    idempotency_key: str
+    created_at: datetime
+    received_at: datetime
+
+
+class ChatIntentRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    channel_message_id: UUID
+    channel_thread_id: UUID | None
+    intent_kind: str
+    status: str
+    created_at: datetime
+
+
+class ChannelDeliveryReceiptRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    channel_message_id: UUID
+    channel_type: str
+    status: str
+    provider_receipt_id: str | None
+    failure_code: str | None
+    failure_detail: str | None
+    recorded_at: datetime
+    created_at: datetime
+
+
 class TaskArtifactRow(TypedDict):
     id: UUID
     user_id: UUID
