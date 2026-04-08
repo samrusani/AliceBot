@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-04-08
+
+- Shipped `P9-S38` launch-facing documentation and release assets without widening core product semantics.
+- Rewrote `README.md` around a canonical quickstart path from local install to first useful continuity result.
+- Added dedicated docs for quickstart, CLI integration, MCP integration, importer integration, and reproducible command walkthroughs.
+- Added release readiness assets:
+  - `docs/release/v0.1.0-release-checklist.md`
+  - `docs/release/v0.1.0-tag-plan.md`
+  - `docs/runbooks/phase9-public-release-runbook.md`
+- Added public repo readiness docs: `CONTRIBUTING.md`, `SECURITY.md`, and `LICENSE`.
+- Synced core control docs (`PRODUCT_BRIEF.md`, `ARCHITECTURE.md`, `ROADMAP.md`, `RULES.md`, `.ai/handoff/CURRENT_STATE.md`, `docs/phase9-sprint-33-38-plan.md`) to the shipped `P9-S33` to `P9-S37` truth and `P9-S38` launch scope.
+
 ## 2026-03-11
 
 - Redacted embedded Redis credentials from `/healthz` so the endpoint no longer echoes `REDIS_URL` secrets back to callers.

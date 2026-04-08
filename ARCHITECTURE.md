@@ -2,220 +2,119 @@
 
 ## System Overview
 
-Alice is a local-first memory and continuity engine built around durable continuity storage, deterministic context compilation, correction-aware memory, open-loop tracking, trust-calibrated retrieval, and approval-bounded operational workflows.
+Alice is a local-first continuity system built around durable events, typed continuity objects, correction-aware retrieval, and deterministic recall/resumption compilation.
 
-The current implementation already includes:
+Phase 9 packaging did not redesign core semantics. It exposed already-shipped seams through a public-safe contract:
 
-- continuity capture, recall, resumption, review, and open-loop seams
-- trust-calibrated memory quality and retrieval posture
-- a chief-of-staff layer with prioritization, follow-through, preparation, review, and governed handoff workflows
-- deterministic gate and release evidence infrastructure
-
-Phase 9 does not replace that architecture. It packages and exposes it through public-safe boundaries.
-
-Current public packaging baseline now spans `P9-S33` through `P9-S37`:
-
-- `P9-S33`: public-safe core boundary and canonical local startup
-- `P9-S34`: deterministic local CLI continuity contract
-- `P9-S35`: narrow deterministic MCP transport contract
-- `P9-S36`: first OpenClaw adapter/import boundary with provenance + dedupe posture
-- `P9-S37`: additional markdown and ChatGPT importer paths plus reproducible local evaluation harness
+- `P9-S33`: local runtime and public package boundary
+- `P9-S34`: deterministic CLI continuity contract
+- `P9-S35`: deterministic MCP transport with a narrow tool surface
+- `P9-S36`: OpenClaw import adapter path
+- `P9-S37`: Markdown + ChatGPT importers and reproducible evaluation harness
+- `P9-S38`: launch docs and release assets grounded in those shipped paths
 
 ## Technical Stack
 
 - Backend: Python + FastAPI
-- Web: Next.js + React
-- Database: Postgres
-- Vector support: `pgvector`
-- Local infrastructure: Docker Compose, Redis, MinIO
-- Testing: pytest, Vitest
-- Shipped packaging/runtime baseline (`P9-S33` to `P9-S37`):
-  - `alice-core` (published package name in `pyproject.toml`)
-  - deterministic fixture loader (`scripts/load_sample_data.sh`)
-  - deterministic local CLI contract (`python -m alicebot_api ...`)
-  - deterministic local MCP transport (`python -m alicebot_api.mcp_server`)
-  - OpenClaw import loader and fixture path (`scripts/load_openclaw_sample_data.sh`)
-  - markdown import loader and fixture path (`scripts/load_markdown_sample_data.sh`)
-  - ChatGPT import loader and fixture path (`scripts/load_chatgpt_sample_data.sh`)
-  - Phase 9 evaluation harness (`scripts/run_phase9_eval.sh`)
+- Web shell: Next.js + React
+- Data store: Postgres (`pgvector` enabled)
+- Local infra: Docker Compose, Redis, MinIO
+- Test stack: pytest + Vitest
+- Public package metadata: `pyproject.toml` (`alice-core` version `0.1.0`)
 
-## High-Level Architecture
+## Runtime Layers
 
-### Current Runtime Layers
+1. Continuity capture and revision/event persistence
+2. Recall and resumption compilation layer
+3. Trust and memory-quality posture
+4. CLI and MCP transport surface
+5. Import adapters with deterministic provenance/dedupe
+6. Evaluation harness and evidence outputs
 
-1. Continuity and memory engine
-2. Retrieval and resumption compiler
-3. Trust and memory-quality layer
-4. Chief-of-staff product layer
-5. Governed task/approval/handoff layer
-6. Web operator shell and test/evidence scripts
+## Public Interface Boundaries
 
-### Phase 9 Public Packaging Layers
+### CLI (`P9-S34`)
 
-1. `alice-core`
-   - continuity capture
-   - recall
-   - resumption
-   - open-loop retrieval
-   - correction-aware memory behavior
-2. `alice-cli` (shipped baseline in `P9-S34`, module-scoped runtime)
-   - terminal access to public core flows
-3. `alice-mcp-server` (shipped baseline in `P9-S35`, narrow tool contract)
-   - stable MCP tool surface for external assistants
-4. `alice-importers` (shipped baseline in `P9-S37`)
-   - markdown import path
-   - ChatGPT export import path
-   - shared provenance + dedupe persistence strategy
-5. `alice-openclaw` (shipped baseline in `P9-S36`, integrated with shared importer persistence in `P9-S37`)
-   - OpenClaw-specific normalization with shared deterministic import persistence
+- entrypoints: `python -m alicebot_api` and optional `alicebot`
+- commands: `status`, `capture`, `recall`, `resume`, `open-loops`, `review *`
+- output posture: deterministic formatting with provenance snippets
 
-## Module Boundaries
+### MCP (`P9-S35`)
 
-### Current Modules
+- entrypoints: `python -m alicebot_api.mcp_server` and optional `alicebot-mcp`
+- intentionally narrow tools:
+  - `alice_capture`
+  - `alice_recall`
+  - `alice_resume`
+  - `alice_open_loops`
+  - `alice_recent_decisions`
+  - `alice_recent_changes`
+  - `alice_memory_review`
+  - `alice_memory_correct`
+  - `alice_context_pack`
 
-- `apps/api`: core product seams and current HTTP surface
-- `apps/web`: operator shell and review workspaces
-- `scripts`: local dev, migration, gate, evidence, and operational commands
-- `tests`: backend and web validation
+### Importers (`P9-S36` / `P9-S37`)
 
-### Phase 9 Public Boundaries
+- `openclaw_import`
+- `markdown_import`
+- `chatgpt_import`
 
-Public-safe:
+All importers keep source-specific provenance fields and deterministic dedupe keys.
 
-- continuity core
-- recall and resumption compiler
-- correction and review seams
-- open-loop seams
-- trust-calibrated retrieval posture
-- CLI command layer
-- MCP tool layer
-- importer layer
-- external adapter layer
-
-Keep internal or deferred:
-
-- broad connector write actions
-- unsafe autonomous execution
-- hosted SaaS assumptions
-- broad channel distribution layers
-
-## Core Flows
-
-### Continuity Flow
-
-1. Capture immutable continuity event.
-2. Conservatively derive typed continuity object when justified.
-3. Retrieve scoped continuity by query, thread, project, person, or time.
-4. Compile deterministic resumption and review artifacts.
-5. Apply correction events before mutating active truth posture.
-
-### Public CLI Flow
-
-1. User runs CLI command.
-2. Command resolves local config and user context.
-3. Core engine executes continuity or correction flow.
-4. CLI returns deterministic terminal-friendly output with provenance snippets.
-
-### MCP Flow
-
-1. External client calls a small stable Alice MCP tool.
-2. MCP server converts tool input into core continuity operation.
-3. Alice returns deterministic serialized output.
-4. External client uses Alice results for recall, resumption, or context packing.
-
-### Import Flow
-
-1. Importer reads external data source.
-2. Mapping logic transforms source records into capture events and continuity objects.
-3. Dedupe and provenance tagging are applied.
-4. Imported data becomes queryable through normal Alice recall and resumption paths.
-
-## Data Model Summary
-
-Core durable objects already in use:
+## Core Data Objects
 
 - continuity capture events
 - typed continuity objects
-- correction events
-- open loops
-- memory revisions
-- trust and quality posture summaries
-- chief-of-staff artifacts and handoff records
+- correction events and revisions
+- open loops and brief-ready summaries
+- import provenance with explicit `source_kind`
 
-Phase 9 should preserve current semantics and add packaging, import, and interop boundaries around them rather than redesigning these structures.
+## Security and Governance Posture
 
-## API and Interface Boundaries
-
-Current internal/publicizing HTTP seams include:
-
-- continuity capture, recall, resumption, review, open loops
-- memories quality gate and trust dashboard
-- chief-of-staff outputs and governed handoff flows
-
-Phase 9 should add public interfaces through:
-
-- CLI commands
-- MCP tool schemas
-- importer entrypoints
-- adapter-specific import/interop commands
-
-The initial MCP surface should stay intentionally small and stable.
-
-## Security and Permissions Model
-
-- Postgres is the system of record.
-- Row-level security remains required for user-owned tables.
-- Append-only event and revision surfaces remain authoritative.
+- Postgres remains the system of record.
+- User-owned tables remain RLS-governed.
+- Append-only event/revision semantics are preserved.
+- Public surfaces do not bypass trust/provenance discipline.
 - Consequential actions remain approval-bounded.
-- External side effects must not be introduced through Phase 9 packaging work.
-- Public interop should not bypass current trust, provenance, or approval boundaries.
 
-## Deployment Model
+## Local Deployment Model
 
-Phase 9 public deployment target is local-first.
+Canonical startup path:
 
-Primary supported path:
+```bash
+docker compose up -d
+./scripts/migrate.sh
+./scripts/load_sample_data.sh
+./scripts/api_dev.sh
+```
 
-- Docker Compose
-- local Postgres with `pgvector`
-- documented `.env` path
-- one stable boot flow for API/core services
-- deterministic fixture load via `./scripts/load_sample_data.sh`
+Health check:
 
-Optional fallback runtime support should only be introduced if it can be supported cleanly without compromising determinism.
+```bash
+curl -sS http://127.0.0.1:8000/healthz
+```
 
-## Testing Strategy
+## Evidence and Test Surface
 
-Phase 9 should preserve existing backend and web test coverage while adding:
+Required verification commands for launch docs and release assets:
 
-- install smoke tests
-- CLI golden-output tests
-- MCP contract tests
-- importer tests and fixtures
-- interop tests for at least one external client/adapter
-- public quickstart validation path
-- evaluation harness for recall, resumption, correction, and open-loop quality
+```bash
+./.venv/bin/python -m pytest tests/unit tests/integration
+pnpm --dir apps/web test
+./scripts/run_phase9_eval.sh --report-path eval/reports/phase9_eval_latest.json
+```
 
-## Observability and Logging
+Evidence artifacts:
 
-Current deterministic release and evidence infrastructure remains the baseline.
+- `eval/baselines/phase9_s37_baseline.json`
+- `eval/reports/phase9_eval_latest.json`
 
-Phase 9 should add:
+## Architecture Constraints
 
-- install success/failure visibility
-- importer success/failure reporting
-- MCP tool error visibility
-- public evaluation artifacts
-
-This should extend current evidence discipline, not replace it.
-
-## Open Technical Risks
-
-- Public package boundaries may be blurrier than current internal module layout.
-- Import and dedupe quality can quickly degrade trust if rushed.
-- MCP surface can sprawl if too many tools are exposed early.
-- Public docs can drift from actual runtime behavior if install testing is weak.
-- Optional runtime fallback support can create more confusion than value if introduced too early.
+- Preserve shipped P5/P6/P7/P8 semantics.
+- Do not expand MCP tool surface in launch sprint.
+- Do not add importer families beyond shipped OpenClaw/Markdown/ChatGPT paths.
+- Keep launch docs aligned to real command paths and committed evidence.
 
 ## Legacy Compatibility Marker
 

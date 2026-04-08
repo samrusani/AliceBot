@@ -2,81 +2,80 @@
 
 ## Product Summary
 
-Alice is a local-first memory and continuity layer for AI agents. It preserves durable context, compiles useful working context on demand, and improves future recall when corrected.
+Alice is a local-first memory and continuity layer for AI agents. It persists durable context, compiles useful working context on demand, and improves future retrieval when users apply corrections.
 
 ## Problem
 
-General-purpose assistants and agent stacks are still poor at long-horizon continuity. They forget decisions, lose open loops, require repeated context restatement, and often treat correction as transient instead of durable.
+General-purpose assistants and agent stacks still lose long-horizon continuity. They forget decisions, drop open loops, and require repeated context restatement.
 
 ## Target Users
 
-- Technical individual users who want a local memory and continuity engine.
-- Developers and agent builders who need better recall, resumption, and correction-aware memory.
-- Users with existing notes, chat exports, or agent workspaces they want to import into a durable continuity layer.
+- Technical individual users who want a local continuity engine.
+- Developers and agent builders who need durable recall, resumption, and correction-aware memory.
+- Users with existing workspace/chat/note exports they want to import into one governed continuity store.
 
 ## Core Value Proposition
 
 - Durable memory and continuity across sessions.
-- Deterministic recall and resumption briefs.
-- Open-loop visibility for blocked, waiting, and next-action states.
-- Correction-aware retrieval that improves after edits.
-- Interoperability through CLI, MCP, and external adapters instead of closed-product lock-in.
+- Deterministic recall and resumption output.
+- Open-loop visibility (blocked, waiting, next action).
+- Correction-aware retrieval that updates future output.
+- Interoperability via CLI and MCP with a deliberately narrow contract.
 
-## Phase 9 Scope Staging
+## Phase 9 Delivered Surface
 
-### `P9-S33` (current sprint objective)
+`P9-S33` through `P9-S37` are shipped and form the v0.1 product wedge:
 
-- public-safe `alice-core` package boundary
-- one canonical local startup flow
-- deterministic sample-data load path
-- documented proof for one recall call and one resumption call from public docs
+- public-safe local runtime boundary
+- deterministic local CLI continuity commands
+- deterministic MCP tool transport
+- OpenClaw import path
+- Markdown + ChatGPT import paths
+- reproducible local evaluation harness and baseline evidence
 
-### Follow-on (`P9-S34` to `P9-S38`)
+`P9-S38` delivery scope is launch packaging only:
 
-- CLI commands
-- MCP server
-- external adapter and broader importer set
-- evaluation harness expansion and launch assets
+- quickstart and integration docs
+- architecture/repo docs synced to shipped behavior
+- release checklist, runbook, and version-tag assets
 
-## Non-Goals
+## Non-Goals (v0.1)
 
-- Telegram or WhatsApp channels
-- hosted SaaS as a launch dependency
-- vertical-agent expansion
-- deep browser automation
-- autonomous external side effects without approval
+- hosted SaaS dependency for initial launch
 - broad connector write actions
+- Telegram/WhatsApp channel expansion
+- deep browser automation
 - enterprise platform expansion in v0.1
 
 ## Key User Journeys
 
-1. Install Alice locally and run a first recall query in under 30 minutes.
-2. Load sample data and generate a useful resumption brief.
-3. Correct a memory once and verify future retrieval uses the new truth.
-4. Inspect open loops and recent decisions without re-reading raw history.
+1. Install Alice locally and get a first useful recall result in under 30 minutes.
+2. Load deterministic sample data and generate a resumption brief.
+3. Import external context from OpenClaw, Markdown, or ChatGPT export.
+4. Run correction flow and verify future retrieval follows corrected truth.
 
 ## Constraints
 
 - Local-first deployment for v0.1.
 - Deterministic, provenance-backed outputs.
-- Correction must update future behavior.
+- Corrections must influence future behavior.
+- Public docs must only claim shipped command paths and evidence.
 - Consequential execution remains approval-bounded.
-- Public interop surface must stay small and stable before broadening.
 
 ## Success Criteria
 
-- A technical user can install Alice locally in under 30 minutes from docs.
-- Sample data can be loaded from one deterministic command path.
-- One recall call and one resumption call work end to end from documented setup.
-- Public boundaries are explicit enough that CLI and MCP layers can build without reopening package ambiguity.
+- External technical users can follow docs from install to first useful result without handholding.
+- Shipped CLI/MCP/importer paths are reproducible from documented commands.
+- Evaluation evidence is reproducible from `./scripts/run_phase9_eval.sh`.
+- Release assets are sufficient to cut v0.1 without reopening product semantics.
 
 ## Product Non-Negotiables
 
 - Durable context must come from governed storage, not transcript stuffing.
-- Corrections must improve future output.
-- Provenance must remain visible for recall and resumption outputs.
+- Corrections must improve later retrieval/resumption.
+- Provenance must remain visible.
 - Public launch must not depend on unsafe autonomy or broad connector side effects.
-- Alice should remain useful as a standalone local continuity engine even when no external agent is attached.
+- Alice must remain useful as a standalone local continuity engine.
 
 ## Legacy Compatibility Marker
 

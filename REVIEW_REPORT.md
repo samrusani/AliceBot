@@ -4,37 +4,48 @@
 PASS
 
 ## criteria met
-- At least three production-usable importers are present and working in total (OpenClaw, Markdown, ChatGPT export).
-- Newly added imported sources are queryable through recall and contribute useful resumption output.
-- Duplicate-memory posture is deterministic and measurable per importer (first import persists, replay import noops with duplicate skips).
-- A local evaluation harness exists, runs via a canonical command path, and produces baseline evidence from repo fixtures.
-- Correction-aware behavior is represented in baseline evidence (`correction_effectiveness_rate`).
-- Sprint docs and ADRs are synchronized with the shipped importer/evaluation behavior.
+- Acceptance criterion met: an external technical tester can reach first useful result from documented local setup.
+  - Verified runtime path commands and health check:
+    - `docker compose up -d` -> PASS
+    - `./scripts/migrate.sh` -> PASS
+    - `./scripts/load_sample_data.sh` -> PASS (`status=noop` expected on replay)
+    - `APP_RELOAD=false ./scripts/api_dev.sh` -> PASS (API served on `127.0.0.1:8000`)
+    - `curl -sS http://127.0.0.1:8000/healthz` -> PASS (`status=ok`)
+- Acceptance criterion met: public docs reflect shipped CLI/MCP/importer/eval surfaces.
+  - CLI/MCP/importer commands and flags in docs match runnable entrypoints and script `--help` output.
+  - MCP tool list in docs matches `tests/unit/test_mcp.py`.
+- Acceptance criterion met: required verification suites are green.
+  - `./.venv/bin/python -m pytest tests/unit tests/integration` -> PASS (`978 passed`)
+  - `pnpm --dir apps/web test` -> PASS (`57 files`, `192 tests`)
+  - `./.venv/bin/python scripts/check_control_doc_truth.py` -> PASS
+- Acceptance criterion met: release checklist/tag-plan/runbook assets exist and are scoped to `P9-S38` launch packaging.
+- Acceptance criterion met: eval gating path is now deterministic in docs/runbooks/checklist via explicit fresh eval-user scope.
+  - Verified updated command path (fresh user) -> PASS:
+    - `./scripts/run_phase9_eval.sh --user-id <fresh-uuid> --user-email <fresh-email> --display-name "Phase9 Eval" --report-path eval/reports/phase9_eval_latest.json`
+- Acceptance criterion met: no evidence of product-scope overreach (no new runtime features, adapters, or MCP tool expansion added).
 
 ## criteria missed
-- None.
+- None in current pass.
 
 ## quality issues
-- Resolved during review-fix cycle:
-  - Added `scripts/run_phase9_eval.sh` and updated docs to use it as the canonical reproducible command path.
-  - Fixed async timing issues in web tests to remove full-suite instability:
-    - `apps/web/components/approval-detail.test.tsx`
-    - `apps/web/components/continuity-open-loops-panel.test.tsx`
-  - Adjusted status-reset behavior in `apps/web/components/workflow-memory-writeback-form.tsx` so successful submit feedback is not immediately overwritten.
+- No blocking quality issues found in current pass.
 
 ## regression risks
-- Low.
-- Main ongoing risk is future importer additions bypassing shared persistence/dedupe discipline in `apps/api/src/alicebot_api/importers/common.py`; current tests cover the three shipped importers and evaluation harness behavior.
+- Low runtime regression risk: this sprint is docs/release-asset heavy with no observed core runtime feature changes.
+- Low release-process risk after fix: fresh user-scope eval command is now documented for deterministic gating.
 
 ## docs issues
-- None blocking.
-- Canonical eval command references now consistently use `./scripts/run_phase9_eval.sh`.
+- Fixed in current pass:
+  - release-facing docs now require fresh eval user scope for deterministic eval gating
+  - quickstart/runbook/checklist now align on `APP_RELOAD=false ./scripts/api_dev.sh` for verification path consistency
 
 ## should anything be added to RULES.md?
-- No additional rule is required beyond the now-updated reproducibility requirement.
+- Already added in current pass:
+  - release-gating commands that are stateful by user scope must document deterministic execution preconditions.
 
 ## should anything update ARCHITECTURE.md?
-- No further update required; architecture docs already reflect the shipped importer/eval baseline and command path.
+- No architecture update is required from this review. Architecture claims remain within shipped Phase 9 boundaries.
 
 ## recommended next action
-1. Proceed to `P9-S38` launch/documentation work using `eval/baselines/phase9_s37_baseline.json` and the shipped loader/eval commands as canonical evidence.
+1. Ready for Control Tower merge approval under policy.
+2. Run the release checklist end-to-end one final time on the approved merge head before tag cut.
