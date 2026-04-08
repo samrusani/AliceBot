@@ -123,6 +123,11 @@ class TelegramDeliveryReceiptRow(TypedDict):
     provider_receipt_id: str | None
     failure_code: str | None
     failure_detail: str | None
+    scheduled_job_id: UUID | None
+    scheduler_job_kind: str | None
+    scheduled_for: datetime | None
+    schedule_slot: str | None
+    notification_policy: dict[str, Any]
     recorded_at: datetime
     created_at: datetime
 
@@ -966,6 +971,19 @@ def _get_latest_linked_identity(
         return cur.fetchone()
 
 
+def get_latest_linked_telegram_identity(
+    conn,
+    *,
+    user_account_id: UUID,
+    workspace_id: UUID,
+) -> TelegramChannelIdentityRow | None:
+    return _get_latest_linked_identity(
+        conn,
+        user_account_id=user_account_id,
+        workspace_id=workspace_id,
+    )
+
+
 def get_telegram_link_status(
     conn,
     *,
@@ -1199,12 +1217,13 @@ def dispatch_telegram_message(
                        external_user_id, message_text, normalized_payload, route_status,
                        idempotency_key, created_at, received_at
                 FROM channel_messages
-                WHERE channel_type = %s
+                WHERE workspace_id = %s
+                  AND channel_type = %s
                   AND direction = 'outbound'
                   AND idempotency_key = %s
                 LIMIT 1
                 """,
-                (TELEGRAM_CHANNEL_TYPE, resolved_idempotency_key),
+                (workspace_id, TELEGRAM_CHANNEL_TYPE, resolved_idempotency_key),
             )
             outbound = cur.fetchone()
 
@@ -1244,7 +1263,8 @@ def dispatch_telegram_message(
                 recorded_at = EXCLUDED.recorded_at
             RETURNING id, workspace_id, channel_message_id, channel_type,
                       status, provider_receipt_id, failure_code, failure_detail,
-                      recorded_at, created_at
+                      scheduled_job_id, scheduler_job_kind, scheduled_for, schedule_slot,
+                      notification_policy, recorded_at, created_at
             """,
             (
                 workspace_id,
@@ -1261,6 +1281,227 @@ def dispatch_telegram_message(
 
     if receipt is None:
         raise RuntimeError("failed to persist telegram delivery receipt")
+
+    return outbound, receipt
+
+
+def dispatch_telegram_workspace_message(
+    conn,
+    *,
+    user_account_id: UUID,
+    workspace_id: UUID,
+    text: str,
+    dispatch_idempotency_key: str,
+    bot_token: str,
+    dispatch_payload: dict[str, Any] | None = None,
+    receipt_status_override: str | None = None,
+    failure_code_override: str | None = None,
+    failure_detail_override: str | None = None,
+    scheduled_job_id: UUID | None = None,
+    scheduler_job_kind: str | None = None,
+    scheduled_for: datetime | None = None,
+    schedule_slot: str | None = None,
+    notification_policy: dict[str, Any] | None = None,
+) -> tuple[TelegramChannelMessageRow, TelegramDeliveryReceiptRow]:
+    normalized_text = text.strip()
+    if normalized_text == "":
+        raise ValueError("dispatch text is required")
+
+    resolved_idempotency_key = dispatch_idempotency_key.strip()
+    if resolved_idempotency_key == "":
+        raise ValueError("dispatch idempotency key is required")
+
+    identity = _get_latest_linked_identity(
+        conn,
+        user_account_id=user_account_id,
+        workspace_id=workspace_id,
+    )
+    if identity is None:
+        raise TelegramIdentityNotFoundError("telegram channel is not linked for this workspace")
+
+    now = utc_now()
+    external_thread_key = resolve_telegram_thread_key(external_chat_id=identity["external_chat_id"])
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO channel_threads (
+              workspace_id,
+              channel_type,
+              external_thread_key,
+              channel_identity_id,
+              last_message_at,
+              updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (workspace_id, channel_type, external_thread_key) DO UPDATE
+            SET channel_identity_id = EXCLUDED.channel_identity_id,
+                last_message_at = EXCLUDED.last_message_at,
+                updated_at = EXCLUDED.updated_at
+            RETURNING id
+            """,
+            (
+                workspace_id,
+                TELEGRAM_CHANNEL_TYPE,
+                external_thread_key,
+                identity["id"],
+                now,
+                now,
+            ),
+        )
+        thread = cur.fetchone()
+
+    if thread is None:
+        raise RuntimeError("failed to resolve telegram channel thread for workspace dispatch")
+
+    provider_message_id = f"simulated:{hashlib.sha256(resolved_idempotency_key.encode('utf-8')).hexdigest()[:20]}"
+    normalized_dispatch_payload = dispatch_payload or {}
+    dispatch_mode = "suppressed" if receipt_status_override == "suppressed" else (
+        "simulated" if bot_token.strip() == "" else "deterministic_failure"
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO channel_messages (
+              workspace_id,
+              channel_thread_id,
+              channel_identity_id,
+              channel_type,
+              direction,
+              provider_update_id,
+              provider_message_id,
+              external_chat_id,
+              external_user_id,
+              message_text,
+              normalized_payload,
+              route_status,
+              idempotency_key,
+              received_at
+            )
+            VALUES (%s, %s, %s, %s, 'outbound', NULL, %s, %s, %s, %s, %s, 'resolved', %s, %s)
+            ON CONFLICT (channel_type, direction, idempotency_key) DO NOTHING
+            RETURNING id, workspace_id, channel_thread_id, channel_identity_id,
+                      channel_type, direction, provider_update_id, provider_message_id,
+                      external_chat_id, external_user_id, message_text,
+                      normalized_payload, route_status, idempotency_key, created_at, received_at
+            """,
+            (
+                workspace_id,
+                thread["id"],
+                identity["id"],
+                TELEGRAM_CHANNEL_TYPE,
+                provider_message_id,
+                identity["external_chat_id"],
+                identity["external_user_id"],
+                normalized_text,
+                Jsonb(
+                    {
+                        "dispatch": {
+                            "source": "workspace_notification",
+                            "mode": dispatch_mode,
+                        },
+                        "scheduler": normalized_dispatch_payload,
+                    }
+                ),
+                resolved_idempotency_key,
+                now,
+            ),
+        )
+        outbound = cur.fetchone()
+
+        if outbound is None:
+            cur.execute(
+                """
+                SELECT id, workspace_id, channel_thread_id, channel_identity_id, channel_type,
+                       direction, provider_update_id, provider_message_id, external_chat_id,
+                       external_user_id, message_text, normalized_payload, route_status,
+                       idempotency_key, created_at, received_at
+                FROM channel_messages
+                WHERE workspace_id = %s
+                  AND channel_type = %s
+                  AND direction = 'outbound'
+                  AND idempotency_key = %s
+                LIMIT 1
+                """,
+                (workspace_id, TELEGRAM_CHANNEL_TYPE, resolved_idempotency_key),
+            )
+            outbound = cur.fetchone()
+
+    if outbound is None:
+        raise RuntimeError("failed to create outbound telegram workspace notification message")
+
+    if receipt_status_override is not None:
+        receipt_status = receipt_status_override
+        provider_receipt_id: str | None = None
+        failure_code = failure_code_override
+        failure_detail = failure_detail_override
+    else:
+        receipt_status = "simulated"
+        failure_code = None
+        failure_detail = None
+        provider_receipt_id = outbound["provider_message_id"]
+        if bot_token.strip() != "":
+            receipt_status = "failed"
+            provider_receipt_id = None
+            failure_code = "telegram_transport_not_enabled"
+            failure_detail = "live telegram dispatch is not enabled in this environment"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO channel_delivery_receipts (
+              workspace_id,
+              channel_message_id,
+              channel_type,
+              status,
+              provider_receipt_id,
+              failure_code,
+              failure_detail,
+              scheduled_job_id,
+              scheduler_job_kind,
+              scheduled_for,
+              schedule_slot,
+              notification_policy,
+              recorded_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (channel_message_id) DO UPDATE
+            SET status = EXCLUDED.status,
+                provider_receipt_id = EXCLUDED.provider_receipt_id,
+                failure_code = EXCLUDED.failure_code,
+                failure_detail = EXCLUDED.failure_detail,
+                scheduled_job_id = EXCLUDED.scheduled_job_id,
+                scheduler_job_kind = EXCLUDED.scheduler_job_kind,
+                scheduled_for = EXCLUDED.scheduled_for,
+                schedule_slot = EXCLUDED.schedule_slot,
+                notification_policy = EXCLUDED.notification_policy,
+                recorded_at = EXCLUDED.recorded_at
+            RETURNING id, workspace_id, channel_message_id, channel_type,
+                      status, provider_receipt_id, failure_code, failure_detail,
+                      scheduled_job_id, scheduler_job_kind, scheduled_for, schedule_slot,
+                      notification_policy, recorded_at, created_at
+            """,
+            (
+                workspace_id,
+                outbound["id"],
+                TELEGRAM_CHANNEL_TYPE,
+                receipt_status,
+                provider_receipt_id,
+                failure_code,
+                failure_detail,
+                scheduled_job_id,
+                scheduler_job_kind,
+                scheduled_for,
+                schedule_slot,
+                Jsonb(notification_policy or {}),
+                utc_now(),
+            ),
+        )
+        receipt = cur.fetchone()
+
+    if receipt is None:
+        raise RuntimeError("failed to persist telegram workspace notification delivery receipt")
 
     return outbound, receipt
 
@@ -1283,6 +1524,11 @@ def list_workspace_telegram_delivery_receipts(
                    r.provider_receipt_id,
                    r.failure_code,
                    r.failure_detail,
+                   r.scheduled_job_id,
+                   r.scheduler_job_kind,
+                   r.scheduled_for,
+                   r.schedule_slot,
+                   r.notification_policy,
                    r.recorded_at,
                    r.created_at
             FROM channel_delivery_receipts AS r
@@ -1399,6 +1645,13 @@ def serialize_delivery_receipt(receipt: TelegramDeliveryReceiptRow) -> dict[str,
         "provider_receipt_id": receipt["provider_receipt_id"],
         "failure_code": receipt["failure_code"],
         "failure_detail": receipt["failure_detail"],
+        "scheduled_job_id": None
+        if receipt["scheduled_job_id"] is None
+        else str(receipt["scheduled_job_id"]),
+        "scheduler_job_kind": receipt["scheduler_job_kind"],
+        "scheduled_for": None if receipt["scheduled_for"] is None else receipt["scheduled_for"].isoformat(),
+        "schedule_slot": receipt["schedule_slot"],
+        "notification_policy": receipt["notification_policy"],
         "recorded_at": receipt["recorded_at"].isoformat(),
         "created_at": receipt["created_at"].isoformat(),
     }
