@@ -40,6 +40,10 @@ DEFAULT_RESPONSE_RATE_LIMIT_MAX_REQUESTS = 20
 DEFAULT_MAGIC_LINK_TTL_SECONDS = 900
 DEFAULT_AUTH_SESSION_TTL_SECONDS = 2_592_000
 DEFAULT_DEVICE_LINK_TTL_SECONDS = 600
+DEFAULT_TELEGRAM_LINK_TTL_SECONDS = 600
+DEFAULT_TELEGRAM_BOT_USERNAME = "alicebot"
+DEFAULT_TELEGRAM_WEBHOOK_SECRET = ""
+DEFAULT_TELEGRAM_BOT_TOKEN = ""
 
 Environment = Mapping[str, str]
 
@@ -86,6 +90,10 @@ class Settings:
     magic_link_ttl_seconds: int = DEFAULT_MAGIC_LINK_TTL_SECONDS
     auth_session_ttl_seconds: int = DEFAULT_AUTH_SESSION_TTL_SECONDS
     device_link_ttl_seconds: int = DEFAULT_DEVICE_LINK_TTL_SECONDS
+    telegram_link_ttl_seconds: int = DEFAULT_TELEGRAM_LINK_TTL_SECONDS
+    telegram_bot_username: str = DEFAULT_TELEGRAM_BOT_USERNAME
+    telegram_webhook_secret: str = DEFAULT_TELEGRAM_WEBHOOK_SECRET
+    telegram_bot_token: str = DEFAULT_TELEGRAM_BOT_TOKEN
 
     @classmethod
     def from_env(cls, env: Environment | None = None) -> "Settings":
@@ -164,6 +172,26 @@ class Settings:
                 "DEVICE_LINK_TTL_SECONDS",
                 cls.device_link_ttl_seconds,
             ),
+            telegram_link_ttl_seconds=_get_env_int(
+                current_env,
+                "TELEGRAM_LINK_TTL_SECONDS",
+                cls.telegram_link_ttl_seconds,
+            ),
+            telegram_bot_username=_get_env_value(
+                current_env,
+                "TELEGRAM_BOT_USERNAME",
+                cls.telegram_bot_username,
+            ).strip(),
+            telegram_webhook_secret=_get_env_value(
+                current_env,
+                "TELEGRAM_WEBHOOK_SECRET",
+                cls.telegram_webhook_secret,
+            ).strip(),
+            telegram_bot_token=_get_env_value(
+                current_env,
+                "TELEGRAM_BOT_TOKEN",
+                cls.telegram_bot_token,
+            ).strip(),
         )
         return _validate_settings(settings)
 
@@ -185,6 +213,10 @@ def _validate_settings(settings: Settings) -> Settings:
         raise ValueError("AUTH_SESSION_TTL_SECONDS must be a positive integer")
     if settings.device_link_ttl_seconds <= 0:
         raise ValueError("DEVICE_LINK_TTL_SECONDS must be a positive integer")
+    if settings.telegram_link_ttl_seconds <= 0:
+        raise ValueError("TELEGRAM_LINK_TTL_SECONDS must be a positive integer")
+    if settings.telegram_bot_username == "":
+        raise ValueError("TELEGRAM_BOT_USERNAME must be provided")
 
     if settings.app_env not in {"development", "test"}:
         if settings.auth_user_id == "":

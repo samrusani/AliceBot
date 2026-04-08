@@ -5,9 +5,9 @@ export default function SettingsPage() {
   return (
     <div className="page-stack">
       <PageHeader
-        eyebrow="Phase 10 Sprint 1"
+        eyebrow="Phase 10 Sprint 2"
         title="Hosted Settings"
-        description="Persist timezone, brief-policy inputs, quiet hours, and linked-device visibility for hosted workspace continuity."
+        description="Manage Telegram link/unlink lifecycle, transport status, normalized message visibility, and deterministic delivery receipts."
       />
       <HostedSettingsPanel />
     </div>

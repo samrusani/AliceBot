@@ -105,7 +105,7 @@ def test_phase10_identity_workspace_bootstrap_and_preferences_flow(
     )
     assert verify_status == 200
     assert verify_payload["workspace"] is None
-    assert verify_payload["telegram_state"] == "not_available_in_p10_s1"
+    assert verify_payload["telegram_state"] == "available_in_p10_s2_transport"
 
     session_token = verify_payload["session_token"]
     primary_device_id = verify_payload["session"]["device_id"]
@@ -143,7 +143,7 @@ def test_phase10_identity_workspace_bootstrap_and_preferences_flow(
     )
     assert bootstrap_status_before == 200
     assert bootstrap_payload_before["bootstrap"]["status"] == "pending"
-    assert bootstrap_payload_before["bootstrap"]["telegram_state"] == "not_available_in_p10_s1"
+    assert bootstrap_payload_before["bootstrap"]["telegram_state"] == "available_in_p10_s2_transport"
 
     bootstrap_status, bootstrap_payload = invoke_request(
         "POST",
@@ -154,7 +154,7 @@ def test_phase10_identity_workspace_bootstrap_and_preferences_flow(
     assert bootstrap_status == 200
     assert bootstrap_payload["workspace"]["bootstrap_status"] == "ready"
     assert bootstrap_payload["bootstrap"]["ready_for_next_phase_telegram_linkage"] is True
-    assert bootstrap_payload["telegram_state"] == "not_available_in_p10_s1"
+    assert bootstrap_payload["telegram_state"] == "available_in_p10_s2_transport"
 
     duplicate_bootstrap_status, duplicate_bootstrap_payload = invoke_request(
         "POST",
