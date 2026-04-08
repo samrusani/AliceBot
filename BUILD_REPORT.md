@@ -1,87 +1,109 @@
-# BUILD_REPORT.md
+# BUILD_REPORT
 
 ## sprint objective
-
-Compact the repo's live operating docs so `README.md`, `ROADMAP.md`, `RULES.md`, and `.ai/handoff/CURRENT_STATE.md` hold only current, durable Phase 9 truth while superseded planning and control material is preserved in archive.
+Implement **Phase 10 Sprint 1 (P10-S1): Identity + Workspace Bootstrap** with hosted magic-link auth, hosted workspace bootstrap, deterministic device linking/management, hosted preferences persistence, and beta cohort/feature-flag foundations without expanding into Telegram delivery/linking scope.
 
 ## completed work
-
-- Rewrote the live control docs to reflect the correct idle state:
-  - Phase 9 is complete
-  - no active build sprint is open
-  - Phase 10 planning docs are not defined yet
-- Replaced `.ai/active/SPRINT_PACKET.md` with an explicit idle-state placeholder so the active control path matches the repo's no-active-sprint truth.
-- Slimmed `README.md` to onboarding, shipped-product truth, and canonical doc pointers.
-- Rewrote `ROADMAP.md` to be future-facing instead of a sprint ledger.
-- Pruned `RULES.md` down to durable reusable rules.
-- Compacted `.ai/handoff/CURRENT_STATE.md` into current-state truth plus next control move.
-- Pruned `PRODUCT_BRIEF.md` and `ARCHITECTURE.md` to remove stale sprint-ledger and legacy-marker language from canonical docs.
-- Slimmed `CHANGELOG.md` to short release-facing history.
-- Archived superseded Phase 9 planning/history docs under `docs/archive/planning/2026-04-08-context-compaction/`:
-  - `phase9-product-spec.md`
-  - `phase9-sprint-33-38-plan.md`
-  - `phase9-sprint-33-control-tower-packet.md`
-  - `phase9-bootstrap-notes.md`
-- Preserved pre-compaction snapshots of the live docs in the same archive folder:
-  - `README.pre-compaction.md`
-  - `ROADMAP.pre-compaction.md`
-  - `RULES.pre-compaction.md`
-- Preserved superseded control snapshots under `.ai/archive/planning/2026-04-08-context-compaction/`:
-  - `CURRENT_STATE.pre-compaction.md`
-  - `SPRINT_PACKET.context-compaction-01.md`
-- Added `docs/archive/planning/2026-04-08-context-compaction/README.md` as the canonical archive index for this compaction pass.
-- Repaired archived snapshot links where moving the file would otherwise leave dead relative references.
-- Updated the existing control-doc validation script and its unit test so repo validation matches the compacted control truth, including the idle active-sprint placeholder.
+- Updated the active control/docs layer to reflect an active `P10-S1` execution sprint instead of the post-Phase-9 idle placeholder:
+  - `.ai/active/SPRINT_PACKET.md`
+  - `.ai/handoff/CURRENT_STATE.md`
+  - `README.md`
+  - `ROADMAP.md`
+  - `RULES.md`
+  - `ARCHITECTURE.md`
+  - `PRODUCT_BRIEF.md`
+  - `ARCHIVE_RECOMMENDATIONS.md`
+  - `RECOMMENDED_ADRS.md`
+- Added hosted control-plane migration for all sprint data additions:
+  - `user_accounts`, `auth_sessions`, `magic_link_challenges`, `devices`, `device_link_challenges`, `workspaces`, `workspace_members`, `user_preferences`, `beta_cohorts`, `feature_flags`.
+- Implemented new hosted modules under API source:
+  - `hosted_auth.py` (magic-link lifecycle, session issuance/validation/logout, feature-flag resolution)
+  - `hosted_workspace.py` (workspace creation/current selection/bootstrap status/complete)
+  - `hosted_devices.py` (device-link challenge start/confirm, list, revoke + session revocation)
+  - `hosted_preferences.py` (timezone validation + preference get/patch persistence)
+- Added full `v1` API surface in `main.py`:
+  - `POST /v1/auth/magic-link/start`
+  - `POST /v1/auth/magic-link/verify`
+  - `POST /v1/auth/logout`
+  - `GET /v1/auth/session`
+  - `POST /v1/workspaces`
+  - `GET /v1/workspaces/current`
+  - `POST /v1/workspaces/bootstrap`
+  - `GET /v1/workspaces/bootstrap/status`
+  - `POST /v1/devices/link/start`
+  - `POST /v1/devices/link/confirm`
+  - `GET /v1/devices`
+  - `DELETE /v1/devices/{device_id}`
+  - `GET /v1/preferences`
+  - `PATCH /v1/preferences`
+- Added config knobs for hosted TTL controls:
+  - `MAGIC_LINK_TTL_SECONDS`, `AUTH_SESSION_TTL_SECONDS`, `DEVICE_LINK_TTL_SECONDS`.
+- Added hosted contract types in `contracts.py` for account/session/workspace/device/preferences records and statuses.
+- Added hosted onboarding/settings web slice:
+  - new routes `/onboarding` and `/settings`
+  - supporting components for onboarding and settings posture
+  - navigation + overview route-card updates
+  - explicit messaging that Telegram linkage is not available in `P10-S1`.
+- Added verification coverage:
+  - integration coverage for all new `v1` flows, including invalid token, expired token, duplicate bootstrap, and revoked-device session path
+  - unit coverage for hosted helper logic and migration wiring
+  - web tests for onboarding/settings pages.
 
 ## incomplete work
-
-- No broader historical docs outside the moved Phase 9 planning/control set were archived in this sprint.
+- None within `P10-S1` acceptance scope.
 
 ## files changed
-
-- `.ai/handoff/CURRENT_STATE.md`
+Sprint-owned files changed:
 - `.ai/active/SPRINT_PACKET.md`
+- `.ai/handoff/CURRENT_STATE.md`
+- `ARCHITECTURE.md`
+- `ARCHIVE_RECOMMENDATIONS.md`
+- `PRODUCT_BRIEF.md`
 - `README.md`
+- `RECOMMENDED_ADRS.md`
 - `ROADMAP.md`
 - `RULES.md`
-- `PRODUCT_BRIEF.md`
-- `ARCHITECTURE.md`
-- `CHANGELOG.md`
-- `docs/archive/planning/2026-04-08-context-compaction/README.md`
-- `docs/archive/planning/2026-04-08-context-compaction/README.pre-compaction.md`
-- `docs/archive/planning/2026-04-08-context-compaction/ROADMAP.pre-compaction.md`
-- `docs/archive/planning/2026-04-08-context-compaction/RULES.pre-compaction.md`
-- `docs/archive/planning/2026-04-08-context-compaction/phase9-product-spec.md`
-- `docs/archive/planning/2026-04-08-context-compaction/phase9-sprint-33-38-plan.md`
-- `docs/archive/planning/2026-04-08-context-compaction/phase9-sprint-33-control-tower-packet.md`
-- `docs/archive/planning/2026-04-08-context-compaction/phase9-bootstrap-notes.md`
-- `.ai/archive/planning/2026-04-08-context-compaction/CURRENT_STATE.pre-compaction.md`
-- `.ai/archive/planning/2026-04-08-context-compaction/SPRINT_PACKET.context-compaction-01.md`
 - `scripts/check_control_doc_truth.py`
-- `tests/unit/test_control_doc_truth.py`
 - `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
+- `apps/api/alembic/versions/20260408_0043_phase10_identity_workspace_bootstrap.py`
+- `apps/api/src/alicebot_api/config.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/hosted_auth.py`
+- `apps/api/src/alicebot_api/hosted_workspace.py`
+- `apps/api/src/alicebot_api/hosted_devices.py`
+- `apps/api/src/alicebot_api/hosted_preferences.py`
+- `tests/integration/test_phase10_identity_workspace_bootstrap_api.py`
+- `tests/unit/test_20260408_0043_phase10_identity_workspace_bootstrap.py`
+- `tests/unit/test_phase10_hosted_modules.py`
+- `apps/web/app/onboarding/page.tsx`
+- `apps/web/app/onboarding/page.test.tsx`
+- `apps/web/app/settings/page.tsx`
+- `apps/web/app/settings/page.test.tsx`
+- `apps/web/components/hosted-onboarding-panel.tsx`
+- `apps/web/components/hosted-settings-panel.tsx`
+- `apps/web/components/app-shell.tsx`
+- `apps/web/app/page.tsx`
 
 ## tests run
+Required verification commands and results:
+- `python3 scripts/check_control_doc_truth.py`
+  - `Control-doc truth check: PASS`
+  - Verified: `README.md`, `ROADMAP.md`, `.ai/active/SPRINT_PACKET.md`, `RULES.md`, `.ai/handoff/CURRENT_STATE.md`, `docs/archive/planning/2026-04-08-context-compaction/README.md`
+- `./.venv/bin/python -m pytest tests/unit tests/integration -q`
+  - `990 passed in 108.75s (0:01:48)`
+- `pnpm --dir apps/web test`
+  - `Test Files 59 passed (59)`
+  - `Tests 194 passed (194)`
 
-- Manual review of `README.md`, `ROADMAP.md`, `RULES.md`, `.ai/handoff/CURRENT_STATE.md`, and `CHANGELOG.md` for duplication and stale control language.
-- `rg -n "through Phase 3 Sprint 9|Active Sprint focus is Phase 4 Sprint 14|Gate ownership is canonicalized to Phase 4 runner scripts|Gate ownership is canonicalized to Phase 4 runner script names|Legacy Compatibility Markers|Phase 9 Sprint Sequence" README.md ROADMAP.md RULES.md .ai/handoff/CURRENT_STATE.md`
-  - PASS (no stale live-control markers)
-- `rg -n "docs/phase9-product-spec.md|docs/phase9-sprint-33-38-plan.md|docs/phase9-sprint-33-control-tower-packet.md|docs/phase9-bootstrap-notes.md" README.md CHANGELOG.md ROADMAP.md RULES.md .ai/handoff/CURRENT_STATE.md docs scripts tests .ai`
-  - PASS (no stale references from canonical/live surfaces)
-- `rg --pcre2 -n "\\]\\((?!https?://|/)[^)]+\\)" docs/archive/planning/2026-04-08-context-compaction .ai/archive/planning/2026-04-08-context-compaction`
-  - PASS after link normalization review for archived snapshots
-- `./.venv/bin/python scripts/check_control_doc_truth.py`
-  - PASS
-- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-  - PASS (`5 passed`)
-- `git diff --name-only`
-  - PASS for scope review: only docs plus doc-validation tooling/tests changed; no product-behavior files were modified in this sprint work
+Additional focused checks run during implementation:
+- `./.venv/bin/python -m pytest tests/unit/test_phase10_hosted_modules.py tests/unit/test_20260408_0043_phase10_identity_workspace_bootstrap.py tests/integration/test_phase10_identity_workspace_bootstrap_api.py -q`
+  - `9 passed in 1.37s`
 
 ## blockers/issues
-
-- No remaining functional blockers in branch scope.
+- No implementation blockers.
+- One transient web test assertion ambiguity (duplicate text match) was resolved by tightening the selector to role-based heading assertions.
 
 ## recommended next step
-
-Seek explicit Control Tower merge approval for this compaction branch, then proceed to Phase 10 planning document creation only after the Phase 9 release checklist/runbook gates are complete.
+Seek explicit Control Tower merge approval for `P10-S1`, using this branch head and the verification evidence above.

@@ -86,6 +86,12 @@ TaskRunRetryPosture = Literal[
     "awaiting_user",
 ]
 TaskWorkspaceStatus = Literal["active"]
+HostedAuthSessionStatus = Literal["active", "revoked", "expired"]
+HostedMagicLinkChallengeStatus = Literal["pending", "consumed", "expired"]
+HostedDeviceLinkChallengeStatus = Literal["pending", "confirmed", "expired"]
+HostedDeviceStatus = Literal["active", "revoked"]
+HostedWorkspaceBootstrapStatus = Literal["pending", "ready"]
+HostedWorkspaceMemberRole = Literal["owner", "member"]
 TaskArtifactStatus = Literal["registered"]
 TaskArtifactIngestionStatus = Literal["pending", "ingested"]
 TaskArtifactChunkRetrievalScopeKind = Literal["task", "artifact"]
@@ -5065,3 +5071,89 @@ def isoformat_or_none(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
+
+
+class HostedUserAccountRecord(TypedDict):
+    id: str
+    email: str
+    display_name: str | None
+    beta_cohort_key: str | None
+    created_at: str
+
+
+class HostedAuthSessionRecord(TypedDict):
+    id: str
+    user_account_id: str
+    workspace_id: str | None
+    device_id: str | None
+    status: HostedAuthSessionStatus
+    expires_at: str
+    revoked_at: str | None
+    last_seen_at: str | None
+    created_at: str
+
+
+class HostedMagicLinkChallengeRecord(TypedDict):
+    id: str
+    email: str
+    challenge_token_hash: str
+    status: HostedMagicLinkChallengeStatus
+    expires_at: str
+    consumed_at: str | None
+    created_at: str
+
+
+class HostedWorkspaceRecord(TypedDict):
+    id: str
+    owner_user_account_id: str
+    slug: str
+    name: str
+    bootstrap_status: HostedWorkspaceBootstrapStatus
+    bootstrapped_at: str | None
+    created_at: str
+    updated_at: str
+
+
+class HostedBootstrapStatusRecord(TypedDict):
+    workspace_id: str
+    status: HostedWorkspaceBootstrapStatus
+    bootstrapped_at: str | None
+    ready_for_next_phase_telegram_linkage: bool
+    telegram_state: Literal["not_available_in_p10_s1"]
+
+
+class HostedDeviceRecord(TypedDict):
+    id: str
+    user_account_id: str
+    workspace_id: str | None
+    device_key: str
+    device_label: str
+    status: HostedDeviceStatus
+    last_seen_at: str | None
+    revoked_at: str | None
+    created_at: str
+    updated_at: str
+
+
+class HostedDeviceLinkChallengeRecord(TypedDict):
+    id: str
+    user_account_id: str
+    workspace_id: str | None
+    device_key: str
+    device_label: str
+    challenge_token_hash: str
+    status: HostedDeviceLinkChallengeStatus
+    expires_at: str
+    confirmed_at: str | None
+    device_id: str | None
+    created_at: str
+
+
+class HostedUserPreferencesRecord(TypedDict):
+    id: str
+    user_account_id: str
+    timezone: str
+    brief_preferences: JsonObject
+    quiet_hours: JsonObject
+    created_at: str
+    updated_at: str

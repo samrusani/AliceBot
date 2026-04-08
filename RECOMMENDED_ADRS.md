@@ -1,61 +1,47 @@
 # Recommended ADRs
 
-## ADR-001: Modular Monolith for V1
+## Existing Accepted ADRs Still In Force
 
-- Why it deserves an ADR: service boundaries, deployment complexity, team workflow, and failure modes all depend on this choice.
+- `ADR-001` public core package boundary
+- `ADR-002` public runtime baseline
+- `ADR-003` MCP tool surface contract
+- `ADR-004` OpenClaw integration boundary
+- `ADR-005` import provenance and dedupe strategy
+- `ADR-007` public evaluation harness scope
+
+## Next ADRs To Author For Phase 10
+
+### ADR-006: Hosted Identity, Session, and Device Trust Model
+
+- Why it deserves an ADR: auth mode, session expiry, device linking, and trust levels become hard security boundaries for the hosted product layer.
 - Proposed status: Proposed
 
-## ADR-002: Postgres + `pgvector` as V1 System of Record and Retrieval Store
+### ADR-008: Alice Connect Control Plane vs Data Plane Boundary
 
-- Why it deserves an ADR: it sets the data platform, query model, operational burden, and later migration path.
+- Why it deserves an ADR: this decision determines what lives in hosted orchestration versus Alice Core and prevents semantic drift across surfaces.
 - Proposed status: Proposed
 
-## ADR-003: Append-Only Continuity Model for Threads, Sessions, and Events
+### ADR-009: Cross-Surface Continuity Parity Contract
 
-- Why it deserves an ADR: this decision defines auditability, replay behavior, and how memory derives from source truth.
+- Why it deserves an ADR: Telegram must reuse local, CLI, and MCP semantics instead of inventing a separate chat behavior model.
 - Proposed status: Proposed
 
-## ADR-004: Memory as a Derived, Revisioned Projection
+### ADR-010: Telegram Message Normalization and Routing Contract
 
-- Why it deserves an ADR: it governs data integrity, contradiction handling, consolidation, and user trust.
+- Why it deserves an ADR: inbound idempotency, attachment handling, workspace resolution, and thread routing define the chat transport boundary.
 - Proposed status: Proposed
 
-## ADR-005: Deterministic Context Compiler Contract
+### ADR-011: Daily Brief and Notification Policy Model
 
-- Why it deserves an ADR: it affects explainability, cache reuse, testing strategy, and model portability.
+- Why it deserves an ADR: scheduling semantics, quiet hours, delivery retries, and brief composition will otherwise sprawl across product and ops code.
 - Proposed status: Proposed
 
-## ADR-006: Auth and Per-User Isolation Model
+### ADR-012: Opt-In Encrypted Backup and Sync Boundary
 
-- Why it deserves an ADR: username/password plus TOTP, database user context, and RLS policy shape are hard security boundaries.
+- Why it deserves an ADR: backup scope, encryption posture, and recovery semantics affect trust, support burden, and OSS-to-product separation.
 - Proposed status: Proposed
 
-## ADR-007: Policy Engine + Tool Proxy + Approval Boundary
+### ADR-013: Beta Rollout, Feature Flag, and Support Telemetry Model
 
-- Why it deserves an ADR: this is the core safety architecture for any external action or sensitive data access.
-- Proposed status: Proposed
-
-## ADR-008: Relational Entity and Relationship Storage in V1
-
-- Why it deserves an ADR: choosing relational storage over a graph database affects schema design, query strategy, and scale assumptions.
-- Proposed status: Proposed
-
-## ADR-009: Object Storage and Scoped Task Workspace Strategy
-
-- Why it deserves an ADR: artifact handling, document ingestion, and task isolation depend on this storage boundary.
-- Proposed status: Proposed
-
-## ADR-010: Read-Only Connector Strategy for Gmail and Calendar
-
-- Why it deserves an ADR: connector permission scope has major product, security, and delivery consequences.
-- Proposed status: Proposed
-
-## ADR-011: Trace-First Observability and Audit Logging Model
-
-- Why it deserves an ADR: explainability, incident review, and ship-gate validation depend on what is logged and retained.
-- Proposed status: Proposed
-
-## ADR-012: Deployment Architecture for V1
-
-- Why it deserves an ADR: VPS versus managed container hosting, secret handling, backup posture, and runtime topology affect both cost and risk.
+- Why it deserves an ADR: safe rollout, rollback, observability, and support diagnostics are launch-critical and cut across every Phase 10 surface.
 - Proposed status: Proposed
