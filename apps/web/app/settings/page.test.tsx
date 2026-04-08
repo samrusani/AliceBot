@@ -9,14 +9,14 @@ describe("SettingsPage", () => {
     cleanup();
   });
 
-  it("renders hosted settings foundations and no Telegram delivery claim", () => {
+  it("renders telegram channel settings and preserves continuity boundary claims", () => {
     render(<SettingsPage />);
 
     expect(screen.getByRole("heading", { level: 1, name: "Hosted Settings" })).toBeInTheDocument();
-    expect(screen.getByText("Preference Foundations")).toBeInTheDocument();
+    expect(screen.getByText("Telegram Channel Settings")).toBeInTheDocument();
     expect(
-      screen.getByText("Persist IANA timezone for future scheduled brief orchestration."),
+      screen.getByText("Issue a deterministic link challenge bound to the active hosted workspace."),
     ).toBeInTheDocument();
-    expect(screen.getByText(/do not claim Telegram linkage/i)).toBeInTheDocument();
+    expect(screen.getByText(/does not claim Telegram continuity capture/i)).toBeInTheDocument();
   });
 });
