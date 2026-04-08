@@ -19,36 +19,37 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="README.md",
         required_markers=(
             "Phase 9 is complete.",
+            "Alice Connect is the planned Phase 10 product layer",
             "Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md]",
         ),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "No active build sprint is open.",
-            "Phase 10 planning docs are not defined yet.",
+            "Phase 10 is the next delivery phase: Alice Connect.",
+            "P10-S1: Identity + Workspace Bootstrap",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "No active build sprint is open.",
-            "Keep this file as an idle-state pointer, not as a fake active sprint.",
+            "Phase 10 Sprint 1 (P10-S1): Identity + Workspace Bootstrap",
+            "Phase 9 shipped scope is baseline truth, not sprint work",
         ),
     ),
     ControlDocTruthRule(
         relative_path="RULES.md",
         required_markers=(
-            "Archive superseded planning and control snapshots instead of keeping them in live files.",
-            "Do not create a fake active sprint when the repo is between planning cycles.",
+            "Phase 10 must not fork semantics between local, CLI, MCP, and Telegram.",
+            "Do not rewrite shipped Phase 9 capabilities as future roadmap items.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "Phase 9 is complete.",
-            "No active build sprint is open.",
-            "Phase 10 planning docs are not defined yet.",
+            "Phase 9 is complete and shipped.",
+            "Phase 10 planning is defined as Alice Connect.",
+            "P10-S1 (Identity + Workspace Bootstrap) is the first execution sprint packet.",
         ),
     ),
     ControlDocTruthRule(
@@ -65,6 +66,9 @@ DISALLOWED_MARKERS: tuple[str, ...] = (
     "Legacy Compatibility Marker",
     "Legacy Compatibility Markers",
     "Phase 9 Sprint Sequence",
+    "No active build sprint is open.",
+    "Phase 10 planning docs are not defined yet.",
+    "Keep this file as an idle-state pointer, not as a fake active sprint.",
 )
 
 

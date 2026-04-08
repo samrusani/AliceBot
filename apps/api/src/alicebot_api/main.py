@@ -343,6 +343,50 @@ from alicebot_api.continuity_recall import (
     query_continuity_recall,
 )
 from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
+from alicebot_api.hosted_auth import (
+    AuthSessionExpiredError,
+    AuthSessionInvalidError,
+    AuthSessionRevokedDeviceError,
+    MagicLinkTokenExpiredError,
+    MagicLinkTokenInvalidError,
+    ensure_user_preferences_row,
+    list_feature_flags_for_user,
+    logout_auth_session,
+    resolve_auth_session,
+    serialize_auth_session,
+    serialize_magic_link_challenge,
+    serialize_user_account,
+    start_magic_link_challenge,
+    verify_magic_link_challenge,
+)
+from alicebot_api.hosted_devices import (
+    DeviceLinkTokenExpiredError,
+    DeviceLinkTokenInvalidError,
+    HostedDeviceNotFoundError,
+    confirm_device_link_challenge,
+    list_devices as list_hosted_devices,
+    revoke_device as revoke_hosted_device,
+    serialize_device,
+    serialize_device_link_challenge,
+    start_device_link_challenge,
+)
+from alicebot_api.hosted_preferences import (
+    HostedPreferencesValidationError,
+    ensure_user_preferences,
+    patch_user_preferences,
+    serialize_user_preferences,
+)
+from alicebot_api.hosted_workspace import (
+    HostedWorkspaceBootstrapConflictError,
+    HostedWorkspaceNotFoundError,
+    complete_workspace_bootstrap,
+    create_workspace,
+    get_bootstrap_status,
+    get_current_workspace,
+    get_workspace_for_member,
+    serialize_workspace,
+    set_session_workspace,
+)
 from alicebot_api.continuity_review import (
     ContinuityReviewNotFoundError,
     ContinuityReviewValidationError,
@@ -1244,6 +1288,84 @@ async def enforce_authenticated_user_identity(
         return JSONResponse(status_code=401, content={"detail": str(exc)})
 
     return await call_next(request)
+
+
+class MagicLinkStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=3, max_length=320)
+
+
+class MagicLinkVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_token: str = Field(min_length=16, max_length=256)
+    device_label: str = Field(default="Primary device", min_length=1, max_length=120)
+    device_key: str | None = Field(default=None, min_length=1, max_length=160)
+
+
+class HostedWorkspaceCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    slug: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class HostedWorkspaceBootstrapRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: UUID | None = None
+
+
+class DeviceLinkStartRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    device_key: str = Field(min_length=1, max_length=160)
+    device_label: str = Field(min_length=1, max_length=120)
+    workspace_id: UUID | None = None
+
+
+class DeviceLinkConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    challenge_token: str = Field(min_length=16, max_length=256)
+
+
+class HostedPreferencesPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timezone: str | None = Field(default=None, min_length=1, max_length=120)
+    brief_preferences: dict[str, object] | None = None
+    quiet_hours: dict[str, object] | None = None
+
+
+def _extract_bearer_token(request: Request) -> str:
+    raw_authorization = request.headers.get("authorization", "").strip()
+    if raw_authorization == "":
+        raise AuthSessionInvalidError("authorization bearer token is required")
+
+    scheme, _, token = raw_authorization.partition(" ")
+    if scheme.lower() != "bearer" or token.strip() == "":
+        raise AuthSessionInvalidError("authorization header must use Bearer token format")
+    return token.strip()
+
+
+def _serialize_hosted_session_payload(
+    *,
+    session: dict[str, object],
+    user_account: dict[str, object],
+    workspace: dict[str, object] | None,
+    preferences: dict[str, object],
+    feature_flags: list[str],
+) -> dict[str, object]:
+    return {
+        "session": session,
+        "user_account": user_account,
+        "workspace": workspace,
+        "preferences": preferences,
+        "feature_flags": feature_flags,
+        "telegram_state": "not_available_in_p10_s1",
+    }
 
 
 @app.get("/healthz")
@@ -4472,4 +4594,478 @@ def get_entity(entity_id: UUID, user_id: UUID) -> JSONResponse:
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v1/auth/magic-link/start")
+def start_v1_magic_link(request: MagicLinkStartRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                challenge = start_magic_link_challenge(
+                    conn,
+                    email=request.email,
+                    ttl_seconds=settings.magic_link_ttl_seconds,
+                )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    payload = {
+        "challenge": serialize_magic_link_challenge(challenge),
+        "delivery": {
+            "kind": "simulated_magic_link",
+            "posture": "builder_visible_only",
+        },
+    }
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v1/auth/magic-link/verify")
+def verify_v1_magic_link(request: MagicLinkVerifyRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                user_account, session, session_token, _device = verify_magic_link_challenge(
+                    conn,
+                    challenge_token=request.challenge_token,
+                    session_ttl_seconds=settings.auth_session_ttl_seconds,
+                    device_label=request.device_label,
+                    device_key=request.device_key,
+                )
+                ensure_user_preferences_row(conn, user_account_id=user_account["id"])
+                preferences = ensure_user_preferences(conn, user_account_id=user_account["id"])
+                workspace = None
+                if session["workspace_id"] is not None:
+                    workspace = get_workspace_for_member(
+                        conn,
+                        workspace_id=session["workspace_id"],
+                        user_account_id=user_account["id"],
+                    )
+                feature_flags = list_feature_flags_for_user(conn, user_account_id=user_account["id"])
+    except MagicLinkTokenExpiredError as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except (MagicLinkTokenInvalidError, ValueError) as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    payload = _serialize_hosted_session_payload(
+        session=serialize_auth_session(session),
+        user_account=serialize_user_account(user_account),
+        workspace=None if workspace is None else serialize_workspace(workspace),
+        preferences=serialize_user_preferences(preferences),
+        feature_flags=feature_flags,
+    )
+    payload["session_token"] = session_token
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v1/auth/logout")
+def logout_v1_auth_session(request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                logout_auth_session(conn, session_token=session_token)
+    except (AuthSessionInvalidError, ValueError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content={"status": "logged_out"})
+
+
+@app.get("/v1/auth/session")
+def get_v1_auth_session(request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=user_account_id,
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is not None and resolution["session"]["workspace_id"] != workspace["id"]:
+                    set_session_workspace(
+                        conn,
+                        session_id=resolution["session"]["id"],
+                        user_account_id=user_account_id,
+                        workspace_id=workspace["id"],
+                    )
+                    resolution["session"]["workspace_id"] = workspace["id"]
+                preferences = ensure_user_preferences(conn, user_account_id=user_account_id)
+                feature_flags = list_feature_flags_for_user(conn, user_account_id=user_account_id)
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    payload = _serialize_hosted_session_payload(
+        session=serialize_auth_session(resolution["session"]),
+        user_account=serialize_user_account(resolution["user_account"]),
+        workspace=None if workspace is None else serialize_workspace(workspace),
+        preferences=serialize_user_preferences(preferences),
+        feature_flags=feature_flags,
+    )
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v1/workspaces")
+def create_v1_workspace(request: Request, body: HostedWorkspaceCreateRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = create_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    name=body.name,
+                    slug=body.slug,
+                )
+                set_session_workspace(
+                    conn,
+                    session_id=resolution["session"]["id"],
+                    user_account_id=resolution["user_account"]["id"],
+                    workspace_id=workspace["id"],
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder({"workspace": serialize_workspace(workspace)}),
+    )
+
+
+@app.get("/v1/workspaces/current")
+def get_v1_current_workspace(request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                if resolution["session"]["workspace_id"] != workspace["id"]:
+                    set_session_workspace(
+                        conn,
+                        session_id=resolution["session"]["id"],
+                        user_account_id=resolution["user_account"]["id"],
+                        workspace_id=workspace["id"],
+                    )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder({"workspace": serialize_workspace(workspace)}),
+    )
+
+
+@app.post("/v1/workspaces/bootstrap")
+def bootstrap_v1_workspace(
+    request: Request,
+    body: HostedWorkspaceBootstrapRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace = None
+                if body.workspace_id is not None:
+                    workspace = get_workspace_for_member(
+                        conn,
+                        workspace_id=body.workspace_id,
+                        user_account_id=user_account_id,
+                    )
+                    if workspace is None:
+                        raise HostedWorkspaceNotFoundError(f"workspace {body.workspace_id} was not found")
+                    set_session_workspace(
+                        conn,
+                        session_id=resolution["session"]["id"],
+                        user_account_id=user_account_id,
+                        workspace_id=workspace["id"],
+                    )
+                else:
+                    workspace = get_current_workspace(
+                        conn,
+                        user_account_id=user_account_id,
+                        preferred_workspace_id=resolution["session"]["workspace_id"],
+                    )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                bootstrapped_workspace = complete_workspace_bootstrap(
+                    conn,
+                    workspace_id=workspace["id"],
+                    user_account_id=user_account_id,
+                )
+                preferences = ensure_user_preferences(conn, user_account_id=user_account_id)
+                status_payload = get_bootstrap_status(
+                    conn,
+                    workspace_id=workspace["id"],
+                    user_account_id=user_account_id,
+                )
+                feature_flags = list_feature_flags_for_user(conn, user_account_id=user_account_id)
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except HostedWorkspaceBootstrapConflictError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "workspace": serialize_workspace(bootstrapped_workspace),
+                "bootstrap": status_payload,
+                "preferences": serialize_user_preferences(preferences),
+                "feature_flags": feature_flags,
+                "telegram_state": "not_available_in_p10_s1",
+            }
+        ),
+    )
+
+
+@app.get("/v1/workspaces/bootstrap/status")
+def get_v1_workspace_bootstrap_status(request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                status_payload = get_bootstrap_status(
+                    conn,
+                    workspace_id=workspace["id"],
+                    user_account_id=resolution["user_account"]["id"],
+                )
+                feature_flags = list_feature_flags_for_user(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "workspace": serialize_workspace(workspace),
+                "bootstrap": status_payload,
+                "feature_flags": feature_flags,
+                "telegram_state": "not_available_in_p10_s1",
+            }
+        ),
+    )
+
+
+@app.post("/v1/devices/link/start")
+def start_v1_device_link(request: Request, body: DeviceLinkStartRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                workspace_id = body.workspace_id or resolution["session"]["workspace_id"]
+                if body.workspace_id is not None:
+                    workspace = get_workspace_for_member(
+                        conn,
+                        workspace_id=body.workspace_id,
+                        user_account_id=user_account_id,
+                    )
+                    if workspace is None:
+                        raise HostedWorkspaceNotFoundError(f"workspace {body.workspace_id} was not found")
+                    workspace_id = workspace["id"]
+                challenge = start_device_link_challenge(
+                    conn,
+                    user_account_id=user_account_id,
+                    workspace_id=workspace_id,
+                    device_key=body.device_key,
+                    device_label=body.device_label,
+                    ttl_seconds=settings.device_link_ttl_seconds,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedWorkspaceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder({"challenge": serialize_device_link_challenge(challenge)}),
+    )
+
+
+@app.post("/v1/devices/link/confirm")
+def confirm_v1_device_link(request: Request, body: DeviceLinkConfirmRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                device = confirm_device_link_challenge(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    challenge_token=body.challenge_token,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except DeviceLinkTokenExpiredError as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except DeviceLinkTokenInvalidError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder({"device": serialize_device(device)}),
+    )
+
+
+@app.get("/v1/devices")
+def list_v1_devices(request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                devices = list_hosted_devices(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    workspace_id=resolution["session"]["workspace_id"],
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    items = [serialize_device(device) for device in devices]
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "items": items,
+                "summary": {
+                    "total_count": len(items),
+                    "active_count": sum(1 for item in items if item["status"] == "active"),
+                    "revoked_count": sum(1 for item in items if item["status"] == "revoked"),
+                    "order": ["created_at_desc", "id_desc"],
+                },
+            }
+        ),
+    )
+
+
+@app.delete("/v1/devices/{device_id}")
+def delete_v1_device(device_id: UUID, request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                device = revoke_hosted_device(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    device_id=device_id,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedDeviceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder({"device": serialize_device(device)}),
+    )
+
+
+@app.get("/v1/preferences")
+def get_v1_preferences(request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                preferences = ensure_user_preferences(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder({"preferences": serialize_user_preferences(preferences)}),
+    )
+
+
+@app.patch("/v1/preferences")
+def patch_v1_preferences(
+    request: Request,
+    body: HostedPreferencesPatchRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                preferences = patch_user_preferences(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    timezone=body.timezone,
+                    brief_preferences=body.brief_preferences,
+                    quiet_hours=body.quiet_hours,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except HostedPreferencesValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder({"preferences": serialize_user_preferences(preferences)}),
     )
