@@ -485,6 +485,11 @@ class ChannelDeliveryReceiptRow(TypedDict):
     provider_receipt_id: str | None
     failure_code: str | None
     failure_detail: str | None
+    scheduled_job_id: UUID | None
+    scheduler_job_kind: str | None
+    scheduled_for: datetime | None
+    schedule_slot: str | None
+    notification_policy: JsonObject
     recorded_at: datetime
     created_at: datetime
 
@@ -511,6 +516,64 @@ class OpenLoopReviewRow(TypedDict):
     review_action: str
     note: str | None
     created_at: datetime
+
+
+class NotificationSubscriptionRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    channel_type: str
+    channel_identity_id: UUID
+    notifications_enabled: bool
+    daily_brief_enabled: bool
+    daily_brief_window_start: str
+    open_loop_prompts_enabled: bool
+    waiting_for_prompts_enabled: bool
+    stale_prompts_enabled: bool
+    timezone: str
+    quiet_hours_enabled: bool
+    quiet_hours_start: str
+    quiet_hours_end: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContinuityBriefRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    channel_type: str
+    channel_identity_id: UUID
+    brief_kind: str
+    assembly_version: str
+    summary: JsonObject
+    brief_payload: JsonObject
+    message_text: str
+    compiled_at: datetime
+    created_at: datetime
+
+
+class DailyBriefJobRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    channel_type: str
+    channel_identity_id: UUID
+    job_kind: str
+    prompt_kind: str | None
+    prompt_id: str | None
+    continuity_object_id: UUID | None
+    continuity_brief_id: UUID | None
+    schedule_slot: str
+    idempotency_key: str
+    due_at: datetime
+    status: str
+    suppression_reason: str | None
+    attempt_count: int
+    delivery_receipt_id: UUID | None
+    payload: JsonObject
+    result_payload: JsonObject
+    attempted_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 class TaskArtifactRow(TypedDict):
