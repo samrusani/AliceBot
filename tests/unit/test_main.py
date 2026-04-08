@@ -163,6 +163,12 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v0/task-steps/{task_step_id}/transition" in route_paths
     assert "/v0/entities/{entity_id}" in route_paths
     assert "/v0/entities/{entity_id}/edges" in route_paths
+    assert "/v1/channels/telegram/daily-brief" in route_paths
+    assert "/v1/channels/telegram/daily-brief/deliver" in route_paths
+    assert "/v1/channels/telegram/notification-preferences" in route_paths
+    assert "/v1/channels/telegram/open-loop-prompts" in route_paths
+    assert "/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver" in route_paths
+    assert "/v1/channels/telegram/scheduler/jobs" in route_paths
 
 
 def test_redact_url_credentials_strips_embedded_secrets() -> None:

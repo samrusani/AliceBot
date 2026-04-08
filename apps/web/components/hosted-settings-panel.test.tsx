@@ -22,10 +22,10 @@ describe("HostedSettingsPanel", () => {
 
     expect(screen.getByText("Telegram Channel Settings")).toBeInTheDocument();
     expect(screen.getByText(/Telegram Link Start/i)).toBeInTheDocument();
-    expect(screen.getByText(/Telegram Link Confirm/i)).toBeInTheDocument();
-    expect(screen.getByText(/Telegram Status \+ Unlink/i)).toBeInTheDocument();
+    expect(screen.getByText(/Daily Brief \+ Notification Preferences/i)).toBeInTheDocument();
+    expect(screen.getByText(/Open-Loop Prompts \+ Scheduler/i)).toBeInTheDocument();
     expect(screen.getAllByText(/Messages, Threads, Receipts/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/does not claim Telegram continuity capture/i)).toBeInTheDocument();
+    expect(screen.getByText(/does not claim beta admin dashboards/i)).toBeInTheDocument();
   });
 
   it("starts telegram link challenge from hosted controls", async () => {

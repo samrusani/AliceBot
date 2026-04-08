@@ -111,7 +111,18 @@ ChatIntentKind = Literal[
     "unknown",
 ]
 ChatIntentStatus = Literal["pending", "recorded", "handled", "failed"]
-ChannelDeliveryReceiptStatus = Literal["delivered", "failed", "simulated"]
+ChannelDeliveryReceiptStatus = Literal["delivered", "failed", "simulated", "suppressed"]
+TelegramSchedulerJobKind = Literal["daily_brief", "open_loop_prompt"]
+TelegramSchedulerPromptKind = Literal["waiting_for", "stale"]
+TelegramSchedulerJobStatus = Literal[
+    "scheduled",
+    "delivered",
+    "simulated",
+    "suppressed_quiet_hours",
+    "suppressed_disabled",
+    "suppressed_outside_window",
+    "failed",
+]
 TaskArtifactStatus = Literal["registered"]
 TaskArtifactIngestionStatus = Literal["pending", "ingested"]
 TaskArtifactChunkRetrievalScopeKind = Literal["task", "artifact"]
@@ -5186,6 +5197,25 @@ class HostedUserPreferencesRecord(TypedDict):
     updated_at: str
 
 
+class NotificationSubscriptionRecord(TypedDict):
+    id: str
+    workspace_id: str
+    channel_type: ChannelTransportType
+    channel_identity_id: str
+    notifications_enabled: bool
+    daily_brief_enabled: bool
+    daily_brief_window_start: str
+    open_loop_prompts_enabled: bool
+    waiting_for_prompts_enabled: bool
+    stale_prompts_enabled: bool
+    timezone: str
+    quiet_hours_enabled: bool
+    quiet_hours_start: str
+    quiet_hours_end: str
+    created_at: str
+    updated_at: str
+
+
 class ChannelIdentityRecord(TypedDict):
     id: str
     user_account_id: str
@@ -5267,8 +5297,52 @@ class ChannelDeliveryReceiptRecord(TypedDict):
     provider_receipt_id: str | None
     failure_code: str | None
     failure_detail: str | None
+    scheduled_job_id: str | None
+    scheduler_job_kind: TelegramSchedulerJobKind | None
+    scheduled_for: str | None
+    schedule_slot: str | None
+    notification_policy: JsonObject
     recorded_at: str
     created_at: str
+
+
+class TelegramContinuityBriefRecord(TypedDict):
+    id: str
+    workspace_id: str
+    channel_type: ChannelTransportType
+    channel_identity_id: str
+    brief_kind: Literal["daily_brief"]
+    assembly_version: str
+    summary: JsonObject
+    brief_payload: JsonObject
+    message_text: str
+    compiled_at: str
+    created_at: str
+
+
+class TelegramDailyBriefJobRecord(TypedDict):
+    id: str
+    workspace_id: str
+    channel_type: ChannelTransportType
+    channel_identity_id: str
+    job_kind: TelegramSchedulerJobKind
+    prompt_kind: TelegramSchedulerPromptKind | None
+    prompt_id: str | None
+    continuity_object_id: str | None
+    continuity_brief_id: str | None
+    schedule_slot: str
+    idempotency_key: str
+    due_at: str
+    status: TelegramSchedulerJobStatus
+    suppression_reason: str | None
+    attempt_count: int
+    delivery_receipt_id: str | None
+    payload: JsonObject
+    result_payload: JsonObject
+    attempted_at: str | None
+    completed_at: str | None
+    created_at: str
+    updated_at: str
 
 
 class ApprovalChallengeRecord(TypedDict):
