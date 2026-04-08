@@ -103,7 +103,7 @@ def seed_traceable_thread(
         )
         person = store.create_entity(
             entity_type="person",
-            name="Samir",
+            name="Alex",
             source_memory_ids=[str(breakfast_memory["id"])],
         )
         merchant = store.create_entity(

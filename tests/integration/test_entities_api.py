@@ -175,7 +175,7 @@ def test_entity_endpoints_list_and_get_entities_in_deterministic_user_scoped_ord
         created_entities = [
             store.create_entity(
                 entity_type="person",
-                name="Samir",
+                name="Alex",
                 source_memory_ids=[str(seeded["memory_ids"][0])],
             ),
             store.create_entity(
