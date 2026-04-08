@@ -13,12 +13,13 @@ The current implementation already includes:
 
 Phase 9 does not replace that architecture. It packages and exposes it through public-safe boundaries.
 
-Current public packaging baseline now spans `P9-S33` through `P9-S36`:
+Current public packaging baseline now spans `P9-S33` through `P9-S37`:
 
 - `P9-S33`: public-safe core boundary and canonical local startup
 - `P9-S34`: deterministic local CLI continuity contract
 - `P9-S35`: narrow deterministic MCP transport contract
 - `P9-S36`: first OpenClaw adapter/import boundary with provenance + dedupe posture
+- `P9-S37`: additional markdown and ChatGPT importer paths plus reproducible local evaluation harness
 
 ## Technical Stack
 
@@ -28,14 +29,15 @@ Current public packaging baseline now spans `P9-S33` through `P9-S36`:
 - Vector support: `pgvector`
 - Local infrastructure: Docker Compose, Redis, MinIO
 - Testing: pytest, Vitest
-- Shipped packaging/runtime baseline (`P9-S33` to `P9-S36`):
+- Shipped packaging/runtime baseline (`P9-S33` to `P9-S37`):
   - `alice-core` (published package name in `pyproject.toml`)
   - deterministic fixture loader (`scripts/load_sample_data.sh`)
   - deterministic local CLI contract (`python -m alicebot_api ...`)
   - deterministic local MCP transport (`python -m alicebot_api.mcp_server`)
   - OpenClaw import loader and fixture path (`scripts/load_openclaw_sample_data.sh`)
-- Deferred/next packaging targets (`P9-S37+`):
-  - broader importer set and evaluation harness outputs
+  - markdown import loader and fixture path (`scripts/load_markdown_sample_data.sh`)
+  - ChatGPT import loader and fixture path (`scripts/load_chatgpt_sample_data.sh`)
+  - Phase 9 evaluation harness (`scripts/run_phase9_eval.sh`)
 
 ## High-Level Architecture
 
@@ -60,10 +62,12 @@ Current public packaging baseline now spans `P9-S33` through `P9-S36`:
    - terminal access to public core flows
 3. `alice-mcp-server` (shipped baseline in `P9-S35`, narrow tool contract)
    - stable MCP tool surface for external assistants
-4. `alice-importers` (next seam in `P9-S37`)
-   - markdown, chat export, CSV, and adapter-backed imports
-5. `alice-openclaw` (shipped baseline in `P9-S36`, adapter-scoped import path)
-   - OpenClaw-specific ingestion and interop mapping
+4. `alice-importers` (shipped baseline in `P9-S37`)
+   - markdown import path
+   - ChatGPT export import path
+   - shared provenance + dedupe persistence strategy
+5. `alice-openclaw` (shipped baseline in `P9-S36`, integrated with shared importer persistence in `P9-S37`)
+   - OpenClaw-specific normalization with shared deterministic import persistence
 
 ## Module Boundaries
 
