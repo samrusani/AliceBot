@@ -12,6 +12,16 @@ const navigation = [
     caption: "Shell landing and governed surface summary",
   },
   {
+    href: "/onboarding",
+    label: "Onboarding",
+    caption: "Hosted identity and workspace bootstrap",
+  },
+  {
+    href: "/settings",
+    label: "Settings",
+    caption: "Hosted preferences and device visibility",
+  },
+  {
     href: "/chat",
     label: "Requests",
     caption: "Compose bounded operator requests",
@@ -85,8 +95,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <p className="eyebrow">AliceBot</p>
             <h1 className="brand-title">Operator shell</h1>
             <p className="brand-description">
-              Calm, governed views for requests, approvals, tasks, artifacts, Gmail, Calendar,
-              memories, chief-of-staff priorities, entities, and explainability.
+              Calm, governed views for hosted onboarding/settings plus requests, approvals, tasks,
+              artifacts, Gmail, Calendar, memories, chief-of-staff priorities, entities, and
+              explainability.
             </p>
           </div>
 
@@ -122,7 +133,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
               <div className="topbar-status" aria-label="Shell status">
                 <span className="subtle-chip">Single-user v1</span>
-                <span className="subtle-chip">Existing backend seams only</span>
+                <span className="subtle-chip">Hosted bootstrap seams + operator shell</span>
               </div>
             </div>
 

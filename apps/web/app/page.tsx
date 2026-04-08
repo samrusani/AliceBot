@@ -6,10 +6,10 @@ import { StatusBadge } from "../components/status-badge";
 
 const summaryCards = [
   {
-    value: "10",
+    value: "12",
     label: "Operator views",
     detail:
-      "Home, request composition, approvals, task inspection, artifact review, Gmail review, Calendar review, memory review, entity review, and explainability are all exposed in one bounded shell.",
+      "Home, hosted onboarding/settings, request composition, approvals, task inspection, artifact review, Gmail review, Calendar review, memory review, entity review, and explainability are all exposed in one bounded shell.",
   },
   {
     value: "8",
@@ -30,6 +30,20 @@ const summaryCards = [
 ];
 
 const routeCards = [
+  {
+    href: "/onboarding",
+    title: "Hosted Onboarding",
+    description:
+      "Sign in by magic link, create/bootstrap a workspace, and confirm readiness for later Telegram linkage.",
+    status: "active",
+  },
+  {
+    href: "/settings",
+    title: "Hosted Settings",
+    description:
+      "Persist timezone, brief-policy inputs, quiet hours, and linked-device visibility without scheduler execution.",
+    status: "active",
+  },
   {
     href: "/chat",
     title: "Governed Requests",

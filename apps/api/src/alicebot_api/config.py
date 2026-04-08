@@ -37,6 +37,9 @@ DEFAULT_CALENDAR_SECRET_MANAGER_URL = ""
 DEFAULT_AUTH_USER_ID = ""
 DEFAULT_RESPONSE_RATE_LIMIT_WINDOW_SECONDS = 60
 DEFAULT_RESPONSE_RATE_LIMIT_MAX_REQUESTS = 20
+DEFAULT_MAGIC_LINK_TTL_SECONDS = 900
+DEFAULT_AUTH_SESSION_TTL_SECONDS = 2_592_000
+DEFAULT_DEVICE_LINK_TTL_SECONDS = 600
 
 Environment = Mapping[str, str]
 
@@ -80,6 +83,9 @@ class Settings:
     auth_user_id: str = DEFAULT_AUTH_USER_ID
     response_rate_limit_window_seconds: int = DEFAULT_RESPONSE_RATE_LIMIT_WINDOW_SECONDS
     response_rate_limit_max_requests: int = DEFAULT_RESPONSE_RATE_LIMIT_MAX_REQUESTS
+    magic_link_ttl_seconds: int = DEFAULT_MAGIC_LINK_TTL_SECONDS
+    auth_session_ttl_seconds: int = DEFAULT_AUTH_SESSION_TTL_SECONDS
+    device_link_ttl_seconds: int = DEFAULT_DEVICE_LINK_TTL_SECONDS
 
     @classmethod
     def from_env(cls, env: Environment | None = None) -> "Settings":
@@ -143,6 +149,21 @@ class Settings:
                 "RESPONSE_RATE_LIMIT_MAX_REQUESTS",
                 cls.response_rate_limit_max_requests,
             ),
+            magic_link_ttl_seconds=_get_env_int(
+                current_env,
+                "MAGIC_LINK_TTL_SECONDS",
+                cls.magic_link_ttl_seconds,
+            ),
+            auth_session_ttl_seconds=_get_env_int(
+                current_env,
+                "AUTH_SESSION_TTL_SECONDS",
+                cls.auth_session_ttl_seconds,
+            ),
+            device_link_ttl_seconds=_get_env_int(
+                current_env,
+                "DEVICE_LINK_TTL_SECONDS",
+                cls.device_link_ttl_seconds,
+            ),
         )
         return _validate_settings(settings)
 
@@ -158,6 +179,12 @@ def _validate_settings(settings: Settings) -> Settings:
         raise ValueError("RESPONSE_RATE_LIMIT_WINDOW_SECONDS must be a positive integer")
     if settings.response_rate_limit_max_requests <= 0:
         raise ValueError("RESPONSE_RATE_LIMIT_MAX_REQUESTS must be a positive integer")
+    if settings.magic_link_ttl_seconds <= 0:
+        raise ValueError("MAGIC_LINK_TTL_SECONDS must be a positive integer")
+    if settings.auth_session_ttl_seconds <= 0:
+        raise ValueError("AUTH_SESSION_TTL_SECONDS must be a positive integer")
+    if settings.device_link_ttl_seconds <= 0:
+        raise ValueError("DEVICE_LINK_TTL_SECONDS must be a positive integer")
 
     if settings.app_env not in {"development", "test"}:
         if settings.auth_user_id == "":
