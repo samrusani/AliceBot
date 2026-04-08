@@ -16,64 +16,55 @@ class ControlDocTruthRule:
 
 CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
-        relative_path="ARCHITECTURE.md",
-        required_markers=("through Phase 3 Sprint 9",),
+        relative_path="README.md",
+        required_markers=(
+            "Phase 9 is complete.",
+            "Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md]",
+        ),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "through Phase 3 Sprint 9",
-            "Phase 4 Sprint 14 is the active release-control layer",
-            "Gate ownership is canonicalized to Phase 4 runner scripts",
+            "No active build sprint is open.",
+            "Phase 10 planning docs are not defined yet.",
         ),
     ),
     ControlDocTruthRule(
-        relative_path="README.md",
+        relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "through Phase 3 Sprint 9",
-            "Canonical gate entrypoints: `scripts/run_phase4_*.py` are the control-plane canonical MVP release gates",
+            "No active build sprint is open.",
+            "Keep this file as an idle-state pointer, not as a fake active sprint.",
         ),
-    ),
-    ControlDocTruthRule(
-        relative_path="PRODUCT_BRIEF.md",
-        required_markers=("canonical v1 release-readiness validation scenario",),
     ),
     ControlDocTruthRule(
         relative_path="RULES.md",
-        required_markers=("v1 release-readiness validation scenario",),
+        required_markers=(
+            "Archive superseded planning and control snapshots instead of keeping them in live files.",
+            "Do not create a fake active sprint when the repo is between planning cycles.",
+        ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "through Phase 3 Sprint 9",
-            "Active Sprint focus is Phase 4 Sprint 14",
-            "Gate ownership is canonicalized to Phase 4 runner script names",
+            "Phase 9 is complete.",
+            "No active build sprint is open.",
+            "Phase 10 planning docs are not defined yet.",
         ),
     ),
     ControlDocTruthRule(
-        relative_path="docs/runbooks/phase3-closeout-packet.md",
-        required_markers=(
-            "accepted Phase 3 Sprint 9 baseline",
-            "Required Phase 3 Go/No-Go Commands",
-            "Required PASS Evidence Bundle",
-            "Explicit Deferred Scope Entering Next Phase",
-        ),
+        relative_path="docs/archive/planning/2026-04-08-context-compaction/README.md",
+        required_markers=("This folder preserves superseded planning and control material removed from the live docs during Context Compaction 01.",),
     ),
 )
 
 DISALLOWED_MARKERS: tuple[str, ...] = (
-    "through Phase 2 Sprint 14",
-    "current through Phase 2 Sprint 14",
-    "accepted Phase 2 Sprint 14 baseline",
-    "canonical Phase 2 gate ownership",
-    "Gate ownership is canonicalized to Phase 2 runner scripts",
-    "through Phase 2 Sprint 11",
-    "current through Phase 2 Sprint 11",
-    "Phase 2 Sprint 7",
-    "Phase 4 Sprint 13",
-    "v1 ship gate",
-    "v1 ship-gate",
-    "ship gates",
+    "through Phase 3 Sprint 9",
+    "Active Sprint focus is Phase 4 Sprint 14",
+    "Gate ownership is canonicalized to Phase 4 runner scripts",
+    "Gate ownership is canonicalized to Phase 4 runner script names",
+    "Legacy Compatibility Marker",
+    "Legacy Compatibility Markers",
+    "Phase 9 Sprint Sequence",
 )
 
 
