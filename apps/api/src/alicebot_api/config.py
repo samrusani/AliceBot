@@ -44,6 +44,14 @@ DEFAULT_TELEGRAM_LINK_TTL_SECONDS = 600
 DEFAULT_TELEGRAM_BOT_USERNAME = "alicebot"
 DEFAULT_TELEGRAM_WEBHOOK_SECRET = ""
 DEFAULT_TELEGRAM_BOT_TOKEN = ""
+DEFAULT_HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS = 60
+DEFAULT_HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS = 20
+DEFAULT_HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS = 300
+DEFAULT_HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS = 20
+DEFAULT_HOSTED_ABUSE_WINDOW_SECONDS = 600
+DEFAULT_HOSTED_ABUSE_BLOCK_THRESHOLD = 5
+DEFAULT_HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT = True
+DEFAULT_HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT = True
 
 Environment = Mapping[str, str]
 
@@ -94,6 +102,14 @@ class Settings:
     telegram_bot_username: str = DEFAULT_TELEGRAM_BOT_USERNAME
     telegram_webhook_secret: str = DEFAULT_TELEGRAM_WEBHOOK_SECRET
     telegram_bot_token: str = DEFAULT_TELEGRAM_BOT_TOKEN
+    hosted_chat_rate_limit_window_seconds: int = DEFAULT_HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS
+    hosted_chat_rate_limit_max_requests: int = DEFAULT_HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS
+    hosted_scheduler_rate_limit_window_seconds: int = DEFAULT_HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS
+    hosted_scheduler_rate_limit_max_requests: int = DEFAULT_HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS
+    hosted_abuse_window_seconds: int = DEFAULT_HOSTED_ABUSE_WINDOW_SECONDS
+    hosted_abuse_block_threshold: int = DEFAULT_HOSTED_ABUSE_BLOCK_THRESHOLD
+    hosted_rate_limits_enabled_by_default: bool = DEFAULT_HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT
+    hosted_abuse_controls_enabled_by_default: bool = DEFAULT_HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT
 
     @classmethod
     def from_env(cls, env: Environment | None = None) -> "Settings":
@@ -192,6 +208,48 @@ class Settings:
                 "TELEGRAM_BOT_TOKEN",
                 cls.telegram_bot_token,
             ).strip(),
+            hosted_chat_rate_limit_window_seconds=_get_env_int(
+                current_env,
+                "HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS",
+                cls.hosted_chat_rate_limit_window_seconds,
+            ),
+            hosted_chat_rate_limit_max_requests=_get_env_int(
+                current_env,
+                "HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS",
+                cls.hosted_chat_rate_limit_max_requests,
+            ),
+            hosted_scheduler_rate_limit_window_seconds=_get_env_int(
+                current_env,
+                "HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS",
+                cls.hosted_scheduler_rate_limit_window_seconds,
+            ),
+            hosted_scheduler_rate_limit_max_requests=_get_env_int(
+                current_env,
+                "HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS",
+                cls.hosted_scheduler_rate_limit_max_requests,
+            ),
+            hosted_abuse_window_seconds=_get_env_int(
+                current_env,
+                "HOSTED_ABUSE_WINDOW_SECONDS",
+                cls.hosted_abuse_window_seconds,
+            ),
+            hosted_abuse_block_threshold=_get_env_int(
+                current_env,
+                "HOSTED_ABUSE_BLOCK_THRESHOLD",
+                cls.hosted_abuse_block_threshold,
+            ),
+            hosted_rate_limits_enabled_by_default=_get_env_value(
+                current_env,
+                "HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT",
+                "true" if cls.hosted_rate_limits_enabled_by_default else "false",
+            ).strip().lower()
+            in {"1", "true", "yes", "on"},
+            hosted_abuse_controls_enabled_by_default=_get_env_value(
+                current_env,
+                "HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT",
+                "true" if cls.hosted_abuse_controls_enabled_by_default else "false",
+            ).strip().lower()
+            in {"1", "true", "yes", "on"},
         )
         return _validate_settings(settings)
 
@@ -217,6 +275,18 @@ def _validate_settings(settings: Settings) -> Settings:
         raise ValueError("TELEGRAM_LINK_TTL_SECONDS must be a positive integer")
     if settings.telegram_bot_username == "":
         raise ValueError("TELEGRAM_BOT_USERNAME must be provided")
+    if settings.hosted_chat_rate_limit_window_seconds <= 0:
+        raise ValueError("HOSTED_CHAT_RATE_LIMIT_WINDOW_SECONDS must be a positive integer")
+    if settings.hosted_chat_rate_limit_max_requests <= 0:
+        raise ValueError("HOSTED_CHAT_RATE_LIMIT_MAX_REQUESTS must be a positive integer")
+    if settings.hosted_scheduler_rate_limit_window_seconds <= 0:
+        raise ValueError("HOSTED_SCHEDULER_RATE_LIMIT_WINDOW_SECONDS must be a positive integer")
+    if settings.hosted_scheduler_rate_limit_max_requests <= 0:
+        raise ValueError("HOSTED_SCHEDULER_RATE_LIMIT_MAX_REQUESTS must be a positive integer")
+    if settings.hosted_abuse_window_seconds <= 0:
+        raise ValueError("HOSTED_ABUSE_WINDOW_SECONDS must be a positive integer")
+    if settings.hosted_abuse_block_threshold <= 0:
+        raise ValueError("HOSTED_ABUSE_BLOCK_THRESHOLD must be a positive integer")
 
     if settings.app_env not in {"development", "test"}:
         if settings.auth_user_id == "":
