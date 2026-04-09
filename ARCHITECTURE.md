@@ -174,4 +174,4 @@ Phase 10 adds targeted verification for:
 
 ## Historical Traceability
 
-Superseded rollout planning and control snapshots live under `docs/archive/planning/2026-04-08-context-compaction/README.md`.
+Historical planning/control snapshots are retained in local-only internal docs and are intentionally excluded from the public repository.

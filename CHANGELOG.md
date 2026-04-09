@@ -3,7 +3,7 @@
 ## 2026-04-08
 
 - Compacted the live control docs so `README.md`, `ROADMAP.md`, and `RULES.md` carry only current Phase 9 completion truth.
-- Archived superseded Phase 9 planning and control material under `docs/archive/planning/2026-04-08-context-compaction/` (with internal operating snapshots retained locally).
+- Archived superseded Phase 9 planning and control material into local-only internal archives.
 - Kept the quickstart, integration, release, runbook, and evaluation artifacts as the canonical Phase 9 launch surface.
 
 ## 2026-04-07

@@ -44,7 +44,7 @@
       "thread_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       "task_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
       "project": "Alice Public Core",
-      "person": "Control Tower",
+      "person": "Maintainers",
       "provenance": {
         "source_event_ids": [
           "openclaw-dir-event-0003"
@@ -60,7 +60,7 @@
       "thread_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       "task_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
       "project": "Alice Public Core",
-      "person": "Control Tower",
+      "person": "Maintainers",
       "provenance": {
         "source_event_ids": [
           "openclaw-dir-event-0003"
