@@ -5,151 +5,111 @@ durable memory for agents, agent resumption, open loop tracking, local-first ai 
 
 # Alice
 
-**The memory and continuity layer for AI agents.**
+**Durable memory and resumption for AI agents.**
 
 ![Local-first](https://img.shields.io/badge/local--first-core-0A7B61)
 ![MCP](https://img.shields.io/badge/MCP-supported-1f6feb)
 ![License](https://img.shields.io/badge/license-MIT-2ea043)
 
-Alice gives agents something most assistants still lack:
-**durable memory, clean resumption, open-loop continuity, and correction-aware context.**
+AI assistants are good at replying in the moment. They are still weak at remembering what matters, resuming interrupted work, and staying aligned after corrections.
 
-Instead of forcing you to restate context over and over, Alice helps your tools and agents remember what matters, resume work intelligently, and improve when corrected.
+Alice is the continuity layer that fixes that.
 
-## What Alice does
+It gives agents and workflows a local-first system for capture, recall, resumption, open-loop tracking, and correction-aware memory, so you do not have to rebuild context from scratch every time work resumes.
 
-Alice helps agents and users:
+## Why use Alice
 
-- **Capture** important notes, decisions, and commitments quickly
-- **Recall** what was decided about a person, project, or topic
-- **Resume** work without rereading long threads
-- **Track open loops** like waiting-fors, blockers, and stale items
-- **Correct memory** so future answers improve deterministically
+Use Alice if you want your agents or workflows to:
 
-## Why Alice exists
-
-Most AI assistants still break in the same places:
-
-- they forget why decisions were made
-- they lose context between sessions
-- they treat memory as vague summaries
-- they make correction hard
-- they do not help you resume interrupted work
-
-Alice is built to solve that.
-
-It is a **local-first continuity engine** with:
-
-- structured memory revisions
-- deterministic recall and resumption
-- provenance-aware corrections
-- open-loop management
-- MCP access for external agents
-- importers for existing workflows
-
-## Who it is for
-
-Alice is built for:
-
-- founders
-- operators
-- consultants
-- researchers
-- technical teams
-- agent builders
-- anyone who wants their AI systems to remember and resume work properly
+- remember decisions, commitments, and context across sessions
+- resume work without rereading long threads
+- track waiting-fors, blockers, and unresolved follow-ups
+- improve deterministically when memory is corrected
+- stay portable across CLI, MCP, and imported workflow data
 
 ## What makes Alice different
 
-### Memory that can be corrected
+### It is built for continuity, not just storage
 
-Alice does not just store chats.
-It keeps explicit continuity objects and supports review, correction, and supersession.
+Alice does not treat memory as a pile of chat history or vague summaries.
+It stores typed continuity objects, revisions, provenance, and open loops so context can be reused operationally.
 
-### Resumption, not just search
+### It is built for resumption, not just retrieval
 
-Alice is designed to answer:
+Most memory tools help you find something.
+Alice is designed to answer the higher-value questions:
 
 - What did we decide?
 - What changed?
 - What am I waiting on?
-- Get me back into this project.
+- What should happen next?
 
-### Agent-agnostic by design
+### It is correction-aware
 
-Use Alice on its own, through the CLI, through MCP, or alongside external agent systems.
+Alice supports explicit review, correction, and supersession so future answers improve in a traceable way instead of drifting based on hidden summarization.
 
-### Local-first core
+### It is local-first and agent-agnostic
 
-Alice Core runs locally and keeps continuity close to the user.
+Alice Core runs locally and exposes the same continuity semantics through the CLI and MCP, so you can use it with your own workflows instead of being locked into a closed assistant product.
 
-## Current surfaces
+## Who Alice is for
 
-Today, Alice ships with:
+Alice is useful for:
 
-- **Alice Core**
-- **CLI**
-- **MCP server**
-- **Hermes integration**
-- **OpenClaw adapter**
-- **OpenClaw one-command demo**
-- **Importers**
-  - OpenClaw
-  - Markdown
-  - ChatGPT exports
+- agent builders
+- technical teams
+- founders and operators
+- consultants and researchers
+- anyone who needs reliable memory and clean resumption across days or weeks of work
+
+## What ships today
+
+The open-source surface includes:
+
+- Alice Core
+- deterministic CLI workflows
+- MCP server
+- importers for OpenClaw, Markdown, and ChatGPT exports
+- OpenClaw adapter and demo path
+- evaluation harness and integration docs
 
 ## Quickstart
 
-> Replace these commands with your exact final install path before launch.
+Clone the repo and install the local runtime:
 
 ```bash
-git clone https://github.com/your-org/alice.git
-cd alice
+git clone https://github.com/samrusani/AliceBot.git
+cd AliceBot
 cp .env.example .env
+python3 -m venv .venv
+./.venv/bin/python -m pip install -e '.[dev]'
+```
+
+Start the local services and seed sample data:
+
+```bash
 docker compose up -d
+./scripts/migrate.sh
+./scripts/load_sample_data.sh
+APP_RELOAD=false ./scripts/api_dev.sh
 ```
 
-Run the OpenClaw end-to-end demo:
+In another terminal, verify the runtime and get a first useful result:
 
 ```bash
-./scripts/use_alice_with_openclaw.sh
+./.venv/bin/python -m alicebot_api status
+./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
+./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
+./.venv/bin/python -m alicebot_api open-loops --limit 5
 ```
 
-Check status:
+Capture something new:
 
 ```bash
-alice status
+./.venv/bin/python -m alicebot_api capture "Remember that the Q3 board pack is due on Thursday."
 ```
 
-Capture something:
-
-```bash
-alice capture "Remember that the Q3 board pack is due on Thursday."
-```
-
-Recall it later:
-
-```bash
-alice recall "What do I know about the Q3 board pack?"
-```
-
-Resume work:
-
-```bash
-alice resume q3-board-pack
-```
-
-Review open loops:
-
-```bash
-alice open-loops
-```
-
-Correct memory:
-
-```bash
-alice correct-memory
-```
+See the full local setup walkthrough in [docs/quickstart/local-setup-and-first-result.md](docs/quickstart/local-setup-and-first-result.md).
 
 ## Use Alice with your agents
 
@@ -157,7 +117,7 @@ Alice is designed to be a continuity layer, not a closed assistant silo.
 
 ### MCP
 
-Alice exposes a narrow, stable MCP surface for continuity workflows:
+Alice exposes a narrow MCP surface for continuity workflows:
 
 - `alice_capture`
 - `alice_recall`
@@ -169,7 +129,7 @@ Alice exposes a narrow, stable MCP surface for continuity workflows:
 - `alice_memory_correct`
 - `alice_context_pack`
 
-This makes it easy to connect Alice to MCP-capable assistants and development environments.
+This makes it straightforward to plug Alice into MCP-capable assistants and development environments without changing the underlying continuity model.
 
 See:
 
@@ -183,78 +143,59 @@ Hermes runtime smoke test:
 ./scripts/run_hermes_mcp_smoke.py
 ```
 
-### OpenClaw
+### Import and augment existing workflows
 
-Alice includes an OpenClaw integration path for import and augmentation.
+Alice includes importer paths for existing memory and conversation data so you can upgrade an existing workflow instead of starting from zero.
 
-One-command demo:
+With the current integration surface, you can:
+
+- import OpenClaw memory into Alice
+- normalize imported data into Alice continuity objects
+- run recall and resumption against imported work
+- add Alice MCP workflows on top of an existing setup
+
+OpenClaw demo:
 
 ```bash
 ./scripts/use_alice_with_openclaw.sh
 ```
-
-You can:
-
-- import existing OpenClaw memory into Alice
-- normalize it into Alice continuity objects
-- use Alice recall and resumption on imported work
-- augment OpenClaw workflows through Alice MCP tools
-
-The one-command flow runs:
-
-- before snapshot
-- OpenClaw import
-- replay/recall checks
-- after snapshot
 
 See:
 
 - [docs/integrations/importers.md](docs/integrations/importers.md)
 - [docs/integrations/openclaw.md](docs/integrations/openclaw.md)
 
-## Example workflows
+## Example outcomes
 
-### Founder continuity
+### Founder and operator continuity
 
-- capture strategic decisions
-- resume fundraising or product threads
-- track waiting-fors and follow-ups
-- stop losing context across days and weeks
+- keep strategic decisions from disappearing into old chats
+- resume fundraising, hiring, or product threads quickly
+- stay on top of commitments and follow-ups
 
-### Consulting continuity
+### Consulting and client work
 
-- recall client decisions
-- resume project threads fast
+- preserve client-specific decisions and context
+- restart project work without reconstructing the last week
 - maintain open loops without building a manual CRM ritual
 
-### Agent memory upgrade
+### Agent memory upgrades
 
-- plug Alice into your existing agent stack
-- improve recall, resumption, and correction
-- avoid rebuilding your whole runtime
+- add durable continuity to an existing agent stack
+- improve recall and resumption without rebuilding your runtime
+- keep correction and provenance explicit
 
 ## Architecture at a glance
 
-Alice is built around a shared continuity core:
+Alice is built around a shared continuity core with:
 
-- immutable events
 - structured memory revisions
 - provenance-aware recall
 - deterministic resumption briefs
 - open-loop objects
-- MCP and CLI surfaces on the same semantics
+- CLI and MCP surfaces on the same semantics
 
-This means Alice behaves consistently whether you use:
-
-- CLI
-- MCP
-- imported data
-- external adapters
-
-## Why people share Alice
-
-Because Alice solves a very real problem:
-your AI can only be useful if it can remember, resume, and stay aligned with how you actually work.
+That means the system behaves consistently across local workflows, MCP-connected agents, and imported data sources.
 
 ## Roadmap
 
@@ -282,45 +223,20 @@ your AI can only be useful if it can remember, resume, and stay aligned with how
 - [MCP](docs/integrations/mcp.md)
 - [Hermes Guide](docs/integrations/hermes.md)
 - [Hermes Skill Pack](docs/integrations/hermes-skill-pack.md)
-- [Integrations](docs/integrations/importers.md)
+- [Importers](docs/integrations/importers.md)
 - [OpenClaw Guide](docs/integrations/openclaw.md)
 - [Examples](docs/examples/phase9-command-walkthrough.md)
 
-## Tags
-
-`ai-memory` `agent-memory` `durable-memory` `continuity-layer` `mcp` `local-first` `resumption` `open-loops` `ai-agents` `memory-correction`
-
-## GitHub Topics To Set
-
-Use these in GitHub repository settings (`About` -> `Edit` -> `Topics`):
-
-- [ ] `ai-memory`
-- [ ] `agent-memory`
-- [ ] `mcp`
-- [ ] `local-first`
-- [ ] `continuity-layer`
-- [ ] `durable-memory`
-- [ ] `context-engineering`
-- [ ] `developer-tools`
-- [ ] `openclaw`
-- [ ] `memory-correction`
-
 ## Contributing
 
-We welcome issues, adapters, importers, eval contributions, and integration examples.
+Issues, adapters, importers, eval contributions, and integration examples are welcome.
 
-See:
-
-- [CONTRIBUTING.md](CONTRIBUTING.md)
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security
 
-If you discover a security issue, please report it through the process in:
-
-- [SECURITY.md](SECURITY.md)
+If you discover a security issue, follow the process in [SECURITY.md](SECURITY.md).
 
 ## License
 
-See:
-
-- [LICENSE](LICENSE)
+See [LICENSE](LICENSE).
