@@ -173,6 +173,7 @@ This makes it easy to connect Alice to MCP-capable assistants and development en
 See:
 
 - [docs/integrations/mcp.md](docs/integrations/mcp.md)
+- [docs/integrations/hermes.md](docs/integrations/hermes.md)
 
 ### OpenClaw
 

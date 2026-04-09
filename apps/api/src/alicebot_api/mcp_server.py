@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import sys
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Literal
 from uuid import UUID
 
 from alicebot_api import __version__
@@ -22,6 +22,9 @@ _JSONRPC_VERSION = "2.0"
 _MCP_PROTOCOL_VERSION = "2024-11-05"
 _MCP_SERVER_NAME = "alice-core-mcp"
 _DEFAULT_MCP_USER_ID = "00000000-0000-0000-0000-000000000001"
+_TRANSPORT_CONTENT_LENGTH = "content-length"
+_TRANSPORT_JSON_LINE = "json-line"
+_TransportMode = Literal["content-length", "json-line"]
 
 
 def _parse_uuid(value: str) -> UUID:
@@ -46,14 +49,27 @@ def _build_runtime_context(args: argparse.Namespace) -> MCPRuntimeContext:
     return MCPRuntimeContext(database_url=database_url, user_id=user_id)
 
 
-def _read_message(stream: BinaryIO) -> dict[str, Any] | None:
+def _parse_json_rpc_payload(raw_payload: str) -> dict[str, Any]:
+    payload = json.loads(raw_payload)
+    if not isinstance(payload, dict):
+        raise ValueError("JSON-RPC payload must be an object")
+    return payload
+
+
+def _read_message(stream: BinaryIO) -> tuple[dict[str, Any], _TransportMode] | None:
+    first_line = stream.readline()
+    if first_line == b"":
+        return None
+
+    # MCP SDK >=1.0 stdio transport sends one JSON-RPC message per line.
+    stripped_first_line = first_line.strip()
+    if stripped_first_line.startswith(b"{"):
+        payload = _parse_json_rpc_payload(stripped_first_line.decode("utf-8"))
+        return payload, _TRANSPORT_JSON_LINE
+
     headers: dict[str, str] = {}
-
+    line = first_line
     while True:
-        line = stream.readline()
-        if line == b"":
-            return None
-
         if line in {b"\r\n", b"\n"}:
             break
 
@@ -62,6 +78,10 @@ def _read_message(stream: BinaryIO) -> dict[str, Any] | None:
             raise ValueError("invalid MCP header line")
         key, value = decoded.split(":", 1)
         headers[key.strip().lower()] = value.strip()
+
+        line = stream.readline()
+        if line == b"":
+            return None
 
     content_length_raw = headers.get("content-length")
     if content_length_raw is None:
@@ -76,17 +96,23 @@ def _read_message(stream: BinaryIO) -> dict[str, Any] | None:
     body = stream.read(content_length)
     if len(body) != content_length:
         return None
-    payload = json.loads(body.decode("utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("JSON-RPC payload must be an object")
-    return payload
+    payload = _parse_json_rpc_payload(body.decode("utf-8"))
+    return payload, _TRANSPORT_CONTENT_LENGTH
 
 
-def _write_message(stream: BinaryIO, message: dict[str, Any]) -> None:
+def _write_message(
+    stream: BinaryIO,
+    message: dict[str, Any],
+    *,
+    transport_mode: _TransportMode,
+) -> None:
     encoded = json.dumps(message, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    header = f"Content-Length: {len(encoded)}\r\n\r\n".encode("ascii")
-    stream.write(header)
-    stream.write(encoded)
+    if transport_mode == _TRANSPORT_JSON_LINE:
+        stream.write(encoded + b"\n")
+    else:
+        header = f"Content-Length: {len(encoded)}\r\n\r\n".encode("ascii")
+        stream.write(header)
+        stream.write(encoded)
     stream.flush()
 
 
@@ -114,6 +140,7 @@ class MCPServer:
         self._context = context
         self._input_stream = input_stream
         self._output_stream = output_stream
+        self._transport_mode: _TransportMode = _TRANSPORT_CONTENT_LENGTH
 
     def _handle_request(self, request: dict[str, Any]) -> dict[str, Any] | None:
         if request.get("jsonrpc") != _JSONRPC_VERSION:
@@ -202,22 +229,36 @@ class MCPServer:
     def run(self) -> int:
         while True:
             try:
-                request = _read_message(self._input_stream)
+                framed_request = _read_message(self._input_stream)
             except json.JSONDecodeError as exc:
                 response = _response_error(None, code=-32700, message=f"parse error: {exc.msg}")
-                _write_message(self._output_stream, response)
+                _write_message(
+                    self._output_stream,
+                    response,
+                    transport_mode=self._transport_mode,
+                )
                 continue
             except ValueError as exc:
                 response = _response_error(None, code=-32600, message=str(exc))
-                _write_message(self._output_stream, response)
+                _write_message(
+                    self._output_stream,
+                    response,
+                    transport_mode=self._transport_mode,
+                )
                 continue
 
-            if request is None:
+            if framed_request is None:
                 return 0
 
+            request, transport_mode = framed_request
+            self._transport_mode = transport_mode
             response = self._handle_request(request)
             if response is not None:
-                _write_message(self._output_stream, response)
+                _write_message(
+                    self._output_stream,
+                    response,
+                    transport_mode=self._transport_mode,
+                )
 
 
 def build_parser() -> argparse.ArgumentParser:
