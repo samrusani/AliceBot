@@ -1,0 +1,41 @@
+{
+  "name": "@aliceos/alice-cli",
+  "version": "0.1.0",
+  "description": "CLI package for AliceOS.",
+  "type": "module",
+  "bin": {
+    "alice": "./bin/alice.js"
+  },
+  "files": [
+    "bin/alice.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node ./bin/alice.js --help"
+  },
+  "keywords": [
+    "alice",
+    "aliceos",
+    "cli"
+  ],
+  "author": "AliceOS",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/samrusani/AliceBot.git",
+    "directory": "packages/alice-cli"
+  },
+  "homepage": "https://github.com/samrusani/AliceBot/tree/main/packages/alice-cli",
+  "bugs": {
+    "url": "https://github.com/samrusani/AliceBot/issues"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@aliceos/alice-core": "^0.1.0"
+  }
+}

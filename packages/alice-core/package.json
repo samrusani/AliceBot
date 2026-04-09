@@ -1,0 +1,39 @@
+{
+  "name": "@aliceos/alice-core",
+  "version": "0.1.0",
+  "description": "Core utilities for AliceOS packages.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node -e \"import('./index.js').then((m)=>console.log(m.helloAlice()))\""
+  },
+  "keywords": [
+    "alice",
+    "aliceos",
+    "core"
+  ],
+  "author": "AliceOS",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/samrusani/AliceBot.git",
+    "directory": "packages/alice-core"
+  },
+  "homepage": "https://github.com/samrusani/AliceBot/tree/main/packages/alice-core",
+  "bugs": {
+    "url": "https://github.com/samrusani/AliceBot/issues"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
