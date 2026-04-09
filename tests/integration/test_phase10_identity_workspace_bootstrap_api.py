@@ -422,3 +422,97 @@ def test_phase10_device_link_invalid_and_expired_paths(migrated_database_urls, m
     )
     assert expired_confirm_status == 401
     assert expired_confirm_payload == {"detail": "device-link token has expired"}
+
+
+def test_phase10_magic_link_start_hides_challenge_token_outside_dev(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            app_env="staging",
+            database_url=migrated_database_urls["app"],
+            magic_link_ttl_seconds=600,
+            auth_session_ttl_seconds=3600,
+            device_link_ttl_seconds=600,
+            entrypoint_rate_limit_backend="memory",
+        ),
+    )
+
+    start_status, start_payload = invoke_request(
+        "POST",
+        "/v1/auth/magic-link/start",
+        payload={"email": "staging-builder@example.com"},
+    )
+
+    assert start_status == 200
+    assert "challenge_token" not in start_payload["challenge"]
+    assert start_payload["delivery"] == {
+        "kind": "magic_link",
+        "posture": "out_of_band_delivery_required",
+    }
+
+
+def test_phase10_magic_link_start_and_verify_rate_limits(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            magic_link_ttl_seconds=600,
+            auth_session_ttl_seconds=3600,
+            device_link_ttl_seconds=600,
+            magic_link_start_rate_limit_max_requests=1,
+            magic_link_start_rate_limit_window_seconds=60,
+            magic_link_verify_rate_limit_max_requests=1,
+            magic_link_verify_rate_limit_window_seconds=60,
+        ),
+    )
+
+    start_status, start_payload = invoke_request(
+        "POST",
+        "/v1/auth/magic-link/start",
+        payload={"email": "rate-limit@example.com"},
+    )
+    assert start_status == 200
+
+    start_limited_status, start_limited_payload = invoke_request(
+        "POST",
+        "/v1/auth/magic-link/start",
+        payload={"email": "rate-limit@example.com"},
+    )
+    assert start_limited_status == 429
+    assert start_limited_payload["detail"]["code"] == "magic_link_start_rate_limit_exceeded"
+    assert start_limited_payload["detail"]["max_requests"] == 1
+    assert start_limited_payload["detail"]["window_seconds"] == 60
+
+    challenge_token = start_payload["challenge"]["challenge_token"]
+    verify_status, _verify_payload = invoke_request(
+        "POST",
+        "/v1/auth/magic-link/verify",
+        payload={
+            "challenge_token": challenge_token,
+            "device_label": "Rate Limited Device",
+            "device_key": "rate-limited-device",
+        },
+    )
+    assert verify_status == 200
+
+    verify_limited_status, verify_limited_payload = invoke_request(
+        "POST",
+        "/v1/auth/magic-link/verify",
+        payload={
+            "challenge_token": challenge_token,
+            "device_label": "Rate Limited Device",
+            "device_key": "rate-limited-device",
+        },
+    )
+    assert verify_limited_status == 429
+    assert verify_limited_payload["detail"]["code"] == "magic_link_verify_rate_limit_exceeded"
+    assert verify_limited_payload["detail"]["max_requests"] == 1
+    assert verify_limited_payload["detail"]["window_seconds"] == 60
