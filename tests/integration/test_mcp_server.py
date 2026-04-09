@@ -206,6 +206,7 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         tool_names = [tool["name"] for tool in tools_list["result"]["tools"]]
         assert "alice_recall" in tool_names
         assert "alice_resume" in tool_names
+        assert "alice_open_loops" in tool_names
         assert "alice_memory_correct" in tool_names
 
         recall_before = _call_tool(
@@ -232,6 +233,19 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         )
         assert resume_before["isError"] is False
         assert resume_before["structuredContent"]["brief"]["last_decision"]["item"]["id"] == str(legacy_decision["id"])
+
+        open_loops = _call_tool(
+            client,
+            name="alice_open_loops",
+            arguments={
+                "thread_id": str(thread_id),
+                "limit": 20,
+            },
+        )
+        assert open_loops["isError"] is False
+        open_loop_dashboard = open_loops["structuredContent"]["dashboard"]
+        assert open_loop_dashboard["summary"]["total_count"] == 1
+        assert open_loop_dashboard["waiting_for"]["items"][0]["id"] == str(waiting_for["id"])
 
         correction = _call_tool(
             client,
