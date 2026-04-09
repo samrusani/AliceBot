@@ -55,6 +55,7 @@ MCP uses the same local runtime scope as CLI:
 For Hermes Agent-specific setup, prompts, and troubleshooting:
 
 - `docs/integrations/hermes.md`
+- `docs/integrations/hermes-skill-pack.md`
 
 ## Contract Guardrails
 

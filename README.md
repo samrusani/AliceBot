@@ -175,6 +175,7 @@ See:
 
 - [docs/integrations/mcp.md](docs/integrations/mcp.md)
 - [docs/integrations/hermes.md](docs/integrations/hermes.md)
+- [docs/integrations/hermes-skill-pack.md](docs/integrations/hermes-skill-pack.md)
 
 Hermes runtime smoke test:
 
@@ -280,6 +281,7 @@ your AI can only be useful if it can remember, resume, and stay aligned with how
 - [Architecture](ARCHITECTURE.md)
 - [MCP](docs/integrations/mcp.md)
 - [Hermes Guide](docs/integrations/hermes.md)
+- [Hermes Skill Pack](docs/integrations/hermes-skill-pack.md)
 - [Integrations](docs/integrations/importers.md)
 - [OpenClaw Guide](docs/integrations/openclaw.md)
 - [Examples](docs/examples/phase9-command-walkthrough.md)
