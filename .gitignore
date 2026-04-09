@@ -8,3 +8,10 @@ __pycache__/
 apps/web/.next/
 apps/web/node_modules/
 artifacts/
+
+# Internal operating docs (keep local, exclude from public repo)
+.ai/
+BUILD_REPORT.md
+REVIEW_REPORT.md
+ARCHIVE_RECOMMENDATIONS.md
+RECOMMENDED_ADRS.md

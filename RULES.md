@@ -32,6 +32,6 @@
 
 ## Control Docs
 
-- Keep `ROADMAP.md` future-facing, `.ai/handoff/CURRENT_STATE.md` factual, and `RULES.md` limited to durable guidance.
+- Keep `ROADMAP.md` future-facing and `RULES.md` limited to durable guidance.
 - Archive superseded planning and control snapshots instead of keeping them in live files.
-- Do not create or overwrite `.ai/active/SPRINT_PACKET.md` unless the next execution sprint is explicitly defined.
+- Keep sprint packet and handoff state in internal/local-only operating docs, not public docs.
