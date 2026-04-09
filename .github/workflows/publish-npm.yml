@@ -1,0 +1,86 @@
+name: Publish NPM Packages
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-core:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Resolve core version
+        id: core_meta
+        working-directory: packages/alice-core
+        run: echo "version=$(node -p 'require(\"./package.json\").version')" >> "$GITHUB_OUTPUT"
+
+      - name: Check if core version is already published
+        id: core_exists
+        run: |
+          if npm view @aliceos/alice-core@${{ steps.core_meta.outputs.version }} version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish @aliceos/alice-core
+        if: steps.core_exists.outputs.exists == 'false'
+        working-directory: packages/alice-core
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Skip core publish (already exists)
+        if: steps.core_exists.outputs.exists == 'true'
+        run: echo "@aliceos/alice-core@${{ steps.core_meta.outputs.version }} already published; skipping."
+
+  publish-cli:
+    runs-on: ubuntu-latest
+    needs: publish-core
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Resolve cli version
+        id: cli_meta
+        working-directory: packages/alice-cli
+        run: echo "version=$(node -p 'require(\"./package.json\").version')" >> "$GITHUB_OUTPUT"
+
+      - name: Check if cli version is already published
+        id: cli_exists
+        run: |
+          if npm view @aliceos/alice-cli@${{ steps.cli_meta.outputs.version }} version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish @aliceos/alice-cli
+        if: steps.cli_exists.outputs.exists == 'false'
+        working-directory: packages/alice-cli
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Skip cli publish (already exists)
+        if: steps.cli_exists.outputs.exists == 'true'
+        run: echo "@aliceos/alice-cli@${{ steps.cli_meta.outputs.version }} already published; skipping."
