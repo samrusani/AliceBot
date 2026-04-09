@@ -91,6 +91,7 @@ Today, Alice ships with:
 - **CLI**
 - **MCP server**
 - **OpenClaw adapter**
+- **OpenClaw one-command demo**
 - **Importers**
   - OpenClaw
   - Markdown
@@ -105,6 +106,12 @@ git clone https://github.com/your-org/alice.git
 cd alice
 cp .env.example .env
 docker compose up -d
+```
+
+Run the OpenClaw end-to-end demo:
+
+```bash
+./scripts/use_alice_with_openclaw.sh
 ```
 
 Check status:
@@ -183,6 +190,13 @@ You can:
 - normalize it into Alice continuity objects
 - use Alice recall and resumption on imported work
 - augment OpenClaw workflows through Alice MCP tools
+
+The one-command flow runs:
+
+- before snapshot
+- OpenClaw import
+- replay/recall checks
+- after snapshot
 
 See:
 
