@@ -90,6 +90,7 @@ Today, Alice ships with:
 - **Alice Core**
 - **CLI**
 - **MCP server**
+- **Hermes integration**
 - **OpenClaw adapter**
 - **OpenClaw one-command demo**
 - **Importers**
@@ -174,6 +175,12 @@ See:
 
 - [docs/integrations/mcp.md](docs/integrations/mcp.md)
 - [docs/integrations/hermes.md](docs/integrations/hermes.md)
+
+Hermes runtime smoke test:
+
+```bash
+./scripts/run_hermes_mcp_smoke.py
+```
 
 ### OpenClaw
 
@@ -272,6 +279,7 @@ your AI can only be useful if it can remember, resume, and stay aligned with how
 - [Quickstart](docs/quickstart/local-setup-and-first-result.md)
 - [Architecture](ARCHITECTURE.md)
 - [MCP](docs/integrations/mcp.md)
+- [Hermes Guide](docs/integrations/hermes.md)
 - [Integrations](docs/integrations/importers.md)
 - [OpenClaw Guide](docs/integrations/openclaw.md)
 - [Examples](docs/examples/phase9-command-walkthrough.md)
