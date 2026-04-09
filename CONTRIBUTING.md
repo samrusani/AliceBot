@@ -45,4 +45,4 @@ Read before making non-trivial changes:
 
 - `ARCHITECTURE.md`
 - `RULES.md`
-- `.ai/active/SPRINT_PACKET.md`
+- active sprint packet (internal/local-only; not published in this repo)
