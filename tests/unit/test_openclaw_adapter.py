@@ -10,6 +10,7 @@ from alicebot_api.openclaw_adapter import OpenClawAdapterValidationError, load_o
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH = REPO_ROOT / "fixtures" / "openclaw" / "workspace_v1.json"
+DIRECTORY_FIXTURE_PATH = REPO_ROOT / "fixtures" / "openclaw" / "workspace_dir_v1"
 
 
 def test_openclaw_adapter_loads_fixture_with_deterministic_mapping() -> None:
@@ -70,6 +71,20 @@ def test_openclaw_adapter_supports_directory_workspace_contract(tmp_path: Path) 
     assert batch.context.workspace_name == "Directory Workspace"
     assert len(batch.items) == 1
     assert batch.items[0].object_type == "NextAction"
+
+
+def test_openclaw_adapter_loads_shipped_directory_fixture_with_multiple_memory_keys() -> None:
+    first = load_openclaw_payload(DIRECTORY_FIXTURE_PATH)
+    second = load_openclaw_payload(DIRECTORY_FIXTURE_PATH)
+
+    assert first.context.fixture_id == "openclaw-s39-workspace-dir-v1"
+    assert first.context.workspace_id == "openclaw-workspace-dir-demo-001"
+    assert first.context.workspace_name == "OpenClaw Directory Interop Demo"
+    assert len(first.items) == 4
+
+    item_ids = [item.source_item_id for item in first.items]
+    assert item_ids == ["oc-dir-memory-001", "oc-dir-memory-002", "oc-dir-memory-003", "oc-dir-memory-003"]
+    assert [item.dedupe_key for item in first.items] == [item.dedupe_key for item in second.items]
 
 
 def test_openclaw_adapter_rejects_invalid_payload() -> None:

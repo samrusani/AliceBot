@@ -143,6 +143,7 @@ def test_openclaw_imported_data_is_usable_from_shipped_mcp_recall_and_resume_too
             source=OPENCLAW_FIXTURE_PATH,
         )
         assert summary["imported_count"] == 4
+        assert summary["provenance_source_label"] == "OpenClaw"
 
     client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
     try:
@@ -170,9 +171,12 @@ def test_openclaw_imported_data_is_usable_from_shipped_mcp_recall_and_resume_too
 
     assert recall_payload["summary"]["returned_count"] >= 1
     assert any(item["provenance"]["source_kind"] == "openclaw_import" for item in recall_payload["items"])
+    assert any(item["provenance"].get("source_label") == "OpenClaw" for item in recall_payload["items"])
 
     brief = resume_payload["brief"]
     assert brief["last_decision"]["item"] is not None
     assert brief["last_decision"]["item"]["provenance"]["source_kind"] == "openclaw_import"
+    assert brief["last_decision"]["item"]["provenance"]["source_label"] == "OpenClaw"
     assert brief["next_action"]["item"] is not None
     assert brief["next_action"]["item"]["provenance"]["source_kind"] == "openclaw_import"
+    assert brief["next_action"]["item"]["provenance"]["source_label"] == "OpenClaw"

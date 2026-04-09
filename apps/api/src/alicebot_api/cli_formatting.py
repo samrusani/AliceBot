@@ -48,6 +48,26 @@ def _format_provenance_refs(item: ContinuityRecallResultRecord) -> str:
     return "; ".join(f"{ref['source_kind']}:{ref['source_id']}" for ref in refs)
 
 
+def _format_provenance_source(item: ContinuityRecallResultRecord) -> str:
+    provenance = item.get("provenance", {})
+    if not isinstance(provenance, dict):
+        return "(unknown)"
+
+    label = provenance.get("source_label")
+    source_kind = provenance.get("source_kind")
+
+    label_text = label.strip() if isinstance(label, str) else None
+    source_kind_text = source_kind.strip() if isinstance(source_kind, str) else None
+
+    if label_text and source_kind_text:
+        return f"{label_text} ({source_kind_text})"
+    if label_text:
+        return label_text
+    if source_kind_text:
+        return source_kind_text
+    return "(unknown)"
+
+
 def _render_recall_item(
     item: ContinuityRecallResultRecord,
     *,
@@ -68,6 +88,7 @@ def _render_recall_item(
             f"provenance={item['ordering']['provenance_posture']} "
             f"supersession={item['ordering']['supersession_posture']}"
         ),
+        f"{prefix}  source={_format_provenance_source(item)}",
         f"{prefix}  provenance_refs={_format_provenance_refs(item)}",
     ]
     return lines
@@ -355,4 +376,3 @@ def format_status_output(status: Mapping[str, object]) -> str:
         ),
     ]
     return "\n".join(lines)
-

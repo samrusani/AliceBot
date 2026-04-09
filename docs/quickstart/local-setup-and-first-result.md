@@ -54,12 +54,15 @@ Expected: JSON with `"status": "ok"`.
 ## 6) Optional: Prove Shipped Importer Paths
 
 ```bash
+./scripts/use_alice_with_openclaw.sh
 ./scripts/load_openclaw_sample_data.sh --source fixtures/openclaw/workspace_v1.json
+./scripts/load_openclaw_sample_data.sh --source fixtures/openclaw/workspace_dir_v1
 ./scripts/load_markdown_sample_data.sh --source fixtures/importers/markdown/workspace_v1.md
 ./scripts/load_chatgpt_sample_data.sh --source fixtures/importers/chatgpt/workspace_v1.json
 ```
 
 Repeat the same command to verify deterministic dedupe posture (`status=noop`, duplicate skips).
+OpenClaw details: `docs/integrations/openclaw.md`.
 
 ## 7) Optional: Generate Evaluation Evidence
 

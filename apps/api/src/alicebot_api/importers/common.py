@@ -18,6 +18,7 @@ class ImportPersistenceConfig:
     admission_reason: str
     dedupe_key_field: str
     dedupe_posture: str
+    source_label: str | None = None
 
 
 def _existing_dedupe_keys(
@@ -54,7 +55,7 @@ def _build_provenance(
     config: ImportPersistenceConfig,
 ) -> JsonObject:
     source_prefix = config.source_prefix
-    return {
+    provenance = {
         **source_provenance,
         "source_event_ids": source_event_ids,
         "source_kind": config.source_kind,
@@ -67,6 +68,9 @@ def _build_provenance(
         config.dedupe_key_field: source_dedupe_key,
         f"{source_prefix}_dedupe_posture": config.dedupe_posture,
     }
+    if config.source_label is not None:
+        provenance["source_label"] = config.source_label
+    return provenance
 
 
 def import_normalized_batch(
@@ -150,6 +154,7 @@ def import_normalized_batch(
         "skipped_duplicates": skipped_duplicates,
         "dedupe_posture": config.dedupe_posture,
         "provenance_source_kind": config.source_kind,
+        "provenance_source_label": config.source_label,
         "imported_capture_event_ids": imported_capture_ids,
         "imported_object_ids": imported_object_ids,
     }
