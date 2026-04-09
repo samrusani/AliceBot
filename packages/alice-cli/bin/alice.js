@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 
 const args = process.argv.slice(2);
-const version = "0.1.0";
+const version = "0.1.1";
 const defaultPythonCommand = process.platform === "win32" ? "python" : "python3";
 
 if (args.includes("--version") || args.includes("-v")) {
