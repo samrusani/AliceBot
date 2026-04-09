@@ -60,6 +60,7 @@ def import_openclaw_source(
             admission_reason="openclaw_import",
             dedupe_key_field="openclaw_dedupe_key",
             dedupe_posture=_OPENCLAW_DEDUPE_POSTURE,
+            source_label="OpenClaw",
         ),
     )
 

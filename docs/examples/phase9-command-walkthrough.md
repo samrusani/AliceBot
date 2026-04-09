@@ -6,10 +6,8 @@ This page provides one reproducible command walkthrough using only shipped local
 
 1. Start local runtime.
 2. Verify health.
-3. Run recall/resume.
-4. Import OpenClaw fixture.
-5. Re-run recall on imported context.
-6. Generate evaluation report.
+3. Run one-command OpenClaw demo (`before -> import -> replay -> after`).
+4. Generate evaluation report.
 
 ## Commands
 
@@ -22,14 +20,7 @@ APP_RELOAD=false ./scripts/api_dev.sh
 
 ```bash
 curl -sS http://127.0.0.1:8000/healthz
-./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
-./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
-```
-
-```bash
-./scripts/load_openclaw_sample_data.sh --source fixtures/openclaw/workspace_v1.json
-./.venv/bin/python -m alicebot_api recall --thread-id cccccccc-cccc-4ccc-8ccc-cccccccccccc --project "Alice Public Core" --query "MCP tool surface" --limit 5
-./.venv/bin/python -m alicebot_api resume --thread-id cccccccc-cccc-4ccc-8ccc-cccccccccccc --max-recent-changes 5 --max-open-loops 5
+./scripts/use_alice_with_openclaw.sh
 ```
 
 ```bash
@@ -41,8 +32,8 @@ EVAL_USER_EMAIL="phase9-eval-${EVAL_USER_ID}@example.com"
 ## Expected Outcomes
 
 - API health check returns `status=ok`.
-- recall/resume return deterministic continuity output with provenance.
-- importer command returns import summary with explicit source metadata.
+- OpenClaw demo shows before/after recall-resume value and idempotent replay.
+- imported provenance includes source label `OpenClaw` and `source_kind=openclaw_import`.
 - evaluation harness writes report JSON with summary status and metrics.
 
 ## Notes

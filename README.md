@@ -171,6 +171,12 @@ See:
 
 Alice includes an OpenClaw integration path for import and augmentation.
 
+One-command demo:
+
+```bash
+./scripts/use_alice_with_openclaw.sh
+```
+
 You can:
 
 - import existing OpenClaw memory into Alice
@@ -181,6 +187,7 @@ You can:
 See:
 
 - [docs/integrations/importers.md](docs/integrations/importers.md)
+- [docs/integrations/openclaw.md](docs/integrations/openclaw.md)
 
 ## Example workflows
 
@@ -251,6 +258,7 @@ your AI can only be useful if it can remember, resume, and stay aligned with how
 - [Architecture](ARCHITECTURE.md)
 - [MCP](docs/integrations/mcp.md)
 - [Integrations](docs/integrations/importers.md)
+- [OpenClaw Guide](docs/integrations/openclaw.md)
 - [Examples](docs/examples/phase9-command-walkthrough.md)
 
 ## Tags

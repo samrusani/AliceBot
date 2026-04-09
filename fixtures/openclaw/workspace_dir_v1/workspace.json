@@ -1,0 +1,7 @@
+{
+  "fixture_id": "openclaw-s39-workspace-dir-v1",
+  "workspace": {
+    "id": "openclaw-workspace-dir-demo-001",
+    "name": "OpenClaw Directory Interop Demo"
+  }
+}

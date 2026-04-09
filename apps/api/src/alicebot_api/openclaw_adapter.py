@@ -134,13 +134,18 @@ def _extract_workspace_payloads(payload: object) -> tuple[JsonObject | None, lis
         raise OpenClawAdapterValidationError("workspace must be a JSON object when provided")
     workspace_json = as_json_object(workspace_payload) if workspace_payload is not None else None
 
+    entries: list[JsonObject] = []
+    found_memory_key = False
     for key in ("durable_memory", "memories", "items", "records"):
         raw_entries = payload.get(key)
         if raw_entries is None:
             continue
+        found_memory_key = True
         if not isinstance(raw_entries, list):
             raise OpenClawAdapterValidationError(f"{key} must be a JSON array")
-        entries = [ensure_json_object(item, field_name=f"{key}[]") for item in raw_entries]
+        entries.extend(ensure_json_object(item, field_name=f"{key}[]") for item in raw_entries)
+
+    if found_memory_key:
         return workspace_json, entries
 
     if workspace_payload is not None:
