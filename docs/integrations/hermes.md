@@ -114,6 +114,24 @@ Use mcp_alice_core_alice_resume with {"thread_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaa
 Use mcp_alice_core_alice_open_loops with {"thread_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","limit":10}. Group results by waiting_for, blocker, stale, next_action.
 ```
 
+## Alice Workflow Skill Pack
+
+To make Alice tool usage more consistent in Hermes sessions, install the
+Hermes-native Alice skill pack:
+
+- `docs/integrations/hermes-skill-pack.md`
+
+The pack includes:
+
+- `alice-continuity-recall`
+- `alice-resumption`
+- `alice-open-loop-review`
+- `alice-explain-provenance`
+- `alice-correction-loop`
+
+Skills decide when and how to call tools. MCP tools perform deterministic
+continuity reads and writes.
+
 ## Troubleshooting
 
 ### `Connection failed` in `hermes mcp test`
