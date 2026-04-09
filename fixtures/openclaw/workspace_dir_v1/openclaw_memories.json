@@ -1,0 +1,72 @@
+{
+  "workspace": {
+    "id": "openclaw-workspace-dir-demo-001",
+    "name": "OpenClaw Directory Interop Demo"
+  },
+  "durable_memory": [
+    {
+      "id": "oc-dir-memory-001",
+      "type": "decision",
+      "status": "active",
+      "content": "Use one command to bootstrap OpenClaw import checks.",
+      "thread_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "task_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "project": "Alice Public Core",
+      "person": "Interop Owner",
+      "source_event_ids": [
+        "openclaw-dir-event-0001"
+      ],
+      "confirmation_status": "confirmed",
+      "confidence": 0.95
+    },
+    {
+      "id": "oc-dir-memory-002",
+      "type": "next_action",
+      "status": "active",
+      "content": "Run Alice recall after OpenClaw import to verify provenance labels.",
+      "thread_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "task_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "project": "Alice Public Core",
+      "person": "Build Engineer",
+      "source_event_ids": [
+        "openclaw-dir-event-0002"
+      ],
+      "confirmation_status": "confirmed",
+      "confidence": 0.92
+    }
+  ],
+  "records": [
+    {
+      "id": "oc-dir-memory-003",
+      "kind": "waiting_for",
+      "status": "active",
+      "content": "Wait for idempotent replay check to pass.",
+      "thread_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "task_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "project": "Alice Public Core",
+      "person": "Control Tower",
+      "provenance": {
+        "source_event_ids": [
+          "openclaw-dir-event-0003"
+        ]
+      },
+      "confidence": 0.9
+    },
+    {
+      "id": "oc-dir-memory-003",
+      "kind": "waiting_for",
+      "status": "active",
+      "content": "Wait for idempotent replay check to pass.",
+      "thread_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "task_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "project": "Alice Public Core",
+      "person": "Control Tower",
+      "provenance": {
+        "source_event_ids": [
+          "openclaw-dir-event-0003"
+        ]
+      },
+      "confidence": 0.9
+    }
+  ]
+}

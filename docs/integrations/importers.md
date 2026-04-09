@@ -12,9 +12,18 @@ Alice ships three importer paths from `P9-S36` and `P9-S37`.
 
 ```bash
 ./scripts/load_openclaw_sample_data.sh --source fixtures/openclaw/workspace_v1.json
+./scripts/load_openclaw_sample_data.sh --source fixtures/openclaw/workspace_dir_v1
 ./scripts/load_markdown_sample_data.sh --source fixtures/importers/markdown/workspace_v1.md
 ./scripts/load_chatgpt_sample_data.sh --source fixtures/importers/chatgpt/workspace_v1.json
 ```
+
+## OpenClaw One-Command Demo
+
+```bash
+./scripts/use_alice_with_openclaw.sh
+```
+
+See [docs/integrations/openclaw.md](openclaw.md) for end-to-end before/after output and replay expectations.
 
 ## Importer Behavior Contract
 

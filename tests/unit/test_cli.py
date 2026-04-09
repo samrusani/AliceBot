@@ -133,6 +133,7 @@ def test_recall_formatting_is_deterministic() -> None:
         "    id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa capture_event_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\n"
         "    confidence=0.950 relevance=1.000 confirmation=confirmed\n"
         "    freshness=fresh provenance=strong supersession=current\n"
+        "    source=(unknown)\n"
         "    provenance_refs=continuity_capture_event:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb; thread:thread-1"
     )
 
@@ -157,3 +158,56 @@ def test_status_command_returns_unreachable_without_db_connection(monkeypatch, c
     assert "database: unreachable" in captured.out
     assert f"user_id: {user_id}" in captured.out
 
+
+def test_recall_formatting_renders_provenance_source_label_when_present() -> None:
+    payload: ContinuityRecallResponse = {
+        "items": [
+            {
+                "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "capture_event_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                "object_type": "Decision",
+                "status": "active",
+                "title": "Decision: Keep rollout phased",
+                "body": {"decision_text": "Keep rollout phased"},
+                "provenance": {"source_kind": "openclaw_import", "source_label": "OpenClaw"},
+                "confirmation_status": "confirmed",
+                "admission_posture": "DERIVED",
+                "confidence": 0.95,
+                "relevance": 1.0,
+                "last_confirmed_at": "2026-03-30T10:00:00+00:00",
+                "supersedes_object_id": None,
+                "superseded_by_object_id": None,
+                "scope_matches": [],
+                "provenance_references": [
+                    {"source_kind": "continuity_capture_event", "source_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}
+                ],
+                "ordering": {
+                    "scope_match_count": 0,
+                    "query_term_match_count": 0,
+                    "confirmation_rank": 3,
+                    "freshness_posture": "fresh",
+                    "freshness_rank": 4,
+                    "provenance_posture": "strong",
+                    "provenance_rank": 3,
+                    "supersession_posture": "current",
+                    "supersession_rank": 3,
+                    "posture_rank": 2,
+                    "lifecycle_rank": 4,
+                    "confidence": 0.95,
+                },
+                "created_at": "2026-03-30T09:59:00+00:00",
+                "updated_at": "2026-03-30T10:00:00+00:00",
+            }
+        ],
+        "summary": {
+            "query": None,
+            "filters": {"since": None, "until": None},
+            "limit": 20,
+            "returned_count": 1,
+            "total_count": 1,
+            "order": ["relevance_desc", "created_at_desc", "id_desc"],
+        },
+    }
+
+    rendered = cli_module.format_recall_output(payload)
+    assert "source=OpenClaw (openclaw_import)" in rendered
