@@ -1,0 +1,1 @@
+{"open_loop_count":1,"recall_items":2,"registered_tools":["mcp_alice_core_alice_open_loops","mcp_alice_core_alice_recall","mcp_alice_core_alice_resume"],"resume_last_decision_title":"Decision: Keep Alice MCP local-first for Hermes verification."}
