@@ -2,18 +2,28 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from datetime import datetime
+import hmac
+import hashlib
 import json
 import threading
 import time
 from typing import Annotated, Awaitable, Callable, Literal, TypedDict
 from uuid import UUID
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fastapi.responses import JSONResponse
 import psycopg
 from psycopg.rows import dict_row
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+try:
+    import redis
+    from redis.exceptions import RedisError
+except Exception:  # pragma: no cover - optional dependency for local-only test environments
+    redis = None
+
+    class RedisError(Exception):
+        """Fallback Redis error used when redis package is unavailable."""
 
 from alicebot_api.compiler import compile_and_persist_trace, compile_resumption_brief
 from alicebot_api.config import Settings, get_settings
@@ -613,6 +623,85 @@ class ResponseRateLimiter:
 
 
 response_rate_limiter = ResponseRateLimiter()
+
+
+class EntrypointRateLimiterUnavailableError(RuntimeError):
+    """Raised when the configured entrypoint rate limiter backend is unavailable."""
+
+
+class EntrypointRateLimiter:
+    def __init__(self) -> None:
+        self._memory_fallback = ResponseRateLimiter()
+        self._redis_clients_by_url: dict[str, object] = {}
+        self._lock = threading.Lock()
+
+    def _get_redis_client(self, redis_url: str):
+        with self._lock:
+            cached_client = self._redis_clients_by_url.get(redis_url)
+            if cached_client is not None:
+                return cached_client
+
+            if redis is None:
+                raise EntrypointRateLimiterUnavailableError(
+                    "redis backend is unavailable; install redis client dependency"
+                )
+
+            redis_client = redis.Redis.from_url(
+                redis_url,
+                decode_responses=True,
+                socket_connect_timeout=1,
+                socket_timeout=1,
+            )
+            self._redis_clients_by_url[redis_url] = redis_client
+            return redis_client
+
+    def allow(
+        self,
+        *,
+        settings: Settings,
+        key: str,
+        max_requests: int,
+        window_seconds: int,
+    ) -> tuple[bool, int]:
+        if settings.entrypoint_rate_limit_backend == "memory":
+            return self._memory_fallback.allow(
+                key=key,
+                max_requests=max_requests,
+                window_seconds=window_seconds,
+            )
+
+        try:
+            redis_client = self._get_redis_client(settings.redis_url)
+            redis_key = f"entrypoint_rate:{key}"
+            count = int(redis_client.incr(redis_key))
+            ttl = int(redis_client.ttl(redis_key))
+
+            if count == 1 or ttl <= 0:
+                redis_client.expire(redis_key, window_seconds)
+                ttl = window_seconds
+
+            if count > max_requests:
+                return False, max(1, ttl if ttl > 0 else window_seconds)
+            return True, 0
+        except (RedisError, EntrypointRateLimiterUnavailableError) as exc:
+            # Local and test workflows can continue deterministically with in-memory fallback.
+            if settings.app_env in {"development", "test"}:
+                return self._memory_fallback.allow(
+                    key=key,
+                    max_requests=max_requests,
+                    window_seconds=window_seconds,
+                )
+            raise EntrypointRateLimiterUnavailableError(
+                "redis-backed entrypoint rate limiter is unavailable"
+            ) from exc
+
+    def reset(self) -> None:
+        self._memory_fallback.reset()
+        with self._lock:
+            self._redis_clients_by_url.clear()
+
+
+entrypoint_rate_limiter = EntrypointRateLimiter()
 
 
 def _resolve_authenticated_user_id(settings: Settings, request: Request) -> UUID | None:
@@ -1331,11 +1420,191 @@ def _enforce_response_rate_limit(settings: Settings, user_id: UUID) -> JSONRespo
     )
 
 
+def _request_client_identifier(request: Request, settings: Settings) -> str:
+    peer_host = ""
+    if request.client is not None:
+        peer_host = (request.client.host or "").strip()
+
+    if (
+        settings.trust_proxy_headers
+        and peer_host != ""
+        and peer_host in settings.trusted_proxy_ips
+    ):
+        forwarded_for = request.headers.get("x-forwarded-for", "").strip()
+        if forwarded_for != "":
+            first_hop = forwarded_for.split(",", maxsplit=1)[0].strip()
+            if first_hop != "":
+                return first_hop
+
+    if peer_host == "":
+        return "unknown"
+    return peer_host
+
+
+def _entrypoint_rate_limit_error(
+    *,
+    detail_code: str,
+    message: str,
+    max_requests: int,
+    window_seconds: int,
+    retry_after_seconds: int,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        headers={"Retry-After": str(retry_after_seconds)},
+        content={
+            "detail": {
+                "code": detail_code,
+                "message": message,
+                "retry_after_seconds": retry_after_seconds,
+                "window_seconds": window_seconds,
+                "max_requests": max_requests,
+            }
+        },
+    )
+
+
+def _enforce_entrypoint_rate_limit(
+    *,
+    settings: Settings,
+    key: str,
+    max_requests: int,
+    window_seconds: int,
+    detail_code: str,
+    message: str,
+) -> JSONResponse | None:
+    try:
+        allowed, retry_after_seconds = entrypoint_rate_limiter.allow(
+            settings=settings,
+            key=key,
+            max_requests=max_requests,
+            window_seconds=window_seconds,
+        )
+    except EntrypointRateLimiterUnavailableError:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": {
+                    "code": "entrypoint_rate_limiter_unavailable",
+                    "message": "entrypoint rate limiter backend is unavailable",
+                }
+            },
+        )
+    if allowed:
+        return None
+    return _entrypoint_rate_limit_error(
+        detail_code=detail_code,
+        message=message,
+        max_requests=max_requests,
+        window_seconds=window_seconds,
+        retry_after_seconds=retry_after_seconds,
+    )
+
+
+def _append_vary_header(response: Response, value: str) -> None:
+    existing = response.headers.get("Vary", "")
+    values = [item.strip() for item in existing.split(",") if item.strip() != ""]
+    if value not in values:
+        values.append(value)
+    response.headers["Vary"] = ", ".join(values)
+
+
+def _cors_origin_allowed(origin: str, allowed_origins: tuple[str, ...]) -> bool:
+    if len(allowed_origins) == 0:
+        return False
+    if "*" in allowed_origins:
+        return True
+    return origin in allowed_origins
+
+
+def _resolve_cors_allow_origin_value(settings: Settings, origin: str) -> str:
+    if "*" in settings.cors_allowed_origins and not settings.cors_allow_credentials:
+        return "*"
+    return origin
+
+
+def _apply_cors_headers(
+    *,
+    response: Response,
+    settings: Settings,
+    origin: str,
+    preflight: bool,
+) -> None:
+    allow_origin = _resolve_cors_allow_origin_value(settings, origin)
+    response.headers["Access-Control-Allow-Origin"] = allow_origin
+    if allow_origin != "*":
+        _append_vary_header(response, "Origin")
+    if settings.cors_allow_credentials:
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+
+    if not preflight:
+        return
+
+    response.headers["Access-Control-Allow-Methods"] = ", ".join(settings.cors_allowed_methods)
+    response.headers["Access-Control-Allow-Headers"] = ", ".join(settings.cors_allowed_headers)
+    response.headers["Access-Control-Max-Age"] = str(settings.cors_preflight_max_age_seconds)
+    _append_vary_header(response, "Access-Control-Request-Method")
+    _append_vary_header(response, "Access-Control-Request-Headers")
+
+
+def _apply_security_headers(*, response: Response, settings: Settings, request: Request) -> None:
+    if not settings.security_headers_enabled:
+        return
+
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        (
+            "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), "
+            "microphone=(), payment=(), usb=()"
+        ),
+    )
+
+    if request.url.scheme != "https" or settings.app_env in {"development", "test"}:
+        return
+
+    hsts_value = f"max-age={settings.security_headers_hsts_max_age_seconds}"
+    if settings.security_headers_hsts_include_subdomains:
+        hsts_value += "; includeSubDomains"
+    response.headers.setdefault("Strict-Transport-Security", hsts_value)
+
+
+@app.middleware("http")
+async def apply_http_security_posture(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    settings = get_settings()
+    origin = request.headers.get("origin", "").strip()
+    is_preflight = (
+        request.method.upper() == "OPTIONS"
+        and request.headers.get("access-control-request-method", "").strip() != ""
+    )
+
+    if is_preflight:
+        if origin == "" or not _cors_origin_allowed(origin, settings.cors_allowed_origins):
+            response = JSONResponse(status_code=403, content={"detail": "CORS origin is not allowed"})
+            _apply_security_headers(response=response, settings=settings, request=request)
+            return response
+        response = Response(status_code=204)
+        _apply_cors_headers(response=response, settings=settings, origin=origin, preflight=True)
+        _apply_security_headers(response=response, settings=settings, request=request)
+        return response
+
+    response = await call_next(request)
+    if origin != "" and _cors_origin_allowed(origin, settings.cors_allowed_origins):
+        _apply_cors_headers(response=response, settings=settings, origin=origin, preflight=False)
+    _apply_security_headers(response=response, settings=settings, request=request)
+    return response
+
+
 @app.middleware("http")
 async def enforce_authenticated_user_identity(
     request: Request,
-    call_next: Callable[[Request], Awaitable[JSONResponse]],
-):
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
     if not request.url.path.startswith("/v0/"):
         return await call_next(request)
 
@@ -4879,8 +5148,22 @@ def get_entity(entity_id: UUID, user_id: UUID) -> JSONResponse:
 
 
 @app.post("/v1/auth/magic-link/start")
-def start_v1_magic_link(request: MagicLinkStartRequest) -> JSONResponse:
+def start_v1_magic_link(http_request: Request, request: MagicLinkStartRequest) -> JSONResponse:
     settings = get_settings()
+    email_fingerprint = hashlib.sha256(request.email.strip().lower().encode("utf-8")).hexdigest()[:20]
+    rate_limit_error = _enforce_entrypoint_rate_limit(
+        settings=settings,
+        key=(
+            "auth_magic_link_start:"
+            f"{_request_client_identifier(http_request, settings)}:{email_fingerprint}"
+        ),
+        max_requests=settings.magic_link_start_rate_limit_max_requests,
+        window_seconds=settings.magic_link_start_rate_limit_window_seconds,
+        detail_code="magic_link_start_rate_limit_exceeded",
+        message="magic-link start rate limit exceeded",
+    )
+    if rate_limit_error is not None:
+        return rate_limit_error
 
     try:
         with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
@@ -4893,19 +5176,42 @@ def start_v1_magic_link(request: MagicLinkStartRequest) -> JSONResponse:
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    challenge_payload = serialize_magic_link_challenge(challenge)
+    delivery_payload = {
+        "kind": "simulated_magic_link",
+        "posture": "builder_visible_only",
+    }
+    if settings.app_env not in {"development", "test"}:
+        challenge_payload.pop("challenge_token", None)
+        delivery_payload = {
+            "kind": "magic_link",
+            "posture": "out_of_band_delivery_required",
+        }
+
     payload = {
-        "challenge": serialize_magic_link_challenge(challenge),
-        "delivery": {
-            "kind": "simulated_magic_link",
-            "posture": "builder_visible_only",
-        },
+        "challenge": challenge_payload,
+        "delivery": delivery_payload,
     }
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
 @app.post("/v1/auth/magic-link/verify")
-def verify_v1_magic_link(request: MagicLinkVerifyRequest) -> JSONResponse:
+def verify_v1_magic_link(http_request: Request, request: MagicLinkVerifyRequest) -> JSONResponse:
     settings = get_settings()
+    challenge_fingerprint = hashlib.sha256(request.challenge_token.strip().encode("utf-8")).hexdigest()[:20]
+    rate_limit_error = _enforce_entrypoint_rate_limit(
+        settings=settings,
+        key=(
+            "auth_magic_link_verify:"
+            f"{_request_client_identifier(http_request, settings)}:{challenge_fingerprint}"
+        ),
+        max_requests=settings.magic_link_verify_rate_limit_max_requests,
+        window_seconds=settings.magic_link_verify_rate_limit_window_seconds,
+        detail_code="magic_link_verify_rate_limit_exceeded",
+        message="magic-link verify rate limit exceeded",
+    )
+    if rate_limit_error is not None:
+        return rate_limit_error
 
     try:
         with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
@@ -5803,9 +6109,26 @@ def get_v1_telegram_status(
 @app.post("/v1/channels/telegram/webhook")
 async def ingest_v1_telegram_webhook(request: Request) -> JSONResponse:
     settings = get_settings()
+    if settings.app_env not in {"development", "test"} and settings.telegram_webhook_secret == "":
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "telegram webhook ingress is not configured"},
+        )
+
+    rate_limit_error = _enforce_entrypoint_rate_limit(
+        settings=settings,
+        key=f"telegram_webhook:{_request_client_identifier(request, settings)}",
+        max_requests=settings.telegram_webhook_rate_limit_max_requests,
+        window_seconds=settings.telegram_webhook_rate_limit_window_seconds,
+        detail_code="telegram_webhook_rate_limit_exceeded",
+        message="telegram webhook rate limit exceeded",
+    )
+    if rate_limit_error is not None:
+        return rate_limit_error
+
     if settings.telegram_webhook_secret != "":
         header_secret = request.headers.get("x-telegram-bot-api-secret-token", "").strip()
-        if header_secret != settings.telegram_webhook_secret:
+        if not hmac.compare_digest(header_secret, settings.telegram_webhook_secret):
             return JSONResponse(status_code=401, content={"detail": "telegram webhook secret is invalid"})
 
     try:

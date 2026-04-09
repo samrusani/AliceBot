@@ -586,3 +586,81 @@ def test_phase10_telegram_rejects_cross_workspace_identity_conflict(
     )
     assert second_status_code == 200
     assert second_status_payload["linked"] is False
+
+
+def test_phase10_telegram_webhook_requires_secret_outside_dev(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            app_env="staging",
+            database_url=migrated_database_urls["app"],
+            telegram_webhook_secret="",
+            telegram_bot_token="",
+            telegram_bot_username="alicebot",
+        ),
+    )
+
+    webhook_status, webhook_payload = invoke_request(
+        "POST",
+        "/v1/channels/telegram/webhook",
+        payload={"update_id": 1, "message": {"message_id": 1}},
+    )
+    assert webhook_status == 503
+    assert webhook_payload == {"detail": "telegram webhook ingress is not configured"}
+
+
+def test_phase10_telegram_webhook_rate_limit_enforced(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            telegram_webhook_secret="",
+            telegram_bot_token="",
+            telegram_bot_username="alicebot",
+            telegram_webhook_rate_limit_max_requests=1,
+            telegram_webhook_rate_limit_window_seconds=60,
+        ),
+    )
+
+    first_webhook_status, _first_webhook_payload = invoke_request(
+        "POST",
+        "/v1/channels/telegram/webhook",
+        payload={
+            "update_id": 7101,
+            "message": {
+                "message_id": 4001,
+                "date": 1710007000,
+                "chat": {"id": 12345, "type": "private"},
+                "from": {"id": 12345, "username": "ratelimited"},
+                "text": "hello",
+            },
+        },
+    )
+    assert first_webhook_status == 200
+
+    second_webhook_status, second_webhook_payload = invoke_request(
+        "POST",
+        "/v1/channels/telegram/webhook",
+        payload={
+            "update_id": 7102,
+            "message": {
+                "message_id": 4002,
+                "date": 1710007005,
+                "chat": {"id": 12345, "type": "private"},
+                "from": {"id": 12345, "username": "ratelimited"},
+                "text": "hello again",
+            },
+        },
+    )
+    assert second_webhook_status == 429
+    assert second_webhook_payload["detail"]["code"] == "telegram_webhook_rate_limit_exceeded"
+    assert second_webhook_payload["detail"]["max_requests"] == 1
+    assert second_webhook_payload["detail"]["window_seconds"] == 60

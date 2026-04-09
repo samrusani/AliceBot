@@ -317,6 +317,99 @@ def test_rewrite_user_id_json_body_rejects_mismatch() -> None:
         asyncio.run(main_module._rewrite_user_id_json_body(request, uuid4()))
 
 
+def test_request_client_identifier_ignores_forwarded_header_when_proxy_not_trusted() -> None:
+    request = _build_request(
+        method="POST",
+        path="/v1/auth/magic-link/start",
+        headers={"x-forwarded-for": "203.0.113.9, 127.0.0.1"},
+    )
+
+    client_identifier = main_module._request_client_identifier(
+        request,
+        Settings(database_url="postgresql://app"),
+    )
+
+    assert client_identifier == "127.0.0.1"
+
+
+def test_request_client_identifier_uses_forwarded_header_for_trusted_proxy() -> None:
+    request = _build_request(
+        method="POST",
+        path="/v1/auth/magic-link/start",
+        headers={"x-forwarded-for": "203.0.113.9, 127.0.0.1"},
+    )
+
+    client_identifier = main_module._request_client_identifier(
+        request,
+        Settings(
+            database_url="postgresql://app",
+            trust_proxy_headers=True,
+            trusted_proxy_ips=("127.0.0.1",),
+        ),
+    )
+
+    assert client_identifier == "203.0.113.9"
+
+
+def test_entrypoint_rate_limit_memory_backend_enforces_limits() -> None:
+    settings = Settings(
+        database_url="postgresql://app",
+        entrypoint_rate_limit_backend="memory",
+    )
+
+    main_module.entrypoint_rate_limiter.reset()
+    first_result = main_module._enforce_entrypoint_rate_limit(
+        settings=settings,
+        key="entrypoint-test-memory-backend",
+        max_requests=1,
+        window_seconds=60,
+        detail_code="entrypoint_test_limited",
+        message="entrypoint test limit exceeded",
+    )
+    second_result = main_module._enforce_entrypoint_rate_limit(
+        settings=settings,
+        key="entrypoint-test-memory-backend",
+        max_requests=1,
+        window_seconds=60,
+        detail_code="entrypoint_test_limited",
+        message="entrypoint test limit exceeded",
+    )
+    main_module.entrypoint_rate_limiter.reset()
+
+    assert first_result is None
+    assert second_result is not None
+    assert second_result.status_code == 429
+    assert json.loads(second_result.body)["detail"]["code"] == "entrypoint_test_limited"
+
+
+def test_entrypoint_rate_limit_returns_503_when_redis_backend_is_unavailable(monkeypatch) -> None:
+    settings = Settings(
+        app_env="staging",
+        database_url="postgresql://app",
+        entrypoint_rate_limit_backend="redis",
+    )
+    main_module.entrypoint_rate_limiter.reset()
+    monkeypatch.setattr(main_module, "redis", None)
+
+    limited = main_module._enforce_entrypoint_rate_limit(
+        settings=settings,
+        key="entrypoint-test-redis-unavailable",
+        max_requests=1,
+        window_seconds=60,
+        detail_code="entrypoint_test_limited",
+        message="entrypoint test limit exceeded",
+    )
+
+    assert limited is not None
+    assert limited.status_code == 503
+    assert json.loads(limited.body) == {
+        "detail": {
+            "code": "entrypoint_rate_limiter_unavailable",
+            "message": "entrypoint rate limiter backend is unavailable",
+        }
+    }
+
+
 def test_compile_context_returns_trace_and_context_pack(monkeypatch) -> None:
     user_id = uuid4()
     thread_id = uuid4()
