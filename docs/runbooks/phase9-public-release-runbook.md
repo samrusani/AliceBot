@@ -63,7 +63,7 @@ Complete all checks in `docs/release/v0.1.0-release-checklist.md`.
 
 ## Step 7: Tag Gate
 
-After checklist pass + reviewer `PASS` + explicit Control Tower approval, follow:
+After checklist pass + reviewer `PASS` + explicit maintainer approval, follow:
 
 - `docs/release/v0.1.0-tag-plan.md`
 

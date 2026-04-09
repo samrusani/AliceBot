@@ -64,4 +64,4 @@ Phase 10 is done when a non-technical beta user can onboard, use Alice through T
 
 ## Archived Planning
 
-- Historical planning and superseded control docs: `docs/archive/planning/2026-04-08-context-compaction/README.md`
+- Historical planning and superseded control docs are retained in local-only internal archives and are not part of the public repo.

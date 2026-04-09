@@ -14,6 +14,6 @@ default_confidence: 0.90
 
 - Decision: Keep markdown importer deterministic for baseline evidence. | source_event_id=markdown-event-0001 | confirmation_status=confirmed
 - Next Action: Run markdown fixture import before evaluation harness. | source_event_id=markdown-event-0002 | person=Build Engineer | confirmation_status=confirmed
-- Waiting For: Control Tower reviewer PASS on markdown importer verification. | source_event_id=markdown-event-0003
+- Waiting For: reviewer PASS on markdown importer verification. | source_event_id=markdown-event-0003
 - Commitment: Publish markdown importer usage docs in README. | status=completed | source_event_id=markdown-event-0004 | confirmation_status=confirmed
 - Commitment: Publish markdown importer usage docs in README. | status=completed | source_event_id=markdown-event-0004 | confirmation_status=confirmed

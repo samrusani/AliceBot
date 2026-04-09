@@ -49,20 +49,20 @@
       }
     },
     {
-      "raw_content": "Waiting for: reviewer PASS and merge approval from Control Tower.",
+      "raw_content": "Waiting for: reviewer PASS and merge approval from maintainers.",
       "explicit_signal": "waiting_for",
       "object_type": "WaitingFor",
       "status": "active",
-      "title": "Waiting For: reviewer PASS and merge approval from Control Tower.",
+      "title": "Waiting For: reviewer PASS and merge approval from maintainers.",
       "body": {
-        "waiting_for_text": "Reviewer PASS and merge approval from Control Tower."
+        "waiting_for_text": "Reviewer PASS and merge approval from maintainers."
       },
       "confidence": 0.91,
       "provenance": {
         "thread_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "task_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         "project": "Alice Public Core",
-        "person": "Control Tower",
+        "person": "Maintainers",
         "source_event_ids": [
           "sample-event-0003"
         ],

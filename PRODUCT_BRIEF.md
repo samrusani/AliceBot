@@ -86,4 +86,4 @@ At the end of Phase 10, a non-developer beta user can:
 
 ## Historical Traceability
 
-Superseded planning and control material lives under `docs/archive/planning/2026-04-08-context-compaction/README.md`.
+Superseded planning and control material is retained in local-only internal archives and is not part of the public repo.
