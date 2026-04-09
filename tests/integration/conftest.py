@@ -10,6 +10,7 @@ import psycopg
 from psycopg import sql
 import pytest
 
+import apps.api.src.alicebot_api.main as main_module
 from alicebot_api.migrations import make_alembic_config
 
 
@@ -53,3 +54,12 @@ def migrated_database_urls(database_urls: dict[str, str]) -> Iterator[dict[str, 
     config = make_alembic_config(database_urls["admin"])
     command.upgrade(config, "head")
     yield database_urls
+
+
+@pytest.fixture(autouse=True)
+def reset_response_rate_limiter_between_tests() -> Iterator[None]:
+    main_module.response_rate_limiter.reset()
+    main_module.entrypoint_rate_limiter.reset()
+    yield
+    main_module.response_rate_limiter.reset()
+    main_module.entrypoint_rate_limiter.reset()
