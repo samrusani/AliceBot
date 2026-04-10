@@ -8,8 +8,10 @@ import subprocess
 import sys
 from uuid import UUID, uuid4
 
+from alicebot_api.contracts import MemoryCandidateInput
 from alicebot_api.db import user_connection
 from alicebot_api.markdown_import import import_markdown_source
+from alicebot_api.memory import admit_memory_candidate
 from alicebot_api.store import ContinuityStore
 
 
@@ -315,3 +317,101 @@ def test_cli_command_surface_and_correction_flow(migrated_database_urls) -> None
     assert "artifact detail" in artifact_result.stdout
     assert "copies: 1" in artifact_result.stdout
     assert "segments:" in artifact_result.stdout
+
+
+def test_cli_lists_and_explains_trusted_fact_promotions(migrated_database_urls) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="trusted-cli@example.invalid")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        thread = store.create_thread("Trusted fact CLI")
+        session = store.create_session(thread["id"], status="active")
+        coffee_event = store.append_event(thread["id"], session["id"], "message.user", {"text": "Coffee"})["id"]
+        tea_event = store.append_event(thread["id"], session["id"], "message.user", {"text": "Tea"})["id"]
+        generated_event = store.append_event(
+            thread["id"], session["id"], "message.user", {"text": "Model suggested mate"}
+        )["id"]
+
+        admit_memory_candidate(
+            store,
+            user_id=user_id,
+            candidate=MemoryCandidateInput(
+                memory_key="user.preference.coffee",
+                value={"drink": "coffee"},
+                source_event_ids=(coffee_event,),
+                memory_type="preference",
+                trust_class="human_curated",
+                promotion_eligibility="promotable",
+                evidence_count=2,
+                independent_source_count=2,
+                trust_reason="owner confirmed",
+            ),
+        )
+        admit_memory_candidate(
+            store,
+            user_id=user_id,
+            candidate=MemoryCandidateInput(
+                memory_key="user.preference.tea",
+                value={"drink": "tea"},
+                source_event_ids=(tea_event,),
+                memory_type="preference",
+                trust_class="deterministic",
+                promotion_eligibility="promotable",
+                evidence_count=1,
+                independent_source_count=1,
+                trust_reason="deterministic capture",
+            ),
+        )
+        admit_memory_candidate(
+            store,
+            user_id=user_id,
+            candidate=MemoryCandidateInput(
+                memory_key="user.preference.generated",
+                value={"drink": "mate"},
+                source_event_ids=(generated_event,),
+                memory_type="preference",
+                trust_class="llm_single_source",
+                promotion_eligibility="promotable",
+                evidence_count=1,
+                independent_source_count=1,
+                extracted_by_model="gpt-5.4-mini",
+                trust_reason="single-source model extraction",
+            ),
+        )
+
+    env = build_cli_env(database_url=migrated_database_urls["app"], user_id=user_id)
+
+    patterns_list = run_cli(["patterns", "list", "--limit", "10"], env=env)
+    assert patterns_list.returncode == 0
+    assert "patterns" in patterns_list.stdout
+    assert "fact_count=2" in patterns_list.stdout
+
+    pattern_id = None
+    for line in patterns_list.stdout.splitlines():
+        if line.strip().startswith("id="):
+            pattern_id = line.split("id=", 1)[1].split()[0]
+            break
+    assert pattern_id is not None
+
+    pattern_explain = run_cli(["patterns", "explain", pattern_id], env=env)
+    assert pattern_explain.returncode == 0
+    assert "evidence_chain:" in pattern_explain.stdout
+    assert "memory_key=user.preference.coffee" in pattern_explain.stdout
+    assert "user.preference.generated" not in pattern_explain.stdout
+
+    playbooks_list = run_cli(["playbooks", "list", "--limit", "10"], env=env)
+    assert playbooks_list.returncode == 0
+    assert "playbooks" in playbooks_list.stdout
+    assert "step_count=2" in playbooks_list.stdout
+
+    playbook_id = None
+    for line in playbooks_list.stdout.splitlines():
+        if line.strip().startswith("id="):
+            playbook_id = line.split("id=", 1)[1].split()[0]
+            break
+    assert playbook_id is not None
+
+    playbook_explain = run_cli(["playbooks", "explain", playbook_id], env=env)
+    assert playbook_explain.returncode == 0
+    assert "steps:" in playbook_explain.stdout
+    assert "[prefer]" in playbook_explain.stdout
