@@ -24,7 +24,16 @@ alicebot --help
 ./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
 ./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
 ./.venv/bin/python -m alicebot_api open-loops
+./.venv/bin/python -m alicebot_api state-at <entity_id> --at 2026-03-12T09:45:00+00:00
+./.venv/bin/python -m alicebot_api timeline <entity_id> --limit 20
+./.venv/bin/python -m alicebot_api explain --entity-id <entity_id> --at 2026-03-12T09:45:00+00:00
 ```
+
+## Temporal History Commands
+
+- `state-at` reconstructs entity facts plus effective edges at a prior time
+- `timeline` returns chronological entity history from fact revisions and edge lifecycle rows
+- `explain --entity-id` adds trust, provenance, and supersession-chain detail for the reconstructed state
 
 ## Review and Correction Commands
 
@@ -44,3 +53,4 @@ See tests:
 
 - `tests/integration/test_mcp_cli_parity.py`
 - `tests/integration/test_mcp_server.py`
+- `tests/integration/test_temporal_state_mcp_cli.py`
