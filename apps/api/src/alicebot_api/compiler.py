@@ -338,6 +338,18 @@ def _serialize_typed_memory_metadata(memory: MemoryRow) -> dict[str, object]:
         payload["salience"] = memory["salience"]
     if "confirmation_status" in memory:
         payload["confirmation_status"] = memory["confirmation_status"]
+    if "trust_class" in memory:
+        payload["trust_class"] = memory["trust_class"]
+    if "promotion_eligibility" in memory:
+        payload["promotion_eligibility"] = memory["promotion_eligibility"]
+    if "evidence_count" in memory:
+        payload["evidence_count"] = memory["evidence_count"]
+    if "independent_source_count" in memory:
+        payload["independent_source_count"] = memory["independent_source_count"]
+    if "extracted_by_model" in memory:
+        payload["extracted_by_model"] = memory["extracted_by_model"]
+    if "trust_reason" in memory:
+        payload["trust_reason"] = memory["trust_reason"]
     if "valid_from" in memory:
         payload["valid_from"] = isoformat_or_none(memory["valid_from"])
     if "valid_to" in memory:

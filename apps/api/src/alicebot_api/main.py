@@ -898,6 +898,12 @@ class AdmitMemoryRequest(BaseModel):
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     salience: float | None = Field(default=None, ge=0.0, le=1.0)
     confirmation_status: str | None = Field(default=None, min_length=1, max_length=100)
+    trust_class: str | None = Field(default=None, min_length=1, max_length=100)
+    promotion_eligibility: str | None = Field(default=None, min_length=1, max_length=100)
+    evidence_count: int | None = Field(default=None, ge=0)
+    independent_source_count: int | None = Field(default=None, ge=0)
+    extracted_by_model: str | None = Field(default=None, min_length=1, max_length=200)
+    trust_reason: str | None = Field(default=None, min_length=1, max_length=500)
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     last_confirmed_at: datetime | None = None
@@ -2350,6 +2356,12 @@ def admit_memory(request: AdmitMemoryRequest) -> JSONResponse:
                     confidence=request.confidence,
                     salience=request.salience,
                     confirmation_status=request.confirmation_status,
+                    trust_class=request.trust_class,
+                    promotion_eligibility=request.promotion_eligibility,
+                    evidence_count=request.evidence_count,
+                    independent_source_count=request.independent_source_count,
+                    extracted_by_model=request.extracted_by_model,
+                    trust_reason=request.trust_reason,
                     valid_from=request.valid_from,
                     valid_to=request.valid_to,
                     last_confirmed_at=request.last_confirmed_at,
