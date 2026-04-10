@@ -23,13 +23,23 @@ def make_candidate_row(
     provenance: dict[str, object] | None = None,
     confidence: float = 1.0,
     status: str = "active",
+    is_searchable: bool = True,
+    is_promotable: bool | None = None,
 ) -> dict[str, object]:
+    resolved_is_promotable = (
+        object_type in {"Decision", "Commitment", "WaitingFor", "Blocker", "NextAction"}
+        if is_promotable is None
+        else is_promotable
+    )
     return {
         "id": uuid4(),
         "user_id": UUID("11111111-1111-4111-8111-111111111111"),
         "capture_event_id": uuid4(),
         "object_type": object_type,
         "status": status,
+        "is_preserved": True,
+        "is_searchable": is_searchable,
+        "is_promotable": resolved_is_promotable,
         "title": title,
         "body": {"text": title},
         "provenance": provenance or {},
@@ -298,4 +308,51 @@ def test_resumption_brief_excludes_completed_and_stale_from_primary_open_loop_se
         "Waiting For: still blocked active item",
         "Waiting For: deferred stale item",
         "Waiting For: completed item",
+    ]
+
+
+def test_resumption_brief_excludes_non_promotable_memory_facts_by_default_but_can_override() -> None:
+    thread_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    rows = [
+        make_candidate_row(
+            title="Memory Fact: searchable but not promotable",
+            object_type="MemoryFact",
+            capture_created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+            provenance={"thread_id": str(thread_id)},
+            is_promotable=False,
+        ),
+        make_candidate_row(
+            title="Decision: still visible",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 5, tzinfo=UTC),
+            provenance={"thread_id": str(thread_id)},
+        ),
+    ]
+
+    default_payload = compile_continuity_resumption_brief(
+        ContinuityResumptionStoreStub(rows),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityResumptionBriefRequestInput(
+            thread_id=thread_id,
+            max_recent_changes=5,
+            max_open_loops=2,
+        ),
+    )
+    override_payload = compile_continuity_resumption_brief(
+        ContinuityResumptionStoreStub(rows),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityResumptionBriefRequestInput(
+            thread_id=thread_id,
+            max_recent_changes=5,
+            max_open_loops=2,
+            include_non_promotable_facts=True,
+        ),
+    )
+
+    assert [item["title"] for item in default_payload["brief"]["recent_changes"]["items"]] == [
+        "Decision: still visible",
+    ]
+    assert [item["title"] for item in override_payload["brief"]["recent_changes"]["items"]] == [
+        "Decision: still visible",
+        "Memory Fact: searchable but not promotable",
     ]

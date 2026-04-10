@@ -14,6 +14,8 @@ def test_parser_routes_required_commands() -> None:
     cases = [
         (["capture", "Decision: Keep rollout phased"], "_run_capture"),
         (["recall"], "_run_recall"),
+        (["lifecycle", "list"], "_run_lifecycle_list"),
+        (["lifecycle", "show", continuity_object_id], "_run_lifecycle_show"),
         (["resume"], "_run_resume"),
         (["open-loops"], "_run_open_loops"),
         (["review", "queue"], "_run_review_queue"),
@@ -77,6 +79,14 @@ def test_recall_formatting_is_deterministic() -> None:
                 "capture_event_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
                 "object_type": "Decision",
                 "status": "active",
+                "lifecycle": {
+                    "is_preserved": True,
+                    "preservation_status": "preserved",
+                    "is_searchable": True,
+                    "searchability_status": "searchable",
+                    "is_promotable": True,
+                    "promotion_status": "promotable",
+                },
                 "title": "Decision: Keep rollout phased",
                 "body": {"decision_text": "Keep rollout phased"},
                 "provenance": {"thread_id": "thread-1"},
@@ -131,6 +141,7 @@ def test_recall_formatting_is_deterministic() -> None:
         "items:\n"
         "  1. [Decision|active] Decision: Keep rollout phased\n"
         "    id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa capture_event_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\n"
+        "    lifecycle=preserved:True searchable:True promotable:True\n"
         "    confidence=0.950 relevance=1.000 confirmation=confirmed\n"
         "    freshness=fresh provenance=strong supersession=current\n"
         "    source=(unknown)\n"
@@ -167,6 +178,14 @@ def test_recall_formatting_renders_provenance_source_label_when_present() -> Non
                 "capture_event_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
                 "object_type": "Decision",
                 "status": "active",
+                "lifecycle": {
+                    "is_preserved": True,
+                    "preservation_status": "preserved",
+                    "is_searchable": True,
+                    "searchability_status": "searchable",
+                    "is_promotable": True,
+                    "promotion_status": "promotable",
+                },
                 "title": "Decision: Keep rollout phased",
                 "body": {"decision_text": "Keep rollout phased"},
                 "provenance": {"source_kind": "openclaw_import", "source_label": "OpenClaw"},

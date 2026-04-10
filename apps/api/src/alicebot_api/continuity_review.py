@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
+from alicebot_api.continuity_objects import serialize_continuity_lifecycle_state_from_record
 from alicebot_api.contracts import (
     CONTINUITY_CORRECTION_ACTIONS,
     CONTINUITY_REVIEW_QUEUE_ORDER,
@@ -80,6 +81,7 @@ def _serialize_review_object(record: ContinuityObjectRow) -> ContinuityReviewObj
         "capture_event_id": str(record["capture_event_id"]),
         "object_type": record["object_type"],  # type: ignore[typeddict-item]
         "status": record["status"],
+        "lifecycle": serialize_continuity_lifecycle_state_from_record(record),
         "title": record["title"],
         "body": record["body"],
         "provenance": record["provenance"],
@@ -115,6 +117,9 @@ def _snapshot(record: ContinuityObjectRow) -> JsonObject:
         "capture_event_id": str(record["capture_event_id"]),
         "object_type": record["object_type"],
         "status": record["status"],
+        "is_preserved": record["is_preserved"],
+        "is_searchable": record["is_searchable"],
+        "is_promotable": record["is_promotable"],
         "title": record["title"],
         "body": record["body"],
         "provenance": record["provenance"],
@@ -371,6 +376,9 @@ def apply_continuity_correction(
             capture_event_id=capture_event["id"],
             object_type=current["object_type"],
             status="active",
+            is_preserved=current["is_preserved"],
+            is_searchable=current["is_searchable"],
+            is_promotable=current["is_promotable"],
             title=replacement_title,
             body=replacement_body,
             provenance=replacement_provenance_payload,
@@ -383,6 +391,9 @@ def apply_continuity_correction(
         updated = store.update_continuity_object_optional(
             continuity_object_id=continuity_object_id,
             status="superseded",
+            is_preserved=current["is_preserved"],
+            is_searchable=current["is_searchable"],
+            is_promotable=current["is_promotable"],
             title=current["title"],
             body=current["body"],
             provenance=current["provenance"],
@@ -432,6 +443,9 @@ def apply_continuity_correction(
     updated = store.update_continuity_object_optional(
         continuity_object_id=continuity_object_id,
         status=next_status,
+        is_preserved=current["is_preserved"],
+        is_searchable=current["is_searchable"],
+        is_promotable=current["is_promotable"],
         title=next_title,
         body=next_body,
         provenance=next_provenance,

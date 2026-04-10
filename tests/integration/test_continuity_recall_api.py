@@ -85,6 +85,33 @@ def set_continuity_timestamps(
             )
 
 
+def set_continuity_lifecycle_flags(
+    admin_database_url: str,
+    *,
+    continuity_object_id: UUID,
+    is_searchable: bool | None = None,
+    is_promotable: bool | None = None,
+) -> None:
+    assignments: list[str] = []
+    values: list[object] = []
+    if is_searchable is not None:
+        assignments.append("is_searchable = %s")
+        values.append(is_searchable)
+    if is_promotable is not None:
+        assignments.append("is_promotable = %s")
+        values.append(is_promotable)
+    if not assignments:
+        return
+
+    values.append(continuity_object_id)
+    with psycopg.connect(admin_database_url, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE continuity_objects SET {', '.join(assignments)} WHERE id = %s",
+                tuple(values),
+            )
+
+
 def test_continuity_recall_api_returns_provenance_backed_scoped_results(
     migrated_database_urls,
     monkeypatch,
@@ -354,3 +381,142 @@ def test_continuity_recall_api_prefers_confirmed_fresh_active_truth_over_superse
     assert payload["items"][0]["ordering"]["freshness_posture"] == "fresh"
     assert payload["items"][0]["ordering"]["supersession_posture"] == "current"
     assert payload["items"][-1]["ordering"]["supersession_posture"] == "superseded"
+
+
+def test_continuity_recall_api_excludes_preserved_but_non_searchable_objects(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="nonsearchable@example.com")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        hidden_capture = store.create_continuity_capture_event(
+            raw_content="Note: internal scratchpad",
+            explicit_signal="note",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_note",
+        )
+        hidden_object = store.create_continuity_object(
+            capture_event_id=hidden_capture["id"],
+            object_type="Note",
+            status="active",
+            title="Note: internal scratchpad",
+            body={"body": "internal scratchpad"},
+            provenance={},
+            confidence=1.0,
+        )
+        visible_capture = store.create_continuity_capture_event(
+            raw_content="Decision: public outcome",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        visible_object = store.create_continuity_object(
+            capture_event_id=visible_capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: public outcome",
+            body={"decision_text": "public outcome"},
+            provenance={},
+            confidence=1.0,
+        )
+
+    set_continuity_lifecycle_flags(
+        migrated_database_urls["admin"],
+        continuity_object_id=hidden_object["id"],
+        is_searchable=False,
+    )
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=hidden_object["id"],
+        created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+    )
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=visible_object["id"],
+        created_at=datetime(2026, 3, 29, 10, 5, tzinfo=UTC),
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status, payload = invoke_request(
+        "GET",
+        "/v0/continuity/recall",
+        query_params={
+            "user_id": str(user_id),
+            "limit": "20",
+        },
+    )
+
+    assert status == 200
+    assert [item["title"] for item in payload["items"]] == ["Decision: public outcome"]
+
+
+def test_continuity_lifecycle_debug_endpoints_expose_flags(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="lifecycle-debug@example.com")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        capture = store.create_continuity_capture_event(
+            raw_content="Remember: searchable but not promotable",
+            explicit_signal="remember_this",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_remember_this",
+        )
+        continuity_object = store.create_continuity_object(
+            capture_event_id=capture["id"],
+            object_type="MemoryFact",
+            status="active",
+            title="Memory Fact: searchable but not promotable",
+            body={"fact_text": "searchable but not promotable"},
+            provenance={},
+            confidence=0.9,
+        )
+
+    set_continuity_lifecycle_flags(
+        migrated_database_urls["admin"],
+        continuity_object_id=continuity_object["id"],
+        is_promotable=False,
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    list_status, list_payload = invoke_request(
+        "GET",
+        "/v0/admin/debug/continuity/lifecycle",
+        query_params={"user_id": str(user_id), "limit": "20"},
+    )
+    detail_status, detail_payload = invoke_request(
+        "GET",
+        f"/v0/admin/debug/continuity/lifecycle/{continuity_object['id']}",
+        query_params={"user_id": str(user_id)},
+    )
+
+    assert list_status == 200
+    assert list_payload["summary"]["counts"]["preserved_count"] == 1
+    assert list_payload["summary"]["counts"]["searchable_count"] == 1
+    assert list_payload["summary"]["counts"]["promotable_count"] == 0
+    assert list_payload["items"][0]["lifecycle"] == {
+        "is_preserved": True,
+        "preservation_status": "preserved",
+        "is_searchable": True,
+        "searchability_status": "searchable",
+        "is_promotable": False,
+        "promotion_status": "not_promotable",
+    }
+
+    assert detail_status == 200
+    assert detail_payload["continuity_object"]["id"] == str(continuity_object["id"])
+    assert detail_payload["continuity_object"]["lifecycle"]["is_promotable"] is False

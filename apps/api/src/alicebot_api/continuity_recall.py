@@ -6,6 +6,10 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID
 
+from alicebot_api.continuity_objects import (
+    default_continuity_searchable,
+    serialize_continuity_lifecycle_state_from_record,
+)
 from alicebot_api.contracts import (
     CONTINUITY_RECALL_LIST_ORDER,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
@@ -473,6 +477,7 @@ def _serialize_recall_result(item: RankedRecallCandidate) -> ContinuityRecallRes
         "capture_event_id": str(row["capture_event_id"]),
         "object_type": row["object_type"],  # type: ignore[typeddict-item]
         "status": row["status"],
+        "lifecycle": serialize_continuity_lifecycle_state_from_record(row),
         "title": row["title"],
         "body": row["body"],
         "provenance": row["provenance"],
@@ -547,6 +552,8 @@ def _ordered_recall_candidates(
 
     for row in store.list_continuity_recall_candidates():
         if row["status"] == "deleted":
+            continue
+        if not bool(row.get("is_searchable", default_continuity_searchable(row["object_type"]))):
             continue
 
         if not _matches_time_window(
