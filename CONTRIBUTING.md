@@ -37,6 +37,7 @@ For Phase 9 public-surface changes, also run:
 - Keep PR scope narrow and sprint-aligned.
 - Update docs when behavior or command paths change.
 - Include exact commands executed and pass/fail evidence.
+- Complete the protected-path `Upgrade Overview` when the PR touches paths listed in `PROTECTED_PATHS.md`.
 - Do not introduce claims that outrun shipped functionality.
 
 ## Architecture and Rules
@@ -45,4 +46,5 @@ Read before making non-trivial changes:
 
 - `ARCHITECTURE.md`
 - `RULES.md`
+- `PROTECTED_PATHS.md`
 - active sprint packet (internal/local-only; not published in this repo)
