@@ -220,6 +220,10 @@ def test_continuity_recall_api_returns_provenance_backed_scoped_results(
         "total_count": 1,
         "order": ["relevance_desc", "created_at_desc", "id_desc"],
     }
+    explanation = payload["items"][0]["explanation"]
+    assert explanation["trust"]["provenance_posture"] == "strong"
+    assert explanation["evidence_segments"][0]["source_kind"] == "continuity_capture_event"
+    assert explanation["timestamps"]["created_at"] == "2026-03-29T10:00:00+00:00"
     assert payload["items"][0]["title"] == "Decision: Keep rollout phased"
     assert payload["items"][0]["confirmation_status"] == "confirmed"
     assert payload["items"][0]["admission_posture"] == "DERIVED"

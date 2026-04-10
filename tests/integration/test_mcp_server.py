@@ -221,6 +221,9 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         assert recall_before["isError"] is False
         before_payload = recall_before["structuredContent"]
         assert before_payload["items"][0]["id"] == str(legacy_decision["id"])
+        assert before_payload["items"][0]["explanation"]["evidence_segments"][0]["source_kind"] == (
+            "continuity_capture_event"
+        )
 
         resume_before = _call_tool(
             client,
@@ -279,6 +282,11 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         after_payload = recall_after["structuredContent"]
         assert after_payload["items"][0]["id"] == replacement_id
         assert any(item["id"] == str(legacy_decision["id"]) for item in after_payload["items"])
+        replacement_item = next(item for item in after_payload["items"] if item["id"] == replacement_id)
+        legacy_item = next(item for item in after_payload["items"] if item["id"] == str(legacy_decision["id"]))
+        assert any(note["kind"] == "supersedes" for note in replacement_item["explanation"]["supersession_notes"])
+        assert any(note["kind"] == "superseded_by" for note in legacy_item["explanation"]["supersession_notes"])
+        assert any(note["action"] == "supersede" for note in legacy_item["explanation"]["supersession_notes"])
 
         resume_after = _call_tool(
             client,
