@@ -15,12 +15,16 @@ def test_mcp_tool_surface_is_adr_aligned_and_deterministic() -> None:
     assert names == [
         "alice_capture",
         "alice_recall",
+        "alice_state_at",
         "alice_resume",
         "alice_open_loops",
         "alice_recent_decisions",
         "alice_recent_changes",
+        "alice_timeline",
         "alice_memory_review",
         "alice_memory_correct",
+        "alice_explain",
+        "alice_artifact_inspect",
         "alice_context_pack",
     ]
 
