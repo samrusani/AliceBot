@@ -44,20 +44,31 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
+    DEFAULT_TEMPORAL_TIMELINE_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     MAX_CONTINUITY_REVIEW_LIMIT,
+    MAX_TEMPORAL_TIMELINE_LIMIT,
     ContinuityCaptureCreateInput,
     ContinuityCorrectionInput,
     ContinuityOpenLoopDashboardQueryInput,
     ContinuityRecallQueryInput,
     ContinuityResumptionBriefRequestInput,
     ContinuityReviewQueueQueryInput,
+    TemporalExplainQueryInput,
+    TemporalStateAtQueryInput,
+    TemporalTimelineQueryInput,
 )
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore, JsonObject
+from alicebot_api.temporal_state import (
+    TemporalStateValidationError,
+    get_temporal_explain,
+    get_temporal_state_at,
+    get_temporal_timeline,
+)
 
 
 _REVIEW_STATUS_CHOICES = ("correction_ready", "active", "stale", "superseded", "deleted", "all")
@@ -279,6 +290,18 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
         )
 
 
+def _handle_alice_state_at(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _store_context(context) as store:
+        return get_temporal_state_at(
+            store,
+            user_id=context.user_id,
+            request=TemporalStateAtQueryInput(
+                entity_id=_parse_required_uuid(arguments, "entity_id"),
+                at=_parse_optional_datetime(arguments, "at"),
+            ),
+        )
+
+
 def _handle_alice_resume(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     max_recent_changes = _parse_int(
         arguments,
@@ -423,6 +446,27 @@ def _handle_alice_recent_changes(context: MCPRuntimeContext, arguments: Mapping[
     }
 
 
+def _handle_alice_timeline(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    limit = _parse_int(
+        arguments,
+        key="limit",
+        default=DEFAULT_TEMPORAL_TIMELINE_LIMIT,
+        minimum=1,
+        maximum=MAX_TEMPORAL_TIMELINE_LIMIT,
+    )
+    with _store_context(context) as store:
+        return get_temporal_timeline(
+            store,
+            user_id=context.user_id,
+            request=TemporalTimelineQueryInput(
+                entity_id=_parse_required_uuid(arguments, "entity_id"),
+                since=_parse_optional_datetime(arguments, "since"),
+                until=_parse_optional_datetime(arguments, "until"),
+                limit=limit,
+            ),
+        )
+
+
 def _handle_alice_memory_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     continuity_object_id = _parse_optional_uuid(arguments, "continuity_object_id")
     if continuity_object_id is not None:
@@ -492,11 +536,27 @@ def _handle_alice_memory_correct(context: MCPRuntimeContext, arguments: Mapping[
 
 
 def _handle_alice_explain(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    continuity_object_id = _parse_optional_uuid(arguments, "continuity_object_id")
+    entity_id = _parse_optional_uuid(arguments, "entity_id")
+    if continuity_object_id is not None and entity_id is not None:
+        raise MCPToolError("alice_explain accepts either continuity_object_id or entity_id, not both")
+    if entity_id is not None:
+        with _store_context(context) as store:
+            return get_temporal_explain(
+                store,
+                user_id=context.user_id,
+                request=TemporalExplainQueryInput(
+                    entity_id=entity_id,
+                    at=_parse_optional_datetime(arguments, "at"),
+                ),
+            )
+    if continuity_object_id is None:
+        raise MCPToolError("alice_explain requires continuity_object_id or entity_id")
     with _store_context(context) as store:
         return build_continuity_explain(
             store,
             user_id=context.user_id,
-            continuity_object_id=_parse_required_uuid(arguments, "continuity_object_id"),
+            continuity_object_id=continuity_object_id,
         )
 
 
@@ -609,6 +669,19 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_state_at",
+        "description": "Show entity facts and edges that were effective at a specific point in time.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["entity_id"],
+            "properties": {
+                "entity_id": {"type": "string", "format": "uuid"},
+                "at": {"type": "string", "format": "date-time"},
+            },
+        },
+    },
+    {
         "name": "alice_resume",
         "description": "Compile continuity resumption brief for decisions, open loops, and next action.",
         "inputSchema": {
@@ -695,6 +768,21 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_timeline",
+        "description": "List chronological temporal history for one entity.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["entity_id"],
+            "properties": {
+                "entity_id": {"type": "string", "format": "uuid"},
+                "since": {"type": "string", "format": "date-time"},
+                "until": {"type": "string", "format": "date-time"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_TEMPORAL_TIMELINE_LIMIT},
+            },
+        },
+    },
+    {
         "name": "alice_memory_review",
         "description": "List correction review queue or fetch review detail for one continuity object.",
         "inputSchema": {
@@ -731,13 +819,14 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
     },
     {
         "name": "alice_explain",
-        "description": "Show the raw evidence chain backing one continuity object.",
+        "description": "Show continuity evidence for one continuity object or temporal explain output for one entity.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["continuity_object_id"],
             "properties": {
                 "continuity_object_id": {"type": "string", "format": "uuid"},
+                "entity_id": {"type": "string", "format": "uuid"},
+                "at": {"type": "string", "format": "date-time"},
             },
         },
     },
@@ -790,10 +879,12 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
 _TOOL_HANDLERS = {
     "alice_capture": _handle_alice_capture,
     "alice_recall": _handle_alice_recall,
+    "alice_state_at": _handle_alice_state_at,
     "alice_resume": _handle_alice_resume,
     "alice_open_loops": _handle_alice_open_loops,
     "alice_recent_decisions": _handle_alice_recent_decisions,
     "alice_recent_changes": _handle_alice_recent_changes,
+    "alice_timeline": _handle_alice_timeline,
     "alice_memory_review": _handle_alice_memory_review,
     "alice_memory_correct": _handle_alice_memory_correct,
     "alice_explain": _handle_alice_explain,
@@ -827,6 +918,7 @@ def call_mcp_tool(
         ContinuityReviewValidationError,
         ContinuityReviewNotFoundError,
         ContinuityEvidenceNotFoundError,
+        TemporalStateValidationError,
     ) as exc:
         raise MCPToolError(str(exc)) from exc
     except (TypeError, ValueError) as exc:
