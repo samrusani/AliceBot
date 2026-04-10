@@ -30,17 +30,27 @@ def make_candidate_row(
     last_confirmed_at: datetime | None = None,
     supersedes_object_id: UUID | None = None,
     superseded_by_object_id: UUID | None = None,
+    is_searchable: bool = True,
+    is_promotable: bool | None = None,
 ) -> dict[str, object]:
     object_id = uuid4()
     capture_event_id = uuid4()
     created_at = capture_created_at
     updated_at = capture_created_at
+    resolved_is_promotable = (
+        object_type in {"Decision", "Commitment", "WaitingFor", "Blocker", "NextAction"}
+        if is_promotable is None
+        else is_promotable
+    )
     return {
         "id": object_id,
         "user_id": UUID("11111111-1111-4111-8111-111111111111"),
         "capture_event_id": capture_event_id,
         "object_type": object_type,
         "status": status,
+        "is_preserved": True,
+        "is_searchable": is_searchable,
+        "is_promotable": resolved_is_promotable,
         "title": title,
         "body": body or {},
         "provenance": provenance or {},
@@ -135,6 +145,7 @@ def test_recall_returns_deterministic_order_and_provenance_fields() -> None:
     assert payload["items"][0]["ordering"]["supersession_posture"] == "current"
     assert payload["items"][0]["ordering"]["supersession_rank"] == 3
     assert payload["items"][0]["ordering"]["lifecycle_rank"] == 4
+    assert payload["items"][0]["lifecycle"]["is_promotable"] is True
 
 
 def test_recall_filters_project_person_query_and_time_window() -> None:
@@ -220,6 +231,16 @@ def test_recall_excludes_deleted_and_ranks_lifecycle_posture_deterministically()
             status="deleted",
             body={"decision_text": "deleted item"},
         ),
+        make_candidate_row(
+            title="Note: preserved but hidden",
+            object_type="Note",
+            capture_created_at=datetime(2026, 3, 29, 10, 4, tzinfo=UTC),
+            confidence=1.0,
+            status="active",
+            body={"body": "preserved but hidden"},
+            is_searchable=False,
+            is_promotable=False,
+        ),
     ]
 
     store = ContinuityRecallStoreStub(rows)  # type: ignore[arg-type]
@@ -235,6 +256,7 @@ def test_recall_excludes_deleted_and_ranks_lifecycle_posture_deterministically()
         "Decision: superseded item",
     ]
     assert all(item["status"] != "deleted" for item in payload["items"])
+    assert all(item["object_type"] != "Note" for item in payload["items"])
 
     with pytest.raises(ContinuityRecallValidationError, match="until must be greater than or equal to since"):
         query_continuity_recall(

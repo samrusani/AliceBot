@@ -6,6 +6,8 @@ from typing import Mapping, Sequence
 from alicebot_api.contracts import (
     ContinuityCaptureCreateResponse,
     ContinuityCorrectionApplyResponse,
+    ContinuityLifecycleDetailResponse,
+    ContinuityLifecycleListResponse,
     ContinuityOpenLoopDashboardResponse,
     ContinuityRecallResultRecord,
     ContinuityRecallResponse,
@@ -79,6 +81,11 @@ def _render_recall_item(
         f"{prefix}{marker} [{item['object_type']}|{item['status']}] {item['title']}",
         f"{prefix}  id={item['id']} capture_event_id={item['capture_event_id']}",
         (
+            f"{prefix}  lifecycle=preserved:{item['lifecycle']['is_preserved']} "
+            f"searchable:{item['lifecycle']['is_searchable']} "
+            f"promotable:{item['lifecycle']['is_promotable']}"
+        ),
+        (
             f"{prefix}  confidence={_format_float(item['confidence'])} "
             f"relevance={_format_float(item['relevance'])} "
             f"confirmation={item['confirmation_status']}"
@@ -137,6 +144,12 @@ def format_capture_output(payload: ContinuityCaptureCreateResponse) -> str:
                 f"derived_object_id: {derived['id']}",
                 f"derived_object_type: {derived['object_type']}",
                 f"derived_object_status: {derived['status']}",
+                (
+                    "derived_lifecycle: "
+                    f"preserved={derived['lifecycle']['is_preserved']} "
+                    f"searchable={derived['lifecycle']['is_searchable']} "
+                    f"promotable={derived['lifecycle']['is_promotable']}"
+                ),
                 f"derived_confidence: {_format_float(derived['confidence'])}",
                 f"derived_title: {derived['title']}",
             ]
@@ -268,6 +281,12 @@ def format_review_queue_output(payload: ContinuityReviewQueueResponse) -> str:
             [
                 f"{index}. [{item['object_type']}|{item['status']}] {item['title']}",
                 f"   id={item['id']} capture_event_id={item['capture_event_id']}",
+                (
+                    "   lifecycle="
+                    f"preserved:{item['lifecycle']['is_preserved']} "
+                    f"searchable:{item['lifecycle']['is_searchable']} "
+                    f"promotable:{item['lifecycle']['is_promotable']}"
+                ),
                 f"   confidence={_format_float(item['confidence'])} last_confirmed_at={item['last_confirmed_at']}",
                 f"   provenance={_format_json(item['provenance'])}",
             ]
@@ -286,6 +305,12 @@ def format_review_detail_output(payload: ContinuityReviewDetailResponse) -> str:
         f"continuity_object_id: {continuity_object['id']}",
         f"type: {continuity_object['object_type']}",
         f"status: {continuity_object['status']}",
+        (
+            "lifecycle: "
+            f"preserved={continuity_object['lifecycle']['is_preserved']} "
+            f"searchable={continuity_object['lifecycle']['is_searchable']} "
+            f"promotable={continuity_object['lifecycle']['is_promotable']}"
+        ),
         f"title: {continuity_object['title']}",
         f"confidence: {_format_float(continuity_object['confidence'])}",
         f"last_confirmed_at: {continuity_object['last_confirmed_at']}",
@@ -317,6 +342,12 @@ def format_review_apply_output(payload: ContinuityCorrectionApplyResponse) -> st
         "review apply result",
         f"continuity_object_id: {continuity_object['id']}",
         f"continuity_object_status: {continuity_object['status']}",
+        (
+            "continuity_object_lifecycle: "
+            f"preserved={continuity_object['lifecycle']['is_preserved']} "
+            f"searchable={continuity_object['lifecycle']['is_searchable']} "
+            f"promotable={continuity_object['lifecycle']['is_promotable']}"
+        ),
         f"continuity_object_title: {continuity_object['title']}",
         f"correction_event_id: {correction_event['id']}",
         f"correction_action: {correction_event['action']}",
@@ -353,6 +384,13 @@ def format_status_output(status: Mapping[str, object]) -> str:
             f"deleted={status['continuity_objects_deleted']}"
         ),
         (
+            "continuity_object_lifecycle: "
+            f"searchable={status['continuity_objects_searchable']} "
+            f"non_searchable={status['continuity_objects_non_searchable']} "
+            f"promotable={status['continuity_objects_promotable']} "
+            f"non_promotable={status['continuity_objects_non_promotable']}"
+        ),
+        (
             "review_queue: "
             f"correction_ready={status['review_correction_ready']} "
             f"active={status['review_active']} "
@@ -376,3 +414,62 @@ def format_status_output(status: Mapping[str, object]) -> str:
         ),
     ]
     return "\n".join(lines)
+
+
+def format_lifecycle_list_output(payload: ContinuityLifecycleListResponse) -> str:
+    summary = payload["summary"]
+    lines = [
+        "continuity lifecycle",
+        (
+            f"returned: {summary['returned_count']}/{summary['total_count']} "
+            f"(limit={summary['limit']})"
+        ),
+        (
+            "counts: "
+            f"preserved={summary['counts']['preserved_count']} "
+            f"searchable={summary['counts']['searchable_count']} "
+            f"promotable={summary['counts']['promotable_count']} "
+            f"non_searchable={summary['counts']['not_searchable_count']} "
+            f"non_promotable={summary['counts']['not_promotable_count']}"
+        ),
+        f"order: {', '.join(summary['order'])}",
+    ]
+    if len(payload["items"]) == 0:
+        lines.append("empty: no continuity lifecycle records.")
+        return "\n".join(lines)
+
+    for index, item in enumerate(payload["items"], start=1):
+        lines.extend(
+            [
+                f"{index}. [{item['object_type']}|{item['status']}] {item['title']}",
+                f"   id={item['id']} capture_event_id={item['capture_event_id']}",
+                (
+                    "   lifecycle="
+                    f"preserved:{item['lifecycle']['is_preserved']} "
+                    f"searchable:{item['lifecycle']['is_searchable']} "
+                    f"promotable:{item['lifecycle']['is_promotable']}"
+                ),
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_lifecycle_detail_output(payload: ContinuityLifecycleDetailResponse) -> str:
+    item = payload["continuity_object"]
+    return "\n".join(
+        [
+            "continuity lifecycle detail",
+            f"continuity_object_id: {item['id']}",
+            f"type: {item['object_type']}",
+            f"status: {item['status']}",
+            (
+                "lifecycle: "
+                f"preserved={item['lifecycle']['is_preserved']} "
+                f"searchable={item['lifecycle']['is_searchable']} "
+                f"promotable={item['lifecycle']['is_promotable']}"
+            ),
+            f"title: {item['title']}",
+            f"body: {_format_json(item['body'])}",
+            f"provenance: {_format_json(item['provenance'])}",
+        ]
+    )

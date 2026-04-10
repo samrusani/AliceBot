@@ -40,6 +40,9 @@ class ContinuityReviewStoreStub:
             "capture_event_id": capture_event_id,
             "object_type": object_type,
             "status": status,
+            "is_preserved": True,
+            "is_searchable": True,
+            "is_promotable": True,
             "title": title,
             "body": {"text": title},
             "provenance": {"capture_event_id": str(capture_event_id)},
@@ -107,6 +110,9 @@ class ContinuityReviewStoreStub:
         *,
         continuity_object_id: UUID,
         status: str,
+        is_preserved: bool,
+        is_searchable: bool,
+        is_promotable: bool,
         title: str,
         body,
         provenance,
@@ -122,6 +128,9 @@ class ContinuityReviewStoreStub:
         row.update(
             {
                 "status": status,
+                "is_preserved": is_preserved,
+                "is_searchable": is_searchable,
+                "is_promotable": is_promotable,
                 "title": title,
                 "body": body,
                 "provenance": provenance,
@@ -163,6 +172,9 @@ class ContinuityReviewStoreStub:
         body,
         provenance,
         confidence: float,
+        is_preserved: bool = True,
+        is_searchable: bool = True,
+        is_promotable: bool = True,
         last_confirmed_at: datetime | None = None,
         supersedes_object_id: UUID | None = None,
         superseded_by_object_id: UUID | None = None,
@@ -175,6 +187,9 @@ class ContinuityReviewStoreStub:
             "capture_event_id": capture_event_id,
             "object_type": object_type,
             "status": status,
+            "is_preserved": is_preserved,
+            "is_searchable": is_searchable,
+            "is_promotable": is_promotable,
             "title": title,
             "body": body,
             "provenance": provenance,
@@ -225,6 +240,7 @@ def test_confirm_records_event_before_lifecycle_mutation() -> None:
 
     assert store.call_log[:2] == ["create_event", "update_object"]
     assert payload["continuity_object"]["status"] == "active"
+    assert payload["continuity_object"]["lifecycle"]["is_promotable"] is True
     assert payload["continuity_object"]["last_confirmed_at"] is not None
     assert payload["correction_event"]["action"] == "confirm"
     assert payload["replacement_object"] is None
