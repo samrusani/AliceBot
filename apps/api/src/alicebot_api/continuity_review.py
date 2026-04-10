@@ -387,6 +387,14 @@ def apply_continuity_correction(
             supersedes_object_id=current["id"],
             superseded_by_object_id=None,
         )
+        for evidence_link in store.list_continuity_object_evidence(current["id"]):
+            store.create_continuity_object_evidence_link(
+                continuity_object_id=replacement_object["id"],
+                artifact_id=evidence_link["artifact_id"],
+                artifact_copy_id=evidence_link["artifact_copy_id"],
+                artifact_segment_id=evidence_link["artifact_segment_id"],
+                relationship=evidence_link["relationship"],
+            )
 
         updated = store.update_continuity_object_optional(
             continuity_object_id=continuity_object_id,

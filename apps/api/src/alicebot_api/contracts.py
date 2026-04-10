@@ -2563,6 +2563,64 @@ class ContinuityReviewDetailResponse(TypedDict):
     review: ContinuityReviewDetail
 
 
+class ContinuityEvidenceArtifactRecord(TypedDict):
+    id: str
+    source_kind: str
+    import_source_path: str
+    relative_path: str
+    display_name: str
+    media_type: str
+    created_at: str
+
+
+class ContinuityEvidenceArtifactCopyRecord(TypedDict):
+    id: str
+    checksum_sha256: str
+    content_length_bytes: int
+    content_encoding: str
+    content_text: str
+    created_at: str
+
+
+class ContinuityEvidenceArtifactSegmentRecord(TypedDict):
+    id: str
+    source_item_id: str
+    sequence_no: int
+    segment_kind: str
+    locator: JsonObject
+    raw_content: str
+    checksum_sha256: str
+    created_at: str
+
+
+class ContinuityEvidenceLinkRecord(TypedDict):
+    id: str
+    relationship: str
+    created_at: str
+    artifact: ContinuityEvidenceArtifactRecord
+    artifact_copy: ContinuityEvidenceArtifactCopyRecord
+    artifact_segment: ContinuityEvidenceArtifactSegmentRecord | None
+
+
+class ContinuityExplainRecord(TypedDict):
+    continuity_object: ContinuityReviewObjectRecord
+    evidence_chain: list[ContinuityEvidenceLinkRecord]
+
+
+class ContinuityExplainResponse(TypedDict):
+    explain: ContinuityExplainRecord
+
+
+class ContinuityArtifactDetailRecord(TypedDict):
+    artifact: ContinuityEvidenceArtifactRecord
+    copies: list[ContinuityEvidenceArtifactCopyRecord]
+    segments: list[ContinuityEvidenceArtifactSegmentRecord]
+
+
+class ContinuityArtifactDetailResponse(TypedDict):
+    artifact_detail: ContinuityArtifactDetailRecord
+
+
 class ContinuityRecallScopeFilters(TypedDict):
     thread_id: NotRequired[str]
     task_id: NotRequired[str]
