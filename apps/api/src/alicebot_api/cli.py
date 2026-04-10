@@ -28,6 +28,10 @@ from alicebot_api.cli_formatting import (
     format_temporal_explain_output,
     format_temporal_state_output,
     format_temporal_timeline_output,
+    format_trusted_fact_pattern_explain_output,
+    format_trusted_fact_pattern_list_output,
+    format_trusted_fact_playbook_explain_output,
+    format_trusted_fact_playbook_list_output,
 )
 from alicebot_api.config import Settings, get_settings
 from alicebot_api.continuity_capture import (
@@ -78,6 +82,7 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
     DEFAULT_TEMPORAL_TIMELINE_LIMIT,
+    DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_LIFECYCLE_LIMIT,
@@ -85,6 +90,7 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     MAX_CONTINUITY_REVIEW_LIMIT,
     MAX_TEMPORAL_TIMELINE_LIMIT,
+    MAX_TRUSTED_FACT_PROMOTION_LIMIT,
     ContinuityCaptureCreateInput,
     ContinuityCorrectionInput,
     ContinuityLifecycleQueryInput,
@@ -95,6 +101,8 @@ from alicebot_api.contracts import (
     TemporalExplainQueryInput,
     TemporalStateAtQueryInput,
     TemporalTimelineQueryInput,
+    TrustedFactPatternListQueryInput,
+    TrustedFactPlaybookListQueryInput,
 )
 from alicebot_api.db import ping_database, user_connection
 from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
@@ -104,6 +112,13 @@ from alicebot_api.temporal_state import (
     get_temporal_explain,
     get_temporal_state_at,
     get_temporal_timeline,
+)
+from alicebot_api.trusted_fact_promotions import (
+    TrustedFactPromotionNotFoundError,
+    get_trusted_fact_pattern,
+    get_trusted_fact_playbook,
+    list_trusted_fact_patterns,
+    list_trusted_fact_playbooks,
 )
 
 DEFAULT_CLI_USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -389,6 +404,46 @@ def _run_evidence_artifact(ctx: CLIContext, args: argparse.Namespace) -> str:
             artifact_id=args.artifact_id,
         )
     return format_artifact_detail_output(payload)
+
+
+def _run_pattern_list(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = list_trusted_fact_patterns(
+            store,
+            user_id=ctx.user_id,
+            request=TrustedFactPatternListQueryInput(limit=args.limit),
+        )
+    return format_trusted_fact_pattern_list_output(payload)
+
+
+def _run_pattern_explain(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = get_trusted_fact_pattern(
+            store,
+            user_id=ctx.user_id,
+            pattern_id=args.pattern_id,
+        )
+    return format_trusted_fact_pattern_explain_output(payload)
+
+
+def _run_playbook_list(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = list_trusted_fact_playbooks(
+            store,
+            user_id=ctx.user_id,
+            request=TrustedFactPlaybookListQueryInput(limit=args.limit),
+        )
+    return format_trusted_fact_playbook_list_output(payload)
+
+
+def _run_playbook_explain(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = get_trusted_fact_playbook(
+            store,
+            user_id=ctx.user_id,
+            playbook_id=args.playbook_id,
+        )
+    return format_trusted_fact_playbook_explain_output(payload)
 
 
 def _run_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
@@ -735,6 +790,34 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_artifact_parser.add_argument("artifact_id", type=_parse_uuid, help="Continuity artifact UUID.")
     evidence_artifact_parser.set_defaults(handler=_run_evidence_artifact)
 
+    patterns_parser = subparsers.add_parser("patterns", help="List and explain trusted fact patterns.")
+    patterns_subparsers = patterns_parser.add_subparsers(dest="patterns_command", required=True)
+    patterns_list_parser = patterns_subparsers.add_parser("list", help="List trusted fact patterns.")
+    patterns_list_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT,
+        help=f"Max pattern results (1-{MAX_TRUSTED_FACT_PROMOTION_LIMIT}).",
+    )
+    patterns_list_parser.set_defaults(handler=_run_pattern_list)
+    patterns_explain_parser = patterns_subparsers.add_parser("explain", help="Explain one trusted fact pattern.")
+    patterns_explain_parser.add_argument("pattern_id", type=_parse_uuid, help="Pattern UUID.")
+    patterns_explain_parser.set_defaults(handler=_run_pattern_explain)
+
+    playbooks_parser = subparsers.add_parser("playbooks", help="List and explain trusted fact playbooks.")
+    playbooks_subparsers = playbooks_parser.add_subparsers(dest="playbooks_command", required=True)
+    playbooks_list_parser = playbooks_subparsers.add_parser("list", help="List trusted fact playbooks.")
+    playbooks_list_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT,
+        help=f"Max playbook results (1-{MAX_TRUSTED_FACT_PROMOTION_LIMIT}).",
+    )
+    playbooks_list_parser.set_defaults(handler=_run_playbook_list)
+    playbooks_explain_parser = playbooks_subparsers.add_parser("explain", help="Explain one trusted fact playbook.")
+    playbooks_explain_parser.add_argument("playbook_id", type=_parse_uuid, help="Playbook UUID.")
+    playbooks_explain_parser.set_defaults(handler=_run_playbook_explain)
+
     status_parser = subparsers.add_parser("status", help="Show local continuity runtime status.")
     status_parser.set_defaults(handler=_run_status)
 
@@ -795,6 +878,20 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             minimum=1,
             maximum=MAX_CONTINUITY_REVIEW_LIMIT,
         )
+    elif args.command == "patterns" and args.patterns_command == "list":
+        _validate_limit(
+            args.limit,
+            option_name="--limit",
+            minimum=1,
+            maximum=MAX_TRUSTED_FACT_PROMOTION_LIMIT,
+        )
+    elif args.command == "playbooks" and args.playbooks_command == "list":
+        _validate_limit(
+            args.limit,
+            option_name="--limit",
+            minimum=1,
+            maximum=MAX_TRUSTED_FACT_PROMOTION_LIMIT,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -819,6 +916,7 @@ def main(argv: list[str] | None = None) -> int:
         ContinuityReviewNotFoundError,
         ContinuityEvidenceNotFoundError,
         TemporalStateValidationError,
+        TrustedFactPromotionNotFoundError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

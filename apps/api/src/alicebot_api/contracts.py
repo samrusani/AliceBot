@@ -466,6 +466,8 @@ DEFAULT_MEMORY_TRUST_CLASS: MemoryTrustClass = "deterministic"
 DEFAULT_MEMORY_PROMOTION_ELIGIBILITY: MemoryPromotionEligibility = "promotable"
 DEFAULT_CONTINUITY_LIFECYCLE_LIMIT = 50
 MAX_CONTINUITY_LIFECYCLE_LIMIT = 200
+DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT = 50
+MAX_TRUSTED_FACT_PROMOTION_LIMIT = 200
 ENTITY_TYPES = [
     "person",
     "merchant",
@@ -476,6 +478,8 @@ ENTITY_TYPES = [
 ENTITY_LIST_ORDER = ["created_at_asc", "id_asc"]
 ENTITY_EDGE_LIST_ORDER = ["created_at_asc", "id_asc"]
 TEMPORAL_TIMELINE_ORDER = ["occurred_at_asc", "event_type_asc", "id_asc"]
+TRUSTED_FACT_PATTERN_ORDER = ["memory_type_asc", "namespace_key_asc", "title_asc", "id_asc"]
+TRUSTED_FACT_PLAYBOOK_ORDER = ["memory_type_asc", "pattern_key_asc", "title_asc", "id_asc"]
 EMBEDDING_CONFIG_LIST_ORDER = ["created_at_asc", "id_asc"]
 MEMORY_EMBEDDING_LIST_ORDER = ["created_at_asc", "id_asc"]
 SEMANTIC_MEMORY_RETRIEVAL_ORDER = ["score_desc", "created_at_asc", "id_asc"]
@@ -2064,6 +2068,26 @@ class TemporalExplainQueryInput:
         return {
             "entity_id": str(self.entity_id),
             "at": isoformat_or_none(self.at),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedFactPatternListQueryInput:
+    limit: int = DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "limit": self.limit,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedFactPlaybookListQueryInput:
+    limit: int = DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "limit": self.limit,
         }
 
 
@@ -3974,6 +3998,93 @@ class TemporalExplainRecord(TypedDict):
 
 class TemporalExplainResponse(TypedDict):
     explain: TemporalExplainRecord
+
+
+class TrustedFactEvidenceLinkRecord(TypedDict):
+    fact_id: str
+    memory_key: str
+    memory_type: str
+    value: JsonValue
+    trust: TemporalTrustRecord
+    promotion_eligibility: MemoryPromotionEligibility
+    evidence_count: int | None
+    independent_source_count: int | None
+    extracted_by_model: str | None
+    source_event_ids: list[str]
+    revision_sequence_no: int | None
+    revision_action: str | None
+    revision_created_at: str | None
+
+
+class TrustedFactPatternRecord(TypedDict):
+    id: str
+    pattern_key: str
+    title: str
+    memory_type: str
+    namespace_key: str
+    fact_count: int
+    source_fact_ids: list[str]
+    evidence_chain: list[TrustedFactEvidenceLinkRecord]
+    explanation: str
+    created_at: str
+    updated_at: str
+
+
+class TrustedFactPatternListSummary(TypedDict):
+    returned_count: int
+    total_count: int
+    limit: int
+    order: list[str]
+
+
+class TrustedFactPatternListResponse(TypedDict):
+    items: list[TrustedFactPatternRecord]
+    summary: TrustedFactPatternListSummary
+
+
+class TrustedFactPatternExplainResponse(TypedDict):
+    pattern: TrustedFactPatternRecord
+
+
+class TrustedFactPlaybookStepRecord(TypedDict):
+    step_no: int
+    fact_id: str
+    memory_key: str
+    action_type: str
+    instruction: str
+    value: JsonValue
+    trust: TemporalTrustRecord
+
+
+class TrustedFactPlaybookRecord(TypedDict):
+    id: str
+    playbook_key: str
+    pattern_id: str
+    pattern_key: str
+    title: str
+    memory_type: str
+    source_fact_ids: list[str]
+    source_pattern_ids: list[str]
+    steps: list[TrustedFactPlaybookStepRecord]
+    explanation: str
+    created_at: str
+    updated_at: str
+
+
+class TrustedFactPlaybookListSummary(TypedDict):
+    returned_count: int
+    total_count: int
+    limit: int
+    order: list[str]
+
+
+class TrustedFactPlaybookListResponse(TypedDict):
+    items: list[TrustedFactPlaybookRecord]
+    summary: TrustedFactPlaybookListSummary
+
+
+class TrustedFactPlaybookExplainResponse(TypedDict):
+    playbook: TrustedFactPlaybookRecord
 
 
 class EmbeddingConfigRecord(TypedDict):
