@@ -55,6 +55,11 @@ Memories carry trust classification and promotion eligibility, so agents can sea
 
 Trust metadata flows through admission, retrieval, explain output, review behavior, and CLI/MCP responses, which makes memory quality visible instead of implicit.
 
+### It is archive-first and evidence-backed
+
+Alice archives imported source material before extraction and links derived continuity objects back to archived artifacts, copies, and source segments.
+That means imported memory is not just provenance-tagged in theory. It remains inspectable through a concrete evidence chain, including explain output and artifact inspection surfaces in the CLI and MCP.
+
 ### It is local-first and agent-agnostic
 
 Alice Core runs locally and exposes the same continuity semantics through the CLI and MCP, so you can use it with your own workflows instead of being locked into a closed assistant product.
@@ -77,6 +82,7 @@ The open-source surface includes:
 - deterministic CLI workflows
 - MCP server
 - trust-aware memory classification and promotion controls
+- archive-first import evidence with inspectable artifact and segment links
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -117,6 +123,13 @@ Capture something new:
 ./.venv/bin/python -m alicebot_api capture "Remember that the Q3 board pack is due on Thursday."
 ```
 
+Inspect the evidence chain behind one continuity object:
+
+```bash
+./.venv/bin/python -m alicebot_api explain <continuity_object_id>
+./.venv/bin/python -m alicebot_api evidence artifact <artifact_id>
+```
+
 See the full local setup walkthrough in [docs/quickstart/local-setup-and-first-result.md](docs/quickstart/local-setup-and-first-result.md).
 
 ## Use Alice with your agents
@@ -154,6 +167,7 @@ Hermes runtime smoke test:
 ### Import and augment existing workflows
 
 Alice includes importer paths for existing memory and conversation data so you can upgrade an existing workflow instead of starting from zero.
+Imported continuity objects are linked back to archived source artifacts and extracted segments so the evidence chain remains inspectable after import.
 
 With the current integration surface, you can:
 
@@ -199,6 +213,7 @@ Alice is built around a shared continuity core with:
 
 - structured memory revisions
 - provenance- and trust-aware recall
+- archive-first evidence chains for imported continuity objects
 - deterministic resumption briefs
 - open-loop objects
 - CLI and MCP surfaces on the same semantics
