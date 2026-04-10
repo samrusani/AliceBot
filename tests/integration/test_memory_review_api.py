@@ -283,6 +283,12 @@ def test_list_memories_endpoint_returns_filtered_memories_with_deterministic_ord
     assert payload["items"][0]["source_event_ids"] == [seeded["coffee_update_event_id"]]
     assert payload["items"][0]["memory_type"] == "preference"
     assert payload["items"][0]["confirmation_status"] == "unconfirmed"
+    assert payload["items"][0]["trust_class"] == "deterministic"
+    assert payload["items"][0]["promotion_eligibility"] == "promotable"
+    assert payload["items"][0]["evidence_count"] is None
+    assert payload["items"][0]["independent_source_count"] is None
+    assert payload["items"][0]["extracted_by_model"] is None
+    assert payload["items"][0]["trust_reason"] is None
     assert payload["items"][0]["confidence"] is None
     assert payload["items"][0]["salience"] is None
     assert payload["items"][0]["valid_from"] is None
@@ -319,6 +325,12 @@ def test_list_memories_endpoint_returns_filtered_memories_with_deterministic_ord
             "confidence": None,
             "salience": None,
             "confirmation_status": "unconfirmed",
+            "trust_class": "deterministic",
+            "promotion_eligibility": "promotable",
+            "evidence_count": None,
+            "independent_source_count": None,
+            "extracted_by_model": None,
+            "trust_reason": None,
             "valid_from": None,
             "valid_to": None,
             "last_confirmed_at": None,
@@ -760,11 +772,18 @@ def test_memory_review_queue_endpoint_returns_only_active_unlabeled_memories_in_
                 "confidence": None,
                 "salience": None,
                 "confirmation_status": "unconfirmed",
+                "trust_class": "deterministic",
+                "promotion_eligibility": "promotable",
+                "evidence_count": None,
+                "independent_source_count": None,
+                "extracted_by_model": None,
+                "trust_reason": None,
                 "valid_from": None,
                 "valid_to": None,
                 "last_confirmed_at": None,
                 "is_high_risk": True,
                 "is_stale_truth": False,
+                "is_promotable": True,
                 "queue_priority_mode": "recent_first",
                 "priority_reason": "recent_first",
                 "created_at": payload["items"][0]["created_at"],
@@ -780,11 +799,18 @@ def test_memory_review_queue_endpoint_returns_only_active_unlabeled_memories_in_
                 "confidence": None,
                 "salience": None,
                 "confirmation_status": "unconfirmed",
+                "trust_class": "deterministic",
+                "promotion_eligibility": "promotable",
+                "evidence_count": None,
+                "independent_source_count": None,
+                "extracted_by_model": None,
+                "trust_reason": None,
                 "valid_from": None,
                 "valid_to": None,
                 "last_confirmed_at": None,
                 "is_high_risk": True,
                 "is_stale_truth": False,
+                "is_promotable": True,
                 "queue_priority_mode": "recent_first",
                 "priority_reason": "recent_first",
                 "created_at": payload["items"][1]["created_at"],

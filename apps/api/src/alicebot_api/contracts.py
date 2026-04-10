@@ -24,6 +24,13 @@ MemoryType = Literal[
     "working_style",
 ]
 MemoryConfirmationStatus = Literal["unconfirmed", "confirmed", "contested"]
+MemoryTrustClass = Literal[
+    "deterministic",
+    "llm_single_source",
+    "llm_corroborated",
+    "human_curated",
+]
+MemoryPromotionEligibility = Literal["promotable", "not_promotable"]
 ContinuityRecallFreshnessPosture = Literal["fresh", "aging", "stale", "superseded", "unknown"]
 ContinuityRecallProvenancePosture = Literal["strong", "partial", "weak", "missing"]
 ContinuityRecallSupersessionPosture = Literal["current", "historical", "superseded", "deleted"]
@@ -435,6 +442,16 @@ MEMORY_CONFIRMATION_STATUSES = [
     "confirmed",
     "contested",
 ]
+MEMORY_TRUST_CLASSES = [
+    "deterministic",
+    "llm_single_source",
+    "llm_corroborated",
+    "human_curated",
+]
+MEMORY_PROMOTION_ELIGIBILITIES = [
+    "promotable",
+    "not_promotable",
+]
 OPEN_LOOP_STATUSES = [
     "open",
     "resolved",
@@ -442,6 +459,8 @@ OPEN_LOOP_STATUSES = [
 ]
 DEFAULT_MEMORY_TYPE: MemoryType = "preference"
 DEFAULT_MEMORY_CONFIRMATION_STATUS: MemoryConfirmationStatus = "unconfirmed"
+DEFAULT_MEMORY_TRUST_CLASS: MemoryTrustClass = "deterministic"
+DEFAULT_MEMORY_PROMOTION_ELIGIBILITY: MemoryPromotionEligibility = "promotable"
 ENTITY_TYPES = [
     "person",
     "merchant",
@@ -1082,6 +1101,12 @@ class ContextPackMemory(TypedDict):
     confidence: NotRequired[float | None]
     salience: NotRequired[float | None]
     confirmation_status: NotRequired[MemoryConfirmationStatus]
+    trust_class: NotRequired[MemoryTrustClass]
+    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
+    evidence_count: NotRequired[int | None]
+    independent_source_count: NotRequired[int | None]
+    extracted_by_model: NotRequired[str | None]
+    trust_reason: NotRequired[str | None]
     valid_from: NotRequired[str | None]
     valid_to: NotRequired[str | None]
     last_confirmed_at: NotRequired[str | None]
@@ -1235,6 +1260,8 @@ class HybridMemoryDecisionTracePayload(TypedDict):
     source_event_ids: list[str]
     selected_sources: list[MemorySelectionSource]
     semantic_score: float | None
+    trust_class: NotRequired[MemoryTrustClass]
+    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
 
 
 class ContextPackEntity(TypedDict):
@@ -1491,6 +1518,12 @@ class MemoryCandidateInput:
     confidence: float | None = None
     salience: float | None = None
     confirmation_status: str | None = None
+    trust_class: str | None = None
+    promotion_eligibility: str | None = None
+    evidence_count: int | None = None
+    independent_source_count: int | None = None
+    extracted_by_model: str | None = None
+    trust_reason: str | None = None
     valid_from: datetime | None = None
     valid_to: datetime | None = None
     last_confirmed_at: datetime | None = None
@@ -1513,6 +1546,18 @@ class MemoryCandidateInput:
             payload["salience"] = self.salience
         if self.confirmation_status is not None:
             payload["confirmation_status"] = self.confirmation_status
+        if self.trust_class is not None:
+            payload["trust_class"] = self.trust_class
+        if self.promotion_eligibility is not None:
+            payload["promotion_eligibility"] = self.promotion_eligibility
+        if self.evidence_count is not None:
+            payload["evidence_count"] = self.evidence_count
+        if self.independent_source_count is not None:
+            payload["independent_source_count"] = self.independent_source_count
+        if self.extracted_by_model is not None:
+            payload["extracted_by_model"] = self.extracted_by_model
+        if self.trust_reason is not None:
+            payload["trust_reason"] = self.trust_reason
         if self.valid_from is not None:
             payload["valid_from"] = isoformat_or_none(self.valid_from)
         if self.valid_to is not None:
@@ -2262,6 +2307,12 @@ class PersistedMemoryRecord(TypedDict):
     confidence: NotRequired[float | None]
     salience: NotRequired[float | None]
     confirmation_status: NotRequired[MemoryConfirmationStatus]
+    trust_class: NotRequired[MemoryTrustClass]
+    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
+    evidence_count: NotRequired[int | None]
+    independent_source_count: NotRequired[int | None]
+    extracted_by_model: NotRequired[str | None]
+    trust_reason: NotRequired[str | None]
     valid_from: NotRequired[str | None]
     valid_to: NotRequired[str | None]
     last_confirmed_at: NotRequired[str | None]
@@ -3304,6 +3355,12 @@ class MemoryReviewRecord(TypedDict):
     confidence: NotRequired[float | None]
     salience: NotRequired[float | None]
     confirmation_status: NotRequired[MemoryConfirmationStatus]
+    trust_class: NotRequired[MemoryTrustClass]
+    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
+    evidence_count: NotRequired[int | None]
+    independent_source_count: NotRequired[int | None]
+    extracted_by_model: NotRequired[str | None]
+    trust_reason: NotRequired[str | None]
     valid_from: NotRequired[str | None]
     valid_to: NotRequired[str | None]
     last_confirmed_at: NotRequired[str | None]
@@ -3438,11 +3495,18 @@ class MemoryReviewQueueItem(TypedDict):
     confidence: NotRequired[float | None]
     salience: NotRequired[float | None]
     confirmation_status: NotRequired[MemoryConfirmationStatus]
+    trust_class: NotRequired[MemoryTrustClass]
+    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
+    evidence_count: NotRequired[int | None]
+    independent_source_count: NotRequired[int | None]
+    extracted_by_model: NotRequired[str | None]
+    trust_reason: NotRequired[str | None]
     valid_from: NotRequired[str | None]
     valid_to: NotRequired[str | None]
     last_confirmed_at: NotRequired[str | None]
     is_high_risk: bool
     is_stale_truth: bool
+    is_promotable: bool
     queue_priority_mode: MemoryReviewQueuePriorityMode
     priority_reason: str
     created_at: str
@@ -3663,6 +3727,12 @@ class SemanticMemoryRetrievalResultItem(TypedDict):
     confidence: NotRequired[float | None]
     salience: NotRequired[float | None]
     confirmation_status: NotRequired[MemoryConfirmationStatus]
+    trust_class: NotRequired[MemoryTrustClass]
+    promotion_eligibility: NotRequired[MemoryPromotionEligibility]
+    evidence_count: NotRequired[int | None]
+    independent_source_count: NotRequired[int | None]
+    extracted_by_model: NotRequired[str | None]
+    trust_reason: NotRequired[str | None]
     valid_from: NotRequired[str | None]
     valid_to: NotRequired[str | None]
     last_confirmed_at: NotRequired[str | None]

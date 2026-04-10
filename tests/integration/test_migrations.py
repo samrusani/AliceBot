@@ -701,6 +701,12 @@ def test_migrations_upgrade_and_downgrade(database_urls):
                     'confidence',
                     'salience',
                     'confirmation_status',
+                    'trust_class',
+                    'promotion_eligibility',
+                    'evidence_count',
+                    'independent_source_count',
+                    'extracted_by_model',
+                    'trust_reason',
                     'valid_from',
                     'valid_to',
                     'last_confirmed_at'
@@ -711,9 +717,15 @@ def test_migrations_upgrade_and_downgrade(database_urls):
             assert cur.fetchall() == [
                 ("confidence",),
                 ("confirmation_status",),
+                ("evidence_count",),
+                ("extracted_by_model",),
+                ("independent_source_count",),
                 ("last_confirmed_at",),
                 ("memory_type",),
+                ("promotion_eligibility",),
                 ("salience",),
+                ("trust_class",),
+                ("trust_reason",),
                 ("valid_from",),
                 ("valid_to",),
             ]

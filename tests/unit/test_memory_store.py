@@ -134,10 +134,16 @@ def test_memory_methods_use_expected_queries_and_payload_serialization() -> None
     assert create_params[5] is None
     assert create_params[6] is None
     assert create_params[7] == "unconfirmed"
-    assert create_params[8] is None
-    assert create_params[9] is None
+    assert create_params[8] == "deterministic"
+    assert create_params[9] == "promotable"
     assert create_params[10] is None
-    assert create_params[11] == "assistant_default"
+    assert create_params[11] is None
+    assert create_params[12] is None
+    assert create_params[13] is None
+    assert create_params[14] is None
+    assert create_params[15] is None
+    assert create_params[16] is None
+    assert create_params[17] == "assistant_default"
 
     update_query, update_params = cursor.executed[1]
     assert "UPDATE memories" in update_query
@@ -153,11 +159,17 @@ def test_memory_methods_use_expected_queries_and_payload_serialization() -> None
     assert update_params[4] is None
     assert update_params[5] is None
     assert update_params[6] == "unconfirmed"
-    assert update_params[7] is None
-    assert update_params[8] is None
+    assert update_params[7] == "deterministic"
+    assert update_params[8] == "promotable"
     assert update_params[9] is None
-    assert update_params[10] == "active"
-    assert update_params[11] == memory_id
+    assert update_params[10] is None
+    assert update_params[11] is None
+    assert update_params[12] is None
+    assert update_params[13] is None
+    assert update_params[14] is None
+    assert update_params[15] is None
+    assert update_params[16] == "active"
+    assert update_params[17] == memory_id
 
     assert cursor.executed[2] == (
         "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 1))",
@@ -194,6 +206,12 @@ def test_memory_methods_use_expected_queries_and_payload_serialization() -> None
                   confidence,
                   salience,
                   confirmation_status,
+                  trust_class,
+                  promotion_eligibility,
+                  evidence_count,
+                  independent_source_count,
+                  extracted_by_model,
+                  trust_reason,
                   valid_from,
                   valid_to,
                   last_confirmed_at,
@@ -282,6 +300,12 @@ def test_memory_review_read_methods_use_explicit_order_filter_and_limit() -> Non
                   confidence,
                   salience,
                   confirmation_status,
+                  trust_class,
+                  promotion_eligibility,
+                  evidence_count,
+                  independent_source_count,
+                  extracted_by_model,
+                  trust_reason,
                   valid_from,
                   valid_to,
                   last_confirmed_at,
@@ -315,6 +339,12 @@ def test_memory_review_read_methods_use_explicit_order_filter_and_limit() -> Non
                   confidence,
                   salience,
                   confirmation_status,
+                  trust_class,
+                  promotion_eligibility,
+                  evidence_count,
+                  independent_source_count,
+                  extracted_by_model,
+                  trust_reason,
                   valid_from,
                   valid_to,
                   last_confirmed_at,
