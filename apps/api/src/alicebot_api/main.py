@@ -55,6 +55,7 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    DEFAULT_TEMPORAL_TIMELINE_LIMIT,
     DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT,
     DEFAULT_MAX_EVENTS,
     DEFAULT_MAX_ENTITY_EDGES,
@@ -84,6 +85,7 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    MAX_TEMPORAL_TIMELINE_LIMIT,
     MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
@@ -107,6 +109,12 @@ from alicebot_api.contracts import (
     ContinuityReviewQueueResponse,
     ContinuityResumptionBriefRequestInput,
     ContinuityResumptionBriefResponse,
+    TemporalExplainQueryInput,
+    TemporalExplainResponse,
+    TemporalStateAtQueryInput,
+    TemporalStateAtResponse,
+    TemporalTimelineQueryInput,
+    TemporalTimelineResponse,
     ChiefOfStaffPriorityBriefRequestInput,
     ChiefOfStaffPriorityBriefResponse,
     ChiefOfStaffExecutionRoutingActionInput,
@@ -359,6 +367,13 @@ from alicebot_api.continuity_evidence import (
     ContinuityEvidenceNotFoundError,
     build_continuity_explain,
     get_continuity_artifact_detail,
+)
+from alicebot_api.temporal_state import (
+    TemporalStateNotFoundError,
+    TemporalStateValidationError,
+    get_temporal_explain,
+    get_temporal_state_at,
+    get_temporal_timeline,
 )
 from alicebot_api.continuity_lifecycle import (
     ContinuityLifecycleNotFoundError,
@@ -4238,6 +4253,85 @@ def get_continuity_explain_endpoint(
         status_code=200,
         content=jsonable_encoder(payload),
     )
+
+
+@app.get("/v0/state-at")
+def get_temporal_state_at_endpoint(
+    entity_id: UUID,
+    user_id: UUID,
+    at: datetime | None = None,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: TemporalStateAtResponse = get_temporal_state_at(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=TemporalStateAtQueryInput(
+                    entity_id=entity_id,
+                    at=at,
+                ),
+            )
+    except (TemporalStateNotFoundError, TemporalStateValidationError) as exc:
+        status_code = 404 if isinstance(exc, TemporalStateNotFoundError) else 400
+        return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/timeline")
+def get_temporal_timeline_endpoint(
+    entity_id: UUID,
+    user_id: UUID,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = Query(default=DEFAULT_TEMPORAL_TIMELINE_LIMIT, ge=1, le=MAX_TEMPORAL_TIMELINE_LIMIT),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: TemporalTimelineResponse = get_temporal_timeline(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=TemporalTimelineQueryInput(
+                    entity_id=entity_id,
+                    since=since,
+                    until=until,
+                    limit=limit,
+                ),
+            )
+    except (TemporalStateNotFoundError, TemporalStateValidationError) as exc:
+        status_code = 404 if isinstance(exc, TemporalStateNotFoundError) else 400
+        return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/explain")
+def get_temporal_explain_endpoint(
+    entity_id: UUID,
+    user_id: UUID,
+    at: datetime | None = None,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: TemporalExplainResponse = get_temporal_explain(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=TemporalExplainQueryInput(
+                    entity_id=entity_id,
+                    at=at,
+                ),
+            )
+    except (TemporalStateNotFoundError, TemporalStateValidationError) as exc:
+        status_code = 404 if isinstance(exc, TemporalStateNotFoundError) else 400
+        return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
 @app.get("/v0/admin/debug/continuity/artifacts/{artifact_id}")

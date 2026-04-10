@@ -14,6 +14,8 @@ def test_parser_routes_required_commands() -> None:
     cases = [
         (["capture", "Decision: Keep rollout phased"], "_run_capture"),
         (["recall"], "_run_recall"),
+        (["state-at", continuity_object_id], "_run_state_at"),
+        (["timeline", continuity_object_id], "_run_timeline"),
         (["lifecycle", "list"], "_run_lifecycle_list"),
         (["lifecycle", "show", continuity_object_id], "_run_lifecycle_show"),
         (["resume"], "_run_resume"),
@@ -22,6 +24,7 @@ def test_parser_routes_required_commands() -> None:
         (["review", "show", continuity_object_id], "_run_review_show"),
         (["review", "apply", continuity_object_id, "--action", "confirm"], "_run_review_apply"),
         (["explain", continuity_object_id], "_run_explain"),
+        (["explain", "--entity-id", continuity_object_id], "_run_explain"),
         (["evidence", "artifact", continuity_object_id], "_run_evidence_artifact"),
         (["status"], "_run_status"),
     ]
