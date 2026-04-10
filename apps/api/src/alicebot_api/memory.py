@@ -10,7 +10,9 @@ from alicebot_api.contracts import (
     AdmissionDecisionOutput,
     DEFAULT_AGENT_PROFILE_ID,
     DEFAULT_MEMORY_CONFIRMATION_STATUS,
+    DEFAULT_MEMORY_PROMOTION_ELIGIBILITY,
     DEFAULT_MEMORY_REVIEW_QUEUE_PRIORITY_MODE,
+    DEFAULT_MEMORY_TRUST_CLASS,
     DEFAULT_MEMORY_TYPE,
     DEFAULT_MEMORY_REVIEW_LIMIT,
     DEFAULT_OPEN_LOOP_LIMIT,
@@ -18,6 +20,7 @@ from alicebot_api.contracts import (
     MEMORY_QUALITY_MIN_ADJUDICATED_SAMPLE,
     MEMORY_QUALITY_PRECISION_TARGET,
     MEMORY_CONFIRMATION_STATUSES,
+    MEMORY_PROMOTION_ELIGIBILITIES,
     OPEN_LOOP_REVIEW_ORDER,
     OPEN_LOOP_STATUSES,
     MEMORY_REVIEW_LABEL_ORDER,
@@ -27,6 +30,7 @@ from alicebot_api.contracts import (
     MEMORY_REVISION_REVIEW_ORDER,
     MEMORY_REVIEW_ORDER,
     MEMORY_TYPES,
+    MEMORY_TRUST_CLASSES,
     MemoryCandidateInput,
     MemoryEvaluationSummary,
     MemoryEvaluationSummaryResponse,
@@ -113,6 +117,18 @@ def _serialize_typed_memory_metadata(memory: MemoryRow) -> JsonObject:
         payload["salience"] = memory["salience"]
     if "confirmation_status" in memory:
         payload["confirmation_status"] = memory["confirmation_status"]
+    if "trust_class" in memory:
+        payload["trust_class"] = memory["trust_class"]
+    if "promotion_eligibility" in memory:
+        payload["promotion_eligibility"] = memory["promotion_eligibility"]
+    if "evidence_count" in memory:
+        payload["evidence_count"] = memory["evidence_count"]
+    if "independent_source_count" in memory:
+        payload["independent_source_count"] = memory["independent_source_count"]
+    if "extracted_by_model" in memory:
+        payload["extracted_by_model"] = memory["extracted_by_model"]
+    if "trust_reason" in memory:
+        payload["trust_reason"] = memory["trust_reason"]
     if "valid_from" in memory:
         payload["valid_from"] = isoformat_or_none(memory["valid_from"])
     if "valid_to" in memory:
@@ -177,6 +193,8 @@ def _is_stale_truth_memory(memory: MemoryRow) -> bool:
 
 
 def _is_high_risk_memory(memory: MemoryRow) -> bool:
+    if memory.get("promotion_eligibility") == "not_promotable":
+        return True
     if _is_stale_truth_memory(memory):
         return True
     if memory.get("confirmation_status") != "confirmed":
@@ -252,7 +270,17 @@ def _review_queue_priority_reason(
     priority_mode: MemoryReviewQueuePriorityMode,
     is_high_risk: bool,
     is_stale_truth: bool,
+    is_promotable: bool,
 ) -> str:
+    if not is_promotable:
+        if priority_mode == "oldest_first":
+            return "oldest_not_promotable"
+        if priority_mode == "recent_first":
+            return "recent_not_promotable"
+        if priority_mode == "stale_truth_first" and is_stale_truth:
+            return "stale_truth_not_promotable"
+        return "high_risk_not_promotable"
+
     if priority_mode == "high_risk_first":
         if is_high_risk and is_stale_truth:
             return "high_risk_stale_truth"
@@ -284,6 +312,7 @@ def _serialize_memory_review_queue_item(
 ) -> MemoryReviewQueueItem:
     is_high_risk = _is_high_risk_memory(memory)
     is_stale_truth = _is_stale_truth_memory(memory)
+    is_promotable = memory.get("promotion_eligibility") != "not_promotable"
     payload: MemoryReviewQueueItem = {
         "id": str(memory["id"]),
         "memory_key": memory["memory_key"],
@@ -292,11 +321,13 @@ def _serialize_memory_review_queue_item(
         "source_event_ids": memory["source_event_ids"],
         "is_high_risk": is_high_risk,
         "is_stale_truth": is_stale_truth,
+        "is_promotable": is_promotable,
         "queue_priority_mode": priority_mode,
         "priority_reason": _review_queue_priority_reason(
             priority_mode=priority_mode,
             is_high_risk=is_high_risk,
             is_stale_truth=is_stale_truth,
+            is_promotable=is_promotable,
         ),
         "created_at": memory["created_at"].isoformat(),
         "updated_at": memory["updated_at"].isoformat(),
@@ -633,6 +664,7 @@ def _summarize_queue_posture(
             priority_mode=priority_mode,
             is_high_risk=is_high_risk,
             is_stale_truth=is_stale_truth,
+            is_promotable=memory.get("promotion_eligibility") != "not_promotable",
         )
         priority_reason_counts[reason] = priority_reason_counts.get(reason, 0) + 1
 
@@ -1209,6 +1241,32 @@ def _validate_confirmation_status(confirmation_status: str | None) -> str | None
     return confirmation_status
 
 
+def _validate_trust_class(trust_class: str | None) -> str | None:
+    if trust_class is None:
+        return None
+    if trust_class not in MEMORY_TRUST_CLASSES:
+        allowed_values = ", ".join(MEMORY_TRUST_CLASSES)
+        raise MemoryAdmissionValidationError(f"trust_class must be one of: {allowed_values}")
+    return trust_class
+
+
+def _validate_promotion_eligibility(promotion_eligibility: str | None) -> str | None:
+    if promotion_eligibility is None:
+        return None
+    if promotion_eligibility not in MEMORY_PROMOTION_ELIGIBILITIES:
+        allowed_values = ", ".join(MEMORY_PROMOTION_ELIGIBILITIES)
+        raise MemoryAdmissionValidationError(
+            f"promotion_eligibility must be one of: {allowed_values}"
+        )
+    return promotion_eligibility
+
+
+def _default_promotion_eligibility_for_trust_class(trust_class: str) -> str:
+    if trust_class == "llm_single_source":
+        return "not_promotable"
+    return DEFAULT_MEMORY_PROMOTION_ELIGIBILITY
+
+
 def _validate_score(name: str, score: float | None) -> float | None:
     if score is None:
         return None
@@ -1223,6 +1281,24 @@ def _validate_temporal_range(valid_from: datetime | None, valid_to: datetime | N
         raise MemoryAdmissionValidationError("valid_to must be greater than or equal to valid_from")
 
 
+def _validate_count(name: str, value: int | None) -> int | None:
+    if value is None:
+        return None
+    normalized = int(value)
+    if normalized < 0:
+        raise MemoryAdmissionValidationError(f"{name} must be greater than or equal to 0")
+    return normalized
+
+
+def _normalize_optional_text(name: str, value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = " ".join(value.split()).strip()
+    if normalized == "":
+        raise MemoryAdmissionValidationError(f"{name} must not be empty")
+    return normalized
+
+
 def _resolve_memory_typed_metadata(
     *,
     existing_memory: MemoryRow | None,
@@ -1230,20 +1306,55 @@ def _resolve_memory_typed_metadata(
 ) -> dict[str, object]:
     memory_type = _validate_memory_type(candidate.memory_type)
     confirmation_status = _validate_confirmation_status(candidate.confirmation_status)
+    trust_class = _validate_trust_class(candidate.trust_class)
+    promotion_eligibility = _validate_promotion_eligibility(candidate.promotion_eligibility)
     confidence = _validate_score("confidence", candidate.confidence)
     salience = _validate_score("salience", candidate.salience)
+    evidence_count = _validate_count("evidence_count", candidate.evidence_count)
+    independent_source_count = _validate_count(
+        "independent_source_count",
+        candidate.independent_source_count,
+    )
+    extracted_by_model = _normalize_optional_text("extracted_by_model", candidate.extracted_by_model)
+    trust_reason = _normalize_optional_text("trust_reason", candidate.trust_reason)
     _validate_temporal_range(candidate.valid_from, candidate.valid_to)
 
     if existing_memory is None:
+        resolved_trust_class = trust_class or DEFAULT_MEMORY_TRUST_CLASS
         return {
             "memory_type": memory_type or DEFAULT_MEMORY_TYPE,
             "confidence": confidence,
             "salience": salience,
             "confirmation_status": confirmation_status or DEFAULT_MEMORY_CONFIRMATION_STATUS,
+            "trust_class": resolved_trust_class,
+            "promotion_eligibility": (
+                promotion_eligibility
+                if promotion_eligibility is not None
+                else _default_promotion_eligibility_for_trust_class(resolved_trust_class)
+            ),
+            "evidence_count": evidence_count,
+            "independent_source_count": independent_source_count,
+            "extracted_by_model": extracted_by_model,
+            "trust_reason": trust_reason,
             "valid_from": candidate.valid_from,
             "valid_to": candidate.valid_to,
             "last_confirmed_at": candidate.last_confirmed_at,
         }
+
+    existing_trust_class = existing_memory.get("trust_class", DEFAULT_MEMORY_TRUST_CLASS)
+    resolved_trust_class = trust_class if trust_class is not None else existing_trust_class
+    resolved_promotion_eligibility: str
+    if promotion_eligibility is not None:
+        resolved_promotion_eligibility = promotion_eligibility
+    elif trust_class is not None:
+        resolved_promotion_eligibility = _default_promotion_eligibility_for_trust_class(
+            resolved_trust_class
+        )
+    else:
+        resolved_promotion_eligibility = existing_memory.get(
+            "promotion_eligibility",
+            _default_promotion_eligibility_for_trust_class(resolved_trust_class),
+        )
 
     return {
         "memory_type": memory_type if memory_type is not None else existing_memory.get("memory_type", DEFAULT_MEMORY_TYPE),
@@ -1254,6 +1365,22 @@ def _resolve_memory_typed_metadata(
             if confirmation_status is not None
             else existing_memory.get("confirmation_status", DEFAULT_MEMORY_CONFIRMATION_STATUS)
         ),
+        "trust_class": resolved_trust_class,
+        "promotion_eligibility": resolved_promotion_eligibility,
+        "evidence_count": (
+            evidence_count if evidence_count is not None else existing_memory.get("evidence_count")
+        ),
+        "independent_source_count": (
+            independent_source_count
+            if independent_source_count is not None
+            else existing_memory.get("independent_source_count")
+        ),
+        "extracted_by_model": (
+            extracted_by_model
+            if extracted_by_model is not None
+            else existing_memory.get("extracted_by_model")
+        ),
+        "trust_reason": trust_reason if trust_reason is not None else existing_memory.get("trust_reason"),
         "valid_from": candidate.valid_from if candidate.valid_from is not None else existing_memory.get("valid_from"),
         "valid_to": candidate.valid_to if candidate.valid_to is not None else existing_memory.get("valid_to"),
         "last_confirmed_at": (
@@ -1315,6 +1442,12 @@ def admit_memory_candidate(
             confidence=resolved_metadata["confidence"],
             salience=resolved_metadata["salience"],
             confirmation_status=resolved_metadata["confirmation_status"],
+            trust_class=resolved_metadata["trust_class"],
+            promotion_eligibility=resolved_metadata["promotion_eligibility"],
+            evidence_count=resolved_metadata["evidence_count"],
+            independent_source_count=resolved_metadata["independent_source_count"],
+            extracted_by_model=resolved_metadata["extracted_by_model"],
+            trust_reason=resolved_metadata["trust_reason"],
             valid_from=resolved_metadata["valid_from"],
             valid_to=resolved_metadata["valid_to"],
             last_confirmed_at=resolved_metadata["last_confirmed_at"],
@@ -1356,6 +1489,12 @@ def admit_memory_candidate(
             confidence=resolved_metadata["confidence"],
             salience=resolved_metadata["salience"],
             confirmation_status=resolved_metadata["confirmation_status"],
+            trust_class=resolved_metadata["trust_class"],
+            promotion_eligibility=resolved_metadata["promotion_eligibility"],
+            evidence_count=resolved_metadata["evidence_count"],
+            independent_source_count=resolved_metadata["independent_source_count"],
+            extracted_by_model=resolved_metadata["extracted_by_model"],
+            trust_reason=resolved_metadata["trust_reason"],
             valid_from=resolved_metadata["valid_from"],
             valid_to=resolved_metadata["valid_to"],
             last_confirmed_at=resolved_metadata["last_confirmed_at"],
@@ -1392,6 +1531,12 @@ def admit_memory_candidate(
             "confidence",
             "salience",
             "confirmation_status",
+            "trust_class",
+            "promotion_eligibility",
+            "evidence_count",
+            "independent_source_count",
+            "extracted_by_model",
+            "trust_reason",
             "valid_from",
             "valid_to",
             "last_confirmed_at",
@@ -1420,6 +1565,12 @@ def admit_memory_candidate(
         confidence=resolved_metadata["confidence"],
         salience=resolved_metadata["salience"],
         confirmation_status=resolved_metadata["confirmation_status"],
+        trust_class=resolved_metadata["trust_class"],
+        promotion_eligibility=resolved_metadata["promotion_eligibility"],
+        evidence_count=resolved_metadata["evidence_count"],
+        independent_source_count=resolved_metadata["independent_source_count"],
+        extracted_by_model=resolved_metadata["extracted_by_model"],
+        trust_reason=resolved_metadata["trust_reason"],
         valid_from=resolved_metadata["valid_from"],
         valid_to=resolved_metadata["valid_to"],
         last_confirmed_at=resolved_metadata["last_confirmed_at"],
