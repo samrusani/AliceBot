@@ -16,6 +16,9 @@ from alicebot_api.contracts import (
     ContinuityResumptionBriefResponse,
     ContinuityReviewDetailResponse,
     ContinuityReviewQueueResponse,
+    TemporalExplainResponse,
+    TemporalStateAtResponse,
+    TemporalTimelineResponse,
 )
 
 
@@ -373,6 +376,135 @@ def format_explain_output(payload: ContinuityExplainResponse) -> str:
                         f"locator={_format_json(segment['locator'])}"
                     ),
                     f"   raw_evidence={segment['raw_content']}",
+                ]
+            )
+    return "\n".join(lines)
+
+
+def format_temporal_state_output(payload: TemporalStateAtResponse) -> str:
+    state_at = payload["state_at"]
+    summary = state_at["summary"]
+    lines = [
+        "state_at",
+        f"entity_id: {summary['entity_id']}",
+        f"entity_name: {summary['entity_name']}",
+        f"entity_type: {summary['entity_type']}",
+        f"as_of: {summary['as_of']}",
+        f"facts: {summary['fact_count']}",
+        f"edges: {summary['edge_count']}",
+    ]
+    if len(state_at["facts"]) == 0:
+        lines.append("facts_detail: none")
+    else:
+        lines.append("facts_detail:")
+        for index, fact in enumerate(state_at["facts"], start=1):
+            lines.extend(
+                [
+                    f"  {index}. {fact['memory_key']}",
+                    f"    memory_id={fact['memory_id']} status={fact['status']}",
+                    f"    value={_format_json(fact['value'])}",
+                    (
+                        "    validity="
+                        f"{fact['validity']['valid_from']}..{fact['validity']['valid_to']} "
+                        f"effective_at={fact['validity']['effective_at']}"
+                    ),
+                ]
+            )
+    if len(state_at["edges"]) == 0:
+        lines.append("edges_detail: none")
+    else:
+        lines.append("edges_detail:")
+        for index, edge in enumerate(state_at["edges"], start=1):
+            lines.extend(
+                [
+                    f"  {index}. {edge['relationship_type']}",
+                    (
+                        f"    from={edge['from_entity_id']} "
+                        f"to={edge['to_entity_id']}"
+                    ),
+                    (
+                        "    validity="
+                        f"{edge['validity']['valid_from']}..{edge['validity']['valid_to']} "
+                        f"effective_at={edge['validity']['effective_at']}"
+                    ),
+                    f"    source_memory_ids={','.join(edge['source_memory_ids'])}",
+                ]
+            )
+    return "\n".join(lines)
+
+
+def format_temporal_timeline_output(payload: TemporalTimelineResponse) -> str:
+    timeline = payload["timeline"]
+    summary = timeline["summary"]
+    lines = [
+        "timeline",
+        f"entity_id: {summary['entity_id']}",
+        f"entity_name: {summary['entity_name']}",
+        f"entity_type: {summary['entity_type']}",
+        f"filters: entity_id={summary['entity_id']}, since={summary['since']}, until={summary['until']}",
+        f"returned: {summary['returned_count']}/{summary['total_count']} (limit={summary['limit']})",
+        f"order: {', '.join(summary['order'])}",
+    ]
+    if len(timeline["events"]) == 0:
+        lines.append("empty: no temporal events in requested scope.")
+        return "\n".join(lines)
+
+    lines.append("events:")
+    for index, event in enumerate(timeline["events"], start=1):
+        lines.extend(
+            [
+                f"  {index}. [{event['event_type']}] {event['summary']}",
+                (
+                    f"    occurred_at={event['occurred_at']} "
+                    f"object_kind={event['object_kind']} object_id={event['object_id']}"
+                ),
+                f"    payload={_format_json(event['payload'])}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_temporal_explain_output(payload: TemporalExplainResponse) -> str:
+    explain = payload["explain"]
+    summary = explain["summary"]
+    lines = [
+        "temporal explain",
+        f"entity_id: {summary['entity_id']}",
+        f"entity_name: {summary['entity_name']}",
+        f"entity_type: {summary['entity_type']}",
+        f"as_of: {summary['as_of']}",
+        f"facts: {summary['fact_count']}",
+        f"edges: {summary['edge_count']}",
+    ]
+    if len(explain["facts"]) == 0:
+        lines.append("fact_explanations: none")
+    else:
+        lines.append("fact_explanations:")
+        for index, fact in enumerate(explain["facts"], start=1):
+            lines.extend(
+                [
+                    f"  {index}. {fact['memory_key']}",
+                    f"    memory_id={fact['memory_id']} status={fact['status']}",
+                    f"    trust={_format_json(fact['trust'])}",
+                    f"    provenance={_format_json(fact['provenance'])}",
+                    f"    supersession_chain={_format_json(fact['supersession_chain'])}",
+                ]
+            )
+    if len(explain["edges"]) == 0:
+        lines.append("edge_explanations: none")
+    else:
+        lines.append("edge_explanations:")
+        for index, edge in enumerate(explain["edges"], start=1):
+            lines.extend(
+                [
+                    f"  {index}. {edge['relationship_type']}",
+                    (
+                        f"    from={edge['from_entity_id']} "
+                        f"to={edge['to_entity_id']}"
+                    ),
+                    f"    trust={_format_json(edge['trust'])}",
+                    f"    provenance={_format_json(edge['provenance'])}",
+                    f"    supersession_chain={_format_json(edge['supersession_chain'])}",
                 ]
             )
     return "\n".join(lines)

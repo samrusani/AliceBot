@@ -24,13 +24,18 @@ MCP uses the same local runtime scope as CLI:
 
 - `alice_capture`
 - `alice_recall`
+- `alice_state_at`
 - `alice_resume`
 - `alice_open_loops`
 - `alice_recent_decisions`
 - `alice_recent_changes`
+- `alice_timeline`
 - `alice_memory_review`
 - `alice_memory_correct`
+- `alice_explain`
 - `alice_context_pack`
+
+`alice_explain` now accepts either `continuity_object_id` for evidence-chain inspection or `entity_id` plus optional `at` for temporal explain output.
 
 ## Example: Claude Desktop MCP Config
 
@@ -67,4 +72,5 @@ See tests:
 
 - `tests/unit/test_mcp.py`
 - `tests/integration/test_mcp_server.py`
+- `tests/integration/test_temporal_state_mcp_cli.py`
 - `tests/integration/test_openclaw_mcp_integration.py`
