@@ -66,6 +66,11 @@ That makes it useful for questions like:
 - When did this change?
 - Why is this the effective fact as of this timestamp?
 
+### It is identity-aware, not just text-matched
+
+Alice does not rely only on raw text labels for people, projects, and topics.
+It resolves aliases to canonical entities, keeps merge history explicit, and prefers FK-backed entity bindings in recall and resumption so continuity stays stable even when names vary over time.
+
 ### It is local-first and agent-agnostic
 
 Alice Core runs locally and exposes the same continuity semantics through the CLI and MCP, so you can use it with your own workflows instead of being locked into a closed assistant product.
@@ -89,6 +94,7 @@ The open-source surface includes:
 - MCP server
 - trust-aware memory classification and promotion controls
 - temporal state, timelines, and explain surfaces across HTTP, CLI, and MCP
+- canonical entity identity with alias resolution, merge audit, and FK-backed continuity bindings
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -179,6 +185,7 @@ Hermes runtime smoke test:
 ### Import and augment existing workflows
 
 Alice includes importer paths for existing memory and conversation data so you can upgrade an existing workflow instead of starting from zero.
+Imported records preserve source text while binding to canonical entities when aliases resolve, which keeps imported continuity usable across recall and resumption.
 
 With the current integration surface, you can:
 
@@ -225,6 +232,7 @@ Alice is built around a shared continuity core with:
 - structured memory revisions
 - provenance- and trust-aware recall
 - temporal state reconstruction over memory revisions and effective edges
+- canonical entity bindings with alias-aware recall and resumption
 - deterministic resumption briefs
 - open-loop objects
 - CLI and MCP surfaces on the same semantics
