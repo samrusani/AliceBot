@@ -14,6 +14,8 @@ import psycopg
 
 from alicebot_api.cli_formatting import (
     format_capture_output,
+    format_lifecycle_detail_output,
+    format_lifecycle_list_output,
     format_open_loops_output,
     format_recall_output,
     format_resume_output,
@@ -26,6 +28,16 @@ from alicebot_api.config import Settings, get_settings
 from alicebot_api.continuity_capture import (
     ContinuityCaptureValidationError,
     capture_continuity_input,
+)
+from alicebot_api.continuity_objects import (
+    default_continuity_promotable,
+    default_continuity_searchable,
+)
+from alicebot_api.continuity_lifecycle import (
+    ContinuityLifecycleNotFoundError,
+    ContinuityLifecycleValidationError,
+    get_continuity_lifecycle_state,
+    list_continuity_lifecycle_state,
 )
 from alicebot_api.continuity_open_loops import (
     ContinuityOpenLoopValidationError,
@@ -49,6 +61,7 @@ from alicebot_api.continuity_review import (
 from alicebot_api.contracts import (
     CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
     CONTINUITY_CORRECTION_ACTIONS,
+    DEFAULT_CONTINUITY_LIFECYCLE_LIMIT,
     DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
@@ -56,11 +69,13 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
+    MAX_CONTINUITY_LIFECYCLE_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     MAX_CONTINUITY_REVIEW_LIMIT,
     ContinuityCaptureCreateInput,
     ContinuityCorrectionInput,
+    ContinuityLifecycleQueryInput,
     ContinuityOpenLoopDashboardQueryInput,
     ContinuityRecallQueryInput,
     ContinuityResumptionBriefRequestInput,
@@ -176,6 +191,26 @@ def _run_recall(ctx: CLIContext, args: argparse.Namespace) -> str:
     return format_recall_output(payload)
 
 
+def _run_lifecycle_list(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = list_continuity_lifecycle_state(
+            store,
+            user_id=ctx.user_id,
+            request=ContinuityLifecycleQueryInput(limit=args.limit),
+        )
+    return format_lifecycle_list_output(payload)
+
+
+def _run_lifecycle_show(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = get_continuity_lifecycle_state(
+            store,
+            user_id=ctx.user_id,
+            continuity_object_id=args.continuity_object_id,
+        )
+    return format_lifecycle_detail_output(payload)
+
+
 def _run_resume(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _store_context(ctx) as store:
         payload = compile_continuity_resumption_brief(
@@ -191,6 +226,7 @@ def _run_resume(ctx: CLIContext, args: argparse.Namespace) -> str:
                 until=args.until,
                 max_recent_changes=args.max_recent_changes,
                 max_open_loops=args.max_open_loops,
+                include_non_promotable_facts=args.include_non_promotable_facts,
             ),
         )
     return format_resume_output(payload)
@@ -286,6 +322,10 @@ def _run_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
         "continuity_objects_stale": 0,
         "continuity_objects_superseded": 0,
         "continuity_objects_deleted": 0,
+        "continuity_objects_searchable": 0,
+        "continuity_objects_non_searchable": 0,
+        "continuity_objects_promotable": 0,
+        "continuity_objects_non_promotable": 0,
         "review_correction_ready": 0,
         "review_active": 0,
         "review_stale": 0,
@@ -343,6 +383,46 @@ def _run_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
                 "continuity_objects_stale": object_status_counts["stale"],
                 "continuity_objects_superseded": object_status_counts["superseded"],
                 "continuity_objects_deleted": object_status_counts["deleted"],
+                "continuity_objects_searchable": sum(
+                    1
+                    for candidate in recall_candidates
+                    if bool(
+                        candidate.get(
+                            "is_searchable",
+                            default_continuity_searchable(str(candidate["object_type"])),
+                        )
+                    )
+                ),
+                "continuity_objects_non_searchable": sum(
+                    1
+                    for candidate in recall_candidates
+                    if not bool(
+                        candidate.get(
+                            "is_searchable",
+                            default_continuity_searchable(str(candidate["object_type"])),
+                        )
+                    )
+                ),
+                "continuity_objects_promotable": sum(
+                    1
+                    for candidate in recall_candidates
+                    if bool(
+                        candidate.get(
+                            "is_promotable",
+                            default_continuity_promotable(str(candidate["object_type"])),
+                        )
+                    )
+                ),
+                "continuity_objects_non_promotable": sum(
+                    1
+                    for candidate in recall_candidates
+                    if not bool(
+                        candidate.get(
+                            "is_promotable",
+                            default_continuity_promotable(str(candidate["object_type"])),
+                        )
+                    )
+                ),
                 "review_correction_ready": review_counts["active"] + review_counts["stale"],
                 "review_active": review_counts["active"],
                 "review_stale": review_counts["stale"],
@@ -403,6 +483,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recall_parser.set_defaults(handler=_run_recall)
 
+    lifecycle_parser = subparsers.add_parser("lifecycle", help="Inspect continuity lifecycle state.")
+    lifecycle_subparsers = lifecycle_parser.add_subparsers(dest="lifecycle_command", required=True)
+
+    lifecycle_list_parser = lifecycle_subparsers.add_parser("list", help="List lifecycle states.")
+    lifecycle_list_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_CONTINUITY_LIFECYCLE_LIMIT,
+        help=f"Max lifecycle results (1-{MAX_CONTINUITY_LIFECYCLE_LIMIT}).",
+    )
+    lifecycle_list_parser.set_defaults(handler=_run_lifecycle_list)
+
+    lifecycle_show_parser = lifecycle_subparsers.add_parser("show", help="Show one lifecycle state.")
+    lifecycle_show_parser.add_argument(
+        "continuity_object_id",
+        type=_parse_uuid,
+        help="Continuity object UUID.",
+    )
+    lifecycle_show_parser.set_defaults(handler=_run_lifecycle_show)
+
     resume_parser = subparsers.add_parser("resume", help="Compile continuity resumption brief.")
     _add_scope_filter_arguments(resume_parser)
     resume_parser.add_argument(
@@ -416,6 +516,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
         help=f"Open loop limit (0-{MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT}).",
+    )
+    resume_parser.add_argument(
+        "--include-non-promotable-facts",
+        action="store_true",
+        help="Include searchable but non-promotable facts in recent changes.",
     )
     resume_parser.set_defaults(handler=_run_resume)
 
@@ -522,6 +627,13 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             minimum=1,
             maximum=MAX_CONTINUITY_RECALL_LIMIT,
         )
+    elif args.command == "lifecycle" and args.lifecycle_command == "list":
+        _validate_limit(
+            args.limit,
+            option_name="--limit",
+            minimum=1,
+            maximum=MAX_CONTINUITY_LIFECYCLE_LIMIT,
+        )
     elif args.command == "resume":
         _validate_limit(
             args.max_recent_changes,
@@ -564,6 +676,8 @@ def main(argv: list[str] | None = None) -> int:
         ValueError,
         psycopg.Error,
         ContinuityCaptureValidationError,
+        ContinuityLifecycleValidationError,
+        ContinuityLifecycleNotFoundError,
         ContinuityRecallValidationError,
         ContinuityResumptionValidationError,
         ContinuityOpenLoopValidationError,

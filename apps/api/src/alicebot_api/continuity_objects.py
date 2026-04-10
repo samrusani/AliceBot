@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from uuid import UUID
 
 from alicebot_api.contracts import (
     CONTINUITY_OBJECT_TYPES,
+    ContinuityLifecycleStateRecord,
     ContinuityObjectRecord,
 )
 from alicebot_api.store import ContinuityObjectRow, ContinuityStore, JsonObject
@@ -13,12 +15,48 @@ class ContinuityObjectValidationError(ValueError):
     """Raised when a continuity object request is invalid."""
 
 
+def default_continuity_searchable(object_type: str) -> bool:
+    return object_type != "Note"
+
+
+def default_continuity_promotable(object_type: str) -> bool:
+    return object_type in {"Decision", "Commitment", "WaitingFor", "Blocker", "NextAction"}
+
+
+def serialize_continuity_lifecycle_state(
+    *,
+    is_preserved: bool,
+    is_searchable: bool,
+    is_promotable: bool,
+) -> ContinuityLifecycleStateRecord:
+    return {
+        "is_preserved": is_preserved,
+        "preservation_status": "preserved" if is_preserved else "not_preserved",
+        "is_searchable": is_searchable,
+        "searchability_status": "searchable" if is_searchable else "not_searchable",
+        "is_promotable": is_promotable,
+        "promotion_status": "promotable" if is_promotable else "not_promotable",
+    }
+
+
+def serialize_continuity_lifecycle_state_from_record(
+    record: Mapping[str, object],
+) -> ContinuityLifecycleStateRecord:
+    object_type = str(record["object_type"])
+    return serialize_continuity_lifecycle_state(
+        is_preserved=bool(record.get("is_preserved", True)),
+        is_searchable=bool(record.get("is_searchable", default_continuity_searchable(object_type))),
+        is_promotable=bool(record.get("is_promotable", default_continuity_promotable(object_type))),
+    )
+
+
 def _serialize_continuity_object(record: ContinuityObjectRow) -> ContinuityObjectRecord:
     return {
         "id": str(record["id"]),
         "capture_event_id": str(record["capture_event_id"]),
         "object_type": record["object_type"],
         "status": record["status"],
+        "lifecycle": serialize_continuity_lifecycle_state_from_record(record),
         "title": record["title"],
         "body": record["body"],
         "provenance": record["provenance"],
@@ -60,17 +98,33 @@ def create_continuity_object_record(
     provenance: JsonObject,
     confidence: float,
     status: str = "active",
+    is_preserved: bool = True,
+    is_searchable: bool | None = None,
+    is_promotable: bool | None = None,
 ) -> ContinuityObjectRecord:
     del user_id
 
     _validate_object_type(object_type)
     _validate_title(title)
     _validate_confidence(confidence)
+    resolved_is_searchable = (
+        default_continuity_searchable(object_type)
+        if is_searchable is None
+        else is_searchable
+    )
+    resolved_is_promotable = (
+        default_continuity_promotable(object_type)
+        if is_promotable is None
+        else is_promotable
+    )
 
     row = store.create_continuity_object(
         capture_event_id=capture_event_id,
         object_type=object_type,
         status=status,
+        is_preserved=is_preserved,
+        is_searchable=resolved_is_searchable,
+        is_promotable=resolved_is_promotable,
         title=title.strip(),
         body=body,
         provenance=provenance,
