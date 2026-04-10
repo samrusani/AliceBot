@@ -98,6 +98,7 @@ def test_cli_command_surface_and_correction_flow(migrated_database_urls) -> None
     assert status_result.returncode == 0
     assert "database: reachable" in status_result.stdout
     assert "continuity_capture_events: 2" in status_result.stdout
+    assert "continuity_object_lifecycle:" in status_result.stdout
 
     capture_result = run_cli(
         [
@@ -126,6 +127,22 @@ def test_cli_command_surface_and_correction_flow(migrated_database_urls) -> None
     )
     assert recall_before.returncode == 0
     assert "Decision: Legacy rollout plan" in recall_before.stdout
+    assert "lifecycle=preserved:True searchable:True promotable:True" in recall_before.stdout
+
+    lifecycle_list_result = run_cli(
+        ["lifecycle", "list", "--limit", "20"],
+        env=env,
+    )
+    assert lifecycle_list_result.returncode == 0
+    assert "continuity lifecycle" in lifecycle_list_result.stdout
+    assert "promotable=3" in lifecycle_list_result.stdout
+
+    lifecycle_show_result = run_cli(
+        ["lifecycle", "show", str(legacy_decision["id"])],
+        env=env,
+    )
+    assert lifecycle_show_result.returncode == 0
+    assert f"continuity_object_id: {legacy_decision['id']}" in lifecycle_show_result.stdout
 
     resume_before = run_cli(
         [
@@ -220,3 +237,59 @@ def test_cli_command_surface_and_correction_flow(migrated_database_urls) -> None
     assert resume_after.returncode == 0
     assert "Decision: Updated rollout plan" in resume_after.stdout
 
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        hidden_fact_capture = store.create_continuity_capture_event(
+            raw_content="Remember: searchable but not promotable",
+            explicit_signal="remember_this",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_remember_this",
+        )
+        hidden_fact = store.create_continuity_object(
+            capture_event_id=hidden_fact_capture["id"],
+            object_type="MemoryFact",
+            status="active",
+            title="Memory Fact: searchable but not promotable",
+            body={"fact_text": "searchable but not promotable"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["cli-seed-3"]},
+            confidence=0.88,
+            is_promotable=False,
+        )
+
+    lifecycle_hidden_result = run_cli(
+        ["lifecycle", "show", str(hidden_fact["id"])],
+        env=env,
+    )
+    assert lifecycle_hidden_result.returncode == 0
+    assert "promotable=False" in lifecycle_hidden_result.stdout
+
+    resume_default_fact_result = run_cli(
+        [
+            "resume",
+            "--thread-id",
+            str(thread_id),
+            "--max-recent-changes",
+            "10",
+            "--max-open-loops",
+            "5",
+        ],
+        env=env,
+    )
+    assert resume_default_fact_result.returncode == 0
+    assert "Memory Fact: searchable but not promotable" not in resume_default_fact_result.stdout
+
+    resume_override_fact_result = run_cli(
+        [
+            "resume",
+            "--thread-id",
+            str(thread_id),
+            "--max-recent-changes",
+            "10",
+            "--max-open-loops",
+            "5",
+            "--include-non-promotable-facts",
+        ],
+        env=env,
+    )
+    assert resume_override_fact_result.returncode == 0
+    assert "Memory Fact: searchable but not promotable" in resume_override_fact_result.stdout

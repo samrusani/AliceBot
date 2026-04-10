@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
+from alicebot_api.continuity_objects import serialize_continuity_lifecycle_state_from_record
 from alicebot_api.continuity_recall import query_continuity_recall
 from alicebot_api.contracts import (
     CONTINUITY_DAILY_BRIEF_ASSEMBLY_VERSION_V0,
@@ -96,6 +97,7 @@ def _serialize_review_object(record: ContinuityObjectRow) -> ContinuityReviewObj
         "capture_event_id": str(record["capture_event_id"]),
         "object_type": record["object_type"],  # type: ignore[typeddict-item]
         "status": record["status"],
+        "lifecycle": serialize_continuity_lifecycle_state_from_record(record),
         "title": record["title"],
         "body": record["body"],
         "provenance": record["provenance"],
@@ -131,6 +133,9 @@ def _snapshot(record: ContinuityObjectRow) -> JsonObject:
         "capture_event_id": str(record["capture_event_id"]),
         "object_type": record["object_type"],
         "status": record["status"],
+        "is_preserved": record["is_preserved"],
+        "is_searchable": record["is_searchable"],
+        "is_promotable": record["is_promotable"],
         "title": record["title"],
         "body": record["body"],
         "provenance": record["provenance"],
@@ -540,6 +545,9 @@ def apply_continuity_open_loop_review_action(
     updated = store.update_continuity_object_optional(
         continuity_object_id=continuity_object_id,
         status=transition.lifecycle_outcome,
+        is_preserved=current["is_preserved"],
+        is_searchable=current["is_searchable"],
+        is_promotable=current["is_promotable"],
         title=current["title"],
         body=current["body"],
         provenance=current["provenance"],

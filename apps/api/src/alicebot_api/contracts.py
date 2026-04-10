@@ -31,6 +31,9 @@ MemoryTrustClass = Literal[
     "human_curated",
 ]
 MemoryPromotionEligibility = Literal["promotable", "not_promotable"]
+ContinuityPreservationStatus = Literal["preserved", "not_preserved"]
+ContinuitySearchabilityStatus = Literal["searchable", "not_searchable"]
+ContinuityPromotionStatus = Literal["promotable", "not_promotable"]
 ContinuityRecallFreshnessPosture = Literal["fresh", "aging", "stale", "superseded", "unknown"]
 ContinuityRecallProvenancePosture = Literal["strong", "partial", "weak", "missing"]
 ContinuityRecallSupersessionPosture = Literal["current", "historical", "superseded", "deleted"]
@@ -461,6 +464,8 @@ DEFAULT_MEMORY_TYPE: MemoryType = "preference"
 DEFAULT_MEMORY_CONFIRMATION_STATUS: MemoryConfirmationStatus = "unconfirmed"
 DEFAULT_MEMORY_TRUST_CLASS: MemoryTrustClass = "deterministic"
 DEFAULT_MEMORY_PROMOTION_ELIGIBILITY: MemoryPromotionEligibility = "promotable"
+DEFAULT_CONTINUITY_LIFECYCLE_LIMIT = 50
+MAX_CONTINUITY_LIFECYCLE_LIMIT = 200
 ENTITY_TYPES = [
     "person",
     "merchant",
@@ -563,6 +568,7 @@ CONTINUITY_OBJECT_LIST_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_REVIEW_QUEUE_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
 CONTINUITY_CORRECTION_EVENT_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_RECALL_LIST_ORDER = ["relevance_desc", "created_at_desc", "id_desc"]
+CONTINUITY_LIFECYCLE_LIST_ORDER = ["updated_at_desc", "id_desc"]
 CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_RESUMPTION_OPEN_LOOP_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_OPEN_LOOP_POSTURE_ORDER = ["waiting_for", "blocker", "stale", "next_action"]
@@ -735,6 +741,18 @@ CONTINUITY_CORRECTION_ACTIONS = [
     "delete",
     "supersede",
     "mark_stale",
+]
+CONTINUITY_PRESERVATION_STATUSES = [
+    "preserved",
+    "not_preserved",
+]
+CONTINUITY_SEARCHABILITY_STATUSES = [
+    "searchable",
+    "not_searchable",
+]
+CONTINUITY_PROMOTION_STATUSES = [
+    "promotable",
+    "not_promotable",
 ]
 CONTINUITY_REVIEW_STATUSES = [
     "active",
@@ -1689,6 +1707,7 @@ class ContinuityResumptionBriefRequestInput:
     until: datetime | None = None
     max_recent_changes: int = DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT
     max_open_loops: int = DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT
+    include_non_promotable_facts: bool = False
 
     def as_payload(self) -> JsonObject:
         payload: JsonObject = {
@@ -1699,10 +1718,21 @@ class ContinuityResumptionBriefRequestInput:
             "person": self.person,
             "max_recent_changes": self.max_recent_changes,
             "max_open_loops": self.max_open_loops,
+            "include_non_promotable_facts": self.include_non_promotable_facts,
         }
         payload["since"] = isoformat_or_none(self.since)
         payload["until"] = isoformat_or_none(self.until)
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityLifecycleQueryInput:
+    limit: int = DEFAULT_CONTINUITY_LIFECYCLE_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "limit": self.limit,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -2427,11 +2457,21 @@ class ContinuityCaptureEventRecord(TypedDict):
     created_at: str
 
 
+class ContinuityLifecycleStateRecord(TypedDict):
+    is_preserved: bool
+    preservation_status: ContinuityPreservationStatus
+    is_searchable: bool
+    searchability_status: ContinuitySearchabilityStatus
+    is_promotable: bool
+    promotion_status: ContinuityPromotionStatus
+
+
 class ContinuityObjectRecord(TypedDict):
     id: str
     capture_event_id: str
     object_type: ContinuityObjectType
     status: str
+    lifecycle: ContinuityLifecycleStateRecord
     title: str
     body: JsonObject
     provenance: JsonObject
@@ -2445,6 +2485,7 @@ class ContinuityReviewObjectRecord(TypedDict):
     capture_event_id: str
     object_type: ContinuityObjectType
     status: str
+    lifecycle: ContinuityLifecycleStateRecord
     title: str
     body: JsonObject
     provenance: JsonObject
@@ -2561,6 +2602,7 @@ class ContinuityRecallResultRecord(TypedDict):
     capture_event_id: str
     object_type: ContinuityObjectType
     status: str
+    lifecycle: ContinuityLifecycleStateRecord
     title: str
     body: JsonObject
     provenance: JsonObject
@@ -2590,6 +2632,31 @@ class ContinuityRecallSummary(TypedDict):
 class ContinuityRecallResponse(TypedDict):
     items: list[ContinuityRecallResultRecord]
     summary: ContinuityRecallSummary
+
+
+class ContinuityLifecycleCounts(TypedDict):
+    preserved_count: int
+    searchable_count: int
+    promotable_count: int
+    not_searchable_count: int
+    not_promotable_count: int
+
+
+class ContinuityLifecycleListSummary(TypedDict):
+    limit: int
+    returned_count: int
+    total_count: int
+    counts: ContinuityLifecycleCounts
+    order: list[str]
+
+
+class ContinuityLifecycleListResponse(TypedDict):
+    items: list[ContinuityReviewObjectRecord]
+    summary: ContinuityLifecycleListSummary
+
+
+class ContinuityLifecycleDetailResponse(TypedDict):
+    continuity_object: ContinuityReviewObjectRecord
 
 
 class ContinuityResumptionEmptyState(TypedDict):
