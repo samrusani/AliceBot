@@ -25,6 +25,9 @@ from alicebot_api.cli_formatting import (
     format_review_detail_output,
     format_review_queue_output,
     format_status_output,
+    format_temporal_explain_output,
+    format_temporal_state_output,
+    format_temporal_timeline_output,
 )
 from alicebot_api.config import Settings, get_settings
 from alicebot_api.continuity_capture import (
@@ -74,12 +77,14 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
+    DEFAULT_TEMPORAL_TIMELINE_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_LIFECYCLE_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     MAX_CONTINUITY_REVIEW_LIMIT,
+    MAX_TEMPORAL_TIMELINE_LIMIT,
     ContinuityCaptureCreateInput,
     ContinuityCorrectionInput,
     ContinuityLifecycleQueryInput,
@@ -87,10 +92,19 @@ from alicebot_api.contracts import (
     ContinuityRecallQueryInput,
     ContinuityResumptionBriefRequestInput,
     ContinuityReviewQueueQueryInput,
+    TemporalExplainQueryInput,
+    TemporalStateAtQueryInput,
+    TemporalTimelineQueryInput,
 )
 from alicebot_api.db import ping_database, user_connection
 from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
 from alicebot_api.store import ContinuityStore, JsonObject
+from alicebot_api.temporal_state import (
+    TemporalStateValidationError,
+    get_temporal_explain,
+    get_temporal_state_at,
+    get_temporal_timeline,
+)
 
 DEFAULT_CLI_USER_ID = "00000000-0000-0000-0000-000000000001"
 REVIEW_STATUS_CHOICES = ("correction_ready", "active", "stale", "superseded", "deleted", "all")
@@ -196,6 +210,34 @@ def _run_recall(ctx: CLIContext, args: argparse.Namespace) -> str:
             ),
         )
     return format_recall_output(payload)
+
+
+def _run_state_at(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = get_temporal_state_at(
+            store,
+            user_id=ctx.user_id,
+            request=TemporalStateAtQueryInput(
+                entity_id=args.entity_id,
+                at=args.at,
+            ),
+        )
+    return format_temporal_state_output(payload)
+
+
+def _run_timeline(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = get_temporal_timeline(
+            store,
+            user_id=ctx.user_id,
+            request=TemporalTimelineQueryInput(
+                entity_id=args.entity_id,
+                since=args.since,
+                until=args.until,
+                limit=args.limit,
+            ),
+        )
+    return format_temporal_timeline_output(payload)
 
 
 def _run_lifecycle_list(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -315,6 +357,21 @@ def _run_review_apply(ctx: CLIContext, args: argparse.Namespace) -> str:
 
 
 def _run_explain(ctx: CLIContext, args: argparse.Namespace) -> str:
+    if args.entity_id is not None:
+        with _store_context(ctx) as store:
+            payload = get_temporal_explain(
+                store,
+                user_id=ctx.user_id,
+                request=TemporalExplainQueryInput(
+                    entity_id=args.entity_id,
+                    at=args.at,
+                ),
+            )
+        return format_temporal_explain_output(payload)
+
+    if args.continuity_object_id is None:
+        raise ValueError("explain requires either a continuity_object_id or --entity-id")
+
     with _store_context(ctx) as store:
         payload = build_continuity_explain(
             store,
@@ -510,6 +567,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recall_parser.set_defaults(handler=_run_recall)
 
+    state_at_parser = subparsers.add_parser(
+        "state-at",
+        help="Show entity state reconstructed at a specific point in time.",
+    )
+    state_at_parser.add_argument("entity_id", type=_parse_uuid, help="Entity UUID.")
+    state_at_parser.add_argument("--at", type=_parse_datetime, default=None, help="As-of time (ISO-8601).")
+    state_at_parser.set_defaults(handler=_run_state_at)
+
+    timeline_parser = subparsers.add_parser(
+        "timeline",
+        help="Show chronological temporal history for one entity.",
+    )
+    timeline_parser.add_argument("entity_id", type=_parse_uuid, help="Entity UUID.")
+    timeline_parser.add_argument("--since", type=_parse_datetime, default=None, help="Optional start time (ISO-8601).")
+    timeline_parser.add_argument("--until", type=_parse_datetime, default=None, help="Optional end time (ISO-8601).")
+    timeline_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_TEMPORAL_TIMELINE_LIMIT,
+        help=f"Max timeline events (1-{MAX_TEMPORAL_TIMELINE_LIMIT}).",
+    )
+    timeline_parser.set_defaults(handler=_run_timeline)
+
     lifecycle_parser = subparsers.add_parser("lifecycle", help="Inspect continuity lifecycle state.")
     lifecycle_subparsers = lifecycle_parser.add_subparsers(dest="lifecycle_command", required=True)
 
@@ -635,8 +715,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review_apply_parser.set_defaults(handler=_run_review_apply)
 
-    explain_parser = subparsers.add_parser("explain", help="Show raw evidence chain for one continuity object.")
-    explain_parser.add_argument("continuity_object_id", type=_parse_uuid, help="Continuity object UUID.")
+    explain_parser = subparsers.add_parser(
+        "explain",
+        help="Show continuity evidence or temporal explain output.",
+    )
+    explain_parser.add_argument(
+        "continuity_object_id",
+        nargs="?",
+        type=_parse_uuid,
+        help="Continuity object UUID.",
+    )
+    explain_parser.add_argument("--entity-id", type=_parse_uuid, default=None, help="Entity UUID.")
+    explain_parser.add_argument("--at", type=_parse_datetime, default=None, help="As-of time (ISO-8601).")
     explain_parser.set_defaults(handler=_run_explain)
 
     evidence_parser = subparsers.add_parser("evidence", help="Inspect archived continuity artifacts.")
@@ -663,6 +753,13 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             option_name="--limit",
             minimum=1,
             maximum=MAX_CONTINUITY_RECALL_LIMIT,
+        )
+    elif args.command == "timeline":
+        _validate_limit(
+            args.limit,
+            option_name="--limit",
+            minimum=1,
+            maximum=MAX_TEMPORAL_TIMELINE_LIMIT,
         )
     elif args.command == "lifecycle" and args.lifecycle_command == "list":
         _validate_limit(
@@ -721,6 +818,7 @@ def main(argv: list[str] | None = None) -> int:
         ContinuityReviewValidationError,
         ContinuityReviewNotFoundError,
         ContinuityEvidenceNotFoundError,
+        TemporalStateValidationError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
