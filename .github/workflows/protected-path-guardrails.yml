@@ -1,0 +1,27 @@
+name: Protected Path Guardrails
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - edited
+      - ready_for_review
+
+permissions:
+  contents: read
+
+jobs:
+  protected-path-upgrade-guardrails:
+    name: Protected Path Upgrade Guardrails
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require upgrade metadata for protected paths
+        run: python3 scripts/check_protected_paths.py --event-path "$GITHUB_EVENT_PATH"
