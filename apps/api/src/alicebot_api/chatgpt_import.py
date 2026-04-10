@@ -287,6 +287,7 @@ def load_chatgpt_payload(source: str | Path) -> ImporterNormalizedBatch:
             conversation_title = normalize_optional_text(conversation.get("title"))
             conversation_project = normalize_optional_text(conversation.get("project"))
             conversation_person = normalize_optional_text(conversation.get("person"))
+            conversation_topic = normalize_optional_text(conversation.get("topic"))
 
             messages = _conversation_messages(conversation)
             for message_index, message in enumerate(messages, start=1):
@@ -342,6 +343,8 @@ def load_chatgpt_payload(source: str | Path) -> ImporterNormalizedBatch:
                     source_provenance["project"] = conversation_project
                 if conversation_person is not None:
                     source_provenance["person"] = conversation_person
+                if conversation_topic is not None:
+                    source_provenance["topic"] = conversation_topic
 
                 source_event_ids = [f"chatgpt-event:{conversation_id}:{message_id}"]
                 source_provenance["source_event_ids"] = source_event_ids

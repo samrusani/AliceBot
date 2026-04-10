@@ -11,6 +11,7 @@ from alicebot_api.contracts import (
     EntityListSummary,
     EntityRecord,
 )
+from alicebot_api.identity_resolution import normalize_identity_alias
 from alicebot_api.store import ContinuityStore, EntityRow
 
 
@@ -80,6 +81,13 @@ def create_entity_record(
         name=entity.name,
         source_memory_ids=source_memory_ids,
     )
+    normalized_alias = normalize_identity_alias(entity.name)
+    if normalized_alias is not None:
+        store.create_entity_alias(
+            entity_id=created["id"],
+            alias=created["name"],
+            normalized_alias=normalized_alias,
+        )
     return {"entity": _serialize_entity(created)}
 
 

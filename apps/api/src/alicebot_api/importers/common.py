@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from alicebot_api.continuity_evidence import ArchivedArtifactRef, checksum_sha256_for_text
+from alicebot_api.identity_resolution import resolve_scope_entity_filters
 from alicebot_api.importer_models import (
     ImporterNormalizedBatch,
     OBJECT_TYPE_TO_EXPLICIT_SIGNAL,
@@ -148,6 +149,12 @@ def import_normalized_batch(
         provenance["artifact_copy_checksum_sha256"] = archived_artifact.checksum_sha256
         provenance["artifact_segment_id"] = str(segment["id"])
         provenance["artifact_segment_source_item_id"] = item.source_item_id
+        resolved_scope_filters = resolve_scope_entity_filters(
+            store,
+            project=provenance.get("project") if isinstance(provenance.get("project"), str) else None,
+            person=provenance.get("person") if isinstance(provenance.get("person"), str) else None,
+            topic=provenance.get("topic") if isinstance(provenance.get("topic"), str) else None,
+        )
 
         continuity_object = store.create_continuity_object(
             capture_event_id=capture["id"],
@@ -156,6 +163,9 @@ def import_normalized_batch(
             title=item.title,
             body=item.body,
             provenance=provenance,
+            project_entity_id=resolved_scope_filters.project_entity_id,
+            person_entity_id=resolved_scope_filters.person_entity_id,
+            topic_entity_id=resolved_scope_filters.topic_entity_id,
             confidence=item.confidence,
         )
         store.create_continuity_object_evidence_link(

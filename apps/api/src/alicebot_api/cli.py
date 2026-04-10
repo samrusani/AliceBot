@@ -154,6 +154,10 @@ def _add_scope_filter_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--task-id", type=_parse_uuid, default=None, help="Optional task UUID scope.")
     parser.add_argument("--project", default=None, help="Optional project scope.")
     parser.add_argument("--person", default=None, help="Optional person scope.")
+    parser.add_argument("--topic", default=None, help="Optional topic scope.")
+    parser.add_argument("--project-entity-id", type=_parse_uuid, default=None, help="Optional project entity UUID.")
+    parser.add_argument("--person-entity-id", type=_parse_uuid, default=None, help="Optional person entity UUID.")
+    parser.add_argument("--topic-entity-id", type=_parse_uuid, default=None, help="Optional topic entity UUID.")
     parser.add_argument("--since", type=_parse_datetime, default=None, help="Optional start time (ISO-8601).")
     parser.add_argument("--until", type=_parse_datetime, default=None, help="Optional end time (ISO-8601).")
 
@@ -204,6 +208,10 @@ def _run_recall(ctx: CLIContext, args: argparse.Namespace) -> str:
                 task_id=args.task_id,
                 project=args.project,
                 person=args.person,
+                topic=args.topic,
+                project_entity_id=args.project_entity_id,
+                person_entity_id=args.person_entity_id,
+                topic_entity_id=args.topic_entity_id,
                 since=args.since,
                 until=args.until,
                 limit=args.limit,
@@ -271,6 +279,10 @@ def _run_resume(ctx: CLIContext, args: argparse.Namespace) -> str:
                 task_id=args.task_id,
                 project=args.project,
                 person=args.person,
+                topic=args.topic,
+                project_entity_id=args.project_entity_id,
+                person_entity_id=args.person_entity_id,
+                topic_entity_id=args.topic_entity_id,
                 since=args.since,
                 until=args.until,
                 max_recent_changes=args.max_recent_changes,
@@ -292,6 +304,10 @@ def _run_open_loops(ctx: CLIContext, args: argparse.Namespace) -> str:
                 task_id=args.task_id,
                 project=args.project,
                 person=args.person,
+                topic=args.topic,
+                project_entity_id=args.project_entity_id,
+                person_entity_id=args.person_entity_id,
+                topic_entity_id=args.topic_entity_id,
                 since=args.since,
                 until=args.until,
                 limit=args.limit,

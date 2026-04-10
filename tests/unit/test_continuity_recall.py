@@ -10,11 +10,35 @@ from alicebot_api.contracts import ContinuityRecallQueryInput
 
 
 class ContinuityRecallStoreStub:
-    def __init__(self, rows: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, object]],
+        *,
+        alias_matches: dict[tuple[str, str], list[dict[str, object]]] | None = None,
+        merge_targets: dict[UUID, UUID] | None = None,
+    ) -> None:
         self._rows = rows
+        self._alias_matches = alias_matches or {}
+        self._merge_targets = merge_targets or {}
 
     def list_continuity_recall_candidates(self):
         return list(self._rows)
+
+    def find_entity_alias_matches(self, *, entity_type: str, normalized_alias: str):
+        return list(self._alias_matches.get((entity_type, normalized_alias), []))
+
+    def get_latest_entity_merge_for_source_optional(self, source_entity_id: UUID):
+        target_entity_id = self._merge_targets.get(source_entity_id)
+        if target_entity_id is None:
+            return None
+        return {
+            "id": uuid4(),
+            "user_id": UUID("11111111-1111-4111-8111-111111111111"),
+            "source_entity_id": source_entity_id,
+            "target_entity_id": target_entity_id,
+            "reason": "merged duplicate identity",
+            "created_at": datetime(2026, 3, 29, 7, 0, tzinfo=UTC),
+        }
 
 
 def make_candidate_row(
@@ -23,6 +47,9 @@ def make_candidate_row(
     object_type: str,
     capture_created_at: datetime,
     confidence: float,
+    project_entity_id: UUID | None = None,
+    person_entity_id: UUID | None = None,
+    topic_entity_id: UUID | None = None,
     admission_posture: str = "DERIVED",
     provenance: dict[str, object] | None = None,
     body: dict[str, object] | None = None,
@@ -54,6 +81,9 @@ def make_candidate_row(
         "title": title,
         "body": body or {},
         "provenance": provenance or {},
+        "project_entity_id": project_entity_id,
+        "person_entity_id": person_entity_id,
+        "topic_entity_id": topic_entity_id,
         "confidence": confidence,
         "last_confirmed_at": last_confirmed_at,
         "supersedes_object_id": supersedes_object_id,
@@ -149,27 +179,51 @@ def test_recall_returns_deterministic_order_and_provenance_fields() -> None:
 
 
 def test_recall_filters_project_person_query_and_time_window() -> None:
+    project_entity_id = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+    person_entity_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
     rows = [
         make_candidate_row(
-            title="Next Action: Follow up with Alex on Phoenix",
+            title="Next Action: Follow up with contact on Orion",
             object_type="NextAction",
             capture_created_at=datetime(2026, 3, 29, 10, 30, tzinfo=UTC),
             confidence=1.0,
-            provenance={"project": "Project Phoenix", "person": "Alex"},
-            body={"action_text": "Follow up with Alex"},
+            provenance={"project": "Project Orion", "person": "Contact One"},
+            body={"action_text": "Follow up with contact"},
+            project_entity_id=project_entity_id,
+            person_entity_id=person_entity_id,
         ),
         make_candidate_row(
             title="Next Action: Draft runway notes",
             object_type="NextAction",
             capture_created_at=datetime(2026, 3, 29, 8, 0, tzinfo=UTC),
             confidence=1.0,
-            provenance={"project": "Project Atlas", "person": "Sam"},
+            provenance={"project": "Project Atlas", "person": "Contact Two"},
             body={"action_text": "Draft notes"},
         ),
     ]
 
     payload = query_continuity_recall(
-        ContinuityRecallStoreStub(rows),  # type: ignore[arg-type]
+        ContinuityRecallStoreStub(
+            rows,
+            alias_matches={
+                ("project", "project phoenix"): [
+                    {
+                        "entity_id": project_entity_id,
+                        "entity_type": "project",
+                        "entity_name": "Project Orion",
+                        "created_at": datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+                    }
+                ],
+                ("person", "alex"): [
+                    {
+                        "entity_id": person_entity_id,
+                        "entity_type": "person",
+                        "entity_name": "Contact One",
+                        "created_at": datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+                    }
+                ],
+            },
+        ),  # type: ignore[arg-type]
         user_id=UUID("11111111-1111-4111-8111-111111111111"),
         request=ContinuityRecallQueryInput(
             query="follow up",
@@ -182,8 +236,39 @@ def test_recall_filters_project_person_query_and_time_window() -> None:
     )
 
     assert [item["title"] for item in payload["items"]] == [
-        "Next Action: Follow up with Alex on Phoenix",
+        "Next Action: Follow up with contact on Orion",
     ]
+
+
+def test_recall_canonicalizes_merged_entity_scope_ids() -> None:
+    source_project_entity_id = UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+    target_project_entity_id = UUID("ffffffff-ffff-4fff-8fff-ffffffffffff")
+    rows = [
+        make_candidate_row(
+            title="Decision: Keep rollout staged",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+            confidence=0.95,
+            provenance={"project": "Project Orion"},
+            body={"decision_text": "Keep rollout staged"},
+            project_entity_id=target_project_entity_id,
+        ),
+    ]
+
+    payload = query_continuity_recall(
+        ContinuityRecallStoreStub(
+            rows,
+            merge_targets={source_project_entity_id: target_project_entity_id},
+        ),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityRecallQueryInput(
+            project_entity_id=source_project_entity_id,
+            limit=10,
+        ),
+    )
+
+    assert [item["title"] for item in payload["items"]] == ["Decision: Keep rollout staged"]
+    assert payload["summary"]["filters"]["project_entity_id"] == str(target_project_entity_id)
 
 
 def test_recall_rejects_invalid_limits_and_time_window() -> None:
