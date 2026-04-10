@@ -55,6 +55,13 @@ Memories carry trust classification and promotion eligibility, so agents can sea
 
 Trust metadata flows through admission, retrieval, explain output, review behavior, and CLI/MCP responses, which makes memory quality visible instead of implicit.
 
+### It makes retrieval explainable, not just accurate
+
+Alice does not only return answers.
+Recall, resumption, open-loop review, and explain output all expose a shared explanation model with source facts, trust posture, evidence segments, supersession notes, and timestamps.
+
+That makes it easier to audit why an answer appeared, how it was derived, and how corrections changed the explanation chain over time.
+
 ### It is local-first and agent-agnostic
 
 Alice Core runs locally and exposes the same continuity semantics through the CLI and MCP, so you can use it with your own workflows instead of being locked into a closed assistant product.
@@ -77,6 +84,7 @@ The open-source surface includes:
 - deterministic CLI workflows
 - MCP server
 - trust-aware memory classification and promotion controls
+- shared explainability across recall, resume, open-loop review, and explain surfaces
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -109,6 +117,12 @@ In another terminal, verify the runtime and get a first useful result:
 ./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
 ./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
 ./.venv/bin/python -m alicebot_api open-loops --limit 5
+```
+
+Recall-derived surfaces now expose a shared explanation payload, and `explain` uses the same structure for continuity evidence:
+
+```bash
+./.venv/bin/python -m alicebot_api explain <continuity_object_id>
 ```
 
 Capture something new:
@@ -199,6 +213,7 @@ Alice is built around a shared continuity core with:
 
 - structured memory revisions
 - provenance- and trust-aware recall
+- shared explanation chains across recall-derived workflows
 - deterministic resumption briefs
 - open-loop objects
 - CLI and MCP surfaces on the same semantics
