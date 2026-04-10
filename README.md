@@ -55,6 +55,17 @@ Memories carry trust classification and promotion eligibility, so agents can sea
 
 Trust metadata flows through admission, retrieval, explain output, review behavior, and CLI/MCP responses, which makes memory quality visible instead of implicit.
 
+### It is temporal, not just current-state
+
+Alice does not just tell you what it believes now.
+It can reconstruct entity state at a specific point in time, show a chronological timeline of changes, and explain historical truth with trust, provenance, and supersession chains.
+
+That makes it useful for questions like:
+
+- What was true about this entity last week?
+- When did this change?
+- Why is this the effective fact as of this timestamp?
+
 ### It is local-first and agent-agnostic
 
 Alice Core runs locally and exposes the same continuity semantics through the CLI and MCP, so you can use it with your own workflows instead of being locked into a closed assistant product.
@@ -77,6 +88,7 @@ The open-source surface includes:
 - deterministic CLI workflows
 - MCP server
 - trust-aware memory classification and promotion controls
+- temporal state, timelines, and explain surfaces across HTTP, CLI, and MCP
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -111,6 +123,14 @@ In another terminal, verify the runtime and get a first useful result:
 ./.venv/bin/python -m alicebot_api open-loops --limit 5
 ```
 
+Inspect temporal state and history:
+
+```bash
+./.venv/bin/python -m alicebot_api state-at <entity_id> --at 2026-03-12T09:45:00+00:00
+./.venv/bin/python -m alicebot_api timeline <entity_id> --limit 20
+./.venv/bin/python -m alicebot_api explain --entity-id <entity_id> --at 2026-03-12T09:45:00+00:00
+```
+
 Capture something new:
 
 ```bash
@@ -129,15 +149,20 @@ Alice exposes a narrow MCP surface for continuity workflows:
 
 - `alice_capture`
 - `alice_recall`
+- `alice_state_at`
 - `alice_resume`
 - `alice_open_loops`
 - `alice_recent_decisions`
 - `alice_recent_changes`
+- `alice_timeline`
 - `alice_memory_review`
 - `alice_memory_correct`
+- `alice_explain`
 - `alice_context_pack`
 
 This makes it straightforward to plug Alice into MCP-capable assistants and development environments without changing the underlying continuity model.
+
+`alice_explain` supports either continuity-object evidence inspection or temporal entity explain output.
 
 See:
 
@@ -199,6 +224,7 @@ Alice is built around a shared continuity core with:
 
 - structured memory revisions
 - provenance- and trust-aware recall
+- temporal state reconstruction over memory revisions and effective edges
 - deterministic resumption briefs
 - open-loop objects
 - CLI and MCP surfaces on the same semantics
