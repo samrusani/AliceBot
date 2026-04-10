@@ -6,6 +6,7 @@ from uuid import UUID
 
 from psycopg.conninfo import make_conninfo
 
+from alicebot_api.continuity_explainability import build_continuity_item_explanation
 from alicebot_api.continuity_objects import serialize_continuity_lifecycle_state_from_record
 from alicebot_api.contracts import (
     ContinuityArtifactDetailRecord,
@@ -236,6 +237,21 @@ def build_continuity_explain(
 
     explain: ContinuityExplainRecord = {
         "continuity_object": _serialize_review_object(continuity_object),
+        "explanation": build_continuity_item_explanation(
+            store,
+            continuity_object_id=continuity_object["id"],
+            capture_event_id=continuity_object["capture_event_id"],
+            title=continuity_object["title"],
+            body=continuity_object["body"],
+            provenance=continuity_object["provenance"],
+            status=continuity_object["status"],
+            confidence=float(continuity_object["confidence"]),
+            last_confirmed_at=continuity_object["last_confirmed_at"],
+            supersedes_object_id=continuity_object["supersedes_object_id"],
+            superseded_by_object_id=continuity_object["superseded_by_object_id"],
+            created_at=continuity_object["created_at"],
+            updated_at=continuity_object["updated_at"],
+        ),
         "evidence_chain": serialize_continuity_evidence_rows(
             store.list_continuity_object_evidence(continuity_object_id)
         ),
