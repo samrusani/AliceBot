@@ -12,9 +12,41 @@ from alicebot_api.contracts import ContinuityRecallQueryInput
 class ContinuityRecallStoreStub:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self._rows = rows
+        self._capture_events: dict[UUID, dict[str, object]] = {}
+        self._evidence_by_object: dict[UUID, list[dict[str, object]]] = {}
+        self._corrections_by_object: dict[UUID, list[dict[str, object]]] = {}
 
     def list_continuity_recall_candidates(self):
         return list(self._rows)
+
+    def add_capture_event(self, capture_event_id: UUID, *, raw_content: str, created_at: datetime) -> None:
+        self._capture_events[capture_event_id] = {
+            "id": capture_event_id,
+            "user_id": UUID("11111111-1111-4111-8111-111111111111"),
+            "raw_content": raw_content,
+            "explicit_signal": None,
+            "admission_posture": "DERIVED",
+            "admission_reason": "seeded",
+            "created_at": created_at,
+        }
+
+    def get_continuity_capture_event_optional(self, capture_event_id: UUID):
+        record = self._capture_events.get(capture_event_id)
+        return None if record is None else dict(record)
+
+    def add_evidence_row(self, continuity_object_id: UUID, evidence_row: dict[str, object]) -> None:
+        self._evidence_by_object.setdefault(continuity_object_id, []).append(evidence_row)
+
+    def list_continuity_object_evidence(self, continuity_object_id: UUID):
+        return [dict(row) for row in self._evidence_by_object.get(continuity_object_id, [])]
+
+    def add_correction_event(self, continuity_object_id: UUID, correction_event: dict[str, object]) -> None:
+        self._corrections_by_object.setdefault(continuity_object_id, []).append(correction_event)
+
+    def list_continuity_correction_events(self, *, continuity_object_id: UUID, limit: int):
+        rows = [dict(row) for row in self._corrections_by_object.get(continuity_object_id, [])]
+        rows.sort(key=lambda row: (row["created_at"], row["id"]), reverse=True)
+        return rows[:limit]
 
 
 def make_candidate_row(
@@ -146,6 +178,9 @@ def test_recall_returns_deterministic_order_and_provenance_fields() -> None:
     assert payload["items"][0]["ordering"]["supersession_rank"] == 3
     assert payload["items"][0]["ordering"]["lifecycle_rank"] == 4
     assert payload["items"][0]["lifecycle"]["is_promotable"] is True
+    assert payload["items"][0]["explanation"]["trust"]["provenance_posture"] == "strong"
+    assert payload["items"][0]["explanation"]["evidence_segments"][0]["source_kind"] == "continuity_capture_event"
+    assert payload["items"][0]["explanation"]["timestamps"]["created_at"] == "2026-03-29T10:05:00+00:00"
 
 
 def test_recall_filters_project_person_query_and_time_window() -> None:
@@ -184,6 +219,91 @@ def test_recall_filters_project_person_query_and_time_window() -> None:
     assert [item["title"] for item in payload["items"]] == [
         "Next Action: Follow up with Alex on Phoenix",
     ]
+
+
+def test_recall_explanation_surfaces_evidence_and_correction_supersession_notes() -> None:
+    created_at = datetime(2026, 3, 29, 10, 5, tzinfo=UTC)
+    superseded_by_object_id = uuid4()
+    row = make_candidate_row(
+        title="Decision: Keep rollout phased",
+        object_type="Decision",
+        capture_created_at=created_at,
+        confidence=0.93,
+        provenance={
+            "thread_id": "thread-1",
+            "source_event_ids": ["event-1", "event-2"],
+        },
+        body={"decision_text": "Keep rollout phased"},
+        status="superseded",
+        superseded_by_object_id=superseded_by_object_id,
+    )
+    store = ContinuityRecallStoreStub([row])
+    store.add_capture_event(
+        row["capture_event_id"],
+        raw_content="Decision: Keep rollout phased",
+        created_at=created_at,
+    )
+    store.add_evidence_row(
+        row["id"],
+        {
+            "id": uuid4(),
+            "user_id": UUID("11111111-1111-4111-8111-111111111111"),
+            "continuity_object_id": row["id"],
+            "artifact_id": uuid4(),
+            "artifact_copy_id": uuid4(),
+            "artifact_segment_id": uuid4(),
+            "relationship": "supports",
+            "created_at": created_at,
+            "source_kind": "markdown_import",
+            "import_source_path": "fixtures/demo.md",
+            "relative_path": "demo.md",
+            "display_name": "Demo import",
+            "media_type": "text/markdown",
+            "artifact_created_at": created_at,
+            "artifact_copy_checksum_sha256": "checksum",
+            "artifact_copy_content_text": "Decision: Keep rollout phased",
+            "artifact_copy_content_length_bytes": 29,
+            "artifact_copy_content_encoding": "utf-8",
+            "artifact_copy_created_at": created_at,
+            "segment_source_item_id": "decision-1",
+            "segment_sequence_no": 1,
+            "segment_kind": "paragraph",
+            "segment_locator": {"line_start": 1},
+            "segment_raw_content": "Decision: Keep rollout phased because of rollout safety.",
+            "segment_checksum_sha256": "segment-checksum",
+            "segment_created_at": created_at,
+        },
+    )
+    store.add_correction_event(
+        row["id"],
+        {
+            "id": uuid4(),
+            "user_id": UUID("11111111-1111-4111-8111-111111111111"),
+            "continuity_object_id": row["id"],
+            "action": "supersede",
+            "reason": "Updated rollout decision replaced this one",
+            "before_snapshot": {},
+            "after_snapshot": {},
+            "payload": {},
+            "created_at": datetime(2026, 3, 29, 11, 0, tzinfo=UTC),
+        },
+    )
+
+    payload = query_continuity_recall(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityRecallQueryInput(limit=20),
+    )
+
+    explanation = payload["items"][0]["explanation"]
+    assert explanation["trust"]["trust_class"] == "human_curated"
+    assert explanation["evidence_segments"][0]["source_kind"] == "markdown_import"
+    assert explanation["evidence_segments"][0]["snippet"].startswith("Decision: Keep rollout phased")
+    assert any(
+        note["related_object_id"] == str(superseded_by_object_id)
+        for note in explanation["supersession_notes"]
+    )
+    assert any(note["action"] == "supersede" for note in explanation["supersession_notes"])
 
 
 def test_recall_rejects_invalid_limits_and_time_window() -> None:

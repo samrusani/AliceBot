@@ -75,6 +75,96 @@ def _format_provenance_source(item: ContinuityRecallResultRecord) -> str:
     return "(unknown)"
 
 
+def _format_explanation_source_facts(item: ContinuityRecallResultRecord) -> str:
+    explanation = item.get("explanation")
+    if not isinstance(explanation, dict):
+        return "(none)"
+    source_facts = explanation.get("source_facts")
+    if not isinstance(source_facts, list) or len(source_facts) == 0:
+        return "(none)"
+    rendered: list[str] = []
+    for fact in source_facts:
+        if not isinstance(fact, dict):
+            continue
+        label = fact.get("label")
+        value = fact.get("value")
+        if isinstance(label, str) and isinstance(value, str):
+            rendered.append(f"{label}={value}")
+    return " | ".join(rendered) if rendered else "(none)"
+
+
+def _format_explanation_evidence(item: ContinuityRecallResultRecord) -> str:
+    explanation = item.get("explanation")
+    if not isinstance(explanation, dict):
+        return "(none)"
+    evidence_segments = explanation.get("evidence_segments")
+    if not isinstance(evidence_segments, list) or len(evidence_segments) == 0:
+        return "(none)"
+    rendered: list[str] = []
+    for segment in evidence_segments:
+        if not isinstance(segment, dict):
+            continue
+        source_kind = segment.get("source_kind")
+        source_id = segment.get("source_id")
+        snippet = segment.get("snippet")
+        if isinstance(source_kind, str) and isinstance(source_id, str) and isinstance(snippet, str):
+            rendered.append(f"{source_kind}:{source_id} \"{snippet}\"")
+    return " | ".join(rendered) if rendered else "(none)"
+
+
+def _format_explanation_supersession(item: ContinuityRecallResultRecord) -> str:
+    explanation = item.get("explanation")
+    if not isinstance(explanation, dict):
+        return "(none)"
+    supersession_notes = explanation.get("supersession_notes")
+    if not isinstance(supersession_notes, list) or len(supersession_notes) == 0:
+        return "(none)"
+    rendered: list[str] = []
+    for note in supersession_notes:
+        if not isinstance(note, dict):
+            continue
+        text = note.get("note")
+        if isinstance(text, str):
+            rendered.append(text)
+    return " | ".join(rendered) if rendered else "(none)"
+
+
+def _format_explanation_timestamps(item: ContinuityRecallResultRecord) -> str:
+    explanation = item.get("explanation")
+    if not isinstance(explanation, dict):
+        return (
+            f"created_at={item['created_at']} updated_at={item['updated_at']} "
+            f"last_confirmed_at={item['last_confirmed_at']}"
+        )
+    timestamps = explanation.get("timestamps")
+    if not isinstance(timestamps, dict):
+        return (
+            f"created_at={item['created_at']} updated_at={item['updated_at']} "
+            f"last_confirmed_at={item['last_confirmed_at']}"
+        )
+    return (
+        f"capture_created_at={timestamps.get('capture_created_at')} "
+        f"created_at={timestamps.get('created_at')} "
+        f"updated_at={timestamps.get('updated_at')} "
+        f"last_confirmed_at={timestamps.get('last_confirmed_at')}"
+    )
+
+
+def _format_explanation_trust(item: ContinuityRecallResultRecord) -> str:
+    explanation = item.get("explanation")
+    if not isinstance(explanation, dict):
+        return "(none)"
+    trust = explanation.get("trust")
+    if not isinstance(trust, dict):
+        return "(none)"
+    return (
+        f"{trust.get('trust_class')} "
+        f"reason={trust.get('trust_reason')} "
+        f"evidence_segments={trust.get('evidence_segment_count')} "
+        f"corrections={trust.get('correction_count')}"
+    )
+
+
 def _render_recall_item(
     item: ContinuityRecallResultRecord,
     *,
@@ -102,6 +192,11 @@ def _render_recall_item(
         ),
         f"{prefix}  source={_format_provenance_source(item)}",
         f"{prefix}  provenance_refs={_format_provenance_refs(item)}",
+        f"{prefix}  trust={_format_explanation_trust(item)}",
+        f"{prefix}  timestamps={_format_explanation_timestamps(item)}",
+        f"{prefix}  source_facts={_format_explanation_source_facts(item)}",
+        f"{prefix}  evidence_segments={_format_explanation_evidence(item)}",
+        f"{prefix}  supersession_notes={_format_explanation_supersession(item)}",
     ]
     return lines
 
@@ -341,14 +436,34 @@ def format_review_detail_output(payload: ContinuityReviewDetailResponse) -> str:
 def format_explain_output(payload: ContinuityExplainResponse) -> str:
     explain = payload["explain"]
     continuity_object = explain["continuity_object"]
+    explanation = explain.get("explanation")
     lines = [
         "explain",
         f"continuity_object_id: {continuity_object['id']}",
         f"title: {continuity_object['title']}",
         f"type: {continuity_object['object_type']}",
         f"status: {continuity_object['status']}",
-        f"evidence_links: {len(explain['evidence_chain'])}",
     ]
+    if isinstance(explanation, dict):
+        trust = explanation.get("trust", {})
+        timestamps = explanation.get("timestamps", {})
+        source_facts = explanation.get("source_facts", [])
+        supersession_notes = explanation.get("supersession_notes", [])
+        evidence_segments = explanation.get("evidence_segments", [])
+        lines.extend(
+            [
+                f"trust: {_format_json(trust)}",
+                f"timestamps: {_format_json(timestamps)}",
+                f"source_facts: {_format_json(source_facts)}",
+                f"evidence_segments: {_format_json(evidence_segments)}",
+                f"supersession_notes: {_format_json(supersession_notes)}",
+            ]
+        )
+    lines.extend(
+        [
+        f"evidence_links: {len(explain['evidence_chain'])}",
+        ]
+    )
     if len(explain["evidence_chain"]) == 0:
         lines.append("evidence: none")
         return "\n".join(lines)

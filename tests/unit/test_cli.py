@@ -121,6 +121,41 @@ def test_recall_formatting_is_deterministic() -> None:
                     "lifecycle_rank": 4,
                     "confidence": 0.95,
                 },
+                "explanation": {
+                    "source_facts": [
+                        {"kind": "capture_event", "label": "raw_content", "value": "Decision: Keep rollout phased"},
+                        {"kind": "body", "label": "decision_text", "value": "Keep rollout phased"},
+                    ],
+                    "trust": {
+                        "trust_class": "human_curated",
+                        "trust_reason": "Inferred from confirmation or correction history.",
+                        "confirmation_status": "confirmed",
+                        "confidence": 0.95,
+                        "provenance_posture": "strong",
+                        "evidence_segment_count": 1,
+                        "correction_count": 0,
+                    },
+                    "evidence_segments": [
+                        {
+                            "relationship": "captured_from",
+                            "source_kind": "continuity_capture_event",
+                            "source_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                            "display_name": "capture event",
+                            "relative_path": None,
+                            "segment_kind": "capture_event",
+                            "locator": None,
+                            "snippet": "Decision: Keep rollout phased",
+                            "created_at": "2026-03-30T09:58:00+00:00",
+                        }
+                    ],
+                    "supersession_notes": [],
+                    "timestamps": {
+                        "capture_created_at": "2026-03-30T09:58:00+00:00",
+                        "created_at": "2026-03-30T09:59:00+00:00",
+                        "updated_at": "2026-03-30T10:00:00+00:00",
+                        "last_confirmed_at": "2026-03-30T10:00:00+00:00",
+                    },
+                },
                 "created_at": "2026-03-30T09:59:00+00:00",
                 "updated_at": "2026-03-30T10:00:00+00:00",
             }
@@ -150,7 +185,12 @@ def test_recall_formatting_is_deterministic() -> None:
         "    confidence=0.950 relevance=1.000 confirmation=confirmed\n"
         "    freshness=fresh provenance=strong supersession=current\n"
         "    source=(unknown)\n"
-        "    provenance_refs=continuity_capture_event:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb; thread:thread-1"
+        "    provenance_refs=continuity_capture_event:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb; thread:thread-1\n"
+        "    trust=human_curated reason=Inferred from confirmation or correction history. evidence_segments=1 corrections=0\n"
+        "    timestamps=capture_created_at=2026-03-30T09:58:00+00:00 created_at=2026-03-30T09:59:00+00:00 updated_at=2026-03-30T10:00:00+00:00 last_confirmed_at=2026-03-30T10:00:00+00:00\n"
+        "    source_facts=raw_content=Decision: Keep rollout phased | decision_text=Keep rollout phased\n"
+        "    evidence_segments=continuity_capture_event:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb \"Decision: Keep rollout phased\"\n"
+        "    supersession_notes=(none)"
     )
 
 
@@ -218,6 +258,38 @@ def test_recall_formatting_renders_provenance_source_label_when_present() -> Non
                     "posture_rank": 2,
                     "lifecycle_rank": 4,
                     "confidence": 0.95,
+                },
+                "explanation": {
+                    "source_facts": [],
+                    "trust": {
+                        "trust_class": "llm_single_source",
+                        "trust_reason": "Inferred from a single capture or provenance chain.",
+                        "confirmation_status": "confirmed",
+                        "confidence": 0.95,
+                        "provenance_posture": "strong",
+                        "evidence_segment_count": 1,
+                        "correction_count": 0,
+                    },
+                    "evidence_segments": [
+                        {
+                            "relationship": "captured_from",
+                            "source_kind": "continuity_capture_event",
+                            "source_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                            "display_name": "capture event",
+                            "relative_path": None,
+                            "segment_kind": "capture_event",
+                            "locator": None,
+                            "snippet": "Decision: Keep rollout phased",
+                            "created_at": "2026-03-30T09:58:00+00:00",
+                        }
+                    ],
+                    "supersession_notes": [],
+                    "timestamps": {
+                        "capture_created_at": "2026-03-30T09:58:00+00:00",
+                        "created_at": "2026-03-30T09:59:00+00:00",
+                        "updated_at": "2026-03-30T10:00:00+00:00",
+                        "last_confirmed_at": "2026-03-30T10:00:00+00:00",
+                    },
                 },
                 "created_at": "2026-03-30T09:59:00+00:00",
                 "updated_at": "2026-03-30T10:00:00+00:00",
