@@ -13,7 +13,9 @@ from uuid import UUID
 import psycopg
 
 from alicebot_api.cli_formatting import (
+    format_artifact_detail_output,
     format_capture_output,
+    format_explain_output,
     format_lifecycle_detail_output,
     format_lifecycle_list_output,
     format_open_loops_output,
@@ -28,6 +30,11 @@ from alicebot_api.config import Settings, get_settings
 from alicebot_api.continuity_capture import (
     ContinuityCaptureValidationError,
     capture_continuity_input,
+)
+from alicebot_api.continuity_evidence import (
+    ContinuityEvidenceNotFoundError,
+    build_continuity_explain,
+    get_continuity_artifact_detail,
 )
 from alicebot_api.continuity_objects import (
     default_continuity_promotable,
@@ -305,6 +312,26 @@ def _run_review_apply(ctx: CLIContext, args: argparse.Namespace) -> str:
             ),
         )
     return format_review_apply_output(payload)
+
+
+def _run_explain(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = build_continuity_explain(
+            store,
+            user_id=ctx.user_id,
+            continuity_object_id=args.continuity_object_id,
+        )
+    return format_explain_output(payload)
+
+
+def _run_evidence_artifact(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = get_continuity_artifact_detail(
+            store,
+            user_id=ctx.user_id,
+            artifact_id=args.artifact_id,
+        )
+    return format_artifact_detail_output(payload)
 
 
 def _run_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
@@ -608,6 +635,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review_apply_parser.set_defaults(handler=_run_review_apply)
 
+    explain_parser = subparsers.add_parser("explain", help="Show raw evidence chain for one continuity object.")
+    explain_parser.add_argument("continuity_object_id", type=_parse_uuid, help="Continuity object UUID.")
+    explain_parser.set_defaults(handler=_run_explain)
+
+    evidence_parser = subparsers.add_parser("evidence", help="Inspect archived continuity artifacts.")
+    evidence_subparsers = evidence_parser.add_subparsers(dest="evidence_command", required=True)
+    evidence_artifact_parser = evidence_subparsers.add_parser("artifact", help="Show one archived artifact.")
+    evidence_artifact_parser.add_argument("artifact_id", type=_parse_uuid, help="Continuity artifact UUID.")
+    evidence_artifact_parser.set_defaults(handler=_run_evidence_artifact)
+
     status_parser = subparsers.add_parser("status", help="Show local continuity runtime status.")
     status_parser.set_defaults(handler=_run_status)
 
@@ -683,6 +720,7 @@ def main(argv: list[str] | None = None) -> int:
         ContinuityOpenLoopValidationError,
         ContinuityReviewValidationError,
         ContinuityReviewNotFoundError,
+        ContinuityEvidenceNotFoundError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

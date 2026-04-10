@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
+from alicebot_api.continuity_evidence import ArchivedArtifactRef, checksum_sha256_for_text
 from alicebot_api.importer_models import (
     ImporterNormalizedBatch,
     OBJECT_TYPE_TO_EXPLICIT_SIGNAL,
@@ -79,6 +80,7 @@ def import_normalized_batch(
     user_id: UUID,
     batch: ImporterNormalizedBatch,
     config: ImportPersistenceConfig,
+    archived_artifacts: dict[str, ArchivedArtifactRef],
 ) -> JsonObject:
     del user_id
 
@@ -93,12 +95,27 @@ def import_normalized_batch(
     imported_capture_ids: list[str] = []
     skipped_duplicates = 0
 
-    for item in batch.items:
+    for sequence_no, item in enumerate(batch.items, start=1):
         if item.dedupe_key in existing_dedupe_keys or item.dedupe_key in run_dedupe_keys:
             skipped_duplicates += 1
             continue
 
         run_dedupe_keys.add(item.dedupe_key)
+
+        archived_artifact = archived_artifacts.get(item.source_file)
+        if archived_artifact is None:
+            raise ValueError(f"missing archived artifact for source file '{item.source_file}'")
+
+        segment = store.upsert_continuity_artifact_segment(
+            artifact_id=archived_artifact.artifact_id,
+            artifact_copy_id=archived_artifact.artifact_copy_id,
+            source_item_id=item.source_item_id,
+            sequence_no=sequence_no,
+            segment_kind=item.source_segment_kind,
+            locator=item.source_locator,
+            raw_content=item.source_segment_text,
+            checksum_sha256=checksum_sha256_for_text(item.source_segment_text),
+        )
 
         capture = store.create_continuity_capture_event(
             raw_content=item.raw_content,
@@ -126,6 +143,11 @@ def import_normalized_batch(
             source_event_ids=source_event_ids,
             config=config,
         )
+        provenance["artifact_id"] = str(archived_artifact.artifact_id)
+        provenance["artifact_copy_id"] = str(archived_artifact.artifact_copy_id)
+        provenance["artifact_copy_checksum_sha256"] = archived_artifact.checksum_sha256
+        provenance["artifact_segment_id"] = str(segment["id"])
+        provenance["artifact_segment_source_item_id"] = item.source_item_id
 
         continuity_object = store.create_continuity_object(
             capture_event_id=capture["id"],
@@ -135,6 +157,13 @@ def import_normalized_batch(
             body=item.body,
             provenance=provenance,
             confidence=item.confidence,
+        )
+        store.create_continuity_object_evidence_link(
+            continuity_object_id=continuity_object["id"],
+            artifact_id=archived_artifact.artifact_id,
+            artifact_copy_id=archived_artifact.artifact_copy_id,
+            artifact_segment_id=segment["id"],
+            relationship="primary_source_segment",
         )
 
         imported_capture_ids.append(str(capture["id"]))

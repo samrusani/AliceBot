@@ -300,6 +300,12 @@ def _normalize_entry(
     return OpenClawNormalizedItem(
         source_item_id=source_item_id,
         source_file=source_file,
+        source_locator={
+            "source_identifier": source_identifier,
+            "entry_index": entry_index + 1,
+        },
+        source_segment_text=canonical_json_string(raw_entry),
+        source_segment_kind="openclaw_entry",
         object_type=object_type,
         status=status,
         raw_content=_build_raw_content(object_type=object_type, text=text),
@@ -333,6 +339,29 @@ def _extract_context(
         workspace_name=pick_first_text(payload.get("name"), payload.get("title")),
         source_path=str(source_path),
     )
+
+
+def list_openclaw_source_files(source: str | Path) -> tuple[Path, list[Path]]:
+    source_path = Path(source).expanduser().resolve()
+    if not source_path.exists():
+        raise OpenClawAdapterValidationError(f"OpenClaw source path does not exist: {source_path}")
+
+    if source_path.is_file():
+        return source_path, [source_path]
+
+    files: list[Path] = []
+    for filename in (*_SUPPORTED_WORKSPACE_FILENAMES, *_SUPPORTED_MEMORY_FILENAMES):
+        candidate = source_path / filename
+        if candidate.exists():
+            files.append(candidate)
+
+    if files:
+        return source_path, files
+
+    json_files = sorted(path for path in source_path.iterdir() if path.suffix == ".json")
+    if not json_files:
+        raise OpenClawAdapterValidationError("no OpenClaw memory entries were found at the source path")
+    return source_path, json_files
 
 
 def load_openclaw_payload(source: str | Path) -> OpenClawNormalizedBatch:
@@ -419,5 +448,6 @@ def load_openclaw_payload(source: str | Path) -> OpenClawNormalizedBatch:
 
 __all__ = [
     "OpenClawAdapterValidationError",
+    "list_openclaw_source_files",
     "load_openclaw_payload",
 ]

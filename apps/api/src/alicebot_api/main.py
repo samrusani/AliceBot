@@ -87,7 +87,9 @@ from alicebot_api.contracts import (
     MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
+    ContinuityArtifactDetailResponse,
     ContinuityCaptureCreateInput,
+    ContinuityExplainResponse,
     ContinuityLifecycleDetailResponse,
     ContinuityLifecycleListResponse,
     ContinuityLifecycleQueryInput,
@@ -352,6 +354,11 @@ from alicebot_api.continuity_capture import (
     capture_continuity_input,
     get_continuity_capture_detail,
     list_continuity_capture_inbox,
+)
+from alicebot_api.continuity_evidence import (
+    ContinuityEvidenceNotFoundError,
+    build_continuity_explain,
+    get_continuity_artifact_detail,
 )
 from alicebot_api.continuity_lifecycle import (
     ContinuityLifecycleNotFoundError,
@@ -4202,6 +4209,52 @@ def get_continuity_review_detail_endpoint(
                 continuity_object_id=continuity_object_id,
             )
     except ContinuityReviewNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/explain/{continuity_object_id}")
+def get_continuity_explain_endpoint(
+    continuity_object_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityExplainResponse = build_continuity_explain(
+                ContinuityStore(conn),
+                user_id=user_id,
+                continuity_object_id=continuity_object_id,
+            )
+    except ContinuityEvidenceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/admin/debug/continuity/artifacts/{artifact_id}")
+def get_continuity_artifact_detail_endpoint(
+    artifact_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityArtifactDetailResponse = get_continuity_artifact_detail(
+                ContinuityStore(conn),
+                user_id=user_id,
+                artifact_id=artifact_id,
+            )
+    except ContinuityEvidenceNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     return JSONResponse(

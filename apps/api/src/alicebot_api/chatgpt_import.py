@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from uuid import UUID
 
+from alicebot_api.continuity_evidence import SourceArtifactArchiveInput, archive_import_source_files
 from alicebot_api.importer_models import (
     ImporterNormalizedBatch,
     ImporterNormalizedItem,
@@ -68,6 +69,23 @@ def _read_json(path: Path) -> object:
         raise ChatGPTImportValidationError(
             f"invalid JSON at {path}: {exc.msg}"
         ) from exc
+
+
+def _read_chatgpt_source_files(source: str | Path) -> tuple[Path, list[Path]]:
+    source_path = Path(source).expanduser().resolve()
+    if not source_path.exists():
+        raise ChatGPTImportValidationError(f"ChatGPT source path does not exist: {source_path}")
+
+    source_files = [source_path] if source_path.is_file() else sorted(source_path.rglob("*.json"))
+    if not source_files:
+        raise ChatGPTImportValidationError("no ChatGPT JSON files were found at the source path")
+    return source_path, source_files
+
+
+def _relative_source_file(source_root: Path, file_path: Path) -> str:
+    if source_root.is_dir():
+        return str(file_path.relative_to(source_root))
+    return file_path.name
 
 
 def _normalize_message_text(value: object) -> str | None:
@@ -242,13 +260,7 @@ def _message_text(message: JsonObject) -> str | None:
 
 
 def load_chatgpt_payload(source: str | Path) -> ImporterNormalizedBatch:
-    source_path = Path(source).expanduser().resolve()
-    if not source_path.exists():
-        raise ChatGPTImportValidationError(f"ChatGPT source path does not exist: {source_path}")
-
-    source_files = [source_path] if source_path.is_file() else sorted(source_path.rglob("*.json"))
-    if not source_files:
-        raise ChatGPTImportValidationError("no ChatGPT JSON files were found at the source path")
+    source_path, source_files = _read_chatgpt_source_files(source)
 
     fixture_id: str | None = None
     workspace_id: str | None = None
@@ -350,7 +362,14 @@ def load_chatgpt_payload(source: str | Path) -> ImporterNormalizedBatch:
                 items.append(
                     ImporterNormalizedItem(
                         source_item_id=source_item_id,
-                        source_file=source_file.name,
+                        source_file=_relative_source_file(source_path, source_file),
+                        source_locator={
+                            "conversation_id": conversation_id,
+                            "message_id": message_id,
+                            "role": role,
+                        },
+                        source_segment_text=text,
+                        source_segment_kind="chatgpt_message",
                         object_type=object_type,
                         status=status,
                         raw_content=_build_raw_content(object_type=object_type, text=object_text),
@@ -383,7 +402,23 @@ def import_chatgpt_source(
     user_id: UUID,
     source: str | Path,
 ) -> JsonObject:
-    batch = load_chatgpt_payload(source)
+    source_path, source_files = _read_chatgpt_source_files(source)
+    archived_artifacts = archive_import_source_files(
+        store,
+        user_id=user_id,
+        source_kind="chatgpt_import",
+        import_source_path=str(source_path),
+        files=[
+            SourceArtifactArchiveInput(
+                relative_path=_relative_source_file(source_path, file_path),
+                display_name=file_path.name,
+                media_type="application/json",
+                content_text=file_path.read_text(encoding="utf-8"),
+            )
+            for file_path in source_files
+        ],
+    )
+    batch = load_chatgpt_payload(source_path)
     return import_normalized_batch(
         store,
         user_id=user_id,
@@ -395,6 +430,7 @@ def import_chatgpt_source(
             dedupe_key_field="chatgpt_dedupe_key",
             dedupe_posture=_DEFAULT_DEDUPE_POSTURE,
         ),
+        archived_artifacts=archived_artifacts,
     )
 
 
