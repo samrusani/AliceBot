@@ -15,7 +15,7 @@ AI assistants are good at replying in the moment. They are still weak at remembe
 
 Alice is the continuity layer that fixes that.
 
-It gives agents and workflows a local-first system for capture, recall, resumption, open-loop tracking, and correction-aware memory, so you do not have to rebuild context from scratch every time work resumes.
+It gives agents and workflows a local-first system for capture, recall, resumption, open-loop tracking, and correction-aware, trust-aware memory, so you do not have to rebuild context from scratch every time work resumes.
 
 ## Why use Alice
 
@@ -48,6 +48,13 @@ Alice is designed to answer the higher-value questions:
 
 Alice supports explicit review, correction, and supersession so future answers improve in a traceable way instead of drifting based on hidden summarization.
 
+### It is trust-aware
+
+Alice does not treat every memory as equally reliable.
+Memories carry trust classification and promotion eligibility, so agents can search broadly without promoting weak, single-source AI-extracted facts into durable truth by default.
+
+Trust metadata flows through admission, retrieval, explain output, review behavior, and CLI/MCP responses, which makes memory quality visible instead of implicit.
+
 ### It is local-first and agent-agnostic
 
 Alice Core runs locally and exposes the same continuity semantics through the CLI and MCP, so you can use it with your own workflows instead of being locked into a closed assistant product.
@@ -69,6 +76,7 @@ The open-source surface includes:
 - Alice Core
 - deterministic CLI workflows
 - MCP server
+- trust-aware memory classification and promotion controls
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -190,7 +198,7 @@ See:
 Alice is built around a shared continuity core with:
 
 - structured memory revisions
-- provenance-aware recall
+- provenance- and trust-aware recall
 - deterministic resumption briefs
 - open-loop objects
 - CLI and MCP surfaces on the same semantics
