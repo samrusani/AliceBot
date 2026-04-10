@@ -21,6 +21,8 @@ def test_parser_routes_required_commands() -> None:
         (["review", "queue"], "_run_review_queue"),
         (["review", "show", continuity_object_id], "_run_review_show"),
         (["review", "apply", continuity_object_id, "--action", "confirm"], "_run_review_apply"),
+        (["explain", continuity_object_id], "_run_explain"),
+        (["evidence", "artifact", continuity_object_id], "_run_evidence_artifact"),
         (["status"], "_run_status"),
     ]
 

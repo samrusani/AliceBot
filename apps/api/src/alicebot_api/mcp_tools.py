@@ -10,6 +10,11 @@ from alicebot_api.continuity_capture import (
     ContinuityCaptureValidationError,
     capture_continuity_input,
 )
+from alicebot_api.continuity_evidence import (
+    ContinuityEvidenceNotFoundError,
+    build_continuity_explain,
+    get_continuity_artifact_detail,
+)
 from alicebot_api.continuity_open_loops import (
     ContinuityOpenLoopValidationError,
     compile_continuity_open_loop_dashboard,
@@ -486,6 +491,27 @@ def _handle_alice_memory_correct(context: MCPRuntimeContext, arguments: Mapping[
         )
 
 
+def _handle_alice_explain(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _store_context(context) as store:
+        return build_continuity_explain(
+            store,
+            user_id=context.user_id,
+            continuity_object_id=_parse_required_uuid(arguments, "continuity_object_id"),
+        )
+
+
+def _handle_alice_artifact_inspect(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    with _store_context(context) as store:
+        return get_continuity_artifact_detail(
+            store,
+            user_id=context.user_id,
+            artifact_id=_parse_required_uuid(arguments, "artifact_id"),
+        )
+
+
 def _handle_alice_context_pack(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     open_loops_limit = _parse_int(
         arguments,
@@ -704,6 +730,30 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_explain",
+        "description": "Show the raw evidence chain backing one continuity object.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["continuity_object_id"],
+            "properties": {
+                "continuity_object_id": {"type": "string", "format": "uuid"},
+            },
+        },
+    },
+    {
+        "name": "alice_artifact_inspect",
+        "description": "Inspect one archived artifact with copies and extracted segments.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["artifact_id"],
+            "properties": {
+                "artifact_id": {"type": "string", "format": "uuid"},
+            },
+        },
+    },
+    {
         "name": "alice_context_pack",
         "description": "Assemble a deterministic continuity context pack for scoped external-agent use.",
         "inputSchema": {
@@ -746,6 +796,8 @@ _TOOL_HANDLERS = {
     "alice_recent_changes": _handle_alice_recent_changes,
     "alice_memory_review": _handle_alice_memory_review,
     "alice_memory_correct": _handle_alice_memory_correct,
+    "alice_explain": _handle_alice_explain,
+    "alice_artifact_inspect": _handle_alice_artifact_inspect,
     "alice_context_pack": _handle_alice_context_pack,
 }
 
@@ -774,6 +826,7 @@ def call_mcp_tool(
         ContinuityOpenLoopValidationError,
         ContinuityReviewValidationError,
         ContinuityReviewNotFoundError,
+        ContinuityEvidenceNotFoundError,
     ) as exc:
         raise MCPToolError(str(exc)) from exc
     except (TypeError, ValueError) as exc:

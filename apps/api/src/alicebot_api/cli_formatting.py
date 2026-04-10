@@ -4,8 +4,10 @@ import json
 from typing import Mapping, Sequence
 
 from alicebot_api.contracts import (
+    ContinuityArtifactDetailResponse,
     ContinuityCaptureCreateResponse,
     ContinuityCorrectionApplyResponse,
+    ContinuityExplainResponse,
     ContinuityLifecycleDetailResponse,
     ContinuityLifecycleListResponse,
     ContinuityOpenLoopDashboardResponse,
@@ -330,6 +332,87 @@ def format_review_detail_output(payload: ContinuityReviewDetailResponse) -> str:
             f"reason={event['reason']} created_at={event['created_at']}"
         )
 
+    return "\n".join(lines)
+
+
+def format_explain_output(payload: ContinuityExplainResponse) -> str:
+    explain = payload["explain"]
+    continuity_object = explain["continuity_object"]
+    lines = [
+        "explain",
+        f"continuity_object_id: {continuity_object['id']}",
+        f"title: {continuity_object['title']}",
+        f"type: {continuity_object['object_type']}",
+        f"status: {continuity_object['status']}",
+        f"evidence_links: {len(explain['evidence_chain'])}",
+    ]
+    if len(explain["evidence_chain"]) == 0:
+        lines.append("evidence: none")
+        return "\n".join(lines)
+
+    for index, link in enumerate(explain["evidence_chain"], start=1):
+        lines.extend(
+            [
+                f"{index}. relationship={link['relationship']}",
+                (
+                    "   artifact="
+                    f"{link['artifact']['display_name']} "
+                    f"({link['artifact']['relative_path']}, {link['artifact']['source_kind']})"
+                ),
+                f"   artifact_copy_checksum={link['artifact_copy']['checksum_sha256']}",
+            ]
+        )
+        segment = link["artifact_segment"]
+        if segment is not None:
+            lines.extend(
+                [
+                    (
+                        "   segment="
+                        f"{segment['segment_kind']} "
+                        f"source_item_id={segment['source_item_id']} "
+                        f"locator={_format_json(segment['locator'])}"
+                    ),
+                    f"   raw_evidence={segment['raw_content']}",
+                ]
+            )
+    return "\n".join(lines)
+
+
+def format_artifact_detail_output(payload: ContinuityArtifactDetailResponse) -> str:
+    detail = payload["artifact_detail"]
+    artifact = detail["artifact"]
+    lines = [
+        "artifact detail",
+        f"artifact_id: {artifact['id']}",
+        f"source_kind: {artifact['source_kind']}",
+        f"import_source_path: {artifact['import_source_path']}",
+        f"relative_path: {artifact['relative_path']}",
+        f"media_type: {artifact['media_type']}",
+        f"copies: {len(detail['copies'])}",
+        f"segments: {len(detail['segments'])}",
+    ]
+    for index, artifact_copy in enumerate(detail["copies"], start=1):
+        lines.extend(
+            [
+                f"copy {index}: checksum={artifact_copy['checksum_sha256']}",
+                (
+                    "  content="
+                    f"{artifact_copy['content_encoding']} "
+                    f"bytes={artifact_copy['content_length_bytes']}"
+                ),
+            ]
+        )
+    for index, segment in enumerate(detail["segments"], start=1):
+        lines.extend(
+            [
+                (
+                    f"segment {index}: {segment['segment_kind']} "
+                    f"source_item_id={segment['source_item_id']}"
+                ),
+                f"  locator={_format_json(segment['locator'])}",
+                f"  raw={segment['raw_content']}",
+            ]
+        )
     return "\n".join(lines)
 
 

@@ -31,6 +31,9 @@ class OpenClawWorkspaceContext:
 class OpenClawNormalizedItem:
     source_item_id: str
     source_file: str
+    source_locator: JsonObject
+    source_segment_text: str
+    source_segment_kind: str
     object_type: str
     status: str
     raw_content: str

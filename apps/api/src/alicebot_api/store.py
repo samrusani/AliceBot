@@ -220,6 +220,82 @@ class ContinuityRecallCandidateRow(TypedDict):
     capture_created_at: datetime
 
 
+class ContinuityArtifactRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    source_kind: str
+    import_source_path: str
+    relative_path: str
+    display_name: str
+    media_type: str
+    created_at: datetime
+
+
+class ContinuityArtifactCopyRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    artifact_id: UUID
+    checksum_sha256: str
+    content_text: str
+    content_length_bytes: int
+    content_encoding: str
+    created_at: datetime
+
+
+class ContinuityArtifactSegmentRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    artifact_id: UUID
+    artifact_copy_id: UUID
+    source_item_id: str
+    sequence_no: int
+    segment_kind: str
+    locator: JsonObject
+    raw_content: str
+    checksum_sha256: str
+    created_at: datetime
+
+
+class ContinuityObjectEvidenceLinkRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    continuity_object_id: UUID
+    artifact_id: UUID
+    artifact_copy_id: UUID
+    artifact_segment_id: UUID | None
+    relationship: str
+    created_at: datetime
+
+
+class ContinuityObjectEvidenceRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    continuity_object_id: UUID
+    artifact_id: UUID
+    artifact_copy_id: UUID
+    artifact_segment_id: UUID | None
+    relationship: str
+    created_at: datetime
+    source_kind: str
+    import_source_path: str
+    relative_path: str
+    display_name: str
+    media_type: str
+    artifact_created_at: datetime
+    artifact_copy_checksum_sha256: str
+    artifact_copy_content_text: str
+    artifact_copy_content_length_bytes: int
+    artifact_copy_content_encoding: str
+    artifact_copy_created_at: datetime
+    segment_source_item_id: str | None
+    segment_sequence_no: int | None
+    segment_kind: str | None
+    segment_locator: JsonObject | None
+    segment_raw_content: str | None
+    segment_checksum_sha256: str | None
+    segment_created_at: datetime | None
+
+
 class EmbeddingConfigRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -4110,6 +4186,302 @@ LIST_CONTINUITY_RECALL_CANDIDATES_SQL = """
                 ORDER BY continuity_objects.created_at DESC, continuity_objects.id DESC
                 """
 
+UPSERT_CONTINUITY_ARTIFACT_SQL = """
+                INSERT INTO continuity_artifacts (
+                  user_id,
+                  source_kind,
+                  import_source_path,
+                  relative_path,
+                  display_name,
+                  media_type
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                ON CONFLICT (user_id, source_kind, import_source_path, relative_path)
+                DO NOTHING
+                RETURNING
+                  id,
+                  user_id,
+                  source_kind,
+                  import_source_path,
+                  relative_path,
+                  display_name,
+                  media_type,
+                  created_at
+                """
+
+GET_CONTINUITY_ARTIFACT_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  source_kind,
+                  import_source_path,
+                  relative_path,
+                  display_name,
+                  media_type,
+                  created_at
+                FROM continuity_artifacts
+                WHERE id = %s
+                """
+
+GET_CONTINUITY_ARTIFACT_BY_SOURCE_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  source_kind,
+                  import_source_path,
+                  relative_path,
+                  display_name,
+                  media_type,
+                  created_at
+                FROM continuity_artifacts
+                WHERE source_kind = %s
+                  AND import_source_path = %s
+                  AND relative_path = %s
+                """
+
+UPSERT_CONTINUITY_ARTIFACT_COPY_SQL = """
+                INSERT INTO continuity_artifact_copies (
+                  user_id,
+                  artifact_id,
+                  checksum_sha256,
+                  content_text,
+                  content_length_bytes,
+                  content_encoding
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                ON CONFLICT (user_id, artifact_id, checksum_sha256)
+                DO NOTHING
+                RETURNING
+                  id,
+                  user_id,
+                  artifact_id,
+                  checksum_sha256,
+                  content_text,
+                  content_length_bytes,
+                  content_encoding,
+                  created_at
+                """
+
+GET_CONTINUITY_ARTIFACT_COPY_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  artifact_id,
+                  checksum_sha256,
+                  content_text,
+                  content_length_bytes,
+                  content_encoding,
+                  created_at
+                FROM continuity_artifact_copies
+                WHERE id = %s
+                """
+
+GET_CONTINUITY_ARTIFACT_COPY_BY_CHECKSUM_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  artifact_id,
+                  checksum_sha256,
+                  content_text,
+                  content_length_bytes,
+                  content_encoding,
+                  created_at
+                FROM continuity_artifact_copies
+                WHERE artifact_id = %s
+                  AND checksum_sha256 = %s
+                """
+
+LIST_CONTINUITY_ARTIFACT_COPIES_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  artifact_id,
+                  checksum_sha256,
+                  content_text,
+                  content_length_bytes,
+                  content_encoding,
+                  created_at
+                FROM continuity_artifact_copies
+                WHERE artifact_id = %s
+                ORDER BY created_at ASC, id ASC
+                """
+
+UPSERT_CONTINUITY_ARTIFACT_SEGMENT_SQL = """
+                INSERT INTO continuity_artifact_segments (
+                  user_id,
+                  artifact_id,
+                  artifact_copy_id,
+                  source_item_id,
+                  sequence_no,
+                  segment_kind,
+                  locator,
+                  raw_content,
+                  checksum_sha256
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                ON CONFLICT (user_id, artifact_copy_id, source_item_id)
+                DO NOTHING
+                RETURNING
+                  id,
+                  user_id,
+                  artifact_id,
+                  artifact_copy_id,
+                  source_item_id,
+                  sequence_no,
+                  segment_kind,
+                  locator,
+                  raw_content,
+                  checksum_sha256,
+                  created_at
+                """
+
+GET_CONTINUITY_ARTIFACT_SEGMENT_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  artifact_id,
+                  artifact_copy_id,
+                  source_item_id,
+                  sequence_no,
+                  segment_kind,
+                  locator,
+                  raw_content,
+                  checksum_sha256,
+                  created_at
+                FROM continuity_artifact_segments
+                WHERE id = %s
+                """
+
+GET_CONTINUITY_ARTIFACT_SEGMENT_BY_SOURCE_ITEM_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  artifact_id,
+                  artifact_copy_id,
+                  source_item_id,
+                  sequence_no,
+                  segment_kind,
+                  locator,
+                  raw_content,
+                  checksum_sha256,
+                  created_at
+                FROM continuity_artifact_segments
+                WHERE artifact_copy_id = %s
+                  AND source_item_id = %s
+                """
+
+LIST_CONTINUITY_ARTIFACT_SEGMENTS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  artifact_id,
+                  artifact_copy_id,
+                  source_item_id,
+                  sequence_no,
+                  segment_kind,
+                  locator,
+                  raw_content,
+                  checksum_sha256,
+                  created_at
+                FROM continuity_artifact_segments
+                WHERE artifact_id = %s
+                ORDER BY sequence_no ASC, created_at ASC, id ASC
+                """
+
+INSERT_CONTINUITY_OBJECT_EVIDENCE_LINK_SQL = """
+                INSERT INTO continuity_object_evidence_links (
+                  user_id,
+                  continuity_object_id,
+                  artifact_id,
+                  artifact_copy_id,
+                  artifact_segment_id,
+                  relationship
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  continuity_object_id,
+                  artifact_id,
+                  artifact_copy_id,
+                  artifact_segment_id,
+                  relationship,
+                  created_at
+                """
+
+LIST_CONTINUITY_OBJECT_EVIDENCE_SQL = """
+                SELECT
+                  links.id,
+                  links.user_id,
+                  links.continuity_object_id,
+                  links.artifact_id,
+                  links.artifact_copy_id,
+                  links.artifact_segment_id,
+                  links.relationship,
+                  links.created_at,
+                  artifacts.source_kind,
+                  artifacts.import_source_path,
+                  artifacts.relative_path,
+                  artifacts.display_name,
+                  artifacts.media_type,
+                  artifacts.created_at AS artifact_created_at,
+                  copies.checksum_sha256 AS artifact_copy_checksum_sha256,
+                  copies.content_text AS artifact_copy_content_text,
+                  copies.content_length_bytes AS artifact_copy_content_length_bytes,
+                  copies.content_encoding AS artifact_copy_content_encoding,
+                  copies.created_at AS artifact_copy_created_at,
+                  segments.source_item_id AS segment_source_item_id,
+                  segments.sequence_no AS segment_sequence_no,
+                  segments.segment_kind,
+                  segments.locator AS segment_locator,
+                  segments.raw_content AS segment_raw_content,
+                  segments.checksum_sha256 AS segment_checksum_sha256,
+                  segments.created_at AS segment_created_at
+                FROM continuity_object_evidence_links AS links
+                JOIN continuity_artifacts AS artifacts
+                  ON artifacts.id = links.artifact_id
+                 AND artifacts.user_id = links.user_id
+                JOIN continuity_artifact_copies AS copies
+                  ON copies.id = links.artifact_copy_id
+                 AND copies.user_id = links.user_id
+                LEFT JOIN continuity_artifact_segments AS segments
+                  ON segments.id = links.artifact_segment_id
+                 AND segments.user_id = links.user_id
+                WHERE links.continuity_object_id = %s
+                ORDER BY links.created_at ASC, links.id ASC
+                """
+
 UPDATE_CONTINUITY_OBJECT_SQL = """
                 UPDATE continuity_objects
                 SET status = %s,
@@ -4820,6 +5192,180 @@ class ContinuityStore:
 
     def list_continuity_recall_candidates(self) -> list[ContinuityRecallCandidateRow]:
         return self._fetch_all(LIST_CONTINUITY_RECALL_CANDIDATES_SQL)
+
+    def upsert_continuity_artifact(
+        self,
+        *,
+        source_kind: str,
+        import_source_path: str,
+        relative_path: str,
+        display_name: str,
+        media_type: str,
+    ) -> ContinuityArtifactRow:
+        created = self._fetch_optional_one(
+            UPSERT_CONTINUITY_ARTIFACT_SQL,
+            (
+                source_kind,
+                import_source_path,
+                relative_path,
+                display_name,
+                media_type,
+            ),
+        )
+        if created is not None:
+            return created
+        existing = self._fetch_optional_one(
+            GET_CONTINUITY_ARTIFACT_BY_SOURCE_SQL,
+            (source_kind, import_source_path, relative_path),
+        )
+        if existing is None:
+            raise ContinuityStoreInvariantError(
+                "upsert_continuity_artifact did not return or reveal an artifact row",
+            )
+        return existing
+
+    def get_continuity_artifact_optional(
+        self,
+        artifact_id: UUID,
+    ) -> ContinuityArtifactRow | None:
+        return self._fetch_optional_one(
+            GET_CONTINUITY_ARTIFACT_SQL,
+            (artifact_id,),
+        )
+
+    def upsert_continuity_artifact_copy(
+        self,
+        *,
+        artifact_id: UUID,
+        checksum_sha256: str,
+        content_text: str,
+        content_length_bytes: int,
+        content_encoding: str,
+    ) -> ContinuityArtifactCopyRow:
+        created = self._fetch_optional_one(
+            UPSERT_CONTINUITY_ARTIFACT_COPY_SQL,
+            (
+                artifact_id,
+                checksum_sha256,
+                content_text,
+                content_length_bytes,
+                content_encoding,
+            ),
+        )
+        if created is not None:
+            return created
+        existing = self._fetch_optional_one(
+            GET_CONTINUITY_ARTIFACT_COPY_BY_CHECKSUM_SQL,
+            (artifact_id, checksum_sha256),
+        )
+        if existing is None:
+            raise ContinuityStoreInvariantError(
+                "upsert_continuity_artifact_copy did not return or reveal an artifact copy row",
+            )
+        return existing
+
+    def get_continuity_artifact_copy_optional(
+        self,
+        artifact_copy_id: UUID,
+    ) -> ContinuityArtifactCopyRow | None:
+        return self._fetch_optional_one(
+            GET_CONTINUITY_ARTIFACT_COPY_SQL,
+            (artifact_copy_id,),
+        )
+
+    def list_continuity_artifact_copies(
+        self,
+        artifact_id: UUID,
+    ) -> list[ContinuityArtifactCopyRow]:
+        return self._fetch_all(
+            LIST_CONTINUITY_ARTIFACT_COPIES_SQL,
+            (artifact_id,),
+        )
+
+    def upsert_continuity_artifact_segment(
+        self,
+        *,
+        artifact_id: UUID,
+        artifact_copy_id: UUID,
+        source_item_id: str,
+        sequence_no: int,
+        segment_kind: str,
+        locator: JsonObject,
+        raw_content: str,
+        checksum_sha256: str,
+    ) -> ContinuityArtifactSegmentRow:
+        created = self._fetch_optional_one(
+            UPSERT_CONTINUITY_ARTIFACT_SEGMENT_SQL,
+            (
+                artifact_id,
+                artifact_copy_id,
+                source_item_id,
+                sequence_no,
+                segment_kind,
+                Jsonb(locator),
+                raw_content,
+                checksum_sha256,
+            ),
+        )
+        if created is not None:
+            return created
+        existing = self._fetch_optional_one(
+            GET_CONTINUITY_ARTIFACT_SEGMENT_BY_SOURCE_ITEM_SQL,
+            (artifact_copy_id, source_item_id),
+        )
+        if existing is None:
+            raise ContinuityStoreInvariantError(
+                "upsert_continuity_artifact_segment did not return or reveal a segment row",
+            )
+        return existing
+
+    def get_continuity_artifact_segment_optional(
+        self,
+        artifact_segment_id: UUID,
+    ) -> ContinuityArtifactSegmentRow | None:
+        return self._fetch_optional_one(
+            GET_CONTINUITY_ARTIFACT_SEGMENT_SQL,
+            (artifact_segment_id,),
+        )
+
+    def list_continuity_artifact_segments(
+        self,
+        artifact_id: UUID,
+    ) -> list[ContinuityArtifactSegmentRow]:
+        return self._fetch_all(
+            LIST_CONTINUITY_ARTIFACT_SEGMENTS_SQL,
+            (artifact_id,),
+        )
+
+    def create_continuity_object_evidence_link(
+        self,
+        *,
+        continuity_object_id: UUID,
+        artifact_id: UUID,
+        artifact_copy_id: UUID,
+        artifact_segment_id: UUID | None,
+        relationship: str,
+    ) -> ContinuityObjectEvidenceLinkRow:
+        return self._fetch_one(
+            "create_continuity_object_evidence_link",
+            INSERT_CONTINUITY_OBJECT_EVIDENCE_LINK_SQL,
+            (
+                continuity_object_id,
+                artifact_id,
+                artifact_copy_id,
+                artifact_segment_id,
+                relationship,
+            ),
+        )
+
+    def list_continuity_object_evidence(
+        self,
+        continuity_object_id: UUID,
+    ) -> list[ContinuityObjectEvidenceRow]:
+        return self._fetch_all(
+            LIST_CONTINUITY_OBJECT_EVIDENCE_SQL,
+            (continuity_object_id,),
+        )
 
     def update_continuity_object_optional(
         self,
