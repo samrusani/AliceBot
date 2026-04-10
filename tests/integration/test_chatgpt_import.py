@@ -60,6 +60,8 @@ def test_chatgpt_import_supports_recall_resumption_and_idempotent_dedupe(migrate
             item["provenance"].get("chatgpt_workspace_id") == "chatgpt-workspace-demo-001"
             for item in recall["items"]
         )
+        assert all(item["provenance"].get("artifact_id") is not None for item in recall["items"])
+        assert all(item["provenance"].get("artifact_segment_id") is not None for item in recall["items"])
 
         resumption = compile_continuity_resumption_brief(
             store,

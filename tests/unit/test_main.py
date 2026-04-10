@@ -134,6 +134,8 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v0/memory-embeddings/{memory_embedding_id}" in route_paths
     assert "/v0/admin/debug/continuity/lifecycle" in route_paths
     assert "/v0/admin/debug/continuity/lifecycle/{continuity_object_id}" in route_paths
+    assert "/v0/admin/debug/continuity/artifacts/{artifact_id}" in route_paths
+    assert "/v0/continuity/explain/{continuity_object_id}" in route_paths
     assert "/v0/task-artifact-chunk-embeddings" in route_paths
     assert "/v0/task-artifacts/{task_artifact_id}/chunk-embeddings" in route_paths
     assert "/v0/task-artifact-chunks/{task_artifact_chunk_id}/embeddings" in route_paths

@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 from uuid import UUID
 
+from alicebot_api.continuity_evidence import SourceArtifactArchiveInput, archive_import_source_files
 from alicebot_api.importer_models import (
     ImporterNormalizedBatch,
     ImporterNormalizedItem,
@@ -133,6 +134,12 @@ def _resolve_object_type_and_text(*, text: str, type_hint: str | None) -> tuple[
         return object_type, stripped
 
     return "Note", text
+
+
+def _relative_source_file(source_root: Path, file_path: Path) -> str:
+    if source_root.is_dir():
+        return str(file_path.relative_to(source_root))
+    return file_path.name
 
 
 def _parse_line_tags(line: str) -> tuple[str, dict[str, str]]:
@@ -284,7 +291,10 @@ def load_markdown_payload(source: str | Path) -> ImporterNormalizedBatch:
             items.append(
                 ImporterNormalizedItem(
                     source_item_id=source_item_id,
-                    source_file=file_path.name,
+                    source_file=_relative_source_file(source_path, file_path),
+                    source_locator={"line_number": line_number, "source_item_id": source_item_id},
+                    source_segment_text=raw_line,
+                    source_segment_kind="markdown_line",
                     object_type=object_type,
                     status=status,
                     raw_content=_build_raw_content(object_type=object_type, text=object_text),
@@ -317,7 +327,23 @@ def import_markdown_source(
     user_id: UUID,
     source: str | Path,
 ) -> JsonObject:
-    batch = load_markdown_payload(source)
+    source_path, markdown_files = _read_markdown_source(source)
+    archived_artifacts = archive_import_source_files(
+        store,
+        user_id=user_id,
+        source_kind="markdown_import",
+        import_source_path=str(source_path),
+        files=[
+            SourceArtifactArchiveInput(
+                relative_path=_relative_source_file(source_path, file_path),
+                display_name=file_path.name,
+                media_type="text/markdown",
+                content_text=file_path.read_text(encoding="utf-8"),
+            )
+            for file_path in markdown_files
+        ],
+    )
+    batch = load_markdown_payload(source_path)
     return import_normalized_batch(
         store,
         user_id=user_id,
@@ -329,6 +355,7 @@ def import_markdown_source(
             dedupe_key_field="markdown_dedupe_key",
             dedupe_posture=_DEFAULT_DEDUPE_POSTURE,
         ),
+        archived_artifacts=archived_artifacts,
     )
 
 

@@ -9,6 +9,7 @@ import sys
 from uuid import UUID, uuid4
 
 from alicebot_api.db import user_connection
+from alicebot_api.markdown_import import import_markdown_source
 from alicebot_api.store import ContinuityStore
 
 
@@ -293,3 +294,24 @@ def test_cli_command_surface_and_correction_flow(migrated_database_urls) -> None
     )
     assert resume_override_fact_result.returncode == 0
     assert "Memory Fact: searchable but not promotable" in resume_override_fact_result.stdout
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        imported = import_markdown_source(
+            ContinuityStore(conn),
+            user_id=user_id,
+            source=REPO_ROOT / "fixtures" / "importers" / "markdown" / "workspace_v1.md",
+        )
+        imported_object_id = imported["imported_object_ids"][0]
+        evidence_rows = ContinuityStore(conn).list_continuity_object_evidence(UUID(imported_object_id))
+        artifact_id = evidence_rows[0]["artifact_id"]
+
+    explain_result = run_cli(["explain", imported_object_id], env=env)
+    assert explain_result.returncode == 0
+    assert "evidence_links: 1" in explain_result.stdout
+    assert "raw_evidence=" in explain_result.stdout
+
+    artifact_result = run_cli(["evidence", "artifact", str(artifact_id)], env=env)
+    assert artifact_result.returncode == 0
+    assert "artifact detail" in artifact_result.stdout
+    assert "copies: 1" in artifact_result.stdout
+    assert "segments:" in artifact_result.stdout
