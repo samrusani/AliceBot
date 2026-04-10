@@ -61,6 +61,7 @@ from alicebot_api.contracts import (
     TemporalStateAtQueryInput,
     TemporalTimelineQueryInput,
 )
+from alicebot_api.config import get_settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore, JsonObject
 from alicebot_api.temporal_state import (
@@ -552,11 +553,17 @@ def _handle_alice_explain(context: MCPRuntimeContext, arguments: Mapping[str, ob
             )
     if continuity_object_id is None:
         raise MCPToolError("alice_explain requires continuity_object_id or entity_id")
+
+    include_raw_content = _parse_bool(arguments, key="include_raw_content", default=False)
+    if include_raw_content and get_settings().app_env not in {"development", "test"}:
+        raise MCPToolError("include_raw_content is restricted to development/test environments")
+
     with _store_context(context) as store:
         return build_continuity_explain(
             store,
             user_id=context.user_id,
             continuity_object_id=continuity_object_id,
+            include_raw_content=include_raw_content,
         )
 
 
@@ -564,11 +571,16 @@ def _handle_alice_artifact_inspect(
     context: MCPRuntimeContext,
     arguments: Mapping[str, object],
 ) -> JsonObject:
+    include_raw_content = _parse_bool(arguments, key="include_raw_content", default=False)
+    if include_raw_content and get_settings().app_env not in {"development", "test"}:
+        raise MCPToolError("include_raw_content is restricted to development/test environments")
+
     with _store_context(context) as store:
         return get_continuity_artifact_detail(
             store,
             user_id=context.user_id,
             artifact_id=_parse_required_uuid(arguments, "artifact_id"),
+            include_raw_content=include_raw_content,
         )
 
 
@@ -827,6 +839,7 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "continuity_object_id": {"type": "string", "format": "uuid"},
                 "entity_id": {"type": "string", "format": "uuid"},
                 "at": {"type": "string", "format": "date-time"},
+                "include_raw_content": {"type": "boolean"},
             },
         },
     },
@@ -839,6 +852,7 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
             "required": ["artifact_id"],
             "properties": {
                 "artifact_id": {"type": "string", "format": "uuid"},
+                "include_raw_content": {"type": "boolean"},
             },
         },
     },
