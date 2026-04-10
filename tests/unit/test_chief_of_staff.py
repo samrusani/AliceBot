@@ -789,12 +789,18 @@ def test_capture_handoff_review_action_records_transition_and_returns_updated_qu
             body: dict[str, object],
             provenance: dict[str, object],
             confidence: float,
+            is_preserved: bool = True,
+            is_searchable: bool = True,
+            is_promotable: bool = True,
         ) -> dict[str, object]:
             self.object_payloads.append(
                 {
                     "capture_event_id": capture_event_id,
                     "object_type": object_type,
                     "status": status,
+                    "is_preserved": is_preserved,
+                    "is_searchable": is_searchable,
+                    "is_promotable": is_promotable,
                     "title": title,
                     "body": body,
                     "provenance": provenance,
@@ -920,12 +926,18 @@ def test_capture_execution_routing_action_records_transition_and_returns_updated
             body: dict[str, object],
             provenance: dict[str, object],
             confidence: float,
+            is_preserved: bool = True,
+            is_searchable: bool = True,
+            is_promotable: bool = True,
         ) -> dict[str, object]:
             self.object_payloads.append(
                 {
                     "capture_event_id": capture_event_id,
                     "object_type": object_type,
                     "status": status,
+                    "is_preserved": is_preserved,
+                    "is_searchable": is_searchable,
+                    "is_promotable": is_promotable,
                     "title": title,
                     "body": body,
                     "provenance": provenance,
@@ -1305,12 +1317,18 @@ def test_capture_recommendation_outcome_creates_auditable_note_and_returns_learn
             body: dict[str, object],
             provenance: dict[str, object],
             confidence: float,
+            is_preserved: bool = True,
+            is_searchable: bool = True,
+            is_promotable: bool = True,
         ) -> dict[str, object]:
             self.object_payloads.append(
                 {
                     "capture_event_id": capture_event_id,
                     "object_type": object_type,
                     "status": status,
+                    "is_preserved": is_preserved,
+                    "is_searchable": is_searchable,
+                    "is_promotable": is_promotable,
                     "title": title,
                     "body": body,
                     "provenance": provenance,
@@ -1508,12 +1526,18 @@ def test_capture_handoff_outcome_records_event_and_returns_updated_learning(monk
             body: dict[str, object],
             provenance: dict[str, object],
             confidence: float,
+            is_preserved: bool = True,
+            is_searchable: bool = True,
+            is_promotable: bool = True,
         ) -> dict[str, object]:
             self.object_payloads.append(
                 {
                     "capture_event_id": capture_event_id,
                     "object_type": object_type,
                     "status": status,
+                    "is_preserved": is_preserved,
+                    "is_searchable": is_searchable,
+                    "is_promotable": is_promotable,
                     "title": title,
                     "body": body,
                     "provenance": provenance,

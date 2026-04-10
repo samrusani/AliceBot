@@ -170,6 +170,9 @@ class ContinuityObjectRow(TypedDict):
     capture_event_id: UUID
     object_type: str
     status: str
+    is_preserved: bool
+    is_searchable: bool
+    is_promotable: bool
     title: str
     body: JsonObject
     provenance: JsonObject
@@ -199,6 +202,9 @@ class ContinuityRecallCandidateRow(TypedDict):
     capture_event_id: UUID
     object_type: str
     status: str
+    is_preserved: bool
+    is_searchable: bool
+    is_promotable: bool
     title: str
     body: JsonObject
     provenance: JsonObject
@@ -3926,6 +3932,9 @@ INSERT_CONTINUITY_OBJECT_SQL = """
                   capture_event_id,
                   object_type,
                   status,
+                  is_preserved,
+                  is_searchable,
+                  is_promotable,
                   title,
                   body,
                   provenance,
@@ -3945,6 +3954,9 @@ INSERT_CONTINUITY_OBJECT_SQL = """
                   %s,
                   %s,
                   %s,
+                  %s,
+                  %s,
+                  %s,
                   %s
                 )
                 RETURNING
@@ -3953,6 +3965,9 @@ INSERT_CONTINUITY_OBJECT_SQL = """
                   capture_event_id,
                   object_type,
                   status,
+                  is_preserved,
+                  is_searchable,
+                  is_promotable,
                   title,
                   body,
                   provenance,
@@ -3971,6 +3986,9 @@ GET_CONTINUITY_OBJECT_BY_CAPTURE_EVENT_SQL = """
                   capture_event_id,
                   object_type,
                   status,
+                  is_preserved,
+                  is_searchable,
+                  is_promotable,
                   title,
                   body,
                   provenance,
@@ -3991,6 +4009,9 @@ GET_CONTINUITY_OBJECT_SQL = """
                   capture_event_id,
                   object_type,
                   status,
+                  is_preserved,
+                  is_searchable,
+                  is_promotable,
                   title,
                   body,
                   provenance,
@@ -4011,6 +4032,9 @@ LIST_CONTINUITY_OBJECTS_FOR_CAPTURE_EVENTS_SQL = """
                   capture_event_id,
                   object_type,
                   status,
+                  is_preserved,
+                  is_searchable,
+                  is_promotable,
                   title,
                   body,
                   provenance,
@@ -4032,6 +4056,9 @@ LIST_CONTINUITY_REVIEW_QUEUE_SQL = """
                   capture_event_id,
                   object_type,
                   status,
+                  is_preserved,
+                  is_searchable,
+                  is_promotable,
                   title,
                   body,
                   provenance,
@@ -4060,6 +4087,9 @@ LIST_CONTINUITY_RECALL_CANDIDATES_SQL = """
                   continuity_objects.capture_event_id,
                   continuity_objects.object_type,
                   continuity_objects.status,
+                  continuity_objects.is_preserved,
+                  continuity_objects.is_searchable,
+                  continuity_objects.is_promotable,
                   continuity_objects.title,
                   continuity_objects.body,
                   continuity_objects.provenance,
@@ -4083,6 +4113,9 @@ LIST_CONTINUITY_RECALL_CANDIDATES_SQL = """
 UPDATE_CONTINUITY_OBJECT_SQL = """
                 UPDATE continuity_objects
                 SET status = %s,
+                    is_preserved = %s,
+                    is_searchable = %s,
+                    is_promotable = %s,
                     title = %s,
                     body = %s,
                     provenance = %s,
@@ -4098,6 +4131,9 @@ UPDATE_CONTINUITY_OBJECT_SQL = """
                   capture_event_id,
                   object_type,
                   status,
+                  is_preserved,
+                  is_searchable,
+                  is_promotable,
                   title,
                   body,
                   provenance,
@@ -4174,6 +4210,14 @@ class ContinuityStoreInvariantError(RuntimeError):
 class ContinuityStore:
     def __init__(self, conn: psycopg.Connection):
         self.conn = conn
+
+    @staticmethod
+    def _default_continuity_searchable(object_type: str) -> bool:
+        return object_type != "Note"
+
+    @staticmethod
+    def _default_continuity_promotable(object_type: str) -> bool:
+        return object_type in {"Decision", "Commitment", "WaitingFor", "Blocker", "NextAction"}
 
     def _acquire_advisory_lock(self, lock_query: str, lock_key: UUID) -> None:
         with self.conn.cursor() as cur:
@@ -4686,10 +4730,24 @@ class ContinuityStore:
         body: JsonObject,
         provenance: JsonObject,
         confidence: float,
+        is_preserved: bool | None = None,
+        is_searchable: bool | None = None,
+        is_promotable: bool | None = None,
         last_confirmed_at: datetime | None = None,
         supersedes_object_id: UUID | None = None,
         superseded_by_object_id: UUID | None = None,
     ) -> ContinuityObjectRow:
+        resolved_is_preserved = True if is_preserved is None else is_preserved
+        resolved_is_searchable = (
+            self._default_continuity_searchable(object_type)
+            if is_searchable is None
+            else is_searchable
+        )
+        resolved_is_promotable = (
+            self._default_continuity_promotable(object_type)
+            if is_promotable is None
+            else is_promotable
+        )
         return self._fetch_one(
             "create_continuity_object",
             INSERT_CONTINUITY_OBJECT_SQL,
@@ -4697,6 +4755,9 @@ class ContinuityStore:
                 capture_event_id,
                 object_type,
                 status,
+                resolved_is_preserved,
+                resolved_is_searchable,
+                resolved_is_promotable,
                 title,
                 Jsonb(body),
                 Jsonb(provenance),
@@ -4765,6 +4826,9 @@ class ContinuityStore:
         *,
         continuity_object_id: UUID,
         status: str,
+        is_preserved: bool,
+        is_searchable: bool,
+        is_promotable: bool,
         title: str,
         body: JsonObject,
         provenance: JsonObject,
@@ -4777,6 +4841,9 @@ class ContinuityStore:
             UPDATE_CONTINUITY_OBJECT_SQL,
             (
                 status,
+                is_preserved,
+                is_searchable,
+                is_promotable,
                 title,
                 Jsonb(body),
                 Jsonb(provenance),
