@@ -10,6 +10,7 @@ from alicebot_api.continuity_objects import (
     default_continuity_searchable,
     serialize_continuity_lifecycle_state_from_record,
 )
+from alicebot_api.continuity_explainability import build_continuity_item_explanation
 from alicebot_api.contracts import (
     CONTINUITY_RECALL_LIST_ORDER,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
@@ -454,7 +455,10 @@ def _build_provenance_references(
     ]
 
 
-def _serialize_recall_result(item: RankedRecallCandidate) -> ContinuityRecallResultRecord:
+def _serialize_recall_result(
+    store: ContinuityStore,
+    item: RankedRecallCandidate,
+) -> ContinuityRecallResultRecord:
     row = item.row
 
     ordering: ContinuityRecallOrderingMetadata = {
@@ -498,6 +502,23 @@ def _serialize_recall_result(item: RankedRecallCandidate) -> ContinuityRecallRes
             row["provenance"],
         ),
         "ordering": ordering,
+        "explanation": build_continuity_item_explanation(
+            store,
+            continuity_object_id=row["id"],
+            capture_event_id=row["capture_event_id"],
+            title=row["title"],
+            body=row["body"],
+            provenance=row["provenance"],
+            status=row["status"],
+            confidence=float(row["confidence"]),
+            last_confirmed_at=row["last_confirmed_at"],
+            supersedes_object_id=row["supersedes_object_id"],
+            superseded_by_object_id=row["superseded_by_object_id"],
+            created_at=row["object_created_at"],
+            updated_at=row["object_updated_at"],
+            confirmation_status=item.confirmation_status,
+            provenance_posture=item.provenance_posture,
+        ),
         "created_at": row["object_created_at"].isoformat(),
         "updated_at": row["object_updated_at"].isoformat(),
     }
@@ -682,7 +703,7 @@ def query_continuity_recall(
         returned_candidates = ordered_candidates[: normalized_request.limit]
     else:
         returned_candidates = ordered_candidates
-    items = [_serialize_recall_result(item) for item in returned_candidates]
+    items = [_serialize_recall_result(store, item) for item in returned_candidates]
 
     return {
         "items": items,

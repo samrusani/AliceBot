@@ -228,6 +228,10 @@ def test_daily_and_weekly_review_endpoints_are_deterministic(
     assert [item["title"] for item in first_daily["brief"]["waiting_for_highlights"]["items"]] == [
         "Waiting For: Vendor quote",
     ]
+    assert (
+        first_daily["brief"]["waiting_for_highlights"]["items"][0]["explanation"]["trust"]["trust_class"]
+        == "human_curated"
+    )
     assert [item["title"] for item in first_daily["brief"]["blocker_highlights"]["items"]] == [
         "Blocker: Missing API key",
     ]

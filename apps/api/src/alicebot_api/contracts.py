@@ -2670,8 +2670,60 @@ class ContinuityEvidenceLinkRecord(TypedDict):
     artifact_segment: ContinuityEvidenceArtifactSegmentRecord | None
 
 
+class ContinuityExplanationSourceFactRecord(TypedDict):
+    kind: str
+    label: str
+    value: str
+
+
+class ContinuityExplanationEvidenceSegmentRecord(TypedDict):
+    relationship: str
+    source_kind: str
+    source_id: str
+    display_name: str
+    relative_path: str | None
+    segment_kind: str | None
+    locator: JsonObject | None
+    snippet: str
+    created_at: str | None
+
+
+class ContinuityExplanationSupersessionNoteRecord(TypedDict):
+    kind: str
+    note: str
+    action: str | None
+    related_object_id: str | None
+    created_at: str | None
+
+
+class ContinuityExplanationTrustRecord(TypedDict):
+    trust_class: MemoryTrustClass
+    trust_reason: str
+    confirmation_status: MemoryConfirmationStatus
+    confidence: float
+    provenance_posture: ContinuityRecallProvenancePosture
+    evidence_segment_count: int
+    correction_count: int
+
+
+class ContinuityExplanationTimestampsRecord(TypedDict):
+    capture_created_at: str | None
+    created_at: str
+    updated_at: str
+    last_confirmed_at: str | None
+
+
+class ContinuityExplanationRecord(TypedDict):
+    source_facts: list[ContinuityExplanationSourceFactRecord]
+    trust: ContinuityExplanationTrustRecord
+    evidence_segments: list[ContinuityExplanationEvidenceSegmentRecord]
+    supersession_notes: list[ContinuityExplanationSupersessionNoteRecord]
+    timestamps: ContinuityExplanationTimestampsRecord
+
+
 class ContinuityExplainRecord(TypedDict):
     continuity_object: ContinuityReviewObjectRecord
+    explanation: ContinuityExplanationRecord
     evidence_chain: list[ContinuityEvidenceLinkRecord]
 
 
@@ -2742,6 +2794,7 @@ class ContinuityRecallResultRecord(TypedDict):
     scope_matches: list[ContinuityRecallScopeMatch]
     provenance_references: list[ContinuityRecallProvenanceReference]
     ordering: ContinuityRecallOrderingMetadata
+    explanation: ContinuityExplanationRecord
     created_at: str
     updated_at: str
 

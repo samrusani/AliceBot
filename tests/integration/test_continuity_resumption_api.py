@@ -215,6 +215,7 @@ def test_continuity_resumption_api_returns_required_sections(
     brief = payload["brief"]
     assert brief["assembly_version"] == "continuity_resumption_brief_v0"
     assert brief["last_decision"]["item"]["title"] == "Decision: Keep rollout phased"
+    assert brief["last_decision"]["item"]["explanation"]["trust"]["trust_class"] == "llm_single_source"
     assert brief["open_loops"]["summary"] == {
         "limit": 2,
         "returned_count": 1,
