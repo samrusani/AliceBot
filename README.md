@@ -55,6 +55,9 @@ Memories carry trust classification and promotion eligibility, so agents can sea
 
 Trust metadata flows through admission, retrieval, explain output, review behavior, and CLI/MCP responses, which makes memory quality visible instead of implicit.
 
+Alice also separates preservation, searchability, and promotability.
+That means a continuity object can be preserved for audit, excluded from default recall, or withheld from promotion into resumption briefs depending on its lifecycle posture instead of being treated as uniformly active.
+
 ### It is local-first and agent-agnostic
 
 Alice Core runs locally and exposes the same continuity semantics through the CLI and MCP, so you can use it with your own workflows instead of being locked into a closed assistant product.
@@ -77,6 +80,7 @@ The open-source surface includes:
 - deterministic CLI workflows
 - MCP server
 - trust-aware memory classification and promotion controls
+- lifecycle-aware continuity controls for preservation, recall visibility, and promotion into resumption
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -109,6 +113,13 @@ In another terminal, verify the runtime and get a first useful result:
 ./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
 ./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
 ./.venv/bin/python -m alicebot_api open-loops --limit 5
+```
+
+By default, recall excludes non-searchable objects and resume excludes non-promotable `MemoryFact` items. Inspect lifecycle posture or override resume filtering when needed:
+
+```bash
+./.venv/bin/python -m alicebot_api lifecycle list
+./.venv/bin/python -m alicebot_api resume --include-non-promotable-facts --max-recent-changes 5 --max-open-loops 5
 ```
 
 Capture something new:
@@ -199,6 +210,7 @@ Alice is built around a shared continuity core with:
 
 - structured memory revisions
 - provenance- and trust-aware recall
+- lifecycle-aware preservation, search visibility, and resumption promotion
 - deterministic resumption briefs
 - open-loop objects
 - CLI and MCP surfaces on the same semantics
