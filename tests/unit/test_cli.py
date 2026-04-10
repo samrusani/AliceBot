@@ -26,6 +26,10 @@ def test_parser_routes_required_commands() -> None:
         (["explain", continuity_object_id], "_run_explain"),
         (["explain", "--entity-id", continuity_object_id], "_run_explain"),
         (["evidence", "artifact", continuity_object_id], "_run_evidence_artifact"),
+        (["patterns", "list"], "_run_pattern_list"),
+        (["patterns", "explain", continuity_object_id], "_run_pattern_explain"),
+        (["playbooks", "list"], "_run_playbook_list"),
+        (["playbooks", "explain", continuity_object_id], "_run_playbook_explain"),
         (["status"], "_run_status"),
     ]
 

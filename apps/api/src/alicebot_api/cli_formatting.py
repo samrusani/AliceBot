@@ -19,6 +19,10 @@ from alicebot_api.contracts import (
     TemporalExplainResponse,
     TemporalStateAtResponse,
     TemporalTimelineResponse,
+    TrustedFactPatternExplainResponse,
+    TrustedFactPatternListResponse,
+    TrustedFactPlaybookExplainResponse,
+    TrustedFactPlaybookListResponse,
 )
 
 
@@ -507,6 +511,123 @@ def format_temporal_explain_output(payload: TemporalExplainResponse) -> str:
                     f"    supersession_chain={_format_json(edge['supersession_chain'])}",
                 ]
             )
+    return "\n".join(lines)
+
+
+def format_trusted_fact_pattern_list_output(payload: TrustedFactPatternListResponse) -> str:
+    summary = payload["summary"]
+    lines = [
+        "patterns",
+        f"returned: {summary['returned_count']}/{summary['total_count']} (limit={summary['limit']})",
+        f"order: {', '.join(summary['order'])}",
+    ]
+    if len(payload["items"]) == 0:
+        lines.append("empty: no trusted fact patterns.")
+        return "\n".join(lines)
+
+    for index, item in enumerate(payload["items"], start=1):
+        lines.extend(
+            [
+                f"{index}. {item['title']}",
+                f"   id={item['id']} pattern_key={item['pattern_key']}",
+                (
+                    f"   memory_type={item['memory_type']} "
+                    f"namespace_key={item['namespace_key']} fact_count={item['fact_count']}"
+                ),
+                f"   source_fact_ids={','.join(item['source_fact_ids'])}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_trusted_fact_pattern_explain_output(payload: TrustedFactPatternExplainResponse) -> str:
+    pattern = payload["pattern"]
+    lines = [
+        "pattern",
+        f"id: {pattern['id']}",
+        f"pattern_key: {pattern['pattern_key']}",
+        f"title: {pattern['title']}",
+        f"memory_type: {pattern['memory_type']}",
+        f"namespace_key: {pattern['namespace_key']}",
+        f"fact_count: {pattern['fact_count']}",
+        f"source_fact_ids: {','.join(pattern['source_fact_ids'])}",
+        f"explanation: {pattern['explanation']}",
+    ]
+    if len(pattern["evidence_chain"]) == 0:
+        lines.append("evidence_chain: none")
+        return "\n".join(lines)
+
+    lines.append("evidence_chain:")
+    for index, link in enumerate(pattern["evidence_chain"], start=1):
+        lines.extend(
+            [
+                f"  {index}. fact_id={link['fact_id']} memory_key={link['memory_key']}",
+                (
+                    f"    trust_class={link['trust']['trust_class']} "
+                    f"promotion={link['promotion_eligibility']} "
+                    f"evidence_count={link['evidence_count']} "
+                    f"independent_source_count={link['independent_source_count']}"
+                ),
+                f"    source_event_ids={','.join(link['source_event_ids'])}",
+                f"    revision={_format_json({'sequence_no': link['revision_sequence_no'], 'action': link['revision_action'], 'created_at': link['revision_created_at']})}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_trusted_fact_playbook_list_output(payload: TrustedFactPlaybookListResponse) -> str:
+    summary = payload["summary"]
+    lines = [
+        "playbooks",
+        f"returned: {summary['returned_count']}/{summary['total_count']} (limit={summary['limit']})",
+        f"order: {', '.join(summary['order'])}",
+    ]
+    if len(payload["items"]) == 0:
+        lines.append("empty: no trusted fact playbooks.")
+        return "\n".join(lines)
+
+    for index, item in enumerate(payload["items"], start=1):
+        lines.extend(
+            [
+                f"{index}. {item['title']}",
+                f"   id={item['id']} playbook_key={item['playbook_key']}",
+                (
+                    f"   memory_type={item['memory_type']} pattern_key={item['pattern_key']} "
+                    f"step_count={len(item['steps'])}"
+                ),
+                f"   source_fact_ids={','.join(item['source_fact_ids'])}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_trusted_fact_playbook_explain_output(payload: TrustedFactPlaybookExplainResponse) -> str:
+    playbook = payload["playbook"]
+    lines = [
+        "playbook",
+        f"id: {playbook['id']}",
+        f"playbook_key: {playbook['playbook_key']}",
+        f"pattern_id: {playbook['pattern_id']}",
+        f"pattern_key: {playbook['pattern_key']}",
+        f"title: {playbook['title']}",
+        f"memory_type: {playbook['memory_type']}",
+        f"source_fact_ids: {','.join(playbook['source_fact_ids'])}",
+        f"source_pattern_ids: {','.join(playbook['source_pattern_ids'])}",
+        f"explanation: {playbook['explanation']}",
+    ]
+    if len(playbook["steps"]) == 0:
+        lines.append("steps: none")
+        return "\n".join(lines)
+
+    lines.append("steps:")
+    for step in playbook["steps"]:
+        lines.extend(
+            [
+                f"  {step['step_no']}. [{step['action_type']}] {step['instruction']}",
+                f"    fact_id={step['fact_id']} memory_key={step['memory_key']}",
+                f"    trust={_format_json(step['trust'])}",
+            ]
+        )
     return "\n".join(lines)
 
 
