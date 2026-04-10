@@ -1612,6 +1612,15 @@ UPSERT_FACT_PATTERN_SQL = """
                   evidence_chain = EXCLUDED.evidence_chain,
                   explanation = EXCLUDED.explanation,
                   updated_at = clock_timestamp()
+                WHERE
+                  fact_patterns.id IS DISTINCT FROM EXCLUDED.id
+                  OR fact_patterns.title IS DISTINCT FROM EXCLUDED.title
+                  OR fact_patterns.memory_type IS DISTINCT FROM EXCLUDED.memory_type
+                  OR fact_patterns.namespace_key IS DISTINCT FROM EXCLUDED.namespace_key
+                  OR fact_patterns.fact_count IS DISTINCT FROM EXCLUDED.fact_count
+                  OR fact_patterns.source_fact_ids IS DISTINCT FROM EXCLUDED.source_fact_ids
+                  OR fact_patterns.evidence_chain IS DISTINCT FROM EXCLUDED.evidence_chain
+                  OR fact_patterns.explanation IS DISTINCT FROM EXCLUDED.explanation
                 RETURNING
                   id,
                   user_id,
@@ -1723,6 +1732,16 @@ UPSERT_FACT_PLAYBOOK_SQL = """
                   steps = EXCLUDED.steps,
                   explanation = EXCLUDED.explanation,
                   updated_at = clock_timestamp()
+                WHERE
+                  fact_playbooks.id IS DISTINCT FROM EXCLUDED.id
+                  OR fact_playbooks.pattern_id IS DISTINCT FROM EXCLUDED.pattern_id
+                  OR fact_playbooks.pattern_key IS DISTINCT FROM EXCLUDED.pattern_key
+                  OR fact_playbooks.title IS DISTINCT FROM EXCLUDED.title
+                  OR fact_playbooks.memory_type IS DISTINCT FROM EXCLUDED.memory_type
+                  OR fact_playbooks.source_fact_ids IS DISTINCT FROM EXCLUDED.source_fact_ids
+                  OR fact_playbooks.source_pattern_ids IS DISTINCT FROM EXCLUDED.source_pattern_ids
+                  OR fact_playbooks.steps IS DISTINCT FROM EXCLUDED.steps
+                  OR fact_playbooks.explanation IS DISTINCT FROM EXCLUDED.explanation
                 RETURNING
                   id,
                   user_id,

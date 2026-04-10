@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 import json
+from threading import Lock
+import time
 from typing import cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -30,6 +32,9 @@ from alicebot_api.store import (
 )
 
 _TRUSTED_PATTERN_CLASSES = frozenset({"deterministic", "llm_corroborated", "human_curated"})
+_PROMOTION_SYNC_MIN_INTERVAL_SECONDS = 30.0
+_promotion_sync_lock = Lock()
+_last_promotion_sync_at_by_user: dict[UUID, float] = {}
 _ACTION_TYPE_BY_MEMORY_TYPE = {
     "preference": "prefer",
     "working_style": "work_with",
@@ -257,13 +262,37 @@ def sync_trusted_fact_promotions(
     store.delete_fact_patterns_not_in(pattern_ids)
 
 
+def _sync_trusted_fact_promotions_if_due(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+) -> None:
+    now = time.monotonic()
+    with _promotion_sync_lock:
+        last_sync_at = _last_promotion_sync_at_by_user.get(user_id)
+        if (
+            last_sync_at is not None
+            and now - last_sync_at < _PROMOTION_SYNC_MIN_INTERVAL_SECONDS
+        ):
+            return
+        _last_promotion_sync_at_by_user[user_id] = now
+
+    try:
+        sync_trusted_fact_promotions(store, user_id=user_id)
+    except Exception:
+        # A failed sync should not suppress future retries.
+        with _promotion_sync_lock:
+            _last_promotion_sync_at_by_user.pop(user_id, None)
+        raise
+
+
 def list_trusted_fact_patterns(
     store: ContinuityStore,
     *,
     user_id: UUID,
     request: TrustedFactPatternListQueryInput,
 ) -> TrustedFactPatternListResponse:
-    sync_trusted_fact_promotions(store, user_id=user_id)
+    _sync_trusted_fact_promotions_if_due(store, user_id=user_id)
     rows = store.list_fact_patterns(limit=request.limit)
     total_count = store.count_fact_patterns()
     return {
@@ -283,7 +312,7 @@ def get_trusted_fact_pattern(
     user_id: UUID,
     pattern_id: UUID,
 ) -> TrustedFactPatternExplainResponse:
-    sync_trusted_fact_promotions(store, user_id=user_id)
+    _sync_trusted_fact_promotions_if_due(store, user_id=user_id)
     row = store.get_fact_pattern_optional(pattern_id)
     if row is None:
         raise TrustedFactPromotionNotFoundError(f"pattern {pattern_id} was not found")
@@ -296,7 +325,7 @@ def list_trusted_fact_playbooks(
     user_id: UUID,
     request: TrustedFactPlaybookListQueryInput,
 ) -> TrustedFactPlaybookListResponse:
-    sync_trusted_fact_promotions(store, user_id=user_id)
+    _sync_trusted_fact_promotions_if_due(store, user_id=user_id)
     rows = store.list_fact_playbooks(limit=request.limit)
     total_count = store.count_fact_playbooks()
     return {
@@ -316,7 +345,7 @@ def get_trusted_fact_playbook(
     user_id: UUID,
     playbook_id: UUID,
 ) -> TrustedFactPlaybookExplainResponse:
-    sync_trusted_fact_promotions(store, user_id=user_id)
+    _sync_trusted_fact_promotions_if_due(store, user_id=user_id)
     row = store.get_fact_playbook_optional(playbook_id)
     if row is None:
         raise TrustedFactPromotionNotFoundError(f"playbook {playbook_id} was not found")
