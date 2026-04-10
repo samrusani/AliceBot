@@ -131,6 +131,37 @@ class MemoryRevisionRow(TypedDict):
     created_at: datetime
 
 
+class FactPatternRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    pattern_key: str
+    title: str
+    memory_type: str
+    namespace_key: str
+    fact_count: int
+    source_fact_ids: list[str]
+    evidence_chain: JsonValue
+    explanation: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class FactPlaybookRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    playbook_key: str
+    pattern_id: UUID
+    pattern_key: str
+    title: str
+    memory_type: str
+    source_fact_ids: list[str]
+    source_pattern_ids: list[str]
+    steps: JsonValue
+    explanation: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class MemoryReviewLabelRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -1539,6 +1570,228 @@ LIST_LIMITED_MEMORY_REVISIONS_SQL = """
                 WHERE memory_id = %s
                 ORDER BY sequence_no ASC
                 LIMIT %s
+                """
+
+UPSERT_FACT_PATTERN_SQL = """
+                INSERT INTO fact_patterns (
+                  id,
+                  user_id,
+                  pattern_key,
+                  title,
+                  memory_type,
+                  namespace_key,
+                  fact_count,
+                  source_fact_ids,
+                  evidence_chain,
+                  explanation,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  %s,
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                ON CONFLICT (user_id, pattern_key)
+                DO UPDATE SET
+                  id = EXCLUDED.id,
+                  title = EXCLUDED.title,
+                  memory_type = EXCLUDED.memory_type,
+                  namespace_key = EXCLUDED.namespace_key,
+                  fact_count = EXCLUDED.fact_count,
+                  source_fact_ids = EXCLUDED.source_fact_ids,
+                  evidence_chain = EXCLUDED.evidence_chain,
+                  explanation = EXCLUDED.explanation,
+                  updated_at = clock_timestamp()
+                RETURNING
+                  id,
+                  user_id,
+                  pattern_key,
+                  title,
+                  memory_type,
+                  namespace_key,
+                  fact_count,
+                  source_fact_ids,
+                  evidence_chain,
+                  explanation,
+                  created_at,
+                  updated_at
+                """
+
+LIST_FACT_PATTERNS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  pattern_key,
+                  title,
+                  memory_type,
+                  namespace_key,
+                  fact_count,
+                  source_fact_ids,
+                  evidence_chain,
+                  explanation,
+                  created_at,
+                  updated_at
+                FROM fact_patterns
+                ORDER BY memory_type ASC, namespace_key ASC, title ASC, id ASC
+                LIMIT %s
+                """
+
+COUNT_FACT_PATTERNS_SQL = """
+                SELECT COUNT(*) AS count
+                FROM fact_patterns
+                """
+
+GET_FACT_PATTERN_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  pattern_key,
+                  title,
+                  memory_type,
+                  namespace_key,
+                  fact_count,
+                  source_fact_ids,
+                  evidence_chain,
+                  explanation,
+                  created_at,
+                  updated_at
+                FROM fact_patterns
+                WHERE id = %s
+                """
+
+DELETE_FACT_PATTERNS_NOT_IN_SQL = """
+                DELETE FROM fact_patterns
+                WHERE user_id = app.current_user_id()
+                  AND NOT (id = ANY(%s))
+                """
+
+DELETE_ALL_FACT_PATTERNS_SQL = """
+                DELETE FROM fact_patterns
+                WHERE user_id = app.current_user_id()
+                """
+
+UPSERT_FACT_PLAYBOOK_SQL = """
+                INSERT INTO fact_playbooks (
+                  id,
+                  user_id,
+                  playbook_key,
+                  pattern_id,
+                  pattern_key,
+                  title,
+                  memory_type,
+                  source_fact_ids,
+                  source_pattern_ids,
+                  steps,
+                  explanation,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  %s,
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                ON CONFLICT (user_id, playbook_key)
+                DO UPDATE SET
+                  id = EXCLUDED.id,
+                  pattern_id = EXCLUDED.pattern_id,
+                  pattern_key = EXCLUDED.pattern_key,
+                  title = EXCLUDED.title,
+                  memory_type = EXCLUDED.memory_type,
+                  source_fact_ids = EXCLUDED.source_fact_ids,
+                  source_pattern_ids = EXCLUDED.source_pattern_ids,
+                  steps = EXCLUDED.steps,
+                  explanation = EXCLUDED.explanation,
+                  updated_at = clock_timestamp()
+                RETURNING
+                  id,
+                  user_id,
+                  playbook_key,
+                  pattern_id,
+                  pattern_key,
+                  title,
+                  memory_type,
+                  source_fact_ids,
+                  source_pattern_ids,
+                  steps,
+                  explanation,
+                  created_at,
+                  updated_at
+                """
+
+LIST_FACT_PLAYBOOKS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  playbook_key,
+                  pattern_id,
+                  pattern_key,
+                  title,
+                  memory_type,
+                  source_fact_ids,
+                  source_pattern_ids,
+                  steps,
+                  explanation,
+                  created_at,
+                  updated_at
+                FROM fact_playbooks
+                ORDER BY memory_type ASC, pattern_key ASC, title ASC, id ASC
+                LIMIT %s
+                """
+
+COUNT_FACT_PLAYBOOKS_SQL = """
+                SELECT COUNT(*) AS count
+                FROM fact_playbooks
+                """
+
+GET_FACT_PLAYBOOK_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  playbook_key,
+                  pattern_id,
+                  pattern_key,
+                  title,
+                  memory_type,
+                  source_fact_ids,
+                  source_pattern_ids,
+                  steps,
+                  explanation,
+                  created_at,
+                  updated_at
+                FROM fact_playbooks
+                WHERE id = %s
+                """
+
+DELETE_FACT_PLAYBOOKS_NOT_IN_SQL = """
+                DELETE FROM fact_playbooks
+                WHERE user_id = app.current_user_id()
+                  AND NOT (id = ANY(%s))
+                """
+
+DELETE_ALL_FACT_PLAYBOOKS_SQL = """
+                DELETE FROM fact_playbooks
+                WHERE user_id = app.current_user_id()
                 """
 
 INSERT_MEMORY_REVIEW_LABEL_SQL = """
@@ -4668,6 +4921,16 @@ class ContinuityStore:
 
         return cast(CountRow, row)["count"]
 
+    def _execute(
+        self,
+        operation_name: str,
+        query: str,
+        params: tuple[object, ...] | None = None,
+    ) -> None:
+        del operation_name
+        with self.conn.cursor() as cur:
+            cur.execute(query, params)
+
     @staticmethod
     def _vector_literal(vector: list[float]) -> str:
         return "[" + ",".join(repr(value) for value in vector) + "]"
@@ -4956,6 +5219,96 @@ class ContinuityStore:
         if limit is None:
             return self._fetch_all(LIST_MEMORY_REVISIONS_SQL, (memory_id,))
         return self._fetch_all(LIST_LIMITED_MEMORY_REVISIONS_SQL, (memory_id, limit))
+
+    def upsert_fact_pattern(
+        self,
+        *,
+        pattern_id: UUID,
+        pattern_key: str,
+        title: str,
+        memory_type: str,
+        namespace_key: str,
+        fact_count: int,
+        source_fact_ids: list[str],
+        evidence_chain: JsonValue,
+        explanation: str,
+    ) -> FactPatternRow:
+        return self._fetch_one(
+            "upsert_fact_pattern",
+            UPSERT_FACT_PATTERN_SQL,
+            (
+                pattern_id,
+                pattern_key,
+                title,
+                memory_type,
+                namespace_key,
+                fact_count,
+                Jsonb(source_fact_ids),
+                Jsonb(evidence_chain),
+                explanation,
+            ),
+        )
+
+    def list_fact_patterns(self, *, limit: int) -> list[FactPatternRow]:
+        return self._fetch_all(LIST_FACT_PATTERNS_SQL, (limit,))
+
+    def count_fact_patterns(self) -> int:
+        return self._fetch_count(COUNT_FACT_PATTERNS_SQL)
+
+    def get_fact_pattern_optional(self, pattern_id: UUID) -> FactPatternRow | None:
+        return self._fetch_optional_one(GET_FACT_PATTERN_SQL, (pattern_id,))
+
+    def delete_fact_patterns_not_in(self, pattern_ids: list[UUID]) -> None:
+        if not pattern_ids:
+            self._execute("delete_all_fact_patterns", DELETE_ALL_FACT_PATTERNS_SQL)
+            return
+        self._execute("delete_fact_patterns_not_in", DELETE_FACT_PATTERNS_NOT_IN_SQL, (pattern_ids,))
+
+    def upsert_fact_playbook(
+        self,
+        *,
+        playbook_id: UUID,
+        playbook_key: str,
+        pattern_id: UUID,
+        pattern_key: str,
+        title: str,
+        memory_type: str,
+        source_fact_ids: list[str],
+        source_pattern_ids: list[str],
+        steps: JsonValue,
+        explanation: str,
+    ) -> FactPlaybookRow:
+        return self._fetch_one(
+            "upsert_fact_playbook",
+            UPSERT_FACT_PLAYBOOK_SQL,
+            (
+                playbook_id,
+                playbook_key,
+                pattern_id,
+                pattern_key,
+                title,
+                memory_type,
+                Jsonb(source_fact_ids),
+                Jsonb(source_pattern_ids),
+                Jsonb(steps),
+                explanation,
+            ),
+        )
+
+    def list_fact_playbooks(self, *, limit: int) -> list[FactPlaybookRow]:
+        return self._fetch_all(LIST_FACT_PLAYBOOKS_SQL, (limit,))
+
+    def count_fact_playbooks(self) -> int:
+        return self._fetch_count(COUNT_FACT_PLAYBOOKS_SQL)
+
+    def get_fact_playbook_optional(self, playbook_id: UUID) -> FactPlaybookRow | None:
+        return self._fetch_optional_one(GET_FACT_PLAYBOOK_SQL, (playbook_id,))
+
+    def delete_fact_playbooks_not_in(self, playbook_ids: list[UUID]) -> None:
+        if not playbook_ids:
+            self._execute("delete_all_fact_playbooks", DELETE_ALL_FACT_PLAYBOOKS_SQL)
+            return
+        self._execute("delete_fact_playbooks_not_in", DELETE_FACT_PLAYBOOKS_NOT_IN_SQL, (playbook_ids,))
 
     def create_memory_review_label(
         self,

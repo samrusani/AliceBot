@@ -56,6 +56,7 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     DEFAULT_TEMPORAL_TIMELINE_LIMIT,
+    DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT,
     DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT,
     DEFAULT_MAX_EVENTS,
     DEFAULT_MAX_ENTITY_EDGES,
@@ -86,6 +87,7 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     MAX_TEMPORAL_TIMELINE_LIMIT,
+    MAX_TRUSTED_FACT_PROMOTION_LIMIT,
     MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
@@ -115,6 +117,12 @@ from alicebot_api.contracts import (
     TemporalStateAtResponse,
     TemporalTimelineQueryInput,
     TemporalTimelineResponse,
+    TrustedFactPatternExplainResponse,
+    TrustedFactPatternListQueryInput,
+    TrustedFactPatternListResponse,
+    TrustedFactPlaybookExplainResponse,
+    TrustedFactPlaybookListQueryInput,
+    TrustedFactPlaybookListResponse,
     ChiefOfStaffPriorityBriefRequestInput,
     ChiefOfStaffPriorityBriefResponse,
     ChiefOfStaffExecutionRoutingActionInput,
@@ -374,6 +382,13 @@ from alicebot_api.temporal_state import (
     get_temporal_explain,
     get_temporal_state_at,
     get_temporal_timeline,
+)
+from alicebot_api.trusted_fact_promotions import (
+    TrustedFactPromotionNotFoundError,
+    get_trusted_fact_pattern,
+    get_trusted_fact_playbook,
+    list_trusted_fact_patterns,
+    list_trusted_fact_playbooks,
 )
 from alicebot_api.continuity_lifecycle import (
     ContinuityLifecycleNotFoundError,
@@ -4330,6 +4345,86 @@ def get_temporal_explain_endpoint(
     except (TemporalStateNotFoundError, TemporalStateValidationError) as exc:
         status_code = 404 if isinstance(exc, TemporalStateNotFoundError) else 400
         return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/patterns")
+def list_trusted_fact_patterns_endpoint(
+    user_id: UUID,
+    limit: int = Query(
+        default=DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT,
+        ge=1,
+        le=MAX_TRUSTED_FACT_PROMOTION_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload: TrustedFactPatternListResponse = list_trusted_fact_patterns(
+            ContinuityStore(conn),
+            user_id=user_id,
+            request=TrustedFactPatternListQueryInput(limit=limit),
+        )
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/patterns/{pattern_id}")
+def get_trusted_fact_pattern_endpoint(
+    pattern_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: TrustedFactPatternExplainResponse = get_trusted_fact_pattern(
+                ContinuityStore(conn),
+                user_id=user_id,
+                pattern_id=pattern_id,
+            )
+    except TrustedFactPromotionNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/playbooks")
+def list_trusted_fact_playbooks_endpoint(
+    user_id: UUID,
+    limit: int = Query(
+        default=DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT,
+        ge=1,
+        le=MAX_TRUSTED_FACT_PROMOTION_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload: TrustedFactPlaybookListResponse = list_trusted_fact_playbooks(
+            ContinuityStore(conn),
+            user_id=user_id,
+            request=TrustedFactPlaybookListQueryInput(limit=limit),
+        )
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v0/playbooks/{playbook_id}")
+def get_trusted_fact_playbook_endpoint(
+    playbook_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: TrustedFactPlaybookExplainResponse = get_trusted_fact_playbook(
+                ContinuityStore(conn),
+                user_id=user_id,
+                playbook_id=playbook_id,
+            )
+    except TrustedFactPromotionNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
