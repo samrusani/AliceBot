@@ -136,7 +136,7 @@ def serialize_semantic_memory_result_item(
             f"semantic retrieval only supports active memories: {row['id']}"
         )
 
-    return {
+    payload: SemanticMemoryRetrievalResultItem = {
         "memory_id": str(row["id"]),
         "memory_key": row["memory_key"],
         "value": row["value"],
@@ -145,6 +145,24 @@ def serialize_semantic_memory_result_item(
         "updated_at": row["updated_at"].isoformat(),
         "score": float(row["score"]),
     }
+    payload["memory_type"] = row["memory_type"]
+    payload["confidence"] = row["confidence"]
+    payload["salience"] = row["salience"]
+    payload["confirmation_status"] = row["confirmation_status"]
+    payload["trust_class"] = row["trust_class"]
+    payload["promotion_eligibility"] = row["promotion_eligibility"]
+    payload["evidence_count"] = row["evidence_count"]
+    payload["independent_source_count"] = row["independent_source_count"]
+    payload["extracted_by_model"] = row["extracted_by_model"]
+    payload["trust_reason"] = row["trust_reason"]
+    payload["valid_from"] = None if row["valid_from"] is None else row["valid_from"].isoformat()
+    payload["valid_to"] = None if row["valid_to"] is None else row["valid_to"].isoformat()
+    payload["last_confirmed_at"] = (
+        None
+        if row["last_confirmed_at"] is None
+        else row["last_confirmed_at"].isoformat()
+    )
+    return payload
 
 
 def _infer_media_type(*, relative_path: str, media_type_hint: str | None) -> str:

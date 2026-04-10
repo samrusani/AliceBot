@@ -96,6 +96,12 @@ class MemoryStoreStub:
         confidence: float | None = None,
         salience: float | None = None,
         confirmation_status: str = "unconfirmed",
+        trust_class: str = "deterministic",
+        promotion_eligibility: str = "promotable",
+        evidence_count: int | None = None,
+        independent_source_count: int | None = None,
+        extracted_by_model: str | None = None,
+        trust_reason: str | None = None,
         valid_from: datetime | None = None,
         valid_to: datetime | None = None,
         last_confirmed_at: datetime | None = None,
@@ -113,6 +119,12 @@ class MemoryStoreStub:
             "confidence": confidence,
             "salience": salience,
             "confirmation_status": confirmation_status,
+            "trust_class": trust_class,
+            "promotion_eligibility": promotion_eligibility,
+            "evidence_count": evidence_count,
+            "independent_source_count": independent_source_count,
+            "extracted_by_model": extracted_by_model,
+            "trust_reason": trust_reason,
             "valid_from": valid_from,
             "valid_to": valid_to,
             "last_confirmed_at": last_confirmed_at,
@@ -134,6 +146,12 @@ class MemoryStoreStub:
         confidence: float | None = None,
         salience: float | None = None,
         confirmation_status: str = "unconfirmed",
+        trust_class: str = "deterministic",
+        promotion_eligibility: str = "promotable",
+        evidence_count: int | None = None,
+        independent_source_count: int | None = None,
+        extracted_by_model: str | None = None,
+        trust_reason: str | None = None,
         valid_from: datetime | None = None,
         valid_to: datetime | None = None,
         last_confirmed_at: datetime | None = None,
@@ -150,6 +168,12 @@ class MemoryStoreStub:
             "confidence": confidence,
             "salience": salience,
             "confirmation_status": confirmation_status,
+            "trust_class": trust_class,
+            "promotion_eligibility": promotion_eligibility,
+            "evidence_count": evidence_count,
+            "independent_source_count": independent_source_count,
+            "extracted_by_model": extracted_by_model,
+            "trust_reason": trust_reason,
             "valid_from": valid_from,
             "valid_to": valid_to,
             "last_confirmed_at": last_confirmed_at,
@@ -308,6 +332,27 @@ def test_admit_memory_candidate_rejects_invalid_memory_type() -> None:
                 memory_type="not_a_valid_type",
             ),
         )
+
+
+def test_admit_memory_candidate_defaults_llm_single_source_to_not_promotable() -> None:
+    store = MemoryStoreStub()
+    event_id = seed_event(store)
+
+    decision = admit_memory_candidate(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        candidate=MemoryCandidateInput(
+            memory_key="user.fact.weather",
+            value={"summary": "Rain tomorrow"},
+            source_event_ids=(event_id,),
+            trust_class="llm_single_source",
+        ),
+    )
+
+    assert decision.action == "ADD"
+    assert decision.memory is not None
+    assert decision.memory["trust_class"] == "llm_single_source"
+    assert decision.memory["promotion_eligibility"] == "not_promotable"
 
 
 def test_admit_memory_candidate_adds_new_memory_with_first_revision() -> None:
@@ -1014,6 +1059,7 @@ def test_list_memory_review_queue_records_returns_only_active_unlabeled_memories
                 "source_event_ids": ["event-4"],
                 "is_high_risk": True,
                 "is_stale_truth": False,
+                "is_promotable": True,
                 "queue_priority_mode": "recent_first",
                 "priority_reason": "recent_first",
                 "created_at": "2026-03-11T12:03:00+00:00",
@@ -1027,6 +1073,7 @@ def test_list_memory_review_queue_records_returns_only_active_unlabeled_memories
                 "source_event_ids": ["event-2"],
                 "is_high_risk": True,
                 "is_stale_truth": False,
+                "is_promotable": True,
                 "queue_priority_mode": "recent_first",
                 "priority_reason": "recent_first",
                 "created_at": "2026-03-11T12:01:00+00:00",
@@ -1050,6 +1097,38 @@ def test_list_memory_review_queue_records_returns_only_active_unlabeled_memories
             "order": ["updated_at_desc", "created_at_desc", "id_desc"],
         },
     }
+
+
+def test_list_memory_review_queue_records_marks_not_promotable_fact_as_high_risk() -> None:
+    store = MemoryReviewStoreStub()
+    base_time = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
+    memory_id = uuid4()
+    store.memories = [
+        {
+            "id": memory_id,
+            "user_id": uuid4(),
+            "memory_key": "user.fact.single_source",
+            "value": {"claim": "single source"},
+            "status": "active",
+            "source_event_ids": ["event-1"],
+            "trust_class": "llm_single_source",
+            "promotion_eligibility": "not_promotable",
+            "created_at": base_time,
+            "updated_at": base_time,
+            "deleted_at": None,
+        }
+    ]
+
+    payload = list_memory_review_queue_records(
+        store,  # type: ignore[arg-type]
+        user_id=uuid4(),
+        limit=1,
+    )
+
+    assert payload["items"][0]["id"] == str(memory_id)
+    assert payload["items"][0]["is_promotable"] is False
+    assert payload["items"][0]["is_high_risk"] is True
+    assert payload["items"][0]["priority_reason"] == "recent_not_promotable"
 
 
 def test_list_memory_review_queue_records_supports_all_priority_modes_with_deterministic_order() -> None:
