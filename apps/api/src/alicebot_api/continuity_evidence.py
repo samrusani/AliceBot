@@ -36,6 +36,9 @@ class ContinuityEvidenceNotFoundError(LookupError):
     """Raised when a continuity evidence resource is not visible in scope."""
 
 
+_REDACTED_EVIDENCE_CONTENT = "[redacted]"
+
+
 @dataclass(frozen=True, slots=True)
 class SourceArtifactArchiveInput:
     relative_path: str
@@ -170,8 +173,20 @@ def _serialize_artifact_segment(
     }
 
 
+def _sensitive_evidence_content(
+    value: str,
+    *,
+    include_raw_content: bool,
+) -> str:
+    if include_raw_content:
+        return value
+    return _REDACTED_EVIDENCE_CONTENT
+
+
 def serialize_continuity_evidence_rows(
     rows: list[ContinuityObjectEvidenceRow],
+    *,
+    include_raw_content: bool = True,
 ) -> list[ContinuityEvidenceLinkRecord]:
     serialized: list[ContinuityEvidenceLinkRecord] = []
     for row in rows:
@@ -189,7 +204,10 @@ def serialize_continuity_evidence_rows(
             "checksum_sha256": row["artifact_copy_checksum_sha256"],
             "content_length_bytes": row["artifact_copy_content_length_bytes"],
             "content_encoding": row["artifact_copy_content_encoding"],
-            "content_text": row["artifact_copy_content_text"],
+            "content_text": _sensitive_evidence_content(
+                row["artifact_copy_content_text"],
+                include_raw_content=include_raw_content,
+            ),
             "created_at": row["artifact_copy_created_at"].isoformat(),
         }
         artifact_segment = None
@@ -200,7 +218,10 @@ def serialize_continuity_evidence_rows(
                 "sequence_no": row["segment_sequence_no"] or 0,
                 "segment_kind": row["segment_kind"] or "unknown",
                 "locator": row["segment_locator"] or {},
-                "raw_content": row["segment_raw_content"] or "",
+                "raw_content": _sensitive_evidence_content(
+                    row["segment_raw_content"] or "",
+                    include_raw_content=include_raw_content,
+                ),
                 "checksum_sha256": row["segment_checksum_sha256"] or "",
                 "created_at": (
                     row["segment_created_at"].isoformat()
@@ -226,6 +247,7 @@ def build_continuity_explain(
     *,
     user_id: UUID,
     continuity_object_id: UUID,
+    include_raw_content: bool = True,
 ) -> ContinuityExplainResponse:
     del user_id
 
@@ -253,7 +275,8 @@ def build_continuity_explain(
             updated_at=continuity_object["updated_at"],
         ),
         "evidence_chain": serialize_continuity_evidence_rows(
-            store.list_continuity_object_evidence(continuity_object_id)
+            store.list_continuity_object_evidence(continuity_object_id),
+            include_raw_content=include_raw_content,
         ),
     }
     return {"explain": explain}
@@ -264,6 +287,7 @@ def get_continuity_artifact_detail(
     *,
     user_id: UUID,
     artifact_id: UUID,
+    include_raw_content: bool = True,
 ) -> ContinuityArtifactDetailResponse:
     del user_id
 
@@ -274,11 +298,23 @@ def get_continuity_artifact_detail(
     detail: ContinuityArtifactDetailRecord = {
         "artifact": _serialize_artifact(artifact),
         "copies": [
-            _serialize_artifact_copy(copy)
+            {
+                **_serialize_artifact_copy(copy),
+                "content_text": _sensitive_evidence_content(
+                    copy["content_text"],
+                    include_raw_content=include_raw_content,
+                ),
+            }
             for copy in store.list_continuity_artifact_copies(artifact_id)
         ],
         "segments": [
-            _serialize_artifact_segment(segment)
+            {
+                **_serialize_artifact_segment(segment),
+                "raw_content": _sensitive_evidence_content(
+                    segment["raw_content"],
+                    include_raw_content=include_raw_content,
+                ),
+            }
             for segment in store.list_continuity_artifact_segments(artifact_id)
         ],
     }
