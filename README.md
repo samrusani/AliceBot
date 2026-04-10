@@ -55,6 +55,13 @@ Memories carry trust classification and promotion eligibility, so agents can sea
 
 Trust metadata flows through admission, retrieval, explain output, review behavior, and CLI/MCP responses, which makes memory quality visible instead of implicit.
 
+### It turns trusted facts into reusable patterns
+
+Alice does not stop at storing individual facts.
+It can promote active, trusted, promotable facts into inspectable patterns and playbooks, while explicitly rejecting single-source model-extracted facts as a basis for durable operational guidance.
+
+Pattern and playbook explain output stays transparent: source fact IDs, evidence chain, trust posture, source events, and current revision context remain visible.
+
 ### It is local-first and agent-agnostic
 
 Alice Core runs locally and exposes the same continuity semantics through the CLI and MCP, so you can use it with your own workflows instead of being locked into a closed assistant product.
@@ -77,6 +84,7 @@ The open-source surface includes:
 - deterministic CLI workflows
 - MCP server
 - trust-aware memory classification and promotion controls
+- trusted-fact patterns and playbooks with transparent explain output
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -115,6 +123,15 @@ Capture something new:
 
 ```bash
 ./.venv/bin/python -m alicebot_api capture "Remember that the Q3 board pack is due on Thursday."
+```
+
+Inspect trusted patterns and playbooks:
+
+```bash
+./.venv/bin/python -m alicebot_api patterns list
+./.venv/bin/python -m alicebot_api playbooks list
+./.venv/bin/python -m alicebot_api patterns explain <pattern_id>
+./.venv/bin/python -m alicebot_api playbooks explain <playbook_id>
 ```
 
 See the full local setup walkthrough in [docs/quickstart/local-setup-and-first-result.md](docs/quickstart/local-setup-and-first-result.md).
@@ -199,6 +216,7 @@ Alice is built around a shared continuity core with:
 
 - structured memory revisions
 - provenance- and trust-aware recall
+- trusted-fact promotion into inspectable patterns and playbooks
 - deterministic resumption briefs
 - open-loop objects
 - CLI and MCP surfaces on the same semantics
