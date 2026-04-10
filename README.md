@@ -254,6 +254,8 @@ That means the system behaves consistently across local workflows, MCP-connected
 
 Issues, adapters, importers, eval contributions, and integration examples are welcome.
 
+PRs that touch protected continuity, evidence, trust, promotion, or API surfaces must include the required upgrade overview and satisfy the protected-path guardrails described in [PROTECTED_PATHS.md](PROTECTED_PATHS.md).
+
 See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security
