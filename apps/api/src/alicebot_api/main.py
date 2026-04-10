@@ -5,6 +5,7 @@ from datetime import datetime
 import hmac
 import hashlib
 import json
+import logging
 import threading
 import time
 from typing import Annotated, Awaitable, Callable, Literal, TypedDict
@@ -608,6 +609,8 @@ from alicebot_api.traces import (
     list_trace_event_records,
     list_trace_records,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 app = FastAPI(title="AliceBot API", version="0.1.0")
@@ -1885,6 +1888,25 @@ def _ensure_hosted_admin_access(conn, *, user_account_id: UUID) -> None:
         raise PermissionError(
             "hosted admin access requires hosted_admin_read and hosted_admin_operator flags"
         )
+
+
+def _allow_raw_evidence_debug_access(settings: Settings) -> bool:
+    return settings.app_env in {"development", "test"}
+
+
+def _audit_raw_evidence_access(
+    *,
+    request: Request,
+    settings: Settings,
+    route: str,
+    user_id: UUID,
+) -> None:
+    LOGGER.info(
+        "raw evidence content requested route=%s user_id=%s client=%s",
+        route,
+        user_id,
+        _request_client_identifier(request, settings),
+    )
 
 
 def _record_workspace_onboarding_failure(
@@ -4260,6 +4282,7 @@ def get_continuity_explain_endpoint(
                 ContinuityStore(conn),
                 user_id=user_id,
                 continuity_object_id=continuity_object_id,
+                include_raw_content=False,
             )
     except ContinuityEvidenceNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
@@ -4431,10 +4454,25 @@ def get_trusted_fact_playbook_endpoint(
 
 @app.get("/v0/admin/debug/continuity/artifacts/{artifact_id}")
 def get_continuity_artifact_detail_endpoint(
+    request: Request,
     artifact_id: UUID,
     user_id: UUID,
+    include_raw_content: bool = Query(default=False),
 ) -> JSONResponse:
     settings = get_settings()
+    if include_raw_content and not _allow_raw_evidence_debug_access(settings):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "raw evidence content access is restricted to development/test"},
+        )
+
+    if include_raw_content:
+        _audit_raw_evidence_access(
+            request=request,
+            settings=settings,
+            route="/v0/admin/debug/continuity/artifacts/{artifact_id}",
+            user_id=user_id,
+        )
 
     try:
         with user_connection(settings.database_url, user_id) as conn:
@@ -4442,6 +4480,7 @@ def get_continuity_artifact_detail_endpoint(
                 ContinuityStore(conn),
                 user_id=user_id,
                 artifact_id=artifact_id,
+                include_raw_content=include_raw_content,
             )
     except ContinuityEvidenceNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
