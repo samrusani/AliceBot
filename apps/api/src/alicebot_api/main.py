@@ -47,6 +47,7 @@ from alicebot_api.contracts import (
     DEFAULT_AGENT_PROFILE_ID,
     DEFAULT_CALENDAR_EVENT_LIST_LIMIT,
     DEFAULT_CONTINUITY_CAPTURE_LIMIT,
+    DEFAULT_CONTINUITY_LIFECYCLE_LIMIT,
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
     DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
@@ -75,6 +76,7 @@ from alicebot_api.contracts import (
     MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
     MAX_CALENDAR_EVENT_LIST_LIMIT,
     MAX_CONTINUITY_CAPTURE_LIMIT,
+    MAX_CONTINUITY_LIFECYCLE_LIMIT,
     MAX_CONTINUITY_REVIEW_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
@@ -86,6 +88,9 @@ from alicebot_api.contracts import (
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
     ContinuityCaptureCreateInput,
+    ContinuityLifecycleDetailResponse,
+    ContinuityLifecycleListResponse,
+    ContinuityLifecycleQueryInput,
     ContinuityDailyBriefRequestInput,
     ContinuityDailyBriefResponse,
     ContinuityOpenLoopDashboardQueryInput,
@@ -347,6 +352,12 @@ from alicebot_api.continuity_capture import (
     capture_continuity_input,
     get_continuity_capture_detail,
     list_continuity_capture_inbox,
+)
+from alicebot_api.continuity_lifecycle import (
+    ContinuityLifecycleNotFoundError,
+    ContinuityLifecycleValidationError,
+    get_continuity_lifecycle_state,
+    list_continuity_lifecycle_state,
 )
 from alicebot_api.continuity_recall import (
     ContinuityRecallValidationError,
@@ -4095,6 +4106,56 @@ def get_continuity_capture(capture_event_id: UUID, user_id: UUID) -> JSONRespons
     )
 
 
+@app.get("/v0/admin/debug/continuity/lifecycle")
+def list_continuity_lifecycle_endpoint(
+    user_id: UUID,
+    limit: int = Query(
+        default=DEFAULT_CONTINUITY_LIFECYCLE_LIMIT,
+        ge=1,
+        le=MAX_CONTINUITY_LIFECYCLE_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityLifecycleListResponse = list_continuity_lifecycle_state(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=ContinuityLifecycleQueryInput(limit=limit),
+            )
+    except ContinuityLifecycleValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/admin/debug/continuity/lifecycle/{continuity_object_id}")
+def get_continuity_lifecycle_endpoint(
+    continuity_object_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityLifecycleDetailResponse = get_continuity_lifecycle_state(
+                ContinuityStore(conn),
+                user_id=user_id,
+                continuity_object_id=continuity_object_id,
+            )
+    except ContinuityLifecycleNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
 @app.get("/v0/continuity/review-queue")
 def list_continuity_review_queue_endpoint(
     user_id: UUID,
@@ -4429,6 +4490,7 @@ def get_continuity_resumption_brief(
         ge=0,
         le=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     ),
+    include_non_promotable_facts: bool = False,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -4447,6 +4509,7 @@ def get_continuity_resumption_brief(
                     until=until,
                     max_recent_changes=max_recent_changes,
                     max_open_loops=max_open_loops,
+                    include_non_promotable_facts=include_non_promotable_facts,
                 ),
             )
     except ContinuityResumptionValidationError as exc:

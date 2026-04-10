@@ -198,6 +198,19 @@ def _parse_optional_float(arguments: Mapping[str, object], key: str) -> float | 
     raise MCPToolError(f"{key} must be a number")
 
 
+def _parse_bool(arguments: Mapping[str, object], *, key: str, default: bool = False) -> bool:
+    value = arguments.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    raise MCPToolError(f"{key} must be a boolean")
+
+
 def _build_recall_query(arguments: Mapping[str, object], *, limit: int) -> ContinuityRecallQueryInput:
     return ContinuityRecallQueryInput(
         query=_parse_optional_text(arguments, "query"),
@@ -291,6 +304,11 @@ def _handle_alice_resume(context: MCPRuntimeContext, arguments: Mapping[str, obj
                 until=_parse_optional_datetime(arguments, "until"),
                 max_recent_changes=max_recent_changes,
                 max_open_loops=max_open_loops,
+                include_non_promotable_facts=_parse_bool(
+                    arguments,
+                    key="include_non_promotable_facts",
+                    default=False,
+                ),
             ),
         )
 
@@ -588,6 +606,7 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "minimum": 0,
                     "maximum": MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
                 },
+                "include_non_promotable_facts": {"type": "boolean"},
             },
         },
     },

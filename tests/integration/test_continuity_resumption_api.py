@@ -85,6 +85,20 @@ def set_continuity_timestamps(
             )
 
 
+def set_continuity_lifecycle_flags(
+    admin_database_url: str,
+    *,
+    continuity_object_id: UUID,
+    is_promotable: bool,
+) -> None:
+    with psycopg.connect(admin_database_url, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE continuity_objects SET is_promotable = %s WHERE id = %s",
+                (is_promotable, continuity_object_id),
+            )
+
+
 def test_continuity_resumption_api_returns_required_sections(
     migrated_database_urls,
     monkeypatch,
@@ -389,4 +403,100 @@ def test_continuity_resumption_api_selects_latest_sections_beyond_recall_limit(
     assert [item["title"] for item in brief["recent_changes"]["items"]] == [
         "Next Action: newest low confidence",
         "Decision: newest low confidence",
+    ]
+
+
+def test_continuity_resumption_api_uses_promotable_facts_by_default_with_override(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="promotable@example.com")
+    thread_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        fact_capture = store.create_continuity_capture_event(
+            raw_content="Remember: hidden from brief",
+            explicit_signal="remember_this",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_remember_this",
+        )
+        fact_object = store.create_continuity_object(
+            capture_event_id=fact_capture["id"],
+            object_type="MemoryFact",
+            status="active",
+            title="Memory Fact: hidden from brief",
+            body={"fact_text": "hidden from brief"},
+            provenance={"thread_id": str(thread_id)},
+            confidence=0.9,
+        )
+        decision_capture = store.create_continuity_capture_event(
+            raw_content="Decision: visible in brief",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        decision_object = store.create_continuity_object(
+            capture_event_id=decision_capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: visible in brief",
+            body={"decision_text": "visible in brief"},
+            provenance={"thread_id": str(thread_id)},
+            confidence=1.0,
+        )
+
+    set_continuity_lifecycle_flags(
+        migrated_database_urls["admin"],
+        continuity_object_id=fact_object["id"],
+        is_promotable=False,
+    )
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=fact_object["id"],
+        created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+    )
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=decision_object["id"],
+        created_at=datetime(2026, 3, 29, 10, 5, tzinfo=UTC),
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    default_status, default_payload = invoke_request(
+        "GET",
+        "/v0/continuity/resumption-brief",
+        query_params={
+            "user_id": str(user_id),
+            "thread_id": str(thread_id),
+            "max_recent_changes": "5",
+            "max_open_loops": "2",
+        },
+    )
+    override_status, override_payload = invoke_request(
+        "GET",
+        "/v0/continuity/resumption-brief",
+        query_params={
+            "user_id": str(user_id),
+            "thread_id": str(thread_id),
+            "max_recent_changes": "5",
+            "max_open_loops": "2",
+            "include_non_promotable_facts": "true",
+        },
+    )
+
+    assert default_status == 200
+    assert [item["title"] for item in default_payload["brief"]["recent_changes"]["items"]] == [
+        "Decision: visible in brief",
+    ]
+
+    assert override_status == 200
+    assert [item["title"] for item in override_payload["brief"]["recent_changes"]["items"]] == [
+        "Decision: visible in brief",
+        "Memory Fact: hidden from brief",
     ]

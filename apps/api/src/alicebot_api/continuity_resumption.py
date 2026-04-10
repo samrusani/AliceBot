@@ -37,6 +37,18 @@ def _is_recent_change_candidate(item: ContinuityRecallResultRecord) -> bool:
     return item["status"] in {"active", "stale", "superseded", "completed", "cancelled"}
 
 
+def _is_promotable_fact(
+    item: ContinuityRecallResultRecord,
+    *,
+    include_non_promotable_facts: bool,
+) -> bool:
+    if item["object_type"] != "MemoryFact":
+        return True
+    if include_non_promotable_facts:
+        return True
+    return item["lifecycle"]["is_promotable"]
+
+
 def _build_empty_state(*, is_empty: bool, message: str) -> ContinuityResumptionEmptyState:
     return {
         "is_empty": is_empty,
@@ -165,6 +177,10 @@ def compile_continuity_resumption_brief(
         item
         for item in recent_ordered_items
         if _is_recent_change_candidate(item)
+        and _is_promotable_fact(
+            item,
+            include_non_promotable_facts=request.include_non_promotable_facts,
+        )
     ]
     recent_change_items = (
         recent_change_candidates[: request.max_recent_changes]

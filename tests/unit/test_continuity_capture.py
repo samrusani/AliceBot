@@ -67,6 +67,9 @@ class ContinuityCaptureStoreStub:
         body,
         provenance,
         confidence: float,
+        is_preserved: bool = True,
+        is_searchable: bool = True,
+        is_promotable: bool = True,
     ):
         row = {
             "id": uuid4(),
@@ -74,6 +77,9 @@ class ContinuityCaptureStoreStub:
             "capture_event_id": capture_event_id,
             "object_type": object_type,
             "status": status,
+            "is_preserved": is_preserved,
+            "is_searchable": is_searchable,
+            "is_promotable": is_promotable,
             "title": title,
             "body": body,
             "provenance": provenance,
