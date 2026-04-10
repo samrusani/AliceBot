@@ -176,6 +176,9 @@ class ContinuityObjectRow(TypedDict):
     title: str
     body: JsonObject
     provenance: JsonObject
+    project_entity_id: UUID | None
+    person_entity_id: UUID | None
+    topic_entity_id: UUID | None
     confidence: float
     last_confirmed_at: datetime | None
     supersedes_object_id: UUID | None
@@ -208,6 +211,9 @@ class ContinuityRecallCandidateRow(TypedDict):
     title: str
     body: JsonObject
     provenance: JsonObject
+    project_entity_id: UUID | None
+    person_entity_id: UUID | None
+    topic_entity_id: UUID | None
     confidence: float
     last_confirmed_at: datetime | None
     supersedes_object_id: UUID | None
@@ -352,6 +358,31 @@ class EntityRow(TypedDict):
     entity_type: str
     name: str
     source_memory_ids: list[str]
+    created_at: datetime
+
+
+class EntityAliasRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    entity_id: UUID
+    alias: str
+    normalized_alias: str
+    created_at: datetime
+
+
+class EntityAliasMatchRow(TypedDict):
+    entity_id: UUID
+    entity_type: str
+    entity_name: str
+    created_at: datetime
+
+
+class EntityMergeLogRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    source_entity_id: UUID
+    target_entity_id: UUID
+    reason: str | None
     created_at: datetime
 
 
@@ -2058,6 +2089,81 @@ LIST_ENTITIES_SQL = """
                 SELECT id, user_id, entity_type, name, source_memory_ids, created_at
                 FROM entities
                 ORDER BY created_at ASC, id ASC
+                """
+
+INSERT_ENTITY_ALIAS_SQL = """
+                INSERT INTO entity_aliases (user_id, entity_id, alias, normalized_alias, created_at)
+                VALUES (app.current_user_id(), %s, %s, %s, clock_timestamp())
+                ON CONFLICT (user_id, entity_id, normalized_alias)
+                DO UPDATE SET alias = EXCLUDED.alias
+                RETURNING id, user_id, entity_id, alias, normalized_alias, created_at
+                """
+
+LIST_ENTITY_ALIASES_FOR_ENTITY_SQL = """
+                SELECT id, user_id, entity_id, alias, normalized_alias, created_at
+                FROM entity_aliases
+                WHERE entity_id = %s
+                ORDER BY created_at ASC, id ASC
+                """
+
+FIND_ENTITY_ALIAS_MATCHES_SQL = """
+                SELECT
+                  matches.entity_id,
+                  entities.entity_type,
+                  entities.name AS entity_name,
+                  entities.created_at
+                FROM (
+                  SELECT entity_id
+                  FROM entity_aliases
+                  WHERE normalized_alias = %s
+                  UNION
+                  SELECT id AS entity_id
+                  FROM entities
+                  WHERE entity_type = %s
+                    AND regexp_replace(lower(name), '\\s+', ' ', 'g') = %s
+                ) AS matches
+                JOIN entities
+                  ON entities.id = matches.entity_id
+                 AND entities.user_id = app.current_user_id()
+                WHERE entities.entity_type = %s
+                ORDER BY entities.created_at ASC, matches.entity_id ASC
+                """
+
+INSERT_ENTITY_MERGE_LOG_SQL = """
+                INSERT INTO entity_merge_log (
+                  user_id,
+                  source_entity_id,
+                  target_entity_id,
+                  reason,
+                  created_at
+                )
+                VALUES (app.current_user_id(), %s, %s, %s, clock_timestamp())
+                RETURNING id, user_id, source_entity_id, target_entity_id, reason, created_at
+                """
+
+GET_LATEST_ENTITY_MERGE_FOR_SOURCE_SQL = """
+                SELECT id, user_id, source_entity_id, target_entity_id, reason, created_at
+                FROM entity_merge_log
+                WHERE source_entity_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """
+
+LIST_ENTITY_MERGE_LOGS_FOR_ENTITY_SQL = """
+                SELECT id, user_id, source_entity_id, target_entity_id, reason, created_at
+                FROM entity_merge_log
+                WHERE source_entity_id = %s OR target_entity_id = %s
+                ORDER BY created_at DESC, id DESC
+                """
+
+REBIND_CONTINUITY_OBJECT_ENTITY_REFERENCES_SQL = """
+                UPDATE continuity_objects
+                SET project_entity_id = CASE WHEN project_entity_id = %s THEN %s ELSE project_entity_id END,
+                    person_entity_id = CASE WHEN person_entity_id = %s THEN %s ELSE person_entity_id END,
+                    topic_entity_id = CASE WHEN topic_entity_id = %s THEN %s ELSE topic_entity_id END,
+                    updated_at = clock_timestamp()
+                WHERE project_entity_id = %s OR person_entity_id = %s OR topic_entity_id = %s
+                RETURNING id
                 """
 
 INSERT_ENTITY_EDGE_SQL = """
@@ -4014,6 +4120,9 @@ INSERT_CONTINUITY_OBJECT_SQL = """
                   title,
                   body,
                   provenance,
+                  project_entity_id,
+                  person_entity_id,
+                  topic_entity_id,
                   confidence,
                   last_confirmed_at,
                   supersedes_object_id,
@@ -4021,6 +4130,9 @@ INSERT_CONTINUITY_OBJECT_SQL = """
                 )
                 VALUES (
                   app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
                   %s,
                   %s,
                   %s,
@@ -4047,6 +4159,9 @@ INSERT_CONTINUITY_OBJECT_SQL = """
                   title,
                   body,
                   provenance,
+                  project_entity_id,
+                  person_entity_id,
+                  topic_entity_id,
                   confidence,
                   last_confirmed_at,
                   supersedes_object_id,
@@ -4068,6 +4183,9 @@ GET_CONTINUITY_OBJECT_BY_CAPTURE_EVENT_SQL = """
                   title,
                   body,
                   provenance,
+                  project_entity_id,
+                  person_entity_id,
+                  topic_entity_id,
                   confidence,
                   last_confirmed_at,
                   supersedes_object_id,
@@ -4091,6 +4209,9 @@ GET_CONTINUITY_OBJECT_SQL = """
                   title,
                   body,
                   provenance,
+                  project_entity_id,
+                  person_entity_id,
+                  topic_entity_id,
                   confidence,
                   last_confirmed_at,
                   supersedes_object_id,
@@ -4114,6 +4235,9 @@ LIST_CONTINUITY_OBJECTS_FOR_CAPTURE_EVENTS_SQL = """
                   title,
                   body,
                   provenance,
+                  project_entity_id,
+                  person_entity_id,
+                  topic_entity_id,
                   confidence,
                   last_confirmed_at,
                   supersedes_object_id,
@@ -4138,6 +4262,9 @@ LIST_CONTINUITY_REVIEW_QUEUE_SQL = """
                   title,
                   body,
                   provenance,
+                  project_entity_id,
+                  person_entity_id,
+                  topic_entity_id,
                   confidence,
                   last_confirmed_at,
                   supersedes_object_id,
@@ -4169,6 +4296,9 @@ LIST_CONTINUITY_RECALL_CANDIDATES_SQL = """
                   continuity_objects.title,
                   continuity_objects.body,
                   continuity_objects.provenance,
+                  continuity_objects.project_entity_id,
+                  continuity_objects.person_entity_id,
+                  continuity_objects.topic_entity_id,
                   continuity_objects.confidence,
                   continuity_objects.last_confirmed_at,
                   continuity_objects.supersedes_object_id,
@@ -4491,6 +4621,9 @@ UPDATE_CONTINUITY_OBJECT_SQL = """
                     title = %s,
                     body = %s,
                     provenance = %s,
+                    project_entity_id = %s,
+                    person_entity_id = %s,
+                    topic_entity_id = %s,
                     confidence = %s,
                     last_confirmed_at = %s,
                     supersedes_object_id = %s,
@@ -4509,6 +4642,9 @@ UPDATE_CONTINUITY_OBJECT_SQL = """
                   title,
                   body,
                   provenance,
+                  project_entity_id,
+                  person_entity_id,
+                  topic_entity_id,
                   confidence,
                   last_confirmed_at,
                   supersedes_object_id,
@@ -5102,6 +5238,9 @@ class ContinuityStore:
         body: JsonObject,
         provenance: JsonObject,
         confidence: float,
+        project_entity_id: UUID | None = None,
+        person_entity_id: UUID | None = None,
+        topic_entity_id: UUID | None = None,
         is_preserved: bool | None = None,
         is_searchable: bool | None = None,
         is_promotable: bool | None = None,
@@ -5133,6 +5272,9 @@ class ContinuityStore:
                 title,
                 Jsonb(body),
                 Jsonb(provenance),
+                project_entity_id,
+                person_entity_id,
+                topic_entity_id,
                 confidence,
                 last_confirmed_at,
                 supersedes_object_id,
@@ -5379,6 +5521,9 @@ class ContinuityStore:
         body: JsonObject,
         provenance: JsonObject,
         confidence: float,
+        project_entity_id: UUID | None = None,
+        person_entity_id: UUID | None = None,
+        topic_entity_id: UUID | None = None,
         last_confirmed_at: datetime | None,
         supersedes_object_id: UUID | None,
         superseded_by_object_id: UUID | None,
@@ -5393,6 +5538,9 @@ class ContinuityStore:
                 title,
                 Jsonb(body),
                 Jsonb(provenance),
+                project_entity_id,
+                person_entity_id,
+                topic_entity_id,
                 confidence,
                 last_confirmed_at,
                 supersedes_object_id,
@@ -5611,6 +5759,80 @@ class ContinuityStore:
 
     def list_entities(self) -> list[EntityRow]:
         return self._fetch_all(LIST_ENTITIES_SQL)
+
+    def create_entity_alias(
+        self,
+        *,
+        entity_id: UUID,
+        alias: str,
+        normalized_alias: str,
+    ) -> EntityAliasRow:
+        return self._fetch_one(
+            "create_entity_alias",
+            INSERT_ENTITY_ALIAS_SQL,
+            (entity_id, alias, normalized_alias),
+        )
+
+    def list_entity_aliases_for_entity(self, entity_id: UUID) -> list[EntityAliasRow]:
+        return self._fetch_all(LIST_ENTITY_ALIASES_FOR_ENTITY_SQL, (entity_id,))
+
+    def find_entity_alias_matches(
+        self,
+        *,
+        entity_type: str,
+        normalized_alias: str,
+    ) -> list[EntityAliasMatchRow]:
+        return self._fetch_all(
+            FIND_ENTITY_ALIAS_MATCHES_SQL,
+            (normalized_alias, entity_type, normalized_alias, entity_type),
+        )
+
+    def create_entity_merge_log(
+        self,
+        *,
+        source_entity_id: UUID,
+        target_entity_id: UUID,
+        reason: str | None,
+    ) -> EntityMergeLogRow:
+        return self._fetch_one(
+            "create_entity_merge_log",
+            INSERT_ENTITY_MERGE_LOG_SQL,
+            (source_entity_id, target_entity_id, reason),
+        )
+
+    def get_latest_entity_merge_for_source_optional(
+        self,
+        source_entity_id: UUID,
+    ) -> EntityMergeLogRow | None:
+        return self._fetch_optional_one(
+            GET_LATEST_ENTITY_MERGE_FOR_SOURCE_SQL,
+            (source_entity_id,),
+        )
+
+    def list_entity_merge_logs_for_entity(self, entity_id: UUID) -> list[EntityMergeLogRow]:
+        return self._fetch_all(LIST_ENTITY_MERGE_LOGS_FOR_ENTITY_SQL, (entity_id, entity_id))
+
+    def rebind_continuity_object_entity_references(
+        self,
+        *,
+        source_entity_id: UUID,
+        target_entity_id: UUID,
+    ) -> int:
+        rows = self._fetch_all(
+            REBIND_CONTINUITY_OBJECT_ENTITY_REFERENCES_SQL,
+            (
+                source_entity_id,
+                target_entity_id,
+                source_entity_id,
+                target_entity_id,
+                source_entity_id,
+                target_entity_id,
+                source_entity_id,
+                source_entity_id,
+                source_entity_id,
+            ),
+        )
+        return len(rows)
 
     def create_entity_edge(
         self,

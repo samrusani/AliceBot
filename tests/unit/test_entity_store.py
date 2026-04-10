@@ -103,6 +103,12 @@ def test_entity_methods_use_expected_queries_and_deterministic_order() -> None:
                   confidence,
                   salience,
                   confirmation_status,
+                  trust_class,
+                  promotion_eligibility,
+                  evidence_count,
+                  independent_source_count,
+                  extracted_by_model,
+                  trust_reason,
                   valid_from,
                   valid_to,
                   last_confirmed_at,
@@ -221,4 +227,201 @@ def test_entity_edge_methods_use_expected_queries_and_deterministic_order() -> N
                 ORDER BY created_at ASC, id ASC
                 """,
         ([from_entity_id, related_entity_id], [from_entity_id, related_entity_id]),
+    )
+
+
+def test_entity_alias_and_merge_methods_use_expected_queries() -> None:
+    entity_id = uuid4()
+    source_entity_id = uuid4()
+    target_entity_id = uuid4()
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "entity_id": entity_id,
+                "alias": "Project Orion",
+                "normalized_alias": "project orion",
+                "created_at": "ignored",
+            },
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "source_entity_id": source_entity_id,
+                "target_entity_id": target_entity_id,
+                "reason": "duplicate import identity",
+                "created_at": "ignored",
+            },
+            {
+                "id": uuid4(),
+                "user_id": uuid4(),
+                "source_entity_id": source_entity_id,
+                "target_entity_id": target_entity_id,
+                "reason": "duplicate import identity",
+                "created_at": "ignored",
+            },
+        ],
+        fetchall_results=[
+            [
+                {
+                    "id": uuid4(),
+                    "user_id": uuid4(),
+                    "entity_id": entity_id,
+                    "alias": "Project Orion",
+                    "normalized_alias": "project orion",
+                    "created_at": "ignored",
+                }
+            ],
+            [
+                {
+                    "entity_id": entity_id,
+                    "entity_type": "project",
+                    "entity_name": "Project Orion",
+                    "created_at": "ignored",
+                }
+            ],
+            [{"id": uuid4()}, {"id": uuid4()}],
+            [
+                {
+                    "id": uuid4(),
+                    "user_id": uuid4(),
+                    "source_entity_id": source_entity_id,
+                    "target_entity_id": target_entity_id,
+                    "reason": "duplicate import identity",
+                    "created_at": "ignored",
+                }
+            ],
+        ],
+    )
+    store = ContinuityStore(RecordingConnection(cursor))
+
+    created_alias = store.create_entity_alias(
+        entity_id=entity_id,
+        alias="Project Orion",
+        normalized_alias="project orion",
+    )
+    listed_aliases = store.list_entity_aliases_for_entity(entity_id)
+    alias_matches = store.find_entity_alias_matches(
+        entity_type="project",
+        normalized_alias="project orion",
+    )
+    merge_record = store.create_entity_merge_log(
+        source_entity_id=source_entity_id,
+        target_entity_id=target_entity_id,
+        reason="duplicate import identity",
+    )
+    latest_merge = store.get_latest_entity_merge_for_source_optional(source_entity_id)
+    rebound_count = store.rebind_continuity_object_entity_references(
+        source_entity_id=source_entity_id,
+        target_entity_id=target_entity_id,
+    )
+    merge_history = store.list_entity_merge_logs_for_entity(source_entity_id)
+
+    assert created_alias["entity_id"] == entity_id
+    assert listed_aliases[0]["alias"] == "Project Orion"
+    assert alias_matches[0]["entity_name"] == "Project Orion"
+    assert merge_record["source_entity_id"] == source_entity_id
+    assert latest_merge is not None
+    assert latest_merge["target_entity_id"] == target_entity_id
+    assert rebound_count == 2
+    assert merge_history[0]["target_entity_id"] == target_entity_id
+
+    assert cursor.executed[0] == (
+        """
+                INSERT INTO entity_aliases (user_id, entity_id, alias, normalized_alias, created_at)
+                VALUES (app.current_user_id(), %s, %s, %s, clock_timestamp())
+                ON CONFLICT (user_id, entity_id, normalized_alias)
+                DO UPDATE SET alias = EXCLUDED.alias
+                RETURNING id, user_id, entity_id, alias, normalized_alias, created_at
+                """,
+        (entity_id, "Project Orion", "project orion"),
+    )
+    assert cursor.executed[1] == (
+        """
+                SELECT id, user_id, entity_id, alias, normalized_alias, created_at
+                FROM entity_aliases
+                WHERE entity_id = %s
+                ORDER BY created_at ASC, id ASC
+                """,
+        (entity_id,),
+    )
+    assert cursor.executed[2] == (
+        """
+                SELECT
+                  matches.entity_id,
+                  entities.entity_type,
+                  entities.name AS entity_name,
+                  entities.created_at
+                FROM (
+                  SELECT entity_id
+                  FROM entity_aliases
+                  WHERE normalized_alias = %s
+                  UNION
+                  SELECT id AS entity_id
+                  FROM entities
+                  WHERE entity_type = %s
+                    AND regexp_replace(lower(name), '\\s+', ' ', 'g') = %s
+                ) AS matches
+                JOIN entities
+                  ON entities.id = matches.entity_id
+                 AND entities.user_id = app.current_user_id()
+                WHERE entities.entity_type = %s
+                ORDER BY entities.created_at ASC, matches.entity_id ASC
+                """,
+        ("project orion", "project", "project orion", "project"),
+    )
+    assert cursor.executed[3] == (
+        """
+                INSERT INTO entity_merge_log (
+                  user_id,
+                  source_entity_id,
+                  target_entity_id,
+                  reason,
+                  created_at
+                )
+                VALUES (app.current_user_id(), %s, %s, %s, clock_timestamp())
+                RETURNING id, user_id, source_entity_id, target_entity_id, reason, created_at
+                """,
+        (source_entity_id, target_entity_id, "duplicate import identity"),
+    )
+    assert cursor.executed[4] == (
+        """
+                SELECT id, user_id, source_entity_id, target_entity_id, reason, created_at
+                FROM entity_merge_log
+                WHERE source_entity_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+        (source_entity_id,),
+    )
+    assert cursor.executed[5] == (
+        """
+                UPDATE continuity_objects
+                SET project_entity_id = CASE WHEN project_entity_id = %s THEN %s ELSE project_entity_id END,
+                    person_entity_id = CASE WHEN person_entity_id = %s THEN %s ELSE person_entity_id END,
+                    topic_entity_id = CASE WHEN topic_entity_id = %s THEN %s ELSE topic_entity_id END,
+                    updated_at = clock_timestamp()
+                WHERE project_entity_id = %s OR person_entity_id = %s OR topic_entity_id = %s
+                RETURNING id
+                """,
+        (
+            source_entity_id,
+            target_entity_id,
+            source_entity_id,
+            target_entity_id,
+            source_entity_id,
+            target_entity_id,
+            source_entity_id,
+            source_entity_id,
+            source_entity_id,
+        ),
+    )
+    assert cursor.executed[6] == (
+        """
+                SELECT id, user_id, source_entity_id, target_entity_id, reason, created_at
+                FROM entity_merge_log
+                WHERE source_entity_id = %s OR target_entity_id = %s
+                ORDER BY created_at DESC, id DESC
+                """,
+        (source_entity_id, source_entity_id),
     )

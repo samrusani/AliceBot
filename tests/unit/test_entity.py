@@ -20,6 +20,7 @@ class EntityStoreStub:
         self.base_time = datetime(2026, 3, 12, 9, 0, tzinfo=UTC)
         self.memories: dict[UUID, dict[str, object]] = {}
         self.created_entities: list[dict[str, object]] = []
+        self.created_aliases: list[dict[str, object]] = []
         self.entity_by_id: dict[UUID, dict[str, object]] = {}
 
     def list_memories_by_ids(self, memory_ids: list[UUID]) -> list[dict[str, object]]:
@@ -50,6 +51,24 @@ class EntityStoreStub:
 
     def get_entity_optional(self, entity_id: UUID) -> dict[str, object] | None:
         return self.entity_by_id.get(entity_id)
+
+    def create_entity_alias(
+        self,
+        *,
+        entity_id: UUID,
+        alias: str,
+        normalized_alias: str,
+    ) -> dict[str, object]:
+        payload = {
+            "id": uuid4(),
+            "user_id": uuid4(),
+            "entity_id": entity_id,
+            "alias": alias,
+            "normalized_alias": normalized_alias,
+            "created_at": self.base_time + timedelta(minutes=len(self.created_aliases)),
+        }
+        self.created_aliases.append(payload)
+        return payload
 
 
 def seed_memory(store: EntityStoreStub) -> UUID:
@@ -115,6 +134,10 @@ def test_create_entity_record_creates_entity_with_deduped_source_memories() -> N
     assert payload["entity"]["entity_type"] == "project"
     assert payload["entity"]["name"] == "AliceBot"
     assert payload["entity"]["source_memory_ids"] == [str(first_memory_id), str(second_memory_id)]
+    assert len(store.created_aliases) == 1
+    assert store.created_aliases[0]["entity_id"] == UUID(payload["entity"]["id"])
+    assert store.created_aliases[0]["alias"] == "AliceBot"
+    assert store.created_aliases[0]["normalized_alias"] == "alicebot"
 
 
 def test_list_entity_records_returns_deterministic_shape() -> None:

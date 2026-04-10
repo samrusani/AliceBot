@@ -56,7 +56,7 @@ MemoryReviewQueuePriorityMode = Literal[
     "high_risk_first",
     "stale_truth_first",
 ]
-EntityType = Literal["person", "merchant", "product", "project", "routine"]
+EntityType = Literal["person", "merchant", "product", "project", "routine", "topic"]
 EmbeddingConfigStatus = Literal["active", "deprecated", "disabled"]
 ConsentStatus = Literal["granted", "revoked"]
 ApprovalStatus = Literal["pending", "approved", "rejected"]
@@ -224,7 +224,7 @@ ContinuityCaptureExplicitSignal = Literal[
     "note",
 ]
 ContinuityCaptureAdmissionPosture = Literal["DERIVED", "TRIAGE"]
-ContinuityRecallScopeKind = Literal["thread", "task", "project", "person"]
+ContinuityRecallScopeKind = Literal["thread", "task", "project", "person", "topic"]
 ContinuityCorrectionAction = Literal["confirm", "edit", "delete", "supersede", "mark_stale"]
 ContinuityReviewStatus = Literal["active", "stale", "superseded", "deleted"]
 ContinuityReviewStatusFilter = Literal["correction_ready", "active", "stale", "superseded", "deleted", "all"]
@@ -1682,6 +1682,10 @@ class ContinuityRecallQueryInput:
     task_id: UUID | None = None
     project: str | None = None
     person: str | None = None
+    topic: str | None = None
+    project_entity_id: UUID | None = None
+    person_entity_id: UUID | None = None
+    topic_entity_id: UUID | None = None
     since: datetime | None = None
     until: datetime | None = None
     limit: int = DEFAULT_CONTINUITY_RECALL_LIMIT
@@ -1693,6 +1697,10 @@ class ContinuityRecallQueryInput:
             "task_id": None if self.task_id is None else str(self.task_id),
             "project": self.project,
             "person": self.person,
+            "topic": self.topic,
+            "project_entity_id": None if self.project_entity_id is None else str(self.project_entity_id),
+            "person_entity_id": None if self.person_entity_id is None else str(self.person_entity_id),
+            "topic_entity_id": None if self.topic_entity_id is None else str(self.topic_entity_id),
             "limit": self.limit,
         }
         payload["since"] = isoformat_or_none(self.since)
@@ -1707,6 +1715,10 @@ class ContinuityResumptionBriefRequestInput:
     task_id: UUID | None = None
     project: str | None = None
     person: str | None = None
+    topic: str | None = None
+    project_entity_id: UUID | None = None
+    person_entity_id: UUID | None = None
+    topic_entity_id: UUID | None = None
     since: datetime | None = None
     until: datetime | None = None
     max_recent_changes: int = DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT
@@ -1720,6 +1732,10 @@ class ContinuityResumptionBriefRequestInput:
             "task_id": None if self.task_id is None else str(self.task_id),
             "project": self.project,
             "person": self.person,
+            "topic": self.topic,
+            "project_entity_id": None if self.project_entity_id is None else str(self.project_entity_id),
+            "person_entity_id": None if self.person_entity_id is None else str(self.person_entity_id),
+            "topic_entity_id": None if self.topic_entity_id is None else str(self.topic_entity_id),
             "max_recent_changes": self.max_recent_changes,
             "max_open_loops": self.max_open_loops,
             "include_non_promotable_facts": self.include_non_promotable_facts,
@@ -1746,6 +1762,10 @@ class ContinuityOpenLoopDashboardQueryInput:
     task_id: UUID | None = None
     project: str | None = None
     person: str | None = None
+    topic: str | None = None
+    project_entity_id: UUID | None = None
+    person_entity_id: UUID | None = None
+    topic_entity_id: UUID | None = None
     since: datetime | None = None
     until: datetime | None = None
     limit: int = DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT
@@ -1757,6 +1777,10 @@ class ContinuityOpenLoopDashboardQueryInput:
             "task_id": None if self.task_id is None else str(self.task_id),
             "project": self.project,
             "person": self.person,
+            "topic": self.topic,
+            "project_entity_id": None if self.project_entity_id is None else str(self.project_entity_id),
+            "person_entity_id": None if self.person_entity_id is None else str(self.person_entity_id),
+            "topic_entity_id": None if self.topic_entity_id is None else str(self.topic_entity_id),
             "limit": self.limit,
         }
         payload["since"] = isoformat_or_none(self.since)
@@ -1771,6 +1795,10 @@ class ContinuityDailyBriefRequestInput:
     task_id: UUID | None = None
     project: str | None = None
     person: str | None = None
+    topic: str | None = None
+    project_entity_id: UUID | None = None
+    person_entity_id: UUID | None = None
+    topic_entity_id: UUID | None = None
     since: datetime | None = None
     until: datetime | None = None
     limit: int = DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT
@@ -1782,6 +1810,10 @@ class ContinuityDailyBriefRequestInput:
             "task_id": None if self.task_id is None else str(self.task_id),
             "project": self.project,
             "person": self.person,
+            "topic": self.topic,
+            "project_entity_id": None if self.project_entity_id is None else str(self.project_entity_id),
+            "person_entity_id": None if self.person_entity_id is None else str(self.person_entity_id),
+            "topic_entity_id": None if self.topic_entity_id is None else str(self.topic_entity_id),
             "limit": self.limit,
         }
         payload["since"] = isoformat_or_none(self.since)
@@ -1796,6 +1828,10 @@ class ContinuityWeeklyReviewRequestInput:
     task_id: UUID | None = None
     project: str | None = None
     person: str | None = None
+    topic: str | None = None
+    project_entity_id: UUID | None = None
+    person_entity_id: UUID | None = None
+    topic_entity_id: UUID | None = None
     since: datetime | None = None
     until: datetime | None = None
     limit: int = DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT
@@ -1807,6 +1843,10 @@ class ContinuityWeeklyReviewRequestInput:
             "task_id": None if self.task_id is None else str(self.task_id),
             "project": self.project,
             "person": self.person,
+            "topic": self.topic,
+            "project_entity_id": None if self.project_entity_id is None else str(self.project_entity_id),
+            "person_entity_id": None if self.person_entity_id is None else str(self.person_entity_id),
+            "topic_entity_id": None if self.topic_entity_id is None else str(self.topic_entity_id),
             "limit": self.limit,
         }
         payload["since"] = isoformat_or_none(self.since)
@@ -1821,6 +1861,10 @@ class ChiefOfStaffPriorityBriefRequestInput:
     task_id: UUID | None = None
     project: str | None = None
     person: str | None = None
+    topic: str | None = None
+    project_entity_id: UUID | None = None
+    person_entity_id: UUID | None = None
+    topic_entity_id: UUID | None = None
     since: datetime | None = None
     until: datetime | None = None
     limit: int = DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT
@@ -1832,6 +1876,10 @@ class ChiefOfStaffPriorityBriefRequestInput:
             "task_id": None if self.task_id is None else str(self.task_id),
             "project": self.project,
             "person": self.person,
+            "topic": self.topic,
+            "project_entity_id": None if self.project_entity_id is None else str(self.project_entity_id),
+            "person_entity_id": None if self.person_entity_id is None else str(self.person_entity_id),
+            "topic_entity_id": None if self.topic_entity_id is None else str(self.topic_entity_id),
             "limit": self.limit,
         }
         payload["since"] = isoformat_or_none(self.since)
@@ -2670,6 +2718,10 @@ class ContinuityRecallScopeFilters(TypedDict):
     task_id: NotRequired[str]
     project: NotRequired[str]
     person: NotRequired[str]
+    topic: NotRequired[str]
+    project_entity_id: NotRequired[str]
+    person_entity_id: NotRequired[str]
+    topic_entity_id: NotRequired[str]
     since: str | None
     until: str | None
 

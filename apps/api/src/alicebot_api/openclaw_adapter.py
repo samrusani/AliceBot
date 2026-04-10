@@ -188,6 +188,14 @@ def _extract_scope_provenance(entry: JsonObject, *, raw_provenance: JsonObject) 
         entry_context.get("person"),
         entry_context.get("owner"),
     )
+    topic = pick_first_text(
+        entry.get("topic"),
+        entry.get("topic_name"),
+        raw_provenance.get("topic"),
+        raw_provenance.get("topic_name"),
+        entry_context.get("topic"),
+        entry_context.get("topic_name"),
+    )
     confirmation_status = pick_first_text(
         entry.get("confirmation_status"),
         raw_provenance.get("confirmation_status"),
@@ -209,6 +217,8 @@ def _extract_scope_provenance(entry: JsonObject, *, raw_provenance: JsonObject) 
         payload["project"] = project
     if person is not None:
         payload["person"] = person
+    if topic is not None:
+        payload["topic"] = topic
     if confirmation_status is not None:
         payload["confirmation_status"] = confirmation_status.casefold()
     if source_event_ids:

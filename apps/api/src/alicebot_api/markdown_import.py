@@ -209,7 +209,7 @@ def load_markdown_payload(source: str | Path) -> ImporterNormalizedBatch:
             default_confidence = maybe_default_confidence
 
         file_scope: JsonObject = {}
-        for key in ("thread_id", "task_id", "project", "person", "confirmation_status"):
+        for key in ("thread_id", "task_id", "project", "person", "topic", "confirmation_status"):
             value = normalize_optional_text(metadata.get(key))
             if value is not None:
                 file_scope[key] = value if key != "confirmation_status" else value.casefold()
@@ -262,7 +262,7 @@ def load_markdown_payload(source: str | Path) -> ImporterNormalizedBatch:
                 },
             )
 
-            for key in ("thread_id", "task_id", "project", "person", "confirmation_status"):
+            for key in ("thread_id", "task_id", "project", "person", "topic", "confirmation_status"):
                 value = normalize_optional_text(tags.get(key))
                 if value is None:
                     continue

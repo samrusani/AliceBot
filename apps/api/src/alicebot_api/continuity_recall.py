@@ -28,6 +28,11 @@ from alicebot_api.contracts import (
     MemoryConfirmationStatus,
     isoformat_or_none,
 )
+from alicebot_api.identity_resolution import (
+    EntityScopeResolutionError,
+    normalize_identity_text,
+    resolve_scope_entity_filters,
+)
 from alicebot_api.store import ContinuityRecallCandidateRow, ContinuityStore, JsonObject
 
 
@@ -58,6 +63,12 @@ _SCOPE_FILTER_KEYS: dict[ContinuityRecallScopeKind, set[str]] = {
     "task": {"task_id", "task"},
     "project": {"project", "project_id", "project_name"},
     "person": {"person", "person_id", "person_name", "owner", "assignee"},
+    "topic": {"topic", "topic_id", "topic_name"},
+}
+_SCOPE_ENTITY_ID_FIELD_NAMES: dict[ContinuityRecallScopeKind, str] = {
+    "project": "project_entity_id",
+    "person": "person_entity_id",
+    "topic": "topic_entity_id",
 }
 _CONFIRMATION_RANK: dict[MemoryConfirmationStatus, int] = {
     "confirmed": 3,
@@ -98,12 +109,7 @@ _LIFECYCLE_RANK: dict[str, int] = {
 
 
 def _normalize_optional_text(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = re.sub(r"\s+", " ", value).strip()
-    if not normalized:
-        return None
-    return normalized
+    return normalize_identity_text(value)
 
 
 def _normalize_uuid_string(value: UUID | str | None) -> str | None:
@@ -289,8 +295,12 @@ def _extract_provenance_posture(
                 | _SCOPE_FILTER_KEYS["task"]
                 | _SCOPE_FILTER_KEYS["project"]
                 | _SCOPE_FILTER_KEYS["person"]
+                | _SCOPE_FILTER_KEYS["topic"]
             ),
         )
+    ) or any(
+        row.get(field_name) is not None
+        for field_name in _SCOPE_ENTITY_ID_FIELD_NAMES.values()
     )
     if has_source_events and has_scope_context:
         return "strong"
@@ -301,6 +311,28 @@ def _extract_provenance_posture(
     return "missing"
 
 
+def _scope_entity_id_candidates(
+    row: ContinuityRecallCandidateRow,
+    *,
+    kind: ContinuityRecallScopeKind,
+) -> set[str]:
+    field_name = _SCOPE_ENTITY_ID_FIELD_NAMES[kind]
+    values: set[str] = set()
+
+    direct_value = row.get(field_name)
+    normalized_direct_value = _normalize_uuid_string(direct_value)
+    if normalized_direct_value is not None:
+        values.add(normalized_direct_value)
+
+    for payload in (row["provenance"], row["body"]):
+        for value in _collect_strings(payload, keys={field_name}):
+            normalized_value = _normalize_uuid_string(value)
+            if normalized_value is not None:
+                values.add(normalized_value)
+
+    return values
+
+
 def _compute_scope_matches(
     row: ContinuityRecallCandidateRow,
     *,
@@ -308,6 +340,10 @@ def _compute_scope_matches(
     task_filter: str | None,
     project_filter: str | None,
     person_filter: str | None,
+    topic_filter: str | None,
+    project_entity_filter: str | None,
+    person_entity_filter: str | None,
+    topic_entity_filter: str | None,
 ) -> list[ContinuityRecallScopeMatch]:
     scope_matches: list[ContinuityRecallScopeMatch] = []
 
@@ -341,7 +377,11 @@ def _compute_scope_matches(
         if task_filter in candidate_values:
             scope_matches.append({"kind": "task", "value": task_filter})
 
-    if project_filter is not None:
+    if project_entity_filter is not None:
+        candidate_values = _scope_entity_id_candidates(row, kind="project")
+        if project_entity_filter in candidate_values:
+            scope_matches.append({"kind": "project", "value": project_entity_filter})
+    elif project_filter is not None:
         candidate_values = {
             value.casefold()
             for value in _collect_strings(
@@ -356,7 +396,11 @@ def _compute_scope_matches(
         if project_filter in candidate_values:
             scope_matches.append({"kind": "project", "value": project_filter})
 
-    if person_filter is not None:
+    if person_entity_filter is not None:
+        candidate_values = _scope_entity_id_candidates(row, kind="person")
+        if person_entity_filter in candidate_values:
+            scope_matches.append({"kind": "person", "value": person_entity_filter})
+    elif person_filter is not None:
         candidate_values = {
             value.casefold()
             for value in _collect_strings(
@@ -370,6 +414,25 @@ def _compute_scope_matches(
         }
         if person_filter in candidate_values:
             scope_matches.append({"kind": "person", "value": person_filter})
+
+    if topic_entity_filter is not None:
+        candidate_values = _scope_entity_id_candidates(row, kind="topic")
+        if topic_entity_filter in candidate_values:
+            scope_matches.append({"kind": "topic", "value": topic_entity_filter})
+    elif topic_filter is not None:
+        candidate_values = {
+            value.casefold()
+            for value in _collect_strings(
+                row["provenance"],
+                keys=_SCOPE_FILTER_KEYS["topic"],
+            )
+            | _collect_strings(
+                row["body"],
+                keys=_SCOPE_FILTER_KEYS["topic"],
+            )
+        }
+        if topic_filter in candidate_values:
+            scope_matches.append({"kind": "topic", "value": topic_filter})
 
     return scope_matches
 
@@ -421,12 +484,15 @@ def _provenance_reference_kind(key: str) -> str:
 
 
 def _build_provenance_references(
-    capture_event_id: UUID,
-    provenance: JsonObject,
+    row: ContinuityRecallCandidateRow,
 ) -> list[ContinuityRecallProvenanceReference]:
     references: set[tuple[str, str]] = {
-        ("continuity_capture_event", str(capture_event_id)),
+        ("continuity_capture_event", str(row["capture_event_id"])),
     }
+    for kind, field_name in _SCOPE_ENTITY_ID_FIELD_NAMES.items():
+        value = row.get(field_name)
+        if value is not None:
+            references.add((kind, str(value)))
 
     def visit(value: object) -> None:
         if isinstance(value, dict):
@@ -446,7 +512,7 @@ def _build_provenance_references(
             for child in value:
                 visit(child)
 
-    visit(provenance)
+    visit(row["provenance"])
 
     return [
         {"source_kind": source_kind, "source_id": source_id}
@@ -493,10 +559,7 @@ def _serialize_recall_result(item: RankedRecallCandidate) -> ContinuityRecallRes
             None if row["superseded_by_object_id"] is None else str(row["superseded_by_object_id"])
         ),
         "scope_matches": item.scope_matches,
-        "provenance_references": _build_provenance_references(
-            row["capture_event_id"],
-            row["provenance"],
-        ),
+        "provenance_references": _build_provenance_references(row),
         "ordering": ordering,
         "created_at": row["object_created_at"].isoformat(),
         "updated_at": row["object_updated_at"].isoformat(),
@@ -516,6 +579,14 @@ def _scope_filters_payload(request: ContinuityRecallQueryInput) -> ContinuityRec
         payload["project"] = request.project
     if request.person is not None:
         payload["person"] = request.person
+    if request.topic is not None:
+        payload["topic"] = request.topic
+    if request.project_entity_id is not None:
+        payload["project_entity_id"] = str(request.project_entity_id)
+    if request.person_entity_id is not None:
+        payload["person_entity_id"] = str(request.person_entity_id)
+    if request.topic_entity_id is not None:
+        payload["topic_entity_id"] = str(request.topic_entity_id)
     return payload
 
 
@@ -536,16 +607,12 @@ def _ordered_recall_candidates(
 ) -> list[RankedRecallCandidate]:
     thread_filter = _normalize_uuid_string(request.thread_id)
     task_filter = _normalize_uuid_string(request.task_id)
-    project_filter = (
-        request.project.casefold()
-        if request.project is not None
-        else None
-    )
-    person_filter = (
-        request.person.casefold()
-        if request.person is not None
-        else None
-    )
+    project_filter = request.project.casefold() if request.project is not None else None
+    person_filter = request.person.casefold() if request.person is not None else None
+    topic_filter = request.topic.casefold() if request.topic is not None else None
+    project_entity_filter = _normalize_uuid_string(request.project_entity_id)
+    person_entity_filter = _normalize_uuid_string(request.person_entity_id)
+    topic_entity_filter = _normalize_uuid_string(request.topic_entity_id)
     query_terms = _query_terms(request.query)
 
     ranked_candidates: list[RankedRecallCandidate] = []
@@ -569,11 +636,21 @@ def _ordered_recall_candidates(
             task_filter=task_filter,
             project_filter=project_filter,
             person_filter=person_filter,
+            topic_filter=topic_filter,
+            project_entity_filter=project_entity_filter,
+            person_entity_filter=person_entity_filter,
+            topic_entity_filter=topic_entity_filter,
         )
 
         required_scope_count = sum(
             value is not None
-            for value in (thread_filter, task_filter, project_filter, person_filter)
+            for value in (
+                thread_filter,
+                task_filter,
+                project_entity_filter or project_filter,
+                person_entity_filter or person_filter,
+                topic_entity_filter or topic_filter,
+            )
         )
         if len(scope_matches) != required_scope_count:
             continue
@@ -658,14 +735,28 @@ def query_continuity_recall(
     del user_id
 
     normalized_query = _normalize_optional_text(request.query)
-    normalized_project = _normalize_optional_text(request.project)
-    normalized_person = _normalize_optional_text(request.person)
+    try:
+        resolved_scope_filters = resolve_scope_entity_filters(
+            store,
+            project=request.project,
+            person=request.person,
+            topic=request.topic,
+            project_entity_id=request.project_entity_id,
+            person_entity_id=request.person_entity_id,
+            topic_entity_id=request.topic_entity_id,
+        )
+    except EntityScopeResolutionError as exc:
+        raise ContinuityRecallValidationError(str(exc)) from exc
     normalized_request = ContinuityRecallQueryInput(
         query=normalized_query,
         thread_id=request.thread_id,
         task_id=request.task_id,
-        project=normalized_project,
-        person=normalized_person,
+        project=resolved_scope_filters.project,
+        person=resolved_scope_filters.person,
+        topic=resolved_scope_filters.topic,
+        project_entity_id=resolved_scope_filters.project_entity_id,
+        person_entity_id=resolved_scope_filters.person_entity_id,
+        topic_entity_id=resolved_scope_filters.topic_entity_id,
         since=request.since,
         until=request.until,
         limit=request.limit,

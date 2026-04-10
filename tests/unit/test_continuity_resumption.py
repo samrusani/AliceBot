@@ -8,11 +8,23 @@ from alicebot_api.contracts import ContinuityResumptionBriefRequestInput
 
 
 class ContinuityResumptionStoreStub:
-    def __init__(self, rows: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, object]],
+        *,
+        alias_matches: dict[tuple[str, str], list[dict[str, object]]] | None = None,
+    ) -> None:
         self._rows = rows
+        self._alias_matches = alias_matches or {}
 
     def list_continuity_recall_candidates(self):
         return list(self._rows)
+
+    def find_entity_alias_matches(self, *, entity_type: str, normalized_alias: str):
+        return list(self._alias_matches.get((entity_type, normalized_alias), []))
+
+    def get_latest_entity_merge_for_source_optional(self, source_entity_id: UUID):
+        return None
 
 
 def make_candidate_row(
@@ -25,6 +37,9 @@ def make_candidate_row(
     status: str = "active",
     is_searchable: bool = True,
     is_promotable: bool | None = None,
+    project_entity_id: UUID | None = None,
+    person_entity_id: UUID | None = None,
+    topic_entity_id: UUID | None = None,
 ) -> dict[str, object]:
     resolved_is_promotable = (
         object_type in {"Decision", "Commitment", "WaitingFor", "Blocker", "NextAction"}
@@ -43,6 +58,9 @@ def make_candidate_row(
         "title": title,
         "body": {"text": title},
         "provenance": provenance or {},
+        "project_entity_id": project_entity_id,
+        "person_entity_id": person_entity_id,
+        "topic_entity_id": topic_entity_id,
         "confidence": confidence,
         "last_confirmed_at": None,
         "supersedes_object_id": None,
@@ -356,3 +374,42 @@ def test_resumption_brief_excludes_non_promotable_memory_facts_by_default_but_ca
         "Decision: still visible",
         "Memory Fact: searchable but not promotable",
     ]
+
+
+def test_resumption_brief_resolves_project_aliases_to_canonical_entity_scope() -> None:
+    project_entity_id = UUID("12121212-1212-4121-8121-121212121212")
+    rows = [
+        make_candidate_row(
+            title="Decision: Keep the staged launch",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+            provenance={"project": "Project Orion"},
+            project_entity_id=project_entity_id,
+        ),
+    ]
+
+    payload = compile_continuity_resumption_brief(
+        ContinuityResumptionStoreStub(
+            rows,
+            alias_matches={
+                ("project", "legacy project label"): [
+                    {
+                        "entity_id": project_entity_id,
+                        "entity_type": "project",
+                        "entity_name": "Project Orion",
+                        "created_at": datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
+                    }
+                ]
+            },
+        ),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityResumptionBriefRequestInput(
+            project="Legacy Project Label",
+            max_recent_changes=3,
+            max_open_loops=2,
+        ),
+    )
+
+    assert payload["brief"]["last_decision"]["item"] is not None
+    assert payload["brief"]["last_decision"]["item"]["title"] == "Decision: Keep the staged launch"
+    assert payload["brief"]["scope"]["project_entity_id"] == str(project_entity_id)
