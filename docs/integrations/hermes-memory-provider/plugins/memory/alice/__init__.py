@@ -12,6 +12,7 @@ Design goals:
 from __future__ import annotations
 
 import json
+import ipaddress
 import logging
 import os
 import threading
@@ -43,6 +44,15 @@ _OPEN_LOOP_LIMIT_MAX = 50
 
 _RECENT_CHANGES_MIN = 0
 _RECENT_CHANGES_MAX = 25
+
+_AUTH_USER_HEADER = "X-AliceBot-User-Id"
+_SAFE_TOOL_ERROR_MESSAGES = (
+    "internal provider error",
+    "provider is not initialized",
+    "provider configuration is invalid",
+    "Alice API connection failed",
+    "Alice API returned an invalid response payload",
+)
 
 
 ALICE_RECALL_TOOL = {
@@ -154,7 +164,41 @@ def _normalize_base_url(value: str) -> str:
     normalized = value.strip().rstrip("/")
     if normalized.endswith("/v0"):
         normalized = normalized[:-3]
-    return normalized
+    parsed = urllib.parse.urlsplit(normalized)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").strip().lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("base_url must start with http:// or https://")
+    if parsed.netloc.strip() == "":
+        raise ValueError("base_url must include a host")
+    if parsed.query or parsed.fragment:
+        raise ValueError("base_url must not include query parameters or fragments")
+    if scheme != "https" and not _is_loopback_host(hostname):
+        raise ValueError("base_url must use https:// unless host is loopback")
+    return urllib.parse.urlunsplit((scheme, parsed.netloc, parsed.path.rstrip("/"), "", ""))
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    if hostname == "":
+        return False
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _sanitize_tool_exception_message(error: Exception) -> str:
+    message = str(error).strip()
+    if message == "":
+        return "internal provider error"
+    for prefix in _SAFE_TOOL_ERROR_MESSAGES:
+        if message.startswith(prefix):
+            return message
+    if message.startswith("Alice API request failed with HTTP status "):
+        return message
+    return "internal provider error"
 
 
 def _config_path(hermes_home: str) -> Path:
@@ -218,40 +262,11 @@ def _load_config(hermes_home: str) -> Dict[str, Any]:
         except Exception:
             logger.debug("Failed to parse %s", path, exc_info=True)
 
-    config["base_url"] = _normalize_base_url(str(config.get("base_url", _DEFAULT_BASE_URL)))
-    config["user_id"] = str(config.get("user_id", "")).strip()
-    config["timeout_seconds"] = _parse_float(
-        config.get("timeout_seconds"),
-        default=_DEFAULT_TIMEOUT_SECONDS,
-        min_value=0.5,
-        max_value=30.0,
-    )
-    config["prefetch_limit"] = _parse_int(
-        config.get("prefetch_limit"),
-        default=_DEFAULT_PREFETCH_LIMIT,
-        min_value=_RECALL_LIMIT_MIN,
-        max_value=_RECALL_LIMIT_MAX,
-    )
-    config["max_recent_changes"] = _parse_int(
-        config.get("max_recent_changes"),
-        default=_DEFAULT_MAX_RECENT_CHANGES,
-        min_value=_RECENT_CHANGES_MIN,
-        max_value=_RECENT_CHANGES_MAX,
-    )
-    config["max_open_loops"] = _parse_int(
-        config.get("max_open_loops"),
-        default=_DEFAULT_MAX_OPEN_LOOPS,
-        min_value=_RECENT_CHANGES_MIN,
-        max_value=_RECENT_CHANGES_MAX,
-    )
-    config["include_non_promotable_facts"] = _parse_bool(
-        config.get("include_non_promotable_facts"),
-        default=False,
-    )
-    config["auto_capture"] = _parse_bool(config.get("auto_capture"), default=False)
-    config["mirror_memory_writes"] = _parse_bool(config.get("mirror_memory_writes"), default=False)
-
-    return config
+    try:
+        return _load_config_dict_from_values(config)
+    except ValueError:
+        logger.warning("Invalid Alice memory provider config; falling back to defaults", exc_info=True)
+        return _load_config_dict_from_values(_default_config())
 
 
 def _validate_uuid(value: str) -> bool:
@@ -286,10 +301,15 @@ class AliceMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         from hermes_constants import get_hermes_home
 
-        cfg = _load_config(str(get_hermes_home()))
+        try:
+            cfg = _load_config(str(get_hermes_home()))
+        except ValueError:
+            return False
         base_url = str(cfg.get("base_url", "")).strip()
         user_id = str(cfg.get("user_id", "")).strip()
-        if not (base_url.startswith("http://") or base_url.startswith("https://")):
+        try:
+            _normalize_base_url(base_url)
+        except ValueError:
             return False
         return _validate_uuid(user_id)
 
@@ -464,7 +484,8 @@ class AliceMemoryProvider(MemoryProvider):
                 return tool_error(f"unknown tool: {tool_name}")
             return json.dumps(payload)
         except Exception as exc:
-            return tool_error(f"{tool_name} failed: {exc}")
+            logger.debug("Alice provider tool call failed for %s", tool_name, exc_info=True)
+            return tool_error(f"{tool_name} failed: {_sanitize_tool_exception_message(exc)}")
 
     def shutdown(self) -> None:
         with self._prefetch_lock:
@@ -571,7 +592,6 @@ class AliceMemoryProvider(MemoryProvider):
 
     def _post_capture(self, raw_content: str) -> None:
         payload = {
-            "user_id": self._config.get("user_id", ""),
             "raw_content": raw_content[:_DEFAULT_CAPTURE_CHAR_LIMIT],
         }
         self._request_json("POST", "/v0/continuity/captures", payload=payload)
@@ -605,16 +625,24 @@ class AliceMemoryProvider(MemoryProvider):
             raise RuntimeError("provider is not initialized")
 
         query = dict(params or {})
-        query["user_id"] = self._config.get("user_id", "")
+        user_id = str(self._config.get("user_id", "")).strip()
+        if not _validate_uuid(user_id):
+            raise RuntimeError("provider configuration is invalid")
 
-        base_url = self._config.get("base_url", _DEFAULT_BASE_URL)
+        try:
+            base_url = _normalize_base_url(str(self._config.get("base_url", _DEFAULT_BASE_URL)))
+        except ValueError as exc:
+            raise RuntimeError("provider configuration is invalid") from exc
         encoded = urllib.parse.urlencode(query, doseq=True)
         url = f"{base_url}{path}"
         if encoded:
             url = f"{url}?{encoded}"
 
         data = None
-        headers = {"Accept": "application/json"}
+        headers = {
+            "Accept": "application/json",
+            _AUTH_USER_HEADER: user_id,
+        }
         if payload is not None:
             headers["Content-Type"] = "application/json"
             data = json.dumps(payload).encode("utf-8")
@@ -624,35 +652,18 @@ class AliceMemoryProvider(MemoryProvider):
         timeout = float(self._config.get("timeout_seconds", _DEFAULT_TIMEOUT_SECONDS))
 
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
                 body = response.read().decode("utf-8", errors="replace")
                 if not body:
                     return {}
                 decoded = json.loads(body)
                 if isinstance(decoded, dict):
                     return decoded
-                raise RuntimeError("unexpected non-object response from Alice API")
+                raise RuntimeError("Alice API returned an invalid response payload")
         except urllib.error.HTTPError as exc:
-            detail = _decode_error_detail(exc)
-            raise RuntimeError(f"Alice API HTTP {exc.code}: {detail}") from exc
+            raise RuntimeError(f"Alice API request failed with HTTP status {exc.code}") from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"Alice API connection failed: {exc.reason}") from exc
-
-
-def _decode_error_detail(error: urllib.error.HTTPError) -> str:
-    try:
-        body = error.read().decode("utf-8", errors="replace")
-    except Exception:
-        return "request failed"
-    try:
-        payload = json.loads(body)
-    except Exception:
-        return body.strip() or "request failed"
-    if isinstance(payload, dict):
-        detail = payload.get("detail")
-        if isinstance(detail, str) and detail.strip():
-            return detail
-    return body.strip() or "request failed"
+            raise RuntimeError("Alice API connection failed") from exc
 
 
 def _load_config_dict_from_values(values: Dict[str, Any]) -> Dict[str, Any]:
