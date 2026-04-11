@@ -88,13 +88,18 @@ def test_retrieval_evaluation_api_returns_deterministic_fixture_precision_summar
     )
 
     assert status == 200
-    assert payload["summary"]["fixture_count"] == 3
-    assert payload["summary"]["evaluated_fixture_count"] == 3
+    assert payload["summary"]["fixture_count"] == 6
+    assert payload["summary"]["evaluated_fixture_count"] == 6
     assert payload["summary"]["status"] == "pass"
     assert payload["summary"]["precision_at_k_mean"] >= payload["summary"]["precision_target"]
+    assert payload["summary"]["precision_at_k_mean"] > payload["summary"]["baseline_precision_at_k_mean"]
+    assert payload["summary"]["precision_at_k_lift"] > 0.0
     assert [fixture["fixture_id"] for fixture in payload["fixtures"]] == [
         "confirmed_fresh_truth_preferred",
         "provenance_breaks_tie",
         "supersession_chain_prefers_current_truth",
+        "semantic_similarity_recovers_non_exact_query",
+        "entity_signal_reduces_cross_entity_noise",
+        "temporal_trust_supersession_prefers_current_valid_truth",
     ]
     assert payload["fixtures"][0]["top_result_ordering"]["freshness_posture"] == "fresh"

@@ -1410,7 +1410,7 @@ def test_get_memory_trust_dashboard_summary_is_deterministic_and_uses_canonical_
     assert first["dashboard"]["queue_posture"]["total_count"] == 2
     assert first["dashboard"]["queue_posture"]["high_risk_count"] == 2
     assert first["dashboard"]["queue_posture"]["stale_truth_count"] == 1
-    assert first["dashboard"]["retrieval_quality"]["fixture_count"] == 3
+    assert first["dashboard"]["retrieval_quality"]["fixture_count"] == 6
     assert first["dashboard"]["correction_freshness"] == {
         "total_open_loop_count": 0,
         "stale_open_loop_count": 0,
