@@ -97,7 +97,7 @@ def _bootstrap_workspace_session(email: str) -> tuple[str, str, str]:
         "/v1/auth/magic-link/verify",
         payload={
             "challenge_token": start_payload["challenge"]["challenge_token"],
-            "device_label": "P11-S1 Device",
+            "device_label": "P11-S2 Device",
             "device_key": f"device-{email}",
         },
     )
@@ -108,7 +108,7 @@ def _bootstrap_workspace_session(email: str) -> tuple[str, str, str]:
     create_workspace_status, create_workspace_payload = invoke_request(
         "POST",
         "/v1/workspaces",
-        payload={"name": "P11 Provider Workspace"},
+        payload={"name": "P11 Local Provider Workspace"},
         headers=auth_header(session_token),
     )
     assert create_workspace_status == 201
@@ -137,138 +137,37 @@ def _seed_thread_for_user(*, admin_db_url: str, user_id: str, email: str) -> str
                 SET email = EXCLUDED.email,
                     display_name = EXCLUDED.display_name
                 """,
-                (user_id, email, "Provider Runtime User"),
+                (user_id, email, "Local Provider Runtime User"),
             )
             cur.execute(
                 """
                 INSERT INTO threads (id, user_id, title)
                 VALUES (%s, %s, %s)
                 """,
-                (thread_id, user_id, "Provider Runtime Thread"),
+                (thread_id, user_id, "Local Provider Runtime Thread"),
             )
         conn.commit()
     return thread_id
 
 
-def test_phase11_provider_registration_list_and_detail(migrated_database_urls, monkeypatch) -> None:
+class FakeHTTPResponse:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def __enter__(self) -> "FakeHTTPResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body
+
+
+def test_phase11_local_provider_registration_list_and_detail(migrated_database_urls, monkeypatch) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
-    session_token, workspace_id, _ = _bootstrap_workspace_session("provider-reg@example.com")
-
-    create_status, create_payload = invoke_request(
-        "POST",
-        "/v1/providers",
-        payload={
-            "provider_key": "openai_compatible",
-            "display_name": "Primary OpenAI",
-            "base_url": "https://provider.example/v1",
-            "api_key": "provider-secret-key",
-            "default_model": "gpt-5-mini",
-            "metadata": {"tier": "test"},
-        },
-        headers=auth_header(session_token),
-    )
-    assert create_status == 201
-    provider_id = create_payload["provider"]["id"]
-    assert create_payload["provider"]["provider_key"] == "openai_compatible"
-    assert create_payload["provider"]["model_provider"] == "openai_responses"
-    assert create_payload["capabilities"]["discovery_status"] == "ready"
-    assert create_payload["capabilities"]["snapshot"]["runtime_provider"] == "openai_responses"
-
-    with psycopg.connect(migrated_database_urls["admin"]) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT api_key
-                FROM model_providers
-                WHERE id = %s
-                  AND workspace_id = %s
-                """,
-                (provider_id, workspace_id),
-            )
-            stored_api_key_row = cur.fetchone()
-    assert stored_api_key_row is not None
-    assert stored_api_key_row[0] != "provider-secret-key"
-    assert stored_api_key_row[0].startswith("provider_secret_ref:")
-
-    duplicate_status, duplicate_payload = invoke_request(
-        "POST",
-        "/v1/providers",
-        payload={
-            "provider_key": "openai_compatible",
-            "display_name": "Primary OpenAI",
-            "base_url": "https://provider.example/v1",
-            "api_key": "provider-secret-key",
-            "default_model": "gpt-5-mini",
-        },
-        headers=auth_header(session_token),
-    )
-    assert duplicate_status == 409
-    assert "display_name" in duplicate_payload["detail"]
-
-    list_status, list_payload = invoke_request(
-        "GET",
-        "/v1/providers",
-        headers=auth_header(session_token),
-    )
-    assert list_status == 200
-    assert list_payload["summary"]["total_count"] == 1
-    assert list_payload["items"][0]["id"] == provider_id
-
-    detail_status, detail_payload = invoke_request(
-        "GET",
-        f"/v1/providers/{provider_id}",
-        headers=auth_header(session_token),
-    )
-    assert detail_status == 200
-    assert detail_payload["provider"]["id"] == provider_id
-    assert detail_payload["capabilities"]["provider_id"] == provider_id
-
-
-def test_phase11_provider_test_runtime_invoke_and_workspace_isolation(
-    migrated_database_urls,
-    monkeypatch,
-) -> None:
-    _configure_settings(migrated_database_urls, monkeypatch)
-    session_token_a, _, user_account_id_a = _bootstrap_workspace_session("provider-a@example.com")
-    session_token_b, _, _ = _bootstrap_workspace_session("provider-b@example.com")
-
-    create_status, create_payload = invoke_request(
-        "POST",
-        "/v1/providers",
-        payload={
-            "provider_key": "openai_compatible",
-            "display_name": "Shared Runtime",
-            "base_url": "https://provider.example/v1",
-            "api_key": "provider-secret-key",
-            "default_model": "gpt-5-mini",
-        },
-        headers=auth_header(session_token_a),
-    )
-    assert create_status == 201
-    provider_id = create_payload["provider"]["id"]
-
-    detail_other_status, detail_other_payload = invoke_request(
-        "GET",
-        f"/v1/providers/{provider_id}",
-        headers=auth_header(session_token_b),
-    )
-    assert detail_other_status == 404
-    assert "was not found" in detail_other_payload["detail"]
-
+    session_token, _, _ = _bootstrap_workspace_session("provider-local-reg@example.com")
     captured_requests: list[dict[str, object]] = []
-
-    class FakeHTTPResponse:
-        def __init__(self, body: bytes) -> None:
-            self.body = body
-
-        def __enter__(self) -> "FakeHTTPResponse":
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return self.body
 
     def fake_urlopen(request, timeout):
         captured_requests.append(
@@ -276,68 +175,340 @@ def test_phase11_provider_test_runtime_invoke_and_workspace_isolation(
                 "url": request.full_url,
                 "timeout": timeout,
                 "headers": dict(request.header_items()),
-                "body": json.loads(request.data.decode("utf-8")),
+                "body": None if request.data is None else json.loads(request.data.decode("utf-8")),
             }
         )
-        return FakeHTTPResponse(
-            json.dumps(
-                {
-                    "id": f"resp_{len(captured_requests)}",
-                    "status": "completed",
-                    "output": [
-                        {
-                            "type": "message",
-                            "content": [{"type": "output_text", "text": "Provider response"}],
-                        }
-                    ],
-                    "usage": {
-                        "input_tokens": 11,
-                        "output_tokens": 5,
-                        "total_tokens": 16,
-                    },
-                }
-            ).encode("utf-8")
-        )
+        url = request.full_url
+        if url.endswith("/api/version"):
+            return FakeHTTPResponse(json.dumps({"version": "0.4.0"}).encode("utf-8"))
+        if url.endswith("/api/tags"):
+            return FakeHTTPResponse(
+                json.dumps({"models": [{"name": "llama3.2:latest"}, {"name": "qwen2.5:latest"}]}).encode("utf-8")
+            )
+        if url.endswith("/health"):
+            return FakeHTTPResponse(json.dumps({"status": "ok"}).encode("utf-8"))
+        if url.endswith("/v1/models"):
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "Meta-Llama-3.1-8B-Instruct"}]}).encode("utf-8"))
+        raise AssertionError(f"unexpected local provider URL: {url}")
 
-    monkeypatch.setattr("alicebot_api.response_generation.urlopen", fake_urlopen)
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_urlopen)
 
-    test_status, test_payload = invoke_request(
+    ollama_status, ollama_payload = invoke_request(
         "POST",
-        "/v1/providers/test",
+        "/v1/providers/ollama/register",
         payload={
-            "provider_id": provider_id,
-            "prompt": "Validate provider test path.",
+            "display_name": "Ollama Local",
+            "base_url": "http://127.0.0.1:11434",
+            "default_model": "llama3.2:latest",
+            "metadata": {"kind": "local"},
+        },
+        headers=auth_header(session_token),
+    )
+    assert ollama_status == 201
+    ollama_provider_id = ollama_payload["provider"]["id"]
+    assert ollama_payload["provider"]["provider_key"] == "ollama"
+    assert ollama_payload["provider"]["model_provider"] == "openai_responses"
+    assert ollama_payload["provider"]["auth_mode"] == "none"
+    assert ollama_payload["provider"]["model_list_path"] == "/api/tags"
+    assert ollama_payload["provider"]["healthcheck_path"] == "/api/version"
+    assert ollama_payload["provider"]["invoke_path"] == "/api/chat"
+    assert ollama_payload["capabilities"]["discovery_status"] == "ready"
+    assert ollama_payload["capabilities"]["snapshot"]["health_status"] == "ok"
+    assert ollama_payload["capabilities"]["snapshot"]["models"] == [
+        "llama3.2:latest",
+        "qwen2.5:latest",
+    ]
+
+    llamacpp_status, llamacpp_payload = invoke_request(
+        "POST",
+        "/v1/providers/llamacpp/register",
+        payload={
+            "display_name": "llama.cpp Local",
+            "base_url": "http://127.0.0.1:8080",
+            "default_model": "Meta-Llama-3.1-8B-Instruct",
+            "metadata": {"kind": "local"},
+        },
+        headers=auth_header(session_token),
+    )
+    assert llamacpp_status == 201
+    llamacpp_provider_id = llamacpp_payload["provider"]["id"]
+    assert llamacpp_payload["provider"]["provider_key"] == "llamacpp"
+    assert llamacpp_payload["provider"]["model_provider"] == "openai_responses"
+    assert llamacpp_payload["provider"]["auth_mode"] == "none"
+    assert llamacpp_payload["provider"]["model_list_path"] == "/v1/models"
+    assert llamacpp_payload["provider"]["healthcheck_path"] == "/health"
+    assert llamacpp_payload["provider"]["invoke_path"] == "/v1/chat/completions"
+    assert llamacpp_payload["capabilities"]["discovery_status"] == "ready"
+    assert llamacpp_payload["capabilities"]["snapshot"]["health_status"] == "ok"
+    assert llamacpp_payload["capabilities"]["snapshot"]["models"] == ["Meta-Llama-3.1-8B-Instruct"]
+
+    list_status, list_payload = invoke_request(
+        "GET",
+        "/v1/providers",
+        headers=auth_header(session_token),
+    )
+    assert list_status == 200
+    assert list_payload["summary"]["total_count"] == 2
+    listed_provider_ids = [item["id"] for item in list_payload["items"]]
+    assert listed_provider_ids == [ollama_provider_id, llamacpp_provider_id]
+
+    ollama_detail_status, ollama_detail_payload = invoke_request(
+        "GET",
+        f"/v1/providers/{ollama_provider_id}",
+        headers=auth_header(session_token),
+    )
+    assert ollama_detail_status == 200
+    assert ollama_detail_payload["provider"]["id"] == ollama_provider_id
+    assert ollama_detail_payload["capabilities"]["provider_id"] == ollama_provider_id
+
+    llamacpp_detail_status, llamacpp_detail_payload = invoke_request(
+        "GET",
+        f"/v1/providers/{llamacpp_provider_id}",
+        headers=auth_header(session_token),
+    )
+    assert llamacpp_detail_status == 200
+    assert llamacpp_detail_payload["provider"]["id"] == llamacpp_provider_id
+    assert llamacpp_detail_payload["capabilities"]["provider_id"] == llamacpp_provider_id
+
+    captured_urls = [record["url"] for record in captured_requests]
+    assert "http://127.0.0.1:11434/api/version" in captured_urls
+    assert "http://127.0.0.1:11434/api/tags" in captured_urls
+    assert "http://127.0.0.1:8080/health" in captured_urls
+    assert "http://127.0.0.1:8080/v1/models" in captured_urls
+
+
+def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token_a, _, user_account_id_a = _bootstrap_workspace_session("provider-local-a@example.com")
+    session_token_b, _, _ = _bootstrap_workspace_session("provider-local-b@example.com")
+
+    captured_requests: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):
+        body = None if request.data is None else json.loads(request.data.decode("utf-8"))
+        captured_requests.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": body,
+            }
+        )
+        url = request.full_url
+        if url.endswith("/api/version"):
+            return FakeHTTPResponse(json.dumps({"version": "0.4.0"}).encode("utf-8"))
+        if url.endswith("/api/tags"):
+            return FakeHTTPResponse(json.dumps({"models": [{"name": "llama3.2:latest"}]}).encode("utf-8"))
+        if url.endswith("/api/chat"):
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "model": "llama3.2:latest",
+                        "done": True,
+                        "message": {"role": "assistant", "content": "Ollama runtime response"},
+                        "prompt_eval_count": 12,
+                        "eval_count": 5,
+                    }
+                ).encode("utf-8")
+            )
+        if url.endswith("/health"):
+            return FakeHTTPResponse(json.dumps({"status": "ok"}).encode("utf-8"))
+        if url.endswith("/v1/models"):
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "Meta-Llama-3.1-8B-Instruct"}]}).encode("utf-8"))
+        if url.endswith("/v1/chat/completions"):
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "id": "chatcmpl-local-2",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "llama.cpp runtime response"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 13,
+                            "completion_tokens": 4,
+                            "total_tokens": 17,
+                        },
+                    }
+                ).encode("utf-8")
+            )
+        raise AssertionError(f"unexpected local provider URL: {url}")
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_urlopen)
+
+    create_ollama_status, create_ollama_payload = invoke_request(
+        "POST",
+        "/v1/providers/ollama/register",
+        payload={
+            "display_name": "Ollama Runtime",
+            "base_url": "http://127.0.0.1:11434",
+            "default_model": "llama3.2:latest",
         },
         headers=auth_header(session_token_a),
     )
-    assert test_status == 200
-    assert test_payload["result"]["text"] == "Provider response"
-    assert test_payload["result"]["usage"]["total_tokens"] == 16
-    assert captured_requests[0]["url"] == "https://provider.example/v1/responses"
-    assert captured_requests[0]["headers"]["Authorization"] == "Bearer provider-secret-key"
+    assert create_ollama_status == 201
+    ollama_provider_id = create_ollama_payload["provider"]["id"]
+
+    create_llamacpp_status, create_llamacpp_payload = invoke_request(
+        "POST",
+        "/v1/providers/llamacpp/register",
+        payload={
+            "display_name": "llama.cpp Runtime",
+            "base_url": "http://127.0.0.1:8080",
+            "default_model": "Meta-Llama-3.1-8B-Instruct",
+        },
+        headers=auth_header(session_token_a),
+    )
+    assert create_llamacpp_status == 201
+    llamacpp_provider_id = create_llamacpp_payload["provider"]["id"]
+
+    detail_other_status, detail_other_payload = invoke_request(
+        "GET",
+        f"/v1/providers/{ollama_provider_id}",
+        headers=auth_header(session_token_b),
+    )
+    assert detail_other_status == 404
+    assert "was not found" in detail_other_payload["detail"]
 
     thread_id = _seed_thread_for_user(
         admin_db_url=migrated_database_urls["admin"],
         user_id=user_account_id_a,
-        email="provider-a@example.com",
+        email="provider-local-a@example.com",
     )
 
-    runtime_status, runtime_payload = invoke_request(
+    ollama_test_status, ollama_test_payload = invoke_request(
         "POST",
-        "/v1/runtime/invoke",
+        "/v1/providers/test",
         payload={
-            "provider_id": provider_id,
-            "thread_id": thread_id,
-            "message": "What is the runtime status?",
+            "provider_id": ollama_provider_id,
+            "prompt": "Validate local ollama path.",
         },
         headers=auth_header(session_token_a),
     )
-    assert runtime_status == 200
-    assert runtime_payload["assistant"]["provider_id"] == provider_id
-    assert runtime_payload["assistant"]["provider_key"] == "openai_compatible"
-    assert runtime_payload["assistant"]["model_provider"] == "openai_responses"
-    assert runtime_payload["assistant"]["text"] == "Provider response"
-    assert runtime_payload["assistant"]["usage"]["total_tokens"] == 16
-    assert captured_requests[1]["url"] == "https://provider.example/v1/responses"
-    assert captured_requests[1]["headers"]["Authorization"] == "Bearer provider-secret-key"
-    assert UUID(runtime_payload["assistant"]["event_id"])
+    assert ollama_test_status == 200
+    assert ollama_test_payload["result"]["text"] == "Ollama runtime response"
+    assert ollama_test_payload["result"]["usage"]["total_tokens"] == 17
+
+    ollama_runtime_status, ollama_runtime_payload = invoke_request(
+        "POST",
+        "/v1/runtime/invoke",
+        payload={
+            "provider_id": ollama_provider_id,
+            "thread_id": thread_id,
+            "message": "How is ollama runtime?",
+        },
+        headers=auth_header(session_token_a),
+    )
+    assert ollama_runtime_status == 200
+    assert ollama_runtime_payload["assistant"]["provider_id"] == ollama_provider_id
+    assert ollama_runtime_payload["assistant"]["provider_key"] == "ollama"
+    assert ollama_runtime_payload["assistant"]["model_provider"] == "openai_responses"
+    assert ollama_runtime_payload["assistant"]["text"] == "Ollama runtime response"
+    assert ollama_runtime_payload["assistant"]["usage"]["total_tokens"] == 17
+    assert UUID(ollama_runtime_payload["assistant"]["event_id"])
+
+    llamacpp_test_status, llamacpp_test_payload = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={
+            "provider_id": llamacpp_provider_id,
+            "prompt": "Validate local llamacpp path.",
+        },
+        headers=auth_header(session_token_a),
+    )
+    assert llamacpp_test_status == 200
+    assert llamacpp_test_payload["result"]["text"] == "llama.cpp runtime response"
+    assert llamacpp_test_payload["result"]["usage"]["total_tokens"] == 17
+
+    llamacpp_runtime_status, llamacpp_runtime_payload = invoke_request(
+        "POST",
+        "/v1/runtime/invoke",
+        payload={
+            "provider_id": llamacpp_provider_id,
+            "thread_id": thread_id,
+            "message": "How is llamacpp runtime?",
+        },
+        headers=auth_header(session_token_a),
+    )
+    assert llamacpp_runtime_status == 200
+    assert llamacpp_runtime_payload["assistant"]["provider_id"] == llamacpp_provider_id
+    assert llamacpp_runtime_payload["assistant"]["provider_key"] == "llamacpp"
+    assert llamacpp_runtime_payload["assistant"]["model_provider"] == "openai_responses"
+    assert llamacpp_runtime_payload["assistant"]["text"] == "llama.cpp runtime response"
+    assert llamacpp_runtime_payload["assistant"]["usage"]["total_tokens"] == 17
+    assert UUID(llamacpp_runtime_payload["assistant"]["event_id"])
+
+    captured_urls = [record["url"] for record in captured_requests]
+    assert "http://127.0.0.1:11434/api/chat" in captured_urls
+    assert "http://127.0.0.1:8080/v1/chat/completions" in captured_urls
+
+
+def test_phase11_openai_compatible_registration_still_works(migrated_database_urls, monkeypatch) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, workspace_id, _ = _bootstrap_workspace_session("provider-openai-reg@example.com")
+
+    create_status, create_payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "Primary OpenAI",
+            "base_url": "https://provider.example/v1",
+            "api_key": "provider-secret-key",
+            "default_model": "gpt-5-mini",
+        },
+        headers=auth_header(session_token),
+    )
+    assert create_status == 201
+    provider_id = create_payload["provider"]["id"]
+    assert create_payload["provider"]["provider_key"] == "openai_compatible"
+    assert create_payload["provider"]["auth_mode"] == "bearer"
+    assert create_payload["capabilities"]["discovery_status"] == "ready"
+    assert create_payload["capabilities"]["snapshot"]["runtime_provider"] == "openai_responses"
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT api_key, auth_mode
+                FROM model_providers
+                WHERE id = %s
+                  AND workspace_id = %s
+                """,
+                (provider_id, workspace_id),
+            )
+            stored_row = cur.fetchone()
+    assert stored_row is not None
+    stored_api_key, stored_auth_mode = stored_row
+    assert stored_auth_mode == "bearer"
+    assert stored_api_key != "provider-secret-key"
+    assert stored_api_key.startswith("provider_secret_ref:")
+
+
+def test_phase11_local_provider_rejects_api_key_when_auth_mode_none(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, _, _ = _bootstrap_workspace_session("provider-local-authmode-none@example.com")
+
+    status, payload = invoke_request(
+        "POST",
+        "/v1/providers/ollama/register",
+        payload={
+            "display_name": "Ollama Invalid Auth",
+            "base_url": "http://127.0.0.1:11434",
+            "auth_mode": "none",
+            "api_key": "should-not-be-stored",
+            "default_model": "llama3.2:latest",
+        },
+        headers=auth_header(session_token),
+    )
+    assert status == 400
+    assert payload["detail"] == "api_key must be empty when auth_mode is none"

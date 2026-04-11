@@ -4,48 +4,50 @@
 PASS
 
 ## criteria met
-- `P11-S1` in-scope API surface is implemented and verified:
-  - `POST /v1/providers`
-  - `GET /v1/providers`
-  - `GET /v1/providers/{provider_id}`
+- `P11-S2` local provider registration APIs are implemented and functioning:
+  - `POST /v1/providers/ollama/register`
+  - `POST /v1/providers/llamacpp/register`
+- Existing in-scope APIs are functioning with local adapters:
   - `POST /v1/providers/test`
   - `POST /v1/runtime/invoke`
-- Provider abstraction and registry are present with an OpenAI-compatible base adapter (`apps/api/src/alicebot_api/provider_runtime.py`).
-- Required data additions are present and migrated:
-  - `model_providers`
-  - `provider_capabilities`
-- Runtime invoke flows through the provider abstraction and returns normalized assistant/usage payloads.
-- Existing `v0/responses` seam remains intact (response-generation regression tests pass).
-- Provider config/capability access is workspace-scoped and integration-tested.
-- Provider credential handling no longer stores plaintext API keys in provider rows; registration stores secret references and runtime resolves secrets (`apps/api/src/alicebot_api/provider_secrets.py`, `apps/api/src/alicebot_api/main.py`).
-- Required verification commands pass:
+  - `GET /v1/providers`
+  - `GET /v1/providers/{provider_id}`
+- Ollama and llama.cpp adapters are integrated through the shipped provider abstraction and registry.
+- Capability snapshots include deterministic local model enumeration and health posture fields.
+- Additive provider config fields are migrated and wired (`auth_mode`, `model_list_path`, `healthcheck_path`, `invoke_path`).
+- Local setup documentation and runnable e2e example path are present.
+- Regression fix validated: legacy `/v1/providers` path now correctly passes `store` into shared registration helper (`apps/api/src/alicebot_api/main.py:6174-6177`).
+- Credential handling tightened: `auth_mode="none"` now rejects non-empty `api_key`, preventing plaintext persistence (`apps/api/src/alicebot_api/main.py:1562-1568`).
+- New regression coverage added:
+  - OpenAI-compatible registration still works and stores secret ref, not plaintext (`tests/integration/test_phase11_provider_runtime_api.py:470-491`).
+  - `auth_mode="none"` rejects provided `api_key` (`tests/integration/test_phase11_provider_runtime_api.py:494-514`).
+- Required verification commands pass on the current branch head:
   - `python3 scripts/check_control_doc_truth.py` -> PASS
-  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> PASS (`1112 passed in 195.60s`)
-  - `pnpm --dir apps/web test` -> PASS (`62 files`, `199 tests`, duration `5.14s`)
+  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> PASS (`1118 passed in 183.14s`)
+  - `pnpm --dir apps/web test` -> PASS (`62 files`, `199 tests`, duration `4.82s`)
 
 ## criteria missed
-- None for `P11-S1` acceptance criteria.
+- None identified for `P11-S2` acceptance criteria.
 
 ## quality issues
-- No blocking implementation quality issues found in sprint-owned scope.
-- Registration now returns deterministic `409` for duplicate provider display names within a workspace.
+- No blocking quality issues remain in sprint-owned scope after fixes.
 
 ## regression risks
-- Low after full required backend+web test pass.
-- Chief-of-staff, import/archive, and CLI regression paths that were previously red are now green.
+- Low. Full required verification is passing, including new regression tests for the previously broken path.
+- Residual operational risk remains external local-provider availability (Ollama/llama.cpp process reachability), which is surfaced via explicit discovery/test failure posture.
 
 ## docs issues
-- Control-doc truth markers are green, with sprint-owned updates in `README.md`, `ROADMAP.md`, and `RULES.md`.
-- No local machine paths/usernames found in reviewed sprint-owned code/docs/report files.
-- `ARCHITECTURE.md` and `PRODUCT_BRIEF.md` remain locally dirty and out of sprint merge scope; keep them excluded from this sprint PR.
+- No local identifiers (local computer paths, names) were found in sprint-owned changed code/docs reviewed here.
+- Out-of-scope dirty local docs remain and should stay excluded from sprint merge scope:
+  - `ARCHITECTURE.md`
+  - `PRODUCT_BRIEF.md`
 
 ## should anything be added to RULES.md?
-- Already addressed in current updates: explicit credential handling and provider/runtime security/reliability guardrails are present.
-- No additional rule required for this sprint merge.
+- Optional improvement: require backward-compat regression tests for already-shipped endpoints whenever shared registration/runtime helpers are refactored.
 
 ## should anything update ARCHITECTURE.md?
-- Optional follow-up only: add a tightly scoped `P11-S1 shipped` subsection when the docs-only planning edits are split into their own PR.
+- Optional improvement: add a concise note clarifying auth-mode credential invariants (`bearer` uses secret refs; `none` must not persist API keys).
 
 ## recommended next action
-1. Merge `P11-S1` code/test/doc-truth fixes as the sprint PR.
-2. Split `ARCHITECTURE.md` and `PRODUCT_BRIEF.md` planning edits into a separate non-sprint docs PR.
+1. Ready for Control Tower merge approval with the updated build and review evidence on this branch head.
+2. Keep `ARCHITECTURE.md` and `PRODUCT_BRIEF.md` excluded from the sprint PR.

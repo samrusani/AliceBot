@@ -599,10 +599,15 @@ from alicebot_api.proxy_execution import (
     execute_approved_proxy_request,
 )
 from alicebot_api.provider_runtime import (
+    LLAMACPP_ADAPTER_KEY,
+    OLLAMA_ADAPTER_KEY,
+    OPENAI_COMPATIBLE_ADAPTER_KEY,
+    OPENAI_RESPONSES_PROVIDER,
     ProviderAdapterNotFoundError,
     RuntimeProviderConfig,
     build_provider_test_model_request,
     make_provider_adapter_registry,
+    normalized_capability_snapshot,
     resolve_runtime_provider_config_secrets,
 )
 from alicebot_api.provider_secrets import (
@@ -1427,8 +1432,12 @@ def _serialize_model_provider(provider: ModelProviderRow) -> dict[str, object]:
         "model_provider": provider["model_provider"],
         "display_name": provider["display_name"],
         "base_url": provider["base_url"],
+        "auth_mode": provider["auth_mode"],
         "default_model": provider["default_model"],
         "status": provider["status"],
+        "model_list_path": provider["model_list_path"],
+        "healthcheck_path": provider["healthcheck_path"],
+        "invoke_path": provider["invoke_path"],
         "metadata": provider["metadata"],
         "created_at": provider["created_at"].isoformat(),
         "updated_at": provider["updated_at"].isoformat(),
@@ -1468,6 +1477,154 @@ def _runtime_provider_config_or_none(
         config=RuntimeProviderConfig.from_row(row),
         settings=settings,
     )
+
+
+def _normalize_provider_path(*, field_name: str, value: str) -> str:
+    path = value.strip()
+    if path == "":
+        raise ValueError(f"{field_name} is required")
+    return path if path.startswith("/") else f"/{path}"
+
+
+def _fallback_provider_capability_snapshot(
+    *,
+    adapter_key: str,
+    runtime_provider: str,
+    model_list_path: str,
+    healthcheck_path: str,
+    invoke_path: str,
+) -> dict[str, object]:
+    snapshot = normalized_capability_snapshot(
+        adapter_key=adapter_key,
+        runtime_provider=runtime_provider,
+        supports_tool_calls=False,
+        supports_streaming=False,
+        supports_store=False,
+        supports_vision_input=False,
+        supports_audio_input=False,
+    )
+    snapshot.update(
+        {
+            "health_status": "unreachable",
+            "health_endpoint": healthcheck_path,
+            "models_endpoint": model_list_path,
+            "invoke_endpoint": invoke_path,
+            "model_count": 0,
+            "models": [],
+        }
+    )
+    return snapshot
+
+
+def _register_workspace_provider(
+    *,
+    settings: Settings,
+    store: ContinuityStore,
+    workspace_id: UUID,
+    created_by_user_account_id: UUID,
+    provider_key: str,
+    display_name: str,
+    base_url: str,
+    api_key: str,
+    auth_mode: str,
+    default_model: str,
+    model_list_path: str,
+    healthcheck_path: str,
+    invoke_path: str,
+    metadata: dict[str, object],
+) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
+    normalized_display_name = display_name.strip()
+    normalized_base_url = base_url.strip()
+    normalized_api_key = api_key.strip()
+    normalized_default_model = default_model.strip()
+    normalized_auth_mode = auth_mode.strip().lower()
+    normalized_model_list_path = _normalize_provider_path(
+        field_name="model_list_path",
+        value=model_list_path,
+    )
+    normalized_healthcheck_path = _normalize_provider_path(
+        field_name="healthcheck_path",
+        value=healthcheck_path,
+    )
+    normalized_invoke_path = _normalize_provider_path(
+        field_name="invoke_path",
+        value=invoke_path,
+    )
+
+    if normalized_display_name == "":
+        raise ValueError("display_name is required")
+    if normalized_base_url == "":
+        raise ValueError("base_url is required")
+    if normalized_default_model == "":
+        raise ValueError("default_model is required")
+    if normalized_auth_mode not in {"bearer", "none"}:
+        raise ValueError(f"unsupported auth_mode: {auth_mode}")
+    if normalized_auth_mode == "bearer" and normalized_api_key == "":
+        raise ValueError("api_key is required when auth_mode is bearer")
+    if normalized_auth_mode == "none" and normalized_api_key != "":
+        raise ValueError("api_key must be empty when auth_mode is none")
+
+    encoded_api_key = "auth_mode_none"
+    if normalized_auth_mode == "bearer":
+        secret_ref = build_provider_secret_ref(workspace_id=workspace_id)
+        write_provider_api_key(
+            settings=settings,
+            secret_ref=secret_ref,
+            api_key=normalized_api_key,
+        )
+        encoded_api_key = encode_provider_secret_ref(secret_ref=secret_ref)
+
+    provider = store.create_model_provider(
+        workspace_id=workspace_id,
+        created_by_user_account_id=created_by_user_account_id,
+        provider_key=provider_key,
+        model_provider=OPENAI_RESPONSES_PROVIDER,
+        display_name=normalized_display_name,
+        base_url=normalized_base_url,
+        api_key=encoded_api_key,
+        default_model=normalized_default_model,
+        status="active",
+        metadata=metadata,
+        auth_mode=normalized_auth_mode,
+        model_list_path=normalized_model_list_path,
+        healthcheck_path=normalized_healthcheck_path,
+        invoke_path=normalized_invoke_path,
+    )
+
+    runtime_provider = resolve_runtime_provider_config_secrets(
+        config=RuntimeProviderConfig.from_row(provider),
+        settings=settings,
+    )
+    adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
+    discovery_status: str = "ready"
+    discovery_error: str | None = None
+
+    try:
+        capability_snapshot = adapter.discover_capabilities(
+            config=runtime_provider,
+            settings=settings,
+        )
+    except ModelInvocationError as exc:
+        capability_snapshot = _fallback_provider_capability_snapshot(
+            adapter_key=adapter.adapter_key,
+            runtime_provider=adapter.runtime_provider,
+            model_list_path=normalized_model_list_path,
+            healthcheck_path=normalized_healthcheck_path,
+            invoke_path=normalized_invoke_path,
+        )
+        discovery_status = "failed"
+        discovery_error = str(exc)
+
+    capability = store.upsert_provider_capability(
+        workspace_id=workspace_id,
+        provider_id=provider["id"],
+        discovered_by_user_account_id=created_by_user_account_id,
+        adapter_key=adapter.adapter_key,
+        discovery_status=discovery_status,
+        capability_snapshot=capability_snapshot,
+        discovery_error=discovery_error,
+    )
+    return provider, capability
 
 
 def redact_url_credentials(raw_url: str) -> str:
@@ -1882,11 +2039,43 @@ class HostedRolloutFlagsPatchRequest(BaseModel):
 class RegisterProviderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    provider_key: Literal["openai_compatible"] = "openai_compatible"
+    provider_key: Literal["openai_compatible"] = OPENAI_COMPATIBLE_ADAPTER_KEY
     display_name: str = Field(min_length=1, max_length=120)
     base_url: str = Field(min_length=1, max_length=500)
     api_key: str = Field(min_length=1, max_length=8000)
+    auth_mode: Literal["bearer"] = "bearer"
     default_model: str = Field(min_length=1, max_length=200)
+    model_list_path: str = Field(default="/models", min_length=1, max_length=200)
+    healthcheck_path: str = Field(default="/models", min_length=1, max_length=200)
+    invoke_path: str = Field(default="/responses", min_length=1, max_length=200)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class RegisterOllamaProviderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=120)
+    base_url: str = Field(default="http://127.0.0.1:11434", min_length=1, max_length=500)
+    api_key: str | None = Field(default=None, max_length=8000)
+    auth_mode: Literal["bearer", "none"] = "none"
+    default_model: str = Field(min_length=1, max_length=200)
+    model_list_path: str = Field(default="/api/tags", min_length=1, max_length=200)
+    healthcheck_path: str = Field(default="/api/version", min_length=1, max_length=200)
+    invoke_path: str = Field(default="/api/chat", min_length=1, max_length=200)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class RegisterLlamaCppProviderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=120)
+    base_url: str = Field(default="http://127.0.0.1:8080", min_length=1, max_length=500)
+    api_key: str | None = Field(default=None, max_length=8000)
+    auth_mode: Literal["bearer", "none"] = "none"
+    default_model: str = Field(min_length=1, max_length=200)
+    model_list_path: str = Field(default="/v1/models", min_length=1, max_length=200)
+    healthcheck_path: str = Field(default="/health", min_length=1, max_length=200)
+    invoke_path: str = Field(default="/v1/chat/completions", min_length=1, max_length=200)
     metadata: dict[str, object] = Field(default_factory=dict)
 
 
@@ -5981,57 +6170,146 @@ def register_v1_provider(request: Request, body: RegisterProviderRequest) -> JSO
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
 
-                display_name = body.display_name.strip()
-                base_url = body.base_url.strip()
-                api_key = body.api_key.strip()
-                default_model = body.default_model.strip()
-                if display_name == "":
-                    raise ValueError("display_name is required")
-                if base_url == "":
-                    raise ValueError("base_url is required")
-                if api_key == "":
-                    raise ValueError("api_key is required")
-                if default_model == "":
-                    raise ValueError("default_model is required")
-
-                secret_ref = build_provider_secret_ref(workspace_id=workspace["id"])
-                write_provider_api_key(
-                    settings=settings,
-                    secret_ref=secret_ref,
-                    api_key=api_key,
-                )
-
                 store = ContinuityStore(conn)
-                provider = store.create_model_provider(
+                provider, capability = _register_workspace_provider(
+                    settings=settings,
+                    store=store,
                     workspace_id=workspace["id"],
                     created_by_user_account_id=resolution["user_account"]["id"],
                     provider_key=body.provider_key,
-                    model_provider="openai_responses",
-                    display_name=display_name,
-                    base_url=base_url,
-                    api_key=encode_provider_secret_ref(secret_ref=secret_ref),
-                    default_model=default_model,
-                    status="active",
+                    display_name=body.display_name,
+                    base_url=body.base_url,
+                    api_key=body.api_key,
+                    auth_mode=body.auth_mode,
+                    default_model=body.default_model,
+                    model_list_path=body.model_list_path,
+                    healthcheck_path=body.healthcheck_path,
+                    invoke_path=body.invoke_path,
                     metadata=body.metadata,
                 )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except psycopg.errors.UniqueViolation:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "provider display_name must be unique within the workspace"},
+        )
+    except ProviderAdapterNotFoundError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except ProviderSecretManagerError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
-                runtime_provider = resolve_runtime_provider_config_secrets(
-                    config=RuntimeProviderConfig.from_row(provider),
-                    settings=settings,
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(
+            {
+                "provider": _serialize_model_provider(provider),
+                "capabilities": _serialize_provider_capability(capability),
+            }
+        ),
+    )
+
+
+@app.post("/v1/providers/ollama/register")
+def register_v1_ollama_provider(
+    request: Request,
+    body: RegisterOllamaProviderRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
                 )
-                adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
-                capability_snapshot = adapter.discover_capabilities(
-                    config=runtime_provider,
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                provider, capability = _register_workspace_provider(
                     settings=settings,
-                )
-                capability = store.upsert_provider_capability(
+                    store=store,
                     workspace_id=workspace["id"],
-                    provider_id=provider["id"],
-                    discovered_by_user_account_id=resolution["user_account"]["id"],
-                    adapter_key=adapter.adapter_key,
-                    discovery_status="ready",
-                    capability_snapshot=capability_snapshot,
-                    discovery_error=None,
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                    provider_key=OLLAMA_ADAPTER_KEY,
+                    display_name=body.display_name,
+                    base_url=body.base_url,
+                    api_key=body.api_key or "",
+                    auth_mode=body.auth_mode,
+                    default_model=body.default_model,
+                    model_list_path=body.model_list_path,
+                    healthcheck_path=body.healthcheck_path,
+                    invoke_path=body.invoke_path,
+                    metadata=body.metadata,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except psycopg.errors.UniqueViolation:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "provider display_name must be unique within the workspace"},
+        )
+    except ProviderAdapterNotFoundError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except ProviderSecretManagerError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(
+            {
+                "provider": _serialize_model_provider(provider),
+                "capabilities": _serialize_provider_capability(capability),
+            }
+        ),
+    )
+
+
+@app.post("/v1/providers/llamacpp/register")
+def register_v1_llamacpp_provider(
+    request: Request,
+    body: RegisterLlamaCppProviderRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                provider, capability = _register_workspace_provider(
+                    settings=settings,
+                    store=store,
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                    provider_key=LLAMACPP_ADAPTER_KEY,
+                    display_name=body.display_name,
+                    base_url=body.base_url,
+                    api_key=body.api_key or "",
+                    auth_mode=body.auth_mode,
+                    default_model=body.default_model,
+                    model_list_path=body.model_list_path,
+                    healthcheck_path=body.healthcheck_path,
+                    invoke_path=body.invoke_path,
+                    metadata=body.metadata,
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
@@ -6176,10 +6454,37 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                 if model_name == "":
                     raise ValueError("model is required")
 
-                capability_snapshot = adapter.discover_capabilities(
-                    config=runtime_provider,
-                    settings=settings,
-                )
+                try:
+                    capability_snapshot = adapter.discover_capabilities(
+                        config=runtime_provider,
+                        settings=settings,
+                    )
+                except ModelInvocationError as exc:
+                    capability = store.upsert_provider_capability(
+                        workspace_id=workspace["id"],
+                        provider_id=runtime_provider.provider_id,
+                        discovered_by_user_account_id=resolution["user_account"]["id"],
+                        adapter_key=adapter.adapter_key,
+                        discovery_status="failed",
+                        capability_snapshot=_fallback_provider_capability_snapshot(
+                            adapter_key=adapter.adapter_key,
+                            runtime_provider=adapter.runtime_provider,
+                            model_list_path=runtime_provider.model_list_path,
+                            healthcheck_path=runtime_provider.healthcheck_path,
+                            invoke_path=runtime_provider.invoke_path,
+                        ),
+                        discovery_error=str(exc),
+                    )
+                    return JSONResponse(
+                        status_code=502,
+                        content=jsonable_encoder(
+                            {
+                                "detail": str(exc),
+                                "provider": _serialize_model_provider(provider),
+                                "capabilities": _serialize_provider_capability(capability),
+                            }
+                        ),
+                    )
                 model_request = build_provider_test_model_request(
                     runtime_provider=runtime_provider.model_provider,
                     model=model_name,

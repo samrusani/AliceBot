@@ -18,38 +18,38 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="README.md",
         required_markers=(
-            "Phase 9 is complete.",
-            "Alice Connect is the planned Phase 10 product layer",
+            "Phase 10 is complete and shipped.",
+            "`P11-S2` Ollama + llama.cpp Adapters is the active sprint",
             "Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md]",
         ),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "Phase 10 is the next delivery phase: Alice Connect.",
-            "P10-S1: Identity + Workspace Bootstrap",
+            "Phase 10 is complete and shipped baseline truth.",
+            "P11-S2: Ollama + llama.cpp Adapters",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Phase 10 Sprint 1 (P10-S1): Identity + Workspace Bootstrap",
-            "Phase 9 shipped scope is baseline truth, not sprint work",
+            "Phase 11 Sprint 2 (P11-S2): Ollama + llama.cpp Adapters",
+            "Phase 10 and `P11-S1` shipped scope remain baseline truth and are not reopened as sprint work",
         ),
     ),
     ControlDocTruthRule(
         relative_path="RULES.md",
         required_markers=(
-            "Phase 10 must not fork semantics between local, CLI, MCP, and Telegram.",
-            "Do not rewrite shipped Phase 9 capabilities as future roadmap items.",
+            "Never fork continuity semantics by provider, model, or runtime.",
+            "Provider-specific quirks belong in adapters or declarative packs, not core semantics.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
             "Phase 9 is complete and shipped.",
-            "Phase 10 planning is defined as Alice Connect.",
-            "P10-S1 (Identity + Workspace Bootstrap) is the first execution sprint packet.",
+            "Phase 10 is complete and shipped.",
+            "`P11-S2` (Ollama + llama.cpp Adapters) is the active execution sprint packet.",
         ),
     ),
     ControlDocTruthRule(

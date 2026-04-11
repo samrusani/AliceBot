@@ -124,7 +124,7 @@ The current open-source surface includes:
 - shared explainability across recall, resume, open-loop review, and explain surfaces
 - scheduled archive maintenance, ops status reporting, and failure alerting
 - Hermes external memory provider for always-on continuity prefetch and Alice memory tools inside Hermes
-- provider runtime abstraction with workspace-scoped provider registration, capability snapshots, and an OpenAI-compatible base adapter
+- provider runtime abstraction with workspace-scoped provider registration, capability snapshots, an OpenAI-compatible base adapter, and local Ollama/llama.cpp adapters
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -205,6 +205,7 @@ See:
 - [docs/integrations/hermes.md](docs/integrations/hermes.md)
 - [docs/integrations/hermes-memory-provider.md](docs/integrations/hermes-memory-provider.md)
 - [docs/integrations/hermes-skill-pack.md](docs/integrations/hermes-skill-pack.md)
+- [docs/integrations/phase11-local-provider-adapters.md](docs/integrations/phase11-local-provider-adapters.md)
 
 Hermes runtime smoke test:
 

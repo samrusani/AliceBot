@@ -189,7 +189,7 @@ ToolAllowlistDecision = Literal["allowed", "denied", "approval_required"]
 ToolRoutingDecision = Literal["ready", "denied", "approval_required"]
 PromptSectionName = Literal["system", "developer", "context", "conversation"]
 ModelProvider = Literal["openai_responses"]
-ProviderAdapterKey = Literal["openai_compatible"]
+ProviderAdapterKey = Literal["openai_compatible", "ollama", "llamacpp"]
 ModelProviderStatus = Literal["active"]
 ProviderCapabilityDiscoveryStatus = Literal["ready", "failed"]
 ModelFinishReason = Literal["completed", "incomplete"]
@@ -1547,8 +1547,12 @@ class ModelProviderRecord(TypedDict):
     model_provider: ModelProvider
     display_name: str
     base_url: str
+    auth_mode: str
     default_model: str
     status: ModelProviderStatus
+    model_list_path: str
+    healthcheck_path: str
+    invoke_path: str
     metadata: JsonObject
     created_at: str
     updated_at: str
