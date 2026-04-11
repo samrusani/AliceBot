@@ -161,6 +161,7 @@ See:
 
 - [docs/integrations/mcp.md](docs/integrations/mcp.md)
 - [docs/integrations/hermes.md](docs/integrations/hermes.md)
+- [docs/integrations/hermes-memory-provider.md](docs/integrations/hermes-memory-provider.md)
 - [docs/integrations/hermes-skill-pack.md](docs/integrations/hermes-skill-pack.md)
 
 Hermes runtime smoke test:
@@ -250,6 +251,7 @@ That means the system behaves consistently across local workflows, MCP-connected
 - [Architecture](ARCHITECTURE.md)
 - [MCP](docs/integrations/mcp.md)
 - [Hermes Guide](docs/integrations/hermes.md)
+- [Hermes Memory Provider](docs/integrations/hermes-memory-provider.md)
 - [Hermes Skill Pack](docs/integrations/hermes-skill-pack.md)
 - [Importers](docs/integrations/importers.md)
 - [OpenClaw Guide](docs/integrations/openclaw.md)
