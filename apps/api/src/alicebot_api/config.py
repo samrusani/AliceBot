@@ -32,6 +32,7 @@ DEFAULT_MODEL_NAME = "gpt-5-mini"
 DEFAULT_MODEL_API_KEY = ""
 DEFAULT_MODEL_TIMEOUT_SECONDS = 30
 DEFAULT_TASK_WORKSPACE_ROOT = "/tmp/alicebot/task-workspaces"
+DEFAULT_PROVIDER_SECRET_MANAGER_URL = ""
 DEFAULT_GMAIL_SECRET_MANAGER_URL = ""
 DEFAULT_CALENDAR_SECRET_MANAGER_URL = ""
 DEFAULT_AUTH_USER_ID = ""
@@ -144,6 +145,7 @@ class Settings:
     model_api_key: str = DEFAULT_MODEL_API_KEY
     model_timeout_seconds: int = DEFAULT_MODEL_TIMEOUT_SECONDS
     task_workspace_root: str = DEFAULT_TASK_WORKSPACE_ROOT
+    provider_secret_manager_url: str = DEFAULT_PROVIDER_SECRET_MANAGER_URL
     gmail_secret_manager_url: str = DEFAULT_GMAIL_SECRET_MANAGER_URL
     calendar_secret_manager_url: str = DEFAULT_CALENDAR_SECRET_MANAGER_URL
     auth_user_id: str = DEFAULT_AUTH_USER_ID
@@ -230,6 +232,11 @@ class Settings:
                 current_env,
                 "TASK_WORKSPACE_ROOT",
                 cls.task_workspace_root,
+            ),
+            provider_secret_manager_url=_get_env_value(
+                current_env,
+                "PROVIDER_SECRET_MANAGER_URL",
+                cls.provider_secret_manager_url,
             ),
             gmail_secret_manager_url=_get_env_value(
                 current_env,
