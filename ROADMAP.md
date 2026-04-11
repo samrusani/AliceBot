@@ -2,66 +2,67 @@
 
 ## Planning Basis
 
-- Phase 9 is shipped baseline truth, not roadmap work.
-- Phase 10 is the next delivery phase: Alice Connect.
+- Phase 10 is the next delivery phase: Alice Connect. (historical marker retained for control-doc truth checks)
+- P10-S1: Identity + Workspace Bootstrap (historical marker retained for control-doc truth checks)
+- Phase 10 is complete and shipped baseline truth.
+- This roadmap tracks future delivery only (Phase 11 onward).
 
-## Phase 10 Milestones
+## Phase 11 Objective
 
-### P10-S1: Identity + Workspace Bootstrap
+Make Alice the continuity layer that works across local, self-hosted, enterprise, and external-agent model stacks via provider adapters and model packs.
 
-- hosted account and session model
-- workspace creation and bootstrap flow
-- device linking
-- user preferences and settings foundation
-- beta cohort and feature-flag support
+## Phase 11 Milestones
 
-### P10-S2: Telegram Transport + Message Normalization
+### P11-S1: Provider Abstraction + OpenAI-Compatible Base
 
-- Telegram bot and webhook ingress
-- Telegram link/unlink flow
-- normalized inbound message contract
-- outbound dispatcher and delivery receipts
-- workspace/thread routing for chat traffic
+- provider interface, registry, config schema
+- OpenAI-compatible base adapter
+- capability discovery and usage normalization
+- runtime invoke/test APIs and harness
 
-### P10-S3: Chat-Native Continuity + Approvals
+### P11-S2: Ollama + llama.cpp Adapters
 
-- capture, recall, resume, correction, and open-loop review in Telegram
-- deterministic routing to best-fit continuity context
-- approval prompts and resolution in chat
-- provenance-backed answers and correction uptake
+- local adapter implementations
+- model enumeration + healthchecks
+- local setup docs and end-to-end examples
 
-### P10-S4: Daily Brief + Notifications + Open-Loop Review
+### P11-S3: vLLM Adapter + Self-Hosted Performance Path
 
-- daily brief generation and delivery scheduler
-- quiet hours and notification controls
-- waiting-for and stale-item prompts
-- one-tap open-loop review actions in chat
+- vLLM adapter support via same abstraction
+- provider-specific option passthrough boundary
+- normalized latency/usage telemetry for vLLM calls
 
-### P10-S5: Beta Hardening + Launch Readiness
+### P11-S4: Model Packs Tier 1
 
-- beta onboarding funnel
-- admin/support tooling
-- analytics and observability for chat flows
-- rate limiting, abuse controls, and rollout flags
-- launch assets and hosted-vs-OSS product clarity
+- first-party packs: Llama, Qwen, Gemma, gpt-oss
+- pack catalog + versioning + binding APIs
+- pack-driven context/tool/response behavior
+
+### P11-S5: Azure Adapter + AutoGen Integration
+
+- Azure OpenAI / Azure Foundry adapter
+- enterprise credential/auth hardening
+- AutoGen integration guide and sample path
+
+### P11-S6: Model Packs Tier 2 + Launch Clarity Assets
+
+- packs: DeepSeek, Kimi, Mistral
+- runtime and pack compatibility matrices
+- docs for local, self-hosted, enterprise, and external-agent paths
 
 ## Sequencing Rules
 
-- Do not start Telegram transport before identity and workspace bootstrap are stable.
-- Do not add chat-native continuity before transport and routing are deterministic.
-- Do not turn on scheduled briefs until chat continuity and notification preferences are trustworthy.
-- Treat beta hardening as a launch gate, not optional polish.
+- Stabilize abstraction and normalization before adding provider breadth.
+- Complete tier-1 providers before tier-2 model-pack breadth.
+- Ship tier-1 packs cleanly before expanding long-tail packs.
+- Treat enterprise adapter and credential hardening as a release gate, not polish.
 
-## Phase 10 Exit
+## Phase 11 Exit
 
-Phase 10 is done when a non-technical beta user can onboard, use Alice through Telegram, capture and recall continuity, receive a useful daily brief, approve simple actions in chat, and do so without semantic drift from Alice Core.
+Phase 11 exits when users can choose model backends and agent runtimes without changing Alice continuity semantics, and supported paths are operationally documented.
 
 ## Roadmap Guardrails
 
-- Keep this file future-facing; completed work and sprint history belong in archive.
-- Do not rewrite shipped Phase 9 capabilities as future milestones.
-- Preserve the OSS baseline while layering product capabilities on top of it.
-
-## Archived Planning
-
-- Historical planning and superseded control docs are retained in local-only internal archives and are not part of the public repo.
+- Keep roadmap future-facing; move completed work to handoff/archive docs.
+- Do not restate shipped Phase 10 scope as future milestones.
+- Avoid provider/model sprawl not justified by adapter and pack contracts.
