@@ -339,6 +339,36 @@ class EmbeddingConfigRow(TypedDict):
     created_at: datetime
 
 
+class ModelProviderRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    created_by_user_account_id: UUID
+    provider_key: str
+    model_provider: str
+    display_name: str
+    base_url: str
+    api_key: str
+    default_model: str
+    status: str
+    metadata: JsonObject
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProviderCapabilityRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    provider_id: UUID
+    discovered_by_user_account_id: UUID
+    adapter_key: str
+    discovery_status: str
+    capability_snapshot: JsonObject
+    discovery_error: str | None
+    discovered_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
 class MemoryEmbeddingRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -1612,15 +1642,6 @@ UPSERT_FACT_PATTERN_SQL = """
                   evidence_chain = EXCLUDED.evidence_chain,
                   explanation = EXCLUDED.explanation,
                   updated_at = clock_timestamp()
-                WHERE
-                  fact_patterns.id IS DISTINCT FROM EXCLUDED.id
-                  OR fact_patterns.title IS DISTINCT FROM EXCLUDED.title
-                  OR fact_patterns.memory_type IS DISTINCT FROM EXCLUDED.memory_type
-                  OR fact_patterns.namespace_key IS DISTINCT FROM EXCLUDED.namespace_key
-                  OR fact_patterns.fact_count IS DISTINCT FROM EXCLUDED.fact_count
-                  OR fact_patterns.source_fact_ids IS DISTINCT FROM EXCLUDED.source_fact_ids
-                  OR fact_patterns.evidence_chain IS DISTINCT FROM EXCLUDED.evidence_chain
-                  OR fact_patterns.explanation IS DISTINCT FROM EXCLUDED.explanation
                 RETURNING
                   id,
                   user_id,
@@ -1732,16 +1753,6 @@ UPSERT_FACT_PLAYBOOK_SQL = """
                   steps = EXCLUDED.steps,
                   explanation = EXCLUDED.explanation,
                   updated_at = clock_timestamp()
-                WHERE
-                  fact_playbooks.id IS DISTINCT FROM EXCLUDED.id
-                  OR fact_playbooks.pattern_id IS DISTINCT FROM EXCLUDED.pattern_id
-                  OR fact_playbooks.pattern_key IS DISTINCT FROM EXCLUDED.pattern_key
-                  OR fact_playbooks.title IS DISTINCT FROM EXCLUDED.title
-                  OR fact_playbooks.memory_type IS DISTINCT FROM EXCLUDED.memory_type
-                  OR fact_playbooks.source_fact_ids IS DISTINCT FROM EXCLUDED.source_fact_ids
-                  OR fact_playbooks.source_pattern_ids IS DISTINCT FROM EXCLUDED.source_pattern_ids
-                  OR fact_playbooks.steps IS DISTINCT FROM EXCLUDED.steps
-                  OR fact_playbooks.explanation IS DISTINCT FROM EXCLUDED.explanation
                 RETURNING
                   id,
                   user_id,
@@ -2034,6 +2045,133 @@ UPDATE_OPEN_LOOP_STATUS_SQL = """
                   resolution_note,
                   created_at,
                   updated_at
+                """
+
+INSERT_MODEL_PROVIDER_SQL = """
+                INSERT INTO model_providers (
+                  workspace_id,
+                  created_by_user_account_id,
+                  provider_key,
+                  model_provider,
+                  display_name,
+                  base_url,
+                  api_key,
+                  default_model,
+                  status,
+                  metadata,
+                  created_at,
+                  updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, clock_timestamp(), clock_timestamp())
+                RETURNING
+                  id,
+                  workspace_id,
+                  created_by_user_account_id,
+                  provider_key,
+                  model_provider,
+                  display_name,
+                  base_url,
+                  api_key,
+                  default_model,
+                  status,
+                  metadata,
+                  created_at,
+                  updated_at
+                """
+
+GET_MODEL_PROVIDER_FOR_WORKSPACE_SQL = """
+                SELECT
+                  id,
+                  workspace_id,
+                  created_by_user_account_id,
+                  provider_key,
+                  model_provider,
+                  display_name,
+                  base_url,
+                  api_key,
+                  default_model,
+                  status,
+                  metadata,
+                  created_at,
+                  updated_at
+                FROM model_providers
+                WHERE id = %s
+                  AND workspace_id = %s
+                """
+
+LIST_MODEL_PROVIDERS_FOR_WORKSPACE_SQL = """
+                SELECT
+                  id,
+                  workspace_id,
+                  created_by_user_account_id,
+                  provider_key,
+                  model_provider,
+                  display_name,
+                  base_url,
+                  api_key,
+                  default_model,
+                  status,
+                  metadata,
+                  created_at,
+                  updated_at
+                FROM model_providers
+                WHERE workspace_id = %s
+                ORDER BY created_at ASC, id ASC
+                """
+
+UPSERT_PROVIDER_CAPABILITY_SQL = """
+                INSERT INTO provider_capabilities (
+                  workspace_id,
+                  provider_id,
+                  discovered_by_user_account_id,
+                  adapter_key,
+                  discovery_status,
+                  capability_snapshot,
+                  discovery_error,
+                  discovered_at,
+                  created_at,
+                  updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, clock_timestamp(), clock_timestamp(), clock_timestamp())
+                ON CONFLICT (provider_id) DO UPDATE
+                SET workspace_id = EXCLUDED.workspace_id,
+                    discovered_by_user_account_id = EXCLUDED.discovered_by_user_account_id,
+                    adapter_key = EXCLUDED.adapter_key,
+                    discovery_status = EXCLUDED.discovery_status,
+                    capability_snapshot = EXCLUDED.capability_snapshot,
+                    discovery_error = EXCLUDED.discovery_error,
+                    discovered_at = EXCLUDED.discovered_at,
+                    updated_at = clock_timestamp()
+                RETURNING
+                  id,
+                  workspace_id,
+                  provider_id,
+                  discovered_by_user_account_id,
+                  adapter_key,
+                  discovery_status,
+                  capability_snapshot,
+                  discovery_error,
+                  discovered_at,
+                  created_at,
+                  updated_at
+                """
+
+GET_PROVIDER_CAPABILITY_FOR_PROVIDER_SQL = """
+                SELECT
+                  id,
+                  workspace_id,
+                  provider_id,
+                  discovered_by_user_account_id,
+                  adapter_key,
+                  discovery_status,
+                  capability_snapshot,
+                  discovery_error,
+                  discovered_at,
+                  created_at,
+                  updated_at
+                FROM provider_capabilities
+                WHERE provider_id = %s
+                  AND workspace_id = %s
                 """
 
 INSERT_EMBEDDING_CONFIG_SQL = """
@@ -5805,6 +5943,90 @@ class ContinuityStore:
         return self._fetch_all(
             LIST_CONTINUITY_CORRECTION_EVENTS_SQL,
             (continuity_object_id, limit),
+        )
+
+    def create_model_provider(
+        self,
+        *,
+        workspace_id: UUID,
+        created_by_user_account_id: UUID,
+        provider_key: str,
+        model_provider: str,
+        display_name: str,
+        base_url: str,
+        api_key: str,
+        default_model: str,
+        status: str,
+        metadata: JsonObject,
+    ) -> ModelProviderRow:
+        return self._fetch_one(
+            "create_model_provider",
+            INSERT_MODEL_PROVIDER_SQL,
+            (
+                workspace_id,
+                created_by_user_account_id,
+                provider_key,
+                model_provider,
+                display_name,
+                base_url,
+                api_key,
+                default_model,
+                status,
+                Jsonb(metadata),
+            ),
+        )
+
+    def get_model_provider_for_workspace_optional(
+        self,
+        *,
+        provider_id: UUID,
+        workspace_id: UUID,
+    ) -> ModelProviderRow | None:
+        return self._fetch_optional_one(
+            GET_MODEL_PROVIDER_FOR_WORKSPACE_SQL,
+            (provider_id, workspace_id),
+        )
+
+    def list_model_providers_for_workspace(self, *, workspace_id: UUID) -> list[ModelProviderRow]:
+        return self._fetch_all(
+            LIST_MODEL_PROVIDERS_FOR_WORKSPACE_SQL,
+            (workspace_id,),
+        )
+
+    def upsert_provider_capability(
+        self,
+        *,
+        workspace_id: UUID,
+        provider_id: UUID,
+        discovered_by_user_account_id: UUID,
+        adapter_key: str,
+        discovery_status: str,
+        capability_snapshot: JsonObject,
+        discovery_error: str | None,
+    ) -> ProviderCapabilityRow:
+        return self._fetch_one(
+            "upsert_provider_capability",
+            UPSERT_PROVIDER_CAPABILITY_SQL,
+            (
+                workspace_id,
+                provider_id,
+                discovered_by_user_account_id,
+                adapter_key,
+                discovery_status,
+                Jsonb(capability_snapshot),
+                discovery_error,
+            ),
+        )
+
+    def get_provider_capability_for_provider_optional(
+        self,
+        *,
+        provider_id: UUID,
+        workspace_id: UUID,
+    ) -> ProviderCapabilityRow | None:
+        return self._fetch_optional_one(
+            GET_PROVIDER_CAPABILITY_FOR_PROVIDER_SQL,
+            (provider_id, workspace_id),
         )
 
     def create_embedding_config(

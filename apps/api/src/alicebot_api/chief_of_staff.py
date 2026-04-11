@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 from uuid import UUID
 
 from alicebot_api.continuity_open_loops import (
@@ -1485,6 +1486,25 @@ def _normalize_identifier_part(value: str) -> str:
     return normalized or "none"
 
 
+def _build_deterministic_handoff_item_id(
+    *,
+    candidate: _ActionHandoffCandidate,
+    used_ids: set[str],
+) -> str:
+    source_ref = _normalize_identifier_part(candidate.source_reference_id or "none")
+    digest = hashlib.sha256(
+        f"{candidate.source_kind}|{source_ref}".encode("utf-8")
+    ).hexdigest()[:12]
+    base_id = f"handoff-{candidate.source_kind}-{source_ref}-{digest}"
+    handoff_item_id = base_id
+    duplicate_index = 2
+    while handoff_item_id in used_ids:
+        handoff_item_id = f"{base_id}-{duplicate_index}"
+        duplicate_index += 1
+    used_ids.add(handoff_item_id)
+    return handoff_item_id
+
+
 def _action_handoff_sort_key(candidate: _ActionHandoffCandidate) -> tuple[float, int, str, str]:
     return (
         -candidate.score,
@@ -1745,9 +1765,12 @@ def _build_action_handoff_artifacts(
 
     target = _build_action_handoff_request_target(scope=scope)
     handoff_items: list[ChiefOfStaffActionHandoffItem] = []
+    used_handoff_item_ids: set[str] = set()
     for rank, candidate in enumerate(selected_candidates, start=1):
-        source_ref = _normalize_identifier_part(candidate.source_reference_id or "none")
-        handoff_item_id = f"handoff-{rank}-{candidate.source_kind}-{source_ref}"
+        handoff_item_id = _build_deterministic_handoff_item_id(
+            candidate=candidate,
+            used_ids=used_handoff_item_ids,
+        )
         request_draft = _build_action_handoff_request_draft(
             candidate=candidate,
             handoff_item_id=handoff_item_id,
@@ -2848,6 +2871,7 @@ def capture_chief_of_staff_recommendation_outcome(
         capture_event_id=capture_event["id"],
         object_type="Note",
         status="active",
+        is_searchable=True,
         title=f"Recommendation outcome: {outcome} -> {recommendation_title}",
         body=body,
         provenance=provenance,
@@ -2979,6 +3003,7 @@ def capture_chief_of_staff_handoff_review_action(
         capture_event_id=capture_event["id"],
         object_type="Note",
         status="active",
+        is_searchable=True,
         title=f"Handoff review action: {review_action} ({handoff_item_id})",
         body=body,
         provenance=provenance,
@@ -3115,6 +3140,7 @@ def capture_chief_of_staff_execution_routing_action(
         capture_event_id=capture_event["id"],
         object_type="Note",
         status="active",
+        is_searchable=True,
         title=f"Execution routing action: {route_target} ({handoff_item_id})",
         body=body,
         provenance=provenance,
@@ -3262,6 +3288,7 @@ def capture_chief_of_staff_handoff_outcome(
         capture_event_id=capture_event["id"],
         object_type="Note",
         status="active",
+        is_searchable=True,
         title=f"Handoff outcome: {outcome_status} ({handoff_item_id})",
         body=body,
         provenance=provenance,

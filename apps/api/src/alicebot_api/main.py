@@ -160,6 +160,7 @@ from alicebot_api.contracts import (
     OpenLoopCandidateInput,
     MemoryEmbeddingUpsertInput,
     THREAD_EVENT_LIST_ORDER,
+    PROVIDER_LIST_ORDER,
     THREAD_LIST_ORDER,
     THREAD_SESSION_LIST_ORDER,
     MemoryReviewLabelValue,
@@ -587,6 +588,7 @@ from alicebot_api.semantic_retrieval import (
     retrieve_task_scoped_semantic_artifact_chunk_records,
 )
 from alicebot_api.response_generation import (
+    ModelInvocationError,
     ResponseFailure,
     generate_response,
 )
@@ -596,10 +598,25 @@ from alicebot_api.proxy_execution import (
     ProxyExecutionIdempotencyError,
     execute_approved_proxy_request,
 )
+from alicebot_api.provider_runtime import (
+    ProviderAdapterNotFoundError,
+    RuntimeProviderConfig,
+    build_provider_test_model_request,
+    make_provider_adapter_registry,
+    resolve_runtime_provider_config_secrets,
+)
+from alicebot_api.provider_secrets import (
+    ProviderSecretManagerError,
+    build_provider_secret_ref,
+    encode_provider_secret_ref,
+    write_provider_api_key,
+)
 from alicebot_api.store import (
     ContinuityStore,
     ContinuityStoreInvariantError,
     EventRow,
+    ModelProviderRow,
+    ProviderCapabilityRow,
     SessionRow,
     ThreadRow,
 )
@@ -614,6 +631,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 app = FastAPI(title="AliceBot API", version="0.1.0")
+provider_adapter_registry = make_provider_adapter_registry()
 HealthStatus = Literal["ok", "degraded"]
 ServiceStatus = Literal["ok", "unreachable", "not_checked"]
 
@@ -1400,6 +1418,58 @@ def _serialize_thread_event(event: EventRow) -> ThreadEventRecord:
     }
 
 
+def _serialize_model_provider(provider: ModelProviderRow) -> dict[str, object]:
+    return {
+        "id": str(provider["id"]),
+        "workspace_id": str(provider["workspace_id"]),
+        "created_by_user_account_id": str(provider["created_by_user_account_id"]),
+        "provider_key": provider["provider_key"],
+        "model_provider": provider["model_provider"],
+        "display_name": provider["display_name"],
+        "base_url": provider["base_url"],
+        "default_model": provider["default_model"],
+        "status": provider["status"],
+        "metadata": provider["metadata"],
+        "created_at": provider["created_at"].isoformat(),
+        "updated_at": provider["updated_at"].isoformat(),
+    }
+
+
+def _serialize_provider_capability(capability: ProviderCapabilityRow) -> dict[str, object]:
+    snapshot = capability["capability_snapshot"]
+    capability_version = snapshot.get("capability_version")
+    if not isinstance(capability_version, str) or capability_version == "":
+        capability_version = "provider_capability_v1"
+    return {
+        "provider_id": str(capability["provider_id"]),
+        "adapter_key": capability["adapter_key"],
+        "discovery_status": capability["discovery_status"],
+        "capability_version": capability_version,
+        "snapshot": snapshot,
+        "discovery_error": capability["discovery_error"],
+        "discovered_at": capability["discovered_at"].isoformat(),
+    }
+
+
+def _runtime_provider_config_or_none(
+    *,
+    store: ContinuityStore,
+    provider_id: UUID,
+    workspace_id: UUID,
+    settings: Settings,
+) -> RuntimeProviderConfig | None:
+    row = store.get_model_provider_for_workspace_optional(
+        provider_id=provider_id,
+        workspace_id=workspace_id,
+    )
+    if row is None:
+        return None
+    return resolve_runtime_provider_config_secrets(
+        config=RuntimeProviderConfig.from_row(row),
+        settings=settings,
+    )
+
+
 def redact_url_credentials(raw_url: str) -> str:
     parsed = urlsplit(raw_url)
 
@@ -1807,6 +1877,43 @@ class HostedRolloutFlagsPatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     updates: list[HostedRolloutFlagPatchItemRequest] = Field(min_length=1, max_length=100)
+
+
+class RegisterProviderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_key: Literal["openai_compatible"] = "openai_compatible"
+    display_name: str = Field(min_length=1, max_length=120)
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key: str = Field(min_length=1, max_length=8000)
+    default_model: str = Field(min_length=1, max_length=200)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class TestProviderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_id: UUID
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    prompt: str = Field(
+        default="Reply with a concise provider connectivity confirmation.",
+        min_length=1,
+        max_length=1000,
+    )
+
+
+class RuntimeInvokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_id: UUID
+    thread_id: UUID
+    message: str = Field(min_length=1, max_length=4000)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    max_sessions: int = Field(default=DEFAULT_MAX_SESSIONS, ge=1, le=50)
+    max_events: int = Field(default=DEFAULT_MAX_EVENTS, ge=1, le=200)
+    max_memories: int = Field(default=DEFAULT_MAX_MEMORIES, ge=1, le=200)
+    max_entities: int = Field(default=DEFAULT_MAX_ENTITIES, ge=1, le=200)
+    max_entity_edges: int = Field(default=DEFAULT_MAX_ENTITY_EDGES, ge=1, le=400)
 
 
 def _extract_bearer_token(request: Request) -> str:
@@ -5852,6 +5959,439 @@ def get_v1_workspace_bootstrap_status(request: Request) -> JSONResponse:
                 "bootstrap": status_payload,
                 "feature_flags": feature_flags,
                 "telegram_state": "available_in_p10_s2_transport",
+            }
+        ),
+    )
+
+
+@app.post("/v1/providers")
+def register_v1_provider(request: Request, body: RegisterProviderRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                display_name = body.display_name.strip()
+                base_url = body.base_url.strip()
+                api_key = body.api_key.strip()
+                default_model = body.default_model.strip()
+                if display_name == "":
+                    raise ValueError("display_name is required")
+                if base_url == "":
+                    raise ValueError("base_url is required")
+                if api_key == "":
+                    raise ValueError("api_key is required")
+                if default_model == "":
+                    raise ValueError("default_model is required")
+
+                secret_ref = build_provider_secret_ref(workspace_id=workspace["id"])
+                write_provider_api_key(
+                    settings=settings,
+                    secret_ref=secret_ref,
+                    api_key=api_key,
+                )
+
+                store = ContinuityStore(conn)
+                provider = store.create_model_provider(
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                    provider_key=body.provider_key,
+                    model_provider="openai_responses",
+                    display_name=display_name,
+                    base_url=base_url,
+                    api_key=encode_provider_secret_ref(secret_ref=secret_ref),
+                    default_model=default_model,
+                    status="active",
+                    metadata=body.metadata,
+                )
+
+                runtime_provider = resolve_runtime_provider_config_secrets(
+                    config=RuntimeProviderConfig.from_row(provider),
+                    settings=settings,
+                )
+                adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
+                capability_snapshot = adapter.discover_capabilities(
+                    config=runtime_provider,
+                    settings=settings,
+                )
+                capability = store.upsert_provider_capability(
+                    workspace_id=workspace["id"],
+                    provider_id=provider["id"],
+                    discovered_by_user_account_id=resolution["user_account"]["id"],
+                    adapter_key=adapter.adapter_key,
+                    discovery_status="ready",
+                    capability_snapshot=capability_snapshot,
+                    discovery_error=None,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except psycopg.errors.UniqueViolation:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "provider display_name must be unique within the workspace"},
+        )
+    except ProviderAdapterNotFoundError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except ProviderSecretManagerError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(
+            {
+                "provider": _serialize_model_provider(provider),
+                "capabilities": _serialize_provider_capability(capability),
+            }
+        ),
+    )
+
+
+@app.get("/v1/providers")
+def list_v1_providers(request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                providers = store.list_model_providers_for_workspace(workspace_id=workspace["id"])
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    items = [_serialize_model_provider(provider) for provider in providers]
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "items": items,
+                "summary": {
+                    "total_count": len(items),
+                    "order": list(PROVIDER_LIST_ORDER),
+                },
+            }
+        ),
+    )
+
+
+@app.get("/v1/providers/{provider_id}")
+def get_v1_provider(provider_id: UUID, request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                provider = store.get_model_provider_for_workspace_optional(
+                    provider_id=provider_id,
+                    workspace_id=workspace["id"],
+                )
+                if provider is None:
+                    return JSONResponse(status_code=404, content={"detail": f"provider {provider_id} was not found"})
+                capability = store.get_provider_capability_for_provider_optional(
+                    provider_id=provider_id,
+                    workspace_id=workspace["id"],
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "provider": _serialize_model_provider(provider),
+                "capabilities": None
+                if capability is None
+                else _serialize_provider_capability(capability),
+            }
+        ),
+    )
+
+
+@app.post("/v1/providers/test")
+def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                provider = store.get_model_provider_for_workspace_optional(
+                    provider_id=body.provider_id,
+                    workspace_id=workspace["id"],
+                )
+                if provider is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"detail": f"provider {body.provider_id} was not found"},
+                    )
+
+                runtime_provider = resolve_runtime_provider_config_secrets(
+                    config=RuntimeProviderConfig.from_row(provider),
+                    settings=settings,
+                )
+                adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
+                model_name = (body.model or runtime_provider.default_model).strip()
+                if model_name == "":
+                    raise ValueError("model is required")
+
+                capability_snapshot = adapter.discover_capabilities(
+                    config=runtime_provider,
+                    settings=settings,
+                )
+                model_request = build_provider_test_model_request(
+                    runtime_provider=runtime_provider.model_provider,
+                    model=model_name,
+                    prompt_text=body.prompt.strip(),
+                )
+
+                try:
+                    model_response = adapter.invoke(
+                        config=runtime_provider,
+                        settings=settings,
+                        request=model_request,
+                    )
+                except ModelInvocationError as exc:
+                    capability = store.upsert_provider_capability(
+                        workspace_id=workspace["id"],
+                        provider_id=runtime_provider.provider_id,
+                        discovered_by_user_account_id=resolution["user_account"]["id"],
+                        adapter_key=adapter.adapter_key,
+                        discovery_status="failed",
+                        capability_snapshot=capability_snapshot,
+                        discovery_error=str(exc),
+                    )
+                    return JSONResponse(
+                        status_code=502,
+                        content=jsonable_encoder(
+                            {
+                                "detail": str(exc),
+                                "provider": _serialize_model_provider(provider),
+                                "capabilities": _serialize_provider_capability(capability),
+                            }
+                        ),
+                    )
+
+                capability = store.upsert_provider_capability(
+                    workspace_id=workspace["id"],
+                    provider_id=runtime_provider.provider_id,
+                    discovered_by_user_account_id=resolution["user_account"]["id"],
+                    adapter_key=adapter.adapter_key,
+                    discovery_status="ready",
+                    capability_snapshot=capability_snapshot,
+                    discovery_error=None,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ProviderAdapterNotFoundError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except ProviderSecretManagerError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "provider": _serialize_model_provider(provider),
+                "capabilities": _serialize_provider_capability(capability),
+                "result": {
+                    "provider": model_response.provider,
+                    "model": model_response.model,
+                    "response_id": model_response.response_id,
+                    "finish_reason": model_response.finish_reason,
+                    "text": model_response.output_text,
+                    "usage": model_response.usage,
+                },
+            }
+        ),
+    )
+
+
+@app.post("/v1/runtime/invoke")
+def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONResponse:
+    settings = get_settings()
+
+    workspace_id: UUID | None = None
+    user_account: dict[str, object] | None = None
+    runtime_provider: RuntimeProviderConfig | None = None
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                workspace_id = workspace["id"]
+                user_account = resolution["user_account"]
+
+                store = ContinuityStore(conn)
+                runtime_provider = _runtime_provider_config_or_none(
+                    store=store,
+                    provider_id=body.provider_id,
+                    workspace_id=workspace["id"],
+                    settings=settings,
+                )
+                if runtime_provider is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"detail": f"provider {body.provider_id} was not found"},
+                    )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ProviderSecretManagerError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    assert workspace_id is not None
+    assert user_account is not None
+    assert runtime_provider is not None
+
+    selected_model = (body.model or runtime_provider.default_model).strip()
+    if selected_model == "":
+        return JSONResponse(status_code=400, content={"detail": "model is required"})
+
+    user_account_id = user_account["id"]
+    assert isinstance(user_account_id, UUID)
+
+    try:
+        adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
+    except ProviderAdapterNotFoundError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+    try:
+        with user_connection(settings.database_url, user_account_id) as conn:
+            store = ContinuityStore(conn)
+            result = generate_response(
+                store=store,
+                settings=settings,
+                user_id=user_account_id,
+                thread_id=body.thread_id,
+                message_text=body.message,
+                limits=ContextCompilerLimits(
+                    max_sessions=body.max_sessions,
+                    max_events=body.max_events,
+                    max_memories=body.max_memories,
+                    max_entities=body.max_entities,
+                    max_entity_edges=body.max_entity_edges,
+                ),
+                runtime_override=(runtime_provider.model_provider, selected_model),
+                model_invoker=lambda model_request: adapter.invoke(
+                    config=runtime_provider,
+                    settings=settings,
+                    request=model_request,
+                ),
+            )
+            if isinstance(result, ResponseFailure):
+                return JSONResponse(
+                    status_code=502,
+                    content=jsonable_encoder(
+                        {
+                            "detail": result.detail,
+                            "trace": result.trace,
+                            "metadata": {
+                                "workspace_id": str(workspace_id),
+                                "provider_id": str(runtime_provider.provider_id),
+                                "provider_key": runtime_provider.provider_key,
+                            },
+                        }
+                    ),
+                )
+
+            assistant_event_id = UUID(result["assistant"]["event_id"])
+            assistant_rows = store.list_events_by_ids([assistant_event_id])
+            assistant_payload = assistant_rows[0]["payload"] if assistant_rows else {}
+            model_payload = assistant_payload.get("model", {})
+            usage_payload = (
+                model_payload.get("usage")
+                if isinstance(model_payload, dict) and isinstance(model_payload.get("usage"), dict)
+                else {
+                    "input_tokens": None,
+                    "output_tokens": None,
+                    "total_tokens": None,
+                }
+            )
+            response_id = (
+                model_payload.get("response_id")
+                if isinstance(model_payload, dict) and isinstance(model_payload.get("response_id"), str)
+                else None
+            )
+            finish_reason = (
+                model_payload.get("finish_reason")
+                if isinstance(model_payload, dict) and isinstance(model_payload.get("finish_reason"), str)
+                else "incomplete"
+            )
+    except ContinuityStoreInvariantError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "assistant": {
+                    "event_id": result["assistant"]["event_id"],
+                    "sequence_no": result["assistant"]["sequence_no"],
+                    "provider_id": str(runtime_provider.provider_id),
+                    "provider_key": runtime_provider.provider_key,
+                    "model_provider": result["assistant"]["model_provider"],
+                    "model": result["assistant"]["model"],
+                    "response_id": response_id,
+                    "finish_reason": finish_reason,
+                    "text": result["assistant"]["text"],
+                    "usage": usage_payload,
+                },
+                "trace": result["trace"],
+                "metadata": {
+                    "workspace_id": str(workspace_id),
+                },
             }
         ),
     )

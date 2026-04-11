@@ -145,23 +145,35 @@ def serialize_semantic_memory_result_item(
         "updated_at": row["updated_at"].isoformat(),
         "score": float(row["score"]),
     }
-    payload["memory_type"] = row["memory_type"]
-    payload["confidence"] = row["confidence"]
-    payload["salience"] = row["salience"]
-    payload["confirmation_status"] = row["confirmation_status"]
-    payload["trust_class"] = row["trust_class"]
-    payload["promotion_eligibility"] = row["promotion_eligibility"]
-    payload["evidence_count"] = row["evidence_count"]
-    payload["independent_source_count"] = row["independent_source_count"]
-    payload["extracted_by_model"] = row["extracted_by_model"]
-    payload["trust_reason"] = row["trust_reason"]
-    payload["valid_from"] = None if row["valid_from"] is None else row["valid_from"].isoformat()
-    payload["valid_to"] = None if row["valid_to"] is None else row["valid_to"].isoformat()
-    payload["last_confirmed_at"] = (
-        None
-        if row["last_confirmed_at"] is None
-        else row["last_confirmed_at"].isoformat()
+    optional_fields = (
+        "memory_type",
+        "confidence",
+        "salience",
+        "confirmation_status",
+        "trust_class",
+        "promotion_eligibility",
+        "evidence_count",
+        "independent_source_count",
+        "extracted_by_model",
+        "trust_reason",
     )
+    for field_name in optional_fields:
+        if field_name in row:
+            payload[field_name] = row[field_name]
+
+    if "valid_from" in row:
+        valid_from = row["valid_from"]
+        payload["valid_from"] = None if valid_from is None else valid_from.isoformat()
+    if "valid_to" in row:
+        valid_to = row["valid_to"]
+        payload["valid_to"] = None if valid_to is None else valid_to.isoformat()
+    if "last_confirmed_at" in row:
+        last_confirmed_at = row["last_confirmed_at"]
+        payload["last_confirmed_at"] = (
+            None
+            if last_confirmed_at is None
+            else last_confirmed_at.isoformat()
+        )
     return payload
 
 

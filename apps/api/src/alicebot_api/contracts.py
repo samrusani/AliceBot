@@ -189,6 +189,9 @@ ToolAllowlistDecision = Literal["allowed", "denied", "approval_required"]
 ToolRoutingDecision = Literal["ready", "denied", "approval_required"]
 PromptSectionName = Literal["system", "developer", "context", "conversation"]
 ModelProvider = Literal["openai_responses"]
+ProviderAdapterKey = Literal["openai_compatible"]
+ModelProviderStatus = Literal["active"]
+ProviderCapabilityDiscoveryStatus = Literal["ready", "failed"]
 ModelFinishReason = Literal["completed", "incomplete"]
 ExplicitPreferencePattern = Literal[
     "i_like",
@@ -373,6 +376,7 @@ MAX_CHANNEL_MESSAGE_LIMIT = 200
 COMPILER_VERSION_V0 = "continuity_v0"
 PROMPT_ASSEMBLY_VERSION_V0 = "prompt_assembly_v0"
 RESPONSE_GENERATION_VERSION_V0 = "response_generation_v0"
+PROVIDER_CAPABILITY_VERSION_V1 = "provider_capability_v1"
 TRACE_KIND_CONTEXT_COMPILE = "context.compile"
 TRACE_KIND_RESPONSE_GENERATE = "response.generate"
 TRACE_REVIEW_LIST_ORDER = ["created_at_desc", "id_desc"]
@@ -381,6 +385,7 @@ THREAD_LIST_ORDER = ["created_at_desc", "id_desc"]
 AGENT_PROFILE_LIST_ORDER = ["id_asc"]
 THREAD_SESSION_LIST_ORDER = ["started_at_asc", "created_at_asc", "id_asc"]
 THREAD_EVENT_LIST_ORDER = ["sequence_no_asc"]
+PROVIDER_LIST_ORDER = ["created_at_asc", "id_asc"]
 DEFAULT_AGENT_PROFILE_ID = "assistant_default"
 RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "resumption_brief_v0"
 CONTINUITY_RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_resumption_brief_v0"
@@ -1521,6 +1526,84 @@ class ResponseTraceSummary(TypedDict):
 
 class GenerateResponseSuccess(TypedDict):
     assistant: GeneratedAssistantRecord
+    trace: ResponseTraceSummary
+
+
+class ProviderCapabilityRecord(TypedDict):
+    provider_id: str
+    adapter_key: ProviderAdapterKey
+    discovery_status: ProviderCapabilityDiscoveryStatus
+    capability_version: str
+    snapshot: JsonObject
+    discovery_error: str | None
+    discovered_at: str
+
+
+class ModelProviderRecord(TypedDict):
+    id: str
+    workspace_id: str
+    created_by_user_account_id: str
+    provider_key: ProviderAdapterKey
+    model_provider: ModelProvider
+    display_name: str
+    base_url: str
+    default_model: str
+    status: ModelProviderStatus
+    metadata: JsonObject
+    created_at: str
+    updated_at: str
+
+
+class ProviderRegistrationResponse(TypedDict):
+    provider: ModelProviderRecord
+    capabilities: ProviderCapabilityRecord
+
+
+class ProviderListSummary(TypedDict):
+    total_count: int
+    order: list[str]
+
+
+class ProviderListResponse(TypedDict):
+    items: list[ModelProviderRecord]
+    summary: ProviderListSummary
+
+
+class ProviderDetailResponse(TypedDict):
+    provider: ModelProviderRecord
+    capabilities: ProviderCapabilityRecord | None
+
+
+class ProviderTestResultRecord(TypedDict):
+    provider: ModelProvider
+    model: str
+    response_id: str | None
+    finish_reason: ModelFinishReason
+    text: str
+    usage: ModelUsagePayload
+
+
+class ProviderTestResponse(TypedDict):
+    provider: ModelProviderRecord
+    capabilities: ProviderCapabilityRecord | None
+    result: ProviderTestResultRecord
+
+
+class RuntimeInvokeAssistantRecord(TypedDict):
+    event_id: str
+    sequence_no: int
+    provider_id: str
+    provider_key: ProviderAdapterKey
+    model_provider: ModelProvider
+    model: str
+    response_id: str | None
+    finish_reason: ModelFinishReason
+    text: str
+    usage: ModelUsagePayload
+
+
+class RuntimeInvokeResponse(TypedDict):
+    assistant: RuntimeInvokeAssistantRecord
     trace: ResponseTraceSummary
 
 

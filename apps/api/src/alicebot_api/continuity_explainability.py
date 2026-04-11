@@ -399,14 +399,18 @@ def _supersession_notes(
         )
 
     for event in correction_events[:_MAX_SUPERSESSION_NOTES]:
+        action_value = event.get("action")
+        action = action_value if isinstance(action_value, str) and action_value.strip() else "unknown"
+        created_at_value = event.get("created_at")
         reason_suffix = ""
-        if event["reason"] is not None:
-            reason_suffix = f" Reason: {event['reason']}."
+        reason_value = event.get("reason")
+        if isinstance(reason_value, str) and reason_value.strip():
+            reason_suffix = f" Reason: {reason_value}."
         add_note(
             kind="correction_event",
-            note=f"Correction event {event['action']} updated the explanation chain.{reason_suffix}",
-            action=event["action"],
-            created_at=event["created_at"],
+            note=f"Correction event {action} updated the explanation chain.{reason_suffix}",
+            action=action,
+            created_at=created_at_value if isinstance(created_at_value, datetime) else None,
         )
 
     return notes[:_MAX_SUPERSESSION_NOTES]

@@ -104,6 +104,12 @@ def _ensure_user(store: ContinuityStore, *, user_id: UUID, email: str, display_n
     store.create_user(user_id, email, display_name)
 
 
+def _ensure_user_committed(*, database_url: str, user_id: UUID, email: str, display_name: str) -> None:
+    with user_connection(database_url, user_id) as conn:
+        store = ContinuityStore(conn)
+        _ensure_user(store, user_id=user_id, email=email, display_name=display_name)
+
+
 def _source_kinds(items: list[dict[str, object]]) -> list[str]:
     kinds: list[str] = []
     for item in items:
@@ -146,9 +152,15 @@ def main() -> int:
     user_email = args.user_email or f"openclaw-demo-{user_id}@example.com"
     thread_id = UUID(str(args.thread_id))
 
+    _ensure_user_committed(
+        database_url=args.database_url,
+        user_id=user_id,
+        email=user_email,
+        display_name=str(args.display_name),
+    )
+
     with user_connection(args.database_url, user_id) as conn:
         store = ContinuityStore(conn)
-        _ensure_user(store, user_id=user_id, email=user_email, display_name=str(args.display_name))
 
         recall_before = query_continuity_recall(
             store,
