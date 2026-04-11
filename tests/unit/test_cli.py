@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import alicebot_api.cli as cli_module
@@ -217,6 +219,64 @@ def test_status_command_returns_unreachable_without_db_connection(monkeypatch, c
     assert exit_code == 0
     assert "database: unreachable" in captured.out
     assert f"user_id: {user_id}" in captured.out
+
+
+def test_status_command_surfaces_latest_maintenance_snapshot(monkeypatch, capsys, tmp_path: Path) -> None:
+    user_id = UUID("44444444-4444-4444-8444-444444444444")
+    maintenance_report_path = tmp_path / "maintenance_status_latest.json"
+    maintenance_report_path.write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "status": "warn",
+                    "schedule": "nightly",
+                    "run_completed_at": "2026-04-11T01:00:00Z",
+                    "failure_count": 0,
+                    "warning_count": 2,
+                },
+                "jobs": [
+                    {
+                        "job_key": "stale_fact_marking",
+                        "details": {"stale_fact_count": 3},
+                    },
+                    {
+                        "job_key": "reembed_missing_segments",
+                        "details": {"reembedded_segment_count": 5},
+                    },
+                    {
+                        "job_key": "pattern_candidate_recompute",
+                        "details": {"pattern_candidate_count": 8},
+                    },
+                    {
+                        "job_key": "benchmark_regeneration",
+                        "details": {"benchmark_status": "pass"},
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv(cli_module.MAINTENANCE_REPORT_PATH_ENV, str(maintenance_report_path))
+    monkeypatch.setattr(
+        cli_module,
+        "get_settings",
+        lambda: Settings(
+            database_url="postgresql://db",
+            healthcheck_timeout_seconds=2,
+            auth_user_id=str(user_id),
+        ),
+    )
+    monkeypatch.setattr(cli_module, "ping_database", lambda *_args, **_kwargs: False)
+
+    exit_code = cli_module.main(["status"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "maintenance: status=warn schedule=nightly" in captured.out
+    assert "last_run=2026-04-11T01:00:00Z" in captured.out
+    assert "failures=0 warnings=2 stale_facts=3 reembedded_segments=5 pattern_candidates=8 benchmark=pass" in captured.out
 
 
 def test_recall_formatting_renders_provenance_source_label_when_present() -> None:
