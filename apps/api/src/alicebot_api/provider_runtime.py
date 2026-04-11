@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
-from typing import Protocol, TypedDict
+from typing import NotRequired, Protocol, TypedDict
 from uuid import UUID
 
 from alicebot_api.config import Settings
@@ -11,6 +11,15 @@ from alicebot_api.contracts import (
     ModelInvocationResponse,
     PromptAssemblyResult,
     PromptSection,
+)
+from alicebot_api.local_provider_helpers import (
+    build_auth_headers,
+    parse_llamacpp_invoke_response,
+    parse_llamacpp_models,
+    parse_ollama_invoke_response,
+    parse_ollama_models,
+    prompt_sections_to_messages,
+    request_json,
 )
 from alicebot_api.response_generation import (
     ModelInvocationError,
@@ -21,6 +30,8 @@ from alicebot_api.provider_secrets import resolve_provider_api_key
 from alicebot_api.store import JsonObject
 
 OPENAI_COMPATIBLE_ADAPTER_KEY = "openai_compatible"
+OLLAMA_ADAPTER_KEY = "ollama"
+LLAMACPP_ADAPTER_KEY = "llamacpp"
 OPENAI_RESPONSES_PROVIDER = "openai_responses"
 PROVIDER_CAPABILITY_VERSION_V1 = "provider_capability_v1"
 
@@ -44,6 +55,12 @@ class ProviderCapabilitySnapshot(TypedDict):
     supports_store: bool
     supports_vision_input: bool
     supports_audio_input: bool
+    health_status: NotRequired[str]
+    health_endpoint: NotRequired[str]
+    models_endpoint: NotRequired[str]
+    invoke_endpoint: NotRequired[str]
+    model_count: NotRequired[int]
+    models: NotRequired[list[str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,8 +73,12 @@ class RuntimeProviderConfig:
     model_provider: str
     base_url: str
     api_key: str
+    auth_mode: str
     default_model: str
     status: str
+    model_list_path: str
+    healthcheck_path: str
+    invoke_path: str
     metadata: JsonObject
 
     @classmethod
@@ -71,8 +92,12 @@ class RuntimeProviderConfig:
             model_provider=str(row["model_provider"]),
             base_url=str(row["base_url"]),
             api_key=str(row["api_key"]),
+            auth_mode=str(row.get("auth_mode", "bearer")),
             default_model=str(row["default_model"]),
             status=str(row["status"]),
+            model_list_path=str(row.get("model_list_path", "")),
+            healthcheck_path=str(row.get("healthcheck_path", "")),
+            invoke_path=str(row.get("invoke_path", "")),
             metadata=row["metadata"],  # type: ignore[assignment]
         )
 
@@ -185,9 +210,165 @@ class OpenAICompatibleAdapter:
         )
 
 
+class OllamaAdapter:
+    adapter_key = OLLAMA_ADAPTER_KEY
+    runtime_provider = OPENAI_RESPONSES_PROVIDER
+    default_healthcheck_path = "/api/version"
+    default_model_list_path = "/api/tags"
+    default_invoke_path = "/api/chat"
+
+    def discover_capabilities(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderCapabilitySnapshot:
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
+        model_list_path = config.model_list_path or self.default_model_list_path
+        request_json(
+            method="GET",
+            base_url=config.base_url,
+            path=healthcheck_path,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
+        )
+        model_payload = request_json(
+            method="GET",
+            base_url=config.base_url,
+            path=model_list_path,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
+        )
+        models = parse_ollama_models(model_payload)
+        snapshot = normalized_capability_snapshot(
+            adapter_key=self.adapter_key,
+            runtime_provider=self.runtime_provider,
+            supports_tool_calls=False,
+            supports_streaming=False,
+            supports_store=False,
+            supports_vision_input=False,
+            supports_audio_input=False,
+        )
+        snapshot.update(
+            {
+                "health_status": "ok",
+                "health_endpoint": healthcheck_path,
+                "models_endpoint": model_list_path,
+                "invoke_endpoint": config.invoke_path or self.default_invoke_path,
+                "model_count": len(models),
+                "models": models,
+            }
+        )
+        return snapshot
+
+    def invoke(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+        request: ModelInvocationRequest,
+    ) -> ModelInvocationResponse:
+        if request.provider != self.runtime_provider:
+            raise ModelInvocationError(f"unsupported model provider: {request.provider}")
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        payload = request_json(
+            method="POST",
+            base_url=config.base_url,
+            path=config.invoke_path or self.default_invoke_path,
+            timeout_seconds=settings.model_timeout_seconds,
+            headers=headers,
+            payload={
+                "model": request.model,
+                "stream": False,
+                "messages": prompt_sections_to_messages(request),
+            },
+        )
+        return parse_ollama_invoke_response(request=request, payload=payload)
+
+
+class LlamaCppAdapter:
+    adapter_key = LLAMACPP_ADAPTER_KEY
+    runtime_provider = OPENAI_RESPONSES_PROVIDER
+    default_healthcheck_path = "/health"
+    default_model_list_path = "/v1/models"
+    default_invoke_path = "/v1/chat/completions"
+
+    def discover_capabilities(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderCapabilitySnapshot:
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
+        model_list_path = config.model_list_path or self.default_model_list_path
+        request_json(
+            method="GET",
+            base_url=config.base_url,
+            path=healthcheck_path,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
+        )
+        model_payload = request_json(
+            method="GET",
+            base_url=config.base_url,
+            path=model_list_path,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
+        )
+        models = parse_llamacpp_models(model_payload)
+        snapshot = normalized_capability_snapshot(
+            adapter_key=self.adapter_key,
+            runtime_provider=self.runtime_provider,
+            supports_tool_calls=False,
+            supports_streaming=False,
+            supports_store=False,
+            supports_vision_input=False,
+            supports_audio_input=False,
+        )
+        snapshot.update(
+            {
+                "health_status": "ok",
+                "health_endpoint": healthcheck_path,
+                "models_endpoint": model_list_path,
+                "invoke_endpoint": config.invoke_path or self.default_invoke_path,
+                "model_count": len(models),
+                "models": models,
+            }
+        )
+        return snapshot
+
+    def invoke(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+        request: ModelInvocationRequest,
+    ) -> ModelInvocationResponse:
+        if request.provider != self.runtime_provider:
+            raise ModelInvocationError(f"unsupported model provider: {request.provider}")
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        payload = request_json(
+            method="POST",
+            base_url=config.base_url,
+            path=config.invoke_path or self.default_invoke_path,
+            timeout_seconds=settings.model_timeout_seconds,
+            headers=headers,
+            payload={
+                "model": request.model,
+                "stream": False,
+                "messages": prompt_sections_to_messages(request),
+            },
+        )
+        return parse_llamacpp_invoke_response(request=request, payload=payload)
+
+
 def make_provider_adapter_registry() -> ProviderAdapterRegistry:
     registry = ProviderAdapterRegistry()
     registry.register(OpenAICompatibleAdapter())
+    registry.register(OllamaAdapter())
+    registry.register(LlamaCppAdapter())
     return registry
 
 

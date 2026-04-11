@@ -348,8 +348,12 @@ class ModelProviderRow(TypedDict):
     display_name: str
     base_url: str
     api_key: str
+    auth_mode: str
     default_model: str
     status: str
+    model_list_path: str
+    healthcheck_path: str
+    invoke_path: str
     metadata: JsonObject
     created_at: datetime
     updated_at: datetime
@@ -2056,13 +2060,34 @@ INSERT_MODEL_PROVIDER_SQL = """
                   display_name,
                   base_url,
                   api_key,
+                  auth_mode,
                   default_model,
                   status,
+                  model_list_path,
+                  healthcheck_path,
+                  invoke_path,
                   metadata,
                   created_at,
                   updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, clock_timestamp(), clock_timestamp())
+                VALUES (
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
                 RETURNING
                   id,
                   workspace_id,
@@ -2072,8 +2097,12 @@ INSERT_MODEL_PROVIDER_SQL = """
                   display_name,
                   base_url,
                   api_key,
+                  auth_mode,
                   default_model,
                   status,
+                  model_list_path,
+                  healthcheck_path,
+                  invoke_path,
                   metadata,
                   created_at,
                   updated_at
@@ -2089,8 +2118,12 @@ GET_MODEL_PROVIDER_FOR_WORKSPACE_SQL = """
                   display_name,
                   base_url,
                   api_key,
+                  auth_mode,
                   default_model,
                   status,
+                  model_list_path,
+                  healthcheck_path,
+                  invoke_path,
                   metadata,
                   created_at,
                   updated_at
@@ -2109,8 +2142,12 @@ LIST_MODEL_PROVIDERS_FOR_WORKSPACE_SQL = """
                   display_name,
                   base_url,
                   api_key,
+                  auth_mode,
                   default_model,
                   status,
+                  model_list_path,
+                  healthcheck_path,
+                  invoke_path,
                   metadata,
                   created_at,
                   updated_at
@@ -5958,6 +5995,10 @@ class ContinuityStore:
         default_model: str,
         status: str,
         metadata: JsonObject,
+        auth_mode: str = "bearer",
+        model_list_path: str = "",
+        healthcheck_path: str = "",
+        invoke_path: str = "",
     ) -> ModelProviderRow:
         return self._fetch_one(
             "create_model_provider",
@@ -5970,8 +6011,12 @@ class ContinuityStore:
                 display_name,
                 base_url,
                 api_key,
+                auth_mode,
                 default_model,
                 status,
+                model_list_path,
+                healthcheck_path,
+                invoke_path,
                 Jsonb(metadata),
             ),
         )
