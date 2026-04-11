@@ -5,6 +5,8 @@ from uuid import uuid4
 
 from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.provider_runtime import (
+    LLAMACPP_ADAPTER_KEY,
+    OLLAMA_ADAPTER_KEY,
     OPENAI_COMPATIBLE_ADAPTER_KEY,
     OPENAI_RESPONSES_PROVIDER,
     ProviderAdapterNotFoundError,
@@ -28,18 +30,31 @@ class FakeHTTPResponse:
         return self.body
 
 
-def make_runtime_provider_config() -> RuntimeProviderConfig:
+def make_runtime_provider_config(
+    *,
+    provider_key: str = OPENAI_COMPATIBLE_ADAPTER_KEY,
+    base_url: str = "https://provider.example/v1",
+    api_key: str = "provider-secret-key",
+    auth_mode: str = "bearer",
+    model_list_path: str = "/models",
+    healthcheck_path: str = "/models",
+    invoke_path: str = "/responses",
+) -> RuntimeProviderConfig:
     return RuntimeProviderConfig(
         provider_id=uuid4(),
         workspace_id=uuid4(),
         created_by_user_account_id=uuid4(),
-        provider_key=OPENAI_COMPATIBLE_ADAPTER_KEY,
+        provider_key=provider_key,
         display_name="Primary Provider",
         model_provider=OPENAI_RESPONSES_PROVIDER,
-        base_url="https://provider.example/v1",
-        api_key="provider-secret-key",
+        base_url=base_url,
+        api_key=api_key,
+        auth_mode=auth_mode,
         default_model="gpt-5-mini",
         status="active",
+        model_list_path=model_list_path,
+        healthcheck_path=healthcheck_path,
+        invoke_path=invoke_path,
         metadata={},
     )
 
@@ -48,10 +63,18 @@ def test_provider_registry_resolves_registered_adapter() -> None:
     registry = make_provider_adapter_registry()
 
     adapter = registry.resolve(OPENAI_COMPATIBLE_ADAPTER_KEY)
+    ollama_adapter = registry.resolve(OLLAMA_ADAPTER_KEY)
+    llamacpp_adapter = registry.resolve(LLAMACPP_ADAPTER_KEY)
 
     assert adapter.adapter_key == OPENAI_COMPATIBLE_ADAPTER_KEY
     assert adapter.runtime_provider == OPENAI_RESPONSES_PROVIDER
-    assert registry.keys() == [OPENAI_COMPATIBLE_ADAPTER_KEY]
+    assert ollama_adapter.adapter_key == OLLAMA_ADAPTER_KEY
+    assert llamacpp_adapter.adapter_key == LLAMACPP_ADAPTER_KEY
+    assert registry.keys() == [
+        LLAMACPP_ADAPTER_KEY,
+        OLLAMA_ADAPTER_KEY,
+        OPENAI_COMPATIBLE_ADAPTER_KEY,
+    ]
 
 
 def test_provider_registry_rejects_unknown_adapter() -> None:
@@ -133,3 +156,158 @@ def test_openai_compatible_adapter_invokes_registered_transport(monkeypatch) -> 
     assert response.provider == OPENAI_RESPONSES_PROVIDER
     assert response.model == "gpt-5-mini"
     assert response.output_text == "Provider online"
+
+
+def test_ollama_adapter_discovers_capabilities_and_invokes(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+    registry = make_provider_adapter_registry()
+    adapter = registry.resolve(OLLAMA_ADAPTER_KEY)
+    runtime_provider = make_runtime_provider_config(
+        provider_key=OLLAMA_ADAPTER_KEY,
+        base_url="http://127.0.0.1:11434",
+        api_key="",
+        auth_mode="none",
+        model_list_path="/api/tags",
+        healthcheck_path="/api/version",
+        invoke_path="/api/chat",
+    )
+
+    def fake_urlopen(request, timeout):
+        body = None if request.data is None else json.loads(request.data.decode("utf-8"))
+        captured.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": body,
+            }
+        )
+        if request.full_url.endswith("/api/version"):
+            return FakeHTTPResponse(json.dumps({"version": "0.4.0"}).encode("utf-8"))
+        if request.full_url.endswith("/api/tags"):
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "models": [
+                            {"name": "llama3.2:latest"},
+                            {"name": "qwen2.5:latest"},
+                        ]
+                    }
+                ).encode("utf-8")
+            )
+        return FakeHTTPResponse(
+            json.dumps(
+                {
+                    "model": "llama3.2:latest",
+                    "done": True,
+                    "message": {"role": "assistant", "content": "Local Ollama reply"},
+                    "prompt_eval_count": 20,
+                    "eval_count": 6,
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_urlopen)
+
+    capabilities = adapter.discover_capabilities(
+        config=runtime_provider,
+        settings=Settings(healthcheck_timeout_seconds=5),
+    )
+    response = adapter.invoke(
+        config=runtime_provider,
+        settings=Settings(model_timeout_seconds=11),
+        request=build_provider_test_model_request(
+            runtime_provider=OPENAI_RESPONSES_PROVIDER,
+            model="llama3.2:latest",
+            prompt_text="Reply from local ollama",
+        ),
+    )
+
+    assert capabilities["adapter_key"] == OLLAMA_ADAPTER_KEY
+    assert capabilities["health_status"] == "ok"
+    assert capabilities["model_count"] == 2
+    assert capabilities["models"] == ["llama3.2:latest", "qwen2.5:latest"]
+    assert response.output_text == "Local Ollama reply"
+    assert response.usage["input_tokens"] == 20
+    assert response.usage["output_tokens"] == 6
+    assert captured[0]["url"] == "http://127.0.0.1:11434/api/version"
+    assert captured[1]["url"] == "http://127.0.0.1:11434/api/tags"
+    assert captured[2]["url"] == "http://127.0.0.1:11434/api/chat"
+
+
+def test_llamacpp_adapter_discovers_capabilities_and_invokes(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+    registry = make_provider_adapter_registry()
+    adapter = registry.resolve(LLAMACPP_ADAPTER_KEY)
+    runtime_provider = make_runtime_provider_config(
+        provider_key=LLAMACPP_ADAPTER_KEY,
+        base_url="http://127.0.0.1:8080",
+        api_key="",
+        auth_mode="none",
+        model_list_path="/v1/models",
+        healthcheck_path="/health",
+        invoke_path="/v1/chat/completions",
+    )
+
+    def fake_urlopen(request, timeout):
+        body = None if request.data is None else json.loads(request.data.decode("utf-8"))
+        captured.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": body,
+            }
+        )
+        if request.full_url.endswith("/health"):
+            return FakeHTTPResponse(json.dumps({"status": "ok"}).encode("utf-8"))
+        if request.full_url.endswith("/v1/models"):
+            return FakeHTTPResponse(
+                json.dumps({"data": [{"id": "Llama-3.2-3B-Instruct-Q4_K_M"}]}).encode("utf-8")
+            )
+        return FakeHTTPResponse(
+            json.dumps(
+                {
+                    "id": "chatcmpl-local-1",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "llama.cpp says hi"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 18,
+                        "completion_tokens": 4,
+                        "total_tokens": 22,
+                    },
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_urlopen)
+
+    capabilities = adapter.discover_capabilities(
+        config=runtime_provider,
+        settings=Settings(healthcheck_timeout_seconds=5),
+    )
+    response = adapter.invoke(
+        config=runtime_provider,
+        settings=Settings(model_timeout_seconds=11),
+        request=build_provider_test_model_request(
+            runtime_provider=OPENAI_RESPONSES_PROVIDER,
+            model="Llama-3.2-3B-Instruct-Q4_K_M",
+            prompt_text="Reply from local llamacpp",
+        ),
+    )
+
+    assert capabilities["adapter_key"] == LLAMACPP_ADAPTER_KEY
+    assert capabilities["health_status"] == "ok"
+    assert capabilities["model_count"] == 1
+    assert capabilities["models"] == ["Llama-3.2-3B-Instruct-Q4_K_M"]
+    assert response.output_text == "llama.cpp says hi"
+    assert response.response_id == "chatcmpl-local-1"
+    assert response.usage["total_tokens"] == 22
+    assert captured[0]["url"] == "http://127.0.0.1:8080/health"
+    assert captured[1]["url"] == "http://127.0.0.1:8080/v1/models"
+    assert captured[2]["url"] == "http://127.0.0.1:8080/v1/chat/completions"
