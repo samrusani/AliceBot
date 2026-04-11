@@ -25,16 +25,14 @@ It provides a **local-first memory and continuity engine** for capture, recall, 
 
 ## Current phase
 
-Phase 9 is complete.
-
 Phase 10 is complete and shipped.
-Alice Connect is the planned Phase 10 product layer.
 
 Phase 11 is now the active planning and execution phase:
 
-- `P11-S1` Provider Abstraction + OpenAI-Compatible Base is the active sprint
-- later Phase 11 work adds provider breadth, model packs, and agent integration guides
-- Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md]
+- `P11-S1` Provider Abstraction + OpenAI-Compatible Base is shipped
+- `P11-S2` Ollama + llama.cpp Adapters is the active sprint
+- later Phase 11 work adds more provider breadth, model packs, and agent integration guides
+- Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
 
 ## Why Alice exists
 
@@ -110,6 +108,7 @@ It already supports:
 - **OpenClaw import and augmentation**
 - **Hermes integration paths**
 - **Hermes external memory provider**
+- **Provider runtime abstraction for workspace-scoped model/provider integration**
 - imported workflow data from Markdown and ChatGPT exports
 
 That means you can use Alice to upgrade an existing agent stack instead of rebuilding everything around a new runtime.
@@ -125,6 +124,7 @@ The current open-source surface includes:
 - shared explainability across recall, resume, open-loop review, and explain surfaces
 - scheduled archive maintenance, ops status reporting, and failure alerting
 - Hermes external memory provider for always-on continuity prefetch and Alice memory tools inside Hermes
+- provider runtime abstraction with workspace-scoped provider registration, capability snapshots, and an OpenAI-compatible base adapter
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
