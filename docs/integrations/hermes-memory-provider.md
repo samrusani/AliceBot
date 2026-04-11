@@ -53,6 +53,12 @@ Select `alice` and provide:
 - `base_url`: Alice API base URL (example `http://127.0.0.1:8000`)
 - `user_id`: Alice user UUID scope
 
+Security rules enforced by the provider:
+
+- `https://` is required for non-loopback hosts.
+- `http://` is only allowed for loopback/local development hosts (`localhost`, `127.0.0.1`, `::1`).
+- the provider sends user scope in `X-AliceBot-User-Id` header (not URL query params).
+
 Config is saved to:
 
 - `$HERMES_HOME/alice_memory_provider.json`

@@ -35,6 +35,12 @@ The provider reads and writes:
 - `auto_capture` (bool, default `false`)
 - `mirror_memory_writes` (bool, default `false`)
 
+## Transport and Identity Safety
+
+- non-loopback `base_url` values must use `https://`
+- `http://` is allowed only for loopback development hosts
+- provider requests carry user scope in `X-AliceBot-User-Id`
+
 ## Activation
 
 ```bash
