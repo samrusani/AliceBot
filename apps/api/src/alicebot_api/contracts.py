@@ -484,7 +484,11 @@ EMBEDDING_CONFIG_LIST_ORDER = ["created_at_asc", "id_asc"]
 MEMORY_EMBEDDING_LIST_ORDER = ["created_at_asc", "id_asc"]
 SEMANTIC_MEMORY_RETRIEVAL_ORDER = ["score_desc", "created_at_asc", "id_asc"]
 RETRIEVAL_EVALUATION_FIXTURE_ORDER = ["fixture_id_asc"]
-RETRIEVAL_EVALUATION_RESULT_ORDER = ["precision_at_k_desc", "fixture_id_asc"]
+RETRIEVAL_EVALUATION_RESULT_ORDER = [
+    "precision_at_k_desc",
+    "precision_lift_at_k_desc",
+    "fixture_id_asc",
+]
 EMBEDDING_CONFIG_STATUSES = ["active", "deprecated", "disabled"]
 CONSENT_STATUSES = ["granted", "revoked"]
 CONSENT_LIST_ORDER = ["consent_key_asc", "created_at_asc", "id_asc"]
@@ -2763,13 +2767,21 @@ class ContinuityRecallProvenanceReference(TypedDict):
 class ContinuityRecallOrderingMetadata(TypedDict):
     scope_match_count: int
     query_term_match_count: int
+    semantic_similarity_score: float
+    exact_match_score: float
+    recency_score: float
+    temporal_overlap_score: float
+    entity_match_count: int
     confirmation_rank: int
+    trust_class: MemoryTrustClass
+    trust_rank: int
     freshness_posture: ContinuityRecallFreshnessPosture
     freshness_rank: int
     provenance_posture: ContinuityRecallProvenancePosture
     provenance_rank: int
     supersession_posture: ContinuityRecallSupersessionPosture
     supersession_rank: int
+    supersession_freshness_score: float
     posture_rank: int
     lifecycle_rank: int
     confidence: float
@@ -4237,10 +4249,16 @@ class RetrievalEvaluationFixtureResult(TypedDict):
     query: str
     top_k: int
     expected_relevant_ids: list[str]
+    baseline_returned_ids: list[str]
     returned_ids: list[str]
     hit_count: int
+    baseline_hit_count: int
+    baseline_precision_at_k: float
     precision_at_k: float
+    precision_lift_at_k: float
+    baseline_top_result_id: str | None
     top_result_id: str | None
+    baseline_top_result_ordering: ContinuityRecallOrderingMetadata | None
     top_result_ordering: ContinuityRecallOrderingMetadata | None
 
 
@@ -4248,7 +4266,11 @@ class RetrievalEvaluationSummary(TypedDict):
     fixture_count: int
     evaluated_fixture_count: int
     passing_fixture_count: int
+    baseline_passing_fixture_count: int
+    baseline_precision_at_k_mean: float
     precision_at_k_mean: float
+    precision_at_k_lift: float
+    baseline_precision_at_1_mean: float
     precision_at_1_mean: float
     precision_target: float
     status: RetrievalEvaluationStatus
