@@ -4,50 +4,51 @@
 PASS
 
 ## criteria met
-- `P11-S2` local provider registration APIs are implemented and functioning:
-  - `POST /v1/providers/ollama/register`
-  - `POST /v1/providers/llamacpp/register`
-- Existing in-scope APIs are functioning with local adapters:
+- `P11-S3` acceptance criteria are met for the vLLM self-hosted path.
+- vLLM registration is implemented through the shipped provider registry:
+  - `POST /v1/providers/vllm/register`
+- Provider tests and capability snapshots expose deterministic self-hosted posture through the existing abstraction:
   - `POST /v1/providers/test`
+  - capability snapshot fields include normalized telemetry posture (`supports_normalized_usage_telemetry`, `supports_normalized_latency_telemetry`, `telemetry_flow_scope`).
+- Runtime invoke works through the shipped normalized provider contract for vLLM:
   - `POST /v1/runtime/invoke`
-  - `GET /v1/providers`
-  - `GET /v1/providers/{provider_id}`
-- Ollama and llama.cpp adapters are integrated through the shipped provider abstraction and registry.
-- Capability snapshots include deterministic local model enumeration and health posture fields.
-- Additive provider config fields are migrated and wired (`auth_mode`, `model_list_path`, `healthcheck_path`, `invoke_path`).
-- Local setup documentation and runnable e2e example path are present.
-- Regression fix validated: legacy `/v1/providers` path now correctly passes `store` into shared registration helper (`apps/api/src/alicebot_api/main.py:6174-6177`).
-- Credential handling tightened: `auth_mode="none"` now rejects non-empty `api_key`, preventing plaintext persistence (`apps/api/src/alicebot_api/main.py:1562-1568`).
-- New regression coverage added:
-  - OpenAI-compatible registration still works and stores secret ref, not plaintext (`tests/integration/test_phase11_provider_runtime_api.py:470-491`).
-  - `auth_mode="none"` rejects provided `api_key` (`tests/integration/test_phase11_provider_runtime_api.py:494-514`).
-- Required verification commands pass on the current branch head:
-  - `python3 scripts/check_control_doc_truth.py` -> PASS
-  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> PASS (`1118 passed in 183.14s`)
-  - `pnpm --dir apps/web test` -> PASS (`62 files`, `199 tests`, duration `4.82s`)
+- Normalized latency and usage telemetry are persisted and exposed:
+  - migration adds `provider_invocation_telemetry`
+  - telemetry writes for `provider_test` and `runtime_invoke`
+  - `GET /v1/providers/{provider_id}/telemetry`
+- Bounded provider-specific passthrough is implemented behind explicit vLLM adapter options (`adapter_options.invoke_passthrough` allowlist).
+- Self-hosted docs and runnable examples are now internally consistent for local split endpoints (API `:8000`, vLLM provider `:8001`):
+  - [phase11-vllm-self-hosted.md](/Users/samirusani/Desktop/Codex/AliceBot/docs/integrations/phase11-vllm-self-hosted.md)
+  - [run_phase11_vllm_e2e.py](/Users/samirusani/Desktop/Codex/AliceBot/scripts/run_phase11_vllm_e2e.py)
+- Existing `P11-S1` / `P11-S2` seams remain intact (verified by full unit+integration pass and existing integration coverage).
 
 ## criteria missed
-- None identified for `P11-S2` acceptance criteria.
+- None.
 
 ## quality issues
-- No blocking quality issues remain in sprint-owned scope after fixes.
-
-## regression risks
-- Low. Full required verification is passing, including new regression tests for the previously broken path.
-- Residual operational risk remains external local-provider availability (Ollama/llama.cpp process reachability), which is surfaced via explicit discovery/test failure posture.
-
-## docs issues
-- No local identifiers (local computer paths, names) were found in sprint-owned changed code/docs reviewed here.
-- Out-of-scope dirty local docs remain and should stay excluded from sprint merge scope:
+- No blocking quality issues found in sprint-owned changes after the endpoint-default fix.
+- Out-of-scope dirty local docs remain present and should stay excluded from sprint merge scope:
   - `ARCHITECTURE.md`
   - `PRODUCT_BRIEF.md`
+  - `README.md` (pre-existing dirty context in branch)
+
+## regression risks
+- Low.
+- Required verification suite passes on current workspace state:
+  - `python3 scripts/check_control_doc_truth.py` -> PASS
+  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> `1122 passed in 170.62s`
+  - `pnpm --dir apps/web test` -> `62 passed` files, `199 passed` tests, duration `4.86s`
+
+## docs issues
+- Fixed: vLLM self-hosted docs/script no longer default provider URL to the API URL.
+- No local identifiers (local machine paths, personal names, local-only identifiers) were found in reviewed sprint-owned files.
 
 ## should anything be added to RULES.md?
-- Optional improvement: require backward-compat regression tests for already-shipped endpoints whenever shared registration/runtime helpers are refactored.
+- Optional: add a guardrail that runnable docs/scripts must use non-conflicting default endpoints in multi-service flows and be smoke-validated before merge.
 
 ## should anything update ARCHITECTURE.md?
-- Optional improvement: add a concise note clarifying auth-mode credential invariants (`bearer` uses secret refs; `none` must not persist API keys).
+- No required architecture update for `P11-S3` merge.
 
 ## recommended next action
-1. Ready for Control Tower merge approval with the updated build and review evidence on this branch head.
-2. Keep `ARCHITECTURE.md` and `PRODUCT_BRIEF.md` excluded from the sprint PR.
+1. Proceed with sprint PR review/merge for `P11-S3`.
+2. Keep non-sprint control-doc rewrites excluded from this PR unless explicitly approved as separate scope.

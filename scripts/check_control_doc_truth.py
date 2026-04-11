@@ -19,7 +19,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="README.md",
         required_markers=(
             "Phase 10 is complete and shipped.",
-            "`P11-S2` Ollama + llama.cpp Adapters is the active sprint",
+            "`P11-S3` vLLM Adapter + Self-Hosted Performance Path is the active sprint",
             "Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md]",
         ),
     ),
@@ -27,14 +27,14 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="ROADMAP.md",
         required_markers=(
             "Phase 10 is complete and shipped baseline truth.",
-            "P11-S2: Ollama + llama.cpp Adapters",
+            "P11-S3: vLLM Adapter + Self-Hosted Performance Path",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Phase 11 Sprint 2 (P11-S2): Ollama + llama.cpp Adapters",
-            "Phase 10 and `P11-S1` shipped scope remain baseline truth and are not reopened as sprint work",
+            "Phase 11 Sprint 3 (P11-S3): vLLM Adapter + Self-Hosted Performance Path",
+            "Phase 10, `P11-S1`, and `P11-S2` shipped scope remain baseline truth and are not reopened as sprint work",
         ),
     ),
     ControlDocTruthRule(
@@ -49,7 +49,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         required_markers=(
             "Phase 9 is complete and shipped.",
             "Phase 10 is complete and shipped.",
-            "`P11-S2` (Ollama + llama.cpp Adapters) is the active execution sprint packet.",
+            "`P11-S3` (vLLM Adapter + Self-Hosted Performance Path) is the active execution sprint packet.",
         ),
     ),
     ControlDocTruthRule(

@@ -28,10 +28,12 @@ from alicebot_api.response_generation import (
 )
 from alicebot_api.provider_secrets import resolve_provider_api_key
 from alicebot_api.store import JsonObject
+from alicebot_api.vllm_provider_helpers import extract_vllm_invoke_passthrough_options
 
 OPENAI_COMPATIBLE_ADAPTER_KEY = "openai_compatible"
 OLLAMA_ADAPTER_KEY = "ollama"
 LLAMACPP_ADAPTER_KEY = "llamacpp"
+VLLM_ADAPTER_KEY = "vllm"
 OPENAI_RESPONSES_PROVIDER = "openai_responses"
 PROVIDER_CAPABILITY_VERSION_V1 = "provider_capability_v1"
 
@@ -55,12 +57,15 @@ class ProviderCapabilitySnapshot(TypedDict):
     supports_store: bool
     supports_vision_input: bool
     supports_audio_input: bool
+    supports_normalized_usage_telemetry: bool
+    supports_normalized_latency_telemetry: bool
     health_status: NotRequired[str]
     health_endpoint: NotRequired[str]
     models_endpoint: NotRequired[str]
     invoke_endpoint: NotRequired[str]
     model_count: NotRequired[int]
     models: NotRequired[list[str]]
+    telemetry_flow_scope: NotRequired[list[str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +84,7 @@ class RuntimeProviderConfig:
     model_list_path: str
     healthcheck_path: str
     invoke_path: str
+    adapter_options: JsonObject
     metadata: JsonObject
 
     @classmethod
@@ -98,6 +104,7 @@ class RuntimeProviderConfig:
             model_list_path=str(row.get("model_list_path", "")),
             healthcheck_path=str(row.get("healthcheck_path", "")),
             invoke_path=str(row.get("invoke_path", "")),
+            adapter_options=row.get("adapter_options", {}),  # type: ignore[assignment]
             metadata=row["metadata"],  # type: ignore[assignment]
         )
 
@@ -154,6 +161,8 @@ def normalized_capability_snapshot(
     supports_store: bool,
     supports_vision_input: bool,
     supports_audio_input: bool,
+    supports_normalized_usage_telemetry: bool = False,
+    supports_normalized_latency_telemetry: bool = False,
 ) -> ProviderCapabilitySnapshot:
     return {
         "capability_version": PROVIDER_CAPABILITY_VERSION_V1,
@@ -166,6 +175,8 @@ def normalized_capability_snapshot(
         "supports_store": supports_store,
         "supports_vision_input": supports_vision_input,
         "supports_audio_input": supports_audio_input,
+        "supports_normalized_usage_telemetry": supports_normalized_usage_telemetry,
+        "supports_normalized_latency_telemetry": supports_normalized_latency_telemetry,
     }
 
 
@@ -364,11 +375,102 @@ class LlamaCppAdapter:
         return parse_llamacpp_invoke_response(request=request, payload=payload)
 
 
+class VllmAdapter:
+    adapter_key = VLLM_ADAPTER_KEY
+    runtime_provider = OPENAI_RESPONSES_PROVIDER
+    default_healthcheck_path = "/health"
+    default_model_list_path = "/v1/models"
+    default_invoke_path = "/v1/chat/completions"
+
+    def discover_capabilities(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderCapabilitySnapshot:
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
+        model_list_path = config.model_list_path or self.default_model_list_path
+        request_json(
+            method="GET",
+            base_url=config.base_url,
+            path=healthcheck_path,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
+        )
+        model_payload = request_json(
+            method="GET",
+            base_url=config.base_url,
+            path=model_list_path,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
+        )
+        models = parse_llamacpp_models(model_payload)
+        snapshot = normalized_capability_snapshot(
+            adapter_key=self.adapter_key,
+            runtime_provider=self.runtime_provider,
+            supports_tool_calls=False,
+            supports_streaming=False,
+            supports_store=False,
+            supports_vision_input=False,
+            supports_audio_input=False,
+            supports_normalized_usage_telemetry=True,
+            supports_normalized_latency_telemetry=True,
+        )
+        snapshot.update(
+            {
+                "health_status": "ok",
+                "health_endpoint": healthcheck_path,
+                "models_endpoint": model_list_path,
+                "invoke_endpoint": config.invoke_path or self.default_invoke_path,
+                "model_count": len(models),
+                "models": models,
+                "telemetry_flow_scope": ["provider_test", "runtime_invoke"],
+            }
+        )
+        return snapshot
+
+    def invoke(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+        request: ModelInvocationRequest,
+    ) -> ModelInvocationResponse:
+        if request.provider != self.runtime_provider:
+            raise ModelInvocationError(f"unsupported model provider: {request.provider}")
+
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        payload: dict[str, object] = {
+            "model": request.model,
+            "stream": False,
+            "messages": prompt_sections_to_messages(request),
+        }
+        payload.update(
+            extract_vllm_invoke_passthrough_options(
+                adapter_options=config.adapter_options,
+            )
+        )
+        response_payload = request_json(
+            method="POST",
+            base_url=config.base_url,
+            path=config.invoke_path or self.default_invoke_path,
+            timeout_seconds=settings.model_timeout_seconds,
+            headers=headers,
+            payload=payload,
+        )
+        return parse_llamacpp_invoke_response(
+            request=request,
+            payload=response_payload,
+        )
+
+
 def make_provider_adapter_registry() -> ProviderAdapterRegistry:
     registry = ProviderAdapterRegistry()
     registry.register(OpenAICompatibleAdapter())
     registry.register(OllamaAdapter())
     registry.register(LlamaCppAdapter())
+    registry.register(VllmAdapter())
     return registry
 
 

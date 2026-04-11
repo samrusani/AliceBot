@@ -189,9 +189,11 @@ ToolAllowlistDecision = Literal["allowed", "denied", "approval_required"]
 ToolRoutingDecision = Literal["ready", "denied", "approval_required"]
 PromptSectionName = Literal["system", "developer", "context", "conversation"]
 ModelProvider = Literal["openai_responses"]
-ProviderAdapterKey = Literal["openai_compatible", "ollama", "llamacpp"]
+ProviderAdapterKey = Literal["openai_compatible", "ollama", "llamacpp", "vllm"]
 ModelProviderStatus = Literal["active"]
 ProviderCapabilityDiscoveryStatus = Literal["ready", "failed"]
+ProviderInvocationFlowKind = Literal["provider_test", "runtime_invoke"]
+ProviderInvocationStatus = Literal["completed", "failed"]
 ModelFinishReason = Literal["completed", "incomplete"]
 ExplicitPreferencePattern = Literal[
     "i_like",
@@ -1553,6 +1555,7 @@ class ModelProviderRecord(TypedDict):
     model_list_path: str
     healthcheck_path: str
     invoke_path: str
+    adapter_options: JsonObject
     metadata: JsonObject
     created_at: str
     updated_at: str
@@ -1609,6 +1612,39 @@ class RuntimeInvokeAssistantRecord(TypedDict):
 class RuntimeInvokeResponse(TypedDict):
     assistant: RuntimeInvokeAssistantRecord
     trace: ResponseTraceSummary
+
+
+class ProviderInvocationTelemetryRecord(TypedDict):
+    id: str
+    workspace_id: str
+    provider_id: str
+    invoked_by_user_account_id: str
+    flow_kind: ProviderInvocationFlowKind
+    adapter_key: ProviderAdapterKey
+    runtime_provider: ModelProvider
+    provider_model: str
+    status: ProviderInvocationStatus
+    error_message: str | None
+    latency_ms: int
+    usage: ModelUsagePayload
+    metadata: JsonObject
+    created_at: str
+
+
+class ProviderTelemetrySummary(TypedDict):
+    total_count: int
+    completed_count: int
+    failed_count: int
+    average_latency_ms: float
+    latest_created_at: str | None
+    usage_totals: ModelUsagePayload
+
+
+class ProviderTelemetryResponse(TypedDict):
+    provider_id: str
+    summary: ProviderTelemetrySummary
+    items: list[ProviderInvocationTelemetryRecord]
+    order: list[str]
 
 
 @dataclass(frozen=True, slots=True)

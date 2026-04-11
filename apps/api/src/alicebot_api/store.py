@@ -354,6 +354,7 @@ class ModelProviderRow(TypedDict):
     model_list_path: str
     healthcheck_path: str
     invoke_path: str
+    adapter_options: JsonObject
     metadata: JsonObject
     created_at: datetime
     updated_at: datetime
@@ -371,6 +372,25 @@ class ProviderCapabilityRow(TypedDict):
     discovered_at: datetime
     created_at: datetime
     updated_at: datetime
+
+
+class ProviderInvocationTelemetryRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    provider_id: UUID
+    invoked_by_user_account_id: UUID
+    flow_kind: str
+    adapter_key: str
+    runtime_provider: str
+    provider_model: str
+    status: str
+    error_message: str | None
+    latency_ms: int
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    metadata: JsonObject
+    created_at: datetime
 
 
 class MemoryEmbeddingRow(TypedDict):
@@ -2066,11 +2086,13 @@ INSERT_MODEL_PROVIDER_SQL = """
                   model_list_path,
                   healthcheck_path,
                   invoke_path,
+                  adapter_options,
                   metadata,
                   created_at,
                   updated_at
                 )
                 VALUES (
+                  %s,
                   %s,
                   %s,
                   %s,
@@ -2103,6 +2125,7 @@ INSERT_MODEL_PROVIDER_SQL = """
                   model_list_path,
                   healthcheck_path,
                   invoke_path,
+                  adapter_options,
                   metadata,
                   created_at,
                   updated_at
@@ -2124,6 +2147,7 @@ GET_MODEL_PROVIDER_FOR_WORKSPACE_SQL = """
                   model_list_path,
                   healthcheck_path,
                   invoke_path,
+                  adapter_options,
                   metadata,
                   created_at,
                   updated_at
@@ -2148,6 +2172,7 @@ LIST_MODEL_PROVIDERS_FOR_WORKSPACE_SQL = """
                   model_list_path,
                   healthcheck_path,
                   invoke_path,
+                  adapter_options,
                   metadata,
                   created_at,
                   updated_at
@@ -2209,6 +2234,85 @@ GET_PROVIDER_CAPABILITY_FOR_PROVIDER_SQL = """
                 FROM provider_capabilities
                 WHERE provider_id = %s
                   AND workspace_id = %s
+                """
+
+INSERT_PROVIDER_INVOCATION_TELEMETRY_SQL = """
+                INSERT INTO provider_invocation_telemetry (
+                  workspace_id,
+                  provider_id,
+                  invoked_by_user_account_id,
+                  flow_kind,
+                  adapter_key,
+                  runtime_provider,
+                  provider_model,
+                  status,
+                  error_message,
+                  latency_ms,
+                  input_tokens,
+                  output_tokens,
+                  total_tokens,
+                  metadata,
+                  created_at
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  workspace_id,
+                  provider_id,
+                  invoked_by_user_account_id,
+                  flow_kind,
+                  adapter_key,
+                  runtime_provider,
+                  provider_model,
+                  status,
+                  error_message,
+                  latency_ms,
+                  input_tokens,
+                  output_tokens,
+                  total_tokens,
+                  metadata,
+                  created_at
+                """
+
+LIST_PROVIDER_INVOCATION_TELEMETRY_FOR_PROVIDER_SQL = """
+                SELECT
+                  id,
+                  workspace_id,
+                  provider_id,
+                  invoked_by_user_account_id,
+                  flow_kind,
+                  adapter_key,
+                  runtime_provider,
+                  provider_model,
+                  status,
+                  error_message,
+                  latency_ms,
+                  input_tokens,
+                  output_tokens,
+                  total_tokens,
+                  metadata,
+                  created_at
+                FROM provider_invocation_telemetry
+                WHERE provider_id = %s
+                  AND workspace_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
                 """
 
 INSERT_EMBEDDING_CONFIG_SQL = """
@@ -5999,7 +6103,10 @@ class ContinuityStore:
         model_list_path: str = "",
         healthcheck_path: str = "",
         invoke_path: str = "",
+        adapter_options: JsonObject | None = None,
     ) -> ModelProviderRow:
+        if adapter_options is None:
+            adapter_options = {}
         return self._fetch_one(
             "create_model_provider",
             INSERT_MODEL_PROVIDER_SQL,
@@ -6017,6 +6124,7 @@ class ContinuityStore:
                 model_list_path,
                 healthcheck_path,
                 invoke_path,
+                Jsonb(adapter_options),
                 Jsonb(metadata),
             ),
         )
@@ -6072,6 +6180,61 @@ class ContinuityStore:
         return self._fetch_optional_one(
             GET_PROVIDER_CAPABILITY_FOR_PROVIDER_SQL,
             (provider_id, workspace_id),
+        )
+
+    def create_provider_invocation_telemetry(
+        self,
+        *,
+        workspace_id: UUID,
+        provider_id: UUID,
+        invoked_by_user_account_id: UUID,
+        flow_kind: str,
+        adapter_key: str,
+        runtime_provider: str,
+        provider_model: str,
+        status: str,
+        error_message: str | None,
+        latency_ms: int,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        total_tokens: int | None,
+        metadata: JsonObject,
+    ) -> ProviderInvocationTelemetryRow:
+        return self._fetch_one(
+            "create_provider_invocation_telemetry",
+            INSERT_PROVIDER_INVOCATION_TELEMETRY_SQL,
+            (
+                workspace_id,
+                provider_id,
+                invoked_by_user_account_id,
+                flow_kind,
+                adapter_key,
+                runtime_provider,
+                provider_model,
+                status,
+                error_message,
+                latency_ms,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                Jsonb(metadata),
+            ),
+        )
+
+    def list_provider_invocation_telemetry_for_provider(
+        self,
+        *,
+        provider_id: UUID,
+        workspace_id: UUID,
+        limit: int,
+    ) -> list[ProviderInvocationTelemetryRow]:
+        return self._fetch_all(
+            LIST_PROVIDER_INVOCATION_TELEMETRY_FOR_PROVIDER_SQL,
+            (
+                provider_id,
+                workspace_id,
+                limit,
+            ),
         )
 
     def create_embedding_config(

@@ -603,6 +603,7 @@ from alicebot_api.provider_runtime import (
     OLLAMA_ADAPTER_KEY,
     OPENAI_COMPATIBLE_ADAPTER_KEY,
     OPENAI_RESPONSES_PROVIDER,
+    VLLM_ADAPTER_KEY,
     ProviderAdapterNotFoundError,
     RuntimeProviderConfig,
     build_provider_test_model_request,
@@ -622,6 +623,7 @@ from alicebot_api.store import (
     EventRow,
     ModelProviderRow,
     ProviderCapabilityRow,
+    ProviderInvocationTelemetryRow,
     SessionRow,
     ThreadRow,
 )
@@ -1438,6 +1440,7 @@ def _serialize_model_provider(provider: ModelProviderRow) -> dict[str, object]:
         "model_list_path": provider["model_list_path"],
         "healthcheck_path": provider["healthcheck_path"],
         "invoke_path": provider["invoke_path"],
+        "adapter_options": provider["adapter_options"],
         "metadata": provider["metadata"],
         "created_at": provider["created_at"].isoformat(),
         "updated_at": provider["updated_at"].isoformat(),
@@ -1458,6 +1461,62 @@ def _serialize_provider_capability(capability: ProviderCapabilityRow) -> dict[st
         "discovery_error": capability["discovery_error"],
         "discovered_at": capability["discovered_at"].isoformat(),
     }
+
+
+def _serialize_provider_invocation_telemetry(
+    row: ProviderInvocationTelemetryRow,
+) -> dict[str, object]:
+    return {
+        "id": str(row["id"]),
+        "workspace_id": str(row["workspace_id"]),
+        "provider_id": str(row["provider_id"]),
+        "invoked_by_user_account_id": str(row["invoked_by_user_account_id"]),
+        "flow_kind": row["flow_kind"],
+        "adapter_key": row["adapter_key"],
+        "runtime_provider": row["runtime_provider"],
+        "provider_model": row["provider_model"],
+        "status": row["status"],
+        "error_message": row["error_message"],
+        "latency_ms": row["latency_ms"],
+        "usage": {
+            "input_tokens": row["input_tokens"],
+            "output_tokens": row["output_tokens"],
+            "total_tokens": row["total_tokens"],
+        },
+        "metadata": row["metadata"],
+        "created_at": row["created_at"].isoformat(),
+    }
+
+
+def _summarize_provider_telemetry(
+    rows: list[ProviderInvocationTelemetryRow],
+) -> dict[str, object]:
+    total_count = len(rows)
+    completed_count = sum(1 for row in rows if row["status"] == "completed")
+    failed_count = sum(1 for row in rows if row["status"] == "failed")
+    total_latency = sum(row["latency_ms"] for row in rows)
+    average_latency_ms = (float(total_latency) / float(total_count)) if total_count > 0 else 0.0
+    latest_created_at = rows[0]["created_at"].isoformat() if total_count > 0 else None
+    return {
+        "total_count": total_count,
+        "completed_count": completed_count,
+        "failed_count": failed_count,
+        "average_latency_ms": round(average_latency_ms, 2),
+        "latest_created_at": latest_created_at,
+        "usage_totals": {
+            "input_tokens": sum(row["input_tokens"] or 0 for row in rows),
+            "output_tokens": sum(row["output_tokens"] or 0 for row in rows),
+            "total_tokens": sum(row["total_tokens"] or 0 for row in rows),
+        },
+    }
+
+
+def _usage_token_or_none(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
 
 
 def _runtime_provider_config_or_none(
@@ -1493,6 +1552,9 @@ def _fallback_provider_capability_snapshot(
     model_list_path: str,
     healthcheck_path: str,
     invoke_path: str,
+    supports_normalized_usage_telemetry: bool = False,
+    supports_normalized_latency_telemetry: bool = False,
+    telemetry_flow_scope: list[str] | None = None,
 ) -> dict[str, object]:
     snapshot = normalized_capability_snapshot(
         adapter_key=adapter_key,
@@ -1502,6 +1564,8 @@ def _fallback_provider_capability_snapshot(
         supports_store=False,
         supports_vision_input=False,
         supports_audio_input=False,
+        supports_normalized_usage_telemetry=supports_normalized_usage_telemetry,
+        supports_normalized_latency_telemetry=supports_normalized_latency_telemetry,
     )
     snapshot.update(
         {
@@ -1513,6 +1577,8 @@ def _fallback_provider_capability_snapshot(
             "models": [],
         }
     )
+    if telemetry_flow_scope is not None:
+        snapshot["telemetry_flow_scope"] = telemetry_flow_scope
     return snapshot
 
 
@@ -1531,6 +1597,7 @@ def _register_workspace_provider(
     model_list_path: str,
     healthcheck_path: str,
     invoke_path: str,
+    adapter_options: dict[str, object],
     metadata: dict[str, object],
 ) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
     normalized_display_name = display_name.strip()
@@ -1589,6 +1656,7 @@ def _register_workspace_provider(
         model_list_path=normalized_model_list_path,
         healthcheck_path=normalized_healthcheck_path,
         invoke_path=normalized_invoke_path,
+        adapter_options=adapter_options,
     )
 
     runtime_provider = resolve_runtime_provider_config_secrets(
@@ -1611,6 +1679,11 @@ def _register_workspace_provider(
             model_list_path=normalized_model_list_path,
             healthcheck_path=normalized_healthcheck_path,
             invoke_path=normalized_invoke_path,
+            supports_normalized_usage_telemetry=adapter.adapter_key == VLLM_ADAPTER_KEY,
+            supports_normalized_latency_telemetry=adapter.adapter_key == VLLM_ADAPTER_KEY,
+            telemetry_flow_scope=["provider_test", "runtime_invoke"]
+            if adapter.adapter_key == VLLM_ADAPTER_KEY
+            else None,
         )
         discovery_status = "failed"
         discovery_error = str(exc)
@@ -2076,6 +2149,57 @@ class RegisterLlamaCppProviderRequest(BaseModel):
     model_list_path: str = Field(default="/v1/models", min_length=1, max_length=200)
     healthcheck_path: str = Field(default="/health", min_length=1, max_length=200)
     invoke_path: str = Field(default="/v1/chat/completions", min_length=1, max_length=200)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class VllmInvokePassthroughOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_tokens: int | None = Field(default=None, ge=1, le=32768)
+    frequency_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    n: int | None = Field(default=None, ge=1, le=8)
+    seed: int | None = Field(default=None, ge=0)
+    stop: str | list[str] | None = None
+
+    @model_validator(mode="after")
+    def _validate_stop(self) -> "VllmInvokePassthroughOptions":
+        if self.stop is None:
+            return self
+        if isinstance(self.stop, str):
+            if self.stop.strip() == "":
+                raise ValueError("adapter_options.invoke_passthrough.stop must not be empty")
+            return self
+        if len(self.stop) == 0 or len(self.stop) > 8:
+            raise ValueError("adapter_options.invoke_passthrough.stop list length must be between 1 and 8")
+        for item in self.stop:
+            if item.strip() == "":
+                raise ValueError("adapter_options.invoke_passthrough.stop list items must not be empty")
+            if len(item) > 200:
+                raise ValueError("adapter_options.invoke_passthrough.stop list items must be 200 chars or shorter")
+        return self
+
+
+class VllmAdapterOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    invoke_passthrough: VllmInvokePassthroughOptions = Field(default_factory=VllmInvokePassthroughOptions)
+
+
+class RegisterVllmProviderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=120)
+    base_url: str = Field(default="http://127.0.0.1:8000", min_length=1, max_length=500)
+    api_key: str | None = Field(default=None, max_length=8000)
+    auth_mode: Literal["bearer", "none"] = "none"
+    default_model: str = Field(min_length=1, max_length=200)
+    model_list_path: str = Field(default="/v1/models", min_length=1, max_length=200)
+    healthcheck_path: str = Field(default="/health", min_length=1, max_length=200)
+    invoke_path: str = Field(default="/v1/chat/completions", min_length=1, max_length=200)
+    adapter_options: VllmAdapterOptions = Field(default_factory=VllmAdapterOptions)
     metadata: dict[str, object] = Field(default_factory=dict)
 
 
@@ -6185,6 +6309,7 @@ def register_v1_provider(request: Request, body: RegisterProviderRequest) -> JSO
                     model_list_path=body.model_list_path,
                     healthcheck_path=body.healthcheck_path,
                     invoke_path=body.invoke_path,
+                    adapter_options={},
                     metadata=body.metadata,
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
@@ -6247,6 +6372,7 @@ def register_v1_ollama_provider(
                     model_list_path=body.model_list_path,
                     healthcheck_path=body.healthcheck_path,
                     invoke_path=body.invoke_path,
+                    adapter_options={},
                     metadata=body.metadata,
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
@@ -6309,6 +6435,70 @@ def register_v1_llamacpp_provider(
                     model_list_path=body.model_list_path,
                     healthcheck_path=body.healthcheck_path,
                     invoke_path=body.invoke_path,
+                    adapter_options={},
+                    metadata=body.metadata,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except psycopg.errors.UniqueViolation:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "provider display_name must be unique within the workspace"},
+        )
+    except ProviderAdapterNotFoundError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except ProviderSecretManagerError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(
+            {
+                "provider": _serialize_model_provider(provider),
+                "capabilities": _serialize_provider_capability(capability),
+            }
+        ),
+    )
+
+
+@app.post("/v1/providers/vllm/register")
+def register_v1_vllm_provider(
+    request: Request,
+    body: RegisterVllmProviderRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                provider, capability = _register_workspace_provider(
+                    settings=settings,
+                    store=store,
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                    provider_key=VLLM_ADAPTER_KEY,
+                    display_name=body.display_name,
+                    base_url=body.base_url,
+                    api_key=body.api_key or "",
+                    auth_mode=body.auth_mode,
+                    default_model=body.default_model,
+                    model_list_path=body.model_list_path,
+                    healthcheck_path=body.healthcheck_path,
+                    invoke_path=body.invoke_path,
+                    adapter_options=body.adapter_options.model_dump(exclude_none=True),
                     metadata=body.metadata,
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
@@ -6417,6 +6607,55 @@ def get_v1_provider(provider_id: UUID, request: Request) -> JSONResponse:
     )
 
 
+@app.get("/v1/providers/{provider_id}/telemetry")
+def get_v1_provider_telemetry(
+    provider_id: UUID,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                provider = store.get_model_provider_for_workspace_optional(
+                    provider_id=provider_id,
+                    workspace_id=workspace["id"],
+                )
+                if provider is None:
+                    return JSONResponse(status_code=404, content={"detail": f"provider {provider_id} was not found"})
+                telemetry_rows = store.list_provider_invocation_telemetry_for_provider(
+                    provider_id=provider_id,
+                    workspace_id=workspace["id"],
+                    limit=limit,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "provider_id": str(provider_id),
+                "summary": _summarize_provider_telemetry(telemetry_rows),
+                "items": [_serialize_provider_invocation_telemetry(row) for row in telemetry_rows],
+                "order": ["created_at_desc", "id_desc"],
+            }
+        ),
+    )
+
+
 @app.post("/v1/providers/test")
 def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONResponse:
     settings = get_settings()
@@ -6454,26 +6693,53 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                 if model_name == "":
                     raise ValueError("model is required")
 
+                discovery_started_at = time.perf_counter()
                 try:
                     capability_snapshot = adapter.discover_capabilities(
                         config=runtime_provider,
                         settings=settings,
                     )
                 except ModelInvocationError as exc:
+                    discovery_latency_ms = max(
+                        0,
+                        int((time.perf_counter() - discovery_started_at) * 1000),
+                    )
+                    fallback_snapshot = _fallback_provider_capability_snapshot(
+                        adapter_key=adapter.adapter_key,
+                        runtime_provider=adapter.runtime_provider,
+                        model_list_path=runtime_provider.model_list_path,
+                        healthcheck_path=runtime_provider.healthcheck_path,
+                        invoke_path=runtime_provider.invoke_path,
+                        supports_normalized_usage_telemetry=adapter.adapter_key == VLLM_ADAPTER_KEY,
+                        supports_normalized_latency_telemetry=adapter.adapter_key == VLLM_ADAPTER_KEY,
+                        telemetry_flow_scope=["provider_test", "runtime_invoke"]
+                        if adapter.adapter_key == VLLM_ADAPTER_KEY
+                        else None,
+                    )
                     capability = store.upsert_provider_capability(
                         workspace_id=workspace["id"],
                         provider_id=runtime_provider.provider_id,
                         discovered_by_user_account_id=resolution["user_account"]["id"],
                         adapter_key=adapter.adapter_key,
                         discovery_status="failed",
-                        capability_snapshot=_fallback_provider_capability_snapshot(
-                            adapter_key=adapter.adapter_key,
-                            runtime_provider=adapter.runtime_provider,
-                            model_list_path=runtime_provider.model_list_path,
-                            healthcheck_path=runtime_provider.healthcheck_path,
-                            invoke_path=runtime_provider.invoke_path,
-                        ),
+                        capability_snapshot=fallback_snapshot,
                         discovery_error=str(exc),
+                    )
+                    store.create_provider_invocation_telemetry(
+                        workspace_id=workspace["id"],
+                        provider_id=runtime_provider.provider_id,
+                        invoked_by_user_account_id=resolution["user_account"]["id"],
+                        flow_kind="provider_test",
+                        adapter_key=adapter.adapter_key,
+                        runtime_provider=adapter.runtime_provider,
+                        provider_model=model_name,
+                        status="failed",
+                        error_message=str(exc),
+                        latency_ms=discovery_latency_ms,
+                        input_tokens=None,
+                        output_tokens=None,
+                        total_tokens=None,
+                        metadata={"stage": "capability_discovery"},
                     )
                     return JSONResponse(
                         status_code=502,
@@ -6491,6 +6757,7 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                     prompt_text=body.prompt.strip(),
                 )
 
+                invoke_started_at = time.perf_counter()
                 try:
                     model_response = adapter.invoke(
                         config=runtime_provider,
@@ -6498,6 +6765,7 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                         request=model_request,
                     )
                 except ModelInvocationError as exc:
+                    invoke_latency_ms = max(0, int((time.perf_counter() - invoke_started_at) * 1000))
                     capability = store.upsert_provider_capability(
                         workspace_id=workspace["id"],
                         provider_id=runtime_provider.provider_id,
@@ -6506,6 +6774,22 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                         discovery_status="failed",
                         capability_snapshot=capability_snapshot,
                         discovery_error=str(exc),
+                    )
+                    store.create_provider_invocation_telemetry(
+                        workspace_id=workspace["id"],
+                        provider_id=runtime_provider.provider_id,
+                        invoked_by_user_account_id=resolution["user_account"]["id"],
+                        flow_kind="provider_test",
+                        adapter_key=adapter.adapter_key,
+                        runtime_provider=adapter.runtime_provider,
+                        provider_model=model_name,
+                        status="failed",
+                        error_message=str(exc),
+                        latency_ms=invoke_latency_ms,
+                        input_tokens=None,
+                        output_tokens=None,
+                        total_tokens=None,
+                        metadata={"stage": "invoke"},
                     )
                     return JSONResponse(
                         status_code=502,
@@ -6526,6 +6810,23 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                     discovery_status="ready",
                     capability_snapshot=capability_snapshot,
                     discovery_error=None,
+                )
+                invoke_latency_ms = max(0, int((time.perf_counter() - invoke_started_at) * 1000))
+                store.create_provider_invocation_telemetry(
+                    workspace_id=workspace["id"],
+                    provider_id=runtime_provider.provider_id,
+                    invoked_by_user_account_id=resolution["user_account"]["id"],
+                    flow_kind="provider_test",
+                    adapter_key=adapter.adapter_key,
+                    runtime_provider=adapter.runtime_provider,
+                    provider_model=model_name,
+                    status="completed",
+                    error_message=None,
+                    latency_ms=invoke_latency_ms,
+                    input_tokens=_usage_token_or_none(model_response.usage.get("input_tokens")),
+                    output_tokens=_usage_token_or_none(model_response.usage.get("output_tokens")),
+                    total_tokens=_usage_token_or_none(model_response.usage.get("total_tokens")),
+                    metadata={"stage": "invoke"},
                 )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
@@ -6612,9 +6913,31 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     except ProviderAdapterNotFoundError as exc:
         return JSONResponse(status_code=422, content={"detail": str(exc)})
 
+    invoke_latency_ms: int | None = None
+    invoke_usage_payload: dict[str, object] = {
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+    }
+
     try:
         with user_connection(settings.database_url, user_account_id) as conn:
             store = ContinuityStore(conn)
+
+            def _timed_model_invoker(model_request):
+                nonlocal invoke_latency_ms, invoke_usage_payload
+                invoke_started_at = time.perf_counter()
+                try:
+                    response = adapter.invoke(
+                        config=runtime_provider,
+                        settings=settings,
+                        request=model_request,
+                    )
+                finally:
+                    invoke_latency_ms = max(0, int((time.perf_counter() - invoke_started_at) * 1000))
+                invoke_usage_payload = response.usage
+                return response
+
             result = generate_response(
                 store=store,
                 settings=settings,
@@ -6629,13 +6952,30 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                     max_entity_edges=body.max_entity_edges,
                 ),
                 runtime_override=(runtime_provider.model_provider, selected_model),
-                model_invoker=lambda model_request: adapter.invoke(
-                    config=runtime_provider,
-                    settings=settings,
-                    request=model_request,
-                ),
+                model_invoker=_timed_model_invoker,
             )
             if isinstance(result, ResponseFailure):
+                if invoke_latency_ms is not None:
+                    store.create_provider_invocation_telemetry(
+                        workspace_id=workspace_id,
+                        provider_id=runtime_provider.provider_id,
+                        invoked_by_user_account_id=user_account_id,
+                        flow_kind="runtime_invoke",
+                        adapter_key=adapter.adapter_key,
+                        runtime_provider=adapter.runtime_provider,
+                        provider_model=selected_model,
+                        status="failed",
+                        error_message=result.detail,
+                        latency_ms=invoke_latency_ms,
+                        input_tokens=_usage_token_or_none(invoke_usage_payload.get("input_tokens")),
+                        output_tokens=_usage_token_or_none(invoke_usage_payload.get("output_tokens")),
+                        total_tokens=_usage_token_or_none(invoke_usage_payload.get("total_tokens")),
+                        metadata={
+                            "thread_id": str(body.thread_id),
+                            "response_trace_id": result["trace"]["response_trace_id"],
+                            "compile_trace_id": result["trace"]["compile_trace_id"],
+                        },
+                    )
                 return JSONResponse(
                     status_code=502,
                     content=jsonable_encoder(
@@ -6674,6 +7014,28 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                 if isinstance(model_payload, dict) and isinstance(model_payload.get("finish_reason"), str)
                 else "incomplete"
             )
+            if invoke_latency_ms is not None:
+                store.create_provider_invocation_telemetry(
+                    workspace_id=workspace_id,
+                    provider_id=runtime_provider.provider_id,
+                    invoked_by_user_account_id=user_account_id,
+                    flow_kind="runtime_invoke",
+                    adapter_key=adapter.adapter_key,
+                    runtime_provider=adapter.runtime_provider,
+                    provider_model=selected_model,
+                    status="completed",
+                    error_message=None,
+                    latency_ms=invoke_latency_ms,
+                    input_tokens=_usage_token_or_none(usage_payload.get("input_tokens")),
+                    output_tokens=_usage_token_or_none(usage_payload.get("output_tokens")),
+                    total_tokens=_usage_token_or_none(usage_payload.get("total_tokens")),
+                    metadata={
+                        "thread_id": str(body.thread_id),
+                        "assistant_event_id": str(assistant_event_id),
+                        "response_trace_id": result["trace"]["response_trace_id"],
+                        "compile_trace_id": result["trace"]["compile_trace_id"],
+                    },
+                )
     except ContinuityStoreInvariantError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 

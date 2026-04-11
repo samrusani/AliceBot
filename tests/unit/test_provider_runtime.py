@@ -9,6 +9,7 @@ from alicebot_api.provider_runtime import (
     OLLAMA_ADAPTER_KEY,
     OPENAI_COMPATIBLE_ADAPTER_KEY,
     OPENAI_RESPONSES_PROVIDER,
+    VLLM_ADAPTER_KEY,
     ProviderAdapterNotFoundError,
     RuntimeProviderConfig,
     build_provider_test_model_request,
@@ -39,7 +40,10 @@ def make_runtime_provider_config(
     model_list_path: str = "/models",
     healthcheck_path: str = "/models",
     invoke_path: str = "/responses",
+    adapter_options: dict[str, object] | None = None,
 ) -> RuntimeProviderConfig:
+    if adapter_options is None:
+        adapter_options = {}
     return RuntimeProviderConfig(
         provider_id=uuid4(),
         workspace_id=uuid4(),
@@ -55,6 +59,7 @@ def make_runtime_provider_config(
         model_list_path=model_list_path,
         healthcheck_path=healthcheck_path,
         invoke_path=invoke_path,
+        adapter_options=adapter_options,
         metadata={},
     )
 
@@ -65,15 +70,18 @@ def test_provider_registry_resolves_registered_adapter() -> None:
     adapter = registry.resolve(OPENAI_COMPATIBLE_ADAPTER_KEY)
     ollama_adapter = registry.resolve(OLLAMA_ADAPTER_KEY)
     llamacpp_adapter = registry.resolve(LLAMACPP_ADAPTER_KEY)
+    vllm_adapter = registry.resolve(VLLM_ADAPTER_KEY)
 
     assert adapter.adapter_key == OPENAI_COMPATIBLE_ADAPTER_KEY
     assert adapter.runtime_provider == OPENAI_RESPONSES_PROVIDER
     assert ollama_adapter.adapter_key == OLLAMA_ADAPTER_KEY
     assert llamacpp_adapter.adapter_key == LLAMACPP_ADAPTER_KEY
+    assert vllm_adapter.adapter_key == VLLM_ADAPTER_KEY
     assert registry.keys() == [
         LLAMACPP_ADAPTER_KEY,
         OLLAMA_ADAPTER_KEY,
         OPENAI_COMPATIBLE_ADAPTER_KEY,
+        VLLM_ADAPTER_KEY,
     ]
 
 
@@ -311,3 +319,97 @@ def test_llamacpp_adapter_discovers_capabilities_and_invokes(monkeypatch) -> Non
     assert captured[0]["url"] == "http://127.0.0.1:8080/health"
     assert captured[1]["url"] == "http://127.0.0.1:8080/v1/models"
     assert captured[2]["url"] == "http://127.0.0.1:8080/v1/chat/completions"
+
+
+def test_vllm_adapter_discovers_capabilities_and_applies_bounded_passthrough(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+    registry = make_provider_adapter_registry()
+    adapter = registry.resolve(VLLM_ADAPTER_KEY)
+    runtime_provider = make_runtime_provider_config(
+        provider_key=VLLM_ADAPTER_KEY,
+        base_url="http://127.0.0.1:8001",
+        api_key="",
+        auth_mode="none",
+        model_list_path="/v1/models",
+        healthcheck_path="/health",
+        invoke_path="/v1/chat/completions",
+        adapter_options={
+            "invoke_passthrough": {
+                "temperature": 0.1,
+                "top_p": 0.85,
+                "max_tokens": 256,
+                "seed": 42,
+                "stop": ["###"],
+                "unexpected_option": "ignored",
+            }
+        },
+    )
+
+    def fake_urlopen(request, timeout):
+        body = None if request.data is None else json.loads(request.data.decode("utf-8"))
+        captured.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": body,
+            }
+        )
+        if request.full_url.endswith("/health"):
+            return FakeHTTPResponse(json.dumps({"status": "ok"}).encode("utf-8"))
+        if request.full_url.endswith("/v1/models"):
+            return FakeHTTPResponse(
+                json.dumps({"data": [{"id": "meta-llama/Meta-Llama-3.1-8B-Instruct"}]}).encode("utf-8")
+            )
+        return FakeHTTPResponse(
+            json.dumps(
+                {
+                    "id": "chatcmpl-vllm-1",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "vLLM says hi"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 21,
+                        "completion_tokens": 7,
+                        "total_tokens": 28,
+                    },
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_urlopen)
+
+    capabilities = adapter.discover_capabilities(
+        config=runtime_provider,
+        settings=Settings(healthcheck_timeout_seconds=5),
+    )
+    response = adapter.invoke(
+        config=runtime_provider,
+        settings=Settings(model_timeout_seconds=11),
+        request=build_provider_test_model_request(
+            runtime_provider=OPENAI_RESPONSES_PROVIDER,
+            model="meta-llama/Meta-Llama-3.1-8B-Instruct",
+            prompt_text="Reply from vLLM",
+        ),
+    )
+
+    assert capabilities["adapter_key"] == VLLM_ADAPTER_KEY
+    assert capabilities["health_status"] == "ok"
+    assert capabilities["supports_normalized_latency_telemetry"] is True
+    assert capabilities["supports_normalized_usage_telemetry"] is True
+    assert capabilities["telemetry_flow_scope"] == ["provider_test", "runtime_invoke"]
+    assert response.output_text == "vLLM says hi"
+    assert response.response_id == "chatcmpl-vllm-1"
+
+    invoke_body = captured[2]["body"]
+    assert isinstance(invoke_body, dict)
+    assert invoke_body["temperature"] == 0.1
+    assert invoke_body["top_p"] == 0.85
+    assert invoke_body["max_tokens"] == 256
+    assert invoke_body["seed"] == 42
+    assert invoke_body["stop"] == ["###"]
+    assert "unexpected_option" not in invoke_body
