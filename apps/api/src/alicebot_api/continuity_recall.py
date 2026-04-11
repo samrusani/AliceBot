@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
-from typing import cast
+from datetime import UTC, datetime
+from typing import Literal, cast
 from uuid import UUID
 
 from alicebot_api.continuity_objects import (
@@ -27,6 +27,7 @@ from alicebot_api.contracts import (
     ContinuityRecallScopeMatch,
     ContinuityRecallSupersessionPosture,
     MemoryConfirmationStatus,
+    MemoryTrustClass,
     isoformat_or_none,
 )
 from alicebot_api.store import ContinuityRecallCandidateRow, ContinuityStore, JsonObject
@@ -41,14 +42,22 @@ class RankedRecallCandidate:
     row: ContinuityRecallCandidateRow
     scope_matches: list[ContinuityRecallScopeMatch]
     query_term_match_count: int
+    semantic_similarity_score: float
+    exact_match_score: float
+    recency_score: float
+    temporal_overlap_score: float
+    entity_match_count: int
     confirmation_status: MemoryConfirmationStatus
     confirmation_rank: int
+    trust_class: MemoryTrustClass
+    trust_rank: int
     freshness_posture: ContinuityRecallFreshnessPosture
     freshness_rank: int
     provenance_posture: ContinuityRecallProvenancePosture
     provenance_rank: int
     supersession_posture: ContinuityRecallSupersessionPosture
     supersession_rank: int
+    supersession_freshness_score: float
     posture_rank: int
     lifecycle_rank: int
     relevance: float
@@ -64,6 +73,12 @@ _CONFIRMATION_RANK: dict[MemoryConfirmationStatus, int] = {
     "confirmed": 3,
     "unconfirmed": 2,
     "contested": 1,
+}
+_TRUST_CLASS_RANK: dict[MemoryTrustClass, int] = {
+    "human_curated": 4,
+    "deterministic": 3,
+    "llm_corroborated": 2,
+    "llm_single_source": 1,
 }
 _FRESHNESS_RANK: dict[ContinuityRecallFreshnessPosture, int] = {
     "fresh": 4,
@@ -96,6 +111,29 @@ _LIFECYCLE_RANK: dict[str, int] = {
     "superseded": 1,
     "deleted": 0,
 }
+_TEMPORAL_START_KEYS = {
+    "valid_from",
+    "start_time",
+    "start_at",
+    "effective_from",
+    "since",
+}
+_TEMPORAL_END_KEYS = {
+    "valid_to",
+    "end_time",
+    "end_at",
+    "effective_to",
+    "until",
+    "due_at",
+}
+_ENTITY_KEYS = (
+    _SCOPE_FILTER_KEYS["project"]
+    | _SCOPE_FILTER_KEYS["person"]
+    | _SCOPE_FILTER_KEYS["thread"]
+    | _SCOPE_FILTER_KEYS["task"]
+)
+_TRUST_CLASS_KEYS = {"trust_class", "memory_trust_class"}
+_SEMANTIC_MATCH_THRESHOLD = 0.02
 
 
 def _normalize_optional_text(value: str | None) -> str | None:
@@ -399,6 +437,244 @@ def _count_query_term_matches(row: ContinuityRecallCandidateRow, terms: list[str
     return sum(1 for term in terms if term in text)
 
 
+def _candidate_text(row: ContinuityRecallCandidateRow) -> str:
+    return " ".join(
+        [
+            row["title"],
+            _flatten_text(row["body"]),
+            _flatten_text(row["provenance"]),
+        ]
+    )
+
+
+def _tokenize(value: str) -> list[str]:
+    return [token for token in re.findall(r"[a-z0-9]+", value.casefold()) if token]
+
+
+def _trigrams(value: str) -> set[str]:
+    compact = re.sub(r"\s+", " ", value.casefold()).strip()
+    if len(compact) < 3:
+        return {compact} if compact else set()
+    return {compact[index : index + 3] for index in range(len(compact) - 2)}
+
+
+def _semantic_similarity_score(*, query: str | None, candidate_text: str) -> float:
+    if query is None:
+        return 0.0
+
+    query_tokens = set(_tokenize(query))
+    if not query_tokens:
+        return 0.0
+    candidate_tokens = set(_tokenize(candidate_text))
+
+    token_overlap = (
+        len(query_tokens & candidate_tokens) / len(query_tokens)
+        if query_tokens
+        else 0.0
+    )
+
+    query_ngrams = _trigrams(query)
+    candidate_ngrams = _trigrams(candidate_text)
+    trigram_overlap = (
+        len(query_ngrams & candidate_ngrams) / len(query_ngrams | candidate_ngrams)
+        if query_ngrams and candidate_ngrams
+        else 0.0
+    )
+
+    # Blend term-level overlap and a light character-level similarity proxy.
+    return (token_overlap * 0.75) + (trigram_overlap * 0.25)
+
+
+def _exact_match_score(*, query: str | None, candidate_text: str, title: str) -> float:
+    if query is None:
+        return 0.0
+    normalized_query = _normalize_optional_text(query)
+    if normalized_query is None:
+        return 0.0
+
+    query_casefold = normalized_query.casefold()
+    title_casefold = title.casefold()
+    text_casefold = candidate_text.casefold()
+
+    if query_casefold in title_casefold:
+        return 1.0
+    if query_casefold in text_casefold:
+        return 0.8
+
+    terms = _tokenize(query_casefold)
+    if not terms:
+        return 0.0
+    title_hits = sum(1 for term in terms if term in title_casefold)
+    text_hits = sum(1 for term in terms if term in text_casefold)
+    if title_hits == len(terms):
+        return 0.7
+    if text_hits == len(terms):
+        return 0.5
+    if text_hits > 0:
+        return 0.25 * (text_hits / len(terms))
+    return 0.0
+
+
+def _coerce_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _collect_datetimes(payload: object, *, keys: set[str]) -> list[datetime]:
+    values: list[datetime] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key.strip().casefold() in keys:
+                    if isinstance(child, list):
+                        for list_item in child:
+                            parsed = _coerce_datetime(list_item)
+                            if parsed is not None:
+                                values.append(parsed)
+                    else:
+                        parsed = _coerce_datetime(child)
+                        if parsed is not None:
+                            values.append(parsed)
+                visit(child)
+            return
+        if isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(payload)
+    return values
+
+
+def _temporal_bounds(row: ContinuityRecallCandidateRow) -> tuple[datetime, datetime]:
+    start_candidates = (
+        _collect_datetimes(row["provenance"], keys=_TEMPORAL_START_KEYS)
+        + _collect_datetimes(row["body"], keys=_TEMPORAL_START_KEYS)
+    )
+    end_candidates = (
+        _collect_datetimes(row["provenance"], keys=_TEMPORAL_END_KEYS)
+        + _collect_datetimes(row["body"], keys=_TEMPORAL_END_KEYS)
+    )
+
+    start = min(start_candidates) if start_candidates else row["object_created_at"]
+    end = max(end_candidates) if end_candidates else row["object_updated_at"]
+    if end < start:
+        end = start
+    return start, end
+
+
+def _temporal_overlap_score(
+    row: ContinuityRecallCandidateRow,
+    *,
+    since: datetime | None,
+    until: datetime | None,
+) -> float:
+    candidate_start, candidate_end = _temporal_bounds(row)
+
+    if since is None and until is None:
+        return 1.0
+
+    window_start = candidate_start if since is None else since
+    window_end = candidate_end if until is None else until
+    if window_end < window_start:
+        return 0.0
+
+    overlap_start = max(candidate_start, window_start)
+    overlap_end = min(candidate_end, window_end)
+    if overlap_end < overlap_start:
+        return 0.0
+
+    overlap_seconds = (overlap_end - overlap_start).total_seconds()
+    window_seconds = max((window_end - window_start).total_seconds(), 1.0)
+    return max(0.0, min(1.0, overlap_seconds / window_seconds))
+
+
+def _extract_trust_class(
+    row: ContinuityRecallCandidateRow,
+    *,
+    confirmation_status: MemoryConfirmationStatus,
+    provenance_posture: ContinuityRecallProvenancePosture,
+) -> MemoryTrustClass:
+    explicit_values = _collect_strings_in_order(
+        row["provenance"],
+        keys=_TRUST_CLASS_KEYS,
+    ) + _collect_strings_in_order(
+        row["body"],
+        keys=_TRUST_CLASS_KEYS,
+    )
+    for value in explicit_values:
+        normalized = value.casefold()
+        if normalized in _TRUST_CLASS_RANK:
+            return cast(MemoryTrustClass, normalized)
+
+    if confirmation_status == "confirmed":
+        return "human_curated"
+    if provenance_posture == "strong":
+        return "llm_corroborated"
+    if provenance_posture == "partial":
+        return "llm_single_source"
+    return "deterministic"
+
+
+def _entity_query_terms(request: ContinuityRecallQueryInput) -> list[str]:
+    values: list[str] = []
+    if request.project is not None:
+        values.extend(_tokenize(request.project))
+    if request.person is not None:
+        values.extend(_tokenize(request.person))
+    if request.query is not None:
+        values.extend(
+            term
+            for term in _tokenize(request.query)
+            if len(term) >= 4
+        )
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _entity_match_count(row: ContinuityRecallCandidateRow, *, entity_terms: list[str]) -> int:
+    if not entity_terms:
+        return 0
+    entity_values = _collect_strings(row["provenance"], keys=_ENTITY_KEYS) | _collect_strings(
+        row["body"],
+        keys=_ENTITY_KEYS,
+    )
+    if not entity_values:
+        return 0
+    normalized_values = " ".join(sorted(entity_values)).casefold()
+    return sum(1 for term in entity_terms if term in normalized_values)
+
+
+def _supersession_freshness_score(
+    *,
+    freshness_rank: int,
+    supersession_rank: int,
+) -> float:
+    # Higher values favor current, fresher truth over stale superseded records.
+    return (float(freshness_rank) * 2.0) + float(supersession_rank)
+
+
 def _matches_time_window(
     row: ContinuityRecallCandidateRow,
     *,
@@ -464,13 +740,21 @@ def _serialize_recall_result(
     ordering: ContinuityRecallOrderingMetadata = {
         "scope_match_count": len(item.scope_matches),
         "query_term_match_count": item.query_term_match_count,
+        "semantic_similarity_score": item.semantic_similarity_score,
+        "exact_match_score": item.exact_match_score,
+        "recency_score": item.recency_score,
+        "temporal_overlap_score": item.temporal_overlap_score,
+        "entity_match_count": item.entity_match_count,
         "confirmation_rank": item.confirmation_rank,
+        "trust_class": item.trust_class,
+        "trust_rank": item.trust_rank,
         "freshness_posture": item.freshness_posture,
         "freshness_rank": item.freshness_rank,
         "provenance_posture": item.provenance_posture,
         "provenance_rank": item.provenance_rank,
         "supersession_posture": item.supersession_posture,
         "supersession_rank": item.supersession_rank,
+        "supersession_freshness_score": item.supersession_freshness_score,
         "posture_rank": item.posture_rank,
         "lifecycle_rank": item.lifecycle_rank,
         "confidence": float(row["confidence"]),
@@ -554,6 +838,7 @@ def _ordered_recall_candidates(
     store: ContinuityStore,
     *,
     request: ContinuityRecallQueryInput,
+    ranking_strategy: Literal["legacy_v1", "hybrid_v2"] = "hybrid_v2",
 ) -> list[RankedRecallCandidate]:
     thread_filter = _normalize_uuid_string(request.thread_id)
     task_filter = _normalize_uuid_string(request.task_id)
@@ -568,6 +853,7 @@ def _ordered_recall_candidates(
         else None
     )
     query_terms = _query_terms(request.query)
+    entity_terms = _entity_query_terms(request)
 
     ranked_candidates: list[RankedRecallCandidate] = []
 
@@ -599,9 +885,23 @@ def _ordered_recall_candidates(
         if len(scope_matches) != required_scope_count:
             continue
 
+        candidate_text = _candidate_text(row)
         query_term_match_count = _count_query_term_matches(row, query_terms)
-        if query_terms and query_term_match_count == 0:
-            continue
+        semantic_similarity_score = _semantic_similarity_score(
+            query=request.query,
+            candidate_text=candidate_text,
+        )
+        exact_match_score = _exact_match_score(
+            query=request.query,
+            candidate_text=candidate_text,
+            title=row["title"],
+        )
+        if ranking_strategy == "legacy_v1":
+            if query_terms and query_term_match_count == 0:
+                continue
+        elif query_terms and query_term_match_count == 0:
+            if exact_match_score <= 0.0 and semantic_similarity_score < _SEMANTIC_MATCH_THRESHOLD:
+                continue
 
         confirmation_status = _extract_confirmation_status(row)
         confirmation_rank = _CONFIRMATION_RANK[confirmation_status]
@@ -615,54 +915,125 @@ def _ordered_recall_candidates(
             scope_matches=scope_matches,
         )
         provenance_rank = _PROVENANCE_RANK[provenance_posture]
+        trust_class = _extract_trust_class(
+            row,
+            confirmation_status=confirmation_status,
+            provenance_posture=provenance_posture,
+        )
+        trust_rank = _TRUST_CLASS_RANK[trust_class]
         supersession_posture = _extract_supersession_posture(row)
         supersession_rank = _SUPERSESSION_RANK[supersession_posture]
+        temporal_overlap_score = _temporal_overlap_score(
+            row,
+            since=request.since,
+            until=request.until,
+        )
+        recency_score = row["object_created_at"].timestamp() / 3600.0
+        entity_match_count = _entity_match_count(
+            row,
+            entity_terms=entity_terms,
+        )
+        supersession_freshness_score = _supersession_freshness_score(
+            freshness_rank=freshness_rank,
+            supersession_rank=supersession_rank,
+        )
         posture_rank = _POSTURE_RANK.get(row["admission_posture"], 0)
         lifecycle_rank = _LIFECYCLE_RANK.get(row["status"], 0)
-        relevance = (
-            float(len(scope_matches)) * 100.0
-            + float(query_term_match_count) * 20.0
-            + float(confirmation_rank) * 14.0
-            + float(freshness_rank) * 12.0
-            + float(provenance_rank) * 8.0
-            + float(supersession_rank) * 10.0
-            + float(posture_rank) * 4.0
-            + float(lifecycle_rank) * 2.0
-            + float(row["confidence"])
-        )
+        if ranking_strategy == "legacy_v1":
+            relevance = (
+                float(len(scope_matches)) * 100.0
+                + float(query_term_match_count) * 20.0
+                + float(confirmation_rank) * 14.0
+                + float(freshness_rank) * 12.0
+                + float(provenance_rank) * 8.0
+                + float(supersession_rank) * 10.0
+                + float(posture_rank) * 4.0
+                + float(lifecycle_rank) * 2.0
+                + float(row["confidence"])
+            )
+        else:
+            relevance = (
+                float(len(scope_matches)) * 100.0
+                + float(entity_match_count) * 35.0
+                + exact_match_score * 36.0
+                + semantic_similarity_score * 28.0
+                + float(query_term_match_count) * 14.0
+                + temporal_overlap_score * 16.0
+                + float(trust_rank) * 12.0
+                + supersession_freshness_score * 8.0
+                + float(confirmation_rank) * 8.0
+                + float(provenance_rank) * 6.0
+                + float(posture_rank) * 4.0
+                + float(lifecycle_rank) * 3.0
+                + recency_score
+                + float(row["confidence"])
+            )
 
         ranked_candidates.append(
             RankedRecallCandidate(
                 row=row,
                 scope_matches=scope_matches,
                 query_term_match_count=query_term_match_count,
+                semantic_similarity_score=semantic_similarity_score,
+                exact_match_score=exact_match_score,
+                recency_score=recency_score,
+                temporal_overlap_score=temporal_overlap_score,
+                entity_match_count=entity_match_count,
                 confirmation_status=confirmation_status,
                 confirmation_rank=confirmation_rank,
+                trust_class=trust_class,
+                trust_rank=trust_rank,
                 freshness_posture=freshness_posture,
                 freshness_rank=freshness_rank,
                 provenance_posture=provenance_posture,
                 provenance_rank=provenance_rank,
                 supersession_posture=supersession_posture,
                 supersession_rank=supersession_rank,
+                supersession_freshness_score=supersession_freshness_score,
                 posture_rank=posture_rank,
                 lifecycle_rank=lifecycle_rank,
                 relevance=relevance,
             )
         )
 
+    if ranking_strategy == "legacy_v1":
+        return sorted(
+            ranked_candidates,
+            key=lambda candidate: (
+                len(candidate.scope_matches),
+                candidate.query_term_match_count,
+                candidate.confirmation_rank,
+                candidate.freshness_rank,
+                candidate.provenance_rank,
+                candidate.supersession_rank,
+                candidate.posture_rank,
+                candidate.lifecycle_rank,
+                float(candidate.row["confidence"]),
+                candidate.row["object_created_at"],
+                str(candidate.row["id"]),
+            ),
+            reverse=True,
+        )
+
     return sorted(
         ranked_candidates,
         key=lambda candidate: (
+            candidate.relevance,
             len(candidate.scope_matches),
+            candidate.entity_match_count,
+            candidate.trust_rank,
+            candidate.supersession_freshness_score,
+            candidate.temporal_overlap_score,
+            candidate.exact_match_score,
+            candidate.semantic_similarity_score,
             candidate.query_term_match_count,
             candidate.confirmation_rank,
-            candidate.freshness_rank,
             candidate.provenance_rank,
-            candidate.supersession_rank,
+            candidate.freshness_rank,
             candidate.posture_rank,
             candidate.lifecycle_rank,
+            candidate.recency_score,
             float(candidate.row["confidence"]),
-            candidate.row["object_created_at"],
             str(candidate.row["id"]),
         ),
         reverse=True,
@@ -675,6 +1046,7 @@ def query_continuity_recall(
     user_id: UUID,
     request: ContinuityRecallQueryInput,
     apply_limit: bool = True,
+    ranking_strategy: Literal["legacy_v1", "hybrid_v2"] = "hybrid_v2",
 ) -> ContinuityRecallResponse:
     del user_id
 
@@ -697,6 +1069,7 @@ def query_continuity_recall(
     ordered_candidates = _ordered_recall_candidates(
         store,
         request=normalized_request,
+        ranking_strategy=ranking_strategy,
     )
 
     if apply_limit:

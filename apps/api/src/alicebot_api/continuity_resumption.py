@@ -138,8 +138,9 @@ def compile_continuity_resumption_brief(
         apply_limit=False,
     )
 
+    ranked_items = list(recall_payload["items"])
     recent_ordered_items = sorted(
-        recall_payload["items"],
+        ranked_items,
         key=_recency_sort_key,
         reverse=True,
     )
@@ -147,7 +148,7 @@ def compile_continuity_resumption_brief(
     latest_decision = next(
         (
             item
-            for item in recent_ordered_items
+            for item in ranked_items
             if item["object_type"] == "Decision" and _is_active_truth(item)
         ),
         None,
@@ -155,7 +156,7 @@ def compile_continuity_resumption_brief(
     latest_next_action = next(
         (
             item
-            for item in recent_ordered_items
+            for item in ranked_items
             if item["object_type"] == "NextAction" and _is_active_truth(item)
         ),
         None,
