@@ -449,6 +449,157 @@ def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
     assert "http://127.0.0.1:8080/v1/chat/completions" in captured_urls
 
 
+def test_phase11_vllm_registration_runtime_and_telemetry(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, _, user_account_id = _bootstrap_workspace_session("provider-vllm-a@example.com")
+    session_token_other, _, _ = _bootstrap_workspace_session("provider-vllm-b@example.com")
+
+    captured_requests: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):
+        body = None if request.data is None else json.loads(request.data.decode("utf-8"))
+        captured_requests.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": body,
+            }
+        )
+        url = request.full_url
+        if url.endswith("/health"):
+            return FakeHTTPResponse(json.dumps({"status": "ok"}).encode("utf-8"))
+        if url.endswith("/v1/models"):
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "meta-llama/Meta-Llama-3.1-8B-Instruct"}]}).encode("utf-8"))
+        if url.endswith("/v1/chat/completions"):
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "id": "chatcmpl-vllm-2",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "vLLM runtime response"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 19,
+                            "completion_tokens": 6,
+                            "total_tokens": 25,
+                        },
+                    }
+                ).encode("utf-8")
+            )
+        raise AssertionError(f"unexpected local provider URL: {url}")
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_urlopen)
+
+    create_status, create_payload = invoke_request(
+        "POST",
+        "/v1/providers/vllm/register",
+        payload={
+            "display_name": "vLLM Self-Hosted",
+            "base_url": "http://127.0.0.1:8001",
+            "default_model": "meta-llama/Meta-Llama-3.1-8B-Instruct",
+            "adapter_options": {
+                "invoke_passthrough": {
+                    "temperature": 0.2,
+                    "top_p": 0.9,
+                    "max_tokens": 256,
+                    "stop": ["###"],
+                }
+            },
+            "metadata": {"kind": "self_hosted"},
+        },
+        headers=auth_header(session_token),
+    )
+    assert create_status == 201
+    provider_id = create_payload["provider"]["id"]
+    assert create_payload["provider"]["provider_key"] == "vllm"
+    assert create_payload["provider"]["adapter_options"]["invoke_passthrough"]["temperature"] == 0.2
+    assert create_payload["capabilities"]["snapshot"]["supports_normalized_latency_telemetry"] is True
+    assert create_payload["capabilities"]["snapshot"]["supports_normalized_usage_telemetry"] is True
+    assert create_payload["capabilities"]["snapshot"]["telemetry_flow_scope"] == [
+        "provider_test",
+        "runtime_invoke",
+    ]
+
+    thread_id = _seed_thread_for_user(
+        admin_db_url=migrated_database_urls["admin"],
+        user_id=user_account_id,
+        email="provider-vllm-a@example.com",
+    )
+
+    test_status, test_payload = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={
+            "provider_id": provider_id,
+            "prompt": "Validate vllm path.",
+        },
+        headers=auth_header(session_token),
+    )
+    assert test_status == 200
+    assert test_payload["result"]["text"] == "vLLM runtime response"
+    assert test_payload["result"]["usage"]["total_tokens"] == 25
+
+    invoke_status, invoke_payload = invoke_request(
+        "POST",
+        "/v1/runtime/invoke",
+        payload={
+            "provider_id": provider_id,
+            "thread_id": thread_id,
+            "message": "How is vllm runtime?",
+        },
+        headers=auth_header(session_token),
+    )
+    assert invoke_status == 200
+    assert invoke_payload["assistant"]["provider_key"] == "vllm"
+    assert invoke_payload["assistant"]["usage"]["total_tokens"] == 25
+
+    telemetry_status, telemetry_payload = invoke_request(
+        "GET",
+        f"/v1/providers/{provider_id}/telemetry",
+        query_params={"limit": "10"},
+        headers=auth_header(session_token),
+    )
+    assert telemetry_status == 200
+    assert telemetry_payload["provider_id"] == provider_id
+    assert telemetry_payload["summary"]["total_count"] == 2
+    assert telemetry_payload["summary"]["completed_count"] == 2
+    assert telemetry_payload["summary"]["failed_count"] == 0
+    assert telemetry_payload["summary"]["usage_totals"]["total_tokens"] == 50
+    telemetry_flow_kinds = [item["flow_kind"] for item in telemetry_payload["items"]]
+    assert "provider_test" in telemetry_flow_kinds
+    assert "runtime_invoke" in telemetry_flow_kinds
+
+    other_workspace_status, other_workspace_payload = invoke_request(
+        "GET",
+        f"/v1/providers/{provider_id}/telemetry",
+        headers=auth_header(session_token_other),
+    )
+    assert other_workspace_status == 404
+    assert "was not found" in other_workspace_payload["detail"]
+
+    invoke_bodies = [
+        record["body"]
+        for record in captured_requests
+        if record["url"] == "http://127.0.0.1:8001/v1/chat/completions"
+    ]
+    assert len(invoke_bodies) == 2
+    for invoke_body in invoke_bodies:
+        assert isinstance(invoke_body, dict)
+        assert invoke_body["temperature"] == 0.2
+        assert invoke_body["top_p"] == 0.9
+        assert invoke_body["max_tokens"] == 256
+        assert invoke_body["stop"] == ["###"]
+        assert "unexpected_option" not in invoke_body
+
+
 def test_phase11_openai_compatible_registration_still_works(migrated_database_urls, monkeypatch) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
     session_token, workspace_id, _ = _bootstrap_workspace_session("provider-openai-reg@example.com")
