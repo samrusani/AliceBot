@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 import os
+from pathlib import Path
 import sys
 from uuid import UUID
 
@@ -122,6 +123,10 @@ from alicebot_api.trusted_fact_promotions import (
 )
 
 DEFAULT_CLI_USER_ID = "00000000-0000-0000-0000-000000000001"
+MAINTENANCE_REPORT_PATH_ENV = "ALICEBOT_MAINTENANCE_REPORT_PATH"
+DEFAULT_MAINTENANCE_REPORT_PATH = (
+    Path(__file__).resolve().parents[4] / "artifacts" / "ops" / "maintenance_status_latest.json"
+)
 REVIEW_STATUS_CHOICES = ("correction_ready", "active", "stale", "superseded", "deleted", "all")
 
 
@@ -192,6 +197,90 @@ def _build_context(args: argparse.Namespace) -> CLIContext:
 def _store_context(ctx: CLIContext) -> Iterator[ContinuityStore]:
     with user_connection(ctx.database_url, ctx.user_id) as conn:
         yield ContinuityStore(conn)
+
+
+def _parse_maintenance_status_payload(payload: object) -> dict[str, object]:
+    default_snapshot: dict[str, object] = {
+        "maintenance_status": "unknown",
+        "maintenance_schedule": "unknown",
+        "maintenance_last_run_at": "unknown",
+        "maintenance_failure_count": 0,
+        "maintenance_warning_count": 0,
+        "maintenance_stale_fact_count": 0,
+        "maintenance_reembedded_segment_count": 0,
+        "maintenance_pattern_candidate_count": 0,
+        "maintenance_benchmark_status": "unknown",
+    }
+
+    if not isinstance(payload, dict):
+        return default_snapshot
+
+    summary = payload.get("summary")
+    if isinstance(summary, dict):
+        status = summary.get("status")
+        if isinstance(status, str):
+            default_snapshot["maintenance_status"] = status
+        schedule = summary.get("schedule")
+        if isinstance(schedule, str):
+            default_snapshot["maintenance_schedule"] = schedule
+        completed_at = summary.get("run_completed_at")
+        if isinstance(completed_at, str):
+            default_snapshot["maintenance_last_run_at"] = completed_at
+        failure_count = summary.get("failure_count")
+        if isinstance(failure_count, int):
+            default_snapshot["maintenance_failure_count"] = failure_count
+        warning_count = summary.get("warning_count")
+        if isinstance(warning_count, int):
+            default_snapshot["maintenance_warning_count"] = warning_count
+
+    jobs = payload.get("jobs")
+    if not isinstance(jobs, list):
+        return default_snapshot
+
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        job_key = job.get("job_key")
+        details = job.get("details")
+        if not isinstance(job_key, str) or not isinstance(details, dict):
+            continue
+        if job_key == "stale_fact_marking":
+            stale_fact_count = details.get("stale_fact_count")
+            if isinstance(stale_fact_count, int):
+                default_snapshot["maintenance_stale_fact_count"] = stale_fact_count
+        elif job_key == "reembed_missing_segments":
+            reembedded_segment_count = details.get("reembedded_segment_count")
+            if isinstance(reembedded_segment_count, int):
+                default_snapshot["maintenance_reembedded_segment_count"] = reembedded_segment_count
+        elif job_key == "pattern_candidate_recompute":
+            pattern_candidate_count = details.get("pattern_candidate_count")
+            if isinstance(pattern_candidate_count, int):
+                default_snapshot["maintenance_pattern_candidate_count"] = pattern_candidate_count
+        elif job_key == "benchmark_regeneration":
+            benchmark_status = details.get("benchmark_status")
+            if isinstance(benchmark_status, str):
+                default_snapshot["maintenance_benchmark_status"] = benchmark_status
+
+    return default_snapshot
+
+
+def _load_maintenance_status_snapshot() -> dict[str, object]:
+    raw_path = os.getenv(MAINTENANCE_REPORT_PATH_ENV)
+    if raw_path is None or raw_path.strip() == "":
+        report_path = DEFAULT_MAINTENANCE_REPORT_PATH
+    else:
+        candidate = Path(raw_path.strip()).expanduser()
+        report_path = candidate if candidate.is_absolute() else (Path.cwd() / candidate).resolve()
+
+    if not report_path.exists():
+        return _parse_maintenance_status_payload({})
+
+    try:
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _parse_maintenance_status_payload({})
+
+    return _parse_maintenance_status_payload(payload)
 
 
 def _run_capture(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -451,6 +540,7 @@ def _run_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
         ctx.database_url,
         timeout_seconds=ctx.settings.healthcheck_timeout_seconds,
     )
+    maintenance_status = _load_maintenance_status_snapshot()
 
     status_payload: dict[str, object] = {
         "user_id": str(ctx.user_id),
@@ -478,6 +568,15 @@ def _run_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
         "retrieval_eval_status": "unknown",
         "retrieval_precision_at_k_mean": "0.000",
         "retrieval_precision_at_1_mean": "0.000",
+        "maintenance_status": maintenance_status["maintenance_status"],
+        "maintenance_schedule": maintenance_status["maintenance_schedule"],
+        "maintenance_last_run_at": maintenance_status["maintenance_last_run_at"],
+        "maintenance_failure_count": maintenance_status["maintenance_failure_count"],
+        "maintenance_warning_count": maintenance_status["maintenance_warning_count"],
+        "maintenance_stale_fact_count": maintenance_status["maintenance_stale_fact_count"],
+        "maintenance_reembedded_segment_count": maintenance_status["maintenance_reembedded_segment_count"],
+        "maintenance_pattern_candidate_count": maintenance_status["maintenance_pattern_candidate_count"],
+        "maintenance_benchmark_status": maintenance_status["maintenance_benchmark_status"],
     }
     if not database_reachable:
         return format_status_output(status_payload)

@@ -858,6 +858,18 @@ def format_status_output(status: Mapping[str, object]) -> str:
             f"next_action={status['open_loops_next_action']}"
         ),
         (
+            "maintenance: "
+            f"status={status['maintenance_status']} "
+            f"schedule={status['maintenance_schedule']} "
+            f"last_run={status['maintenance_last_run_at']} "
+            f"failures={status['maintenance_failure_count']} "
+            f"warnings={status['maintenance_warning_count']} "
+            f"stale_facts={status['maintenance_stale_fact_count']} "
+            f"reembedded_segments={status['maintenance_reembedded_segment_count']} "
+            f"pattern_candidates={status['maintenance_pattern_candidate_count']} "
+            f"benchmark={status['maintenance_benchmark_status']}"
+        ),
+        (
             "retrieval_eval: "
             f"status={status['retrieval_eval_status']} "
             f"precision_at_k_mean={status['retrieval_precision_at_k_mean']} "

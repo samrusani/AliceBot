@@ -117,6 +117,7 @@ In another terminal, verify the runtime and get a first useful result:
 ./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
 ./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
 ./.venv/bin/python -m alicebot_api open-loops --limit 5
+./scripts/run_archive_maintenance.py --schedule manual
 ```
 
 Recall-derived surfaces now expose a shared explanation payload, and `explain` uses the same structure for continuity evidence:
