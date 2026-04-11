@@ -148,7 +148,7 @@ def compile_continuity_resumption_brief(
     latest_decision = next(
         (
             item
-            for item in ranked_items
+            for item in recent_ordered_items
             if item["object_type"] == "Decision" and _is_active_truth(item)
         ),
         None,
@@ -156,7 +156,7 @@ def compile_continuity_resumption_brief(
     latest_next_action = next(
         (
             item
-            for item in ranked_items
+            for item in recent_ordered_items
             if item["object_type"] == "NextAction" and _is_active_truth(item)
         ),
         None,

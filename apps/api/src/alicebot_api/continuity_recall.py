@@ -134,6 +134,13 @@ _ENTITY_KEYS = (
 )
 _TRUST_CLASS_KEYS = {"trust_class", "memory_trust_class"}
 _SEMANTIC_MATCH_THRESHOLD = 0.02
+_MAX_QUERY_TERM_COUNT = 64
+_MAX_SIMILARITY_QUERY_CHARS = 512
+_MAX_SIMILARITY_QUERY_TOKEN_COUNT = 64
+_MAX_SIMILARITY_CANDIDATE_TEXT_CHARS = 16_384
+_MAX_SIMILARITY_TOKEN_COUNT = 512
+_MAX_SIMILARITY_TRIGRAM_COUNT = 4096
+_RECENCY_HALF_LIFE_HOURS = 24.0
 
 
 def _normalize_optional_text(value: str | None) -> str | None:
@@ -418,66 +425,112 @@ def _query_terms(query: str | None) -> list[str]:
         return []
     return [
         term
-        for term in re.findall(r"[a-z0-9]+", query.casefold())
+        for term in re.findall(r"[a-z0-9]+", query.casefold()[:_MAX_SIMILARITY_QUERY_CHARS])
         if term
-    ]
+    ][: _MAX_QUERY_TERM_COUNT]
 
 
-def _count_query_term_matches(row: ContinuityRecallCandidateRow, terms: list[str]) -> int:
+def _count_query_term_matches(*, candidate_text_casefold: str, terms: list[str]) -> int:
     if not terms:
         return 0
+    return sum(1 for term in terms if term in candidate_text_casefold)
 
+
+def _candidate_text(row: ContinuityRecallCandidateRow) -> str:
     text = " ".join(
         [
             row["title"],
             _flatten_text(row["body"]),
             _flatten_text(row["provenance"]),
         ]
-    ).casefold()
-    return sum(1 for term in terms if term in text)
+    )
+    return text[:_MAX_SIMILARITY_CANDIDATE_TEXT_CHARS]
 
 
-def _candidate_text(row: ContinuityRecallCandidateRow) -> str:
-    return " ".join(
-        [
-            row["title"],
-            _flatten_text(row["body"]),
-            _flatten_text(row["provenance"]),
-        ]
+def _tokenize(
+    value: str,
+    *,
+    max_chars: int,
+    max_tokens: int,
+) -> list[str]:
+    tokens = [token for token in re.findall(r"[a-z0-9]+", value.casefold()[:max_chars]) if token]
+    if len(tokens) > max_tokens:
+        return tokens[:max_tokens]
+    return tokens
+
+
+def _trigrams(value: str, *, max_chars: int, max_ngrams: int) -> set[str]:
+    compact = re.sub(r"\s+", " ", value.casefold()[:max_chars]).strip()
+    if len(compact) < 3:
+        return {compact} if compact else set()
+    ngram_count = min(len(compact) - 2, max_ngrams)
+    return {compact[index : index + 3] for index in range(ngram_count)}
+
+
+@dataclass(frozen=True, slots=True)
+class SimilarityQueryFeatures:
+    normalized_query: str | None
+    tokens: set[str]
+    trigrams: set[str]
+
+
+def _build_similarity_query_features(query: str | None) -> SimilarityQueryFeatures:
+    normalized_query = _normalize_optional_text(query)
+    if normalized_query is None:
+        return SimilarityQueryFeatures(
+            normalized_query=None,
+            tokens=set(),
+            trigrams=set(),
+        )
+    tokens = set(
+        _tokenize(
+            normalized_query,
+            max_chars=_MAX_SIMILARITY_QUERY_CHARS,
+            max_tokens=_MAX_SIMILARITY_QUERY_TOKEN_COUNT,
+        )
+    )
+    trigrams = _trigrams(
+        normalized_query,
+        max_chars=_MAX_SIMILARITY_QUERY_CHARS,
+        max_ngrams=_MAX_SIMILARITY_TRIGRAM_COUNT,
+    )
+    return SimilarityQueryFeatures(
+        normalized_query=normalized_query,
+        tokens=tokens,
+        trigrams=trigrams,
     )
 
 
-def _tokenize(value: str) -> list[str]:
-    return [token for token in re.findall(r"[a-z0-9]+", value.casefold()) if token]
-
-
-def _trigrams(value: str) -> set[str]:
-    compact = re.sub(r"\s+", " ", value.casefold()).strip()
-    if len(compact) < 3:
-        return {compact} if compact else set()
-    return {compact[index : index + 3] for index in range(len(compact) - 2)}
-
-
-def _semantic_similarity_score(*, query: str | None, candidate_text: str) -> float:
-    if query is None:
+def _semantic_similarity_score(
+    *,
+    query_features: SimilarityQueryFeatures,
+    candidate_text: str,
+) -> float:
+    if not query_features.tokens:
         return 0.0
 
-    query_tokens = set(_tokenize(query))
-    if not query_tokens:
-        return 0.0
-    candidate_tokens = set(_tokenize(candidate_text))
+    candidate_tokens = set(
+        _tokenize(
+            candidate_text,
+            max_chars=_MAX_SIMILARITY_CANDIDATE_TEXT_CHARS,
+            max_tokens=_MAX_SIMILARITY_TOKEN_COUNT,
+        )
+    )
 
     token_overlap = (
-        len(query_tokens & candidate_tokens) / len(query_tokens)
-        if query_tokens
+        len(query_features.tokens & candidate_tokens) / len(query_features.tokens)
+        if query_features.tokens
         else 0.0
     )
 
-    query_ngrams = _trigrams(query)
-    candidate_ngrams = _trigrams(candidate_text)
+    candidate_ngrams = _trigrams(
+        candidate_text,
+        max_chars=_MAX_SIMILARITY_CANDIDATE_TEXT_CHARS,
+        max_ngrams=_MAX_SIMILARITY_TRIGRAM_COUNT,
+    )
     trigram_overlap = (
-        len(query_ngrams & candidate_ngrams) / len(query_ngrams | candidate_ngrams)
-        if query_ngrams and candidate_ngrams
+        len(query_features.trigrams & candidate_ngrams) / len(query_features.trigrams | candidate_ngrams)
+        if query_features.trigrams and candidate_ngrams
         else 0.0
     )
 
@@ -485,27 +538,28 @@ def _semantic_similarity_score(*, query: str | None, candidate_text: str) -> flo
     return (token_overlap * 0.75) + (trigram_overlap * 0.25)
 
 
-def _exact_match_score(*, query: str | None, candidate_text: str, title: str) -> float:
-    if query is None:
-        return 0.0
-    normalized_query = _normalize_optional_text(query)
-    if normalized_query is None:
+def _exact_match_score(
+    *,
+    query_features: SimilarityQueryFeatures,
+    candidate_text_casefold: str,
+    title: str,
+) -> float:
+    if query_features.normalized_query is None:
         return 0.0
 
-    query_casefold = normalized_query.casefold()
+    query_casefold = query_features.normalized_query.casefold()
     title_casefold = title.casefold()
-    text_casefold = candidate_text.casefold()
 
     if query_casefold in title_casefold:
         return 1.0
-    if query_casefold in text_casefold:
+    if query_casefold in candidate_text_casefold:
         return 0.8
 
-    terms = _tokenize(query_casefold)
+    terms = query_features.tokens
     if not terms:
         return 0.0
     title_hits = sum(1 for term in terms if term in title_casefold)
-    text_hits = sum(1 for term in terms if term in text_casefold)
+    text_hits = sum(1 for term in terms if term in candidate_text_casefold)
     if title_hits == len(terms):
         return 0.7
     if text_hits == len(terms):
@@ -633,13 +687,29 @@ def _extract_trust_class(
 def _entity_query_terms(request: ContinuityRecallQueryInput) -> list[str]:
     values: list[str] = []
     if request.project is not None:
-        values.extend(_tokenize(request.project))
+        values.extend(
+            _tokenize(
+                request.project,
+                max_chars=_MAX_SIMILARITY_QUERY_CHARS,
+                max_tokens=_MAX_SIMILARITY_QUERY_TOKEN_COUNT,
+            )
+        )
     if request.person is not None:
-        values.extend(_tokenize(request.person))
+        values.extend(
+            _tokenize(
+                request.person,
+                max_chars=_MAX_SIMILARITY_QUERY_CHARS,
+                max_tokens=_MAX_SIMILARITY_QUERY_TOKEN_COUNT,
+            )
+        )
     if request.query is not None:
         values.extend(
             term
-            for term in _tokenize(request.query)
+            for term in _tokenize(
+                request.query,
+                max_chars=_MAX_SIMILARITY_QUERY_CHARS,
+                max_tokens=_MAX_SIMILARITY_QUERY_TOKEN_COUNT,
+            )
             if len(term) >= 4
         )
 
@@ -673,6 +743,12 @@ def _supersession_freshness_score(
 ) -> float:
     # Higher values favor current, fresher truth over stale superseded records.
     return (float(freshness_rank) * 2.0) + float(supersession_rank)
+
+
+def _recency_score(*, created_at: datetime, newest_created_at: datetime) -> float:
+    age_hours = max((newest_created_at - created_at).total_seconds(), 0.0) / 3600.0
+    # Bounded [0, 1], with half-life controlled by _RECENCY_HALF_LIFE_HOURS.
+    return 1.0 / (1.0 + (age_hours / _RECENCY_HALF_LIFE_HOURS))
 
 
 def _matches_time_window(
@@ -853,9 +929,13 @@ def _ordered_recall_candidates(
         else None
     )
     query_terms = _query_terms(request.query)
+    query_features = _build_similarity_query_features(request.query)
     entity_terms = _entity_query_terms(request)
-
-    ranked_candidates: list[RankedRecallCandidate] = []
+    scoped_candidates: list[tuple[ContinuityRecallCandidateRow, list[ContinuityRecallScopeMatch]]] = []
+    required_scope_count = sum(
+        value is not None
+        for value in (thread_filter, task_filter, project_filter, person_filter)
+    )
 
     for row in store.list_continuity_recall_candidates():
         if row["status"] == "deleted":
@@ -877,23 +957,34 @@ def _ordered_recall_candidates(
             project_filter=project_filter,
             person_filter=person_filter,
         )
-
-        required_scope_count = sum(
-            value is not None
-            for value in (thread_filter, task_filter, project_filter, person_filter)
-        )
         if len(scope_matches) != required_scope_count:
             continue
+        scoped_candidates.append((row, scope_matches))
+
+    if not scoped_candidates:
+        return []
+
+    newest_created_at = max(
+        row["object_created_at"]
+        for row, _scope_matches in scoped_candidates
+    )
+    ranked_candidates: list[RankedRecallCandidate] = []
+
+    for row, scope_matches in scoped_candidates:
 
         candidate_text = _candidate_text(row)
-        query_term_match_count = _count_query_term_matches(row, query_terms)
+        candidate_text_casefold = candidate_text.casefold()
+        query_term_match_count = _count_query_term_matches(
+            candidate_text_casefold=candidate_text_casefold,
+            terms=query_terms,
+        )
         semantic_similarity_score = _semantic_similarity_score(
-            query=request.query,
+            query_features=query_features,
             candidate_text=candidate_text,
         )
         exact_match_score = _exact_match_score(
-            query=request.query,
-            candidate_text=candidate_text,
+            query_features=query_features,
+            candidate_text_casefold=candidate_text_casefold,
             title=row["title"],
         )
         if ranking_strategy == "legacy_v1":
@@ -928,7 +1019,10 @@ def _ordered_recall_candidates(
             since=request.since,
             until=request.until,
         )
-        recency_score = row["object_created_at"].timestamp() / 3600.0
+        recency_score = _recency_score(
+            created_at=row["object_created_at"],
+            newest_created_at=newest_created_at,
+        )
         entity_match_count = _entity_match_count(
             row,
             entity_terms=entity_terms,
@@ -965,7 +1059,7 @@ def _ordered_recall_candidates(
                 + float(provenance_rank) * 6.0
                 + float(posture_rank) * 4.0
                 + float(lifecycle_rank) * 3.0
-                + recency_score
+                + recency_score * 4.0
                 + float(row["confidence"])
             )
 
