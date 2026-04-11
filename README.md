@@ -5,19 +5,37 @@ durable memory for agents, agent resumption, open loop tracking, local-first ai 
 
 # Alice
 
-**Durable memory and resumption for AI agents.**
+**The continuity layer for AI agents.**
 
 ![Local-first](https://img.shields.io/badge/local--first-core-0A7B61)
 ![MCP](https://img.shields.io/badge/MCP-supported-1f6feb)
+![Python](https://img.shields.io/badge/python-3.12%2B-3776AB)
+![Docker](https://img.shields.io/badge/docker-required-2496ED)
 ![License](https://img.shields.io/badge/license-MIT-2ea043)
 
-AI assistants are good at replying in the moment. They are still weak at remembering what matters, resuming interrupted work, and staying aligned after corrections.
+Alice helps agents **remember what matters, resume interrupted work, explain why something is true, and improve when corrected**.
 
-Alice is the continuity layer that fixes that.
+Most assistants are still good only in the moment. They can answer the current prompt, but they struggle to preserve decisions, track open loops, recover context across sessions, and stay aligned after memory corrections.
 
-It gives agents and workflows a local-first system for capture, recall, resumption, open-loop tracking, and correction-aware, trust-aware memory, so you do not have to rebuild context from scratch every time work resumes.
+Alice fixes that.
 
-## Why use Alice
+It provides a **local-first memory and continuity engine** for capture, recall, resumption, open-loop tracking, and correction-aware, trust-aware memory, so you do not have to rebuild context from scratch every time work resumes.
+
+**Works via CLI, MCP, OpenClaw import, Hermes integration, and local-first workflows.**
+
+## Why Alice exists
+
+AI assistants still fail in the same places:
+
+- important decisions disappear into old chats
+- interrupted work is hard to resume
+- blockers and waiting-fors get lost
+- memory corrections do not reliably improve future behavior
+- "memory" often means vague summaries with unclear provenance
+
+Alice is built to solve those problems directly.
+
+## What Alice gives you
 
 Use Alice if you want your agents or workflows to:
 
@@ -27,14 +45,14 @@ Use Alice if you want your agents or workflows to:
 - improve deterministically when memory is corrected
 - stay portable across CLI, MCP, and imported workflow data
 
-## What makes Alice different
+## Why Alice is different
 
-### It is built for continuity, not just storage
+### Built for continuity, not just storage
 
-Alice does not treat memory as a pile of chat history or vague summaries.
-It stores typed continuity objects, revisions, provenance, and open loops so context can be reused operationally.
+Alice does not treat memory as a pile of chat history or loose summaries.
+It stores **typed continuity objects, revisions, provenance, and open loops** so context can be reused operationally.
 
-### It is built for resumption, not just retrieval
+### Built for resumption, not just retrieval
 
 Most memory tools help you find something.
 Alice is designed to answer the higher-value questions:
@@ -44,41 +62,48 @@ Alice is designed to answer the higher-value questions:
 - What am I waiting on?
 - What should happen next?
 
-### It is correction-aware
+### Correction-aware by design
 
-Alice supports explicit review, correction, and supersession so future answers improve in a traceable way instead of drifting based on hidden summarization.
+Alice supports explicit **review, correction, and supersession** so future answers improve in a traceable way instead of drifting based on hidden summarization.
 
-### It is trust-aware
+### Trust-aware by default
 
 Alice does not treat every memory as equally reliable.
-Memories carry trust classification and promotion eligibility, so agents can search broadly without promoting weak, single-source AI-extracted facts into durable truth by default.
+Memories carry **trust classification** and **promotion eligibility**, so agents can search broadly without promoting weak, single-source AI-extracted facts into durable truth by default.
 
-Trust metadata flows through admission, retrieval, explain output, review behavior, and CLI/MCP responses, which makes memory quality visible instead of implicit.
+### Explainable, not opaque
 
-### It makes retrieval explainable, not just accurate
+Recall, resumption, open-loop review, and explain output all expose a shared explanation model with:
 
-Alice does not only return answers.
-Recall, resumption, open-loop review, and explain output all expose a shared explanation model with source facts, trust posture, evidence segments, supersession notes, and timestamps.
+- source facts
+- trust posture
+- evidence segments
+- supersession notes
+- timestamps
 
 That makes it easier to audit why an answer appeared, how it was derived, and how corrections changed the explanation chain over time.
 
-### It is local-first and agent-agnostic
+### Local-first and agent-agnostic
 
 Alice Core runs locally and exposes the same continuity semantics through the CLI and MCP, so you can use it with your own workflows instead of being locked into a closed assistant product.
 
-## Who Alice is for
+## Use Alice with your existing agents
 
-Alice is useful for:
+Alice is designed to be a **continuity layer**, not a closed assistant silo.
 
-- agent builders
-- technical teams
-- founders and operators
-- consultants and researchers
-- anyone who needs reliable memory and clean resumption across days or weeks of work
+It already supports:
+
+- **MCP-based integrations**
+- **OpenClaw import and augmentation**
+- **Hermes integration paths**
+- **Hermes external memory provider**
+- imported workflow data from Markdown and ChatGPT exports
+
+That means you can use Alice to upgrade an existing agent stack instead of rebuilding everything around a new runtime.
 
 ## What ships today
 
-The open-source surface includes:
+The current open-source surface includes:
 
 - Alice Core
 - deterministic CLI workflows
@@ -86,6 +111,7 @@ The open-source surface includes:
 - trust-aware memory classification and promotion controls
 - shared explainability across recall, resume, open-loop review, and explain surfaces
 - scheduled archive maintenance, ops status reporting, and failure alerting
+- Hermes external memory provider for always-on continuity prefetch and Alice memory tools inside Hermes
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -111,22 +137,15 @@ docker compose up -d
 APP_RELOAD=false ./scripts/api_dev.sh
 ```
 
-In another terminal, verify the runtime and get a first useful result:
+### First useful result in 5 minutes
+
+In another terminal, verify the runtime and get a visible result:
 
 ```bash
 ./.venv/bin/python -m alicebot_api status
 ./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
 ./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
 ./.venv/bin/python -m alicebot_api open-loops --limit 5
-./scripts/run_archive_maintenance.py --schedule manual
-```
-
-Alice also includes a deterministic maintenance runner for archive integrity checks, stale fact surfacing, missing segment re-embedding, trusted-fact pattern candidate recompute, and optional benchmark regeneration.
-
-Recall-derived surfaces now expose a shared explanation payload, and `explain` uses the same structure for continuity evidence:
-
-```bash
-./.venv/bin/python -m alicebot_api explain <continuity_object_id>
 ```
 
 Capture something new:
@@ -135,13 +154,23 @@ Capture something new:
 ./.venv/bin/python -m alicebot_api capture "Remember that the Q3 board pack is due on Thursday."
 ```
 
+Inspect why something is in memory:
+
+```bash
+./.venv/bin/python -m alicebot_api explain <continuity_object_id>
+```
+
+Run archive maintenance manually:
+
+```bash
+./scripts/run_archive_maintenance.py --schedule manual
+```
+
+Alice also includes a deterministic maintenance runner for archive integrity checks, stale fact surfacing, missing segment re-embedding, trusted-fact pattern candidate recompute, and optional benchmark regeneration.
+
 See the full local setup walkthrough in [docs/quickstart/local-setup-and-first-result.md](docs/quickstart/local-setup-and-first-result.md).
 
-## Use Alice with your agents
-
-Alice is designed to be a continuity layer, not a closed assistant silo.
-
-### MCP
+## MCP surface
 
 Alice exposes a narrow MCP surface for continuity workflows:
 
@@ -170,7 +199,9 @@ Hermes runtime smoke test:
 ./scripts/run_hermes_mcp_smoke.py
 ```
 
-### Import and augment existing workflows
+If you use Hermes, Alice supports three integration modes: MCP, skill pack, and a first-class external memory provider for turn prefetch plus recall, resumption, and open-loop tools.
+
+## OpenClaw and imported workflows
 
 Alice includes importer paths for existing memory and conversation data so you can upgrade an existing workflow instead of starting from zero.
 
@@ -191,6 +222,11 @@ See:
 
 - [docs/integrations/importers.md](docs/integrations/importers.md)
 - [docs/integrations/openclaw.md](docs/integrations/openclaw.md)
+
+## Why not just use ChatGPT memory?
+
+ChatGPT memory is convenient.
+Alice is structured, explainable, correctable, and portable across agent stacks, with explicit provenance, trust, resumption, and open-loop workflows.
 
 ## Example outcomes
 
