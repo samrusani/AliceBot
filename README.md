@@ -86,6 +86,7 @@ The open-source surface includes:
 - trust-aware memory classification and promotion controls
 - shared explainability across recall, resume, open-loop review, and explain surfaces
 - scheduled archive maintenance, ops status reporting, and failure alerting
+- Hermes external memory provider for always-on continuity prefetch and Alice memory tools inside Hermes
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -169,6 +170,8 @@ Hermes runtime smoke test:
 ```bash
 ./scripts/run_hermes_mcp_smoke.py
 ```
+
+If you use Hermes, Alice now supports three integration modes: MCP, skill pack, and a first-class external memory provider for turn prefetch plus recall, resumption, and open-loop tools.
 
 ### Import and augment existing workflows
 
