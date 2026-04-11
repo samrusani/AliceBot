@@ -7,6 +7,17 @@ for:
 - `alice_resume`
 - `alice_open_loops`
 
+## Choose The Integration Path
+
+- External memory provider: `docs/integrations/hermes-memory-provider.md`
+- MCP tools: this document (`docs/integrations/hermes.md`)
+- Hermes skill pack: `docs/integrations/hermes-skill-pack.md`
+
+Use MCP when you want broad Alice tool access through Hermes `mcp_servers`.
+Use the external memory provider when you want always-on prefetch and memory
+tools inside Hermes memory-provider flow. Use the skill pack for tool-routing
+and response policy on top of either path.
+
 ## Prerequisites
 
 - Hermes Agent with MCP support (`hermes mcp --help` works).

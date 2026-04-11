@@ -53,11 +53,14 @@ HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}" \
   rg "alice-continuity-recall|alice-resumption|alice-open-loop-review"
 ```
 
-## Skills vs MCP: Responsibility Split
+## Skills vs Provider vs MCP: Responsibility Split
 
 - Skills: decision policy and workflow instructions (when to call tools, how to format output, what evidence to include).
+- External memory provider: always-on prefetch and memory-provider-native recall tools.
 - MCP tools: runtime execution and deterministic continuity data retrieval/update.
-- Practical rule: use skills to decide behavior; use MCP tools to fetch or mutate continuity state.
+- Practical rule: use skills to decide behavior; use provider or MCP to execute continuity reads/writes.
+
+See `docs/integrations/hermes-memory-provider.md` for the external provider setup path.
 
 ## When Hermes Should Prefer Alice Tools
 
