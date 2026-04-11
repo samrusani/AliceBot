@@ -195,36 +195,188 @@ def _fixture_suite() -> tuple[RetrievalEvaluationFixture, ...]:
             ),
             expected_relevant_ids=("00000000-0000-4000-8000-000000000021",),
         ),
+        RetrievalEvaluationFixture(
+            fixture_id="semantic_similarity_recovers_non_exact_query",
+            title="Semantic similarity recovers non-exact query wording without lexical matches",
+            request=ContinuityRecallQueryInput(query="synchronize calendars", limit=5),
+            candidates=(
+                _candidate(
+                    object_id="00000000-0000-4000-8000-000000000031",
+                    capture_event_id="10000000-0000-4000-8000-000000000031",
+                    title="Decision: Sync calendar availability",
+                    body={"decision_text": "sync calendar availability before send"},
+                    provenance={
+                        "project": "Project Orbit",
+                        "source_event_ids": ["e-31"],
+                        "confirmation_status": "confirmed",
+                    },
+                    confidence=0.84,
+                    created_at=datetime(2026, 3, 30, 9, 0, tzinfo=UTC),
+                    last_confirmed_at=datetime(2026, 3, 30, 9, 30, tzinfo=UTC),
+                ),
+                _candidate(
+                    object_id="00000000-0000-4000-8000-000000000032",
+                    capture_event_id="10000000-0000-4000-8000-000000000032",
+                    title="Decision: Archive sprint retro",
+                    body={"decision_text": "archive retro notes after review"},
+                    provenance={"project": "Project Orbit"},
+                    confidence=0.99,
+                    created_at=datetime(2026, 3, 30, 9, 5, tzinfo=UTC),
+                ),
+            ),
+            expected_relevant_ids=("00000000-0000-4000-8000-000000000031",),
+        ),
+        RetrievalEvaluationFixture(
+            fixture_id="entity_signal_reduces_cross_entity_noise",
+            title="Entity matching downranks same-topic but wrong-entity candidates",
+            request=ContinuityRecallQueryInput(query="alex dependency owner", limit=5),
+            candidates=(
+                _candidate(
+                    object_id="00000000-0000-4000-8000-000000000041",
+                    capture_event_id="10000000-0000-4000-8000-000000000041",
+                    title="Decision: Alex owns dependency follow-up",
+                    body={"decision_text": "dependency owner follow-up is Alex"},
+                    provenance={
+                        "person": "Alex",
+                        "project": "Project Atlas",
+                        "source_event_ids": ["e-41"],
+                        "confirmation_status": "confirmed",
+                    },
+                    confidence=0.64,
+                    created_at=datetime(2026, 3, 27, 9, 0, tzinfo=UTC),
+                    last_confirmed_at=datetime(2026, 3, 27, 9, 30, tzinfo=UTC),
+                ),
+                _candidate(
+                    object_id="00000000-0000-4000-8000-000000000042",
+                    capture_event_id="10000000-0000-4000-8000-000000000042",
+                    title="Decision: Dependency owner note",
+                    body={"decision_text": "dependency owner follow-up is Taylor"},
+                    provenance={
+                        "person": "Taylor",
+                        "project": "Project Atlas",
+                        "source_event_ids": ["e-42"],
+                        "confirmation_status": "confirmed",
+                    },
+                    confidence=0.99,
+                    created_at=datetime(2026, 3, 27, 10, 0, tzinfo=UTC),
+                    last_confirmed_at=datetime(2026, 3, 27, 10, 5, tzinfo=UTC),
+                ),
+            ),
+            expected_relevant_ids=("00000000-0000-4000-8000-000000000041",),
+        ),
+        RetrievalEvaluationFixture(
+            fixture_id="temporal_trust_supersession_prefers_current_valid_truth",
+            title="Current valid trusted facts outrank stale superseded alternatives",
+            request=ContinuityRecallQueryInput(
+                query="contract window",
+                since=datetime(2026, 2, 1, 0, 0, tzinfo=UTC),
+                until=datetime(2026, 4, 30, 23, 59, tzinfo=UTC),
+                limit=5,
+            ),
+            candidates=(
+                _candidate(
+                    object_id="00000000-0000-4000-8000-000000000051",
+                    capture_event_id="10000000-0000-4000-8000-000000000051",
+                    title="Decision: Contract window is April",
+                    body={
+                        "decision_text": "contract window is April and currently valid",
+                        "valid_from": "2026-04-01T00:00:00+00:00",
+                        "valid_to": "2026-04-30T23:59:00+00:00",
+                    },
+                    provenance={
+                        "project": "Project Atlas",
+                        "source_event_ids": ["e-51"],
+                        "trust_class": "human_curated",
+                    },
+                    confidence=0.58,
+                    created_at=datetime(2026, 3, 31, 12, 0, tzinfo=UTC),
+                    last_confirmed_at=datetime(2026, 4, 1, 8, 0, tzinfo=UTC),
+                ),
+                _candidate(
+                    object_id="00000000-0000-4000-8000-000000000052",
+                    capture_event_id="10000000-0000-4000-8000-000000000052",
+                    title="Decision: Contract window legacy note",
+                    body={
+                        "decision_text": "contract window from prior quarter",
+                        "valid_from": "2026-01-01T00:00:00+00:00",
+                        "valid_to": "2026-03-01T00:00:00+00:00",
+                    },
+                    provenance={
+                        "project": "Project Atlas",
+                        "source_event_ids": ["e-52"],
+                        "confirmation_status": "confirmed",
+                        "trust_class": "llm_single_source",
+                    },
+                    confidence=0.99,
+                    status="superseded",
+                    created_at=datetime(2026, 2, 15, 12, 0, tzinfo=UTC),
+                    last_confirmed_at=datetime(2026, 2, 15, 12, 30, tzinfo=UTC),
+                    superseded_by_object_id="00000000-0000-4000-8000-000000000051",
+                ),
+            ),
+            expected_relevant_ids=("00000000-0000-4000-8000-000000000051",),
+        ),
     )
 
 
-def _evaluate_fixture(fixture: RetrievalEvaluationFixture) -> tuple[RetrievalEvaluationFixtureResult, float]:
+def _evaluate_fixture(
+    fixture: RetrievalEvaluationFixture,
+) -> tuple[RetrievalEvaluationFixtureResult, float, float]:
     payload = query_continuity_recall(
         _FixtureStore(fixture.candidates),  # type: ignore[arg-type]
         user_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
         request=fixture.request,
         apply_limit=False,
+        ranking_strategy="hybrid_v2",
+    )
+    baseline_payload = query_continuity_recall(
+        _FixtureStore(fixture.candidates),  # type: ignore[arg-type]
+        user_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        request=fixture.request,
+        apply_limit=False,
+        ranking_strategy="legacy_v1",
     )
     returned_ids = [item["id"] for item in payload["items"]]
+    baseline_returned_ids = [item["id"] for item in baseline_payload["items"]]
     relevant_ids = set(fixture.expected_relevant_ids)
     precision_at_k = calculate_precision_at_k(
         returned_ids=returned_ids,
         relevant_ids=relevant_ids,
         top_k=fixture.top_k,
     )
+    baseline_precision_at_k = calculate_precision_at_k(
+        returned_ids=baseline_returned_ids,
+        relevant_ids=relevant_ids,
+        top_k=fixture.top_k,
+    )
     evaluated_window = returned_ids[: fixture.top_k]
+    baseline_evaluated_window = baseline_returned_ids[: fixture.top_k]
     hit_count = sum(1 for candidate_id in evaluated_window if candidate_id in relevant_ids)
+    baseline_hit_count = sum(
+        1 for candidate_id in baseline_evaluated_window if candidate_id in relevant_ids
+    )
     top_result = payload["items"][0] if payload["items"] else None
+    baseline_top_result = baseline_payload["items"][0] if baseline_payload["items"] else None
     result: RetrievalEvaluationFixtureResult = {
         "fixture_id": fixture.fixture_id,
         "title": fixture.title,
         "query": fixture.request.query or "",
         "top_k": fixture.top_k,
         "expected_relevant_ids": list(fixture.expected_relevant_ids),
+        "baseline_returned_ids": baseline_returned_ids,
         "returned_ids": returned_ids,
         "hit_count": hit_count,
+        "baseline_hit_count": baseline_hit_count,
+        "baseline_precision_at_k": baseline_precision_at_k,
         "precision_at_k": precision_at_k,
+        "precision_lift_at_k": precision_at_k - baseline_precision_at_k,
+        "baseline_top_result_id": (
+            None if baseline_top_result is None else baseline_top_result["id"]
+        ),
         "top_result_id": None if top_result is None else top_result["id"],
+        "baseline_top_result_ordering": (
+            None if baseline_top_result is None else baseline_top_result["ordering"]
+        ),
         "top_result_ordering": None if top_result is None else top_result["ordering"],
     }
     precision_at_1 = calculate_precision_at_k(
@@ -232,7 +384,12 @@ def _evaluate_fixture(fixture: RetrievalEvaluationFixture) -> tuple[RetrievalEva
         relevant_ids=relevant_ids,
         top_k=1,
     )
-    return result, precision_at_1
+    baseline_precision_at_1 = calculate_precision_at_k(
+        returned_ids=baseline_returned_ids,
+        relevant_ids=relevant_ids,
+        top_k=1,
+    )
+    return result, precision_at_1, baseline_precision_at_1
 
 
 def get_retrieval_evaluation_summary(
@@ -246,32 +403,53 @@ def get_retrieval_evaluation_summary(
     fixture_suite = _fixture_suite()
     evaluated_results: list[RetrievalEvaluationFixtureResult] = []
     precision_values: list[float] = []
+    baseline_precision_values: list[float] = []
     precision_at_1_values: list[float] = []
+    baseline_precision_at_1_values: list[float] = []
+    precision_lift_values: list[float] = []
 
     for fixture in fixture_suite:
-        result, precision_at_1 = _evaluate_fixture(fixture)
+        result, precision_at_1, baseline_precision_at_1 = _evaluate_fixture(fixture)
         evaluated_results.append(result)
         precision_values.append(result["precision_at_k"])
+        baseline_precision_values.append(result["baseline_precision_at_k"])
+        precision_lift_values.append(result["precision_lift_at_k"])
         precision_at_1_values.append(precision_at_1)
+        baseline_precision_at_1_values.append(baseline_precision_at_1)
 
     fixture_count = len(fixture_suite)
+    baseline_precision_at_k_mean = calculate_mean_precision(baseline_precision_values)
     precision_at_k_mean = calculate_mean_precision(precision_values)
+    precision_at_k_lift = calculate_mean_precision(precision_lift_values)
+    baseline_precision_at_1_mean = calculate_mean_precision(baseline_precision_at_1_values)
     precision_at_1_mean = calculate_mean_precision(precision_at_1_values)
     passing_fixture_count = sum(
         1
         for result in evaluated_results
         if result["precision_at_k"] >= RETRIEVAL_EVALUATION_PRECISION_TARGET
     )
+    baseline_passing_fixture_count = sum(
+        1
+        for result in evaluated_results
+        if result["baseline_precision_at_k"] >= RETRIEVAL_EVALUATION_PRECISION_TARGET
+    )
     status: RetrievalEvaluationStatus = (
         "pass"
-        if precision_at_k_mean >= RETRIEVAL_EVALUATION_PRECISION_TARGET
+        if (
+            precision_at_k_mean >= RETRIEVAL_EVALUATION_PRECISION_TARGET
+            and precision_at_k_lift > 0.0
+        )
         else "fail"
     )
     summary: RetrievalEvaluationSummary = {
         "fixture_count": fixture_count,
         "evaluated_fixture_count": len(evaluated_results),
         "passing_fixture_count": passing_fixture_count,
+        "baseline_passing_fixture_count": baseline_passing_fixture_count,
+        "baseline_precision_at_k_mean": baseline_precision_at_k_mean,
         "precision_at_k_mean": precision_at_k_mean,
+        "precision_at_k_lift": precision_at_k_lift,
+        "baseline_precision_at_1_mean": baseline_precision_at_1_mean,
         "precision_at_1_mean": precision_at_1_mean,
         "precision_target": RETRIEVAL_EVALUATION_PRECISION_TARGET,
         "status": status,
