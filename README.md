@@ -23,6 +23,19 @@ It provides a **local-first memory and continuity engine** for capture, recall, 
 
 **Works via CLI, MCP, OpenClaw import, Hermes integration, and local-first workflows.**
 
+## Current phase
+
+Phase 9 is complete.
+
+Phase 10 is complete and shipped.
+Alice Connect is the planned Phase 10 product layer.
+
+Phase 11 is now the active planning and execution phase:
+
+- `P11-S1` Provider Abstraction + OpenAI-Compatible Base is the active sprint
+- later Phase 11 work adds provider breadth, model packs, and agent integration guides
+- Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md]
+
 ## Why Alice exists
 
 AI assistants still fail in the same places:

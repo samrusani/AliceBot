@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import json
@@ -52,6 +53,13 @@ class ModelInvocationError(RuntimeError):
 class ResponseFailure:
     detail: str
     trace: ResponseTraceSummary
+
+
+@dataclass(frozen=True, slots=True)
+class OpenAICompatibleTransportConfig:
+    base_url: str
+    api_key: str
+    timeout_seconds: int
 
 
 class _OpenAIResponseContentItem(TypedDict, total=False):
@@ -238,13 +246,13 @@ def _extract_http_error_detail(exc: HTTPError) -> str | None:
     return None
 
 
-def _build_model_http_request(*, settings: Settings, payload: JsonObject) -> Request:
-    endpoint = settings.model_base_url.rstrip("/") + "/responses"
+def _build_model_http_request(*, base_url: str, api_key: str, payload: JsonObject) -> Request:
+    endpoint = base_url.rstrip("/") + "/responses"
     return Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {settings.model_api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         method="POST",
@@ -297,21 +305,25 @@ def _create_linked_response_trace(
     return trace
 
 
-def invoke_model(
+def invoke_openai_compatible_model(
     *,
-    settings: Settings,
+    transport: OpenAICompatibleTransportConfig,
     request: ModelInvocationRequest,
 ) -> ModelInvocationResponse:
     if request.provider != "openai_responses":
         raise ModelInvocationError(f"unsupported model provider: {request.provider}")
-    if not settings.model_api_key:
+    if transport.api_key == "":
         raise ModelInvocationError("MODEL_API_KEY is not configured")
 
     payload = _build_openai_responses_payload(request)
-    http_request = _build_model_http_request(settings=settings, payload=payload)
+    http_request = _build_model_http_request(
+        base_url=transport.base_url,
+        api_key=transport.api_key,
+        payload=payload,
+    )
 
     try:
-        with urlopen(http_request, timeout=settings.model_timeout_seconds) as response:
+        with urlopen(http_request, timeout=transport.timeout_seconds) as response:
             raw_payload = response.read()
     except HTTPError as exc:
         detail = _extract_http_error_detail(exc)
@@ -331,6 +343,21 @@ def invoke_model(
         finish_reason=finish_reason,
         output_text=output_text,
         usage=_parse_usage(response_payload),
+    )
+
+
+def invoke_model(
+    *,
+    settings: Settings,
+    request: ModelInvocationRequest,
+) -> ModelInvocationResponse:
+    return invoke_openai_compatible_model(
+        transport=OpenAICompatibleTransportConfig(
+            base_url=settings.model_base_url,
+            api_key=settings.model_api_key,
+            timeout_seconds=settings.model_timeout_seconds,
+        ),
+        request=request,
     )
 
 
@@ -421,6 +448,8 @@ def generate_response(
     thread_id: UUID,
     message_text: str,
     limits: ContextCompilerLimits,
+    runtime_override: tuple[str, str] | None = None,
+    model_invoker: Callable[[ModelInvocationRequest], ModelInvocationResponse] | None = None,
 ) -> GenerateResponseSuccess | ResponseFailure:
     store.get_user(user_id)
     thread = store.get_thread(thread_id)
@@ -445,11 +474,14 @@ def generate_response(
         ),
         compile_trace_id=compiled_trace.trace_id,
     )
-    model_provider, model_name = resolve_thread_model_runtime(
-        store=store,
-        thread=thread,
-        settings=settings,
-    )
+    if runtime_override is None:
+        model_provider, model_name = resolve_thread_model_runtime(
+            store=store,
+            thread=thread,
+            settings=settings,
+        )
+    else:
+        model_provider, model_name = runtime_override
     request = ModelInvocationRequest(
         provider=model_provider,  # type: ignore[arg-type]
         model=model_name,
@@ -461,7 +493,10 @@ def generate_response(
     )
 
     try:
-        model_response = invoke_model(settings=settings, request=request)
+        if model_invoker is None:
+            model_response = invoke_model(settings=settings, request=request)
+        else:
+            model_response = model_invoker(request)
     except ModelInvocationError as exc:
         trace = _create_linked_response_trace(
             store=store,

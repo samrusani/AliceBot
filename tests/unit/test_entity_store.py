@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from psycopg.types.json import Jsonb
 
-from alicebot_api.store import ContinuityStore
+from alicebot_api.store import ContinuityStore, LIST_MEMORIES_BY_IDS_SQL
 
 
 class RecordingCursor:
@@ -89,32 +89,7 @@ def test_entity_methods_use_expected_queries_and_deterministic_order() -> None:
     assert isinstance(create_params[2], Jsonb)
     assert create_params[2].obj == [str(first_memory_id), str(second_memory_id)]
 
-    assert cursor.executed[1] == (
-        """
-                SELECT
-                  id,
-                  user_id,
-                  agent_profile_id,
-                  memory_key,
-                  value,
-                  status,
-                  source_event_ids,
-                  memory_type,
-                  confidence,
-                  salience,
-                  confirmation_status,
-                  valid_from,
-                  valid_to,
-                  last_confirmed_at,
-                  created_at,
-                  updated_at,
-                  deleted_at
-                FROM memories
-                WHERE id = ANY(%s)
-                ORDER BY created_at ASC, id ASC
-                """,
-        ([first_memory_id, second_memory_id],),
-    )
+    assert cursor.executed[1] == (LIST_MEMORIES_BY_IDS_SQL, ([first_memory_id, second_memory_id],))
     assert cursor.executed[2] == (
         """
                 SELECT id, user_id, entity_type, name, source_memory_ids, created_at
