@@ -85,6 +85,7 @@ The open-source surface includes:
 - MCP server
 - trust-aware memory classification and promotion controls
 - shared explainability across recall, resume, open-loop review, and explain surfaces
+- scheduled archive maintenance, ops status reporting, and failure alerting
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -119,6 +120,8 @@ In another terminal, verify the runtime and get a first useful result:
 ./.venv/bin/python -m alicebot_api open-loops --limit 5
 ./scripts/run_archive_maintenance.py --schedule manual
 ```
+
+Alice also includes a deterministic maintenance runner for archive integrity checks, stale fact surfacing, missing segment re-embedding, trusted-fact pattern candidate recompute, and optional benchmark regeneration.
 
 Recall-derived surfaces now expose a shared explanation payload, and `explain` uses the same structure for continuity evidence:
 
@@ -158,6 +161,7 @@ See:
 
 - [docs/integrations/mcp.md](docs/integrations/mcp.md)
 - [docs/integrations/hermes.md](docs/integrations/hermes.md)
+- [docs/integrations/hermes-memory-provider.md](docs/integrations/hermes-memory-provider.md)
 - [docs/integrations/hermes-skill-pack.md](docs/integrations/hermes-skill-pack.md)
 
 Hermes runtime smoke test:
@@ -215,6 +219,7 @@ Alice is built around a shared continuity core with:
 - structured memory revisions
 - provenance- and trust-aware recall
 - shared explanation chains across recall-derived workflows
+- deterministic archive maintenance with ops-visible health summaries
 - deterministic resumption briefs
 - open-loop objects
 - CLI and MCP surfaces on the same semantics
@@ -246,6 +251,7 @@ That means the system behaves consistently across local workflows, MCP-connected
 - [Architecture](ARCHITECTURE.md)
 - [MCP](docs/integrations/mcp.md)
 - [Hermes Guide](docs/integrations/hermes.md)
+- [Hermes Memory Provider](docs/integrations/hermes-memory-provider.md)
 - [Hermes Skill Pack](docs/integrations/hermes-skill-pack.md)
 - [Importers](docs/integrations/importers.md)
 - [OpenClaw Guide](docs/integrations/openclaw.md)
