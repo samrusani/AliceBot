@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Literal
@@ -68,6 +69,7 @@ DEFAULT_STALE_MARKERS_PATH = REPO_ROOT / "artifacts" / "ops" / "stale_fact_marke
 DEFAULT_PHASE9_REPORT_PATH = REPO_ROOT / "eval" / "reports" / "phase9_eval_latest.json"
 DEFAULT_USER_EMAIL = "maintenance-bot@example.invalid"
 DEFAULT_USER_DISPLAY_NAME = "Maintenance Bot"
+_MAX_SANITIZED_REPORT_MESSAGE_CHARS = 200
 
 JOB_STATUS = Literal["pass", "warn", "fail", "skipped"]
 
@@ -107,6 +109,33 @@ def _resolve_path(path_value: str | Path) -> Path:
     return (REPO_ROOT / candidate).resolve()
 
 
+def _path_within_root(*, path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _allowed_archive_root(index_path: Path) -> Path:
+    resolved_index = index_path.expanduser().resolve()
+    parent = resolved_index.parent
+    # `.../archive/index.json` should allow paths under `.../`.
+    return parent.parent if parent.parent != parent else parent
+
+
+def _sanitize_report_message(message: object, *, fallback: str) -> str:
+    if not isinstance(message, str):
+        return fallback
+    normalized = re.sub(r"\s+", " ", message).strip()
+    if normalized == "":
+        return fallback
+    normalized = re.sub(r"(?:(?:[A-Za-z]:)?[/\\\\][^\s]+)", "[path]", normalized)
+    if len(normalized) > _MAX_SANITIZED_REPORT_MESSAGE_CHARS:
+        normalized = normalized[:_MAX_SANITIZED_REPORT_MESSAGE_CHARS]
+    return normalized
+
+
 def _sha256_for_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -125,6 +154,7 @@ def _load_json_object(path: Path) -> dict[str, object]:
 def _collect_archive_paths(index_path: Path) -> tuple[set[Path], list[str]]:
     paths: set[Path] = {index_path}
     errors: list[str] = []
+    allowed_root = _allowed_archive_root(index_path)
 
     if not index_path.exists():
         return paths, [f"archive index missing: {_repo_relative(index_path)}"]
@@ -136,7 +166,11 @@ def _collect_archive_paths(index_path: Path) -> tuple[set[Path], list[str]]:
 
     latest_summary = index_payload.get("latest_summary_path")
     if isinstance(latest_summary, str) and latest_summary.strip():
-        paths.add(_resolve_path(latest_summary))
+        latest_summary_path = _resolve_path(latest_summary)
+        if _path_within_root(path=latest_summary_path, root=allowed_root):
+            paths.add(latest_summary_path)
+        else:
+            errors.append("archive index latest_summary_path points outside allowed archive root")
     else:
         errors.append("archive index latest_summary_path is missing or invalid")
 
@@ -153,7 +187,11 @@ def _collect_archive_paths(index_path: Path) -> tuple[set[Path], list[str]]:
         if not isinstance(archive_artifact_path, str) or not archive_artifact_path.strip():
             errors.append(f"entries[{idx}].archive_artifact_path is missing or invalid")
             continue
-        paths.add(_resolve_path(archive_artifact_path))
+        archive_artifact = _resolve_path(archive_artifact_path)
+        if not _path_within_root(path=archive_artifact, root=allowed_root):
+            errors.append(f"entries[{idx}].archive_artifact_path points outside allowed archive root")
+            continue
+        paths.add(archive_artifact)
 
     return paths, errors
 
@@ -205,17 +243,23 @@ def _run_job(
         job_payload = operation()
     except Exception as exc:  # pragma: no cover - defensive boundary
         status = "fail"
-        errors.append(str(exc))
+        errors.append(f"unhandled_exception:{exc.__class__.__name__}")
         job_payload = {}
 
     if isinstance(job_payload, dict):
         details = dict(job_payload.get("details", {})) if isinstance(job_payload.get("details"), dict) else {}
         payload_warnings = job_payload.get("warnings")
         if isinstance(payload_warnings, list):
-            warnings = [str(item) for item in payload_warnings]
+            warnings = [
+                _sanitize_report_message(item, fallback="maintenance_job_warning")
+                for item in payload_warnings
+            ]
         payload_errors = job_payload.get("errors")
         if isinstance(payload_errors, list):
-            errors.extend(str(item) for item in payload_errors)
+            errors.extend(
+                _sanitize_report_message(item, fallback="maintenance_job_error")
+                for item in payload_errors
+            )
         payload_status = job_payload.get("status")
         if payload_status in {"pass", "warn", "fail", "skipped"}:
             status = payload_status
