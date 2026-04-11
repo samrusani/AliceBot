@@ -94,6 +94,35 @@ def test_verify_archive_checksums_detects_manifest_drift(tmp_path: Path) -> None
     assert any("archive checksum mismatch" in message for message in second["errors"])
 
 
+def test_collect_archive_paths_rejects_outside_allowed_root(tmp_path: Path) -> None:
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir(parents=True)
+    index_path = archive_dir / "index.json"
+    in_scope_summary = archive_dir / "in_scope_summary.json"
+    out_of_scope_summary = tmp_path.parent / "outside_summary.json"
+
+    _write_go_summary(in_scope_summary)
+    _write_archive_index(index_path, in_scope_summary, out_of_scope_summary)
+
+    paths, errors = maintenance._collect_archive_paths(index_path)  # type: ignore[attr-defined]
+    assert any("outside allowed archive root" in message for message in errors)
+    assert out_of_scope_summary.resolve() not in paths
+    assert in_scope_summary.resolve() in paths
+
+
+def test_run_job_sanitizes_unhandled_exception_message() -> None:
+    def _failing_operation() -> dict[str, object]:
+        raise RuntimeError("db password leaked at /private/tmp/secret.txt\nsecond line")
+
+    result = maintenance._run_job(  # type: ignore[attr-defined]
+        job_key="sanitization_test",
+        operation=_failing_operation,
+    )
+
+    assert result.status == "fail"
+    assert result.errors == ["unhandled_exception:RuntimeError"]
+
+
 class _StaleStoreStub:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self._rows = rows
