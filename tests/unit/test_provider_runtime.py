@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.provider_runtime import (
+    AZURE_ADAPTER_KEY,
     LLAMACPP_ADAPTER_KEY,
     OLLAMA_ADAPTER_KEY,
     OPENAI_COMPATIBLE_ADAPTER_KEY,
@@ -13,6 +14,13 @@ from alicebot_api.provider_runtime import (
     RuntimeProviderConfig,
     build_provider_test_model_request,
     make_provider_adapter_registry,
+    resolve_runtime_provider_config_secrets,
+)
+from alicebot_api.provider_secrets import (
+    ProviderSecretManagerError,
+    build_provider_secret_ref,
+    encode_provider_secret_ref,
+    write_provider_api_key,
 )
 
 
@@ -39,6 +47,8 @@ def make_runtime_provider_config(
     model_list_path: str = "/models",
     healthcheck_path: str = "/models",
     invoke_path: str = "/responses",
+    azure_api_version: str = "",
+    azure_auth_secret_ref: str = "",
 ) -> RuntimeProviderConfig:
     return RuntimeProviderConfig(
         provider_id=uuid4(),
@@ -55,6 +65,8 @@ def make_runtime_provider_config(
         model_list_path=model_list_path,
         healthcheck_path=healthcheck_path,
         invoke_path=invoke_path,
+        azure_api_version=azure_api_version,
+        azure_auth_secret_ref=azure_auth_secret_ref,
         metadata={},
     )
 
@@ -63,14 +75,17 @@ def test_provider_registry_resolves_registered_adapter() -> None:
     registry = make_provider_adapter_registry()
 
     adapter = registry.resolve(OPENAI_COMPATIBLE_ADAPTER_KEY)
+    azure_adapter = registry.resolve(AZURE_ADAPTER_KEY)
     ollama_adapter = registry.resolve(OLLAMA_ADAPTER_KEY)
     llamacpp_adapter = registry.resolve(LLAMACPP_ADAPTER_KEY)
 
     assert adapter.adapter_key == OPENAI_COMPATIBLE_ADAPTER_KEY
     assert adapter.runtime_provider == OPENAI_RESPONSES_PROVIDER
+    assert azure_adapter.adapter_key == AZURE_ADAPTER_KEY
     assert ollama_adapter.adapter_key == OLLAMA_ADAPTER_KEY
     assert llamacpp_adapter.adapter_key == LLAMACPP_ADAPTER_KEY
     assert registry.keys() == [
+        AZURE_ADAPTER_KEY,
         LLAMACPP_ADAPTER_KEY,
         OLLAMA_ADAPTER_KEY,
         OPENAI_COMPATIBLE_ADAPTER_KEY,
@@ -311,3 +326,158 @@ def test_llamacpp_adapter_discovers_capabilities_and_invokes(monkeypatch) -> Non
     assert captured[0]["url"] == "http://127.0.0.1:8080/health"
     assert captured[1]["url"] == "http://127.0.0.1:8080/v1/models"
     assert captured[2]["url"] == "http://127.0.0.1:8080/v1/chat/completions"
+
+
+def test_azure_adapter_discovers_capabilities_and_invokes_with_api_key(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+    registry = make_provider_adapter_registry()
+    adapter = registry.resolve(AZURE_ADAPTER_KEY)
+    runtime_provider = make_runtime_provider_config(
+        provider_key=AZURE_ADAPTER_KEY,
+        base_url="https://azure.example",
+        api_key="azure-api-key",
+        auth_mode="azure_api_key",
+        model_list_path="/openai/models",
+        healthcheck_path="/openai/models",
+        invoke_path="/openai/responses",
+        azure_api_version="2024-10-21",
+    )
+
+    def fake_urlopen(request, timeout):
+        body = None if request.data is None else json.loads(request.data.decode("utf-8"))
+        captured.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": body,
+            }
+        )
+        if request.full_url.startswith("https://azure.example/openai/models"):
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "gpt-4.1-mini"}]}).encode("utf-8"))
+        return FakeHTTPResponse(
+            json.dumps(
+                {
+                    "id": "resp_azure_test_1",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": "Azure provider online"}],
+                        }
+                    ],
+                    "usage": {
+                        "input_tokens": 11,
+                        "output_tokens": 4,
+                        "total_tokens": 15,
+                    },
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr("alicebot_api.azure_provider_helpers.urlopen", fake_urlopen)
+
+    capabilities = adapter.discover_capabilities(
+        config=runtime_provider,
+        settings=Settings(healthcheck_timeout_seconds=5),
+    )
+    response = adapter.invoke(
+        config=runtime_provider,
+        settings=Settings(model_timeout_seconds=12),
+        request=build_provider_test_model_request(
+            runtime_provider=OPENAI_RESPONSES_PROVIDER,
+            model="gpt-4.1-mini",
+            prompt_text="Azure runtime check",
+        ),
+    )
+
+    assert capabilities["adapter_key"] == AZURE_ADAPTER_KEY
+    assert capabilities["health_status"] == "ok"
+    assert capabilities["model_count"] == 1
+    assert capabilities["models"] == ["gpt-4.1-mini"]
+    assert capabilities["azure_api_version"] == "2024-10-21"
+    assert capabilities["azure_auth_mode"] == "azure_api_key"
+    assert response.output_text == "Azure provider online"
+    assert response.usage["total_tokens"] == 15
+    assert captured[0]["url"] == "https://azure.example/openai/models?api-version=2024-10-21"
+    assert captured[1]["url"] == "https://azure.example/openai/models?api-version=2024-10-21"
+    assert captured[2]["url"] == "https://azure.example/openai/responses?api-version=2024-10-21"
+    azure_headers = {key.lower(): value for key, value in captured[2]["headers"].items()}
+    assert azure_headers["api-key"] == "azure-api-key"
+    assert "authorization" not in azure_headers
+
+
+def test_azure_adapter_uses_bearer_token_auth_mode(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    registry = make_provider_adapter_registry()
+    adapter = registry.resolve(AZURE_ADAPTER_KEY)
+    runtime_provider = make_runtime_provider_config(
+        provider_key=AZURE_ADAPTER_KEY,
+        base_url="https://foundry.example",
+        api_key="entra-token-value",
+        auth_mode="azure_ad_token",
+        model_list_path="/openai/models",
+        healthcheck_path="/openai/models",
+        invoke_path="/openai/responses",
+        azure_api_version="2024-10-21",
+    )
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        captured["headers"] = dict(request.header_items())
+        return FakeHTTPResponse(json.dumps({"data": [{"id": "gpt-4.1"}]}).encode("utf-8"))
+
+    monkeypatch.setattr("alicebot_api.azure_provider_helpers.urlopen", fake_urlopen)
+
+    adapter.discover_capabilities(
+        config=runtime_provider,
+        settings=Settings(healthcheck_timeout_seconds=5),
+    )
+
+    headers = {key.lower(): value for key, value in captured["headers"].items()}
+    assert headers["authorization"] == "Bearer entra-token-value"
+    assert "api-key" not in headers
+
+
+def test_resolve_runtime_provider_config_secrets_for_azure_secret_ref(tmp_path) -> None:
+    settings = Settings(provider_secret_manager_url=f"file://{tmp_path}")
+    secret_ref = build_provider_secret_ref(workspace_id=uuid4())
+    write_provider_api_key(
+        settings=settings,
+        secret_ref=secret_ref,
+        api_key="resolved-azure-secret",
+    )
+    config = make_runtime_provider_config(
+        provider_key=AZURE_ADAPTER_KEY,
+        auth_mode="azure_api_key",
+        api_key="auth_mode_azure_secret_ref",
+        azure_auth_secret_ref=encode_provider_secret_ref(secret_ref=secret_ref),
+        azure_api_version="2024-10-21",
+    )
+
+    resolved = resolve_runtime_provider_config_secrets(
+        config=config,
+        settings=settings,
+    )
+
+    assert resolved.api_key == "resolved-azure-secret"
+
+
+def test_resolve_runtime_provider_config_secrets_rejects_missing_azure_secret_ref() -> None:
+    config = make_runtime_provider_config(
+        provider_key=AZURE_ADAPTER_KEY,
+        auth_mode="azure_api_key",
+        api_key="auth_mode_azure_secret_ref",
+        azure_auth_secret_ref="",
+        azure_api_version="2024-10-21",
+    )
+
+    try:
+        resolve_runtime_provider_config_secrets(
+            config=config,
+            settings=Settings(),
+        )
+    except ProviderSecretManagerError as exc:
+        assert "azure_auth_secret_ref is required" in str(exc)
+    else:  # pragma: no cover - defensive guard
+        raise AssertionError("expected ProviderSecretManagerError")

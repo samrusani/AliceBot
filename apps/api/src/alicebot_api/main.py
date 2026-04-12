@@ -601,7 +601,13 @@ from alicebot_api.proxy_execution import (
     ProxyExecutionIdempotencyError,
     execute_approved_proxy_request,
 )
+from alicebot_api.azure_provider_helpers import (
+    AZURE_AUTH_MODE_AD_TOKEN,
+    AZURE_AUTH_MODE_API_KEY,
+    DEFAULT_AZURE_API_VERSION,
+)
 from alicebot_api.provider_runtime import (
+    AZURE_ADAPTER_KEY,
     LLAMACPP_ADAPTER_KEY,
     OLLAMA_ADAPTER_KEY,
     OPENAI_COMPATIBLE_ADAPTER_KEY,
@@ -1459,6 +1465,7 @@ def _serialize_model_provider(provider: ModelProviderRow) -> dict[str, object]:
         "model_list_path": provider["model_list_path"],
         "healthcheck_path": provider["healthcheck_path"],
         "invoke_path": provider["invoke_path"],
+        "azure_api_version": provider["azure_api_version"],
         "metadata": provider["metadata"],
         "created_at": provider["created_at"].isoformat(),
         "updated_at": provider["updated_at"].isoformat(),
@@ -1562,6 +1569,7 @@ def _fallback_provider_capability_snapshot(
     model_list_path: str,
     healthcheck_path: str,
     invoke_path: str,
+    extra_snapshot_fields: dict[str, object] | None = None,
 ) -> dict[str, object]:
     snapshot = normalized_capability_snapshot(
         adapter_key=adapter_key,
@@ -1582,6 +1590,8 @@ def _fallback_provider_capability_snapshot(
             "models": [],
         }
     )
+    if extra_snapshot_fields:
+        snapshot.update(extra_snapshot_fields)
     return snapshot
 
 
@@ -1658,6 +1668,8 @@ def _register_workspace_provider(
         model_list_path=normalized_model_list_path,
         healthcheck_path=normalized_healthcheck_path,
         invoke_path=normalized_invoke_path,
+        azure_api_version="",
+        azure_auth_secret_ref="",
     )
 
     runtime_provider = resolve_runtime_provider_config_secrets(
@@ -1680,6 +1692,127 @@ def _register_workspace_provider(
             model_list_path=normalized_model_list_path,
             healthcheck_path=normalized_healthcheck_path,
             invoke_path=normalized_invoke_path,
+        )
+        discovery_status = "failed"
+        discovery_error = str(exc)
+
+    capability = store.upsert_provider_capability(
+        workspace_id=workspace_id,
+        provider_id=provider["id"],
+        discovered_by_user_account_id=created_by_user_account_id,
+        adapter_key=adapter.adapter_key,
+        discovery_status=discovery_status,
+        capability_snapshot=capability_snapshot,
+        discovery_error=discovery_error,
+    )
+    return provider, capability
+
+
+def _normalize_azure_api_version(value: str) -> str:
+    api_version = value.strip()
+    if api_version == "":
+        raise ValueError("api_version is required")
+    return api_version
+
+
+def _register_workspace_azure_provider(
+    *,
+    settings: Settings,
+    store: ContinuityStore,
+    workspace_id: UUID,
+    created_by_user_account_id: UUID,
+    display_name: str,
+    base_url: str,
+    credential: str,
+    auth_mode: str,
+    default_model: str,
+    model_list_path: str,
+    healthcheck_path: str,
+    invoke_path: str,
+    api_version: str,
+    metadata: dict[str, object],
+) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
+    normalized_display_name = display_name.strip()
+    normalized_base_url = base_url.strip()
+    normalized_credential = credential.strip()
+    normalized_default_model = default_model.strip()
+    normalized_auth_mode = auth_mode.strip().lower()
+    normalized_api_version = _normalize_azure_api_version(api_version)
+    normalized_model_list_path = _normalize_provider_path(
+        field_name="model_list_path",
+        value=model_list_path,
+    )
+    normalized_healthcheck_path = _normalize_provider_path(
+        field_name="healthcheck_path",
+        value=healthcheck_path,
+    )
+    normalized_invoke_path = _normalize_provider_path(
+        field_name="invoke_path",
+        value=invoke_path,
+    )
+
+    if normalized_display_name == "":
+        raise ValueError("display_name is required")
+    if normalized_base_url == "":
+        raise ValueError("base_url is required")
+    if normalized_default_model == "":
+        raise ValueError("default_model is required")
+    if normalized_auth_mode not in {AZURE_AUTH_MODE_API_KEY, AZURE_AUTH_MODE_AD_TOKEN}:
+        raise ValueError(f"unsupported auth_mode: {auth_mode}")
+    if normalized_credential == "":
+        raise ValueError("azure credential is required")
+
+    secret_ref = build_provider_secret_ref(workspace_id=workspace_id)
+    write_provider_api_key(
+        settings=settings,
+        secret_ref=secret_ref,
+        api_key=normalized_credential,
+    )
+    encoded_secret_ref = encode_provider_secret_ref(secret_ref=secret_ref)
+
+    provider = store.create_model_provider(
+        workspace_id=workspace_id,
+        created_by_user_account_id=created_by_user_account_id,
+        provider_key=AZURE_ADAPTER_KEY,
+        model_provider=OPENAI_RESPONSES_PROVIDER,
+        display_name=normalized_display_name,
+        base_url=normalized_base_url,
+        api_key="auth_mode_azure_secret_ref",
+        default_model=normalized_default_model,
+        status="active",
+        metadata=metadata,
+        auth_mode=normalized_auth_mode,
+        model_list_path=normalized_model_list_path,
+        healthcheck_path=normalized_healthcheck_path,
+        invoke_path=normalized_invoke_path,
+        azure_api_version=normalized_api_version,
+        azure_auth_secret_ref=encoded_secret_ref,
+    )
+
+    runtime_provider = resolve_runtime_provider_config_secrets(
+        config=RuntimeProviderConfig.from_row(provider),
+        settings=settings,
+    )
+    adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
+    discovery_status: str = "ready"
+    discovery_error: str | None = None
+
+    try:
+        capability_snapshot = adapter.discover_capabilities(
+            config=runtime_provider,
+            settings=settings,
+        )
+    except ModelInvocationError as exc:
+        capability_snapshot = _fallback_provider_capability_snapshot(
+            adapter_key=adapter.adapter_key,
+            runtime_provider=adapter.runtime_provider,
+            model_list_path=normalized_model_list_path,
+            healthcheck_path=normalized_healthcheck_path,
+            invoke_path=normalized_invoke_path,
+            extra_snapshot_fields={
+                "azure_api_version": normalized_api_version,
+                "azure_auth_mode": normalized_auth_mode,
+            },
         )
         discovery_status = "failed"
         discovery_error = str(exc)
@@ -2146,6 +2279,40 @@ class RegisterLlamaCppProviderRequest(BaseModel):
     healthcheck_path: str = Field(default="/health", min_length=1, max_length=200)
     invoke_path: str = Field(default="/v1/chat/completions", min_length=1, max_length=200)
     metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class RegisterAzureProviderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=120)
+    base_url: str = Field(min_length=1, max_length=500)
+    auth_mode: Literal["azure_api_key", "azure_ad_token"] = AZURE_AUTH_MODE_API_KEY
+    api_key: str | None = Field(default=None, max_length=8000)
+    ad_token: str | None = Field(default=None, max_length=16000)
+    api_version: str = Field(default=DEFAULT_AZURE_API_VERSION, min_length=1, max_length=40)
+    default_model: str = Field(min_length=1, max_length=200)
+    model_list_path: str = Field(default="/openai/models", min_length=1, max_length=200)
+    healthcheck_path: str = Field(default="/openai/models", min_length=1, max_length=200)
+    invoke_path: str = Field(default="/openai/responses", min_length=1, max_length=200)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_auth_payload(self) -> "RegisterAzureProviderRequest":
+        api_key = None if self.api_key is None else self.api_key.strip()
+        ad_token = None if self.ad_token is None else self.ad_token.strip()
+
+        if self.auth_mode == AZURE_AUTH_MODE_API_KEY:
+            if api_key in (None, ""):
+                raise ValueError("api_key is required when auth_mode is azure_api_key")
+            if ad_token not in (None, ""):
+                raise ValueError("ad_token must be empty when auth_mode is azure_api_key")
+            return self
+
+        if ad_token in (None, ""):
+            raise ValueError("ad_token is required when auth_mode is azure_ad_token")
+        if api_key not in (None, ""):
+            raise ValueError("api_key must be empty when auth_mode is azure_ad_token")
+        return self
 
 
 class TestProviderRequest(BaseModel):
@@ -6426,6 +6593,74 @@ def register_v1_llamacpp_provider(
     )
 
 
+@app.post("/v1/providers/azure/register")
+def register_v1_azure_provider(
+    request: Request,
+    body: RegisterAzureProviderRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    if body.auth_mode == AZURE_AUTH_MODE_API_KEY:
+        credential = body.api_key
+    else:
+        credential = body.ad_token
+    assert credential is not None
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                provider, capability = _register_workspace_azure_provider(
+                    settings=settings,
+                    store=store,
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                    display_name=body.display_name,
+                    base_url=body.base_url,
+                    credential=credential,
+                    auth_mode=body.auth_mode,
+                    default_model=body.default_model,
+                    model_list_path=body.model_list_path,
+                    healthcheck_path=body.healthcheck_path,
+                    invoke_path=body.invoke_path,
+                    api_version=body.api_version,
+                    metadata=body.metadata,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except psycopg.errors.UniqueViolation:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "provider display_name must be unique within the workspace"},
+        )
+    except ProviderAdapterNotFoundError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except ProviderSecretManagerError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(
+            {
+                "provider": _serialize_model_provider(provider),
+                "capabilities": _serialize_provider_capability(capability),
+            }
+        ),
+    )
+
+
 @app.get("/v1/providers")
 def list_v1_providers(request: Request) -> JSONResponse:
     settings = get_settings()
@@ -6550,6 +6785,13 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                         settings=settings,
                     )
                 except ModelInvocationError as exc:
+                    extra_snapshot_fields = None
+                    if runtime_provider.provider_key == AZURE_ADAPTER_KEY:
+                        extra_snapshot_fields = {
+                            "azure_api_version": runtime_provider.azure_api_version.strip()
+                            or DEFAULT_AZURE_API_VERSION,
+                            "azure_auth_mode": runtime_provider.auth_mode,
+                        }
                     capability = store.upsert_provider_capability(
                         workspace_id=workspace["id"],
                         provider_id=runtime_provider.provider_id,
@@ -6562,6 +6804,7 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                             model_list_path=runtime_provider.model_list_path,
                             healthcheck_path=runtime_provider.healthcheck_path,
                             invoke_path=runtime_provider.invoke_path,
+                            extra_snapshot_fields=extra_snapshot_fields,
                         ),
                         discovery_error=str(exc),
                     )

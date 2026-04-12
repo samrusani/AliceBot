@@ -354,6 +354,8 @@ class ModelProviderRow(TypedDict):
     model_list_path: str
     healthcheck_path: str
     invoke_path: str
+    azure_api_version: str
+    azure_auth_secret_ref: str
     metadata: JsonObject
     created_at: datetime
     updated_at: datetime
@@ -2113,11 +2115,15 @@ INSERT_MODEL_PROVIDER_SQL = """
                   model_list_path,
                   healthcheck_path,
                   invoke_path,
+                  azure_api_version,
+                  azure_auth_secret_ref,
                   metadata,
                   created_at,
                   updated_at
                 )
                 VALUES (
+                  %s,
+                  %s,
                   %s,
                   %s,
                   %s,
@@ -2150,6 +2156,8 @@ INSERT_MODEL_PROVIDER_SQL = """
                   model_list_path,
                   healthcheck_path,
                   invoke_path,
+                  azure_api_version,
+                  azure_auth_secret_ref,
                   metadata,
                   created_at,
                   updated_at
@@ -2171,6 +2179,8 @@ GET_MODEL_PROVIDER_FOR_WORKSPACE_SQL = """
                   model_list_path,
                   healthcheck_path,
                   invoke_path,
+                  azure_api_version,
+                  azure_auth_secret_ref,
                   metadata,
                   created_at,
                   updated_at
@@ -2195,6 +2205,8 @@ LIST_MODEL_PROVIDERS_FOR_WORKSPACE_SQL = """
                   model_list_path,
                   healthcheck_path,
                   invoke_path,
+                  azure_api_version,
+                  azure_auth_secret_ref,
                   metadata,
                   created_at,
                   updated_at
@@ -6268,6 +6280,8 @@ class ContinuityStore:
         model_list_path: str = "",
         healthcheck_path: str = "",
         invoke_path: str = "",
+        azure_api_version: str = "",
+        azure_auth_secret_ref: str = "",
     ) -> ModelProviderRow:
         return self._fetch_one(
             "create_model_provider",
@@ -6286,6 +6300,8 @@ class ContinuityStore:
                 model_list_path,
                 healthcheck_path,
                 invoke_path,
+                azure_api_version,
+                azure_auth_secret_ref,
                 Jsonb(metadata),
             ),
         )
