@@ -1,75 +1,57 @@
 # Roadmap
 
-## Planning Basis
+## Baseline Context (Shipped, Not Roadmap Work)
+- Phase 9: shipped
+- Phase 10: shipped
+- Phase 11: shipped
 
-- Phase 10 is the next delivery phase: Alice Connect. (historical marker retained for control-doc truth checks)
-- P10-S1: Identity + Workspace Bootstrap (historical marker retained for control-doc truth checks)
-- Phase 10 is complete and shipped baseline truth.
-- This roadmap tracks future delivery only (Phase 11 onward).
+Phase 11 remains baseline truth and is not future scope.
 
-## Phase 11 Objective
+## Active Planning Status
+- Bridge Sprint 1 (`B1`) is the active execution sprint.
+- The remaining bridge-phase milestones are planned but not yet promoted.
 
-Make Alice the continuity layer that works across local, self-hosted, enterprise, and external-agent model stacks via provider adapters and model packs.
+## Bridge Phase: Hermes Auto-Capture (Planned)
 
-## Phase 11 Milestones
+### B1: Hermes Memory Provider Foundation
+- formalize the shipped Alice Hermes external memory provider into the bridge-phase contract
+- wire pre-turn hook, post-response hook, and session-end hook
+- parse provider config and expose provider status checks
+- preserve additive coexistence with Hermes built-in `MEMORY.md` and `USER.md`
+- standardize the preferred provider-plus-MCP integration shape
 
-### P11-S1: Provider Abstraction + OpenAI-Compatible Base
+### B2: Auto-Capture Pipeline
+- ship `alice_capture_candidates` + `alice_commit_captures`
+- enforce mode policy (`manual`, `assist`, `auto`) and confidence thresholds
+- add candidate type classification for decision, commitment, waiting-for, blocker, preference, correction, note, and no-op
+- persist review-queue candidates
+- guarantee idempotent repeated sync behavior
+- ensure no-op turns produce no memory writes
+- implement the auto-save vs review-required policy contract from the product brief
 
-- provider interface, registry, config schema
-- OpenAI-compatible base adapter
-- capability discovery and usage normalization
-- runtime invoke/test APIs and harness
+### B3: Review Queue + Explainability
+- ship `alice_review_queue` + `alice_review_apply`
+- support approve/reject/edit/supersede actions
+- preserve provenance/explanation chain for candidate proposals
+- ensure correction-aware parity across UI/CLI/MCP paths
+- make approved review actions change subsequent recall/resume results deterministically
 
-### P11-S2: Ollama + llama.cpp Adapters
-
-- local adapter implementations
-- model enumeration + healthchecks
-- local setup docs and end-to-end examples
-
-### P11-S3: vLLM Adapter + Self-Hosted Performance Path
-
-- vLLM adapter support via same abstraction
-- provider-specific option passthrough boundary
-- normalized latency/usage telemetry for vLLM calls
-
-### P11-S4: Model Packs Tier 1
-
-- first-party packs: Llama, Qwen, Gemma, gpt-oss
-- pack catalog + versioning + binding APIs
-- pack-driven context/tool/response behavior
-
-### P11-S5: Azure Adapter + AutoGen Integration
-
-- Azure OpenAI / Azure Foundry adapter
-- enterprise credential/auth hardening
-- AutoGen integration guide and sample path
-
-### P11-S6: Model Packs Tier 2 + Launch Clarity Assets
-
-- packs: DeepSeek, Kimi, Mistral
-- runtime and pack compatibility matrices
-- docs for local, self-hosted, enterprise, and external-agent paths
-
-### P11-R1: Provider Runtime Hardening (Security Remediation Sprint 1)
-
-- outbound URL validation and SSRF resistance for provider registration and runtime/test calls
-- sanitized upstream provider error surfaces for API responses and persistence
-- URL userinfo rejection plus defensive redaction on serialized provider rows
+### B4: Packaging, Docs, and Smoke Validation
+- publish Hermes integration guide and config examples
+- publish example `config.yaml` for provider-plus-MCP and MCP-only fallback modes
+- document provider+MCP recommended architecture
+- publish a short "why provider + MCP" operator decision doc
+- publish MCP-only fallback and migration path
+- deliver smoke-test scripts and one-command local demo path
+- make provider mode the clearly recommended path in docs once smoke evidence passes
 
 ## Sequencing Rules
+- Build provider lifecycle hooks before capture policy automation.
+- Land capture/commit policy before review UX/process expansion.
+- Validate idempotency and trust gating before broad rollout.
+- Keep MCP fallback available during bridge rollout.
+- Keep the shipped Hermes provider as baseline and extend it rather than replacing it.
 
-- Stabilize abstraction and normalization before adding provider breadth.
-- Complete tier-1 providers before tier-2 model-pack breadth.
-- Ship tier-1 packs cleanly before expanding long-tail packs.
-- Treat enterprise adapter and credential hardening as a release gate, not polish.
-- Clear provider-runtime security holds before Phase 11 release closeout.
-
-## Phase 11 Exit
-
-Phase 11 exits when users can choose model backends and agent runtimes without changing Alice continuity semantics, and supported paths are operationally documented.
-
-## Roadmap Guardrails
-
-- Keep roadmap future-facing; move completed work to handoff/archive docs.
-- Do not restate shipped Phase 10 scope as future milestones.
-- Avoid provider/model sprawl not justified by adapter and pack contracts.
+## Beyond Bridge (Future, Not Yet Defined)
+- Post-bridge roadmap phases are not yet defined in canonical planning.
+- Phase naming, sprinting, and scope for beyond-bridge work require a new planning packet.

@@ -17,6 +17,7 @@ def test_mcp_tool_surface_is_adr_aligned_and_deterministic() -> None:
         "alice_recall",
         "alice_state_at",
         "alice_resume",
+        "alice_prefetch_context",
         "alice_open_loops",
         "alice_recent_decisions",
         "alice_recent_changes",

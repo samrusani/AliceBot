@@ -14,6 +14,9 @@ Hermes behavior with this provider:
 - `alice_resumption_brief`: last decision, next action, open loops, recent changes
 - `alice_open_loops`: open-loop dashboard retrieval
 - prefetch: turn-start context assembled from Alice resumption brief
+- bridge-phase lifecycle contract for `prefetch`, `queue_prefetch`, `sync_turn`, and `on_session_end`
+- deterministic capture dedupe for repeated callback execution
+- local status readiness reporting without live network calls
 
 ## Continuity Model Mapping
 
@@ -22,6 +25,9 @@ The provider maps Alice continuity responses into Hermes provider hooks:
 | Hermes provider hook | Alice endpoint | Mapping |
 |---|---|---|
 | `prefetch(query)` | `GET /v0/continuity/resumption-brief` | renders last decision, next action, open loops, and recent changes into ephemeral context |
+| `queue_prefetch(query)` | `GET /v0/continuity/resumption-brief` | asynchronously prebuilds pre-turn context cache for next `prefetch` |
+| `sync_turn(user, assistant)` | `POST /v0/continuity/captures` | optional post-turn capture hook with duplicate-write suppression |
+| `on_session_end()` | `POST /v0/continuity/captures` | deterministic flush of pending capture work before provider shutdown |
 | `alice_recall` tool | `GET /v0/continuity/recall` | returns ranked continuity objects with provenance and scope filters |
 | `alice_resumption_brief` tool | `GET /v0/continuity/resumption-brief` | returns structured resume sections for deterministic follow-through |
 | `alice_open_loops` tool | `GET /v0/continuity/open-loops` | returns waiting/blocker/stale/next-action open-loop groups |
@@ -80,13 +86,20 @@ hermes memory status
 Run provider smoke validation from this repository:
 
 ```bash
-./scripts/run_hermes_memory_provider_smoke.py
+./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py
 ```
+
+Smoke output includes `structural.bridge_status` with:
+
+- `ready`: bridge-phase config readiness
+- `errors`: invalid config state details (if any)
+- `legacy_config_keys`: legacy keys still accepted for compatibility
+- `lifecycle_hooks`: readiness for `prefetch`, `queue_prefetch`, `sync_turn`, `on_session_end`
 
 Optional live prefetch test:
 
 ```bash
-./scripts/run_hermes_memory_provider_smoke.py \
+./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py \
   --live-prefetch-query "release gating decision" \
   --alice-base-url "http://127.0.0.1:8000" \
   --alice-user-id "00000000-0000-0000-0000-000000000001"
@@ -126,9 +139,19 @@ Practical default:
 - `base_url` (string)
 - `user_id` (UUID string)
 - `timeout_seconds` (float)
-- `prefetch_limit` (int)
-- `max_recent_changes` (int)
-- `max_open_loops` (int)
-- `include_non_promotable_facts` (bool)
-- `auto_capture` (bool, default `false`)
-- `mirror_memory_writes` (bool, default `false`)
+- `prefetch_recall_limit` (int)
+- `prefetch_max_recent_changes` (int)
+- `prefetch_max_open_loops` (int)
+- `prefetch_include_non_promotable_facts` (bool)
+- `sync_turn_capture_enabled` (bool, default `false`)
+- `memory_write_capture_enabled` (bool, default `false`)
+- `session_end_flush_timeout_seconds` (float, default `5.0`)
+
+Legacy compatibility keys still accepted for shipped configs:
+
+- `prefetch_limit`
+- `max_recent_changes`
+- `max_open_loops`
+- `include_non_promotable_facts`
+- `auto_capture`
+- `mirror_memory_writes`

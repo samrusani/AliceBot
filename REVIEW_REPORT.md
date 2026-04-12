@@ -1,52 +1,43 @@
 # REVIEW_REPORT
 
-## sprint
-`P11-R1` Phase 11 Security Remediation Sprint 1: Provider Runtime Hardening
-
 ## verdict
 PASS
 
 ## criteria met
-- Registration and runtime test/invoke flows hard-reject disallowed provider targets, including metadata/link-local, loopback, and RFC1918/private ranges.
-- No outbound call is attempted after disallowed target detection in provider test/runtime flow coverage.
-- Provider HTTP failures do not expose raw upstream provider detail in API responses.
-- Persisted provider discovery/runtime errors are sanitized and redacted.
-- Provider URLs containing embedded userinfo are rejected on registration, and serialized provider rows redact legacy userinfo.
-- Existing Phase 11 provider/runtime/model-pack behavior remains intact outside intended hardening.
-- Sprint closes the three in-scope security findings without feature-scope expansion.
+- The shipped Hermes provider was extended, not replaced (`docs/integrations/hermes-memory-provider/plugins/memory/alice/__init__.py`).
+- Bridge config normalization and readiness/status reporting are present, including legacy compatibility reporting.
+- Lifecycle hooks `prefetch`, `queue_prefetch`, `sync_turn`, and `on_session_end` are implemented with deterministic behavior, and duplicate callback suppression is covered.
+- New MCP tool `alice_prefetch_context` is implemented, wired, and documented (`apps/api/src/alicebot_api/mcp_tools.py`, `docs/integrations/mcp.md`).
+- Existing Hermes tools (`alice_recall`, `alice_resumption_brief`, `alice_open_loops`) remain intact.
+- B1 required verification commands all pass:
+  - `python3 scripts/check_control_doc_truth.py` -> PASS
+  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> `1174 passed in 186.28s (0:03:06)`
+  - `./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py` -> PASS
+- No local identifiers were found in changed code/docs after fixes.
 
 ## criteria missed
 - None.
 
 ## quality issues
-- None blocking.
-- Residual operational note: repo-level URL policy is strong, but production should still enforce network-layer egress policy as defense in depth.
+- No blocking quality issues found after fixes.
+- Minor residual note: callback dedupe now uses a short bounded window; if callback replay behavior changes materially in Hermes, this window may need retuning.
 
 ## regression risks
-- Low. Core risk area (SSRF validation bypass via non-canonical IPv4 encodings) is now covered by both unit and integration tests.
+- Low.
+- Primary risk area remains concurrent lifecycle callback timing; current unit coverage and full suite pass reduce risk materially.
 
 ## docs issues
-- No local machine identifiers (paths/usernames) found in sprint-owned files.
-- Review docs are now aligned with implemented security behavior.
+- Previously identified doc/report inconsistencies were corrected:
+  - architecture now marks B2+ surfaces as planned
+  - build report file list and command results are aligned with current state
+- Local identifier hygiene: PASS.
 
 ## should anything be added to RULES.md?
-- Recommended: add a permanent rule requiring provider URL validation tests for non-canonical IPv4 forms (hex/octal/shorthand/integer) whenever URL policy is touched.
+- Optional improvement: add a permanent rule that sprint reports must match `git diff --name-only` for the sprint-owned file list.
 
 ## should anything update ARCHITECTURE.md?
-- Recommended: add one short provider-runtime egress boundary note clarifying that application URL validation and infra egress controls are complementary controls.
+- No further update required for B1 acceptance after current “Implemented in B1” vs “Planned for B2+” separation.
 
 ## recommended next action
-1. Approve `P11-R1` for merge.
-2. Keep the new non-canonical host blocked-target tests as required coverage for future provider-runtime URL policy changes.
-3. Clear the release `HOLD` once security sign-off records this closure evidence.
-
-## evidence summary
-- Code fix for bypass class:
-  - `apps/api/src/alicebot_api/provider_security.py`: URL validator now canonicalizes IPv4 integer/hex/octal/shorthand forms via `socket.inet_aton` and blocks disallowed resolved IPs.
-- Added/updated security regression tests:
-  - `tests/unit/test_provider_security.py`
-  - `tests/integration/test_phase11_provider_runtime_api.py`
-- Required verification commands (re-run):
-  - `python3 scripts/check_control_doc_truth.py` -> PASS
-  - `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> `1169 passed in 185.41s (0:03:05)`
-  - `./.venv/bin/bandit -r apps/api/src/alicebot_api/provider_runtime.py apps/api/src/alicebot_api/local_provider_helpers.py apps/api/src/alicebot_api/azure_provider_helpers.py apps/api/src/alicebot_api/main.py` -> No issues identified
+1. Approve B1 for merge review.
+2. Carry the new capture-queue/dedupe tests forward as required regression coverage for future bridge sprints.

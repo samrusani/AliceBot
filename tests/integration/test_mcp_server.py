@@ -206,6 +206,7 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         tool_names = [tool["name"] for tool in tools_list["result"]["tools"]]
         assert "alice_recall" in tool_names
         assert "alice_resume" in tool_names
+        assert "alice_prefetch_context" in tool_names
         assert "alice_open_loops" in tool_names
         assert "alice_memory_correct" in tool_names
 
@@ -236,6 +237,20 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         )
         assert resume_before["isError"] is False
         assert resume_before["structuredContent"]["brief"]["last_decision"]["item"]["id"] == str(legacy_decision["id"])
+
+        prefetch_before = _call_tool(
+            client,
+            name="alice_prefetch_context",
+            arguments={
+                "thread_id": str(thread_id),
+                "max_recent_changes": 5,
+                "max_open_loops": 5,
+            },
+        )
+        assert prefetch_before["isError"] is False
+        prefetch_payload = prefetch_before["structuredContent"]["prefetch_context"]
+        assert prefetch_payload["last_decision"]["item"]["id"] == str(legacy_decision["id"])
+        assert "## Alice Continuity Prefetch" in prefetch_payload["text"]
 
         open_loops = _call_tool(
             client,

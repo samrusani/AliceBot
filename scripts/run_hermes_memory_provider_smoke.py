@@ -89,6 +89,36 @@ def _run_structural_validation(provider_class: type) -> Dict[str, Any]:
     manager.add_provider(second_external)
 
     tool_names = sorted(schema.get("name", "") for schema in alice.get_tool_schemas())
+    bridge_status: Dict[str, Any] = {}
+    with tempfile.TemporaryDirectory(prefix="alice-hermes-provider-status-") as temp_dir:
+        hermes_home = Path(temp_dir)
+        config_path = hermes_home / "alice_memory_provider.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "base_url": "http://127.0.0.1:8000",
+                    "user_id": "00000000-0000-0000-0000-000000000001",
+                    "prefetch_recall_limit": 5,
+                    "prefetch_max_recent_changes": 5,
+                    "prefetch_max_open_loops": 5,
+                    "prefetch_include_non_promotable_facts": False,
+                    "sync_turn_capture_enabled": False,
+                    "memory_write_capture_enabled": False,
+                    "session_end_flush_timeout_seconds": 5.0,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        alice.initialize(
+            session_id="smoke-status-session",
+            hermes_home=str(hermes_home),
+            platform="cli",
+            agent_context="primary",
+        )
+        if hasattr(alice, "get_status"):
+            bridge_status = alice.get_status(hermes_home=str(hermes_home))
 
     return {
         "provider_names": manager.provider_names,
@@ -96,6 +126,7 @@ def _run_structural_validation(provider_class: type) -> Dict[str, Any]:
         "single_external_enforced": manager.provider_names.count("second-external") == 0,
         "alice_registered": "alice" in manager.provider_names,
         "alice_tools": tool_names,
+        "bridge_status": bridge_status,
     }
 
 
@@ -116,10 +147,10 @@ def _run_live_prefetch(
                     "base_url": base_url,
                     "user_id": user_id,
                     "timeout_seconds": timeout_seconds,
-                    "prefetch_limit": 5,
-                    "max_recent_changes": 3,
-                    "max_open_loops": 3,
-                    "include_non_promotable_facts": False,
+                    "prefetch_recall_limit": 5,
+                    "prefetch_max_recent_changes": 3,
+                    "prefetch_max_open_loops": 3,
+                    "prefetch_include_non_promotable_facts": False,
                 },
                 indent=2,
             )
