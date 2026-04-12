@@ -6,6 +6,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from alicebot_api.contracts import ModelInvocationRequest, ModelInvocationResponse, ModelUsagePayload
+from alicebot_api.provider_security import validate_provider_base_url
 from alicebot_api.response_generation import ModelInvocationError
 
 
@@ -15,7 +16,7 @@ def build_auth_headers(*, auth_mode: str, api_key: str) -> dict[str, str]:
         return {}
     if mode == "bearer":
         token = api_key.strip()
-        if token == "":
+        if token == "":  # nosec B105
             raise ModelInvocationError("provider api_key is required when auth_mode is bearer")
         return {"Authorization": f"Bearer {token}"}
     raise ModelInvocationError(f"unsupported provider auth_mode: {auth_mode}")
@@ -30,8 +31,9 @@ def request_json(
     headers: dict[str, str] | None = None,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    validated_base_url = validate_provider_base_url(base_url)
     normalized_path = path if path.startswith("/") else f"/{path}"
-    endpoint = base_url.rstrip("/") + normalized_path
+    endpoint = validated_base_url.rstrip("/") + normalized_path
     request_headers = {"Accept": "application/json"}
     if headers:
         request_headers.update(headers)
@@ -41,15 +43,12 @@ def request_json(
         request_headers["Content-Type"] = "application/json"
     request = Request(endpoint, data=body, headers=request_headers, method=method)
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
+        with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
             raw_payload = response.read()
     except HTTPError as exc:
-        detail = _extract_http_error_detail(exc)
-        if detail is not None:
-            raise ModelInvocationError(detail) from exc
         raise ModelInvocationError(f"model provider returned HTTP {exc.code}") from exc
     except URLError as exc:
-        raise ModelInvocationError(f"model provider request failed: {exc.reason}") from exc
+        raise ModelInvocationError("model provider request failed") from exc
 
     try:
         parsed_payload = json.loads(raw_payload)
@@ -179,24 +178,3 @@ def parse_llamacpp_invoke_response(
         output_text=output_text,
         usage=usage,
     )
-
-
-def _extract_http_error_detail(exc: HTTPError) -> str | None:
-    raw_body = exc.read().decode("utf-8", errors="replace")
-    try:
-        parsed_error = json.loads(raw_body)
-    except json.JSONDecodeError:
-        return None
-
-    if not isinstance(parsed_error, dict):
-        return None
-
-    error = parsed_error.get("error")
-    if isinstance(error, dict):
-        detail = error.get("message")
-        if isinstance(detail, str) and detail.strip():
-            return detail
-    detail = parsed_error.get("detail")
-    if isinstance(detail, str) and detail.strip():
-        return detail
-    return None

@@ -7,17 +7,19 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from alicebot_api.contracts import ModelInvocationRequest, ModelInvocationResponse, ModelUsagePayload
+from alicebot_api.provider_security import validate_provider_base_url
 from alicebot_api.response_generation import ModelInvocationError
 
 AZURE_AUTH_MODE_API_KEY = "azure_api_key"
-AZURE_AUTH_MODE_AD_TOKEN = "azure_ad_token"
+# Static auth-mode label; not a credential value.
+AZURE_AUTH_MODE_AD_TOKEN = "azure_ad_token"  # nosec B105
 DEFAULT_AZURE_API_VERSION = "2024-10-21"
 
 
 def build_azure_auth_headers(*, auth_mode: str, credential: str) -> dict[str, str]:
     mode = auth_mode.strip().lower()
     token = credential.strip()
-    if token == "":
+    if token == "":  # nosec B105
         raise ModelInvocationError("azure credential is required")
     if mode == AZURE_AUTH_MODE_API_KEY:
         return {"api-key": token}
@@ -36,9 +38,10 @@ def request_azure_json(
     headers: dict[str, str] | None = None,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    validated_base_url = validate_provider_base_url(base_url)
     normalized_path = path if path.startswith("/") else f"/{path}"
     endpoint = _append_api_version(
-        url=base_url.rstrip("/") + normalized_path,
+        url=validated_base_url.rstrip("/") + normalized_path,
         api_version=api_version,
     )
     request_headers = {"Accept": "application/json"}
@@ -50,15 +53,12 @@ def request_azure_json(
         request_headers["Content-Type"] = "application/json"
     request = Request(endpoint, data=body, headers=request_headers, method=method)
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:
+        with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
             raw_payload = response.read()
     except HTTPError as exc:
-        detail = _extract_http_error_detail(exc)
-        if detail is not None:
-            raise ModelInvocationError(detail) from exc
         raise ModelInvocationError(f"model provider returned HTTP {exc.code}") from exc
     except URLError as exc:
-        raise ModelInvocationError(f"model provider request failed: {exc.reason}") from exc
+        raise ModelInvocationError("model provider request failed") from exc
 
     try:
         parsed_payload = json.loads(raw_payload)
@@ -214,24 +214,3 @@ def _parse_usage(payload: dict[str, Any]) -> ModelUsagePayload:
             break
 
     return usage
-
-
-def _extract_http_error_detail(exc: HTTPError) -> str | None:
-    raw_body = exc.read().decode("utf-8", errors="replace")
-    try:
-        parsed_error = json.loads(raw_body)
-    except json.JSONDecodeError:
-        return None
-
-    if not isinstance(parsed_error, dict):
-        return None
-
-    error = parsed_error.get("error")
-    if isinstance(error, dict):
-        detail = error.get("message")
-        if isinstance(detail, str) and detail.strip():
-            return detail
-    detail = parsed_error.get("detail")
-    if isinstance(detail, str) and detail.strip():
-        return detail
-    return None

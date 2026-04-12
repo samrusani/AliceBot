@@ -179,7 +179,7 @@ def test_ollama_adapter_discovers_capabilities_and_invokes(monkeypatch) -> None:
     adapter = registry.resolve(OLLAMA_ADAPTER_KEY)
     runtime_provider = make_runtime_provider_config(
         provider_key=OLLAMA_ADAPTER_KEY,
-        base_url="http://127.0.0.1:11434",
+        base_url="http://ollama.example:11434",
         api_key="",
         auth_mode="none",
         model_list_path="/api/tags",
@@ -245,9 +245,9 @@ def test_ollama_adapter_discovers_capabilities_and_invokes(monkeypatch) -> None:
     assert response.output_text == "Local Ollama reply"
     assert response.usage["input_tokens"] == 20
     assert response.usage["output_tokens"] == 6
-    assert captured[0]["url"] == "http://127.0.0.1:11434/api/version"
-    assert captured[1]["url"] == "http://127.0.0.1:11434/api/tags"
-    assert captured[2]["url"] == "http://127.0.0.1:11434/api/chat"
+    assert captured[0]["url"] == "http://ollama.example:11434/api/version"
+    assert captured[1]["url"] == "http://ollama.example:11434/api/tags"
+    assert captured[2]["url"] == "http://ollama.example:11434/api/chat"
 
 
 def test_llamacpp_adapter_discovers_capabilities_and_invokes(monkeypatch) -> None:
@@ -256,7 +256,7 @@ def test_llamacpp_adapter_discovers_capabilities_and_invokes(monkeypatch) -> Non
     adapter = registry.resolve(LLAMACPP_ADAPTER_KEY)
     runtime_provider = make_runtime_provider_config(
         provider_key=LLAMACPP_ADAPTER_KEY,
-        base_url="http://127.0.0.1:8080",
+        base_url="http://llamacpp.example:8080",
         api_key="",
         auth_mode="none",
         model_list_path="/v1/models",
@@ -323,9 +323,9 @@ def test_llamacpp_adapter_discovers_capabilities_and_invokes(monkeypatch) -> Non
     assert response.output_text == "llama.cpp says hi"
     assert response.response_id == "chatcmpl-local-1"
     assert response.usage["total_tokens"] == 22
-    assert captured[0]["url"] == "http://127.0.0.1:8080/health"
-    assert captured[1]["url"] == "http://127.0.0.1:8080/v1/models"
-    assert captured[2]["url"] == "http://127.0.0.1:8080/v1/chat/completions"
+    assert captured[0]["url"] == "http://llamacpp.example:8080/health"
+    assert captured[1]["url"] == "http://llamacpp.example:8080/v1/models"
+    assert captured[2]["url"] == "http://llamacpp.example:8080/v1/chat/completions"
 
 
 def test_azure_adapter_discovers_capabilities_and_invokes_with_api_key(monkeypatch) -> None:
