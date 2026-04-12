@@ -30,6 +30,7 @@ from alicebot_api.local_provider_helpers import (
     prompt_sections_to_messages,
     request_json,
 )
+from alicebot_api.provider_security import validate_provider_base_url
 from alicebot_api.response_generation import (
     ModelInvocationError,
     OpenAICompatibleTransportConfig,
@@ -195,7 +196,8 @@ class OpenAICompatibleAdapter:
         config: RuntimeProviderConfig,
         settings: Settings,
     ) -> ProviderCapabilitySnapshot:
-        del config, settings
+        validate_provider_base_url(config.base_url)
+        del settings
         return normalized_capability_snapshot(
             adapter_key=self.adapter_key,
             runtime_provider=self.runtime_provider,
@@ -215,10 +217,11 @@ class OpenAICompatibleAdapter:
     ) -> ModelInvocationResponse:
         if request.provider != self.runtime_provider:
             raise ModelInvocationError(f"unsupported model provider: {request.provider}")
+        validated_base_url = validate_provider_base_url(config.base_url)
 
         return invoke_openai_compatible_model(
             transport=OpenAICompatibleTransportConfig(
-                base_url=config.base_url,
+                base_url=validated_base_url,
                 api_key=config.api_key,
                 timeout_seconds=settings.model_timeout_seconds,
             ),
@@ -239,13 +242,14 @@ class AzureAdapter:
         config: RuntimeProviderConfig,
         settings: Settings,
     ) -> ProviderCapabilitySnapshot:
+        validated_base_url = validate_provider_base_url(config.base_url)
         api_version = config.azure_api_version.strip() or DEFAULT_AZURE_API_VERSION
         headers = build_azure_auth_headers(auth_mode=config.auth_mode, credential=config.api_key)
         healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
         model_list_path = config.model_list_path or self.default_model_list_path
         request_azure_json(
             method="GET",
-            base_url=config.base_url,
+            base_url=validated_base_url,
             path=healthcheck_path,
             api_version=api_version,
             timeout_seconds=settings.healthcheck_timeout_seconds,
@@ -253,7 +257,7 @@ class AzureAdapter:
         )
         model_payload = request_azure_json(
             method="GET",
-            base_url=config.base_url,
+            base_url=validated_base_url,
             path=model_list_path,
             api_version=api_version,
             timeout_seconds=settings.healthcheck_timeout_seconds,
@@ -292,9 +296,10 @@ class AzureAdapter:
     ) -> ModelInvocationResponse:
         if request.provider != self.runtime_provider:
             raise ModelInvocationError(f"unsupported model provider: {request.provider}")
+        validated_base_url = validate_provider_base_url(config.base_url)
         return invoke_azure_openai_responses(
             request=request,
-            base_url=config.base_url,
+            base_url=validated_base_url,
             auth_mode=config.auth_mode,
             credential=config.api_key,
             api_version=config.azure_api_version.strip() or DEFAULT_AZURE_API_VERSION,
@@ -316,19 +321,20 @@ class OllamaAdapter:
         config: RuntimeProviderConfig,
         settings: Settings,
     ) -> ProviderCapabilitySnapshot:
+        validated_base_url = validate_provider_base_url(config.base_url)
         headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
         healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
         model_list_path = config.model_list_path or self.default_model_list_path
         request_json(
             method="GET",
-            base_url=config.base_url,
+            base_url=validated_base_url,
             path=healthcheck_path,
             timeout_seconds=settings.healthcheck_timeout_seconds,
             headers=headers,
         )
         model_payload = request_json(
             method="GET",
-            base_url=config.base_url,
+            base_url=validated_base_url,
             path=model_list_path,
             timeout_seconds=settings.healthcheck_timeout_seconds,
             headers=headers,
@@ -364,10 +370,11 @@ class OllamaAdapter:
     ) -> ModelInvocationResponse:
         if request.provider != self.runtime_provider:
             raise ModelInvocationError(f"unsupported model provider: {request.provider}")
+        validated_base_url = validate_provider_base_url(config.base_url)
         headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
         payload = request_json(
             method="POST",
-            base_url=config.base_url,
+            base_url=validated_base_url,
             path=config.invoke_path or self.default_invoke_path,
             timeout_seconds=settings.model_timeout_seconds,
             headers=headers,
@@ -393,19 +400,20 @@ class LlamaCppAdapter:
         config: RuntimeProviderConfig,
         settings: Settings,
     ) -> ProviderCapabilitySnapshot:
+        validated_base_url = validate_provider_base_url(config.base_url)
         headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
         healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
         model_list_path = config.model_list_path or self.default_model_list_path
         request_json(
             method="GET",
-            base_url=config.base_url,
+            base_url=validated_base_url,
             path=healthcheck_path,
             timeout_seconds=settings.healthcheck_timeout_seconds,
             headers=headers,
         )
         model_payload = request_json(
             method="GET",
-            base_url=config.base_url,
+            base_url=validated_base_url,
             path=model_list_path,
             timeout_seconds=settings.healthcheck_timeout_seconds,
             headers=headers,
@@ -441,10 +449,11 @@ class LlamaCppAdapter:
     ) -> ModelInvocationResponse:
         if request.provider != self.runtime_provider:
             raise ModelInvocationError(f"unsupported model provider: {request.provider}")
+        validated_base_url = validate_provider_base_url(config.base_url)
         headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
         payload = request_json(
             method="POST",
-            base_url=config.base_url,
+            base_url=validated_base_url,
             path=config.invoke_path or self.default_invoke_path,
             timeout_seconds=settings.model_timeout_seconds,
             headers=headers,
@@ -476,7 +485,7 @@ def resolve_runtime_provider_config_secrets(
         AZURE_AUTH_MODE_AD_TOKEN,
     }:
         azure_secret_ref = config.azure_auth_secret_ref.strip()
-        if azure_secret_ref == "":
+        if azure_secret_ref == "":  # nosec B105
             raise ProviderSecretManagerError("azure_auth_secret_ref is required for azure auth modes")
         return replace(
             config,

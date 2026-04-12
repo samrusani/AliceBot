@@ -19,7 +19,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="README.md",
         required_markers=(
             "Phase 10 is complete and shipped.",
-            "`P11-S6` Model Packs Tier 2 + Launch Clarity Assets is the active sprint",
+            "`P11-R1` Provider Runtime Hardening is the active security remediation sprint",
             "Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md]",
         ),
     ),
@@ -27,14 +27,14 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="ROADMAP.md",
         required_markers=(
             "Phase 10 is complete and shipped baseline truth.",
-            "P11-S6: Model Packs Tier 2 + Launch Clarity Assets",
+            "P11-R1: Provider Runtime Hardening (Security Remediation Sprint 1)",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Phase 11 Sprint 6 (P11-S6): Model Packs Tier 2 + Launch Clarity Assets",
-            "Reference baseline markers: shipped Phase 9 Alice Core, shipped Phase 10 Alice Connect, shipped `P11-S1` Provider Abstraction + OpenAI-Compatible Base, shipped `P11-S2` Ollama + llama.cpp Adapters, shipped `P11-S3` vLLM Adapter + Self-Hosted Performance Path, shipped `P11-S4` Model Packs Tier 1, and shipped `P11-S5` Azure Adapter + AutoGen Integration.",
+            "Phase 11 Security Remediation Sprint 1 (P11-R1): Provider Runtime Hardening",
+            "Reference baseline markers: shipped Phase 9 Alice Core, shipped Phase 10 Alice Connect, shipped `P11-S1` through `P11-S6` provider/runtime/model-pack work.",
         ),
     ),
     ControlDocTruthRule(
@@ -49,7 +49,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         required_markers=(
             "Phase 9 is complete and shipped.",
             "Phase 10 is complete and shipped.",
-            "`P11-S6` (Model Packs Tier 2 + Launch Clarity Assets) is the active execution sprint packet.",
+            "`P11-R1` (Provider Runtime Hardening) is the active security remediation sprint packet.",
         ),
     ),
     ControlDocTruthRule(

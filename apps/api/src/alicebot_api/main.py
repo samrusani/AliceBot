@@ -157,6 +157,8 @@ from alicebot_api.contracts import (
     GmailAccountConnectInput,
     GmailMessageIngestInput,
     MemoryCandidateInput,
+    ModelInvocationRequest,
+    ModelInvocationResponse,
     OpenLoopCandidateInput,
     MemoryEmbeddingUpsertInput,
     THREAD_EVENT_LIST_ORDER,
@@ -612,6 +614,7 @@ from alicebot_api.provider_runtime import (
     OLLAMA_ADAPTER_KEY,
     OPENAI_COMPATIBLE_ADAPTER_KEY,
     OPENAI_RESPONSES_PROVIDER,
+    ProviderAdapter,
     ProviderAdapterNotFoundError,
     RuntimeProviderConfig,
     build_provider_test_model_request,
@@ -640,6 +643,10 @@ from alicebot_api.provider_secrets import (
     build_provider_secret_ref,
     encode_provider_secret_ref,
     write_provider_api_key,
+)
+from alicebot_api.provider_security import (
+    sanitize_provider_error_message,
+    validate_provider_base_url,
 )
 from alicebot_api.store import (
     ContinuityStore,
@@ -1458,7 +1465,7 @@ def _serialize_model_provider(provider: ModelProviderRow) -> dict[str, object]:
         "provider_key": provider["provider_key"],
         "model_provider": provider["model_provider"],
         "display_name": provider["display_name"],
-        "base_url": provider["base_url"],
+        "base_url": redact_url_credentials(provider["base_url"]),
         "auth_mode": provider["auth_mode"],
         "default_model": provider["default_model"],
         "status": provider["status"],
@@ -1549,6 +1556,7 @@ def _runtime_provider_config_or_none(
     )
     if row is None:
         return None
+    validate_provider_base_url(row["base_url"])
     return resolve_runtime_provider_config_secrets(
         config=RuntimeProviderConfig.from_row(row),
         settings=settings,
@@ -1595,6 +1603,25 @@ def _fallback_provider_capability_snapshot(
     return snapshot
 
 
+def _invoke_runtime_provider_model(
+    *,
+    adapter: ProviderAdapter,
+    runtime_provider: RuntimeProviderConfig,
+    settings: Settings,
+    model_request: ModelInvocationRequest,
+) -> ModelInvocationResponse:
+    try:
+        return adapter.invoke(
+            config=runtime_provider,
+            settings=settings,
+            request=model_request,
+        )
+    except ValueError as exc:
+        raise ModelInvocationError(str(exc)) from exc
+    except ModelInvocationError as exc:
+        raise ModelInvocationError(sanitize_provider_error_message(str(exc))) from exc
+
+
 def _register_workspace_provider(
     *,
     settings: Settings,
@@ -1632,8 +1659,7 @@ def _register_workspace_provider(
 
     if normalized_display_name == "":
         raise ValueError("display_name is required")
-    if normalized_base_url == "":
-        raise ValueError("base_url is required")
+    normalized_base_url = validate_provider_base_url(normalized_base_url)
     if normalized_default_model == "":
         raise ValueError("default_model is required")
     if normalized_auth_mode not in {"bearer", "none"}:
@@ -1669,7 +1695,8 @@ def _register_workspace_provider(
         healthcheck_path=normalized_healthcheck_path,
         invoke_path=normalized_invoke_path,
         azure_api_version="",
-        azure_auth_secret_ref="",
+        # Non-Azure providers intentionally store an empty Azure secret ref.
+        azure_auth_secret_ref="",  # nosec B106
     )
 
     runtime_provider = resolve_runtime_provider_config_secrets(
@@ -1686,6 +1713,7 @@ def _register_workspace_provider(
             settings=settings,
         )
     except ModelInvocationError as exc:
+        sanitized_discovery_error = sanitize_provider_error_message(str(exc))
         capability_snapshot = _fallback_provider_capability_snapshot(
             adapter_key=adapter.adapter_key,
             runtime_provider=adapter.runtime_provider,
@@ -1694,7 +1722,7 @@ def _register_workspace_provider(
             invoke_path=normalized_invoke_path,
         )
         discovery_status = "failed"
-        discovery_error = str(exc)
+        discovery_error = sanitized_discovery_error
 
     capability = store.upsert_provider_capability(
         workspace_id=workspace_id,
@@ -1753,8 +1781,7 @@ def _register_workspace_azure_provider(
 
     if normalized_display_name == "":
         raise ValueError("display_name is required")
-    if normalized_base_url == "":
-        raise ValueError("base_url is required")
+    normalized_base_url = validate_provider_base_url(normalized_base_url)
     if normalized_default_model == "":
         raise ValueError("default_model is required")
     if normalized_auth_mode not in {AZURE_AUTH_MODE_API_KEY, AZURE_AUTH_MODE_AD_TOKEN}:
@@ -1803,6 +1830,7 @@ def _register_workspace_azure_provider(
             settings=settings,
         )
     except ModelInvocationError as exc:
+        sanitized_discovery_error = sanitize_provider_error_message(str(exc))
         capability_snapshot = _fallback_provider_capability_snapshot(
             adapter_key=adapter.adapter_key,
             runtime_provider=adapter.runtime_provider,
@@ -1815,7 +1843,7 @@ def _register_workspace_azure_provider(
             },
         )
         discovery_status = "failed"
-        discovery_error = str(exc)
+        discovery_error = sanitized_discovery_error
 
     capability = store.upsert_provider_capability(
         workspace_id=workspace_id,
@@ -6604,7 +6632,8 @@ def register_v1_azure_provider(
         credential = body.api_key
     else:
         credential = body.ad_token
-    assert credential is not None
+    if credential is None:
+        return JSONResponse(status_code=400, content={"detail": "azure credential is required"})
 
     try:
         session_token = _extract_bearer_token(request)
@@ -6785,6 +6814,7 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                         settings=settings,
                     )
                 except ModelInvocationError as exc:
+                    sanitized_discovery_error = sanitize_provider_error_message(str(exc))
                     extra_snapshot_fields = None
                     if runtime_provider.provider_key == AZURE_ADAPTER_KEY:
                         extra_snapshot_fields = {
@@ -6806,13 +6836,13 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                             invoke_path=runtime_provider.invoke_path,
                             extra_snapshot_fields=extra_snapshot_fields,
                         ),
-                        discovery_error=str(exc),
+                        discovery_error=sanitized_discovery_error,
                     )
                     return JSONResponse(
                         status_code=502,
                         content=jsonable_encoder(
                             {
-                                "detail": str(exc),
+                                "detail": sanitized_discovery_error,
                                 "provider": _serialize_model_provider(provider),
                                 "capabilities": _serialize_provider_capability(capability),
                             }
@@ -6831,6 +6861,7 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                         request=model_request,
                     )
                 except ModelInvocationError as exc:
+                    sanitized_invoke_error = sanitize_provider_error_message(str(exc))
                     capability = store.upsert_provider_capability(
                         workspace_id=workspace["id"],
                         provider_id=runtime_provider.provider_id,
@@ -6838,13 +6869,13 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                         adapter_key=adapter.adapter_key,
                         discovery_status="failed",
                         capability_snapshot=capability_snapshot,
-                        discovery_error=str(exc),
+                        discovery_error=sanitized_invoke_error,
                     )
                     return JSONResponse(
                         status_code=502,
                         content=jsonable_encoder(
                             {
-                                "detail": str(exc),
+                                "detail": sanitized_invoke_error,
                                 "provider": _serialize_model_provider(provider),
                                 "capabilities": _serialize_provider_capability(capability),
                             }
@@ -7106,7 +7137,8 @@ def bind_v1_model_pack(pack_id: str, request: Request, body: BindModelPackReques
     except ModelPackValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
-    assert binding is not None
+    if binding is None:
+        return JSONResponse(status_code=500, content={"detail": "workspace model pack binding could not be resolved"})
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder({"binding": _serialize_workspace_model_pack_binding(binding)}),
@@ -7206,12 +7238,13 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ModelPackValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ProviderSecretManagerError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
-    assert workspace_id is not None
-    assert user_account is not None
-    assert runtime_provider is not None
+    if workspace_id is None or user_account is None or runtime_provider is None:
+        return JSONResponse(status_code=500, content={"detail": "runtime context could not be resolved"})
 
     selected_model = (body.model or runtime_provider.default_model).strip()
     if selected_model == "":
@@ -7260,7 +7293,8 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
         )
 
     user_account_id = user_account["id"]
-    assert isinstance(user_account_id, UUID)
+    if not isinstance(user_account_id, UUID):
+        return JSONResponse(status_code=500, content={"detail": "runtime user context is invalid"})
 
     try:
         adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
@@ -7278,10 +7312,11 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                 message_text=body.message,
                 limits=runtime_limits,
                 runtime_override=(runtime_provider.model_provider, selected_model),
-                model_invoker=lambda model_request: adapter.invoke(
-                    config=runtime_provider,
+                model_invoker=lambda model_request: _invoke_runtime_provider_model(
+                    adapter=adapter,
+                    runtime_provider=runtime_provider,
                     settings=settings,
-                    request=model_request,
+                    model_request=model_request,
                 ),
                 system_instruction=runtime_system_instruction,
                 developer_instruction=runtime_developer_instruction,
@@ -7975,7 +8010,7 @@ def get_v1_telegram_status(
 @app.post("/v1/channels/telegram/webhook")
 async def ingest_v1_telegram_webhook(request: Request) -> JSONResponse:
     settings = get_settings()
-    if settings.app_env not in {"development", "test"} and settings.telegram_webhook_secret == "":
+    if settings.app_env not in {"development", "test"} and settings.telegram_webhook_secret == "":  # nosec B105
         return JSONResponse(
             status_code=503,
             content={"detail": "telegram webhook ingress is not configured"},
@@ -7992,7 +8027,7 @@ async def ingest_v1_telegram_webhook(request: Request) -> JSONResponse:
     if rate_limit_error is not None:
         return rate_limit_error
 
-    if settings.telegram_webhook_secret != "":
+    if settings.telegram_webhook_secret != "":  # nosec B105
         header_secret = request.headers.get("x-telegram-bot-api-secret-token", "").strip()
         if not hmac.compare_digest(header_secret, settings.telegram_webhook_secret):
             return JSONResponse(status_code=401, content={"detail": "telegram webhook secret is invalid"})

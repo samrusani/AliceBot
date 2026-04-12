@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from io import BytesIO
 import json
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
@@ -198,7 +200,7 @@ def test_phase11_local_provider_registration_list_and_detail(migrated_database_u
         "/v1/providers/ollama/register",
         payload={
             "display_name": "Ollama Local",
-            "base_url": "http://127.0.0.1:11434",
+            "base_url": "http://ollama.example:11434",
             "default_model": "llama3.2:latest",
             "metadata": {"kind": "local"},
         },
@@ -224,7 +226,7 @@ def test_phase11_local_provider_registration_list_and_detail(migrated_database_u
         "/v1/providers/llamacpp/register",
         payload={
             "display_name": "llama.cpp Local",
-            "base_url": "http://127.0.0.1:8080",
+            "base_url": "http://llamacpp.example:8080",
             "default_model": "Meta-Llama-3.1-8B-Instruct",
             "metadata": {"kind": "local"},
         },
@@ -271,10 +273,10 @@ def test_phase11_local_provider_registration_list_and_detail(migrated_database_u
     assert llamacpp_detail_payload["capabilities"]["provider_id"] == llamacpp_provider_id
 
     captured_urls = [record["url"] for record in captured_requests]
-    assert "http://127.0.0.1:11434/api/version" in captured_urls
-    assert "http://127.0.0.1:11434/api/tags" in captured_urls
-    assert "http://127.0.0.1:8080/health" in captured_urls
-    assert "http://127.0.0.1:8080/v1/models" in captured_urls
+    assert "http://ollama.example:11434/api/version" in captured_urls
+    assert "http://ollama.example:11434/api/tags" in captured_urls
+    assert "http://llamacpp.example:8080/health" in captured_urls
+    assert "http://llamacpp.example:8080/v1/models" in captured_urls
 
 
 def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
@@ -347,7 +349,7 @@ def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
         "/v1/providers/ollama/register",
         payload={
             "display_name": "Ollama Runtime",
-            "base_url": "http://127.0.0.1:11434",
+            "base_url": "http://ollama.example:11434",
             "default_model": "llama3.2:latest",
         },
         headers=auth_header(session_token_a),
@@ -360,7 +362,7 @@ def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
         "/v1/providers/llamacpp/register",
         payload={
             "display_name": "llama.cpp Runtime",
-            "base_url": "http://127.0.0.1:8080",
+            "base_url": "http://llamacpp.example:8080",
             "default_model": "Meta-Llama-3.1-8B-Instruct",
         },
         headers=auth_header(session_token_a),
@@ -445,8 +447,8 @@ def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
     assert UUID(llamacpp_runtime_payload["assistant"]["event_id"])
 
     captured_urls = [record["url"] for record in captured_requests]
-    assert "http://127.0.0.1:11434/api/chat" in captured_urls
-    assert "http://127.0.0.1:8080/v1/chat/completions" in captured_urls
+    assert "http://ollama.example:11434/api/chat" in captured_urls
+    assert "http://llamacpp.example:8080/v1/chat/completions" in captured_urls
 
 
 def test_phase11_openai_compatible_registration_still_works(migrated_database_urls, monkeypatch) -> None:
@@ -503,7 +505,7 @@ def test_phase11_local_provider_rejects_api_key_when_auth_mode_none(
         "/v1/providers/ollama/register",
         payload={
             "display_name": "Ollama Invalid Auth",
-            "base_url": "http://127.0.0.1:11434",
+            "base_url": "http://ollama.example:11434",
             "auth_mode": "none",
             "api_key": "should-not-be-stored",
             "default_model": "llama3.2:latest",
@@ -755,3 +757,308 @@ def test_phase11_azure_runtime_invoke_workspace_isolation_and_ad_token_auth(
     headers = {key.lower(): value for key, value in invoke_record["headers"].items()}
     assert headers["authorization"] == "Bearer entra-token-secret"
     assert "api-key" not in headers
+
+
+def test_phase11_provider_registration_rejects_disallowed_targets(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, _, _ = _bootstrap_workspace_session("provider-security-blocked-register@example.com")
+
+    blocked_base_urls = [
+        "http://169.254.169.254/v1",
+        "http://127.0.0.1:11434/v1",
+        "http://10.0.10.7/v1",
+        "http://192.168.1.44/v1",
+        "http://172.16.3.8/v1",
+        "http://0x7f000001/v1",
+        "http://017700000001/v1",
+        "http://127.1/v1",
+    ]
+    for blocked_base_url in blocked_base_urls:
+        status, payload = invoke_request(
+            "POST",
+            "/v1/providers",
+            payload={
+                "provider_key": "openai_compatible",
+                "display_name": f"Blocked {blocked_base_url}",
+                "base_url": blocked_base_url,
+                "api_key": "provider-secret-key",
+                "default_model": "gpt-5-mini",
+            },
+            headers=auth_header(session_token),
+        )
+        assert status == 400
+        assert "not allowed by outbound policy" in payload["detail"]
+
+
+def test_phase11_provider_test_and_runtime_reject_disallowed_target_without_outbound(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, workspace_id, user_account_id = _bootstrap_workspace_session(
+        "provider-security-blocked-runtime@example.com"
+    )
+    urlopen_call_count = 0
+
+    def fake_urlopen(_request, _timeout):
+        nonlocal urlopen_call_count
+        urlopen_call_count += 1
+        raise AssertionError("outbound request should not be attempted for blocked targets")
+
+    monkeypatch.setattr("alicebot_api.response_generation.urlopen", fake_urlopen)
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "OpenAI Blocked Runtime",
+            "base_url": "https://provider.example/v1",
+            "api_key": "provider-secret-key",
+            "default_model": "gpt-5-mini",
+        },
+        headers=auth_header(session_token),
+    )
+    assert register_status == 201
+    provider_id = register_payload["provider"]["id"]
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE model_providers
+                SET base_url = %s
+                WHERE id = %s
+                  AND workspace_id = %s
+                """,
+                ("http://0x7f000001/latest/meta-data", provider_id, workspace_id),
+            )
+        conn.commit()
+
+    test_status, test_payload = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={"provider_id": provider_id},
+        headers=auth_header(session_token),
+    )
+    assert test_status == 400
+    assert "not allowed by outbound policy" in test_payload["detail"]
+
+    thread_id = _seed_thread_for_user(
+        admin_db_url=migrated_database_urls["admin"],
+        user_id=user_account_id,
+        email="provider-security-blocked-runtime@example.com",
+    )
+    runtime_status, runtime_payload = invoke_request(
+        "POST",
+        "/v1/runtime/invoke",
+        payload={
+            "provider_id": provider_id,
+            "thread_id": thread_id,
+            "message": "hello",
+        },
+        headers=auth_header(session_token),
+    )
+    assert runtime_status == 400
+    assert "not allowed by outbound policy" in runtime_payload["detail"]
+    assert urlopen_call_count == 0
+
+
+def test_phase11_provider_rejects_userinfo_and_redacts_legacy_rows(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, workspace_id, user_account_id = _bootstrap_workspace_session("provider-security-userinfo@example.com")
+
+    rejected_status, rejected_payload = invoke_request(
+        "POST",
+        "/v1/providers/azure/register",
+        payload={
+            "display_name": "Azure UserInfo",
+            "base_url": "https://alice:secret@azure.example/openai",
+            "auth_mode": "azure_api_key",
+            "api_key": "azure-secret-key",
+            "api_version": "2024-10-21",
+            "default_model": "gpt-4.1-mini",
+        },
+        headers=auth_header(session_token),
+    )
+    assert rejected_status == 400
+    assert "embedded credentials" in rejected_payload["detail"]
+
+    legacy_provider_id: str
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO model_providers (
+                  workspace_id,
+                  created_by_user_account_id,
+                  provider_key,
+                  model_provider,
+                  display_name,
+                  base_url,
+                  api_key,
+                  auth_mode,
+                  default_model,
+                  status,
+                  model_list_path,
+                  healthcheck_path,
+                  invoke_path,
+                  azure_api_version,
+                  azure_auth_secret_ref,
+                  metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                RETURNING id
+                """,
+                (
+                    workspace_id,
+                    user_account_id,
+                    "openai_compatible",
+                    "openai_responses",
+                    "Legacy UserInfo Provider",
+                    "https://legacy-user:legacy-pass@provider.example/v1",
+                    "provider_secret_ref:legacy",
+                    "bearer",
+                    "gpt-5-mini",
+                    "active",
+                    "/models",
+                    "/models",
+                    "/responses",
+                    "",
+                    "",
+                    "{}",
+                ),
+            )
+            legacy_provider_id = str(cur.fetchone()[0])
+        conn.commit()
+
+    list_status, list_payload = invoke_request(
+        "GET",
+        "/v1/providers",
+        headers=auth_header(session_token),
+    )
+    assert list_status == 200
+    listed_legacy = next(item for item in list_payload["items"] if item["id"] == legacy_provider_id)
+    assert listed_legacy["base_url"] == "https://provider.example/v1"
+
+    detail_status, detail_payload = invoke_request(
+        "GET",
+        f"/v1/providers/{legacy_provider_id}",
+        headers=auth_header(session_token),
+    )
+    assert detail_status == 200
+    assert detail_payload["provider"]["base_url"] == "https://provider.example/v1"
+
+
+def test_phase11_provider_error_reflection_and_persistence_are_sanitized(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, _, user_account_id = _bootstrap_workspace_session(
+        "provider-security-sanitized-errors@example.com"
+    )
+    sensitive_detail = "UPSTREAM_SECRET_TOKEN_ABC123"
+
+    def fake_urlopen(request, timeout):
+        del timeout
+        raise HTTPError(
+            url=request.full_url,
+            code=502,
+            msg="Bad Gateway",
+            hdrs=None,
+            fp=BytesIO(
+                json.dumps({"error": {"message": f"provider failed with {sensitive_detail}"}}).encode("utf-8")
+            ),
+        )
+
+    monkeypatch.setattr("alicebot_api.response_generation.urlopen", fake_urlopen)
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "OpenAI Sanitized Errors",
+            "base_url": "https://provider.example/v1",
+            "api_key": "provider-secret-key",
+            "default_model": "gpt-5-mini",
+        },
+        headers=auth_header(session_token),
+    )
+    assert register_status == 201
+    provider_id = register_payload["provider"]["id"]
+
+    test_status, test_payload = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={
+            "provider_id": provider_id,
+            "prompt": "Ping test provider.",
+        },
+        headers=auth_header(session_token),
+    )
+    assert test_status == 502
+    assert test_payload["detail"] == "provider upstream request failed"
+    assert sensitive_detail not in json.dumps(test_payload)
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT discovery_error
+                FROM provider_capabilities
+                WHERE provider_id = %s
+                """,
+                (provider_id,),
+            )
+            provider_capability_row = cur.fetchone()
+    assert provider_capability_row is not None
+    assert provider_capability_row[0] == "provider upstream request failed"
+    assert sensitive_detail not in provider_capability_row[0]
+
+    thread_id = _seed_thread_for_user(
+        admin_db_url=migrated_database_urls["admin"],
+        user_id=user_account_id,
+        email="provider-security-sanitized-errors@example.com",
+    )
+    runtime_status, runtime_payload = invoke_request(
+        "POST",
+        "/v1/runtime/invoke",
+        payload={
+            "provider_id": provider_id,
+            "thread_id": thread_id,
+            "message": "Runtime request should fail safely.",
+        },
+        headers=auth_header(session_token),
+    )
+    assert runtime_status == 502
+    assert runtime_payload["detail"] == "provider upstream request failed"
+    assert sensitive_detail not in json.dumps(runtime_payload)
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT te.payload->>'error_message'
+                FROM trace_events te
+                JOIN traces t
+                  ON t.id = te.trace_id
+                WHERE t.user_id = %s
+                  AND t.thread_id = %s
+                  AND te.kind = 'response.model.failed'
+                ORDER BY te.created_at DESC
+                LIMIT 1
+                """,
+                (user_account_id, thread_id),
+            )
+            trace_row = cur.fetchone()
+    assert trace_row is not None
+    assert trace_row[0] == "provider upstream request failed"
+    assert sensitive_detail not in trace_row[0]
