@@ -373,6 +373,53 @@ class ProviderCapabilityRow(TypedDict):
     updated_at: datetime
 
 
+class ModelPackRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    created_by_user_account_id: UUID
+    pack_id: str
+    pack_version: str
+    display_name: str
+    family: str
+    description: str
+    status: str
+    contract: JsonObject
+    metadata: JsonObject
+    created_at: datetime
+    updated_at: datetime
+
+
+class WorkspaceModelPackBindingRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    model_pack_id: UUID
+    bound_by_user_account_id: UUID
+    binding_source: str
+    metadata: JsonObject
+    created_at: datetime
+
+
+class WorkspaceModelPackBindingDetailRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    model_pack_id: UUID
+    bound_by_user_account_id: UUID
+    binding_source: str
+    metadata: JsonObject
+    created_at: datetime
+    pack_id: str
+    pack_version: str
+    pack_display_name: str
+    pack_family: str
+    pack_description: str
+    pack_status: str
+    pack_contract: JsonObject
+    pack_metadata: JsonObject
+    pack_created_by_user_account_id: UUID
+    pack_created_at: datetime
+    pack_updated_at: datetime
+
+
 class MemoryEmbeddingRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -2209,6 +2256,228 @@ GET_PROVIDER_CAPABILITY_FOR_PROVIDER_SQL = """
                 FROM provider_capabilities
                 WHERE provider_id = %s
                   AND workspace_id = %s
+                """
+
+INSERT_MODEL_PACK_SQL = """
+                INSERT INTO model_packs (
+                  workspace_id,
+                  created_by_user_account_id,
+                  pack_id,
+                  pack_version,
+                  display_name,
+                  family,
+                  description,
+                  status,
+                  contract,
+                  metadata,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  workspace_id,
+                  created_by_user_account_id,
+                  pack_id,
+                  pack_version,
+                  display_name,
+                  family,
+                  description,
+                  status,
+                  contract,
+                  metadata,
+                  created_at,
+                  updated_at
+                """
+
+INSERT_MODEL_PACK_IF_ABSENT_SQL = """
+                INSERT INTO model_packs (
+                  workspace_id,
+                  created_by_user_account_id,
+                  pack_id,
+                  pack_version,
+                  display_name,
+                  family,
+                  description,
+                  status,
+                  contract,
+                  metadata,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp(),
+                  clock_timestamp()
+                )
+                ON CONFLICT (workspace_id, pack_id, pack_version) DO NOTHING
+                RETURNING
+                  id,
+                  workspace_id,
+                  created_by_user_account_id,
+                  pack_id,
+                  pack_version,
+                  display_name,
+                  family,
+                  description,
+                  status,
+                  contract,
+                  metadata,
+                  created_at,
+                  updated_at
+                """
+
+GET_MODEL_PACK_FOR_WORKSPACE_BY_ID_AND_VERSION_SQL = """
+                SELECT
+                  id,
+                  workspace_id,
+                  created_by_user_account_id,
+                  pack_id,
+                  pack_version,
+                  display_name,
+                  family,
+                  description,
+                  status,
+                  contract,
+                  metadata,
+                  created_at,
+                  updated_at
+                FROM model_packs
+                WHERE workspace_id = %s
+                  AND pack_id = %s
+                  AND pack_version = %s
+                """
+
+GET_LATEST_MODEL_PACK_FOR_WORKSPACE_BY_ID_SQL = """
+                SELECT
+                  id,
+                  workspace_id,
+                  created_by_user_account_id,
+                  pack_id,
+                  pack_version,
+                  display_name,
+                  family,
+                  description,
+                  status,
+                  contract,
+                  metadata,
+                  created_at,
+                  updated_at
+                FROM model_packs
+                WHERE workspace_id = %s
+                  AND pack_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """
+
+GET_MODEL_PACK_FOR_WORKSPACE_BY_ROW_ID_SQL = """
+                SELECT
+                  id,
+                  workspace_id,
+                  created_by_user_account_id,
+                  pack_id,
+                  pack_version,
+                  display_name,
+                  family,
+                  description,
+                  status,
+                  contract,
+                  metadata,
+                  created_at,
+                  updated_at
+                FROM model_packs
+                WHERE workspace_id = %s
+                  AND id = %s
+                """
+
+LIST_MODEL_PACKS_FOR_WORKSPACE_SQL = """
+                SELECT
+                  id,
+                  workspace_id,
+                  created_by_user_account_id,
+                  pack_id,
+                  pack_version,
+                  display_name,
+                  family,
+                  description,
+                  status,
+                  contract,
+                  metadata,
+                  created_at,
+                  updated_at
+                FROM model_packs
+                WHERE workspace_id = %s
+                ORDER BY pack_id ASC, created_at DESC, id DESC
+                """
+
+INSERT_WORKSPACE_MODEL_PACK_BINDING_SQL = """
+                INSERT INTO workspace_model_pack_bindings (
+                  workspace_id,
+                  model_pack_id,
+                  bound_by_user_account_id,
+                  binding_source,
+                  metadata,
+                  created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, clock_timestamp())
+                RETURNING
+                  id,
+                  workspace_id,
+                  model_pack_id,
+                  bound_by_user_account_id,
+                  binding_source,
+                  metadata,
+                  created_at
+                """
+
+GET_LATEST_WORKSPACE_MODEL_PACK_BINDING_SQL = """
+                SELECT
+                  b.id,
+                  b.workspace_id,
+                  b.model_pack_id,
+                  b.bound_by_user_account_id,
+                  b.binding_source,
+                  b.metadata,
+                  b.created_at,
+                  p.pack_id,
+                  p.pack_version,
+                  p.display_name AS pack_display_name,
+                  p.family AS pack_family,
+                  p.description AS pack_description,
+                  p.status AS pack_status,
+                  p.contract AS pack_contract,
+                  p.metadata AS pack_metadata,
+                  p.created_by_user_account_id AS pack_created_by_user_account_id,
+                  p.created_at AS pack_created_at,
+                  p.updated_at AS pack_updated_at
+                FROM workspace_model_pack_bindings AS b
+                INNER JOIN model_packs AS p
+                  ON p.id = b.model_pack_id
+                WHERE b.workspace_id = %s
+                ORDER BY b.created_at DESC, b.id DESC
+                LIMIT 1
                 """
 
 INSERT_EMBEDDING_CONFIG_SQL = """
@@ -6072,6 +6341,132 @@ class ContinuityStore:
         return self._fetch_optional_one(
             GET_PROVIDER_CAPABILITY_FOR_PROVIDER_SQL,
             (provider_id, workspace_id),
+        )
+
+    def create_model_pack(
+        self,
+        *,
+        workspace_id: UUID,
+        created_by_user_account_id: UUID,
+        pack_id: str,
+        pack_version: str,
+        display_name: str,
+        family: str,
+        description: str,
+        status: str,
+        contract: JsonObject,
+        metadata: JsonObject,
+    ) -> ModelPackRow:
+        return self._fetch_one(
+            "create_model_pack",
+            INSERT_MODEL_PACK_SQL,
+            (
+                workspace_id,
+                created_by_user_account_id,
+                pack_id,
+                pack_version,
+                display_name,
+                family,
+                description,
+                status,
+                Jsonb(contract),
+                Jsonb(metadata),
+            ),
+        )
+
+    def create_model_pack_if_absent_optional(
+        self,
+        *,
+        workspace_id: UUID,
+        created_by_user_account_id: UUID,
+        pack_id: str,
+        pack_version: str,
+        display_name: str,
+        family: str,
+        description: str,
+        status: str,
+        contract: JsonObject,
+        metadata: JsonObject,
+    ) -> ModelPackRow | None:
+        return self._fetch_optional_one(
+            INSERT_MODEL_PACK_IF_ABSENT_SQL,
+            (
+                workspace_id,
+                created_by_user_account_id,
+                pack_id,
+                pack_version,
+                display_name,
+                family,
+                description,
+                status,
+                Jsonb(contract),
+                Jsonb(metadata),
+            ),
+        )
+
+    def get_model_pack_for_workspace_optional(
+        self,
+        *,
+        workspace_id: UUID,
+        pack_id: str,
+        pack_version: str | None = None,
+    ) -> ModelPackRow | None:
+        if pack_version is None:
+            return self._fetch_optional_one(
+                GET_LATEST_MODEL_PACK_FOR_WORKSPACE_BY_ID_SQL,
+                (workspace_id, pack_id),
+            )
+        return self._fetch_optional_one(
+            GET_MODEL_PACK_FOR_WORKSPACE_BY_ID_AND_VERSION_SQL,
+            (workspace_id, pack_id, pack_version),
+        )
+
+    def get_model_pack_for_workspace_by_row_id_optional(
+        self,
+        *,
+        workspace_id: UUID,
+        model_pack_id: UUID,
+    ) -> ModelPackRow | None:
+        return self._fetch_optional_one(
+            GET_MODEL_PACK_FOR_WORKSPACE_BY_ROW_ID_SQL,
+            (workspace_id, model_pack_id),
+        )
+
+    def list_model_packs_for_workspace(self, *, workspace_id: UUID) -> list[ModelPackRow]:
+        return self._fetch_all(
+            LIST_MODEL_PACKS_FOR_WORKSPACE_SQL,
+            (workspace_id,),
+        )
+
+    def create_workspace_model_pack_binding(
+        self,
+        *,
+        workspace_id: UUID,
+        model_pack_id: UUID,
+        bound_by_user_account_id: UUID,
+        binding_source: str,
+        metadata: JsonObject,
+    ) -> WorkspaceModelPackBindingRow:
+        return self._fetch_one(
+            "create_workspace_model_pack_binding",
+            INSERT_WORKSPACE_MODEL_PACK_BINDING_SQL,
+            (
+                workspace_id,
+                model_pack_id,
+                bound_by_user_account_id,
+                binding_source,
+                Jsonb(metadata),
+            ),
+        )
+
+    def get_latest_workspace_model_pack_binding_optional(
+        self,
+        *,
+        workspace_id: UUID,
+    ) -> WorkspaceModelPackBindingDetailRow | None:
+        return self._fetch_optional_one(
+            GET_LATEST_WORKSPACE_MODEL_PACK_BINDING_SQL,
+            (workspace_id,),
         )
 
     def create_embedding_config(

@@ -161,6 +161,7 @@ from alicebot_api.contracts import (
     MemoryEmbeddingUpsertInput,
     THREAD_EVENT_LIST_ORDER,
     PROVIDER_LIST_ORDER,
+    MODEL_PACK_LIST_ORDER,
     THREAD_LIST_ORDER,
     THREAD_SESSION_LIST_ORDER,
     MemoryReviewLabelValue,
@@ -588,8 +589,10 @@ from alicebot_api.semantic_retrieval import (
     retrieve_task_scoped_semantic_artifact_chunk_records,
 )
 from alicebot_api.response_generation import (
+    DEVELOPER_INSTRUCTION,
     ModelInvocationError,
     ResponseFailure,
+    SYSTEM_INSTRUCTION,
     generate_response,
 )
 from alicebot_api.proxy_execution import (
@@ -610,6 +613,22 @@ from alicebot_api.provider_runtime import (
     normalized_capability_snapshot,
     resolve_runtime_provider_config_secrets,
 )
+from alicebot_api.model_packs import (
+    MODEL_PACK_BINDING_SOURCE_MANUAL,
+    MODEL_PACK_STATUS_ACTIVE,
+    ModelPackNotFoundError,
+    ModelPackValidationError,
+    append_instruction,
+    apply_runtime_limit_caps,
+    build_model_pack_runtime_shape,
+    ensure_tier1_model_packs_for_workspace,
+    is_reserved_tier1_pack_key,
+    normalize_model_pack_contract,
+    normalize_pack_family,
+    normalize_pack_id,
+    normalize_pack_version,
+    resolve_workspace_model_pack_selection,
+)
 from alicebot_api.provider_secrets import (
     ProviderSecretManagerError,
     build_provider_secret_ref,
@@ -620,10 +639,12 @@ from alicebot_api.store import (
     ContinuityStore,
     ContinuityStoreInvariantError,
     EventRow,
+    ModelPackRow,
     ModelProviderRow,
     ProviderCapabilityRow,
     SessionRow,
     ThreadRow,
+    WorkspaceModelPackBindingDetailRow,
 )
 from alicebot_api.traces import (
     TraceNotFoundError,
@@ -1460,6 +1481,54 @@ def _serialize_provider_capability(capability: ProviderCapabilityRow) -> dict[st
     }
 
 
+def _serialize_model_pack(pack: ModelPackRow) -> dict[str, object]:
+    return {
+        "id": str(pack["id"]),
+        "workspace_id": str(pack["workspace_id"]),
+        "created_by_user_account_id": str(pack["created_by_user_account_id"]),
+        "pack_id": pack["pack_id"],
+        "pack_version": pack["pack_version"],
+        "display_name": pack["display_name"],
+        "family": pack["family"],
+        "description": pack["description"],
+        "status": pack["status"],
+        "contract": pack["contract"],
+        "metadata": pack["metadata"],
+        "created_at": pack["created_at"].isoformat(),
+        "updated_at": pack["updated_at"].isoformat(),
+    }
+
+
+def _serialize_workspace_model_pack_binding(
+    binding: WorkspaceModelPackBindingDetailRow,
+) -> dict[str, object]:
+    model_pack: ModelPackRow = {
+        "id": binding["model_pack_id"],
+        "workspace_id": binding["workspace_id"],
+        "created_by_user_account_id": binding["pack_created_by_user_account_id"],
+        "pack_id": binding["pack_id"],
+        "pack_version": binding["pack_version"],
+        "display_name": binding["pack_display_name"],
+        "family": binding["pack_family"],
+        "description": binding["pack_description"],
+        "status": binding["pack_status"],
+        "contract": binding["pack_contract"],
+        "metadata": binding["pack_metadata"],
+        "created_at": binding["pack_created_at"],
+        "updated_at": binding["pack_updated_at"],
+    }
+    return {
+        "id": str(binding["id"]),
+        "workspace_id": str(binding["workspace_id"]),
+        "model_pack_id": str(binding["model_pack_id"]),
+        "bound_by_user_account_id": str(binding["bound_by_user_account_id"]),
+        "binding_source": binding["binding_source"],
+        "metadata": binding["metadata"],
+        "created_at": binding["created_at"].isoformat(),
+        "model_pack": _serialize_model_pack(model_pack),
+    }
+
+
 def _runtime_provider_config_or_none(
     *,
     store: ContinuityStore,
@@ -2091,6 +2160,25 @@ class TestProviderRequest(BaseModel):
     )
 
 
+class CreateModelPackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pack_id: str = Field(min_length=1, max_length=80)
+    pack_version: str = Field(min_length=1, max_length=40)
+    display_name: str = Field(min_length=1, max_length=120)
+    family: str = Field(min_length=1, max_length=40)
+    description: str = Field(default="", max_length=1000)
+    contract: dict[str, object]
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class BindModelPackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pack_version: str | None = Field(default=None, min_length=1, max_length=40)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
 class RuntimeInvokeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2098,6 +2186,8 @@ class RuntimeInvokeRequest(BaseModel):
     thread_id: UUID
     message: str = Field(min_length=1, max_length=4000)
     model: str | None = Field(default=None, min_length=1, max_length=200)
+    pack_id: str | None = Field(default=None, min_length=1, max_length=80)
+    pack_version: str | None = Field(default=None, min_length=1, max_length=40)
     max_sessions: int = Field(default=DEFAULT_MAX_SESSIONS, ge=1, le=50)
     max_events: int = Field(default=DEFAULT_MAX_EVENTS, ge=1, le=200)
     max_memories: int = Field(default=DEFAULT_MAX_MEMORIES, ge=1, le=200)
@@ -6555,6 +6645,267 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
     )
 
 
+@app.get("/v1/model-packs")
+def list_v1_model_packs(request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                ensure_tier1_model_packs_for_workspace(
+                    store=store,
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                )
+                packs = store.list_model_packs_for_workspace(workspace_id=workspace["id"])
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ModelPackValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    items = [_serialize_model_pack(pack) for pack in packs]
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "items": items,
+                "summary": {
+                    "total_count": len(items),
+                    "order": list(MODEL_PACK_LIST_ORDER),
+                },
+            }
+        ),
+    )
+
+
+@app.get("/v1/model-packs/{pack_id}")
+def get_v1_model_pack(
+    pack_id: str,
+    request: Request,
+    version: Annotated[str | None, Query(min_length=1, max_length=40)] = None,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        normalized_pack_id = normalize_pack_id(pack_id)
+        normalized_version = None if version is None else normalize_pack_version(version)
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                ensure_tier1_model_packs_for_workspace(
+                    store=store,
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                )
+                pack = store.get_model_pack_for_workspace_optional(
+                    workspace_id=workspace["id"],
+                    pack_id=normalized_pack_id,
+                    pack_version=normalized_version,
+                )
+                if pack is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"detail": f"model pack {normalized_pack_id} was not found"},
+                    )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ModelPackValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder({"model_pack": _serialize_model_pack(pack)}),
+    )
+
+
+@app.post("/v1/model-packs")
+def create_v1_model_pack(request: Request, body: CreateModelPackRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        normalized_pack_id = normalize_pack_id(body.pack_id)
+        normalized_pack_version = normalize_pack_version(body.pack_version)
+        normalized_family = normalize_pack_family(body.family)
+        normalized_contract = normalize_model_pack_contract(body.contract)
+        normalized_display_name = body.display_name.strip()
+        if normalized_display_name == "":
+            raise ModelPackValidationError("display_name is required")
+
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                ensure_tier1_model_packs_for_workspace(
+                    store=store,
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                )
+                if is_reserved_tier1_pack_key(
+                    pack_id=normalized_pack_id,
+                    pack_version=normalized_pack_version,
+                ):
+                    return JSONResponse(
+                        status_code=409,
+                        content={
+                            "detail": (
+                                f"model pack {normalized_pack_id}@{normalized_pack_version} "
+                                "is reserved for tier-1 catalog entries"
+                            )
+                        },
+                    )
+                pack = store.create_model_pack(
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                    pack_id=normalized_pack_id,
+                    pack_version=normalized_pack_version,
+                    display_name=normalized_display_name,
+                    family=normalized_family,
+                    description=body.description.strip(),
+                    status=MODEL_PACK_STATUS_ACTIVE,
+                    contract=normalized_contract,
+                    metadata=body.metadata,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except psycopg.errors.UniqueViolation:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "model pack pack_id and pack_version must be unique within the workspace"},
+        )
+    except ModelPackValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder({"model_pack": _serialize_model_pack(pack)}),
+    )
+
+
+@app.post("/v1/model-packs/{pack_id}/bind")
+def bind_v1_model_pack(pack_id: str, request: Request, body: BindModelPackRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        normalized_pack_id = normalize_pack_id(pack_id)
+        normalized_pack_version = (
+            None if body.pack_version is None else normalize_pack_version(body.pack_version)
+        )
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                ensure_tier1_model_packs_for_workspace(
+                    store=store,
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                )
+                pack = store.get_model_pack_for_workspace_optional(
+                    workspace_id=workspace["id"],
+                    pack_id=normalized_pack_id,
+                    pack_version=normalized_pack_version,
+                )
+                if pack is None:
+                    return JSONResponse(
+                        status_code=404,
+                        content={"detail": f"model pack {normalized_pack_id} was not found"},
+                    )
+                store.create_workspace_model_pack_binding(
+                    workspace_id=workspace["id"],
+                    model_pack_id=pack["id"],
+                    bound_by_user_account_id=resolution["user_account"]["id"],
+                    binding_source=MODEL_PACK_BINDING_SOURCE_MANUAL,
+                    metadata=body.metadata,
+                )
+                binding = store.get_latest_workspace_model_pack_binding_optional(
+                    workspace_id=workspace["id"],
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ModelPackValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    assert binding is not None
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder({"binding": _serialize_workspace_model_pack_binding(binding)}),
+    )
+
+
+@app.get("/v1/workspaces/{workspace_id}/model-pack-binding")
+def get_v1_workspace_model_pack_binding(workspace_id: UUID, request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_workspace_for_member(
+                    conn,
+                    workspace_id=workspace_id,
+                    user_account_id=resolution["user_account"]["id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": f"workspace {workspace_id} was not found"})
+
+                store = ContinuityStore(conn)
+                binding = store.get_latest_workspace_model_pack_binding_optional(
+                    workspace_id=workspace["id"],
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "binding": None
+                if binding is None
+                else _serialize_workspace_model_pack_binding(binding),
+            }
+        ),
+    )
+
+
 @app.post("/v1/runtime/invoke")
 def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONResponse:
     settings = get_settings()
@@ -6562,6 +6913,8 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     workspace_id: UUID | None = None
     user_account: dict[str, object] | None = None
     runtime_provider: RuntimeProviderConfig | None = None
+    model_pack: ModelPackRow | None = None
+    model_pack_source: str = "none"
 
     try:
         session_token = _extract_bearer_token(request)
@@ -6591,8 +6944,25 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                         status_code=404,
                         content={"detail": f"provider {body.provider_id} was not found"},
                     )
+                ensure_tier1_model_packs_for_workspace(
+                    store=store,
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                )
+                selected_pack = resolve_workspace_model_pack_selection(
+                    store=store,
+                    workspace_id=workspace["id"],
+                    requested_pack_id=body.pack_id,
+                    requested_pack_version=body.pack_version,
+                )
+                model_pack = selected_pack.pack
+                model_pack_source = selected_pack.source
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ModelPackNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except ModelPackValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ProviderSecretManagerError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
 
@@ -6603,6 +6973,48 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     selected_model = (body.model or runtime_provider.default_model).strip()
     if selected_model == "":
         return JSONResponse(status_code=400, content={"detail": "model is required"})
+
+    runtime_limits = ContextCompilerLimits(
+        max_sessions=body.max_sessions,
+        max_events=body.max_events,
+        max_memories=body.max_memories,
+        max_entities=body.max_entities,
+        max_entity_edges=body.max_entity_edges,
+    )
+    runtime_system_instruction = SYSTEM_INSTRUCTION
+    runtime_developer_instruction = DEVELOPER_INSTRUCTION
+
+    if model_pack is not None:
+        runtime_shape = build_model_pack_runtime_shape(model_pack["contract"])
+        (
+            max_sessions,
+            max_events,
+            max_memories,
+            max_entities,
+            max_entity_edges,
+        ) = apply_runtime_limit_caps(
+            max_sessions=runtime_limits.max_sessions,
+            max_events=runtime_limits.max_events,
+            max_memories=runtime_limits.max_memories,
+            max_entities=runtime_limits.max_entities,
+            max_entity_edges=runtime_limits.max_entity_edges,
+            shape=runtime_shape,
+        )
+        runtime_limits = ContextCompilerLimits(
+            max_sessions=max_sessions,
+            max_events=max_events,
+            max_memories=max_memories,
+            max_entities=max_entities,
+            max_entity_edges=max_entity_edges,
+        )
+        runtime_system_instruction = append_instruction(
+            SYSTEM_INSTRUCTION,
+            runtime_shape.system_instruction_append,
+        )
+        runtime_developer_instruction = append_instruction(
+            DEVELOPER_INSTRUCTION,
+            runtime_shape.developer_instruction_append,
+        )
 
     user_account_id = user_account["id"]
     assert isinstance(user_account_id, UUID)
@@ -6621,19 +7033,15 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                 user_id=user_account_id,
                 thread_id=body.thread_id,
                 message_text=body.message,
-                limits=ContextCompilerLimits(
-                    max_sessions=body.max_sessions,
-                    max_events=body.max_events,
-                    max_memories=body.max_memories,
-                    max_entities=body.max_entities,
-                    max_entity_edges=body.max_entity_edges,
-                ),
+                limits=runtime_limits,
                 runtime_override=(runtime_provider.model_provider, selected_model),
                 model_invoker=lambda model_request: adapter.invoke(
                     config=runtime_provider,
                     settings=settings,
                     request=model_request,
                 ),
+                system_instruction=runtime_system_instruction,
+                developer_instruction=runtime_developer_instruction,
             )
             if isinstance(result, ResponseFailure):
                 return JSONResponse(
@@ -6646,6 +7054,13 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                                 "workspace_id": str(workspace_id),
                                 "provider_id": str(runtime_provider.provider_id),
                                 "provider_key": runtime_provider.provider_key,
+                                "model_pack": None
+                                if model_pack is None
+                                else {
+                                    "pack_id": model_pack["pack_id"],
+                                    "pack_version": model_pack["pack_version"],
+                                    "source": model_pack_source,
+                                },
                             },
                         }
                     ),
@@ -6696,6 +7111,13 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                 "trace": result["trace"],
                 "metadata": {
                     "workspace_id": str(workspace_id),
+                    "model_pack": None
+                    if model_pack is None
+                    else {
+                        "pack_id": model_pack["pack_id"],
+                        "pack_version": model_pack["pack_version"],
+                        "source": model_pack_source,
+                    },
                 },
             }
         ),
