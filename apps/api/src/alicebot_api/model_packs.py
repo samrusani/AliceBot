@@ -12,7 +12,16 @@ MODEL_PACK_CONTRACT_VERSION_V1 = "model_pack_contract_v1"
 MODEL_PACK_STATUS_ACTIVE = "active"
 MODEL_PACK_BINDING_SOURCE_MANUAL = "manual"
 MODEL_PACK_BINDING_SOURCE_RUNTIME_OVERRIDE = "runtime_override"
-MODEL_PACK_FAMILIES: tuple[str, ...] = ("llama", "qwen", "gemma", "gpt-oss", "custom")
+MODEL_PACK_FAMILIES: tuple[str, ...] = (
+    "llama",
+    "qwen",
+    "gemma",
+    "gpt-oss",
+    "deepseek",
+    "kimi",
+    "mistral",
+    "custom",
+)
 MAX_CONTEXT_SESSIONS = 50
 MAX_CONTEXT_EVENTS = 200
 MAX_CONTEXT_MEMORIES = 200
@@ -44,6 +53,8 @@ class Tier1PackSpec:
     family: str
     description: str
     contract: JsonObject
+    seed: str
+    seed_version: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +340,8 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
                     },
                 }
             ),
+            seed="tier1",
+            seed_version="p11-s4",
         ),
         Tier1PackSpec(
             pack_id="qwen",
@@ -362,6 +375,8 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
                     },
                 }
             ),
+            seed="tier1",
+            seed_version="p11-s4",
         ),
         Tier1PackSpec(
             pack_id="gemma",
@@ -395,6 +410,8 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
                     },
                 }
             ),
+            seed="tier1",
+            seed_version="p11-s4",
         ),
         Tier1PackSpec(
             pack_id="gpt-oss",
@@ -428,8 +445,124 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
                     },
                 }
             ),
+            seed="tier1",
+            seed_version="p11-s4",
         ),
     )
+
+
+def _tier2_pack_specs() -> tuple[Tier1PackSpec, ...]:
+    return (
+        Tier1PackSpec(
+            pack_id="deepseek",
+            pack_version="1.0.0",
+            display_name="DeepSeek Tier 2",
+            family="deepseek",
+            description="Tier-2 declarative runtime shaping for DeepSeek-family instruct models.",
+            contract=normalize_model_pack_contract(
+                {
+                    "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
+                    "context": {
+                        "max_sessions_cap": 3,
+                        "max_events_cap": 8,
+                        "max_memories_cap": 6,
+                        "max_entities_cap": 6,
+                        "max_entity_edges_cap": 12,
+                    },
+                    "tools": {"mode": "none"},
+                    "response": {
+                        "system_instruction_append": (
+                            "Prefer precise, concise outputs and anchor claims to explicit context."
+                        ),
+                        "developer_instruction_append": (
+                            "Keep recommendations concrete and avoid speculative branching."
+                        ),
+                    },
+                    "compatibility": {
+                        "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+                        "runtime_providers": ["openai_responses"],
+                        "notes": "Tier-2 baseline for DeepSeek-family backends.",
+                    },
+                }
+            ),
+            seed="tier2",
+            seed_version="p11-s6",
+        ),
+        Tier1PackSpec(
+            pack_id="kimi",
+            pack_version="1.0.0",
+            display_name="Kimi Tier 2",
+            family="kimi",
+            description="Tier-2 declarative runtime shaping for Kimi-family instruct models.",
+            contract=normalize_model_pack_contract(
+                {
+                    "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
+                    "context": {
+                        "max_sessions_cap": 3,
+                        "max_events_cap": 8,
+                        "max_memories_cap": 5,
+                        "max_entities_cap": 6,
+                        "max_entity_edges_cap": 10,
+                    },
+                    "tools": {"mode": "none"},
+                    "response": {
+                        "system_instruction_append": (
+                            "Use direct language and preserve important continuity facts."
+                        ),
+                        "developer_instruction_append": (
+                            "Favor short, execution-ready output with explicit next actions."
+                        ),
+                    },
+                    "compatibility": {
+                        "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+                        "runtime_providers": ["openai_responses"],
+                        "notes": "Tier-2 baseline for Kimi-family backends.",
+                    },
+                }
+            ),
+            seed="tier2",
+            seed_version="p11-s6",
+        ),
+        Tier1PackSpec(
+            pack_id="mistral",
+            pack_version="1.0.0",
+            display_name="Mistral Tier 2",
+            family="mistral",
+            description="Tier-2 declarative runtime shaping for Mistral-family instruct models.",
+            contract=normalize_model_pack_contract(
+                {
+                    "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
+                    "context": {
+                        "max_sessions_cap": 3,
+                        "max_events_cap": 8,
+                        "max_memories_cap": 5,
+                        "max_entities_cap": 5,
+                        "max_entity_edges_cap": 10,
+                    },
+                    "tools": {"mode": "none"},
+                    "response": {
+                        "system_instruction_append": (
+                            "Keep responses structured and grounded in available evidence."
+                        ),
+                        "developer_instruction_append": (
+                            "Prefer concise summaries and call out uncertainty when applicable."
+                        ),
+                    },
+                    "compatibility": {
+                        "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+                        "runtime_providers": ["openai_responses"],
+                        "notes": "Tier-2 baseline for Mistral-family backends.",
+                    },
+                }
+            ),
+            seed="tier2",
+            seed_version="p11-s6",
+        ),
+    )
+
+
+def _catalog_pack_specs() -> tuple[Tier1PackSpec, ...]:
+    return _tier1_pack_specs() + _tier2_pack_specs()
 
 
 def is_reserved_tier1_pack_key(*, pack_id: str, pack_version: str) -> bool:
@@ -437,7 +570,7 @@ def is_reserved_tier1_pack_key(*, pack_id: str, pack_version: str) -> bool:
     normalized_pack_version = normalize_pack_version(pack_version)
     return any(
         spec.pack_id == normalized_pack_id and spec.pack_version == normalized_pack_version
-        for spec in _tier1_pack_specs()
+        for spec in _catalog_pack_specs()
     )
 
 
@@ -448,7 +581,7 @@ def ensure_tier1_model_packs_for_workspace(
     created_by_user_account_id: UUID,
 ) -> list[ModelPackRow]:
     packs: list[ModelPackRow] = []
-    for spec in _tier1_pack_specs():
+    for spec in _catalog_pack_specs():
         created = store.create_model_pack_if_absent_optional(
             workspace_id=workspace_id,
             created_by_user_account_id=created_by_user_account_id,
@@ -459,7 +592,7 @@ def ensure_tier1_model_packs_for_workspace(
             description=spec.description,
             status=MODEL_PACK_STATUS_ACTIVE,
             contract=spec.contract,
-            metadata={"seed": "tier1", "seed_version": "p11-s4"},
+            metadata={"seed": spec.seed, "seed_version": spec.seed_version},
         )
         if created is not None:
             packs.append(created)
@@ -472,7 +605,7 @@ def ensure_tier1_model_packs_for_workspace(
         )
         if existing is None:
             raise RuntimeError(
-                f"tier-1 model pack {spec.pack_id}@{spec.pack_version} was expected but missing"
+                f"catalog model pack {spec.pack_id}@{spec.pack_version} was expected but missing"
             )
         packs.append(existing)
     return packs

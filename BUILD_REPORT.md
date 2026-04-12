@@ -1,73 +1,65 @@
 # BUILD_REPORT
 
 ## sprint objective
-Implement P11-S5: Azure Adapter + AutoGen Integration through the existing provider abstraction by adding Azure provider registration/test/invoke support, enterprise credential/auth hardening, Azure capability posture fields, and AutoGen integration documentation/sample path.
+Implement `P11-S6` by adding tier-2 model packs (DeepSeek, Kimi, Mistral) on the shipped model-pack abstraction, plus compatibility/setup clarity assets for local, self-hosted, enterprise, and external-agent paths, without reopening `P11-S1` through `P11-S5` architecture.
 
 ## completed work
-- Added Azure provider adapter support in the runtime adapter registry (`provider_key: azure`) with normalized capability discovery and invoke behavior using the existing `openai_responses` runtime contract.
-- Added Azure-specific helper module for:
-  - auth header handling (`azure_api_key`, `azure_ad_token`)
-  - `api-version` query handling
-  - model enumeration payload parsing
-  - OpenAI-compatible responses invoke payload/response normalization
-- Added additive provider data fields and migration support:
-  - `model_providers.azure_api_version`
-  - `model_providers.azure_auth_secret_ref`
-  - expanded `model_providers.auth_mode` constraint to include Azure auth modes
-- Added Azure secret-reference credential handling in runtime secret resolution:
-  - Azure modes now resolve credentials from `azure_auth_secret_ref`
-  - plaintext Azure credentials are not persisted in provider rows
-- Added Azure registration endpoint:
-  - `POST /v1/providers/azure/register`
-  - strict auth payload validation (mode-specific field requirements)
-- Preserved existing provider/runtime seams and behavior for shipped P11-S1 through P11-S4 paths.
-- Added Azure capability snapshot posture fields:
-  - `azure_api_version`
-  - `azure_auth_mode`
-- Added docs and sample integration path:
-  - Azure + AutoGen integration guide in `docs/integrations/phase11-azure-autogen.md`
-  - runtime bridge sample in `scripts/run_phase11_autogen_runtime_bridge.py`
-- Updated control-doc truth checker markers to P11-S5 active-sprint truth so required truth checks pass.
+- Added tier-2 built-in pack specs in `model_packs.py`:
+  - `deepseek@1.0.0`
+  - `kimi@1.0.0`
+  - `mistral@1.0.0`
+- Preserved shipped pack API behavior and selection semantics:
+  - seeded catalog still resolves through existing `/v1/model-packs` flow
+  - workspace binding and request override precedence are unchanged
+  - no new runtime/provider paths were introduced
+- Extended family contract/type support for tier-2 families:
+  - `deepseek`, `kimi`, `mistral`
+- Added additive migration `20260412_0056_phase11_model_packs_tier2_families.py` to widen `model_packs_family_check` without schema redesign.
+- Updated catalog reservation conflict text to cover built-in catalog entries (tier-1 + tier-2).
+- Added/updated sprint docs:
+  - `docs/integrations/phase11-model-pack-compatibility.md` with provider/pack compatibility matrices
+  - `docs/integrations/phase11-setup-paths.md` with operator setup paths for local, self-hosted, enterprise, and external-agent use
+  - `docs/integrations/phase11-azure-autogen.md` guardrails/references refreshed for P11-S6
+- Updated sprint-owned tests for tier-2 catalog presence, runtime override behavior, and migration coverage.
+- Updated control-doc truth checker markers to active `P11-S6` packet/state markers.
+- Updated `REVIEW_REPORT.md` for `P11-S6`.
 
 ## incomplete work
 - None within the sprint packet scope.
 
 ## files changed
-- `apps/api/src/alicebot_api/azure_provider_helpers.py` (new)
-- `apps/api/src/alicebot_api/provider_runtime.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/model_packs.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/alembic/versions/20260412_0055_phase11_azure_provider_config_fields.py` (new)
-- `tests/unit/test_provider_runtime.py`
-- `tests/integration/test_phase11_provider_runtime_api.py`
-- `tests/unit/test_20260412_0055_phase11_azure_provider_config_fields.py` (new)
-- `docs/integrations/phase11-azure-autogen.md` (new)
-- `scripts/run_phase11_autogen_runtime_bridge.py` (new)
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/alembic/versions/20260412_0056_phase11_model_packs_tier2_families.py` (new)
+- `tests/unit/test_model_packs.py`
+- `tests/integration/test_phase11_model_packs_api.py`
+- `tests/unit/test_20260412_0056_phase11_model_packs_tier2_families.py` (new)
+- `docs/integrations/phase11-model-pack-compatibility.md`
+- `docs/integrations/phase11-setup-paths.md` (new)
+- `docs/integrations/phase11-azure-autogen.md`
 - `scripts/check_control_doc_truth.py`
-- `README.md`
-- `BUILD_REPORT.md`
 - `REVIEW_REPORT.md`
+- `BUILD_REPORT.md`
 
 ## tests run
 1. `python3 scripts/check_control_doc_truth.py`
 - Result: PASS
 
 2. `./.venv/bin/python -m pytest tests/unit tests/integration -q`
-- Result: PASS (`1142 passed in 196.54s (0:03:16)`)
+- Result: PASS (`1145 passed in 185.18s (0:03:05)`)
 
 3. `pnpm --dir apps/web test`
-- Result: PASS (`62 passed`, `199 passed`, duration `4.62s`)
+- Result: PASS (`62 files`, `199 tests passed`, duration `5.49s`)
 
 4. Focused sprint tests during implementation:
-- `./.venv/bin/python -m pytest tests/unit/test_provider_runtime.py tests/unit/test_provider_secrets.py tests/unit/test_20260412_0055_phase11_azure_provider_config_fields.py tests/integration/test_phase11_provider_runtime_api.py -q`
-- Result: PASS (`20 passed`)
+- `./.venv/bin/python -m pytest tests/unit/test_model_packs.py tests/integration/test_phase11_model_packs_api.py tests/unit/test_20260412_0056_phase11_model_packs_tier2_families.py -q`
+- Result: PASS (`14 passed in 1.62s`)
 
 ## blockers/issues
 - No functional blockers for sprint scope implementation.
-- Pre-existing dirty files not modified as sprint work and excluded from sprint merge scope:
-  - `ARCHITECTURE.md`
-  - `PRODUCT_BRIEF.md`
+- Pre-existing dirty file not modified as sprint work and excluded from sprint merge scope:
+  - `README.md`
 
 ## recommended next step
-Proceed to Control Tower merge approval for `P11-S5`, then run staging validation against a live Azure endpoint for both `azure_api_key` and `azure_ad_token` registration/invoke flows before production rollout.
+Proceed to merge review for `P11-S6`, then run staging smoke checks for one local provider, one self-hosted OpenAI-compatible provider, and one Azure provider with tier-2 and custom pack coverage.

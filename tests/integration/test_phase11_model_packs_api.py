@@ -203,17 +203,26 @@ def test_phase11_model_pack_catalog_bind_and_runtime_shaping(migrated_database_u
     )
     assert list_status == 200
     listed_ids = {item["pack_id"] for item in list_payload["items"]}
-    assert {"llama", "qwen", "gemma", "gpt-oss"}.issubset(listed_ids)
+    assert {
+        "llama",
+        "qwen",
+        "gemma",
+        "gpt-oss",
+        "deepseek",
+        "kimi",
+        "mistral",
+    }.issubset(listed_ids)
 
     detail_status, detail_payload = invoke_request(
         "GET",
-        "/v1/model-packs/gpt-oss",
+        "/v1/model-packs/deepseek",
         query_params={"version": "1.0.0"},
         headers=auth_header(session_token),
     )
     assert detail_status == 200
-    assert detail_payload["model_pack"]["pack_id"] == "gpt-oss"
+    assert detail_payload["model_pack"]["pack_id"] == "deepseek"
     assert detail_payload["model_pack"]["pack_version"] == "1.0.0"
+    assert detail_payload["model_pack"]["metadata"]["seed"] == "tier2"
 
     reserved_create_status, reserved_create_payload = invoke_request(
         "POST",
@@ -239,7 +248,7 @@ def test_phase11_model_pack_catalog_bind_and_runtime_shaping(migrated_database_u
         headers=auth_header(session_token),
     )
     assert reserved_create_status == 409
-    assert "reserved for tier-1 catalog entries" in reserved_create_payload["detail"]
+    assert "reserved for built-in catalog entries" in reserved_create_payload["detail"]
 
     create_pack_status, create_pack_payload = invoke_request(
         "POST",
@@ -394,6 +403,40 @@ def test_phase11_model_pack_catalog_bind_and_runtime_shaping(migrated_database_u
     assert second_context["limits"]["max_memories"] == 4
     assert second_context["limits"]["max_entity_edges"] == 8
     assert "Keep outputs directly actionable and compact." in second_request["input"][1]["content"][0]["text"]
+
+    tier2_override_status, tier2_override_payload = invoke_request(
+        "POST",
+        "/v1/runtime/invoke",
+        payload={
+            "provider_id": provider_id,
+            "thread_id": thread_id,
+            "message": "Summarize current status with tier-2 override.",
+            "pack_id": "deepseek",
+            "pack_version": "1.0.0",
+            "max_sessions": 10,
+            "max_events": 40,
+            "max_memories": 50,
+            "max_entities": 50,
+            "max_entity_edges": 100,
+        },
+        headers=auth_header(session_token),
+    )
+    assert tier2_override_status == 200
+    assert tier2_override_payload["metadata"]["model_pack"] == {
+        "pack_id": "deepseek",
+        "pack_version": "1.0.0",
+        "source": "request",
+    }
+
+    third_request = captured_model_requests[2]
+    third_context = _extract_context_payload(third_request)
+    assert third_context["limits"]["max_memories"] == 6
+    assert third_context["limits"]["max_entities"] == 6
+    assert third_context["limits"]["max_entity_edges"] == 12
+    assert (
+        "Keep recommendations concrete and avoid speculative branching."
+        in third_request["input"][1]["content"][0]["text"]
+    )
 
 
 def test_phase11_workspace_model_pack_binding_is_workspace_isolated(migrated_database_urls, monkeypatch) -> None:
