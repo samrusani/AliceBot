@@ -192,7 +192,16 @@ ModelProvider = Literal["openai_responses"]
 ProviderAdapterKey = Literal["openai_compatible", "ollama", "llamacpp", "azure"]
 ModelProviderStatus = Literal["active"]
 ProviderCapabilityDiscoveryStatus = Literal["ready", "failed"]
-ModelPackFamily = Literal["llama", "qwen", "gemma", "gpt-oss", "custom"]
+ModelPackFamily = Literal[
+    "llama",
+    "qwen",
+    "gemma",
+    "gpt-oss",
+    "deepseek",
+    "kimi",
+    "mistral",
+    "custom",
+]
 ModelPackStatus = Literal["active"]
 ModelPackBindingSource = Literal["manual", "runtime_override"]
 ModelFinishReason = Literal["completed", "incomplete"]

@@ -276,10 +276,26 @@ def test_ensure_tier1_model_packs_for_workspace_seeds_once() -> None:
         created_by_user_account_id=user_account_id,
     )
 
-    assert len(first_seed) == 4
-    assert len(second_seed) == 4
-    assert len(store.packs_by_key) == 4
-    assert {row["pack_id"] for row in first_seed} == {"llama", "qwen", "gemma", "gpt-oss"}
+    assert len(first_seed) == 7
+    assert len(second_seed) == 7
+    assert len(store.packs_by_key) == 7
+    assert {row["pack_id"] for row in first_seed} == {
+        "llama",
+        "qwen",
+        "gemma",
+        "gpt-oss",
+        "deepseek",
+        "kimi",
+        "mistral",
+    }
+    assert {
+        row["pack_id"]: row["metadata"]
+        for row in first_seed
+        if row["pack_id"] in {"llama", "deepseek"}
+    } == {
+        "llama": {"seed": "tier1", "seed_version": "p11-s4"},
+        "deepseek": {"seed": "tier2", "seed_version": "p11-s6"},
+    }
 
 
 def test_ensure_tier1_model_packs_handles_seed_race_with_existing_row() -> None:
@@ -289,12 +305,21 @@ def test_ensure_tier1_model_packs_handles_seed_race_with_existing_row() -> None:
         workspace_id=uuid4(),
         created_by_user_account_id=uuid4(),
     )
-    assert len(seeded) == 4
-    assert {row["pack_id"] for row in seeded} == {"llama", "qwen", "gemma", "gpt-oss"}
+    assert len(seeded) == 7
+    assert {row["pack_id"] for row in seeded} == {
+        "llama",
+        "qwen",
+        "gemma",
+        "gpt-oss",
+        "deepseek",
+        "kimi",
+        "mistral",
+    }
 
 
 def test_is_reserved_tier1_pack_key() -> None:
     assert is_reserved_tier1_pack_key(pack_id="llama", pack_version="1.0.0")
+    assert is_reserved_tier1_pack_key(pack_id="deepseek", pack_version="1.0.0")
     assert not is_reserved_tier1_pack_key(pack_id="llama", pack_version="1.0.1")
     assert not is_reserved_tier1_pack_key(pack_id="custom-brief", pack_version="1.0.0")
 

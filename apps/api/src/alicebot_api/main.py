@@ -7022,7 +7022,7 @@ def create_v1_model_pack(request: Request, body: CreateModelPackRequest) -> JSON
                         content={
                             "detail": (
                                 f"model pack {normalized_pack_id}@{normalized_pack_version} "
-                                "is reserved for tier-1 catalog entries"
+                                "is reserved for built-in catalog entries"
                             )
                         },
                     )

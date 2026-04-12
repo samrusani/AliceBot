@@ -111,4 +111,7 @@ The script exposes `AutoGenAliceRuntimeClient.create(messages=[...])`, which let
 ## Guardrails
 
 - This sprint adds Azure + AutoGen path only.
-- Tier-2 packs and broader framework integrations remain later Phase 11 scope.
+- Broader framework integrations beyond AutoGen remain out of scope.
+- For phase-close compatibility/setup posture, see:
+  - `docs/integrations/phase11-model-pack-compatibility.md`
+  - `docs/integrations/phase11-setup-paths.md`
