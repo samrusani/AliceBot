@@ -103,6 +103,18 @@ def main() -> int:
     print("  1) hermes memory setup      # choose alice")
     print("  2) hermes memory status")
     print("  3) hermes config set memory.provider alice")
+    print("  4) ./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py")
+    print()
+    print("Bridge B1 config keys:")
+    print("  - prefetch_recall_limit")
+    print("  - prefetch_max_recent_changes")
+    print("  - prefetch_max_open_loops")
+    print("  - prefetch_include_non_promotable_facts")
+    print("  - sync_turn_capture_enabled")
+    print("  - memory_write_capture_enabled")
+    print("  - session_end_flush_timeout_seconds")
+    print("Legacy compatibility keys still accepted: prefetch_limit, max_recent_changes,")
+    print("max_open_loops, include_non_promotable_facts, auto_capture, mirror_memory_writes")
     return 0
 
 

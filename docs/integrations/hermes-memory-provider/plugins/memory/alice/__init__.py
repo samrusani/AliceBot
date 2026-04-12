@@ -15,6 +15,8 @@ import json
 import ipaddress
 import logging
 import os
+import hashlib
+import time
 import threading
 import urllib.error
 import urllib.parse
@@ -35,6 +37,9 @@ _DEFAULT_PREFETCH_LIMIT = 5
 _DEFAULT_MAX_RECENT_CHANGES = 5
 _DEFAULT_MAX_OPEN_LOOPS = 5
 _DEFAULT_CAPTURE_CHAR_LIMIT = 3800
+_DEFAULT_SESSION_END_FLUSH_TIMEOUT_SECONDS = 5.0
+_CAPTURE_DEDUPE_WINDOW_SECONDS = 5.0
+_BRIDGE_CONTRACT_VERSION = "bridge_b1"
 
 _RECALL_LIMIT_MIN = 1
 _RECALL_LIMIT_MAX = 50
@@ -46,6 +51,14 @@ _RECENT_CHANGES_MIN = 0
 _RECENT_CHANGES_MAX = 25
 
 _AUTH_USER_HEADER = "X-AliceBot-User-Id"
+_BRIDGE_CONFIG_ALIASES: Dict[str, tuple[str, ...]] = {
+    "prefetch_recall_limit": ("prefetch_limit",),
+    "prefetch_max_recent_changes": ("max_recent_changes",),
+    "prefetch_max_open_loops": ("max_open_loops",),
+    "prefetch_include_non_promotable_facts": ("include_non_promotable_facts",),
+    "sync_turn_capture_enabled": ("auto_capture",),
+    "memory_write_capture_enabled": ("mirror_memory_writes",),
+}
 _SAFE_TOOL_ERROR_MESSAGES = (
     "internal provider error",
     "provider is not initialized",
@@ -205,6 +218,27 @@ def _config_path(hermes_home: str) -> Path:
     return Path(hermes_home) / _CONFIG_FILENAME
 
 
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and value.strip() == "":
+            continue
+        return value
+    return None
+
+
+def _resolve_config_value(values: Dict[str, Any], key: str) -> tuple[Any, str]:
+    value = values.get(key)
+    if value not in (None, ""):
+        return value, key
+    for legacy_key in _BRIDGE_CONFIG_ALIASES.get(key, ()):
+        legacy_value = values.get(legacy_key)
+        if legacy_value not in (None, ""):
+            return legacy_value, legacy_key
+    return None, key
+
+
 def _default_config() -> Dict[str, Any]:
     return {
         "base_url": os.environ.get("ALICE_API_BASE_URL", _DEFAULT_BASE_URL),
@@ -215,41 +249,67 @@ def _default_config() -> Dict[str, Any]:
             min_value=0.5,
             max_value=30.0,
         ),
-        "prefetch_limit": _parse_int(
-            os.environ.get("ALICE_MEMORY_PREFETCH_LIMIT"),
+        "prefetch_recall_limit": _parse_int(
+            _first_non_empty(
+                os.environ.get("ALICE_MEMORY_PREFETCH_RECALL_LIMIT"),
+                os.environ.get("ALICE_MEMORY_PREFETCH_LIMIT"),
+            ),
             default=_DEFAULT_PREFETCH_LIMIT,
             min_value=_RECALL_LIMIT_MIN,
             max_value=_RECALL_LIMIT_MAX,
         ),
-        "max_recent_changes": _parse_int(
-            os.environ.get("ALICE_MEMORY_MAX_RECENT_CHANGES"),
+        "prefetch_max_recent_changes": _parse_int(
+            _first_non_empty(
+                os.environ.get("ALICE_MEMORY_PREFETCH_MAX_RECENT_CHANGES"),
+                os.environ.get("ALICE_MEMORY_MAX_RECENT_CHANGES"),
+            ),
             default=_DEFAULT_MAX_RECENT_CHANGES,
             min_value=_RECENT_CHANGES_MIN,
             max_value=_RECENT_CHANGES_MAX,
         ),
-        "max_open_loops": _parse_int(
-            os.environ.get("ALICE_MEMORY_MAX_OPEN_LOOPS"),
+        "prefetch_max_open_loops": _parse_int(
+            _first_non_empty(
+                os.environ.get("ALICE_MEMORY_PREFETCH_MAX_OPEN_LOOPS"),
+                os.environ.get("ALICE_MEMORY_MAX_OPEN_LOOPS"),
+            ),
             default=_DEFAULT_MAX_OPEN_LOOPS,
             min_value=_RECENT_CHANGES_MIN,
             max_value=_RECENT_CHANGES_MAX,
         ),
-        "include_non_promotable_facts": _parse_bool(
-            os.environ.get("ALICE_MEMORY_INCLUDE_NON_PROMOTABLE"),
+        "prefetch_include_non_promotable_facts": _parse_bool(
+            _first_non_empty(
+                os.environ.get("ALICE_MEMORY_PREFETCH_INCLUDE_NON_PROMOTABLE"),
+                os.environ.get("ALICE_MEMORY_INCLUDE_NON_PROMOTABLE"),
+            ),
             default=False,
         ),
-        "auto_capture": _parse_bool(
-            os.environ.get("ALICE_MEMORY_AUTO_CAPTURE"),
+        "sync_turn_capture_enabled": _parse_bool(
+            _first_non_empty(
+                os.environ.get("ALICE_MEMORY_SYNC_TURN_CAPTURE_ENABLED"),
+                os.environ.get("ALICE_MEMORY_AUTO_CAPTURE"),
+            ),
             default=False,
         ),
-        "mirror_memory_writes": _parse_bool(
-            os.environ.get("ALICE_MEMORY_MIRROR_WRITES"),
+        "memory_write_capture_enabled": _parse_bool(
+            _first_non_empty(
+                os.environ.get("ALICE_MEMORY_MEMORY_WRITE_CAPTURE_ENABLED"),
+                os.environ.get("ALICE_MEMORY_MIRROR_WRITES"),
+            ),
             default=False,
+        ),
+        "session_end_flush_timeout_seconds": _parse_float(
+            os.environ.get("ALICE_MEMORY_SESSION_END_FLUSH_TIMEOUT_SECONDS"),
+            default=_DEFAULT_SESSION_END_FLUSH_TIMEOUT_SECONDS,
+            min_value=0.5,
+            max_value=30.0,
         ),
     }
 
 
-def _load_config(hermes_home: str) -> Dict[str, Any]:
+def _load_config_with_status(hermes_home: str) -> Dict[str, Any]:
     config = _default_config()
+    errors: List[str] = []
+    file_legacy_keys: List[str] = []
 
     path = _config_path(hermes_home)
     if path.exists():
@@ -259,14 +319,36 @@ def _load_config(hermes_home: str) -> Dict[str, Any]:
                 for key, value in raw.items():
                     if value is not None and value != "":
                         config[key] = value
+                for canonical_key, legacy_keys in _BRIDGE_CONFIG_ALIASES.items():
+                    if raw.get(canonical_key) not in (None, ""):
+                        continue
+                    for legacy_key in legacy_keys:
+                        legacy_value = raw.get(legacy_key)
+                        if legacy_value in (None, ""):
+                            continue
+                        config[canonical_key] = legacy_value
+                        file_legacy_keys.append(legacy_key)
+                        break
+            else:
+                errors.append("provider config must be a JSON object")
         except Exception:
             logger.debug("Failed to parse %s", path, exc_info=True)
+            errors.append("provider config could not be parsed")
 
-    try:
-        return _load_config_dict_from_values(config)
-    except ValueError:
-        logger.warning("Invalid Alice memory provider config; falling back to defaults", exc_info=True)
-        return _load_config_dict_from_values(_default_config())
+    normalized, validation_errors, legacy_config_keys = _load_config_dict_from_values(config)
+    errors.extend(validation_errors)
+    return {
+        "config": normalized,
+        "errors": errors,
+        "legacy_config_keys": sorted(set(legacy_config_keys) | set(file_legacy_keys)),
+        "ready": len(errors) == 0,
+        "config_path": str(path),
+    }
+
+
+def _load_config(hermes_home: str) -> Dict[str, Any]:
+    loaded = _load_config_with_status(hermes_home)
+    return dict(loaded["config"])
 
 
 def _validate_uuid(value: str) -> bool:
@@ -287,12 +369,18 @@ class AliceMemoryProvider(MemoryProvider):
         self._session_id: str = ""
         self._hermes_home: str = ""
         self._agent_context: str = "primary"
+        self._config_errors: List[str] = []
+        self._legacy_config_keys: List[str] = []
 
         self._prefetch_cache: Dict[str, str] = {}
         self._prefetch_threads: Dict[str, threading.Thread] = {}
         self._prefetch_lock = threading.Lock()
 
         self._capture_thread: Optional[threading.Thread] = None
+        self._capture_queue: List[tuple[str, str]] = []
+        self._capture_pending_fingerprints: set[str] = set()
+        self._capture_recent_fingerprints: Dict[str, float] = {}
+        self._capture_lock = threading.Lock()
 
     @property
     def name(self) -> str:
@@ -301,17 +389,8 @@ class AliceMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         from hermes_constants import get_hermes_home
 
-        try:
-            cfg = _load_config(str(get_hermes_home()))
-        except ValueError:
-            return False
-        base_url = str(cfg.get("base_url", "")).strip()
-        user_id = str(cfg.get("user_id", "")).strip()
-        try:
-            _normalize_base_url(base_url)
-        except ValueError:
-            return False
-        return _validate_uuid(user_id)
+        status = _load_config_with_status(str(get_hermes_home()))
+        return bool(status.get("ready"))
 
     def initialize(self, session_id: str, **kwargs) -> None:
         from hermes_constants import get_hermes_home
@@ -319,7 +398,14 @@ class AliceMemoryProvider(MemoryProvider):
         self._session_id = session_id or ""
         self._hermes_home = str(kwargs.get("hermes_home") or get_hermes_home())
         self._agent_context = str(kwargs.get("agent_context") or "primary")
-        self._config = _load_config(self._hermes_home)
+        loaded = _load_config_with_status(self._hermes_home)
+        self._config = dict(loaded["config"])
+        self._config_errors = list(loaded["errors"])
+        self._legacy_config_keys = list(loaded["legacy_config_keys"])
+        with self._capture_lock:
+            self._capture_queue = []
+            self._capture_pending_fingerprints.clear()
+            self._capture_recent_fingerprints.clear()
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
         return [
@@ -340,44 +426,51 @@ class AliceMemoryProvider(MemoryProvider):
                 "default": str(_DEFAULT_TIMEOUT_SECONDS),
             },
             {
-                "key": "prefetch_limit",
-                "description": "Default prefetch recall limit",
+                "key": "prefetch_recall_limit",
+                "description": "Prefetch recall limit for bridge pre-turn hook",
                 "default": str(_DEFAULT_PREFETCH_LIMIT),
             },
             {
-                "key": "max_recent_changes",
-                "description": "Resumption brief recent changes cap",
+                "key": "prefetch_max_recent_changes",
+                "description": "Prefetch recent changes cap",
                 "default": str(_DEFAULT_MAX_RECENT_CHANGES),
             },
             {
-                "key": "max_open_loops",
-                "description": "Resumption brief open-loop cap",
+                "key": "prefetch_max_open_loops",
+                "description": "Prefetch open-loop cap",
                 "default": str(_DEFAULT_MAX_OPEN_LOOPS),
             },
             {
-                "key": "include_non_promotable_facts",
-                "description": "Include non-promotable facts in resumption brief",
+                "key": "prefetch_include_non_promotable_facts",
+                "description": "Include non-promotable facts in prefetch resumption brief",
                 "choices": ["true", "false"],
                 "default": "false",
             },
             {
-                "key": "auto_capture",
-                "description": "Auto-capture completed turns into Alice continuity",
+                "key": "sync_turn_capture_enabled",
+                "description": "Capture post-turn transcripts via sync_turn lifecycle hook",
                 "choices": ["true", "false"],
                 "default": "false",
             },
             {
-                "key": "mirror_memory_writes",
-                "description": "Mirror built-in MEMORY.md / USER.md writes to Alice",
+                "key": "memory_write_capture_enabled",
+                "description": "Capture built-in MEMORY.md / USER.md writes via memory-write hook",
                 "choices": ["true", "false"],
                 "default": "false",
+            },
+            {
+                "key": "session_end_flush_timeout_seconds",
+                "description": "Session-end capture flush timeout in seconds",
+                "default": str(_DEFAULT_SESSION_END_FLUSH_TIMEOUT_SECONDS),
             },
         ]
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         cfg = _load_config(hermes_home)
         cfg.update(values)
-        cfg = _load_config_dict_from_values(cfg)
+        cfg, errors, _ = _load_config_dict_from_values(cfg)
+        if errors:
+            raise ValueError("; ".join(errors))
         path = _config_path(hermes_home)
         path.write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -429,7 +522,7 @@ class AliceMemoryProvider(MemoryProvider):
         thread.start()
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        if not self._config.get("auto_capture", False):
+        if not self._config.get("sync_turn_capture_enabled", False):
             return
         if self._agent_context != "primary":
             return
@@ -438,20 +531,10 @@ class AliceMemoryProvider(MemoryProvider):
         if not raw_content:
             return
 
-        def _capture() -> None:
-            try:
-                self._post_capture(raw_content)
-            except Exception as exc:
-                logger.debug("Alice sync_turn capture failed: %s", exc)
-
-        if self._capture_thread and self._capture_thread.is_alive():
-            self._capture_thread.join(timeout=5.0)
-
-        self._capture_thread = threading.Thread(target=_capture, daemon=True, name="alice-sync-capture")
-        self._capture_thread.start()
+        self._enqueue_capture(kind="sync_turn", raw_content=raw_content)
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
-        if not self._config.get("mirror_memory_writes", False):
+        if not self._config.get("memory_write_capture_enabled", False):
             return
         if action not in {"add", "replace"}:
             return
@@ -459,15 +542,52 @@ class AliceMemoryProvider(MemoryProvider):
             return
 
         raw_content = f"Hermes built-in memory update ({target}): {content.strip()}"
+        self._enqueue_capture(kind="memory_write", raw_content=raw_content)
 
-        def _capture() -> None:
-            try:
-                self._post_capture(raw_content)
-            except Exception as exc:
-                logger.debug("Alice memory-write mirror failed: %s", exc)
+    def on_session_end(self, *, session_id: str = "") -> None:
+        key = self._session_key(session_id)
+        flush_timeout = float(
+            self._config.get("session_end_flush_timeout_seconds", _DEFAULT_SESSION_END_FLUSH_TIMEOUT_SECONDS)
+        )
 
-        thread = threading.Thread(target=_capture, daemon=True, name="alice-memory-write")
-        thread.start()
+        with self._prefetch_lock:
+            thread = self._prefetch_threads.pop(key, None)
+            self._prefetch_cache.pop(key, None)
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
+
+        if self._capture_thread and self._capture_thread.is_alive():
+            self._capture_thread.join(timeout=flush_timeout)
+        if not (self._capture_thread and self._capture_thread.is_alive()):
+            self._drain_capture_queue(drop_on_error=True)
+            with self._capture_lock:
+                self._capture_pending_fingerprints.clear()
+        with self._capture_lock:
+            self._capture_recent_fingerprints.clear()
+
+    def get_status(self, *, hermes_home: str = "") -> Dict[str, Any]:
+        selected_home = hermes_home or self._hermes_home
+        if not selected_home:
+            from hermes_constants import get_hermes_home
+
+            selected_home = str(get_hermes_home())
+        loaded = _load_config_with_status(selected_home)
+        config = dict(loaded["config"])
+        return {
+            "provider": self.name,
+            "bridge_contract_version": _BRIDGE_CONTRACT_VERSION,
+            "ready": bool(loaded["ready"]),
+            "errors": list(loaded["errors"]),
+            "legacy_config_keys": list(loaded["legacy_config_keys"]),
+            "lifecycle_hooks": {
+                "prefetch": True,
+                "queue_prefetch": True,
+                "sync_turn": bool(config.get("sync_turn_capture_enabled", False)),
+                "on_session_end": True,
+            },
+            "config": config,
+            "config_path": loaded["config_path"],
+        }
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [ALICE_RECALL_TOOL, ALICE_RESUME_TOOL, ALICE_OPEN_LOOPS_TOOL]
@@ -490,11 +610,12 @@ class AliceMemoryProvider(MemoryProvider):
     def shutdown(self) -> None:
         with self._prefetch_lock:
             threads = list(self._prefetch_threads.values())
+            self._prefetch_threads.clear()
+            self._prefetch_cache.clear()
         for thread in threads:
             if thread.is_alive():
                 thread.join(timeout=2.0)
-        if self._capture_thread and self._capture_thread.is_alive():
-            self._capture_thread.join(timeout=5.0)
+        self.on_session_end(session_id=self._session_id)
 
     def _session_key(self, session_id: str) -> str:
         return session_id or self._session_id or "default"
@@ -503,7 +624,7 @@ class AliceMemoryProvider(MemoryProvider):
         params = self._scope_params(args)
         params["limit"] = _parse_int(
             args.get("limit"),
-            default=self._config.get("prefetch_limit", _DEFAULT_PREFETCH_LIMIT),
+            default=self._config.get("prefetch_recall_limit", _DEFAULT_PREFETCH_LIMIT),
             min_value=_RECALL_LIMIT_MIN,
             max_value=_RECALL_LIMIT_MAX,
         )
@@ -513,19 +634,19 @@ class AliceMemoryProvider(MemoryProvider):
         params = self._scope_params(args)
         params["max_recent_changes"] = _parse_int(
             args.get("max_recent_changes"),
-            default=self._config.get("max_recent_changes", _DEFAULT_MAX_RECENT_CHANGES),
+            default=self._config.get("prefetch_max_recent_changes", _DEFAULT_MAX_RECENT_CHANGES),
             min_value=_RECENT_CHANGES_MIN,
             max_value=_RECENT_CHANGES_MAX,
         )
         params["max_open_loops"] = _parse_int(
             args.get("max_open_loops"),
-            default=self._config.get("max_open_loops", _DEFAULT_MAX_OPEN_LOOPS),
+            default=self._config.get("prefetch_max_open_loops", _DEFAULT_MAX_OPEN_LOOPS),
             min_value=_RECENT_CHANGES_MIN,
             max_value=_RECENT_CHANGES_MAX,
         )
         params["include_non_promotable_facts"] = _parse_bool(
             args.get("include_non_promotable_facts"),
-            default=bool(self._config.get("include_non_promotable_facts", False)),
+            default=bool(self._config.get("prefetch_include_non_promotable_facts", False)),
         )
         return self._request_json("GET", "/v0/continuity/resumption-brief", params=params)
 
@@ -533,7 +654,7 @@ class AliceMemoryProvider(MemoryProvider):
         params = self._scope_params(args)
         params["limit"] = _parse_int(
             args.get("limit"),
-            default=self._config.get("max_open_loops", _DEFAULT_MAX_OPEN_LOOPS),
+            default=self._config.get("prefetch_max_open_loops", _DEFAULT_MAX_OPEN_LOOPS),
             min_value=_OPEN_LOOP_LIMIT_MIN,
             max_value=_OPEN_LOOP_LIMIT_MAX,
         )
@@ -554,9 +675,11 @@ class AliceMemoryProvider(MemoryProvider):
         normalized_query = (query or "").strip()
         if normalized_query:
             params["query"] = normalized_query
-        params["max_recent_changes"] = self._config.get("max_recent_changes", _DEFAULT_MAX_RECENT_CHANGES)
-        params["max_open_loops"] = self._config.get("max_open_loops", _DEFAULT_MAX_OPEN_LOOPS)
-        params["include_non_promotable_facts"] = bool(self._config.get("include_non_promotable_facts", False))
+        params["max_recent_changes"] = self._config.get("prefetch_max_recent_changes", _DEFAULT_MAX_RECENT_CHANGES)
+        params["max_open_loops"] = self._config.get("prefetch_max_open_loops", _DEFAULT_MAX_OPEN_LOOPS)
+        params["include_non_promotable_facts"] = bool(
+            self._config.get("prefetch_include_non_promotable_facts", False)
+        )
 
         payload = self._request_json("GET", "/v0/continuity/resumption-brief", params=params)
         brief = payload.get("brief")
@@ -573,14 +696,14 @@ class AliceMemoryProvider(MemoryProvider):
         if next_action:
             lines.append(f"- Next action: {next_action}")
 
-        open_loop_lines = _extract_titles(brief.get("open_loops"), limit=self._config.get("max_open_loops", 3))
+        open_loop_lines = _extract_titles(brief.get("open_loops"), limit=self._config.get("prefetch_max_open_loops", 3))
         if open_loop_lines:
             lines.append("- Open loops:")
             lines.extend([f"  - {item}" for item in open_loop_lines])
 
         recent_change_lines = _extract_titles(
             brief.get("recent_changes"),
-            limit=self._config.get("max_recent_changes", 3),
+            limit=self._config.get("prefetch_max_recent_changes", 3),
         )
         if recent_change_lines:
             lines.append("- Recent changes:")
@@ -589,6 +712,81 @@ class AliceMemoryProvider(MemoryProvider):
         if len(lines) == 1:
             return ""
         return "\n".join(lines)
+
+    def _capture_fingerprint(self, *, kind: str, raw_content: str) -> str:
+        digest = hashlib.sha256(raw_content.encode("utf-8")).hexdigest()
+        return f"{kind}:{digest}"
+
+    def _prune_recent_capture_fingerprints(self, *, now: float) -> None:
+        stale_before = now - _CAPTURE_DEDUPE_WINDOW_SECONDS
+        stale_keys = [fingerprint for fingerprint, posted_at in self._capture_recent_fingerprints.items() if posted_at < stale_before]
+        for fingerprint in stale_keys:
+            self._capture_recent_fingerprints.pop(fingerprint, None)
+
+    def _new_capture_thread(self) -> threading.Thread:
+        return threading.Thread(
+            target=self._capture_worker,
+            daemon=True,
+            name="alice-sync-capture",
+        )
+
+    def _enqueue_capture(self, *, kind: str, raw_content: str) -> None:
+        fingerprint = self._capture_fingerprint(kind=kind, raw_content=raw_content)
+        worker_to_start: Optional[threading.Thread] = None
+        now = time.monotonic()
+        with self._capture_lock:
+            self._prune_recent_capture_fingerprints(now=now)
+            if fingerprint in self._capture_pending_fingerprints:
+                return
+            posted_at = self._capture_recent_fingerprints.get(fingerprint)
+            if posted_at is not None and now - posted_at <= _CAPTURE_DEDUPE_WINDOW_SECONDS:
+                return
+            self._capture_pending_fingerprints.add(fingerprint)
+            self._capture_queue.append((fingerprint, raw_content))
+            if self._capture_thread is None or not self._capture_thread.is_alive():
+                worker_to_start = self._new_capture_thread()
+                self._capture_thread = worker_to_start
+
+        if worker_to_start is not None:
+            worker_to_start.start()
+
+    def _capture_worker(self) -> None:
+        try:
+            self._drain_capture_queue(drop_on_error=False)
+        finally:
+            worker_to_start: Optional[threading.Thread] = None
+            with self._capture_lock:
+                self._capture_thread = None
+                if self._capture_queue:
+                    worker_to_start = self._new_capture_thread()
+                    self._capture_thread = worker_to_start
+            if worker_to_start is not None:
+                worker_to_start.start()
+
+    def _drain_capture_queue(self, *, drop_on_error: bool) -> None:
+        while True:
+            with self._capture_lock:
+                if not self._capture_queue:
+                    return
+                fingerprint, raw_content = self._capture_queue[0]
+
+            try:
+                self._post_capture(raw_content)
+            except Exception as exc:
+                logger.debug("Alice capture sync failed: %s", exc)
+                if not drop_on_error:
+                    return
+                with self._capture_lock:
+                    if self._capture_queue and self._capture_queue[0][0] == fingerprint:
+                        self._capture_queue.pop(0)
+                    self._capture_pending_fingerprints.discard(fingerprint)
+                continue
+
+            with self._capture_lock:
+                if self._capture_queue and self._capture_queue[0][0] == fingerprint:
+                    self._capture_queue.pop(0)
+                self._capture_pending_fingerprints.discard(fingerprint)
+                self._capture_recent_fingerprints[fingerprint] = time.monotonic()
 
     def _post_capture(self, raw_content: str) -> None:
         payload = {
@@ -666,41 +864,101 @@ class AliceMemoryProvider(MemoryProvider):
             raise RuntimeError("Alice API connection failed") from exc
 
 
-def _load_config_dict_from_values(values: Dict[str, Any]) -> Dict[str, Any]:
-    config: Dict[str, Any] = dict(values)
-    config["base_url"] = _normalize_base_url(str(config.get("base_url", _DEFAULT_BASE_URL)))
-    config["user_id"] = str(config.get("user_id", "")).strip()
+def _load_config_dict_from_values(values: Dict[str, Any]) -> tuple[Dict[str, Any], List[str], List[str]]:
+    config: Dict[str, Any] = {}
+    errors: List[str] = []
+    legacy_config_keys: List[str] = []
+
+    base_url_value = values.get("base_url", _DEFAULT_BASE_URL)
+    try:
+        config["base_url"] = _normalize_base_url(str(base_url_value))
+    except ValueError as exc:
+        errors.append(f"base_url: {exc}")
+        config["base_url"] = _normalize_base_url(_DEFAULT_BASE_URL)
+
+    user_id_value = values.get("user_id", "")
+    config["user_id"] = str(user_id_value).strip()
+    if not _validate_uuid(config["user_id"]):
+        errors.append("user_id must be a valid UUID")
+
     config["timeout_seconds"] = _parse_float(
-        config.get("timeout_seconds"),
+        values.get("timeout_seconds"),
         default=_DEFAULT_TIMEOUT_SECONDS,
         min_value=0.5,
         max_value=30.0,
     )
-    config["prefetch_limit"] = _parse_int(
-        config.get("prefetch_limit"),
+
+    prefetch_recall_limit_value, prefetch_recall_limit_source = _resolve_config_value(values, "prefetch_recall_limit")
+    if prefetch_recall_limit_source != "prefetch_recall_limit":
+        legacy_config_keys.append(prefetch_recall_limit_source)
+    config["prefetch_recall_limit"] = _parse_int(
+        prefetch_recall_limit_value,
         default=_DEFAULT_PREFETCH_LIMIT,
         min_value=_RECALL_LIMIT_MIN,
         max_value=_RECALL_LIMIT_MAX,
     )
-    config["max_recent_changes"] = _parse_int(
-        config.get("max_recent_changes"),
+
+    prefetch_recent_changes_value, prefetch_recent_changes_source = _resolve_config_value(
+        values,
+        "prefetch_max_recent_changes",
+    )
+    if prefetch_recent_changes_source != "prefetch_max_recent_changes":
+        legacy_config_keys.append(prefetch_recent_changes_source)
+    config["prefetch_max_recent_changes"] = _parse_int(
+        prefetch_recent_changes_value,
         default=_DEFAULT_MAX_RECENT_CHANGES,
         min_value=_RECENT_CHANGES_MIN,
         max_value=_RECENT_CHANGES_MAX,
     )
-    config["max_open_loops"] = _parse_int(
-        config.get("max_open_loops"),
+
+    prefetch_open_loops_value, prefetch_open_loops_source = _resolve_config_value(values, "prefetch_max_open_loops")
+    if prefetch_open_loops_source != "prefetch_max_open_loops":
+        legacy_config_keys.append(prefetch_open_loops_source)
+    config["prefetch_max_open_loops"] = _parse_int(
+        prefetch_open_loops_value,
         default=_DEFAULT_MAX_OPEN_LOOPS,
         min_value=_RECENT_CHANGES_MIN,
         max_value=_RECENT_CHANGES_MAX,
     )
-    config["include_non_promotable_facts"] = _parse_bool(
-        config.get("include_non_promotable_facts"),
+
+    prefetch_non_promotable_value, prefetch_non_promotable_source = _resolve_config_value(
+        values,
+        "prefetch_include_non_promotable_facts",
+    )
+    if prefetch_non_promotable_source != "prefetch_include_non_promotable_facts":
+        legacy_config_keys.append(prefetch_non_promotable_source)
+    config["prefetch_include_non_promotable_facts"] = _parse_bool(
+        prefetch_non_promotable_value,
         default=False,
     )
-    config["auto_capture"] = _parse_bool(config.get("auto_capture"), default=False)
-    config["mirror_memory_writes"] = _parse_bool(config.get("mirror_memory_writes"), default=False)
-    return config
+
+    sync_turn_capture_value, sync_turn_capture_source = _resolve_config_value(values, "sync_turn_capture_enabled")
+    if sync_turn_capture_source != "sync_turn_capture_enabled":
+        legacy_config_keys.append(sync_turn_capture_source)
+    config["sync_turn_capture_enabled"] = _parse_bool(
+        sync_turn_capture_value,
+        default=False,
+    )
+
+    memory_write_capture_value, memory_write_capture_source = _resolve_config_value(
+        values,
+        "memory_write_capture_enabled",
+    )
+    if memory_write_capture_source != "memory_write_capture_enabled":
+        legacy_config_keys.append(memory_write_capture_source)
+    config["memory_write_capture_enabled"] = _parse_bool(
+        memory_write_capture_value,
+        default=False,
+    )
+
+    config["session_end_flush_timeout_seconds"] = _parse_float(
+        values.get("session_end_flush_timeout_seconds"),
+        default=_DEFAULT_SESSION_END_FLUSH_TIMEOUT_SECONDS,
+        min_value=0.5,
+        max_value=30.0,
+    )
+
+    return config, errors, sorted(set(legacy_config_keys))
 
 
 def _extract_single_title(section: Any) -> str:

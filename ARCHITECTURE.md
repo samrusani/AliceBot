@@ -1,177 +1,108 @@
 # Architecture
 
-## System Overview
+## Scope Boundary
+This document treats Phase 11 as shipped baseline. New planned work here is the **Hermes Auto-Capture bridge phase** only.
 
-Phase 10 keeps the shipped Phase 9 modular monolith and adds a hosted product layer on top of the same continuity core. Alice Core remains authoritative for continuity objects, recall, resume, corrections, approvals, and provenance-backed retrieval. Hosted identity, Telegram, and scheduling orchestrate access to that core; they do not create a second semantics stack.
+## System Overview
+Use a dual-path integration:
+- **Hermes memory provider (shipped baseline, extended in bridge scope):** lifecycle automation hooks.
+- **Alice MCP server (existing + extended):** explicit recall/review/explain operations.
+
+This keeps Alice continuity semantics centralized while adding Hermes-native automation points.
 
 ## Technical Stack
+- Core API/runtime: Python + FastAPI (`apps/api/src/alicebot_api`)
+- Persistence: Postgres (+ existing continuity and provenance schema)
+- Existing surfaces: CLI, MCP, web/admin, workers
+- Hermes integration artifacts: provider plugin + Hermes config (`~/.hermes/config.yaml`)
 
-- API and core runtime: Python 3.12 + FastAPI under `apps/api/src/alicebot_api`
-- Web app: Next.js 15 + React 19 under `apps/web`
-- Background/task surface: `workers`
-- Primary data store: Postgres with `pgvector`
-- Local support services: Redis and MinIO via `docker-compose.yml`
-- Packaging: `alice-core` in `pyproject.toml`
-- Test surface: pytest, Vitest, and the Phase 9 evaluation harness
+## Module Boundaries
+### Alice Core (already shipped)
+- Continuity objects, revisions, provenance, corrections, open loops
+- Recall/resume/context compilation
+- Existing MCP/CLI APIs and policy controls
 
-## Runtime Boundaries
+### Hermes Provider Adapter (bridge scope)
+- Extends the shipped Hermes Alice provider rather than replacing it
+- Reads provider config (`mode`, thresholds, feature toggles)
+- Executes lifecycle hooks around Hermes turns/sessions
+- Injects compact prefetch payload into Hermes prompt context
 
-### Core Data Plane
+### MCP Tool Surface (explicit workflows)
+Implemented in B1:
+- `alice_prefetch_context`
 
-Owns:
+Planned for B2+ (not shipped in B1):
+- `alice_capture_candidates`
+- `alice_commit_captures`
+- `alice_session_flush`
+- `alice_review_queue`
+- `alice_review_apply`
 
-- continuity capture and revision persistence
-- typed continuity objects and memory revisions
-- recall and resumption compilation
-- entities, edges, and open loops
-- approvals and audit traces
-- CLI and MCP semantics
-- importer provenance and deterministic dedupe
+## Runtime Flows
+### Flow 1: Pre-turn Prefetch
+1. Hermes receives user input.
+2. Provider calls `alice_prefetch_context`.
+3. Alice returns compact continuity payload (summary, relevant memories, open loops, recent decisions/changes, optional resume brief, trust posture).
+4. Provider injects payload into Hermes context before model response.
 
-### Hosted Control Plane
+### Flow 2: Post-response Candidate Extraction (planned B2+)
+1. Hermes emits assistant response.
+2. Provider sends user/assistant turn pair to `alice_capture_candidates`.
+3. Alice returns typed candidates with confidence, trust class, proposed action, evidence snippet, and target object type.
 
-Owns:
+### Flow 3: Post-response Commit (planned B2+)
+1. In `assist`/`auto`, provider submits candidates to `alice_commit_captures`.
+2. Policy gates auto-save vs review queue using type allowlist + confidence threshold.
+3. Writes are idempotent across repeated sync attempts.
 
-- user accounts and auth sessions
-- devices and trust levels
-- workspaces and bootstrap state
-- channel bindings
-- user preferences and notification policy
-- beta cohorts and feature flags
-- telemetry and support tooling
-
-### Surface Layer
-
-- local API and CLI
-- MCP server
-- Telegram adapter and chat routing layer
-- web onboarding/settings/admin surfaces
-- brief and notification scheduler
-
-## Phase 10 Core Flows
-
-### Onboarding
-
-1. User authenticates with a hosted session.
-2. User creates or boots a workspace.
-3. Device and channel bindings are established.
-4. Preferences and import choices are stored.
-5. Alice generates a first brief against the existing continuity core.
-
-### Inbound Chat
-
-1. Telegram webhook receives an inbound message.
-2. The message is normalized into a common channel message contract.
-3. Routing resolves workspace, actor, and best-fit continuity context.
-4. Core capture/recall/resume/correction logic executes.
-5. A reply is dispatched back through the same channel thread.
-
-### Approval
-
-1. Core logic emits an approval request.
-2. Chat surface presents approve/reject/context actions.
-3. Approval resolution writes back to the same approval and audit objects used by other surfaces.
-
-### Daily Brief
-
-1. Scheduler selects workspaces due for delivery.
-2. Brief compiler builds a deterministic summary from continuity state.
-3. Notification policy and quiet hours are applied.
-4. Delivery receipts and failures are recorded for support tooling.
+### Flow 4: Session-End Flush (planned B2+)
+1. On session end, provider calls `alice_session_flush`.
+2. Alice performs dedupe merge, contradiction checks, open-loop normalization, summary refresh, and review queue updates.
 
 ## Data Model Summary
+### Reuse Existing Baseline Objects
+- continuity object graph
+- correction/supersession history
+- open-loop structures
+- provenance evidence links
 
-### Existing Baseline Objects
+### Bridge-Phase Additions/Extensions (required)
+- capture candidate records (including confidence + evidence)
+- review queue records with lifecycle state
+- commit decision audit trail (auto-saved vs queued vs rejected)
 
-- continuity capture events
-- typed continuity objects
-- correction events and revisions
-- open loops and brief-ready summaries
-- import provenance with explicit `source_kind`
+## Security And Trust Controls
+- Preserve existing approval/provenance/correction contracts.
+- Never auto-promote speculative single-turn inferences into higher-order trusted patterns.
+- Keep confidence and type gating explicit and configurable by mode.
+- Ensure workspace/session isolation in provider hook calls.
+- Keep credential handling out of logs and redact sensitive provider connection details.
 
-### Phase 10 Additions
+## Deployment Topology
+### Recommended
+- Hermes configured with external `alice` memory provider + enabled Alice MCP server.
+- Provider and MCP may run against local Alice API base URL for local/self-hosted paths.
 
-Control-plane tables:
+### Fallback
+- MCP-only mode remains supported when provider plugin is not installed.
 
-- `user_accounts`
-- `auth_sessions`
-- `devices`
-- `workspaces`
-- `workspace_members`
-- `user_preferences`
-- `beta_cohorts`
-- `feature_flags`
+## Testing Strategy
+### Bridge-Phase Required Tests
+- prefetch context injection behavior
+- explicit decision/correction auto-capture in `assist`
+- low-confidence inference routes to review queue
+- session-end flush behavior
+- idempotency on duplicate sync attempts
 
-Channel and scheduler tables:
+### Existing Gates To Keep
+- unit/integration suites
+- MCP parity checks
+- phase eval/regression harnesses already in repo
 
-- `channel_identities`
-- `channel_messages`
-- `channel_threads`
-- `channel_delivery_receipts`
-- `chat_intents`
-- `continuity_briefs`
-- `approval_challenges`
-- `daily_brief_jobs`
-- `notification_subscriptions`
-- `open_loop_reviews`
-- `chat_telemetry`
-
-## Security and Governance
-
-- Postgres remains the system of record.
-- Hosted identity and channel access add to, but do not bypass, existing approval and provenance discipline.
-- Append-only continuity and correction history stay intact.
-- Device linking, channel binding, and session expiry are explicit control-plane concerns.
-- Consequential actions remain approval-bounded even when initiated from chat.
-- Opt-in backup/sync must preserve user isolation and encryption boundaries.
-
-## Deployment
-
-### Shipped Baseline
-
-Canonical local startup path remains:
-
-```bash
-docker compose up -d
-./scripts/migrate.sh
-./scripts/load_sample_data.sh
-APP_RELOAD=false ./scripts/api_dev.sh
-```
-
-### Phase 10 Production Additions
-
-- hosted auth/session endpoints
-- public webhook ingress for Telegram
-- scheduler/worker execution for briefs and notifications
-- support/admin visibility for beta operations
-
-## Testing
-
-Existing quality gates remain:
-
-```bash
-./.venv/bin/python -m pytest tests/unit tests/integration
-pnpm --dir apps/web test
-./scripts/run_phase9_eval.sh --report-path eval/reports/phase9_eval_latest.json
-```
-
-Phase 10 adds targeted verification for:
-
-- auth and workspace bootstrap
-- device and channel linking
-- idempotent webhook ingest and outbound delivery
-- cross-surface parity between local, CLI, MCP, and Telegram
-- daily brief scheduling, quiet hours, and failure handling
-- support telemetry and rollout controls
-
-## Architecture Constraints
-
-- Phase 10 must not fork semantics between local, CLI, MCP, and Telegram.
-- Telegram is another surface on the same core objects, not a separate assistant stack.
-- Control-plane additions must not rewrite shipped Alice Core contracts.
-- Do not expand connector breadth beyond Telegram in Phase 10 without an explicit roadmap change.
-- Keep docs clear about what is shipped OSS baseline versus planned beta surface.
-
-## Historical Traceability
-
-Historical planning/control snapshots are retained in local-only internal docs and are intentionally excluded from the public repository.
+## Underspecified Areas (Control Tower Decisions Needed)
+- Canonical candidate/review schema and migration details.
+- Confidence model calibration and versioning policy.
+- Provider package distribution/versioning strategy for Hermes installs.
+- Auth boundary between Hermes provider process and Alice API in hosted deployments.
+- UX surface ownership for review queue beyond MCP parity (web/CLI split not fully specified).

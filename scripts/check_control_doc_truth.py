@@ -19,37 +19,40 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="README.md",
         required_markers=(
             "Phase 10 is complete and shipped.",
-            "`P11-R1` Provider Runtime Hardening is the active security remediation sprint",
+            "Phase 11 is complete and shipped:",
+            "`B1` Hermes Provider Contract Foundation is the active sprint",
             "Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md]",
         ),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "Phase 10 is complete and shipped baseline truth.",
-            "P11-R1: Provider Runtime Hardening (Security Remediation Sprint 1)",
+            "Phase 11 remains baseline truth and is not future scope.",
+            "Bridge Sprint 1 (`B1`) is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Phase 11 Security Remediation Sprint 1 (P11-R1): Provider Runtime Hardening",
-            "Reference baseline markers: shipped Phase 9 Alice Core, shipped Phase 10 Alice Connect, shipped `P11-S1` through `P11-S6` provider/runtime/model-pack work.",
+            "Bridge Sprint 1 (B1): Hermes Provider Contract Foundation",
+            "Phase 10 is complete and shipped.",
+            "Phase 11 is complete and shipped.",
         ),
     ),
     ControlDocTruthRule(
         relative_path="RULES.md",
         required_markers=(
-            "Never fork continuity semantics by provider, model, or runtime.",
-            "Provider-specific quirks belong in adapters or declarative packs, not core semantics.",
+            "For Hermes, use provider hooks for automation and MCP for explicit deep actions.",
+            "Never fork continuity semantics by surface or runtime.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "Phase 9 is complete and shipped.",
-            "Phase 10 is complete and shipped.",
-            "`P11-R1` (Provider Runtime Hardening) is the active security remediation sprint packet.",
+            "Phase 9 is shipped.",
+            "Phase 10 is shipped.",
+            "Phase 11 is shipped and remains baseline truth.",
+            "Bridge Sprint 1 (`B1`) is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(

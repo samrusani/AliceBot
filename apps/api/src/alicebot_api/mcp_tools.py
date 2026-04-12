@@ -74,6 +74,7 @@ from alicebot_api.temporal_state import (
 
 _REVIEW_STATUS_CHOICES = ("correction_ready", "active", "stale", "superseded", "deleted", "all")
 _CONTEXT_PACK_ASSEMBLY_VERSION_V0 = "alice_context_pack_v0"
+_PREFETCH_CONTEXT_ASSEMBLY_VERSION_V0 = "alice_prefetch_context_v0"
 
 
 class MCPToolError(ValueError):
@@ -258,6 +259,72 @@ def _recency_sort_key(item: Mapping[str, object]) -> tuple[str, str]:
     return created_at, item_id
 
 
+def _extract_prefetch_single_title(section: object) -> str:
+    if not isinstance(section, Mapping):
+        return ""
+    item = section.get("item")
+    if not isinstance(item, Mapping):
+        return ""
+    title = item.get("title")
+    if not isinstance(title, str):
+        return ""
+    return title.strip()
+
+
+def _extract_prefetch_titles(section: object, *, limit: int) -> list[str]:
+    if not isinstance(section, Mapping):
+        return []
+    items = section.get("items")
+    if not isinstance(items, list):
+        return []
+
+    titles: list[str] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        title = item.get("title")
+        if not isinstance(title, str):
+            continue
+        normalized = title.strip()
+        if normalized == "":
+            continue
+        titles.append(normalized)
+        if len(titles) >= limit:
+            break
+    return titles
+
+
+def _render_prefetch_context_text(
+    *,
+    brief: Mapping[str, object],
+    open_loops_limit: int,
+    recent_changes_limit: int,
+) -> str:
+    lines: list[str] = ["## Alice Continuity Prefetch"]
+
+    last_decision = _extract_prefetch_single_title(brief.get("last_decision"))
+    if last_decision:
+        lines.append(f"- Last decision: {last_decision}")
+
+    next_action = _extract_prefetch_single_title(brief.get("next_action"))
+    if next_action:
+        lines.append(f"- Next action: {next_action}")
+
+    open_loop_titles = _extract_prefetch_titles(brief.get("open_loops"), limit=open_loops_limit)
+    if open_loop_titles:
+        lines.append("- Open loops:")
+        lines.extend([f"  - {title}" for title in open_loop_titles])
+
+    recent_change_titles = _extract_prefetch_titles(brief.get("recent_changes"), limit=recent_changes_limit)
+    if recent_change_titles:
+        lines.append("- Recent changes:")
+        lines.extend([f"  - {title}" for title in recent_change_titles])
+
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 def _handle_alice_capture(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     explicit_signal = arguments.get("explicit_signal")
     if explicit_signal is not None and not isinstance(explicit_signal, str):
@@ -340,6 +407,63 @@ def _handle_alice_resume(context: MCPRuntimeContext, arguments: Mapping[str, obj
                 ),
             ),
         )
+
+
+def _handle_alice_prefetch_context(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    max_recent_changes = _parse_int(
+        arguments,
+        key="max_recent_changes",
+        default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+        minimum=0,
+        maximum=MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    )
+    max_open_loops = _parse_int(
+        arguments,
+        key="max_open_loops",
+        default=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+        minimum=0,
+        maximum=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+    )
+
+    with _store_context(context) as store:
+        resumption_payload = compile_continuity_resumption_brief(
+            store,
+            user_id=context.user_id,
+            request=ContinuityResumptionBriefRequestInput(
+                query=_parse_optional_text(arguments, "query"),
+                thread_id=_parse_optional_uuid(arguments, "thread_id"),
+                task_id=_parse_optional_uuid(arguments, "task_id"),
+                project=_parse_optional_text(arguments, "project"),
+                person=_parse_optional_text(arguments, "person"),
+                since=_parse_optional_datetime(arguments, "since"),
+                until=_parse_optional_datetime(arguments, "until"),
+                max_recent_changes=max_recent_changes,
+                max_open_loops=max_open_loops,
+                include_non_promotable_facts=_parse_bool(
+                    arguments,
+                    key="include_non_promotable_facts",
+                    default=False,
+                ),
+            ),
+        )
+
+    brief = resumption_payload["brief"]
+    return {
+        "prefetch_context": {
+            "assembly_version": _PREFETCH_CONTEXT_ASSEMBLY_VERSION_V0,
+            "text": _render_prefetch_context_text(
+                brief=brief,
+                open_loops_limit=max_open_loops,
+                recent_changes_limit=max_recent_changes,
+            ),
+            "scope": brief["scope"],
+            "last_decision": brief["last_decision"],
+            "next_action": brief["next_action"],
+            "open_loops": brief["open_loops"],
+            "recent_changes": brief["recent_changes"],
+            "sources": brief["sources"],
+        }
+    }
 
 
 def _handle_alice_open_loops(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -722,6 +846,34 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_prefetch_context",
+        "description": "Assemble deterministic pre-turn prefetch context text from continuity resumption state.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string"},
+                "thread_id": {"type": "string", "format": "uuid"},
+                "task_id": {"type": "string", "format": "uuid"},
+                "project": {"type": "string"},
+                "person": {"type": "string"},
+                "since": {"type": "string", "format": "date-time"},
+                "until": {"type": "string", "format": "date-time"},
+                "max_recent_changes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+                },
+                "max_open_loops": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+                },
+                "include_non_promotable_facts": {"type": "boolean"},
+            },
+        },
+    },
+    {
         "name": "alice_open_loops",
         "description": "List continuity open loops grouped by deterministic posture sections.",
         "inputSchema": {
@@ -895,6 +1047,7 @@ _TOOL_HANDLERS = {
     "alice_recall": _handle_alice_recall,
     "alice_state_at": _handle_alice_state_at,
     "alice_resume": _handle_alice_resume,
+    "alice_prefetch_context": _handle_alice_prefetch_context,
     "alice_open_loops": _handle_alice_open_loops,
     "alice_recent_decisions": _handle_alice_recent_decisions,
     "alice_recent_changes": _handle_alice_recent_changes,

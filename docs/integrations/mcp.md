@@ -26,6 +26,7 @@ MCP uses the same local runtime scope as CLI:
 - `alice_recall`
 - `alice_state_at`
 - `alice_resume`
+- `alice_prefetch_context`
 - `alice_open_loops`
 - `alice_recent_decisions`
 - `alice_recent_changes`
@@ -36,6 +37,7 @@ MCP uses the same local runtime scope as CLI:
 - `alice_context_pack`
 
 `alice_explain` now accepts either `continuity_object_id` for evidence-chain inspection or `entity_id` plus optional `at` for temporal explain output.
+`alice_prefetch_context` provides an automation-oriented pre-turn context assembly surface using the same continuity resumption semantics shipped for `alice_resume`.
 
 ## Example: Claude Desktop MCP Config
 

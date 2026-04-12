@@ -1,42 +1,37 @@
 # Rules
 
-## Baseline Truth
-
-- Phase 10 must not fork semantics between local, CLI, MCP, and Telegram.
-- Do not rewrite shipped Phase 9 capabilities as future roadmap items.
-- Treat shipped Phase 10 capability as baseline truth, not roadmap scope.
-- Do not reframe shipped Alice Core/Connect behavior as aspirational work.
+## Baseline Truth Discipline
+- Treat Phase 11 as shipped baseline truth; do not restate it as future roadmap scope.
+- Keep shipped baseline, bridge-phase plan, and future roadmap clearly separated.
 - Keep `ROADMAP.md` future-facing and `.ai/handoff/CURRENT_STATE.md` factual/current.
 
-## Product Boundaries
+## Integration Rules
+- For Hermes, use provider hooks for automation and MCP for explicit deep actions.
+- Do not collapse to provider-only or MCP-only as the canonical target architecture.
+- Keep MCP fallback viable while provider mode matures.
 
-- Alice remains continuity-first, not a generic autonomous platform.
-- Provider/model expansion must preserve OSS baseline and hosted/enterprise boundary clarity.
-- Do not conflate provider support with complete agent-framework support.
+## Continuity Semantics Rules
+- Never fork continuity semantics by surface or runtime.
+- Provider behavior may automate lifecycle timing, but memory truth remains in Alice continuity contracts.
+- Preserve provenance, correction, and supersession behavior across all capture paths.
 
-## Architecture Rules
+## Capture Policy Rules
+- Default mode is `assist` unless explicitly overridden.
+- Auto-save only explicit high-confidence items: correction, preference, decision, commitment, open-loop create/resolve.
+- Route inferred/weak/speculative or low-confidence items to review queue.
+- Never auto-promote a single-turn inference into higher-order trusted patterns/playbooks.
 
-- Never fork continuity semantics by provider, model, or runtime.
-- Provider-specific quirks belong in adapters or declarative packs, not core semantics.
-- Model pack behavior must be declarative, versioned, and explicit.
-- Keep provider contract normalization mandatory for responses, tools, and usage.
+## Reliability Rules
+- Post-response capture/commit paths must be idempotent.
+- Session-end flush must run dedupe, contradiction checks, open-loop normalization, and summary refresh.
+- No-op turns must not create memory writes.
 
-## Scope Control
+## Security Rules
+- Maintain workspace/session isolation for provider and MCP calls.
+- Keep provider/API credentials out of logs and error payloads.
+- Keep consequential actions approval-bounded regardless of integration mode.
 
-- Build interfaces first (OpenAI-compatible base), then provider breadth, then pack breadth.
-- No deep optimization for one model family before abstraction stability.
-- Do not ship broad pack catalogs before tier-1 packs are production-clean.
-- Do not add non-Phase-11 channel/surface expansion under adapter-pack scope.
-
-## Security And Reliability
-
-- Store provider credentials as encrypted references; never log plaintext secrets.
-- Require idempotency and auditability for provider invoke paths.
-- Keep consequential actions approval-bounded on every provider/runtime path.
-- Maintain cross-workspace isolation for provider configs and pack bindings.
-
-## Documentation Discipline
-
-- Keep canonical operating files concise and non-duplicative.
-- Move major long-lived decisions into ADRs instead of bloating architecture docs.
-- Archive superseded plans, investor framing, and sprint diaries out of live memory files.
+## Documentation Rules
+- Keep canonical files concise and durable.
+- Move major technical commitments into ADRs instead of expanding architecture prose.
+- Archive investor framing, long sprint diaries, and superseded planning drafts out of active memory docs.

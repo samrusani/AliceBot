@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 from pathlib import Path
 import sys
 import types
@@ -34,16 +35,22 @@ def _load_provider_module(monkeypatch: pytest.MonkeyPatch):
 
     tools_pkg = types.ModuleType("tools")
     tools_registry_pkg = types.ModuleType("tools.registry")
+    hermes_constants_pkg = types.ModuleType("hermes_constants")
 
     def _tool_error(message: str) -> str:
         return f"tool_error:{message}"
 
+    def _get_hermes_home() -> str:
+        return "/tmp"
+
     tools_registry_pkg.tool_error = _tool_error
+    hermes_constants_pkg.get_hermes_home = _get_hermes_home
 
     monkeypatch.setitem(sys.modules, "agent", agent_pkg)
     monkeypatch.setitem(sys.modules, "agent.memory_provider", memory_provider_pkg)
     monkeypatch.setitem(sys.modules, "tools", tools_pkg)
     monkeypatch.setitem(sys.modules, "tools.registry", tools_registry_pkg)
+    monkeypatch.setitem(sys.modules, "hermes_constants", hermes_constants_pkg)
 
     module_name = "alice_memory_provider_test_module"
     sys.modules.pop(module_name, None)
@@ -147,3 +154,146 @@ def test_handle_tool_call_sanitizes_http_error_body(monkeypatch: pytest.MonkeyPa
     assert "HTTP status 500" in response
     assert "password leaked" not in response
 
+
+def test_bridge_status_reports_legacy_config_compatibility(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = _load_provider_module(monkeypatch)
+    config_path = tmp_path / "alice_memory_provider.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "base_url": "http://127.0.0.1:8000",
+                "user_id": "00000000-0000-0000-0000-000000000001",
+                "prefetch_limit": 7,
+                "max_recent_changes": 4,
+                "max_open_loops": 3,
+                "include_non_promotable_facts": True,
+                "auto_capture": True,
+                "mirror_memory_writes": True,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    provider = module.AliceMemoryProvider()
+    provider.initialize(session_id="bridge-status", hermes_home=str(tmp_path), agent_context="primary")
+    status = provider.get_status(hermes_home=str(tmp_path))
+
+    assert status["ready"] is True
+    assert status["config"]["prefetch_recall_limit"] == 7
+    assert status["config"]["prefetch_max_recent_changes"] == 4
+    assert status["config"]["prefetch_max_open_loops"] == 3
+    assert status["config"]["prefetch_include_non_promotable_facts"] is True
+    assert status["config"]["sync_turn_capture_enabled"] is True
+    assert status["config"]["memory_write_capture_enabled"] is True
+    assert status["legacy_config_keys"] == [
+        "auto_capture",
+        "include_non_promotable_facts",
+        "max_open_loops",
+        "max_recent_changes",
+        "mirror_memory_writes",
+        "prefetch_limit",
+    ]
+
+
+def test_bridge_status_reports_invalid_config_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module = _load_provider_module(monkeypatch)
+    config_path = tmp_path / "alice_memory_provider.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "base_url": "http://example.com",
+                "user_id": "not-a-uuid",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    provider = module.AliceMemoryProvider()
+    status = provider.get_status(hermes_home=str(tmp_path))
+
+    assert status["ready"] is False
+    assert any("base_url:" in message for message in status["errors"])
+    assert any("user_id must be a valid UUID" in message for message in status["errors"])
+
+
+def test_sync_turn_deduplicates_repeated_callbacks_and_flushes_on_session_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_provider_module(monkeypatch)
+    provider = module.AliceMemoryProvider()
+    provider._config = {
+        "sync_turn_capture_enabled": True,
+        "session_end_flush_timeout_seconds": 5.0,
+    }
+
+    captured: list[str] = []
+
+    def _fake_post_capture(raw_content: str) -> None:
+        captured.append(raw_content)
+
+    monkeypatch.setattr(provider, "_post_capture", _fake_post_capture)
+
+    provider.sync_turn("Need decision", "Decision confirmed")
+    provider.sync_turn("Need decision", "Decision confirmed")
+    provider.on_session_end(session_id="session-a")
+    provider.on_session_end(session_id="session-a")
+
+    assert captured == ["User: Need decision\nAssistant: Decision confirmed"]
+
+
+def test_memory_write_deduplicates_repeated_callbacks(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_provider_module(monkeypatch)
+    provider = module.AliceMemoryProvider()
+    provider._config = {
+        "memory_write_capture_enabled": True,
+        "session_end_flush_timeout_seconds": 5.0,
+    }
+
+    captured: list[str] = []
+
+    def _fake_post_capture(raw_content: str) -> None:
+        captured.append(raw_content)
+
+    monkeypatch.setattr(provider, "_post_capture", _fake_post_capture)
+
+    provider.on_memory_write("add", "MEMORY.md", "Use deterministic release checklist.")
+    provider.on_memory_write("add", "MEMORY.md", "Use deterministic release checklist.")
+    provider.on_session_end(session_id="session-b")
+
+    assert captured == [
+        "Hermes built-in memory update (MEMORY.md): Use deterministic release checklist."
+    ]
+
+
+def test_sync_turn_allows_same_content_after_session_flush(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_provider_module(monkeypatch)
+    provider = module.AliceMemoryProvider()
+    provider._config = {
+        "sync_turn_capture_enabled": True,
+        "session_end_flush_timeout_seconds": 5.0,
+    }
+
+    captured: list[str] = []
+
+    def _fake_post_capture(raw_content: str) -> None:
+        captured.append(raw_content)
+
+    monkeypatch.setattr(provider, "_post_capture", _fake_post_capture)
+
+    provider.sync_turn("Need decision", "Decision confirmed")
+    provider.on_session_end(session_id="session-c")
+
+    provider.sync_turn("Need decision", "Decision confirmed")
+    provider.on_session_end(session_id="session-c")
+
+    assert captured == [
+        "User: Need decision\nAssistant: Decision confirmed",
+        "User: Need decision\nAssistant: Decision confirmed",
+    ]

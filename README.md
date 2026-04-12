@@ -29,14 +29,17 @@ It provides a **local-first memory and continuity engine** for capture, recall, 
 
 Phase 10 is complete and shipped.
 
-Phase 11 is now the active planning and execution phase:
+Phase 11 is complete and shipped:
 
 - `P11-S1` Provider Abstraction + OpenAI-Compatible Base is shipped
 - `P11-S2` Ollama + llama.cpp Adapters is shipped
 - `P11-S3` vLLM Adapter + Self-Hosted Performance Path is shipped
 - `P11-S4` Model Packs Tier 1 is shipped
 - `P11-S5` Azure Adapter + AutoGen Integration is shipped
-- `P11-S6` Model Packs Tier 2 + Launch Clarity Assets is the active sprint
+- `P11-S6` Model Packs Tier 2 + Launch Clarity Assets is shipped
+- `P11-R1` Provider Runtime Hardening is shipped
+- A bridge phase is now active: Hermes Auto-Capture
+- `B1` Hermes Provider Contract Foundation is the active sprint
 - Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
 
 ## Why Alice exists
