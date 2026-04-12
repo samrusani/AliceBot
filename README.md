@@ -21,7 +21,9 @@ Alice fixes that.
 
 It provides a **local-first memory and continuity engine** for capture, recall, resumption, open-loop tracking, and correction-aware, trust-aware memory, so you do not have to rebuild context from scratch every time work resumes.
 
-**Works via CLI, MCP, OpenClaw import, Hermes integration, and local-first workflows.**
+**Bring your own models, keep one continuity layer.**
+
+**Works across local, self-hosted, enterprise, and external-agent workflows via CLI, MCP, provider runtime, OpenClaw import, and Hermes integration.**
 
 ## Current phase
 
@@ -33,8 +35,8 @@ Phase 11 is now the active planning and execution phase:
 - `P11-S2` Ollama + llama.cpp Adapters is shipped
 - `P11-S3` vLLM Adapter + Self-Hosted Performance Path is shipped
 - `P11-S4` Model Packs Tier 1 is shipped
-- `P11-S5` Azure Adapter + AutoGen Integration is the active sprint
-- later Phase 11 work adds tier-2 packs and launch-clarity assets
+- `P11-S5` Azure Adapter + AutoGen Integration is shipped
+- `P11-S6` Model Packs Tier 2 + Launch Clarity Assets is the active sprint
 - Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
 
 ## Why Alice exists
@@ -101,6 +103,11 @@ That makes it easier to audit why an answer appeared, how it was derived, and ho
 
 Alice Core runs locally and exposes the same continuity semantics through the CLI and MCP, so you can use it with your own workflows instead of being locked into a closed assistant product.
 
+### Swap providers, not behavior
+
+Alice is now model-flexible.
+You can switch or standardize model backends across local, self-hosted, enterprise, and external-agent environments without rewriting Alice's continuity, memory, approval, or provenance behavior.
+
 ## Use Alice with your existing agents
 
 Alice is designed to be a **continuity layer**, not a closed assistant silo.
@@ -112,9 +119,10 @@ It already supports:
 - **Hermes integration paths**
 - **Hermes external memory provider**
 - **Provider runtime abstraction for workspace-scoped model/provider integration**
+- **Local, self-hosted, enterprise, and external-agent deployment paths**
 - imported workflow data from Markdown and ChatGPT exports
 
-That means you can use Alice to upgrade an existing agent stack instead of rebuilding everything around a new runtime.
+That means you can use Alice as shared continuity infrastructure across providers and frameworks instead of rebuilding memory behavior per runtime.
 
 ## What ships today
 
@@ -127,7 +135,7 @@ The current open-source surface includes:
 - shared explainability across recall, resume, open-loop review, and explain surfaces
 - scheduled archive maintenance, ops status reporting, and failure alerting
 - Hermes external memory provider for always-on continuity prefetch and Alice memory tools inside Hermes
-- provider runtime abstraction with workspace-scoped provider registration, capability snapshots, OpenAI-compatible base adapter, local Ollama/llama.cpp adapters, and Azure adapter support
+- provider runtime abstraction with workspace-scoped provider registration, capability snapshots, OpenAI-compatible base adapter, local Ollama/llama.cpp, self-hosted vLLM, enterprise Azure, model packs, and external-agent integration paths
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
