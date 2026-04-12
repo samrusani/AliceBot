@@ -32,8 +32,9 @@ Phase 11 is now the active planning and execution phase:
 - `P11-S1` Provider Abstraction + OpenAI-Compatible Base is shipped
 - `P11-S2` Ollama + llama.cpp Adapters is shipped
 - `P11-S3` vLLM Adapter + Self-Hosted Performance Path is shipped
-- `P11-S4` Model Packs Tier 1 is the active sprint
-- later Phase 11 work adds Azure, tier-2 packs, and agent integration guides
+- `P11-S4` Model Packs Tier 1 is shipped
+- `P11-S5` Azure Adapter + AutoGen Integration is the active sprint
+- later Phase 11 work adds tier-2 packs and launch-clarity assets
 - Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
 
 ## Why Alice exists
@@ -126,7 +127,7 @@ The current open-source surface includes:
 - shared explainability across recall, resume, open-loop review, and explain surfaces
 - scheduled archive maintenance, ops status reporting, and failure alerting
 - Hermes external memory provider for always-on continuity prefetch and Alice memory tools inside Hermes
-- provider runtime abstraction with workspace-scoped provider registration, capability snapshots, an OpenAI-compatible base adapter, and local Ollama/llama.cpp adapters
+- provider runtime abstraction with workspace-scoped provider registration, capability snapshots, OpenAI-compatible base adapter, local Ollama/llama.cpp adapters, and Azure adapter support
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -208,6 +209,7 @@ See:
 - [docs/integrations/hermes-memory-provider.md](docs/integrations/hermes-memory-provider.md)
 - [docs/integrations/hermes-skill-pack.md](docs/integrations/hermes-skill-pack.md)
 - [docs/integrations/phase11-local-provider-adapters.md](docs/integrations/phase11-local-provider-adapters.md)
+- [docs/integrations/phase11-azure-autogen.md](docs/integrations/phase11-azure-autogen.md)
 
 Hermes runtime smoke test:
 

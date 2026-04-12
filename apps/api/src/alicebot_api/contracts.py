@@ -189,7 +189,7 @@ ToolAllowlistDecision = Literal["allowed", "denied", "approval_required"]
 ToolRoutingDecision = Literal["ready", "denied", "approval_required"]
 PromptSectionName = Literal["system", "developer", "context", "conversation"]
 ModelProvider = Literal["openai_responses"]
-ProviderAdapterKey = Literal["openai_compatible", "ollama", "llamacpp"]
+ProviderAdapterKey = Literal["openai_compatible", "ollama", "llamacpp", "azure"]
 ModelProviderStatus = Literal["active"]
 ProviderCapabilityDiscoveryStatus = Literal["ready", "failed"]
 ModelPackFamily = Literal["llama", "qwen", "gemma", "gpt-oss", "custom"]
@@ -1558,6 +1558,7 @@ class ModelProviderRecord(TypedDict):
     model_list_path: str
     healthcheck_path: str
     invoke_path: str
+    azure_api_version: str
     metadata: JsonObject
     created_at: str
     updated_at: str

@@ -512,3 +512,246 @@ def test_phase11_local_provider_rejects_api_key_when_auth_mode_none(
     )
     assert status == 400
     assert payload["detail"] == "api_key must be empty when auth_mode is none"
+
+
+def test_phase11_azure_provider_registration_test_and_no_plaintext_storage(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, workspace_id, _ = _bootstrap_workspace_session("provider-azure-reg@example.com")
+    captured_requests: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):
+        captured_requests.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": None if request.data is None else json.loads(request.data.decode("utf-8")),
+            }
+        )
+        url = request.full_url
+        if url.startswith("https://azure.example/openai/models"):
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "gpt-4.1-mini"}]}).encode("utf-8"))
+        if url.startswith("https://azure.example/openai/responses"):
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "id": "resp_azure_test_1",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [{"type": "output_text", "text": "Azure runtime response"}],
+                            }
+                        ],
+                        "usage": {
+                            "input_tokens": 10,
+                            "output_tokens": 4,
+                            "total_tokens": 14,
+                        },
+                    }
+                ).encode("utf-8")
+            )
+        raise AssertionError(f"unexpected azure URL: {url}")
+
+    monkeypatch.setattr("alicebot_api.azure_provider_helpers.urlopen", fake_urlopen)
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        "/v1/providers/azure/register",
+        payload={
+            "display_name": "Azure Primary",
+            "base_url": "https://azure.example",
+            "auth_mode": "azure_api_key",
+            "api_key": "azure-secret-key",
+            "api_version": "2024-10-21",
+            "default_model": "gpt-4.1-mini",
+            "metadata": {"kind": "enterprise"},
+        },
+        headers=auth_header(session_token),
+    )
+    assert register_status == 201
+    provider_id = register_payload["provider"]["id"]
+    assert register_payload["provider"]["provider_key"] == "azure"
+    assert register_payload["provider"]["auth_mode"] == "azure_api_key"
+    assert register_payload["provider"]["azure_api_version"] == "2024-10-21"
+    assert register_payload["capabilities"]["discovery_status"] == "ready"
+    assert register_payload["capabilities"]["snapshot"]["azure_api_version"] == "2024-10-21"
+    assert register_payload["capabilities"]["snapshot"]["azure_auth_mode"] == "azure_api_key"
+    assert register_payload["capabilities"]["snapshot"]["models"] == ["gpt-4.1-mini"]
+
+    list_status, list_payload = invoke_request(
+        "GET",
+        "/v1/providers",
+        headers=auth_header(session_token),
+    )
+    assert list_status == 200
+    assert list_payload["summary"]["total_count"] == 1
+    assert list_payload["items"][0]["id"] == provider_id
+
+    detail_status, detail_payload = invoke_request(
+        "GET",
+        f"/v1/providers/{provider_id}",
+        headers=auth_header(session_token),
+    )
+    assert detail_status == 200
+    assert detail_payload["provider"]["provider_key"] == "azure"
+    assert detail_payload["capabilities"]["provider_id"] == provider_id
+
+    test_status, test_payload = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={
+            "provider_id": provider_id,
+            "prompt": "Reply with a concise Azure connectivity check.",
+        },
+        headers=auth_header(session_token),
+    )
+    assert test_status == 200
+    assert test_payload["result"]["text"] == "Azure runtime response"
+    assert test_payload["result"]["usage"]["total_tokens"] == 14
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT api_key, azure_auth_secret_ref, auth_mode, azure_api_version
+                FROM model_providers
+                WHERE id = %s
+                  AND workspace_id = %s
+                """,
+                (provider_id, workspace_id),
+            )
+            row = cur.fetchone()
+    assert row is not None
+    stored_api_key, stored_secret_ref, stored_auth_mode, stored_api_version = row
+    assert stored_auth_mode == "azure_api_key"
+    assert stored_api_version == "2024-10-21"
+    assert stored_api_key != "azure-secret-key"
+    assert stored_secret_ref != "azure-secret-key"
+    assert stored_secret_ref.startswith("provider_secret_ref:")
+
+    captured_urls = [record["url"] for record in captured_requests]
+    assert "https://azure.example/openai/models?api-version=2024-10-21" in captured_urls
+    assert "https://azure.example/openai/responses?api-version=2024-10-21" in captured_urls
+    invoke_record = next(record for record in captured_requests if "/openai/responses?" in record["url"])
+    invoke_headers = {key.lower(): value for key, value in invoke_record["headers"].items()}
+    assert invoke_headers["api-key"] == "azure-secret-key"
+    assert "authorization" not in invoke_headers
+
+
+def test_phase11_azure_runtime_invoke_workspace_isolation_and_ad_token_auth(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token_a, _, user_account_id_a = _bootstrap_workspace_session("provider-azure-a@example.com")
+    session_token_b, _, _ = _bootstrap_workspace_session("provider-azure-b@example.com")
+    captured_requests: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):
+        captured_requests.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": None if request.data is None else json.loads(request.data.decode("utf-8")),
+            }
+        )
+        url = request.full_url
+        if url.startswith("https://foundry.example/openai/models"):
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "gpt-4.1"}]}).encode("utf-8"))
+        if url.startswith("https://foundry.example/openai/responses"):
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "id": "resp_azure_runtime_1",
+                        "status": "completed",
+                        "output": [
+                            {
+                                "type": "message",
+                                "content": [{"type": "output_text", "text": "Azure runtime invoke works"}],
+                            }
+                        ],
+                        "usage": {
+                            "input_tokens": 12,
+                            "output_tokens": 5,
+                            "total_tokens": 17,
+                        },
+                    }
+                ).encode("utf-8")
+            )
+        raise AssertionError(f"unexpected azure URL: {url}")
+
+    monkeypatch.setattr("alicebot_api.azure_provider_helpers.urlopen", fake_urlopen)
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        "/v1/providers/azure/register",
+        payload={
+            "display_name": "Azure Entra",
+            "base_url": "https://foundry.example",
+            "auth_mode": "azure_ad_token",
+            "ad_token": "entra-token-secret",
+            "api_version": "2024-10-21",
+            "default_model": "gpt-4.1",
+        },
+        headers=auth_header(session_token_a),
+    )
+    assert register_status == 201
+    provider_id = register_payload["provider"]["id"]
+    assert register_payload["provider"]["auth_mode"] == "azure_ad_token"
+
+    other_workspace_status, other_workspace_payload = invoke_request(
+        "GET",
+        f"/v1/providers/{provider_id}",
+        headers=auth_header(session_token_b),
+    )
+    assert other_workspace_status == 404
+    assert "was not found" in other_workspace_payload["detail"]
+
+    invalid_register_status, invalid_register_payload = invoke_request(
+        "POST",
+        "/v1/providers/azure/register",
+        payload={
+            "display_name": "Azure Invalid",
+            "base_url": "https://foundry.example",
+            "auth_mode": "azure_ad_token",
+            "ad_token": "valid-token-that-should-have-been-alone",
+            "api_key": "must-not-be-sent",
+            "default_model": "gpt-4.1",
+        },
+        headers=auth_header(session_token_a),
+    )
+    assert invalid_register_status == 422
+    assert "api_key must be empty when auth_mode is azure_ad_token" in json.dumps(
+        invalid_register_payload["detail"]
+    )
+
+    thread_id = _seed_thread_for_user(
+        admin_db_url=migrated_database_urls["admin"],
+        user_id=user_account_id_a,
+        email="provider-azure-a@example.com",
+    )
+    runtime_status, runtime_payload = invoke_request(
+        "POST",
+        "/v1/runtime/invoke",
+        payload={
+            "provider_id": provider_id,
+            "thread_id": thread_id,
+            "message": "Give a concise enterprise runtime check.",
+        },
+        headers=auth_header(session_token_a),
+    )
+    assert runtime_status == 200
+    assert runtime_payload["assistant"]["provider_id"] == provider_id
+    assert runtime_payload["assistant"]["provider_key"] == "azure"
+    assert runtime_payload["assistant"]["text"] == "Azure runtime invoke works"
+    assert runtime_payload["assistant"]["usage"]["total_tokens"] == 17
+
+    invoke_record = next(record for record in captured_requests if "/openai/responses?" in record["url"])
+    headers = {key.lower(): value for key, value in invoke_record["headers"].items()}
+    assert headers["authorization"] == "Bearer entra-token-secret"
+    assert "api-key" not in headers

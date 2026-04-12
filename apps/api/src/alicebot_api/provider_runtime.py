@@ -5,6 +5,15 @@ import json
 from typing import NotRequired, Protocol, TypedDict
 from uuid import UUID
 
+from alicebot_api.azure_provider_helpers import (
+    AZURE_AUTH_MODE_AD_TOKEN,
+    AZURE_AUTH_MODE_API_KEY,
+    DEFAULT_AZURE_API_VERSION,
+    build_azure_auth_headers,
+    invoke_azure_openai_responses,
+    parse_azure_models,
+    request_azure_json,
+)
 from alicebot_api.config import Settings
 from alicebot_api.contracts import (
     ModelInvocationRequest,
@@ -26,12 +35,13 @@ from alicebot_api.response_generation import (
     OpenAICompatibleTransportConfig,
     invoke_openai_compatible_model,
 )
-from alicebot_api.provider_secrets import resolve_provider_api_key
+from alicebot_api.provider_secrets import ProviderSecretManagerError, resolve_provider_api_key
 from alicebot_api.store import JsonObject
 
 OPENAI_COMPATIBLE_ADAPTER_KEY = "openai_compatible"
 OLLAMA_ADAPTER_KEY = "ollama"
 LLAMACPP_ADAPTER_KEY = "llamacpp"
+AZURE_ADAPTER_KEY = "azure"
 OPENAI_RESPONSES_PROVIDER = "openai_responses"
 PROVIDER_CAPABILITY_VERSION_V1 = "provider_capability_v1"
 
@@ -61,6 +71,8 @@ class ProviderCapabilitySnapshot(TypedDict):
     invoke_endpoint: NotRequired[str]
     model_count: NotRequired[int]
     models: NotRequired[list[str]]
+    azure_api_version: NotRequired[str]
+    azure_auth_mode: NotRequired[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +91,8 @@ class RuntimeProviderConfig:
     model_list_path: str
     healthcheck_path: str
     invoke_path: str
+    azure_api_version: str
+    azure_auth_secret_ref: str
     metadata: JsonObject
 
     @classmethod
@@ -98,6 +112,8 @@ class RuntimeProviderConfig:
             model_list_path=str(row.get("model_list_path", "")),
             healthcheck_path=str(row.get("healthcheck_path", "")),
             invoke_path=str(row.get("invoke_path", "")),
+            azure_api_version=str(row.get("azure_api_version", "")),
+            azure_auth_secret_ref=str(row.get("azure_auth_secret_ref", "")),
             metadata=row["metadata"],  # type: ignore[assignment]
         )
 
@@ -207,6 +223,83 @@ class OpenAICompatibleAdapter:
                 timeout_seconds=settings.model_timeout_seconds,
             ),
             request=request,
+        )
+
+
+class AzureAdapter:
+    adapter_key = AZURE_ADAPTER_KEY
+    runtime_provider = OPENAI_RESPONSES_PROVIDER
+    default_healthcheck_path = "/openai/models"
+    default_model_list_path = "/openai/models"
+    default_invoke_path = "/openai/responses"
+
+    def discover_capabilities(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderCapabilitySnapshot:
+        api_version = config.azure_api_version.strip() or DEFAULT_AZURE_API_VERSION
+        headers = build_azure_auth_headers(auth_mode=config.auth_mode, credential=config.api_key)
+        healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
+        model_list_path = config.model_list_path or self.default_model_list_path
+        request_azure_json(
+            method="GET",
+            base_url=config.base_url,
+            path=healthcheck_path,
+            api_version=api_version,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
+        )
+        model_payload = request_azure_json(
+            method="GET",
+            base_url=config.base_url,
+            path=model_list_path,
+            api_version=api_version,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
+        )
+        models = parse_azure_models(model_payload)
+        snapshot = normalized_capability_snapshot(
+            adapter_key=self.adapter_key,
+            runtime_provider=self.runtime_provider,
+            supports_tool_calls=False,
+            supports_streaming=False,
+            supports_store=False,
+            supports_vision_input=False,
+            supports_audio_input=False,
+        )
+        snapshot.update(
+            {
+                "health_status": "ok",
+                "health_endpoint": healthcheck_path,
+                "models_endpoint": model_list_path,
+                "invoke_endpoint": config.invoke_path or self.default_invoke_path,
+                "model_count": len(models),
+                "models": models,
+                "azure_api_version": api_version,
+                "azure_auth_mode": config.auth_mode,
+            }
+        )
+        return snapshot
+
+    def invoke(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+        request: ModelInvocationRequest,
+    ) -> ModelInvocationResponse:
+        if request.provider != self.runtime_provider:
+            raise ModelInvocationError(f"unsupported model provider: {request.provider}")
+        return invoke_azure_openai_responses(
+            request=request,
+            base_url=config.base_url,
+            auth_mode=config.auth_mode,
+            credential=config.api_key,
+            api_version=config.azure_api_version.strip() or DEFAULT_AZURE_API_VERSION,
+            invoke_path=config.invoke_path or self.default_invoke_path,
+            timeout_seconds=settings.model_timeout_seconds,
         )
 
 
@@ -367,6 +460,7 @@ class LlamaCppAdapter:
 def make_provider_adapter_registry() -> ProviderAdapterRegistry:
     registry = ProviderAdapterRegistry()
     registry.register(OpenAICompatibleAdapter())
+    registry.register(AzureAdapter())
     registry.register(OllamaAdapter())
     registry.register(LlamaCppAdapter())
     return registry
@@ -377,6 +471,17 @@ def resolve_runtime_provider_config_secrets(
     config: RuntimeProviderConfig,
     settings: Settings,
 ) -> RuntimeProviderConfig:
+    if config.provider_key == AZURE_ADAPTER_KEY and config.auth_mode in {
+        AZURE_AUTH_MODE_API_KEY,
+        AZURE_AUTH_MODE_AD_TOKEN,
+    }:
+        azure_secret_ref = config.azure_auth_secret_ref.strip()
+        if azure_secret_ref == "":
+            raise ProviderSecretManagerError("azure_auth_secret_ref is required for azure auth modes")
+        return replace(
+            config,
+            api_key=resolve_provider_api_key(settings=settings, api_key_field=azure_secret_ref),
+        )
     return replace(
         config,
         api_key=resolve_provider_api_key(settings=settings, api_key_field=config.api_key),
