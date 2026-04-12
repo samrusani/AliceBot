@@ -170,7 +170,16 @@ def validate_upgrade_overview(pr_body: str, touched_areas: dict[str, list[str]])
         errors.append("`### Protected Areas` is missing from `## Upgrade Overview`.")
     else:
         checked_areas = parse_checked_areas(protected_area_section)
-        missing_checked = sorted(set(touched_areas) - checked_areas)
+        normalized_touched_labels = {
+            _normalize_heading(area_label): area_label for area_label in touched_areas
+        }
+        missing_checked = sorted(
+            (
+                normalized_touched_labels[normalized_label]
+                for normalized_label in set(normalized_touched_labels) - checked_areas
+            ),
+            key=str.lower,
+        )
         if missing_checked:
             errors.append(
                 "The checked protected areas do not cover the touched categories: "

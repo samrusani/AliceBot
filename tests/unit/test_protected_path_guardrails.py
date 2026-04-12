@@ -121,3 +121,42 @@ Revert the change set and redeploy. No irreversible data rewrite occurs in this 
     )
 
     assert errors == []
+
+
+def test_validate_upgrade_overview_accepts_checked_continuity_apis_label() -> None:
+    touched = {
+        "continuity APIs": ["apps/api/src/alicebot_api/main.py"],
+    }
+
+    errors = guardrails.validate_upgrade_overview(
+        """
+## Upgrade Overview
+
+### Protected Areas
+
+- [x] continuity APIs
+
+### Compatibility Impact
+
+Additive-only API changes with backward-compatible request and response fields.
+
+### Migration / Rollout
+
+No extra migration sequencing beyond standard deployment.
+
+### Operator Action
+
+No manual operator steps are required.
+
+### Validation
+
+Executed guardrail parser tests and validated checked-area coverage for continuity APIs.
+
+### Rollback
+
+Revert the change and redeploy to restore the previous behavior.
+""",
+        touched,
+    )
+
+    assert not any("continuity APIs" in error for error in errors)
