@@ -30,8 +30,10 @@ Phase 10 is complete and shipped.
 Phase 11 is now the active planning and execution phase:
 
 - `P11-S1` Provider Abstraction + OpenAI-Compatible Base is shipped
-- `P11-S2` Ollama + llama.cpp Adapters is the active sprint
-- later Phase 11 work adds more provider breadth, model packs, and agent integration guides
+- `P11-S2` Ollama + llama.cpp Adapters is shipped
+- `P11-S3` vLLM Adapter + Self-Hosted Performance Path is shipped
+- `P11-S4` Model Packs Tier 1 is the active sprint
+- later Phase 11 work adds Azure, tier-2 packs, and agent integration guides
 - Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
 
 ## Why Alice exists

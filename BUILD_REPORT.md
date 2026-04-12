@@ -1,63 +1,69 @@
 # BUILD_REPORT
 
 ## sprint objective
-Implement Phase 11 Sprint 2 (`P11-S2`) local-provider support by shipping Ollama and llama.cpp adapters behind the existing provider abstraction, including registration, model enumeration + health posture snapshots, and normalized runtime invoke through existing `v1` seams.
+Implement Phase 11 Sprint 4 (`P11-S4`) Model Packs Tier 1 by adding a declarative model-pack layer with tier-1 packs (`llama`, `qwen`, `gemma`, `gpt-oss`), pack catalog/versioning APIs, workspace binding APIs, and pack-driven runtime shaping on the existing `POST /v1/runtime/invoke` seam.
 
 ## completed work
-- Added local provider transport helpers in `apps/api/src/alicebot_api/local_provider_helpers.py`:
-  - auth header handling (`bearer`/`none`)
-  - deterministic JSON request helper
-  - Ollama/llama.cpp model enumeration parsers
-  - Ollama/llama.cpp invoke response normalization
-- Extended provider runtime adapters in `apps/api/src/alicebot_api/provider_runtime.py`:
-  - added `ollama` and `llamacpp` adapter keys and implementations
-  - registered both adapters in the existing provider registry
-  - added deterministic capability snapshot fields for local health/model posture
-  - preserved normalized runtime provider seam (`openai_responses`)
-- Added additive model provider config fields in persistence:
-  - migration `apps/api/alembic/versions/20260411_0053_phase11_local_provider_config_fields.py`
-  - store/runtime wiring for `auth_mode`, `model_list_path`, `healthcheck_path`, `invoke_path`
-- Updated API contract and serialization surfaces:
-  - `apps/api/src/alicebot_api/contracts.py`
-  - `apps/api/src/alicebot_api/store.py`
-  - `apps/api/src/alicebot_api/main.py`
-- Added new registration APIs in `apps/api/src/alicebot_api/main.py`:
-  - `POST /v1/providers/ollama/register`
-  - `POST /v1/providers/llamacpp/register`
-- Kept existing in-scope APIs working with local adapters:
-  - `POST /v1/providers/test`
-  - `POST /v1/runtime/invoke`
-  - `GET /v1/providers`
-  - `GET /v1/providers/{provider_id}`
-- Added failure-safe capability behavior:
-  - registration stores failed discovery posture when local provider is unreachable
-  - provider test stores failed discovery posture when capability discovery fails
-- Added sprint verification tests:
-  - `tests/unit/test_provider_runtime.py`
-  - `tests/unit/test_20260411_0053_phase11_local_provider_config_fields.py`
-  - `tests/integration/test_phase11_provider_runtime_api.py`
-- Added local setup docs and runnable example paths:
-  - `docs/integrations/phase11-local-provider-adapters.md`
-  - `scripts/run_phase11_local_provider_e2e.py`
-- Updated control-doc truth checker markers for current sprint state:
+- Added new persistence tables via migration:
+  - `model_packs`
+  - `workspace_model_pack_bindings`
+  - workspace-consistent binding foreign-key integrity (`model_pack_id`, `workspace_id`)
+- Added model-pack domain helper module:
+  - `apps/api/src/alicebot_api/model_packs.py`
+  - contract validation (`model_pack_contract_v1`)
+  - tier-1 pack seeding for workspace scope with concurrency-safe upsert behavior
+  - pack version and family normalization
+  - canonical tier-1 pack key reservation checks
+  - workspace binding vs request override precedence resolution
+  - declarative runtime shaping helpers (context cap shaping + instruction overlays)
+- Extended store layer in `apps/api/src/alicebot_api/store.py`:
+  - typed rows for model packs and bindings
+  - model-pack CRUD/list/get queries
+  - binding create/get-latest queries (workspace-scoped)
+- Extended API contracts in `apps/api/src/alicebot_api/contracts.py`:
+  - model-pack families/status/binding-source literals
+  - model-pack response typed dicts and list order constant
+- Added new v1 model-pack endpoints in `apps/api/src/alicebot_api/main.py`:
+  - `GET /v1/model-packs`
+  - `GET /v1/model-packs/{pack_id}`
+  - `POST /v1/model-packs`
+  - `POST /v1/model-packs/{pack_id}/bind`
+  - `GET /v1/workspaces/{workspace_id}/model-pack-binding`
+- Updated `POST /v1/runtime/invoke` in `apps/api/src/alicebot_api/main.py`:
+  - pack selection precedence: request override > workspace binding > none
+  - pack-driven context cap shaping and instruction overlays
+  - model-pack metadata returned for invoke auditing
+  - no parallel runtime path created; existing provider invoke seam preserved
+- Updated response generation seam in `apps/api/src/alicebot_api/response_generation.py`:
+  - added optional system/developer instruction overrides for runtime shaping
+  - default `v0/responses` behavior remains unchanged
+- Added sprint docs under `docs/`:
+  - `docs/integrations/phase11-model-packs-tier1.md`
+  - `docs/integrations/phase11-model-pack-compatibility.md`
+- Updated control-doc truth markers for active sprint alignment:
   - `scripts/check_control_doc_truth.py`
-  - linked new integration doc from `README.md`
+- Updated active sprint truth markers:
+  - `README.md`
+- Added sprint tests:
+  - unit: `tests/unit/test_model_packs.py`
+  - migration unit: `tests/unit/test_20260412_0054_phase11_model_packs_tier1.py`
+  - integration: `tests/integration/test_phase11_model_packs_api.py`
 
 ## incomplete work
-- None for `P11-S2` acceptance criteria and required verification commands.
+- None identified against `P11-S4` packet acceptance criteria and required API/data scope.
 
 ## files changed
-- `apps/api/src/alicebot_api/local_provider_helpers.py`
-- `apps/api/src/alicebot_api/provider_runtime.py`
-- `apps/api/src/alicebot_api/main.py`
+- `apps/api/alembic/versions/20260412_0054_phase11_model_packs_tier1.py`
+- `apps/api/src/alicebot_api/model_packs.py`
 - `apps/api/src/alicebot_api/store.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/alembic/versions/20260411_0053_phase11_local_provider_config_fields.py`
-- `tests/unit/test_provider_runtime.py`
-- `tests/unit/test_20260411_0053_phase11_local_provider_config_fields.py`
-- `tests/integration/test_phase11_provider_runtime_api.py`
-- `docs/integrations/phase11-local-provider-adapters.md`
-- `scripts/run_phase11_local_provider_e2e.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/response_generation.py`
+- `docs/integrations/phase11-model-packs-tier1.md`
+- `docs/integrations/phase11-model-pack-compatibility.md`
+- `tests/unit/test_model_packs.py`
+- `tests/unit/test_20260412_0054_phase11_model_packs_tier1.py`
+- `tests/integration/test_phase11_model_packs_api.py`
 - `scripts/check_control_doc_truth.py`
 - `README.md`
 - `BUILD_REPORT.md`
@@ -67,16 +73,19 @@ Implement Phase 11 Sprint 2 (`P11-S2`) local-provider support by shipping Ollama
 - `python3 scripts/check_control_doc_truth.py`
   - Result: `PASS`
 - `./.venv/bin/python -m pytest tests/unit tests/integration -q`
-  - Result: `PASS` (`1118 passed in 183.14s (0:03:03)`)
+  - Result: `PASS` (`1133 passed in 188.69s (0:03:08)`)
 - `pnpm --dir apps/web test`
-  - Result: `PASS` (`62 files`, `199 tests`, duration `4.82s`)
-- Sprint-targeted subset:
-  - `./.venv/bin/python -m pytest tests/unit/test_provider_runtime.py tests/unit/test_20260411_0053_phase11_local_provider_config_fields.py tests/integration/test_phase11_provider_runtime_api.py -q`
-  - Result: `PASS` (`12 passed in 2.50s`)
+  - Result: `PASS` (`62` files, `199` tests, duration `4.66s`)
+- Sprint-targeted verification subsets:
+  - `./.venv/bin/python -m pytest tests/unit/test_model_packs.py tests/unit/test_20260412_0054_phase11_model_packs_tier1.py tests/integration/test_phase11_model_packs_api.py -q`
+  - Result: `PASS` (`15 passed in 1.47s`)
+  - `python3 -m pytest tests/unit/test_control_doc_truth.py tests/unit/test_response_generation.py tests/integration/test_phase11_provider_runtime_api.py -q`
+  - Result: `PASS` (`15 passed in 2.25s`)
 
 ## blockers/issues
-- No active implementation blockers.
+- No active blockers.
+- Pre-existing dirty files were present before sprint implementation and were not modified as part of this sprint scope: `ARCHITECTURE.md`, `PRODUCT_BRIEF.md`.
 
 ## recommended next step
-1. Open a sprint PR from `codex/phase11-sprint-2-ollama-llamacpp-adapters` with this report and required test evidence.
-2. Keep pre-existing dirty local docs (`ARCHITECTURE.md`, `PRODUCT_BRIEF.md`) excluded from sprint merge scope.
+1. Open/refresh a sprint PR for `P11-S4` and keep only the sprint-owned files above in merge scope.
+2. Run reviewer pass focused on `P11-S4` acceptance criteria and workspace-isolation/runtime-shaping behavior.

@@ -450,6 +450,8 @@ def generate_response(
     limits: ContextCompilerLimits,
     runtime_override: tuple[str, str] | None = None,
     model_invoker: Callable[[ModelInvocationRequest], ModelInvocationResponse] | None = None,
+    system_instruction: str = SYSTEM_INSTRUCTION,
+    developer_instruction: str = DEVELOPER_INSTRUCTION,
 ) -> GenerateResponseSuccess | ResponseFailure:
     store.get_user(user_id)
     thread = store.get_thread(thread_id)
@@ -469,8 +471,8 @@ def generate_response(
     prompt = assemble_prompt(
         request=PromptAssemblyInput(
             context_pack=compiled_trace.context_pack,
-            system_instruction=SYSTEM_INSTRUCTION,
-            developer_instruction=DEVELOPER_INSTRUCTION,
+            system_instruction=system_instruction,
+            developer_instruction=developer_instruction,
         ),
         compile_trace_id=compiled_trace.trace_id,
     )

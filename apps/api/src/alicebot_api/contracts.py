@@ -192,6 +192,9 @@ ModelProvider = Literal["openai_responses"]
 ProviderAdapterKey = Literal["openai_compatible", "ollama", "llamacpp"]
 ModelProviderStatus = Literal["active"]
 ProviderCapabilityDiscoveryStatus = Literal["ready", "failed"]
+ModelPackFamily = Literal["llama", "qwen", "gemma", "gpt-oss", "custom"]
+ModelPackStatus = Literal["active"]
+ModelPackBindingSource = Literal["manual", "runtime_override"]
 ModelFinishReason = Literal["completed", "incomplete"]
 ExplicitPreferencePattern = Literal[
     "i_like",
@@ -377,6 +380,7 @@ COMPILER_VERSION_V0 = "continuity_v0"
 PROMPT_ASSEMBLY_VERSION_V0 = "prompt_assembly_v0"
 RESPONSE_GENERATION_VERSION_V0 = "response_generation_v0"
 PROVIDER_CAPABILITY_VERSION_V1 = "provider_capability_v1"
+MODEL_PACK_CONTRACT_VERSION_V1 = "model_pack_contract_v1"
 TRACE_KIND_CONTEXT_COMPILE = "context.compile"
 TRACE_KIND_RESPONSE_GENERATE = "response.generate"
 TRACE_REVIEW_LIST_ORDER = ["created_at_desc", "id_desc"]
@@ -386,6 +390,7 @@ AGENT_PROFILE_LIST_ORDER = ["id_asc"]
 THREAD_SESSION_LIST_ORDER = ["started_at_asc", "created_at_asc", "id_asc"]
 THREAD_EVENT_LIST_ORDER = ["sequence_no_asc"]
 PROVIDER_LIST_ORDER = ["created_at_asc", "id_asc"]
+MODEL_PACK_LIST_ORDER = ["pack_id_asc", "created_at_desc", "id_desc"]
 DEFAULT_AGENT_PROFILE_ID = "assistant_default"
 RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "resumption_brief_v0"
 CONTINUITY_RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_resumption_brief_v0"
@@ -1591,6 +1596,51 @@ class ProviderTestResponse(TypedDict):
     provider: ModelProviderRecord
     capabilities: ProviderCapabilityRecord | None
     result: ProviderTestResultRecord
+
+
+class ModelPackRecord(TypedDict):
+    id: str
+    workspace_id: str
+    created_by_user_account_id: str
+    pack_id: str
+    pack_version: str
+    display_name: str
+    family: ModelPackFamily
+    description: str
+    status: ModelPackStatus
+    contract: JsonObject
+    metadata: JsonObject
+    created_at: str
+    updated_at: str
+
+
+class ModelPackListSummary(TypedDict):
+    total_count: int
+    order: list[str]
+
+
+class ModelPackListResponse(TypedDict):
+    items: list[ModelPackRecord]
+    summary: ModelPackListSummary
+
+
+class ModelPackDetailResponse(TypedDict):
+    model_pack: ModelPackRecord
+
+
+class WorkspaceModelPackBindingRecord(TypedDict):
+    id: str
+    workspace_id: str
+    model_pack_id: str
+    bound_by_user_account_id: str
+    binding_source: ModelPackBindingSource
+    metadata: JsonObject
+    created_at: str
+    model_pack: ModelPackRecord
+
+
+class WorkspaceModelPackBindingResponse(TypedDict):
+    binding: WorkspaceModelPackBindingRecord | None
 
 
 class RuntimeInvokeAssistantRecord(TypedDict):
