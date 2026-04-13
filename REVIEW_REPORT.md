@@ -4,43 +4,54 @@
 PASS
 
 ## criteria met
-- `alice_review_queue` is implemented and exposed on MCP.
-- `alice_review_apply` is implemented and exposed on MCP.
-- Required B3 review actions are supported through shipped surface semantics:
-  - `approve` -> `confirm`
-  - `edit-and-approve` -> `edit`
-  - `reject` -> `delete`
-  - `supersede-existing` -> `supersede`
-- Review payloads now include explainability/provenance chain data (`source_facts`, `evidence_segments`, `trust`, `supersession_notes`, `proposal_rationale`).
-- Approved review actions deterministically affect later recall/resume behavior (validated in integration flow using supersede).
-- Rejected review items are not treated as accepted continuity state (validated by recall exclusion after reject).
-- No local identifiers (local usernames/absolute machine paths) were found in changed code/docs/reports.
+- External-operator Hermes bridge documentation is complete and B4-specific via:
+  - `docs/integrations/hermes-bridge-operator-guide.md`
+  - `docs/integrations/hermes-provider-plus-mcp-why.md`
+- Provider-plus-MCP recommended architecture is documented clearly.
+- MCP-only fallback path is documented clearly.
+- MCP-only to provider-plus-MCP migration guidance is documented.
+- Example Hermes configs are present for both paths:
+  - `docs/integrations/examples/hermes-config.provider-plus-mcp.yaml`
+  - `docs/integrations/examples/hermes-config.mcp-only.yaml`
+- One-command local demo path is present and documented:
+  - `./.venv/bin/python scripts/run_hermes_bridge_demo.py`
+- Smoke validation for the shipped bridge path passes:
+  - provider smoke PASS
+  - MCP smoke PASS (including B2/B3 capture/review flow checks)
+  - bridge demo PASS
+- `BUILD_REPORT.md` now lists the exact sprint-owned changed files, including the previously omitted `PRODUCT_BRIEF.md` and `ROADMAP.md`.
+- No local identifiers (local machine paths/usernames) were found in changed docs/scripts/reports.
+- No B4 changes reopen B1/B2/B3 implementation scope or imply post-bridge scope.
 
 ## criteria missed
-- None functionally against B3 acceptance criteria.
+- None.
 
 ## quality issues
-- No blocking quality issues found in B3 scope.
+- No blocking quality issues found in B4 scope.
 
 ## regression risks
-- Low: MCP surface additions are additive, and targeted + full unit/integration suites pass.
-- Moderate-low: review queue objects now include full explanation payloads, increasing response size; monitor MCP client assumptions on payload size/shape.
+- Low: changes are primarily docs/config examples plus additive smoke/demo orchestration.
+- Moderate-low: expanded MCP smoke depends on local schema being migrated before execution.
 
 ## docs issues
-- None blocking. Architecture and build evidence alignment issues are fixed.
+- None blocking.
 
 ## should anything be added to RULES.md?
 - No required change.
 
 ## should anything update ARCHITECTURE.md?
-- No additional architecture changes required for B3.
+- No required architecture update for B4 closeout.
 
 ## recommended next action
-1. Approve B3 for merge.
-2. Start B4 packaging/docs/demo closeout.
+1. Proceed with sprint PR finalization and squash-merge flow.
+2. Keep the bridge demo command in release notes/operator handoff for external adopters.
 
 ## verification evidence checked
 - `python3 scripts/check_control_doc_truth.py` -> PASS
-- `./.venv/bin/python -m pytest tests/unit/test_continuity_review.py tests/unit/test_mcp.py tests/integration/test_mcp_server.py -q` -> `13 passed`
-- `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> `1189 passed in 196.98s (0:03:16)`
+- `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> `1191 passed in 187.48s (0:03:07)`
 - `./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py` -> PASS
+- `./.venv/bin/python scripts/run_hermes_mcp_smoke.py` -> PASS
+- `./.venv/bin/python scripts/run_hermes_bridge_demo.py` -> PASS
+- Recommended path documented: `provider_plus_mcp`
+- Fallback path documented: `mcp_only`
+- Demo command documented: `./.venv/bin/python scripts/run_hermes_bridge_demo.py`

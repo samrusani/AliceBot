@@ -58,9 +58,13 @@ HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}" \
 - Skills: decision policy and workflow instructions (when to call tools, how to format output, what evidence to include).
 - External memory provider: always-on prefetch and memory-provider-native recall tools.
 - MCP tools: runtime execution and deterministic continuity data retrieval/update.
-- Practical rule: use skills to decide behavior; use provider or MCP to execute continuity reads/writes.
+- Practical rule: use skills to decide behavior; use provider plus MCP as the recommended execution shape.
 
-See `docs/integrations/hermes-memory-provider.md` for the external provider setup path.
+See:
+
+- `docs/integrations/hermes-bridge-operator-guide.md`
+- `docs/integrations/hermes-memory-provider.md`
+- `docs/integrations/hermes.md` (MCP-only fallback)
 
 ## When Hermes Should Prefer Alice Tools
 

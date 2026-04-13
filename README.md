@@ -41,7 +41,8 @@ Phase 11 is complete and shipped:
 - A bridge phase is now active: Hermes Auto-Capture
 - `B1` Hermes Provider Contract Foundation is shipped
 - `B2` Auto-Capture Pipeline is shipped
-- `B3` Review Queue + Explainability is the active sprint
+- `B3` Review Queue + Explainability is shipped
+- `B4` Packaging, Docs, and Smoke Validation is the active sprint
 - Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
 
 ## Why Alice exists
@@ -217,6 +218,8 @@ This makes it straightforward to plug Alice into MCP-capable assistants and deve
 
 See:
 
+- [docs/integrations/hermes-bridge-operator-guide.md](docs/integrations/hermes-bridge-operator-guide.md)
+- [docs/integrations/hermes-provider-plus-mcp-why.md](docs/integrations/hermes-provider-plus-mcp-why.md)
 - [docs/integrations/mcp.md](docs/integrations/mcp.md)
 - [docs/integrations/hermes.md](docs/integrations/hermes.md)
 - [docs/integrations/hermes-memory-provider.md](docs/integrations/hermes-memory-provider.md)
@@ -224,13 +227,22 @@ See:
 - [docs/integrations/phase11-local-provider-adapters.md](docs/integrations/phase11-local-provider-adapters.md)
 - [docs/integrations/phase11-azure-autogen.md](docs/integrations/phase11-azure-autogen.md)
 
-Hermes runtime smoke test:
+Recommended Hermes architecture is provider plus MCP, with MCP-only as a fallback.
+
+One-command Hermes bridge demo:
 
 ```bash
-./scripts/run_hermes_mcp_smoke.py
+./.venv/bin/python scripts/run_hermes_bridge_demo.py
 ```
 
-If you use Hermes, Alice supports three integration modes: MCP, skill pack, and a first-class external memory provider for turn prefetch plus recall, resumption, and open-loop tools.
+Hermes runtime smoke tests:
+
+```bash
+./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py
+./.venv/bin/python scripts/run_hermes_mcp_smoke.py
+```
+
+If you use Hermes, run provider plus MCP as the recommended mode, add the skill pack for policy guidance, and keep MCP-only available as fallback.
 
 ## OpenClaw and imported workflows
 

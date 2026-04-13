@@ -1,22 +1,18 @@
-# Hermes MCP Integration
+# Hermes MCP Integration (Fallback Path)
 
-This guide connects Hermes Agent to Alice MCP and verifies the exact tool path
-for:
+This document covers **MCP-only fallback** setup for Hermes.
 
-- `alice_recall`
-- `alice_resume`
-- `alice_open_loops`
+For the recommended deployment shape (provider plus MCP), use:
 
-## Choose The Integration Path
+- `docs/integrations/hermes-bridge-operator-guide.md`
 
-- External memory provider: `docs/integrations/hermes-memory-provider.md`
-- MCP tools: this document (`docs/integrations/hermes.md`)
-- Hermes skill pack: `docs/integrations/hermes-skill-pack.md`
+## When To Use This Path
 
-Use MCP when you want broad Alice tool access through Hermes `mcp_servers`.
-Use the external memory provider when you want always-on prefetch and memory
-tools inside Hermes memory-provider flow. Use the skill pack for tool-routing
-and response policy on top of either path.
+Use MCP-only when the Alice provider plugin cannot be installed yet.
+
+- Keep `memory.provider: builtin`.
+- Attach Alice through `mcp_servers`.
+- Migrate to provider plus MCP when possible.
 
 ## Prerequisites
 
@@ -26,21 +22,29 @@ and response policy on top of either path.
 
 ## Config (`~/.hermes/config.yaml`)
 
-Use `mcp_servers` in Hermes config.
-
 ### Option A: local command (direct Python)
 
 ```yaml
+memory:
+  provider: builtin
+
 mcp_servers:
   alice_core:
-    command: "/ABS/PATH/TO/AliceBot/.venv/bin/python"
+    command: "/path/to/alicebot/.venv/bin/python"
     args: ["-m", "alicebot_api.mcp_server"]
     env:
       DATABASE_URL: "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot"
       ALICEBOT_AUTH_USER_ID: "00000000-0000-0000-0000-000000000001"
-      PYTHONPATH: "/ABS/PATH/TO/AliceBot/apps/api/src:/ABS/PATH/TO/AliceBot/workers"
+      PYTHONPATH: "/path/to/alicebot/apps/api/src:/path/to/alicebot/workers"
     tools:
-      include: [alice_recall, alice_resume, alice_open_loops]
+      include:
+        - alice_recall
+        - alice_resume
+        - alice_open_loops
+        - alice_capture_candidates
+        - alice_commit_captures
+        - alice_review_queue
+        - alice_review_apply
       resources: false
       prompts: false
 ```
@@ -48,26 +52,33 @@ mcp_servers:
 ### Option B: `npx` command (via `alice-cli` package)
 
 ```yaml
+memory:
+  provider: builtin
+
 mcp_servers:
   alice_core:
     command: "npx"
-    args: ["-y", "--package", "/ABS/PATH/TO/AliceBot/packages/alice-cli", "alice", "mcp"]
+    args: ["-y", "--package", "/path/to/alicebot/packages/alice-cli", "alice", "mcp"]
     env:
       NPM_CONFIG_CACHE: "/tmp/alice-npm-cache"
-      ALICEBOT_PYTHON: "/ABS/PATH/TO/AliceBot/.venv/bin/python"
+      ALICEBOT_PYTHON: "/path/to/alicebot/.venv/bin/python"
       DATABASE_URL: "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot"
       ALICEBOT_AUTH_USER_ID: "00000000-0000-0000-0000-000000000001"
-      PYTHONPATH: "/ABS/PATH/TO/AliceBot/apps/api/src:/ABS/PATH/TO/AliceBot/workers"
+      PYTHONPATH: "/path/to/alicebot/apps/api/src:/path/to/alicebot/workers"
     tools:
-      include: [alice_recall, alice_resume, alice_open_loops]
+      include:
+        - alice_recall
+        - alice_resume
+        - alice_open_loops
+        - alice_capture_candidates
+        - alice_commit_captures
+        - alice_review_queue
+        - alice_review_apply
       resources: false
       prompts: false
 ```
 
-`alice mcp` shells out to `${ALICEBOT_PYTHON} -m alicebot_api.mcp_server`.
-
-If you have a published CLI version with `mcp` support, you can replace args
-with:
+If you use a published CLI package with `mcp` support, replace args with:
 
 ```yaml
 args: ["-y", "@aliceos/alice-cli", "mcp"]
@@ -85,107 +96,40 @@ Expected:
 - `Tools discovered`
 - includes `alice_recall`, `alice_resume`, `alice_open_loops`
 
-## Verify Tool Calls (Hermes Runtime Path)
-
-Run the smoke script:
+## Verify Runtime Tool Calls
 
 ```bash
-./scripts/run_hermes_mcp_smoke.py
+./.venv/bin/python scripts/run_hermes_mcp_smoke.py
 ```
 
 Expected JSON output includes:
 
-- `registered_tools` containing:
-  - `mcp_alice_core_alice_recall`
-  - `mcp_alice_core_alice_resume`
-  - `mcp_alice_core_alice_open_loops`
+- registered MCP tool names for recall/resume/open-loops and B2/B3 capture/review tools
 - non-zero `recall_items`
-- `open_loop_count` >= `1`
+- non-zero `capture_candidate_count`
+- non-zero `capture_review_queued_count`
+- `review_apply_resolved_action` = `confirm`
 
-## Sample Hermes Prompts
+## One-Command Demo
 
-Hermes prefixes MCP tools as `mcp_<server>_<tool>`. With server name
-`alice_core`, the names are:
+For the full bridge demo command (provider smoke + MCP smoke):
 
-- `mcp_alice_core_alice_recall`
-- `mcp_alice_core_alice_resume`
-- `mcp_alice_core_alice_open_loops`
-
-Prompts:
-
-```text
-Use mcp_alice_core_alice_recall with {"query":"Hermes docs","limit":5} and summarize the top 3 memories.
+```bash
+./.venv/bin/python scripts/run_hermes_bridge_demo.py
 ```
 
-```text
-Use mcp_alice_core_alice_resume with {"thread_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","max_recent_changes":5,"max_open_loops":5}. Return only decisions, next action, and blockers.
-```
+## Migrate To Recommended Path
 
-```text
-Use mcp_alice_core_alice_open_loops with {"thread_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","limit":10}. Group results by waiting_for, blocker, stale, next_action.
-```
+When provider install is available, move from MCP-only to provider plus MCP:
 
-## Alice Workflow Skill Pack
+1. Install provider plugin: `./scripts/install_hermes_alice_memory_provider.py`
+2. Run `hermes memory setup` and select `alice`
+3. Set `memory.provider: alice`
+4. Keep MCP server configured for deep workflows
+5. Re-run `./.venv/bin/python scripts/run_hermes_bridge_demo.py`
 
-To make Alice tool usage more consistent in Hermes sessions, install the
-Hermes-native Alice skill pack:
+## Related Docs
 
+- `docs/integrations/hermes-bridge-operator-guide.md`
+- `docs/integrations/hermes-memory-provider.md`
 - `docs/integrations/hermes-skill-pack.md`
-
-The pack includes:
-
-- `alice-continuity-recall`
-- `alice-resumption`
-- `alice-open-loop-review`
-- `alice-explain-provenance`
-- `alice-correction-loop`
-
-Skills decide when and how to call tools. MCP tools perform deterministic
-continuity reads and writes.
-
-## Troubleshooting
-
-### `Connection failed` in `hermes mcp test`
-
-- Confirm `command` points to an existing executable.
-- Use absolute paths for `command` and `PYTHONPATH`.
-- Run the server command directly:
-  - `"/ABS/PATH/TO/AliceBot/.venv/bin/python" -m alicebot_api.mcp_server --help`
-
-### Tool list is missing `alice_recall`/`alice_resume`/`alice_open_loops`
-
-- Check `tools.include` values are unprefixed tool names:
-  - `alice_recall`, `alice_resume`, `alice_open_loops`
-- Run `/reload-mcp` in Hermes after config changes.
-- Re-run `hermes mcp test alice_core`.
-
-### Tools register but calls fail at runtime
-
-- Validate `DATABASE_URL` is reachable and points to a migrated DB.
-- Validate `ALICEBOT_AUTH_USER_ID` is a UUID string.
-- Run `./scripts/run_hermes_mcp_smoke.py` to isolate server/runtime issues.
-
-### `npx` path fails
-
-- Check `npx --version`.
-- Ensure `args` contains a valid local package path or a published package.
-- If npm cache permissions are locked down, set `NPM_CONFIG_CACHE` to a writable path.
-- If `npx` is blocked in your environment, use Option A (local command).
-
-## Demo Screenshots
-
-`hermes mcp test` against Alice:
-
-![Hermes MCP test with Alice](assets/hermes/hermes-mcp-test.png)
-
-Hermes runtime tool-call smoke result:
-
-![Hermes runtime smoke result](assets/hermes/hermes-runtime-smoke.png)
-
-## Test Record
-
-Validated on `2026-04-09`:
-
-- `HERMES_HOME=/tmp/alice-hermes-home ./.venv/bin/hermes mcp test alice_core` (local command config)
-- `HERMES_HOME=/tmp/alice-hermes-home ./.venv/bin/hermes mcp test alice_core` (`npx --package ... alice mcp` config)
-- `./scripts/run_hermes_mcp_smoke.py`

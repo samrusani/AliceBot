@@ -1,52 +1,44 @@
 # BUILD_REPORT
 
 ## sprint objective
-Implement Bridge Sprint 3 (`B3`) review queue + explainability scope:
-- ship `alice_review_queue`
-- ship `alice_review_apply`
-- support review actions (`approve`, `reject`, `edit-and-approve`, `supersede-existing`)
-- expose explanation/provenance rationale in review surfaces
-- verify deterministic recall/resume effects after approved review actions
+Deliver Bridge Sprint 4 (`B4`) closeout scope only: package and document the shipped bridge phase for external operators, publish recommended/fallback Hermes config guidance, strengthen bridge smoke validation evidence, and provide a one-command local demo path.
 
 ## completed work
-- Added MCP tool surface `alice_review_queue` with deterministic queue/detail behavior.
-- Added MCP tool surface `alice_review_apply` with B3 action vocabulary mapped to continuity correction semantics:
-  - `approve` -> `confirm`
-  - `edit-and-approve` -> `edit`
-  - `reject` -> `delete`
-  - `supersede-existing` -> `supersede`
-- Kept `alice_memory_review` and `alice_memory_correct` as compatibility aliases.
-- Extended continuity review serialization to include shared explanation records on review objects.
-- Added deterministic `proposal_rationale` to continuity explanation output.
-- Ensured explanation chain remains shared across review, recall, and resume paths.
-- Updated B3-scoped integration docs for MCP and Hermes memory-provider guidance.
-- Updated architecture status markers so B3 review surfaces are marked implemented and only B4 follow-up remains planned.
-- Updated control-doc truth checker markers to B3 active-sprint truth.
-- Updated B3 review evidence report (`REVIEW_REPORT.md`).
-- Added/updated sprint-owned tests for:
-  - MCP tool surface and B3 names
-  - action alias mapping and deterministic correction semantics
-  - review queue explainability presence
-  - recall exclusion after reject and recall/resume updates after supersede
+- Published canonical B4 operator guide: `docs/integrations/hermes-bridge-operator-guide.md`.
+- Published operator decision note: `docs/integrations/hermes-provider-plus-mcp-why.md`.
+- Published concrete Hermes `config.yaml` examples:
+  - recommended path: `docs/integrations/examples/hermes-config.provider-plus-mcp.yaml`
+  - fallback path: `docs/integrations/examples/hermes-config.mcp-only.yaml`
+- Updated in-scope integration docs (`README.md`, `hermes.md`, `hermes-memory-provider.md`, `mcp.md`, `hermes-skill-pack.md`) to align on:
+  - recommended path: provider plus MCP
+  - fallback path: MCP-only
+  - migration path from MCP-only to provider plus MCP
+  - one-command demo command: `./.venv/bin/python scripts/run_hermes_bridge_demo.py`
+- Strengthened `scripts/run_hermes_mcp_smoke.py` to validate bridge flow beyond recall/resume/open-loops by also validating B2/B3 capture and review operations (`alice_capture_candidates`, `alice_commit_captures`, `alice_review_queue`, `alice_review_apply`).
+- Added one-command demo helper: `scripts/run_hermes_bridge_demo.py`.
+- Added sprint-owned validation coverage for the demo helper: `tests/unit/test_hermes_bridge_demo.py`.
+- Updated `scripts/check_control_doc_truth.py` required markers to B4-active truth so the required verifier aligns with the active sprint packet.
+- Updated `REVIEW_REPORT.md` to grade against B4-specific acceptance criteria and evidence.
 
 ## incomplete work
-- None in B3 sprint scope.
+- None within B4 sprint scope.
 
 ## files changed
-- `ARCHITECTURE.md`
 - `PRODUCT_BRIEF.md`
 - `README.md`
 - `ROADMAP.md`
-- `apps/api/src/alicebot_api/continuity_explainability.py`
-- `apps/api/src/alicebot_api/continuity_review.py`
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/mcp_tools.py`
-- `docs/integrations/mcp.md`
 - `docs/integrations/hermes-memory-provider.md`
+- `docs/integrations/hermes-skill-pack.md`
+- `docs/integrations/hermes.md`
+- `docs/integrations/mcp.md`
+- `docs/integrations/hermes-bridge-operator-guide.md`
+- `docs/integrations/hermes-provider-plus-mcp-why.md`
+- `docs/integrations/examples/hermes-config.provider-plus-mcp.yaml`
+- `docs/integrations/examples/hermes-config.mcp-only.yaml`
+- `scripts/run_hermes_mcp_smoke.py`
+- `scripts/run_hermes_bridge_demo.py`
 - `scripts/check_control_doc_truth.py`
-- `tests/unit/test_continuity_review.py`
-- `tests/unit/test_mcp.py`
-- `tests/integration/test_mcp_server.py`
+- `tests/unit/test_hermes_bridge_demo.py`
 - `REVIEW_REPORT.md`
 - `BUILD_REPORT.md`
 
@@ -54,15 +46,21 @@ Implement Bridge Sprint 3 (`B3`) review queue + explainability scope:
 - `python3 scripts/check_control_doc_truth.py`
   - Result: PASS
 - `./.venv/bin/python -m pytest tests/unit tests/integration -q`
-  - Result: `1189 passed in 196.98s (0:03:16)` (latest re-run)
+  - Result: `1191 passed in 187.48s (0:03:07)`
 - `./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py`
   - Result: PASS
-  - Evidence summary: single-external-provider enforcement message emitted; structural payload reports `single_external_enforced=true` and `bridge_status.ready=true`.
-  - Local filesystem-specific path fields from script output were intentionally omitted for identifier hygiene.
+  - Evidence summary: `bridge_status.ready=true`, `single_external_enforced=true`, provider registered.
+- `./.venv/bin/python scripts/run_hermes_mcp_smoke.py`
+  - Result: PASS
+  - Evidence summary: required Hermes MCP tools registered, `recall_items=2`, `open_loop_count=1`, `capture_candidate_count=2`, `capture_auto_saved_count=1`, `capture_review_queued_count=1`, `review_apply_resolved_action=confirm`.
+- `./.venv/bin/python scripts/run_hermes_bridge_demo.py`
+  - Result: PASS
+  - Evidence summary: `status=pass`, `recommended_path=provider_plus_mcp`, `fallback_path=mcp_only`.
 
 ## blockers/issues
-- No functional blockers.
-- No outstanding evidence or documentation blockers after alignment updates.
+- Initial run of `scripts/run_hermes_mcp_smoke.py` failed due local database schema lag and sandbox DB access restriction.
+- Resolved by applying local migrations (`./scripts/migrate.sh`) and rerunning smoke commands with local DB access available.
+- No remaining blockers.
 
 ## recommended next step
-Proceed to Bridge Sprint 4 (`B4`) packaging/docs/smoke closeout using the now-shipped B3 review queue/apply surfaces as baseline.
+Request B4 review against this evidence and, if approved, proceed with the single sprint PR for squash merge closeout.
