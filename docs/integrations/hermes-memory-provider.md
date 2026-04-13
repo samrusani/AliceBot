@@ -125,7 +125,7 @@ Use this split to avoid overlapping integrations:
 | Integration | Best for | Runtime shape |
 |---|---|---|
 | Alice memory provider | always-on continuity prefetch + memory tools inside Hermes memory stack | one external memory provider + built-in `MEMORY.md`/`USER.md` |
-| Alice MCP server | broad Alice tool surface in Hermes (`alice_recall`, `alice_resume`, write/correction flows) | MCP server attached under `mcp_servers` |
+| Alice MCP server | broad Alice tool surface in Hermes (`alice_recall`, `alice_resume`, `alice_review_queue`, `alice_review_apply`) | MCP server attached under `mcp_servers` |
 | Hermes Alice skill pack | policy and prompting guidance on when/how to call Alice tools | skill instructions layered on top of provider or MCP |
 
 Practical default:

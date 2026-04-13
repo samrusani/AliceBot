@@ -94,7 +94,15 @@ class MCPClient:
             payload["params"] = params
 
         _write_mcp_message(self.process.stdin, payload)
-        response = _read_mcp_message(self.process.stdout)
+        try:
+            response = _read_mcp_message(self.process.stdout)
+        except RuntimeError as exc:
+            stderr_text = ""
+            if self.process.stderr is not None:
+                stderr_text = self.process.stderr.read().decode("utf-8", errors="replace")
+            if stderr_text.strip():
+                raise RuntimeError(f"{exc}\nMCP stderr:\n{stderr_text}") from exc
+            raise
         assert response.get("id") == request_id
         return response
 
@@ -208,7 +216,8 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         assert "alice_resume" in tool_names
         assert "alice_prefetch_context" in tool_names
         assert "alice_open_loops" in tool_names
-        assert "alice_memory_correct" in tool_names
+        assert "alice_review_queue" in tool_names
+        assert "alice_review_apply" in tool_names
 
         recall_before = _call_tool(
             client,
@@ -265,12 +274,33 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         assert open_loop_dashboard["summary"]["total_count"] == 1
         assert open_loop_dashboard["waiting_for"]["items"][0]["id"] == str(waiting_for["id"])
 
+        review_queue = _call_tool(
+            client,
+            name="alice_review_queue",
+            arguments={
+                "status": "correction_ready",
+                "limit": 20,
+            },
+        )
+        assert review_queue["isError"] is False
+        queue_payload = review_queue["structuredContent"]
+        queue_item = next(
+            item for item in queue_payload["items"] if item["id"] == str(legacy_decision["id"])
+        )
+        assert queue_item["explanation"]["trust"]["trust_class"] in {
+            "deterministic",
+            "llm_single_source",
+            "llm_corroborated",
+            "human_curated",
+        }
+        assert queue_item["explanation"]["proposal_rationale"]
+
         correction = _call_tool(
             client,
-            name="alice_memory_correct",
+            name="alice_review_apply",
             arguments={
-                "continuity_object_id": str(legacy_decision["id"]),
-                "action": "supersede",
+                "review_item_id": str(legacy_decision["id"]),
+                "action": "supersede-existing",
                 "reason": "Latest rollout decision supersedes legacy plan",
                 "replacement_title": "Decision: Updated rollout plan",
                 "replacement_body": {"decision_text": "Updated rollout plan"},
@@ -282,6 +312,7 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
             },
         )
         assert correction["isError"] is False
+        assert correction["structuredContent"]["review_action"]["resolved_action"] == "supersede"
         replacement_id = correction["structuredContent"]["replacement_object"]["id"]
 
         recall_after = _call_tool(
@@ -314,5 +345,29 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         )
         assert resume_after["isError"] is False
         assert resume_after["structuredContent"]["brief"]["last_decision"]["item"]["id"] == replacement_id
+
+        rejected = _call_tool(
+            client,
+            name="alice_review_apply",
+            arguments={
+                "review_item_id": str(waiting_for["id"]),
+                "action": "reject",
+                "reason": "No longer needed",
+            },
+        )
+        assert rejected["isError"] is False
+        assert rejected["structuredContent"]["review_action"]["resolved_action"] == "delete"
+
+        recall_post_reject = _call_tool(
+            client,
+            name="alice_recall",
+            arguments={
+                "thread_id": str(thread_id),
+                "limit": 20,
+            },
+        )
+        assert recall_post_reject["isError"] is False
+        recall_rejected_payload = recall_post_reject["structuredContent"]
+        assert all(item["id"] != str(waiting_for["id"]) for item in recall_rejected_payload["items"])
     finally:
         client.close()

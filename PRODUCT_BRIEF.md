@@ -70,7 +70,7 @@ Review-required:
 - low-confidence extractions
 
 ## Active Sprint Status
-Bridge Sprint 2 (`B2`) is now the active execution sprint. It is limited to the auto-capture pipeline on top of the shipped Hermes provider surface and the `B1` contract foundation.
+Bridge Sprint 3 (`B3`) is now the active execution sprint. It is limited to review queue and explainability work on top of the shipped Hermes provider surface plus the `B1` and `B2` bridge foundations.
 
 ## Known Gaps To Resolve Before Build
 - Candidate scoring rubric and confidence calibration method are not specified.

@@ -353,6 +353,36 @@ def _trust_record(
     }
 
 
+def _proposal_rationale(
+    *,
+    status: str,
+    source_fact_count: int,
+    evidence_segment_count: int,
+    trust_class: MemoryTrustClass,
+    confirmation_status: MemoryConfirmationStatus,
+    provenance_posture: ContinuityRecallProvenancePosture,
+    correction_count: int,
+) -> str:
+    lifecycle_clause = f"Candidate entered review with lifecycle status '{status}'."
+    source_clause = (
+        f"It is backed by {source_fact_count} source fact(s) and {evidence_segment_count} evidence segment(s)."
+    )
+    trust_clause = (
+        "Trust posture resolves to "
+        f"'{trust_class}' with confirmation status '{confirmation_status}' and provenance posture "
+        f"'{provenance_posture}'."
+    )
+    correction_clause = f"Correction history includes {correction_count} event(s)."
+    return " ".join(
+        [
+            lifecycle_clause,
+            source_clause,
+            trust_clause,
+            correction_clause,
+        ]
+    )
+
+
 def _supersession_notes(
     *,
     status: str,
@@ -475,33 +505,45 @@ def build_continuity_item_explanation(
         evidence_rows=evidence_rows,
         title=title,
     )
+    source_facts = _source_facts(
+        title=title,
+        body=body,
+        provenance=provenance,
+        capture_event=capture_event,
+    )
+    trust = _trust_record(
+        confidence=confidence,
+        confirmation_status=resolved_confirmation_status,
+        provenance_posture=resolved_provenance_posture,
+        evidence_segment_count=len(evidence_segments),
+        correction_count=len(correction_events),
+        source_event_count=source_event_count,
+    )
+    supersession_notes = _supersession_notes(
+        status=status,
+        supersedes_object_id=supersedes_object_id,
+        superseded_by_object_id=superseded_by_object_id,
+        correction_events=correction_events,
+    )
     return {
-        "source_facts": _source_facts(
-            title=title,
-            body=body,
-            provenance=provenance,
-            capture_event=capture_event,
-        ),
-        "trust": _trust_record(
-            confidence=confidence,
-            confirmation_status=resolved_confirmation_status,
-            provenance_posture=resolved_provenance_posture,
-            evidence_segment_count=len(evidence_segments),
-            correction_count=len(correction_events),
-            source_event_count=source_event_count,
-        ),
+        "source_facts": source_facts,
+        "trust": trust,
         "evidence_segments": evidence_segments,
-        "supersession_notes": _supersession_notes(
-            status=status,
-            supersedes_object_id=supersedes_object_id,
-            superseded_by_object_id=superseded_by_object_id,
-            correction_events=correction_events,
-        ),
+        "supersession_notes": supersession_notes,
         "timestamps": _timestamps_record(
             created_at=created_at,
             updated_at=updated_at,
             capture_event=capture_event,
             last_confirmed_at=last_confirmed_at,
+        ),
+        "proposal_rationale": _proposal_rationale(
+            status=status,
+            source_fact_count=len(source_facts),
+            evidence_segment_count=len(evidence_segments),
+            trust_class=trust["trust_class"],
+            confirmation_status=resolved_confirmation_status,
+            provenance_posture=resolved_provenance_posture,
+            correction_count=len(correction_events),
         ),
     }
 

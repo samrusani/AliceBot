@@ -2836,6 +2836,7 @@ class ContinuityReviewObjectRecord(TypedDict):
     superseded_by_object_id: str | None
     created_at: str
     updated_at: str
+    explanation: NotRequired["ContinuityExplanationRecord"]
 
 
 class ContinuityCorrectionEventRecord(TypedDict):
@@ -2992,6 +2993,7 @@ class ContinuityExplanationRecord(TypedDict):
     evidence_segments: list[ContinuityExplanationEvidenceSegmentRecord]
     supersession_notes: list[ContinuityExplanationSupersessionNoteRecord]
     timestamps: ContinuityExplanationTimestampsRecord
+    proposal_rationale: NotRequired[str]
 
 
 class ContinuityExplainRecord(TypedDict):

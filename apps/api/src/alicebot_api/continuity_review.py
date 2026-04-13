@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
+from alicebot_api.continuity_explainability import build_continuity_item_explanation
 from alicebot_api.continuity_objects import serialize_continuity_lifecycle_state_from_record
 from alicebot_api.contracts import (
     CONTINUITY_CORRECTION_ACTIONS,
@@ -45,6 +46,14 @@ _STATUS_FILTERS: dict[ContinuityReviewStatusFilter, list[str]] = {
     "deleted": ["deleted"],
     "all": ["active", "stale", "superseded", "deleted"],
 }
+_CORRECTION_ACTION_ALIASES: dict[str, str] = {
+    "approve": "confirm",
+    "edit-and-approve": "edit",
+    "edit_and_approve": "edit",
+    "reject": "delete",
+    "supersede-existing": "supersede",
+    "supersede_existing": "supersede",
+}
 
 
 def _utcnow() -> datetime:
@@ -75,7 +84,10 @@ def _validate_confidence(confidence: float) -> float:
     return confidence
 
 
-def _serialize_review_object(record: ContinuityObjectRow) -> ContinuityReviewObjectRecord:
+def _serialize_review_object(
+    store: ContinuityStore,
+    record: ContinuityObjectRow,
+) -> ContinuityReviewObjectRecord:
     return {
         "id": str(record["id"]),
         "capture_event_id": str(record["capture_event_id"]),
@@ -95,6 +107,21 @@ def _serialize_review_object(record: ContinuityObjectRow) -> ContinuityReviewObj
         ),
         "created_at": record["created_at"].isoformat(),
         "updated_at": record["updated_at"].isoformat(),
+        "explanation": build_continuity_item_explanation(
+            store,
+            continuity_object_id=record["id"],
+            capture_event_id=record["capture_event_id"],
+            title=record["title"],
+            body=record["body"],
+            provenance=record["provenance"],
+            status=record["status"],
+            confidence=float(record["confidence"]),
+            last_confirmed_at=record["last_confirmed_at"],
+            supersedes_object_id=record["supersedes_object_id"],
+            superseded_by_object_id=record["superseded_by_object_id"],
+            created_at=record["created_at"],
+            updated_at=record["updated_at"],
+        ),
     }
 
 
@@ -145,6 +172,13 @@ def _lookup_object_or_raise(
     return record
 
 
+def _canonicalize_action(action: str) -> str:
+    normalized = action.strip()
+    if normalized in _CORRECTION_ACTION_ALIASES:
+        return _CORRECTION_ACTION_ALIASES[normalized]
+    return normalized
+
+
 def _validate_queue_query(request: ContinuityReviewQueueQueryInput) -> list[str]:
     if request.limit < 1 or request.limit > MAX_CONTINUITY_REVIEW_LIMIT:
         raise ContinuityReviewValidationError(
@@ -171,7 +205,7 @@ def list_continuity_review_queue(
     total_count = store.count_continuity_review_queue(statuses=statuses)
 
     return {
-        "items": [_serialize_review_object(row) for row in rows],
+        "items": [_serialize_review_object(store, row) for row in rows],
         "summary": {
             "status": request.status,
             "limit": request.limit,
@@ -209,14 +243,18 @@ def get_continuity_review_detail(
     )
 
     supersession_chain: ContinuitySupersessionChain = {
-        "supersedes": None if supersedes_object is None else _serialize_review_object(supersedes_object),
+        "supersedes": (
+            None if supersedes_object is None else _serialize_review_object(store, supersedes_object)
+        ),
         "superseded_by": (
-            None if superseded_by_object is None else _serialize_review_object(superseded_by_object)
+            None
+            if superseded_by_object is None
+            else _serialize_review_object(store, superseded_by_object)
         ),
     }
 
     detail: ContinuityReviewDetail = {
-        "continuity_object": _serialize_review_object(continuity_object),
+        "continuity_object": _serialize_review_object(store, continuity_object),
         "correction_events": [_serialize_correction_event(event) for event in correction_events],
         "supersession_chain": supersession_chain,
     }
@@ -255,7 +293,7 @@ def apply_continuity_correction(
 ) -> ContinuityCorrectionApplyResponse:
     del user_id
 
-    action = request.action
+    action = _canonicalize_action(request.action)
     if action not in CONTINUITY_CORRECTION_ACTIONS:
         allowed = ", ".join(CONTINUITY_CORRECTION_ACTIONS)
         raise ContinuityReviewValidationError(f"action must be one of: {allowed}")
@@ -417,9 +455,9 @@ def apply_continuity_correction(
             raise ContinuityReviewNotFoundError(f"continuity object {continuity_object_id} was not found")
 
         return {
-            "continuity_object": _serialize_review_object(updated),
+            "continuity_object": _serialize_review_object(store, updated),
             "correction_event": _serialize_correction_event(correction_event),
-            "replacement_object": _serialize_review_object(replacement_object),
+            "replacement_object": _serialize_review_object(store, replacement_object),
         }
 
     else:
@@ -469,7 +507,7 @@ def apply_continuity_correction(
         raise ContinuityReviewNotFoundError(f"continuity object {continuity_object_id} was not found")
 
     return {
-        "continuity_object": _serialize_review_object(updated),
+        "continuity_object": _serialize_review_object(store, updated),
         "correction_event": _serialize_correction_event(correction_event),
         "replacement_object": None,
     }
