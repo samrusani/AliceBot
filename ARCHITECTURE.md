@@ -32,9 +32,11 @@ This keeps Alice continuity semantics centralized while adding Hermes-native aut
 Implemented in B1:
 - `alice_prefetch_context`
 
-Planned for B2+ (not shipped in B1):
+Implemented in B2:
 - `alice_capture_candidates`
 - `alice_commit_captures`
+
+Planned for B3+:
 - `alice_session_flush`
 - `alice_review_queue`
 - `alice_review_apply`
@@ -46,17 +48,17 @@ Planned for B2+ (not shipped in B1):
 3. Alice returns compact continuity payload (summary, relevant memories, open loops, recent decisions/changes, optional resume brief, trust posture).
 4. Provider injects payload into Hermes context before model response.
 
-### Flow 2: Post-response Candidate Extraction (planned B2+)
+### Flow 2: Post-response Candidate Extraction (implemented in B2)
 1. Hermes emits assistant response.
 2. Provider sends user/assistant turn pair to `alice_capture_candidates`.
 3. Alice returns typed candidates with confidence, trust class, proposed action, evidence snippet, and target object type.
 
-### Flow 3: Post-response Commit (planned B2+)
+### Flow 3: Post-response Commit (implemented in B2)
 1. In `assist`/`auto`, provider submits candidates to `alice_commit_captures`.
 2. Policy gates auto-save vs review queue using type allowlist + confidence threshold.
 3. Writes are idempotent across repeated sync attempts.
 
-### Flow 4: Session-End Flush (planned B2+)
+### Flow 4: Session-End Flush (planned B3+)
 1. On session end, provider calls `alice_session_flush`.
 2. Alice performs dedupe merge, contradiction checks, open-loop normalization, summary refresh, and review queue updates.
 

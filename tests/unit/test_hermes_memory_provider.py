@@ -172,6 +172,7 @@ def test_bridge_status_reports_legacy_config_compatibility(
                 "include_non_promotable_facts": True,
                 "auto_capture": True,
                 "mirror_memory_writes": True,
+                "capture_mode": "auto",
             },
             indent=2,
         )
@@ -190,8 +191,10 @@ def test_bridge_status_reports_legacy_config_compatibility(
     assert status["config"]["prefetch_include_non_promotable_facts"] is True
     assert status["config"]["sync_turn_capture_enabled"] is True
     assert status["config"]["memory_write_capture_enabled"] is True
+    assert status["config"]["bridge_mode"] == "auto"
     assert status["legacy_config_keys"] == [
         "auto_capture",
+        "capture_mode",
         "include_non_promotable_facts",
         "max_open_loops",
         "max_recent_changes",
@@ -297,3 +300,96 @@ def test_sync_turn_allows_same_content_after_session_flush(monkeypatch: pytest.M
         "User: Need decision\nAssistant: Decision confirmed",
         "User: Need decision\nAssistant: Decision confirmed",
     ]
+
+
+def test_sync_turn_skips_capture_in_manual_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_provider_module(monkeypatch)
+    provider = module.AliceMemoryProvider()
+    provider._config = {
+        "sync_turn_capture_enabled": True,
+        "bridge_mode": "manual",
+        "session_end_flush_timeout_seconds": 5.0,
+    }
+
+    captured: list[str] = []
+
+    def _fake_post_capture(raw_content: str) -> None:
+        captured.append(raw_content)
+
+    monkeypatch.setattr(provider, "_post_capture", _fake_post_capture)
+
+    provider.sync_turn("Decision: keep scope tight", "Confirmed")
+    provider.on_session_end(session_id="session-manual")
+
+    assert captured == []
+
+
+def test_post_capture_uses_b2_candidate_commit_pipeline_for_sync_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_provider_module(monkeypatch)
+    provider = module.AliceMemoryProvider()
+    provider._config = {
+        "bridge_mode": "assist",
+    }
+
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def _fake_request_json(method: str, path: str, *, params=None, payload=None):  # type: ignore[no-untyped-def]
+        del params
+        requests.append((method, path, payload))
+        if path == "/v0/continuity/captures/candidates":
+            return {
+                "candidates": [
+                    {
+                        "candidate_id": "cand-1",
+                        "candidate_type": "decision",
+                        "object_type": "Decision",
+                        "normalized_text": "Keep scope tight",
+                        "confidence": 0.98,
+                        "trust_class": "deterministic",
+                        "evidence_snippet": "Decision",
+                        "explicit": True,
+                        "source_role": "user",
+                        "admission_reason": "explicit_prefix_decision",
+                        "proposed_action": "auto_save_candidate",
+                    }
+                ]
+            }
+        return {"ok": True}
+
+    monkeypatch.setattr(provider, "_request_json", _fake_request_json)
+
+    provider._post_capture("User: Decision: Keep scope tight\nAssistant: Confirmed")
+
+    assert requests[0][0:2] == ("POST", "/v0/continuity/captures/candidates")
+    assert requests[1][0:2] == ("POST", "/v0/continuity/captures/commit")
+    assert requests[1][2] is not None
+    assert requests[1][2]["mode"] == "assist"
+    assert requests[1][2]["source_kind"] == "sync_turn"
+    assert isinstance(requests[1][2]["sync_fingerprint"], str)
+    assert requests[1][2]["sync_fingerprint"].startswith("sync_turn:")
+
+
+def test_post_capture_falls_back_to_legacy_endpoint_when_b2_endpoints_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_provider_module(monkeypatch)
+    provider = module.AliceMemoryProvider()
+    provider._config = {
+        "bridge_mode": "assist",
+    }
+
+    requests: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def _fake_request_json(method: str, path: str, *, params=None, payload=None):  # type: ignore[no-untyped-def]
+        del params
+        requests.append((method, path, payload))
+        if path == "/v0/continuity/captures/candidates":
+            raise RuntimeError("Alice API request failed with HTTP status 404")
+        return {"ok": True}
+
+    monkeypatch.setattr(provider, "_request_json", _fake_request_json)
+
+    provider._post_capture("User: Decision: Keep scope tight\nAssistant: Confirmed")
+
+    assert requests[0][1] == "/v0/continuity/captures/candidates"
+    assert requests[1][1] == "/v0/continuity/captures"

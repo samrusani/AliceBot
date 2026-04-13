@@ -14,6 +14,8 @@ def test_mcp_tool_surface_is_adr_aligned_and_deterministic() -> None:
     names = [tool["name"] for tool in tools]
     assert names == [
         "alice_capture",
+        "alice_capture_candidates",
+        "alice_commit_captures",
         "alice_recall",
         "alice_state_at",
         "alice_resume",

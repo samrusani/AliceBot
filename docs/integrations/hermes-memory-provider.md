@@ -16,6 +16,8 @@ Hermes behavior with this provider:
 - prefetch: turn-start context assembled from Alice resumption brief
 - bridge-phase lifecycle contract for `prefetch`, `queue_prefetch`, `sync_turn`, and `on_session_end`
 - deterministic capture dedupe for repeated callback execution
+- B2 auto-capture pipeline for `sync_turn`: `alice_capture_candidates` then `alice_commit_captures`
+- capture mode policy support: `manual`, `assist` (default), `auto`
 - local status readiness reporting without live network calls
 
 ## Continuity Model Mapping
@@ -26,8 +28,8 @@ The provider maps Alice continuity responses into Hermes provider hooks:
 |---|---|---|
 | `prefetch(query)` | `GET /v0/continuity/resumption-brief` | renders last decision, next action, open loops, and recent changes into ephemeral context |
 | `queue_prefetch(query)` | `GET /v0/continuity/resumption-brief` | asynchronously prebuilds pre-turn context cache for next `prefetch` |
-| `sync_turn(user, assistant)` | `POST /v0/continuity/captures` | optional post-turn capture hook with duplicate-write suppression |
-| `on_session_end()` | `POST /v0/continuity/captures` | deterministic flush of pending capture work before provider shutdown |
+| `sync_turn(user, assistant)` | `POST /v0/continuity/captures/candidates` + `POST /v0/continuity/captures/commit` | post-turn extraction/commit pipeline with mode policy and duplicate-write suppression |
+| `on_session_end()` | same as queued `sync_turn` pipeline work | deterministic flush of pending capture/commit work before provider shutdown |
 | `alice_recall` tool | `GET /v0/continuity/recall` | returns ranked continuity objects with provenance and scope filters |
 | `alice_resumption_brief` tool | `GET /v0/continuity/resumption-brief` | returns structured resume sections for deterministic follow-through |
 | `alice_open_loops` tool | `GET /v0/continuity/open-loops` | returns waiting/blocker/stale/next-action open-loop groups |
@@ -145,6 +147,7 @@ Practical default:
 - `prefetch_include_non_promotable_facts` (bool)
 - `sync_turn_capture_enabled` (bool, default `false`)
 - `memory_write_capture_enabled` (bool, default `false`)
+- `bridge_mode` (string enum: `manual`, `assist`, `auto`; default `assist`)
 - `session_end_flush_timeout_seconds` (float, default `5.0`)
 
 Legacy compatibility keys still accepted for shipped configs:
@@ -155,3 +158,4 @@ Legacy compatibility keys still accepted for shipped configs:
 - `include_non_promotable_facts`
 - `auto_capture`
 - `mirror_memory_writes`
+- `capture_mode`

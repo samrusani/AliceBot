@@ -4829,6 +4829,32 @@ GET_CONTINUITY_OBJECT_SQL = """
                 WHERE id = %s
                 """
 
+GET_CONTINUITY_OBJECT_BY_COMMIT_FINGERPRINT_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  capture_event_id,
+                  object_type,
+                  status,
+                  is_preserved,
+                  is_searchable,
+                  is_promotable,
+                  title,
+                  body,
+                  provenance,
+                  confidence,
+                  last_confirmed_at,
+                  supersedes_object_id,
+                  superseded_by_object_id,
+                  created_at,
+                  updated_at
+                FROM continuity_objects
+                WHERE provenance ->> 'sync_fingerprint' = %s
+                  AND provenance ->> 'candidate_id' = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """
+
 LIST_CONTINUITY_OBJECTS_FOR_CAPTURE_EVENTS_SQL = """
                 SELECT
                   id,
@@ -5995,6 +6021,17 @@ class ContinuityStore:
         return self._fetch_optional_one(
             GET_CONTINUITY_OBJECT_SQL,
             (continuity_object_id,),
+        )
+
+    def get_continuity_object_by_commit_fingerprint_optional(
+        self,
+        *,
+        sync_fingerprint: str,
+        candidate_id: str,
+    ) -> ContinuityObjectRow | None:
+        return self._fetch_optional_one(
+            GET_CONTINUITY_OBJECT_BY_COMMIT_FINGERPRINT_SQL,
+            (sync_fingerprint, candidate_id),
         )
 
     def list_continuity_review_queue(

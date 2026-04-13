@@ -23,6 +23,8 @@ MCP uses the same local runtime scope as CLI:
 ## Shipped Tool Surface
 
 - `alice_capture`
+- `alice_capture_candidates`
+- `alice_commit_captures`
 - `alice_recall`
 - `alice_state_at`
 - `alice_resume`
@@ -38,6 +40,7 @@ MCP uses the same local runtime scope as CLI:
 
 `alice_explain` now accepts either `continuity_object_id` for evidence-chain inspection or `entity_id` plus optional `at` for temporal explain output.
 `alice_prefetch_context` provides an automation-oriented pre-turn context assembly surface using the same continuity resumption semantics shipped for `alice_resume`.
+`alice_capture_candidates` and `alice_commit_captures` provide the B2 bridge auto-capture pipeline over user/assistant turns with `manual`/`assist`/`auto` commit policy support.
 
 ## Example: Claude Desktop MCP Config
 

@@ -8,7 +8,9 @@ from uuid import UUID
 
 from alicebot_api.continuity_capture import (
     ContinuityCaptureValidationError,
+    capture_continuity_candidates,
     capture_continuity_input,
+    commit_continuity_captures,
 )
 from alicebot_api.continuity_evidence import (
     ContinuityEvidenceNotFoundError,
@@ -35,6 +37,7 @@ from alicebot_api.continuity_review import (
     list_continuity_review_queue,
 )
 from alicebot_api.contracts import (
+    CONTINUITY_CAPTURE_COMMIT_MODES,
     CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
     CONTINUITY_CORRECTION_ACTIONS,
     CONTINUITY_REVIEW_QUEUE_ORDER,
@@ -51,6 +54,8 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     MAX_CONTINUITY_REVIEW_LIMIT,
     MAX_TEMPORAL_TIMELINE_LIMIT,
+    ContinuityCaptureCandidatesInput,
+    ContinuityCaptureCommitInput,
     ContinuityCaptureCreateInput,
     ContinuityCorrectionInput,
     ContinuityOpenLoopDashboardQueryInput,
@@ -337,6 +342,53 @@ def _handle_alice_capture(context: MCPRuntimeContext, arguments: Mapping[str, ob
             request=ContinuityCaptureCreateInput(
                 raw_content=_parse_required_text(arguments, "raw_content"),
                 explicit_signal=explicit_signal,
+            ),
+        )
+
+
+def _handle_alice_capture_candidates(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    with _store_context(context) as store:
+        return capture_continuity_candidates(
+            store,
+            user_id=context.user_id,
+            request=ContinuityCaptureCandidatesInput(
+                user_content=_parse_optional_text(arguments, "user_content") or "",
+                assistant_content=_parse_optional_text(arguments, "assistant_content") or "",
+                session_id=_parse_optional_text(arguments, "session_id"),
+                source_kind=_parse_optional_text(arguments, "source_kind") or "sync_turn",
+            ),
+        )
+
+
+def _handle_alice_commit_captures(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    raw_mode = _parse_optional_text(arguments, "mode") or "assist"
+    mode = raw_mode.lower()
+    if mode not in CONTINUITY_CAPTURE_COMMIT_MODES:
+        allowed = ", ".join(CONTINUITY_CAPTURE_COMMIT_MODES)
+        raise MCPToolError(f"mode must be one of: {allowed}")
+
+    raw_candidates = arguments.get("candidates", [])
+    if not isinstance(raw_candidates, list):
+        raise MCPToolError("candidates must be a JSON array")
+    for item in raw_candidates:
+        if not isinstance(item, dict):
+            raise MCPToolError("each candidate must be a JSON object")
+
+    with _store_context(context) as store:
+        return commit_continuity_captures(
+            store,
+            user_id=context.user_id,
+            request=ContinuityCaptureCommitInput(
+                mode=mode,  # type: ignore[arg-type]
+                candidates=list(raw_candidates),
+                sync_fingerprint=_parse_optional_text(arguments, "sync_fingerprint"),
+                source_kind=_parse_optional_text(arguments, "source_kind") or "sync_turn",
             ),
         )
 
@@ -787,6 +839,37 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_capture_candidates",
+        "description": "Extract continuity candidates from one user/assistant turn without writing memory.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "user_content": {"type": "string"},
+                "assistant_content": {"type": "string"},
+                "session_id": {"type": "string"},
+                "source_kind": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "alice_commit_captures",
+        "description": "Commit extracted continuity candidates using manual/assist/auto bridge policy.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "mode": {"type": "string", "enum": list(CONTINUITY_CAPTURE_COMMIT_MODES)},
+                "sync_fingerprint": {"type": "string"},
+                "source_kind": {"type": "string"},
+                "candidates": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                },
+            },
+        },
+    },
+    {
         "name": "alice_recall",
         "description": "Recall continuity objects with deterministic ranking and provenance fields.",
         "inputSchema": {
@@ -1044,6 +1127,8 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
 
 _TOOL_HANDLERS = {
     "alice_capture": _handle_alice_capture,
+    "alice_capture_candidates": _handle_alice_capture_candidates,
+    "alice_commit_captures": _handle_alice_commit_captures,
     "alice_recall": _handle_alice_recall,
     "alice_state_at": _handle_alice_state_at,
     "alice_resume": _handle_alice_resume,

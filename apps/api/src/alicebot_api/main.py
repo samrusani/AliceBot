@@ -93,6 +93,8 @@ from alicebot_api.contracts import (
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
     ContinuityArtifactDetailResponse,
+    ContinuityCaptureCandidatesInput,
+    ContinuityCaptureCommitInput,
     ContinuityCaptureCreateInput,
     ContinuityExplainResponse,
     ContinuityLifecycleDetailResponse,
@@ -372,7 +374,9 @@ from alicebot_api.explicit_signal_capture import (
 from alicebot_api.continuity_capture import (
     ContinuityCaptureNotFoundError,
     ContinuityCaptureValidationError,
+    capture_continuity_candidates,
     capture_continuity_input,
+    commit_continuity_captures,
     get_continuity_capture_detail,
     list_continuity_capture_inbox,
 )
@@ -1043,6 +1047,22 @@ class ContinuityCaptureRequest(BaseModel):
     user_id: UUID
     raw_content: str = Field(min_length=1, max_length=4000)
     explicit_signal: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class ContinuityCaptureCandidatesRequest(BaseModel):
+    user_id: UUID
+    user_content: str = Field(default="", max_length=4000)
+    assistant_content: str = Field(default="", max_length=4000)
+    session_id: str | None = Field(default=None, min_length=1, max_length=200)
+    source_kind: str = Field(default="sync_turn", min_length=1, max_length=80)
+
+
+class ContinuityCaptureCommitRequest(BaseModel):
+    user_id: UUID
+    mode: str = Field(default="assist", min_length=1, max_length=20)
+    candidates: list[dict[str, object]] = Field(default_factory=list)
+    sync_fingerprint: str | None = Field(default=None, min_length=1, max_length=200)
+    source_kind: str = Field(default="sync_turn", min_length=1, max_length=80)
 
 
 class ContinuityCorrectionRequest(BaseModel):
@@ -4702,6 +4722,56 @@ def create_continuity_capture(request: ContinuityCaptureRequest) -> JSONResponse
 
     return JSONResponse(
         status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/continuity/captures/candidates")
+def create_continuity_capture_candidates(request: ContinuityCaptureCandidatesRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = capture_continuity_candidates(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ContinuityCaptureCandidatesInput(
+                    user_content=request.user_content,
+                    assistant_content=request.assistant_content,
+                    session_id=request.session_id,
+                    source_kind=request.source_kind,
+                ),
+            )
+    except ContinuityCaptureValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/continuity/captures/commit")
+def commit_continuity_capture_candidates(request: ContinuityCaptureCommitRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = commit_continuity_captures(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ContinuityCaptureCommitInput(
+                    mode=request.mode,  # type: ignore[arg-type]
+                    candidates=request.candidates,
+                    sync_fingerprint=request.sync_fingerprint,
+                    source_kind=request.source_kind,
+                ),
+            )
+    except (ContinuityCaptureValidationError, ContinuityObjectValidationError) as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
         content=jsonable_encoder(payload),
     )
 
