@@ -38,11 +38,11 @@ Phase 11 is complete and shipped:
 - `P11-S5` Azure Adapter + AutoGen Integration is shipped
 - `P11-S6` Model Packs Tier 2 + Launch Clarity Assets is shipped
 - `P11-R1` Provider Runtime Hardening is shipped
-- A bridge phase is now active: Hermes Auto-Capture
+- Hermes bridge phase is complete and shipped:
 - `B1` Hermes Provider Contract Foundation is shipped
 - `B2` Auto-Capture Pipeline is shipped
 - `B3` Review Queue + Explainability is shipped
-- `B4` Packaging, Docs, and Smoke Validation is the active sprint
+- `B4` Packaging, Docs, and Smoke Validation is shipped
 - Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
 
 ## Why Alice exists
@@ -122,8 +122,8 @@ It already supports:
 
 - **MCP-based integrations**
 - **OpenClaw import and augmentation**
-- **Hermes integration paths**
-- **Hermes external memory provider**
+- **Hermes provider-plus-MCP bridge for always-on continuity**
+- **Hermes external memory provider with lifecycle automation and auto-capture**
 - **Provider runtime abstraction for workspace-scoped model/provider integration**
 - **Local, self-hosted, enterprise, and external-agent deployment paths**
 - imported workflow data from Markdown and ChatGPT exports
@@ -140,7 +140,7 @@ The current open-source surface includes:
 - trust-aware memory classification and promotion controls
 - shared explainability across recall, resume, open-loop review, and explain surfaces
 - scheduled archive maintenance, ops status reporting, and failure alerting
-- Hermes external memory provider for always-on continuity prefetch and Alice memory tools inside Hermes
+- Hermes bridge with provider lifecycle hooks, always-on continuity prefetch, turn auto-capture, policy-based commit modes (`manual` / `assist` / `auto`), and reviewable explainable candidate memory flows
 - provider runtime abstraction with workspace-scoped provider registration, capability snapshots, OpenAI-compatible base adapter, local Ollama/llama.cpp, self-hosted vLLM, enterprise Azure, model packs, and external-agent integration paths
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
