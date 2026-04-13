@@ -1,6 +1,10 @@
 # Hermes External Memory Provider: Alice
 
 This guide installs Alice as a Hermes **external memory provider**.
+For the canonical bridge operator path and config examples, see:
+
+- `docs/integrations/hermes-bridge-operator-guide.md`
+- `docs/integrations/hermes-provider-plus-mcp-why.md`
 
 Hermes behavior with this provider:
 
@@ -50,6 +54,11 @@ Optional flags:
 
 ## Configure
 
+Recommended Hermes `config.yaml` examples are published here:
+
+- `docs/integrations/examples/hermes-config.provider-plus-mcp.yaml` (recommended)
+- `docs/integrations/examples/hermes-config.mcp-only.yaml` (fallback)
+
 Use the Hermes setup flow:
 
 ```bash
@@ -91,6 +100,12 @@ Run provider smoke validation from this repository:
 ./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py
 ```
 
+Run the one-command bridge demo (provider smoke + MCP smoke):
+
+```bash
+./.venv/bin/python scripts/run_hermes_bridge_demo.py
+```
+
 Smoke output includes `structural.bridge_status` with:
 
 - `ready`: bridge-phase config readiness
@@ -130,8 +145,8 @@ Use this split to avoid overlapping integrations:
 
 Practical default:
 
-- choose provider when you want continuity context injected every turn
-- choose MCP when you need wider Alice operations beyond memory-provider scope
+- choose provider plus MCP as the default deployment shape
+- choose MCP-only only when provider install is temporarily blocked
 - add skill pack when you want stricter workflow prompting and response policy
 
 ## Provider Config Keys

@@ -67,9 +67,21 @@ MCP uses the same local runtime scope as CLI:
 
 For Hermes Agent-specific setup, prompts, and troubleshooting:
 
+- `docs/integrations/hermes-bridge-operator-guide.md` (recommended provider+MCP path)
 - `docs/integrations/hermes.md`
 - `docs/integrations/hermes-memory-provider.md`
 - `docs/integrations/hermes-skill-pack.md`
+
+Recommended bridge deployment shape:
+
+- provider plus MCP is the default operator path
+- MCP-only remains available as fallback when provider install is blocked
+
+One-command bridge demo:
+
+```bash
+./.venv/bin/python scripts/run_hermes_bridge_demo.py
+```
 
 ## Contract Guardrails
 

@@ -1,0 +1,24 @@
+# Recommended bridge deployment shape.
+# Keep the Alice memory provider active for always-on prefetch/capture,
+# and keep Alice MCP attached for explicit deep workflows.
+memory:
+  provider: alice
+
+mcp_servers:
+  alice_core:
+    command: "/path/to/alicebot/.venv/bin/python"
+    args: ["-m", "alicebot_api.mcp_server"]
+    env:
+      DATABASE_URL: "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot"
+      ALICEBOT_AUTH_USER_ID: "00000000-0000-0000-0000-000000000001"
+      PYTHONPATH: "/path/to/alicebot/apps/api/src:/path/to/alicebot/workers"
+    tools:
+      include:
+        - alice_recall
+        - alice_resume
+        - alice_open_loops
+        - alice_review_queue
+        - alice_review_apply
+        - alice_explain
+      resources: false
+      prompts: false

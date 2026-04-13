@@ -70,7 +70,7 @@ Review-required:
 - low-confidence extractions
 
 ## Active Sprint Status
-Bridge Sprint 3 (`B3`) is now the active execution sprint. It is limited to review queue and explainability work on top of the shipped Hermes provider surface plus the `B1` and `B2` bridge foundations.
+Bridge Sprint 4 (`B4`) is now the active execution sprint. It is limited to packaging, docs, config examples, smoke validation, and local-demo closeout on top of the shipped `B1` through `B3` bridge foundations.
 
 ## Known Gaps To Resolve Before Build
 - Candidate scoring rubric and confidence calibration method are not specified.
