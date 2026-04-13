@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from uuid import UUID
@@ -10,16 +11,28 @@ from alicebot_api.continuity_objects import (
     list_continuity_objects_for_capture_events,
 )
 from alicebot_api.contracts import (
+    CONTINUITY_CAPTURE_ASSIST_AUTOSAVE_TYPES,
+    CONTINUITY_CAPTURE_CANDIDATE_TYPES,
+    CONTINUITY_CAPTURE_COMMIT_MODES,
     CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
     CONTINUITY_CAPTURE_LIST_ORDER,
+    CONTINUITY_CAPTURE_REVIEW_REQUIRED_TYPES,
     DEFAULT_CONTINUITY_CAPTURE_LIMIT,
     MAX_CONTINUITY_CAPTURE_LIMIT,
+    ContinuityCaptureCandidateRecord,
+    ContinuityCaptureCandidatesInput,
+    ContinuityCaptureCandidatesResponse,
+    ContinuityCaptureCommitInput,
+    ContinuityCaptureCommitRecord,
+    ContinuityCaptureCommitResponse,
+    ContinuityCaptureCommitSummary,
     ContinuityCaptureCreateInput,
     ContinuityCaptureCreateResponse,
     ContinuityCaptureDetailResponse,
     ContinuityCaptureEventRecord,
     ContinuityCaptureInboxItem,
     ContinuityCaptureInboxResponse,
+    MemoryTrustClass,
 )
 from alicebot_api.store import ContinuityCaptureEventRow, ContinuityStore, JsonObject
 
@@ -37,6 +50,19 @@ class DerivedObjectDecision:
     object_type: str
     normalized_text: str
     confidence: float
+    admission_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedCandidate:
+    candidate_type: str
+    object_type: str | None
+    normalized_text: str
+    confidence: float
+    trust_class: MemoryTrustClass
+    evidence_snippet: str
+    explicit: bool
+    source_role: str
     admission_reason: str
 
 
@@ -63,6 +89,74 @@ _HIGH_CONFIDENCE_PREFIXES: tuple[tuple[str, str, str], ...] = (
     ("fact:", "MemoryFact", "high_confidence_prefix_fact"),
     ("note:", "Note", "high_confidence_prefix_note"),
 )
+
+_CANDIDATE_PREFIX_RULES: tuple[tuple[str, str, str | None, str], ...] = (
+    ("decision:", "decision", "Decision", "explicit_prefix_decision"),
+    ("commitment:", "commitment", "Commitment", "explicit_prefix_commitment"),
+    ("waiting for:", "waiting_for", "WaitingFor", "explicit_prefix_waiting_for"),
+    ("waiting on:", "waiting_for", "WaitingFor", "explicit_prefix_waiting_for"),
+    ("blocker:", "blocker", "Blocker", "explicit_prefix_blocker"),
+    ("preference:", "preference", "MemoryFact", "explicit_prefix_preference"),
+    ("correction:", "correction", "Note", "explicit_prefix_correction"),
+    ("correct:", "correction", "Note", "explicit_prefix_correction"),
+    ("note:", "note", "Note", "explicit_prefix_note"),
+)
+
+_CANDIDATE_REGEX_RULES: tuple[tuple[re.Pattern[str], str, str | None, str, float], ...] = (
+    (
+        re.compile(r"\b(i prefer|i like|i don't like|remember that i prefer)\b", re.IGNORECASE),
+        "preference",
+        "MemoryFact",
+        "explicit_phrase_preference",
+        0.9,
+    ),
+    (
+        re.compile(r"\b(decision|we decided|i decided|decided that)\b", re.IGNORECASE),
+        "decision",
+        "Decision",
+        "explicit_phrase_decision",
+        0.9,
+    ),
+    (
+        re.compile(r"\b(i will|we will|i'll|we'll|i need to|remind me to)\b", re.IGNORECASE),
+        "commitment",
+        "Commitment",
+        "explicit_phrase_commitment",
+        0.9,
+    ),
+    (
+        re.compile(r"\b(waiting for|waiting on|awaiting)\b", re.IGNORECASE),
+        "waiting_for",
+        "WaitingFor",
+        "explicit_phrase_waiting_for",
+        0.86,
+    ),
+    (
+        re.compile(r"\b(blocked|blocker|cannot proceed|can't proceed)\b", re.IGNORECASE),
+        "blocker",
+        "Blocker",
+        "explicit_phrase_blocker",
+        0.86,
+    ),
+    (
+        re.compile(r"\b(correction|actually|instead|update)\b", re.IGNORECASE),
+        "correction",
+        "Note",
+        "explicit_phrase_correction",
+        0.9,
+    ),
+)
+
+_ACK_ONLY_TURNS: set[str] = {
+    "ok",
+    "okay",
+    "thanks",
+    "thank you",
+    "sounds good",
+    "great",
+    "got it",
+    "understood",
+}
 
 
 def _normalize_content(raw_content: str) -> str:
@@ -179,6 +273,460 @@ def _validate_capture_limit(limit: int) -> None:
         raise ContinuityCaptureValidationError(
             f"limit must be between 1 and {MAX_CONTINUITY_CAPTURE_LIMIT}"
         )
+
+
+def _candidate_id(*, candidate_type: str, normalized_text: str, source_role: str) -> str:
+    encoded = f"{candidate_type}|{normalized_text}|{source_role}".encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _derive_trust_class(*, explicit: bool, confidence: float) -> MemoryTrustClass:
+    if explicit and confidence >= 0.9:
+        return "deterministic"
+    if confidence >= 0.85:
+        return "llm_corroborated"
+    return "llm_single_source"
+
+
+def _build_candidate_record(candidate: ExtractedCandidate) -> ContinuityCaptureCandidateRecord:
+    candidate_id = _candidate_id(
+        candidate_type=candidate.candidate_type,
+        normalized_text=candidate.normalized_text,
+        source_role=candidate.source_role,
+    )
+    if candidate.candidate_type == "no_op":
+        proposed_action = "no_op"
+    elif (
+        candidate.explicit
+        and candidate.candidate_type in CONTINUITY_CAPTURE_ASSIST_AUTOSAVE_TYPES
+        and candidate.confidence >= 0.9
+    ):
+        proposed_action = "auto_save_candidate"
+    else:
+        proposed_action = "queue_for_review"
+
+    return {
+        "candidate_id": candidate_id,
+        "candidate_type": candidate.candidate_type,
+        "object_type": candidate.object_type,
+        "normalized_text": candidate.normalized_text,
+        "confidence": candidate.confidence,
+        "trust_class": candidate.trust_class,
+        "evidence_snippet": candidate.evidence_snippet,
+        "explicit": candidate.explicit,
+        "source_role": candidate.source_role,
+        "admission_reason": candidate.admission_reason,
+        "proposed_action": proposed_action,
+    }
+
+
+def _extract_from_role(*, text: str, source_role: str) -> ExtractedCandidate | None:
+    normalized = _normalize_content(text)
+    if normalized == "":
+        return None
+
+    lowered = normalized.casefold()
+    for prefix, candidate_type, object_type, reason in _CANDIDATE_PREFIX_RULES:
+        if not lowered.startswith(prefix):
+            continue
+        stripped = _normalize_content(normalized[len(prefix) :])
+        if stripped == "":
+            return None
+        confidence = 0.98
+        return ExtractedCandidate(
+            candidate_type=candidate_type,
+            object_type=object_type,
+            normalized_text=stripped,
+            confidence=confidence,
+            trust_class=_derive_trust_class(explicit=True, confidence=confidence),
+            evidence_snippet=_truncate(stripped, max_length=220),
+            explicit=True,
+            source_role=source_role,
+            admission_reason=reason,
+        )
+
+    for pattern, candidate_type, object_type, reason, confidence in _CANDIDATE_REGEX_RULES:
+        match = pattern.search(normalized)
+        if match is None:
+            continue
+        return ExtractedCandidate(
+            candidate_type=candidate_type,
+            object_type=object_type,
+            normalized_text=normalized,
+            confidence=confidence,
+            trust_class=_derive_trust_class(explicit=True, confidence=confidence),
+            evidence_snippet=_truncate(match.group(0), max_length=220),
+            explicit=True,
+            source_role=source_role,
+            admission_reason=reason,
+        )
+
+    return None
+
+
+def _is_ack_only_turn(*, user_text: str, assistant_text: str) -> bool:
+    normalized_user = _normalize_content(user_text).casefold()
+    normalized_assistant = _normalize_content(assistant_text).casefold()
+    if normalized_user == "" and normalized_assistant == "":
+        return True
+    if normalized_user in _ACK_ONLY_TURNS and normalized_assistant in _ACK_ONLY_TURNS:
+        return True
+    if normalized_user == "" and normalized_assistant in _ACK_ONLY_TURNS:
+        return True
+    if normalized_assistant == "" and normalized_user in _ACK_ONLY_TURNS:
+        return True
+    return False
+
+
+def _no_op_candidate(*, user_text: str, assistant_text: str) -> ContinuityCaptureCandidateRecord:
+    evidence = _normalize_content(" ".join(part for part in [user_text, assistant_text] if part))
+    candidate = ExtractedCandidate(
+        candidate_type="no_op",
+        object_type=None,
+        normalized_text="",
+        confidence=1.0,
+        trust_class="deterministic",
+        evidence_snippet=_truncate(evidence, max_length=220),
+        explicit=False,
+        source_role="combined",
+        admission_reason="turn_no_actionable_capture",
+    )
+    return _build_candidate_record(candidate)
+
+
+def _object_type_for_candidate(candidate_type: str, object_type: str | None) -> str:
+    if object_type is not None:
+        return object_type
+
+    fallback_map = {
+        "decision": "Decision",
+        "commitment": "Commitment",
+        "waiting_for": "WaitingFor",
+        "blocker": "Blocker",
+        "preference": "MemoryFact",
+        "correction": "Note",
+        "note": "Note",
+    }
+    return fallback_map.get(candidate_type, "Note")
+
+
+def _explicit_signal_for_candidate(candidate_type: str) -> str | None:
+    signal_map = {
+        "decision": "decision",
+        "commitment": "commitment",
+        "waiting_for": "waiting_for",
+        "blocker": "blocker",
+        "preference": "remember_this",
+        "correction": "note",
+        "note": "note",
+    }
+    return signal_map.get(candidate_type)
+
+
+def _body_for_candidate(*, candidate: ContinuityCaptureCandidateRecord, object_type: str) -> JsonObject:
+    normalized_text = candidate["normalized_text"]
+    candidate_type = candidate["candidate_type"]
+
+    if object_type == "Decision":
+        key = "decision_text"
+    elif object_type == "Commitment":
+        key = "commitment_text"
+    elif object_type == "WaitingFor":
+        key = "waiting_for_text"
+    elif object_type == "Blocker":
+        key = "blocking_reason"
+    elif object_type == "NextAction":
+        key = "action_text"
+    elif object_type == "MemoryFact":
+        key = "fact_text"
+    else:
+        key = "body"
+
+    payload: JsonObject = {
+        key: normalized_text,
+        "candidate_type": candidate_type,
+        "explicit": candidate["explicit"],
+        "evidence_snippet": candidate["evidence_snippet"],
+    }
+    if candidate_type == "correction":
+        payload["correction_text"] = normalized_text
+    if candidate_type == "preference":
+        payload["preference_text"] = normalized_text
+    return payload
+
+
+def _normalize_commit_mode(mode: str) -> str:
+    normalized = mode.strip().lower()
+    if normalized not in CONTINUITY_CAPTURE_COMMIT_MODES:
+        allowed = ", ".join(CONTINUITY_CAPTURE_COMMIT_MODES)
+        raise ContinuityCaptureValidationError(f"mode must be one of: {allowed}")
+    return normalized
+
+
+def _normalize_candidate(payload: JsonObject) -> ContinuityCaptureCandidateRecord:
+    candidate_type = str(payload.get("candidate_type", "")).strip().lower()
+    if candidate_type not in CONTINUITY_CAPTURE_CANDIDATE_TYPES:
+        allowed = ", ".join(CONTINUITY_CAPTURE_CANDIDATE_TYPES)
+        raise ContinuityCaptureValidationError(f"candidate_type must be one of: {allowed}")
+
+    raw_object_type = payload.get("object_type")
+    if raw_object_type is None:
+        object_type: str | None = None
+    elif isinstance(raw_object_type, str) and raw_object_type.strip() != "":
+        object_type = raw_object_type.strip()
+    else:
+        raise ContinuityCaptureValidationError("object_type must be a string when provided")
+
+    normalized_text = _normalize_content(str(payload.get("normalized_text", "")))
+    if candidate_type != "no_op" and normalized_text == "":
+        raise ContinuityCaptureValidationError("normalized_text must not be empty for non-no-op candidates")
+
+    raw_confidence = payload.get("confidence", 0.0)
+    if isinstance(raw_confidence, bool):
+        raise ContinuityCaptureValidationError("confidence must be a number")
+    try:
+        confidence = float(raw_confidence)
+    except (TypeError, ValueError) as exc:
+        raise ContinuityCaptureValidationError("confidence must be a number") from exc
+    if confidence < 0.0 or confidence > 1.0:
+        raise ContinuityCaptureValidationError("confidence must be between 0.0 and 1.0")
+
+    raw_explicit = payload.get("explicit", False)
+    if not isinstance(raw_explicit, bool):
+        raise ContinuityCaptureValidationError("explicit must be a boolean")
+    explicit = raw_explicit
+    source_role = _normalize_content(str(payload.get("source_role", "combined"))) or "combined"
+    admission_reason = _normalize_content(str(payload.get("admission_reason", "derived_candidate")))
+    evidence_snippet = _normalize_content(str(payload.get("evidence_snippet", normalized_text)))
+
+    candidate = ExtractedCandidate(
+        candidate_type=candidate_type,
+        object_type=object_type,
+        normalized_text=normalized_text,
+        confidence=confidence,
+        trust_class=_derive_trust_class(explicit=explicit, confidence=confidence),
+        evidence_snippet=evidence_snippet,
+        explicit=explicit,
+        source_role=source_role,
+        admission_reason=admission_reason,
+    )
+    return _build_candidate_record(candidate)
+
+
+def _resolve_commit_decision(
+    *,
+    candidate: ContinuityCaptureCandidateRecord,
+    mode: str,
+) -> tuple[str, str, str]:
+    candidate_type = candidate["candidate_type"]
+    confidence = candidate["confidence"]
+    explicit = candidate["explicit"]
+
+    if candidate_type == "no_op":
+        return "no_op", "no_actionable_candidate", "none"
+
+    if mode == "manual":
+        return "queued_for_review", "manual_mode_requires_review", "review_queue"
+
+    if candidate_type in CONTINUITY_CAPTURE_REVIEW_REQUIRED_TYPES:
+        return "queued_for_review", "type_requires_review", "review_queue"
+
+    if mode == "assist":
+        if (
+            candidate_type in CONTINUITY_CAPTURE_ASSIST_AUTOSAVE_TYPES
+            and explicit
+            and confidence >= 0.9
+        ):
+            return "auto_saved", "assist_mode_allowlist_explicit_high_confidence", "continuity_objects"
+        return "queued_for_review", "assist_mode_review_gate", "review_queue"
+
+    if mode == "auto":
+        if candidate_type in CONTINUITY_CAPTURE_ASSIST_AUTOSAVE_TYPES and confidence >= 0.85:
+            return "auto_saved", "auto_mode_allowlist_high_confidence", "continuity_objects"
+        return "queued_for_review", "auto_mode_review_gate", "review_queue"
+
+    return "queued_for_review", "unsupported_mode_review_fallback", "review_queue"
+
+
+def capture_continuity_candidates(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    request: ContinuityCaptureCandidatesInput,
+) -> ContinuityCaptureCandidatesResponse:
+    del store, user_id
+
+    user_text = _normalize_content(request.user_content)
+    assistant_text = _normalize_content(request.assistant_content)
+
+    candidates: list[ContinuityCaptureCandidateRecord] = []
+    seen_keys: set[tuple[str, str]] = set()
+
+    for source_role, text in (("user", user_text), ("assistant", assistant_text)):
+        extracted = _extract_from_role(text=text, source_role=source_role)
+        if extracted is None:
+            continue
+        key = (extracted.candidate_type, extracted.normalized_text)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        candidates.append(_build_candidate_record(extracted))
+
+    if not candidates:
+        candidates = [_no_op_candidate(user_text=user_text, assistant_text=assistant_text)]
+    elif _is_ack_only_turn(user_text=user_text, assistant_text=assistant_text):
+        candidates = [_no_op_candidate(user_text=user_text, assistant_text=assistant_text)]
+
+    summary = {
+        "candidate_count": len(candidates),
+        "explicit_count": sum(1 for candidate in candidates if candidate["explicit"]),
+        "high_confidence_count": sum(1 for candidate in candidates if candidate["confidence"] >= 0.9),
+        "no_op_count": sum(1 for candidate in candidates if candidate["candidate_type"] == "no_op"),
+    }
+
+    return {
+        "candidates": candidates,
+        "summary": summary,
+    }
+
+
+def commit_continuity_captures(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    request: ContinuityCaptureCommitInput,
+) -> ContinuityCaptureCommitResponse:
+    mode = _normalize_commit_mode(request.mode)
+
+    normalized_sync_fingerprint = _normalize_content(request.sync_fingerprint or "")
+    commits: list[ContinuityCaptureCommitRecord] = []
+    auto_saved_types: set[str] = set()
+    review_queued_types: set[str] = set()
+
+    auto_saved_count = 0
+    review_queued_count = 0
+    noop_count = 0
+    duplicate_noop_count = 0
+
+    normalized_candidates = [_normalize_candidate(candidate) for candidate in request.candidates]
+
+    for candidate in normalized_candidates:
+        sync_fingerprint = normalized_sync_fingerprint or f"candidate:{candidate['candidate_id']}"
+
+        if candidate["candidate_type"] != "no_op":
+            existing_row = store.get_continuity_object_by_commit_fingerprint_optional(
+                sync_fingerprint=sync_fingerprint,
+                candidate_id=candidate["candidate_id"],
+            )
+            if existing_row is not None:
+                existing_object = get_continuity_object_for_capture_event(
+                    store,
+                    user_id=user_id,
+                    capture_event_id=existing_row["capture_event_id"],
+                )
+                commits.append(
+                    {
+                        "candidate_id": candidate["candidate_id"],
+                        "candidate_type": candidate["candidate_type"],
+                        "decision": "duplicate_noop",
+                        "reason": "idempotent_sync_duplicate",
+                        "persistence_target": "none",
+                        "capture_event": None,
+                        "continuity_object": existing_object,
+                    }
+                )
+                duplicate_noop_count += 1
+                continue
+
+        decision, reason, persistence_target = _resolve_commit_decision(candidate=candidate, mode=mode)
+
+        if decision == "no_op":
+            commits.append(
+                {
+                    "candidate_id": candidate["candidate_id"],
+                    "candidate_type": candidate["candidate_type"],
+                    "decision": "no_op",
+                    "reason": reason,
+                    "persistence_target": "none",
+                    "capture_event": None,
+                    "continuity_object": None,
+                }
+            )
+            noop_count += 1
+            continue
+
+        object_type = _object_type_for_candidate(candidate["candidate_type"], candidate["object_type"])
+        explicit_signal = _explicit_signal_for_candidate(candidate["candidate_type"])
+        admission_posture = "DERIVED" if decision == "auto_saved" else "TRIAGE"
+
+        capture_event_row = store.create_continuity_capture_event(
+            raw_content=candidate["normalized_text"],
+            explicit_signal=explicit_signal,
+            admission_posture=admission_posture,
+            admission_reason=_truncate(candidate["admission_reason"], max_length=200),
+        )
+        serialized_capture = _serialize_capture_event(capture_event_row)
+
+        provenance: JsonObject = {
+            "capture_event_id": str(capture_event_row["id"]),
+            "source_kind": "continuity_capture_candidate",
+            "candidate_id": candidate["candidate_id"],
+            "candidate_type": candidate["candidate_type"],
+            "sync_fingerprint": sync_fingerprint,
+            "commit_mode": mode,
+            "commit_decision": decision,
+            "admission_reason": candidate["admission_reason"],
+            "explicit": candidate["explicit"],
+            "trust_class": candidate["trust_class"],
+            "evidence_snippet": candidate["evidence_snippet"],
+        }
+
+        continuity_object = create_continuity_object_record(
+            store,
+            user_id=user_id,
+            capture_event_id=capture_event_row["id"],
+            object_type=object_type,
+            status="active" if decision == "auto_saved" else "stale",
+            title=_title_for_object_type(object_type, candidate["normalized_text"]),
+            body=_body_for_candidate(candidate=candidate, object_type=object_type),
+            provenance=provenance,
+            confidence=candidate["confidence"],
+        )
+
+        if decision == "auto_saved":
+            auto_saved_count += 1
+            auto_saved_types.add(candidate["candidate_type"])
+        else:
+            review_queued_count += 1
+            review_queued_types.add(candidate["candidate_type"])
+
+        commits.append(
+            {
+                "candidate_id": candidate["candidate_id"],
+                "candidate_type": candidate["candidate_type"],
+                "decision": decision,
+                "reason": reason,
+                "persistence_target": persistence_target,
+                "capture_event": serialized_capture,
+                "continuity_object": continuity_object,
+            }
+        )
+
+    summary: ContinuityCaptureCommitSummary = {
+        "mode": mode,  # type: ignore[typeddict-item]
+        "candidate_count": len(normalized_candidates),
+        "auto_saved_count": auto_saved_count,
+        "review_queued_count": review_queued_count,
+        "noop_count": noop_count,
+        "duplicate_noop_count": duplicate_noop_count,
+        "auto_saved_types": sorted(auto_saved_types),
+        "review_queued_types": sorted(review_queued_types),
+    }
+
+    return {
+        "commits": commits,
+        "summary": summary,
+    }
 
 
 def capture_continuity_input(
@@ -331,7 +879,9 @@ def get_continuity_capture_detail(
 __all__ = [
     "ContinuityCaptureNotFoundError",
     "ContinuityCaptureValidationError",
+    "capture_continuity_candidates",
     "capture_continuity_input",
+    "commit_continuity_captures",
     "get_continuity_capture_detail",
     "list_continuity_capture_inbox",
 ]

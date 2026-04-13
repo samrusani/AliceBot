@@ -20,7 +20,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         required_markers=(
             "Phase 10 is complete and shipped.",
             "Phase 11 is complete and shipped:",
-            "`B1` Hermes Provider Contract Foundation is the active sprint",
+            "`B2` Auto-Capture Pipeline is the active sprint",
             "Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md]",
         ),
     ),
@@ -28,13 +28,13 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="ROADMAP.md",
         required_markers=(
             "Phase 11 remains baseline truth and is not future scope.",
-            "Bridge Sprint 1 (`B1`) is the active execution sprint.",
+            "Bridge Sprint 2 (`B2`) is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Bridge Sprint 1 (B1): Hermes Provider Contract Foundation",
+            "Bridge Sprint 2 (B2): Auto-Capture Pipeline",
             "Phase 10 is complete and shipped.",
             "Phase 11 is complete and shipped.",
         ),
@@ -52,7 +52,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
             "Phase 9 is shipped.",
             "Phase 10 is shipped.",
             "Phase 11 is shipped and remains baseline truth.",
-            "Bridge Sprint 1 (`B1`) is the active execution sprint.",
+            "Bridge Sprint 2 (`B2`) is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(

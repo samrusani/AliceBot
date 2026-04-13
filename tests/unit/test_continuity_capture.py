@@ -8,11 +8,17 @@ import pytest
 from alicebot_api.continuity_capture import (
     ContinuityCaptureNotFoundError,
     ContinuityCaptureValidationError,
+    capture_continuity_candidates,
     capture_continuity_input,
+    commit_continuity_captures,
     get_continuity_capture_detail,
     list_continuity_capture_inbox,
 )
-from alicebot_api.contracts import ContinuityCaptureCreateInput
+from alicebot_api.contracts import (
+    ContinuityCaptureCandidatesInput,
+    ContinuityCaptureCommitInput,
+    ContinuityCaptureCreateInput,
+)
 
 
 class ContinuityCaptureStoreStub:
@@ -22,6 +28,7 @@ class ContinuityCaptureStoreStub:
         self.capture_events: dict[UUID, dict[str, object]] = {}
         self.capture_event_order: list[UUID] = []
         self.objects_by_capture_event: dict[UUID, dict[str, object]] = {}
+        self.objects_by_commit_fingerprint: dict[tuple[str, str], dict[str, object]] = {}
 
     def create_continuity_capture_event(
         self,
@@ -88,10 +95,22 @@ class ContinuityCaptureStoreStub:
             "updated_at": self.base_time,
         }
         self.objects_by_capture_event[capture_event_id] = row
+        sync_fingerprint = str(provenance.get("sync_fingerprint", ""))
+        candidate_id = str(provenance.get("candidate_id", ""))
+        if sync_fingerprint and candidate_id:
+            self.objects_by_commit_fingerprint[(sync_fingerprint, candidate_id)] = row
         return row
 
     def get_continuity_object_by_capture_event_optional(self, capture_event_id: UUID):
         return self.objects_by_capture_event.get(capture_event_id)
+
+    def get_continuity_object_by_commit_fingerprint_optional(
+        self,
+        *,
+        sync_fingerprint: str,
+        candidate_id: str,
+    ):
+        return self.objects_by_commit_fingerprint.get((sync_fingerprint, candidate_id))
 
     def list_continuity_objects_for_capture_events(self, capture_event_ids: list[UUID]):
         return [
@@ -226,3 +245,234 @@ def test_continuity_capture_validation_and_not_found_contracts() -> None:
             user_id=store.user_id,
             capture_event_id=uuid4(),
         )
+
+
+def test_capture_candidates_extracts_explicit_decision_and_correction_from_turn_pair() -> None:
+    store = ContinuityCaptureStoreStub()
+
+    payload = capture_continuity_candidates(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ContinuityCaptureCandidatesInput(
+            user_content="Decision: ship B2 this week",
+            assistant_content="Correction: use assist mode as default",
+        ),
+    )
+
+    assert payload["summary"]["candidate_count"] == 2
+    assert payload["summary"]["explicit_count"] == 2
+    assert {item["candidate_type"] for item in payload["candidates"]} == {"decision", "correction"}
+    assert all(item["proposed_action"] == "auto_save_candidate" for item in payload["candidates"])
+
+
+def test_capture_candidates_returns_no_op_for_ack_only_turns() -> None:
+    store = ContinuityCaptureStoreStub()
+
+    payload = capture_continuity_candidates(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ContinuityCaptureCandidatesInput(
+            user_content="thanks",
+            assistant_content="ok",
+        ),
+    )
+
+    assert payload["summary"]["candidate_count"] == 1
+    assert payload["summary"]["no_op_count"] == 1
+    assert payload["candidates"][0]["candidate_type"] == "no_op"
+
+
+def test_commit_captures_assist_mode_auto_saves_explicit_decisions_and_routes_notes_to_review() -> None:
+    store = ContinuityCaptureStoreStub()
+    candidates = capture_continuity_candidates(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ContinuityCaptureCandidatesInput(
+            user_content="Decision: keep release freeze",
+            assistant_content="Note: broad summary for later",
+        ),
+    )["candidates"]
+
+    payload = commit_continuity_captures(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ContinuityCaptureCommitInput(
+            mode="assist",
+            sync_fingerprint="sync:assist-001",
+            candidates=candidates,  # type: ignore[arg-type]
+        ),
+    )
+
+    commits = payload["commits"]
+    assert len(commits) == 2
+    decision_commit = next(item for item in commits if item["candidate_type"] == "decision")
+    note_commit = next(item for item in commits if item["candidate_type"] == "note")
+
+    assert decision_commit["decision"] == "auto_saved"
+    assert decision_commit["continuity_object"] is not None
+    assert decision_commit["continuity_object"]["status"] == "active"
+    assert note_commit["decision"] == "queued_for_review"
+    assert note_commit["continuity_object"] is not None
+    assert note_commit["continuity_object"]["status"] == "stale"
+
+    assert payload["summary"] == {
+        "mode": "assist",
+        "candidate_count": 2,
+        "auto_saved_count": 1,
+        "review_queued_count": 1,
+        "noop_count": 0,
+        "duplicate_noop_count": 0,
+        "auto_saved_types": ["decision"],
+        "review_queued_types": ["note"],
+    }
+
+
+def test_commit_captures_manual_mode_routes_explicit_items_to_review() -> None:
+    store = ContinuityCaptureStoreStub()
+    candidates = capture_continuity_candidates(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ContinuityCaptureCandidatesInput(
+            user_content="Decision: defer launch by one week",
+            assistant_content="",
+        ),
+    )["candidates"]
+
+    payload = commit_continuity_captures(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ContinuityCaptureCommitInput(
+            mode="manual",
+            sync_fingerprint="sync:manual-001",
+            candidates=candidates,  # type: ignore[arg-type]
+        ),
+    )
+
+    assert payload["commits"][0]["decision"] == "queued_for_review"
+    assert payload["commits"][0]["continuity_object"]["status"] == "stale"
+    assert payload["summary"]["auto_saved_count"] == 0
+    assert payload["summary"]["review_queued_count"] == 1
+
+
+def test_commit_captures_auto_mode_autosaves_allowlist_candidates_above_threshold() -> None:
+    store = ContinuityCaptureStoreStub()
+    payload = commit_continuity_captures(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ContinuityCaptureCommitInput(
+            mode="auto",
+            sync_fingerprint="sync:auto-001",
+            candidates=[
+                {
+                    "candidate_type": "waiting_for",
+                    "object_type": "WaitingFor",
+                    "normalized_text": "waiting on release approval",
+                    "confidence": 0.86,
+                    "explicit": False,
+                    "source_role": "assistant",
+                    "admission_reason": "derived_waiting_for",
+                    "evidence_snippet": "waiting on release approval",
+                }
+            ],
+        ),
+    )
+
+    assert payload["commits"][0]["decision"] == "auto_saved"
+    assert payload["commits"][0]["continuity_object"] is not None
+    assert payload["commits"][0]["continuity_object"]["status"] == "active"
+    assert payload["summary"]["auto_saved_count"] == 1
+    assert payload["summary"]["review_queued_count"] == 0
+    assert payload["summary"]["auto_saved_types"] == ["waiting_for"]
+
+
+def test_commit_captures_auto_mode_routes_below_threshold_candidates_to_review() -> None:
+    store = ContinuityCaptureStoreStub()
+    payload = commit_continuity_captures(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ContinuityCaptureCommitInput(
+            mode="auto",
+            sync_fingerprint="sync:auto-002",
+            candidates=[
+                {
+                    "candidate_type": "decision",
+                    "object_type": "Decision",
+                    "normalized_text": "ship the bridge now",
+                    "confidence": 0.84,
+                    "explicit": True,
+                    "source_role": "user",
+                    "admission_reason": "explicit_prefix_decision",
+                    "evidence_snippet": "ship the bridge now",
+                }
+            ],
+        ),
+    )
+
+    assert payload["commits"][0]["decision"] == "queued_for_review"
+    assert payload["commits"][0]["continuity_object"] is not None
+    assert payload["commits"][0]["continuity_object"]["status"] == "stale"
+    assert payload["summary"]["auto_saved_count"] == 0
+    assert payload["summary"]["review_queued_count"] == 1
+    assert payload["summary"]["review_queued_types"] == ["decision"]
+
+
+def test_commit_captures_rejects_non_boolean_explicit_values() -> None:
+    store = ContinuityCaptureStoreStub()
+
+    with pytest.raises(ContinuityCaptureValidationError, match="explicit must be a boolean"):
+        commit_continuity_captures(
+            store,  # type: ignore[arg-type]
+            user_id=store.user_id,
+            request=ContinuityCaptureCommitInput(
+                mode="assist",
+                sync_fingerprint="sync:explicit-validation-001",
+                candidates=[
+                    {
+                        "candidate_type": "decision",
+                        "object_type": "Decision",
+                        "normalized_text": "ship after review",
+                        "confidence": 0.95,
+                        "explicit": "true",
+                        "source_role": "user",
+                        "admission_reason": "explicit_prefix_decision",
+                        "evidence_snippet": "ship after review",
+                    }
+                ],
+            ),
+        )
+
+
+def test_commit_captures_is_idempotent_for_repeated_sync_attempts() -> None:
+    store = ContinuityCaptureStoreStub()
+    candidates = capture_continuity_candidates(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ContinuityCaptureCandidatesInput(
+            user_content="Decision: freeze scope for bridge sprint",
+            assistant_content="",
+        ),
+    )["candidates"]
+
+    first = commit_continuity_captures(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ContinuityCaptureCommitInput(
+            mode="assist",
+            sync_fingerprint="sync:repeat-001",
+            candidates=candidates,  # type: ignore[arg-type]
+        ),
+    )
+    second = commit_continuity_captures(
+        store,  # type: ignore[arg-type]
+        user_id=store.user_id,
+        request=ContinuityCaptureCommitInput(
+            mode="assist",
+            sync_fingerprint="sync:repeat-001",
+            candidates=candidates,  # type: ignore[arg-type]
+        ),
+    )
+
+    assert first["summary"]["auto_saved_count"] == 1
+    assert second["summary"]["auto_saved_count"] == 0
+    assert second["summary"]["duplicate_noop_count"] == 1
+    assert second["commits"][0]["decision"] == "duplicate_noop"

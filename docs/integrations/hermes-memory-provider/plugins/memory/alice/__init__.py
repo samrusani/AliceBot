@@ -39,7 +39,9 @@ _DEFAULT_MAX_OPEN_LOOPS = 5
 _DEFAULT_CAPTURE_CHAR_LIMIT = 3800
 _DEFAULT_SESSION_END_FLUSH_TIMEOUT_SECONDS = 5.0
 _CAPTURE_DEDUPE_WINDOW_SECONDS = 5.0
-_BRIDGE_CONTRACT_VERSION = "bridge_b1"
+_DEFAULT_BRIDGE_MODE = "assist"
+_BRIDGE_CAPTURE_MODES = ("manual", "assist", "auto")
+_BRIDGE_CONTRACT_VERSION = "bridge_b2"
 
 _RECALL_LIMIT_MIN = 1
 _RECALL_LIMIT_MAX = 50
@@ -58,6 +60,7 @@ _BRIDGE_CONFIG_ALIASES: Dict[str, tuple[str, ...]] = {
     "prefetch_include_non_promotable_facts": ("include_non_promotable_facts",),
     "sync_turn_capture_enabled": ("auto_capture",),
     "memory_write_capture_enabled": ("mirror_memory_writes",),
+    "bridge_mode": ("capture_mode",),
 }
 _SAFE_TOOL_ERROR_MESSAGES = (
     "internal provider error",
@@ -171,6 +174,14 @@ def _parse_float(value: Any, *, default: float, min_value: float, max_value: flo
     except (TypeError, ValueError):
         return default
     return max(min_value, min(max_value, parsed))
+
+
+def _parse_bridge_mode(value: Any, *, default: str) -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _BRIDGE_CAPTURE_MODES:
+            return normalized
+    return default
 
 
 def _normalize_base_url(value: str) -> str:
@@ -296,6 +307,13 @@ def _default_config() -> Dict[str, Any]:
                 os.environ.get("ALICE_MEMORY_MIRROR_WRITES"),
             ),
             default=False,
+        ),
+        "bridge_mode": _parse_bridge_mode(
+            _first_non_empty(
+                os.environ.get("ALICE_MEMORY_BRIDGE_MODE"),
+                os.environ.get("ALICE_MEMORY_CAPTURE_MODE"),
+            ),
+            default=_DEFAULT_BRIDGE_MODE,
         ),
         "session_end_flush_timeout_seconds": _parse_float(
             os.environ.get("ALICE_MEMORY_SESSION_END_FLUSH_TIMEOUT_SECONDS"),
@@ -459,6 +477,12 @@ class AliceMemoryProvider(MemoryProvider):
                 "default": "false",
             },
             {
+                "key": "bridge_mode",
+                "description": "Bridge capture operating mode: manual, assist, or auto",
+                "choices": list(_BRIDGE_CAPTURE_MODES),
+                "default": _DEFAULT_BRIDGE_MODE,
+            },
+            {
                 "key": "session_end_flush_timeout_seconds",
                 "description": "Session-end capture flush timeout in seconds",
                 "default": str(_DEFAULT_SESSION_END_FLUSH_TIMEOUT_SECONDS),
@@ -526,6 +550,8 @@ class AliceMemoryProvider(MemoryProvider):
             return
         if self._agent_context != "primary":
             return
+        if self._config.get("bridge_mode", _DEFAULT_BRIDGE_MODE) == "manual":
+            return
 
         raw_content = self._build_turn_capture_payload(user_content, assistant_content)
         if not raw_content:
@@ -584,6 +610,7 @@ class AliceMemoryProvider(MemoryProvider):
                 "queue_prefetch": True,
                 "sync_turn": bool(config.get("sync_turn_capture_enabled", False)),
                 "on_session_end": True,
+                "bridge_mode": str(config.get("bridge_mode", _DEFAULT_BRIDGE_MODE)),
             },
             "config": config,
             "config_path": loaded["config_path"],
@@ -788,7 +815,69 @@ class AliceMemoryProvider(MemoryProvider):
                 self._capture_pending_fingerprints.discard(fingerprint)
                 self._capture_recent_fingerprints[fingerprint] = time.monotonic()
 
+    def _is_sync_turn_payload(self, raw_content: str) -> bool:
+        stripped = raw_content.strip()
+        return stripped.startswith("User:") or stripped.startswith("Assistant:")
+
+    def _split_turn_capture_payload(self, raw_content: str) -> tuple[str, str]:
+        user_text = ""
+        assistant_text = ""
+        for line in raw_content.splitlines():
+            if line.startswith("User: "):
+                user_text = line[len("User: ") :].strip()
+                continue
+            if line.startswith("Assistant: "):
+                assistant_text = line[len("Assistant: ") :].strip()
+        return user_text, assistant_text
+
+    def _post_sync_turn_capture(self, raw_content: str) -> None:
+        user_text, assistant_text = self._split_turn_capture_payload(raw_content)
+        mode = _parse_bridge_mode(
+            self._config.get("bridge_mode", _DEFAULT_BRIDGE_MODE),
+            default=_DEFAULT_BRIDGE_MODE,
+        )
+        sync_fingerprint = self._capture_fingerprint(kind="sync_turn", raw_content=raw_content)
+
+        candidates_payload = self._request_json(
+            "POST",
+            "/v0/continuity/captures/candidates",
+            payload={
+                "user_content": user_text[:_DEFAULT_CAPTURE_CHAR_LIMIT],
+                "assistant_content": assistant_text[:_DEFAULT_CAPTURE_CHAR_LIMIT],
+                "source_kind": "sync_turn",
+            },
+        )
+        candidates = candidates_payload.get("candidates")
+        if not isinstance(candidates, list):
+            raise RuntimeError("Alice API returned an invalid response payload")
+
+        self._request_json(
+            "POST",
+            "/v0/continuity/captures/commit",
+            payload={
+                "mode": mode,
+                "sync_fingerprint": sync_fingerprint,
+                "source_kind": "sync_turn",
+                "candidates": candidates,
+            },
+        )
+
     def _post_capture(self, raw_content: str) -> None:
+        if self._is_sync_turn_payload(raw_content):
+            mode = _parse_bridge_mode(
+                self._config.get("bridge_mode", _DEFAULT_BRIDGE_MODE),
+                default=_DEFAULT_BRIDGE_MODE,
+            )
+            if mode in {"assist", "auto"}:
+                try:
+                    self._post_sync_turn_capture(raw_content)
+                    return
+                except RuntimeError as exc:
+                    message = str(exc)
+                    if "HTTP status 404" not in message and "HTTP status 400" not in message:
+                        raise
+                    logger.debug("Alice bridge capture endpoints unavailable, falling back to legacy capture path")
+
         payload = {
             "raw_content": raw_content[:_DEFAULT_CAPTURE_CHAR_LIMIT],
         }
@@ -949,6 +1038,14 @@ def _load_config_dict_from_values(values: Dict[str, Any]) -> tuple[Dict[str, Any
     config["memory_write_capture_enabled"] = _parse_bool(
         memory_write_capture_value,
         default=False,
+    )
+
+    bridge_mode_value, bridge_mode_source = _resolve_config_value(values, "bridge_mode")
+    if bridge_mode_source != "bridge_mode":
+        legacy_config_keys.append(bridge_mode_source)
+    config["bridge_mode"] = _parse_bridge_mode(
+        bridge_mode_value,
+        default=_DEFAULT_BRIDGE_MODE,
     )
 
     config["session_end_flush_timeout_seconds"] = _parse_float(

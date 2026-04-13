@@ -239,6 +239,24 @@ ContinuityCaptureExplicitSignal = Literal[
     "note",
 ]
 ContinuityCaptureAdmissionPosture = Literal["DERIVED", "TRIAGE"]
+ContinuityCaptureCandidateType = Literal[
+    "decision",
+    "commitment",
+    "waiting_for",
+    "blocker",
+    "preference",
+    "correction",
+    "note",
+    "no_op",
+]
+ContinuityCaptureCommitMode = Literal["manual", "assist", "auto"]
+ContinuityCaptureCommitDecision = Literal[
+    "auto_saved",
+    "queued_for_review",
+    "no_op",
+    "duplicate_noop",
+]
+ContinuityCaptureProposedAction = Literal["auto_save_candidate", "queue_for_review", "no_op"]
 ContinuityRecallScopeKind = Literal["thread", "task", "project", "person"]
 ContinuityCorrectionAction = Literal["confirm", "edit", "delete", "supersede", "mark_stale"]
 ContinuityReviewStatus = Literal["active", "stale", "superseded", "deleted"]
@@ -763,6 +781,26 @@ CONTINUITY_CAPTURE_EXPLICIT_SIGNALS = [
     "next_action",
     "note",
 ]
+CONTINUITY_CAPTURE_CANDIDATE_TYPES = [
+    "decision",
+    "commitment",
+    "waiting_for",
+    "blocker",
+    "preference",
+    "correction",
+    "note",
+    "no_op",
+]
+CONTINUITY_CAPTURE_COMMIT_MODES = ["manual", "assist", "auto"]
+CONTINUITY_CAPTURE_ASSIST_AUTOSAVE_TYPES = [
+    "correction",
+    "preference",
+    "decision",
+    "commitment",
+    "waiting_for",
+    "blocker",
+]
+CONTINUITY_CAPTURE_REVIEW_REQUIRED_TYPES = ["note"]
 CONTINUITY_CORRECTION_ACTIONS = [
     "confirm",
     "edit",
@@ -1790,6 +1828,38 @@ class ContinuityCaptureCreateInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ContinuityCaptureCandidatesInput:
+    user_content: str
+    assistant_content: str
+    session_id: str | None = None
+    source_kind: str = "sync_turn"
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "user_content": self.user_content,
+            "assistant_content": self.assistant_content,
+            "session_id": self.session_id,
+            "source_kind": self.source_kind,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ContinuityCaptureCommitInput:
+    mode: ContinuityCaptureCommitMode = "assist"
+    candidates: list[JsonObject] = field(default_factory=list)
+    sync_fingerprint: str | None = None
+    source_kind: str = "sync_turn"
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "mode": self.mode,
+            "candidates": self.candidates,
+            "sync_fingerprint": self.sync_fingerprint,
+            "source_kind": self.source_kind,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuityReviewQueueQueryInput:
     status: ContinuityReviewStatusFilter = "correction_ready"
     limit: int = DEFAULT_CONTINUITY_REVIEW_LIMIT
@@ -2674,6 +2744,58 @@ class ContinuityCaptureEventRecord(TypedDict):
     admission_posture: ContinuityCaptureAdmissionPosture
     admission_reason: str
     created_at: str
+
+
+class ContinuityCaptureCandidateRecord(TypedDict):
+    candidate_id: str
+    candidate_type: ContinuityCaptureCandidateType
+    object_type: ContinuityObjectType | None
+    normalized_text: str
+    confidence: float
+    trust_class: MemoryTrustClass
+    evidence_snippet: str
+    explicit: bool
+    source_role: str
+    admission_reason: str
+    proposed_action: ContinuityCaptureProposedAction
+
+
+class ContinuityCaptureCandidatesSummary(TypedDict):
+    candidate_count: int
+    explicit_count: int
+    high_confidence_count: int
+    no_op_count: int
+
+
+class ContinuityCaptureCandidatesResponse(TypedDict):
+    candidates: list[ContinuityCaptureCandidateRecord]
+    summary: ContinuityCaptureCandidatesSummary
+
+
+class ContinuityCaptureCommitRecord(TypedDict):
+    candidate_id: str
+    candidate_type: ContinuityCaptureCandidateType
+    decision: ContinuityCaptureCommitDecision
+    reason: str
+    persistence_target: str
+    capture_event: ContinuityCaptureEventRecord | None
+    continuity_object: ContinuityObjectRecord | None
+
+
+class ContinuityCaptureCommitSummary(TypedDict):
+    mode: ContinuityCaptureCommitMode
+    candidate_count: int
+    auto_saved_count: int
+    review_queued_count: int
+    noop_count: int
+    duplicate_noop_count: int
+    auto_saved_types: list[str]
+    review_queued_types: list[str]
+
+
+class ContinuityCaptureCommitResponse(TypedDict):
+    commits: list[ContinuityCaptureCommitRecord]
+    summary: ContinuityCaptureCommitSummary
 
 
 class ContinuityLifecycleStateRecord(TypedDict):

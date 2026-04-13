@@ -8,7 +8,7 @@
 Phase 11 remains baseline truth and is not future scope.
 
 ## Active Planning Status
-- Bridge Sprint 1 (`B1`) is the active execution sprint.
+- Bridge Sprint 2 (`B2`) is the active execution sprint.
 - The remaining bridge-phase milestones are planned but not yet promoted.
 
 ## Bridge Phase: Hermes Auto-Capture (Planned)

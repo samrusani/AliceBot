@@ -104,6 +104,7 @@ def _run_structural_validation(provider_class: type) -> Dict[str, Any]:
                     "prefetch_include_non_promotable_facts": False,
                     "sync_turn_capture_enabled": False,
                     "memory_write_capture_enabled": False,
+                    "bridge_mode": "assist",
                     "session_end_flush_timeout_seconds": 5.0,
                 },
                 indent=2,
@@ -151,6 +152,7 @@ def _run_live_prefetch(
                     "prefetch_max_recent_changes": 3,
                     "prefetch_max_open_loops": 3,
                     "prefetch_include_non_promotable_facts": False,
+                    "bridge_mode": "assist",
                 },
                 indent=2,
             )

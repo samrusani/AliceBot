@@ -236,3 +236,194 @@ def test_continuity_capture_rejects_invalid_signal_and_enforces_user_scope(
             "order": ["created_at_desc", "id_desc"],
         },
     }
+
+
+def test_continuity_capture_candidate_and_commit_pipeline_supports_assist_mode_autosave(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="pipeline-assist@example.com")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    candidates_status, candidates_payload = invoke_request(
+        "POST",
+        "/v0/continuity/captures/candidates",
+        payload={
+            "user_id": str(user_id),
+            "user_content": "Decision: keep provider-plus-MCP architecture",
+            "assistant_content": "Correction: default bridge mode is assist",
+        },
+    )
+    assert candidates_status == 200
+    assert candidates_payload["summary"]["candidate_count"] == 2
+    assert {item["candidate_type"] for item in candidates_payload["candidates"]} == {"decision", "correction"}
+
+    commit_status, commit_payload = invoke_request(
+        "POST",
+        "/v0/continuity/captures/commit",
+        payload={
+            "user_id": str(user_id),
+            "mode": "assist",
+            "sync_fingerprint": "sync-assist-pipeline-001",
+            "candidates": candidates_payload["candidates"],
+        },
+    )
+    assert commit_status == 200
+    assert commit_payload["summary"] == {
+        "mode": "assist",
+        "candidate_count": 2,
+        "auto_saved_count": 2,
+        "review_queued_count": 0,
+        "noop_count": 0,
+        "duplicate_noop_count": 0,
+        "auto_saved_types": ["correction", "decision"],
+        "review_queued_types": [],
+    }
+    assert all(item["decision"] == "auto_saved" for item in commit_payload["commits"])
+
+
+def test_continuity_capture_pipeline_routes_disallowed_or_low_confidence_candidates_to_review_queue(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="pipeline-review@example.com")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    candidates_status, candidates_payload = invoke_request(
+        "POST",
+        "/v0/continuity/captures/candidates",
+        payload={
+            "user_id": str(user_id),
+            "user_content": "Note: broad recap for later refinement",
+            "assistant_content": "",
+        },
+    )
+    assert candidates_status == 200
+    assert candidates_payload["candidates"][0]["candidate_type"] == "note"
+
+    commit_status, commit_payload = invoke_request(
+        "POST",
+        "/v0/continuity/captures/commit",
+        payload={
+            "user_id": str(user_id),
+            "mode": "assist",
+            "sync_fingerprint": "sync-review-pipeline-001",
+            "candidates": candidates_payload["candidates"],
+        },
+    )
+    assert commit_status == 200
+    assert commit_payload["summary"]["auto_saved_count"] == 0
+    assert commit_payload["summary"]["review_queued_count"] == 1
+    assert commit_payload["summary"]["review_queued_types"] == ["note"]
+    assert commit_payload["commits"][0]["decision"] == "queued_for_review"
+    assert commit_payload["commits"][0]["continuity_object"]["status"] == "stale"
+
+    review_status, review_payload = invoke_request(
+        "GET",
+        "/v0/continuity/review-queue",
+        query_params={"user_id": str(user_id), "status": "stale", "limit": "20"},
+    )
+    assert review_status == 200
+    assert review_payload["summary"]["returned_count"] == 1
+    assert review_payload["items"][0]["status"] == "stale"
+
+
+def test_continuity_capture_pipeline_noop_and_repeated_sync_are_write_safe(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="pipeline-noop@example.com")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    noop_candidates_status, noop_candidates_payload = invoke_request(
+        "POST",
+        "/v0/continuity/captures/candidates",
+        payload={
+            "user_id": str(user_id),
+            "user_content": "thanks",
+            "assistant_content": "ok",
+        },
+    )
+    assert noop_candidates_status == 200
+    assert noop_candidates_payload["summary"]["no_op_count"] == 1
+
+    noop_commit_status, noop_commit_payload = invoke_request(
+        "POST",
+        "/v0/continuity/captures/commit",
+        payload={
+            "user_id": str(user_id),
+            "mode": "assist",
+            "sync_fingerprint": "sync-noop-001",
+            "candidates": noop_candidates_payload["candidates"],
+        },
+    )
+    assert noop_commit_status == 200
+    assert noop_commit_payload["summary"]["noop_count"] == 1
+    assert noop_commit_payload["summary"]["auto_saved_count"] == 0
+    assert noop_commit_payload["summary"]["review_queued_count"] == 0
+
+    list_status_before, list_payload_before = invoke_request(
+        "GET",
+        "/v0/continuity/captures",
+        query_params={"user_id": str(user_id), "limit": "20"},
+    )
+    assert list_status_before == 200
+    assert list_payload_before["summary"]["total_count"] == 0
+
+    candidates_status, candidates_payload = invoke_request(
+        "POST",
+        "/v0/continuity/captures/candidates",
+        payload={
+            "user_id": str(user_id),
+            "user_content": "Decision: ship deterministic commit policy",
+            "assistant_content": "",
+        },
+    )
+    assert candidates_status == 200
+
+    first_commit_status, first_commit_payload = invoke_request(
+        "POST",
+        "/v0/continuity/captures/commit",
+        payload={
+            "user_id": str(user_id),
+            "mode": "assist",
+            "sync_fingerprint": "sync-repeat-001",
+            "candidates": candidates_payload["candidates"],
+        },
+    )
+    assert first_commit_status == 200
+    assert first_commit_payload["summary"]["auto_saved_count"] == 1
+
+    second_commit_status, second_commit_payload = invoke_request(
+        "POST",
+        "/v0/continuity/captures/commit",
+        payload={
+            "user_id": str(user_id),
+            "mode": "assist",
+            "sync_fingerprint": "sync-repeat-001",
+            "candidates": candidates_payload["candidates"],
+        },
+    )
+    assert second_commit_status == 200
+    assert second_commit_payload["summary"]["auto_saved_count"] == 0
+    assert second_commit_payload["summary"]["duplicate_noop_count"] == 1
+
+    list_status_after, list_payload_after = invoke_request(
+        "GET",
+        "/v0/continuity/captures",
+        query_params={"user_id": str(user_id), "limit": "20"},
+    )
+    assert list_status_after == 200
+    assert list_payload_after["summary"]["total_count"] == 1
