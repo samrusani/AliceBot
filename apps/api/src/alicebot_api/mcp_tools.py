@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from typing import cast
 from uuid import UUID
 
 from alicebot_api.continuity_capture import (
@@ -77,7 +78,34 @@ from alicebot_api.temporal_state import (
 )
 
 
-_REVIEW_STATUS_CHOICES = ("correction_ready", "active", "stale", "superseded", "deleted", "all")
+_REVIEW_STATUS_CHOICES = (
+    "pending_review",
+    "correction_ready",
+    "active",
+    "stale",
+    "superseded",
+    "deleted",
+    "all",
+)
+_REVIEW_STATUS_ALIASES = {
+    "pending": "pending_review",
+}
+_REVIEW_APPLY_ACTION_CHOICES = (
+    "approve",
+    "edit-and-approve",
+    "reject",
+    "supersede-existing",
+)
+_REVIEW_APPLY_ACTION_ALIASES = {
+    "edit_and_approve": "edit-and-approve",
+    "supersede_existing": "supersede-existing",
+}
+_REVIEW_APPLY_TO_CORRECTION_ACTION = {
+    "approve": "confirm",
+    "edit-and-approve": "edit",
+    "reject": "delete",
+    "supersede-existing": "supersede",
+}
 _CONTEXT_PACK_ASSEMBLY_VERSION_V0 = "alice_context_pack_v0"
 _PREFETCH_CONTEXT_ASSEMBLY_VERSION_V0 = "alice_prefetch_context_v0"
 
@@ -232,6 +260,51 @@ def _parse_bool(arguments: Mapping[str, object], *, key: str, default: bool = Fa
         if normalized in {"false", "0", "no"}:
             return False
     raise MCPToolError(f"{key} must be a boolean")
+
+
+def _parse_review_status(
+    arguments: Mapping[str, object],
+    *,
+    default: str,
+) -> str:
+    raw_status = arguments.get("status", default)
+    if not isinstance(raw_status, str):
+        raise MCPToolError("status must be a string")
+    normalized = raw_status.strip()
+    if normalized in _REVIEW_STATUS_ALIASES:
+        normalized = _REVIEW_STATUS_ALIASES[normalized]
+    if normalized not in _REVIEW_STATUS_CHOICES:
+        allowed = ", ".join(_REVIEW_STATUS_CHOICES)
+        raise MCPToolError(f"status must be one of: {allowed}")
+    if normalized == "pending_review":
+        return "stale"
+    return normalized
+
+
+def _parse_review_item_id(arguments: Mapping[str, object], *, required: bool) -> UUID | None:
+    review_item_id = _parse_optional_uuid(arguments, "review_item_id")
+    continuity_object_id = _parse_optional_uuid(arguments, "continuity_object_id")
+    if review_item_id is not None and continuity_object_id is not None and review_item_id != continuity_object_id:
+        raise MCPToolError("review_item_id and continuity_object_id must match when both are provided")
+    resolved = review_item_id or continuity_object_id
+    if required and resolved is None:
+        raise MCPToolError("review_item_id or continuity_object_id is required and must be a UUID string")
+    return resolved
+
+
+def _resolve_review_apply_action(raw_action: str, *, allow_legacy: bool) -> str:
+    normalized = raw_action.strip()
+    if normalized in _REVIEW_APPLY_ACTION_ALIASES:
+        normalized = _REVIEW_APPLY_ACTION_ALIASES[normalized]
+    mapped = _REVIEW_APPLY_TO_CORRECTION_ACTION.get(normalized)
+    if mapped is not None:
+        return mapped
+    if allow_legacy and normalized in CONTINUITY_CORRECTION_ACTIONS:
+        return normalized
+    allowed = list(_REVIEW_APPLY_ACTION_CHOICES)
+    if allow_legacy:
+        allowed.extend(CONTINUITY_CORRECTION_ACTIONS)
+    raise MCPToolError(f"action must be one of: {', '.join(allowed)}")
 
 
 def _build_recall_query(arguments: Mapping[str, object], *, limit: int) -> ContinuityRecallQueryInput:
@@ -644,8 +717,13 @@ def _handle_alice_timeline(context: MCPRuntimeContext, arguments: Mapping[str, o
         )
 
 
-def _handle_alice_memory_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    continuity_object_id = _parse_optional_uuid(arguments, "continuity_object_id")
+def _review_queue_payload(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+    *,
+    default_status: str,
+) -> JsonObject:
+    continuity_object_id = _parse_review_item_id(arguments, required=False)
     if continuity_object_id is not None:
         with _store_context(context) as store:
             payload = get_continuity_review_detail(
@@ -658,12 +736,7 @@ def _handle_alice_memory_review(context: MCPRuntimeContext, arguments: Mapping[s
             "review": payload["review"],
         }
 
-    status = arguments.get("status", "correction_ready")
-    if not isinstance(status, str):
-        raise MCPToolError("status must be a string")
-    if status not in _REVIEW_STATUS_CHOICES:
-        allowed = ", ".join(_REVIEW_STATUS_CHOICES)
-        raise MCPToolError(f"status must be one of: {allowed}")
+    status = _parse_review_status(arguments, default=default_status)
     limit = _parse_int(
         arguments,
         key="limit",
@@ -691,14 +764,43 @@ def _handle_alice_memory_review(context: MCPRuntimeContext, arguments: Mapping[s
     }
 
 
-def _handle_alice_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+def _handle_alice_review_queue(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _review_queue_payload(
+        context,
+        arguments,
+        default_status="pending_review",
+    )
+
+
+def _handle_alice_memory_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _review_queue_payload(
+        context,
+        arguments,
+        default_status="correction_ready",
+    )
+
+
+def _review_apply_payload(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+    *,
+    allow_legacy_actions: bool,
+    include_action_resolution: bool,
+) -> JsonObject:
+    requested_action = _parse_required_text(arguments, "action")
+    resolved_action = _resolve_review_apply_action(
+        requested_action,
+        allow_legacy=allow_legacy_actions,
+    )
+    continuity_object_id = cast(UUID, _parse_review_item_id(arguments, required=True))
+
     with _store_context(context) as store:
-        return apply_continuity_correction(
+        payload = apply_continuity_correction(
             store,
             user_id=context.user_id,
-            continuity_object_id=_parse_required_uuid(arguments, "continuity_object_id"),
+            continuity_object_id=continuity_object_id,
             request=ContinuityCorrectionInput(
-                action=_parse_required_text(arguments, "action"),
+                action=resolved_action,
                 reason=_parse_optional_text(arguments, "reason"),
                 title=_parse_optional_text(arguments, "title"),
                 body=_parse_optional_json_object(arguments, "body"),
@@ -710,6 +812,34 @@ def _handle_alice_memory_correct(context: MCPRuntimeContext, arguments: Mapping[
                 replacement_confidence=_parse_optional_float(arguments, "replacement_confidence"),
             ),
         )
+
+    if not include_action_resolution:
+        return payload
+    return {
+        "review_action": {
+            "requested_action": requested_action,
+            "resolved_action": resolved_action,
+        },
+        **payload,
+    }
+
+
+def _handle_alice_review_apply(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _review_apply_payload(
+        context,
+        arguments,
+        allow_legacy_actions=True,
+        include_action_resolution=True,
+    )
+
+
+def _handle_alice_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _review_apply_payload(
+        context,
+        arguments,
+        allow_legacy_actions=True,
+        include_action_resolution=False,
+    )
 
 
 def _handle_alice_explain(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -1030,12 +1160,50 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
-        "name": "alice_memory_review",
-        "description": "List correction review queue or fetch review detail for one continuity object.",
+        "name": "alice_review_queue",
+        "description": "List pending review queue items or fetch one review item detail with explanation metadata.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
             "properties": {
+                "review_item_id": {"type": "string", "format": "uuid"},
+                "continuity_object_id": {"type": "string", "format": "uuid"},
+                "status": {"type": "string", "enum": list(_REVIEW_STATUS_CHOICES)},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_CONTINUITY_REVIEW_LIMIT},
+            },
+        },
+    },
+    {
+        "name": "alice_review_apply",
+        "description": "Apply approve/reject/edit-and-approve/supersede-existing review actions deterministically.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["action"],
+            "properties": {
+                "review_item_id": {"type": "string", "format": "uuid"},
+                "continuity_object_id": {"type": "string", "format": "uuid"},
+                "action": {"type": "string", "enum": list(_REVIEW_APPLY_ACTION_CHOICES)},
+                "reason": {"type": "string"},
+                "title": {"type": "string"},
+                "body": {"type": "object"},
+                "provenance": {"type": "object"},
+                "confidence": {"type": "number"},
+                "replacement_title": {"type": "string"},
+                "replacement_body": {"type": "object"},
+                "replacement_provenance": {"type": "object"},
+                "replacement_confidence": {"type": "number"},
+            },
+        },
+    },
+    {
+        "name": "alice_memory_review",
+        "description": "Legacy alias for review queue/detail (use alice_review_queue).",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "review_item_id": {"type": "string", "format": "uuid"},
                 "continuity_object_id": {"type": "string", "format": "uuid"},
                 "status": {"type": "string", "enum": list(_REVIEW_STATUS_CHOICES)},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_CONTINUITY_REVIEW_LIMIT},
@@ -1044,12 +1212,13 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
     },
     {
         "name": "alice_memory_correct",
-        "description": "Apply deterministic continuity correction actions and return correction evidence.",
+        "description": "Legacy alias for review apply (use alice_review_apply).",
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
             "required": ["continuity_object_id", "action"],
             "properties": {
+                "review_item_id": {"type": "string", "format": "uuid"},
                 "continuity_object_id": {"type": "string", "format": "uuid"},
                 "action": {"type": "string", "enum": list(CONTINUITY_CORRECTION_ACTIONS)},
                 "reason": {"type": "string"},
@@ -1137,6 +1306,8 @@ _TOOL_HANDLERS = {
     "alice_recent_decisions": _handle_alice_recent_decisions,
     "alice_recent_changes": _handle_alice_recent_changes,
     "alice_timeline": _handle_alice_timeline,
+    "alice_review_queue": _handle_alice_review_queue,
+    "alice_review_apply": _handle_alice_review_apply,
     "alice_memory_review": _handle_alice_memory_review,
     "alice_memory_correct": _handle_alice_memory_correct,
     "alice_explain": _handle_alice_explain,

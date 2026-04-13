@@ -40,7 +40,8 @@ Phase 11 is complete and shipped:
 - `P11-R1` Provider Runtime Hardening is shipped
 - A bridge phase is now active: Hermes Auto-Capture
 - `B1` Hermes Provider Contract Foundation is shipped
-- `B2` Auto-Capture Pipeline is the active sprint
+- `B2` Auto-Capture Pipeline is shipped
+- `B3` Review Queue + Explainability is the active sprint
 - Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
 
 ## Why Alice exists

@@ -225,6 +225,8 @@ def test_review_queue_filters_correction_ready_statuses() -> None:
         "total_count": 2,
         "order": ["updated_at_desc", "created_at_desc", "id_desc"],
     }
+    assert payload["items"][0]["explanation"]["proposal_rationale"]
+    assert payload["items"][0]["explanation"]["trust"]["confidence"] > 0.0
 
 
 def test_confirm_records_event_before_lifecycle_mutation() -> None:
@@ -280,6 +282,54 @@ def test_edit_delete_and_mark_stale_are_deterministic() -> None:
     assert edited["continuity_object"]["status"] == "active"
     assert marked_stale["continuity_object"]["status"] == "stale"
     assert deleted["continuity_object"]["status"] == "deleted"
+
+
+def test_review_action_aliases_map_to_deterministic_correction_semantics() -> None:
+    store = ContinuityReviewStoreStub()
+    approve_row = store.add_object(title="Decision: Approve me", status="stale")
+    edit_row = store.add_object(title="Decision: Needs edit", status="stale")
+    reject_row = store.add_object(title="Decision: Reject me", status="active")
+    supersede_row = store.add_object(title="Decision: Legacy", status="active")
+
+    approved = apply_continuity_correction(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        continuity_object_id=approve_row["id"],
+        request=ContinuityCorrectionInput(action="approve"),  # type: ignore[arg-type]
+    )
+    edited_and_approved = apply_continuity_correction(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        continuity_object_id=edit_row["id"],
+        request=ContinuityCorrectionInput(  # type: ignore[arg-type]
+            action="edit-and-approve",
+            title="Decision: Edited and approved",
+        ),
+    )
+    rejected = apply_continuity_correction(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        continuity_object_id=reject_row["id"],
+        request=ContinuityCorrectionInput(action="reject"),  # type: ignore[arg-type]
+    )
+    superseded = apply_continuity_correction(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        continuity_object_id=supersede_row["id"],
+        request=ContinuityCorrectionInput(  # type: ignore[arg-type]
+            action="supersede-existing",
+            replacement_title="Decision: Replacement",
+        ),
+    )
+
+    assert approved["correction_event"]["action"] == "confirm"
+    assert approved["continuity_object"]["status"] == "active"
+    assert edited_and_approved["correction_event"]["action"] == "edit"
+    assert edited_and_approved["continuity_object"]["title"] == "Decision: Edited and approved"
+    assert rejected["correction_event"]["action"] == "delete"
+    assert rejected["continuity_object"]["status"] == "deleted"
+    assert superseded["correction_event"]["action"] == "supersede"
+    assert superseded["continuity_object"]["status"] == "superseded"
 
 
 def test_supersede_creates_replacement_and_preserves_chain_links() -> None:

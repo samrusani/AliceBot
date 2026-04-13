@@ -36,10 +36,12 @@ Implemented in B2:
 - `alice_capture_candidates`
 - `alice_commit_captures`
 
-Planned for B3+:
-- `alice_session_flush`
+Implemented in B3:
 - `alice_review_queue`
 - `alice_review_apply`
+
+Planned for B4+:
+- `alice_session_flush`
 
 ## Runtime Flows
 ### Flow 1: Pre-turn Prefetch
@@ -58,7 +60,7 @@ Planned for B3+:
 2. Policy gates auto-save vs review queue using type allowlist + confidence threshold.
 3. Writes are idempotent across repeated sync attempts.
 
-### Flow 4: Session-End Flush (planned B3+)
+### Flow 4: Session-End Flush (planned B4+)
 1. On session end, provider calls `alice_session_flush`.
 2. Alice performs dedupe merge, contradiction checks, open-loop normalization, summary refresh, and review queue updates.
 

@@ -33,14 +33,17 @@ MCP uses the same local runtime scope as CLI:
 - `alice_recent_decisions`
 - `alice_recent_changes`
 - `alice_timeline`
-- `alice_memory_review`
-- `alice_memory_correct`
+- `alice_review_queue`
+- `alice_review_apply`
+- `alice_memory_review` (legacy alias)
+- `alice_memory_correct` (legacy alias)
 - `alice_explain`
 - `alice_context_pack`
 
 `alice_explain` now accepts either `continuity_object_id` for evidence-chain inspection or `entity_id` plus optional `at` for temporal explain output.
 `alice_prefetch_context` provides an automation-oriented pre-turn context assembly surface using the same continuity resumption semantics shipped for `alice_resume`.
 `alice_capture_candidates` and `alice_commit_captures` provide the B2 bridge auto-capture pipeline over user/assistant turns with `manual`/`assist`/`auto` commit policy support.
+`alice_review_queue` and `alice_review_apply` provide B3 review operations (`approve`, `edit-and-approve`, `reject`, `supersede-existing`) with deterministic recall/resume effects after approved actions.
 
 ## Example: Claude Desktop MCP Config
 
