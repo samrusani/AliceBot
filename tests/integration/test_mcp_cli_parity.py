@@ -291,6 +291,85 @@ def test_mcp_recall_and_resume_match_core_and_cli_behavior(migrated_database_url
     assert core_resume["brief"]["next_action"]["item"]["title"] in cli_resume.stdout
 
 
+def test_mcp_task_brief_compare_smoke_matches_cli_surface(migrated_database_urls) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="mcp-task-briefs@example.com")
+    thread_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        decision = store.create_continuity_object(
+            capture_event_id=store.create_continuity_capture_event(
+                raw_content="Decision: Freeze release scope",
+                explicit_signal="decision",
+                admission_posture="DERIVED",
+                admission_reason="explicit_signal_decision",
+            )["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: Freeze release scope",
+            body={"decision_text": "Freeze release scope"},
+            provenance={"thread_id": str(thread_id)},
+            confidence=1.0,
+        )
+        next_action = store.create_continuity_object(
+            capture_event_id=store.create_continuity_capture_event(
+                raw_content="Next Action: Send release checklist",
+                explicit_signal="next_action",
+                admission_posture="DERIVED",
+                admission_reason="explicit_signal_next_action",
+            )["id"],
+            object_type="NextAction",
+            status="active",
+            title="Next Action: Send release checklist",
+            body={"action_text": "Send release checklist"},
+            provenance={"thread_id": str(thread_id)},
+            confidence=1.0,
+        )
+
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=decision["id"],
+        created_at=datetime(2026, 4, 14, 10, 0, tzinfo=UTC),
+    )
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=next_action["id"],
+        created_at=datetime(2026, 4, 14, 10, 5, tzinfo=UTC),
+    )
+
+    client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
+    try:
+        mcp_compare = _call_tool(
+            client,
+            name="alice_task_brief_compare",
+            arguments={
+                "mode": "worker_subtask",
+                "compare_to_mode": "user_recall",
+                "thread_id": str(thread_id),
+            },
+        )
+        assert mcp_compare["comparison"]["smaller_mode"] == "worker_subtask"
+    finally:
+        client.close()
+
+    cli_env = build_runtime_env(database_url=migrated_database_urls["app"], user_id=user_id)
+    cli_compare = run_cli(
+        [
+            "task-briefs",
+            "compare",
+            "--mode",
+            "worker_subtask",
+            "--compare-to-mode",
+            "user_recall",
+            "--thread-id",
+            str(thread_id),
+        ],
+        env=cli_env,
+    )
+    assert cli_compare.returncode == 0
+    assert "smaller_mode: worker_subtask" in cli_compare.stdout
+
+
 def test_mcp_contradiction_and_trust_tools_smoke(migrated_database_urls) -> None:
     user_id = seed_user(migrated_database_urls["app"], email="mcp-contradictions@example.com")
     thread_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")

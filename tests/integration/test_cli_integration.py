@@ -639,3 +639,89 @@ def test_cli_public_eval_run_rejects_unknown_suite_key(migrated_database_urls) -
 
     assert run_result.returncode == 1
     assert "unknown suite_key values: missing_suite" in run_result.stderr
+
+
+def test_cli_task_brief_compile_compare_and_show(migrated_database_urls) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="cli-task-briefs@example.com")
+    thread_id = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        store.create_continuity_object(
+            capture_event_id=store.create_continuity_capture_event(
+                raw_content="Decision: Freeze release scope",
+                explicit_signal="decision",
+                admission_posture="DERIVED",
+                admission_reason="explicit_signal_decision",
+            )["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: Freeze release scope",
+            body={"decision_text": "Freeze release scope"},
+            provenance={"thread_id": str(thread_id)},
+            confidence=1.0,
+        )
+        store.create_continuity_object(
+            capture_event_id=store.create_continuity_capture_event(
+                raw_content="Next Action: Send release checklist",
+                explicit_signal="next_action",
+                admission_posture="DERIVED",
+                admission_reason="explicit_signal_next_action",
+            )["id"],
+            object_type="NextAction",
+            status="active",
+            title="Next Action: Send release checklist",
+            body={"action_text": "Send release checklist"},
+            provenance={"thread_id": str(thread_id)},
+            confidence=1.0,
+        )
+        store.create_continuity_object(
+            capture_event_id=store.create_continuity_capture_event(
+                raw_content="Waiting For: Security review",
+                explicit_signal="waiting_for",
+                admission_posture="DERIVED",
+                admission_reason="explicit_signal_waiting_for",
+            )["id"],
+            object_type="WaitingFor",
+            status="active",
+            title="Waiting For: Security review",
+            body={"waiting_for_text": "Security review"},
+            provenance={"thread_id": str(thread_id)},
+            confidence=1.0,
+        )
+
+    env = build_cli_env(database_url=migrated_database_urls["app"], user_id=user_id)
+
+    compile_result = run_cli(
+        ["task-briefs", "compile", "--mode", "worker_subtask", "--thread-id", str(thread_id)],
+        env=env,
+    )
+    assert compile_result.returncode == 0
+    assert "task brief" in compile_result.stdout
+    assert "mode: worker_subtask" in compile_result.stdout
+    task_brief_id = next(
+        line.split(": ", 1)[1]
+        for line in compile_result.stdout.splitlines()
+        if line.startswith("task_brief_id: ")
+    )
+
+    show_result = run_cli(["task-briefs", "show", task_brief_id], env=env)
+    assert show_result.returncode == 0
+    assert f"task_brief_id: {task_brief_id}" in show_result.stdout
+
+    compare_result = run_cli(
+        [
+            "task-briefs",
+            "compare",
+            "--mode",
+            "worker_subtask",
+            "--compare-to-mode",
+            "user_recall",
+            "--thread-id",
+            str(thread_id),
+        ],
+        env=env,
+    )
+    assert compare_result.returncode == 0
+    assert "task brief comparison" in compare_result.stdout
+    assert "smaller_mode: worker_subtask" in compare_result.stdout

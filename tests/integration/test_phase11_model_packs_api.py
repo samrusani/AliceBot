@@ -223,6 +223,8 @@ def test_phase11_model_pack_catalog_bind_and_runtime_shaping(migrated_database_u
     assert detail_payload["model_pack"]["pack_id"] == "deepseek"
     assert detail_payload["model_pack"]["pack_version"] == "1.0.0"
     assert detail_payload["model_pack"]["metadata"]["seed"] == "tier2"
+    assert detail_payload["model_pack"]["briefing_strategy"] == "balanced"
+    assert detail_payload["model_pack"]["briefing_max_tokens"] == 192
 
     reserved_create_status, reserved_create_payload = invoke_request(
         "POST",
@@ -259,6 +261,8 @@ def test_phase11_model_pack_catalog_bind_and_runtime_shaping(migrated_database_u
             "display_name": "Custom Brief",
             "family": "custom",
             "description": "Custom operational brief style.",
+            "briefing_strategy": "compact",
+            "briefing_max_tokens": 160,
             "contract": {
                 "contract_version": "model_pack_contract_v1",
                 "context": {
@@ -285,6 +289,8 @@ def test_phase11_model_pack_catalog_bind_and_runtime_shaping(migrated_database_u
     )
     assert create_pack_status == 201
     assert create_pack_payload["model_pack"]["pack_id"] == "custom-brief"
+    assert create_pack_payload["model_pack"]["briefing_strategy"] == "compact"
+    assert create_pack_payload["model_pack"]["briefing_max_tokens"] == 160
 
     bind_status, bind_payload = invoke_request(
         "POST",

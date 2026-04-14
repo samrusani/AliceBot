@@ -25,6 +25,12 @@ def test_parser_routes_required_commands() -> None:
         (["lifecycle", "list"], "_run_lifecycle_list"),
         (["lifecycle", "show", continuity_object_id], "_run_lifecycle_show"),
         (["resume"], "_run_resume"),
+        (["task-briefs", "compile", "--mode", "resume"], "_run_task_brief_compile"),
+        (["task-briefs", "show", continuity_object_id], "_run_task_brief_show"),
+        (
+            ["task-briefs", "compare", "--mode", "worker_subtask", "--compare-to-mode", "user_recall"],
+            "_run_task_brief_compare",
+        ),
         (["open-loops"], "_run_open_loops"),
         (["review", "queue"], "_run_review_queue"),
         (["review", "show", continuity_object_id], "_run_review_show"),

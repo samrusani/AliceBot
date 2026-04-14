@@ -32,6 +32,8 @@ from alicebot_api.cli_formatting import (
     format_review_detail_output,
     format_review_queue_output,
     format_status_output,
+    format_task_brief_comparison_output,
+    format_task_brief_output,
     format_temporal_explain_output,
     format_temporal_state_output,
     format_temporal_timeline_output,
@@ -108,6 +110,7 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
     DEFAULT_TEMPORAL_TIMELINE_LIMIT,
+    DEFAULT_TASK_BRIEF_TOKEN_BUDGET,
     DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT,
     MAX_CONTINUITY_REVIEW_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
@@ -115,6 +118,7 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_LIFECYCLE_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    MAX_TASK_BRIEF_TOKEN_BUDGET,
     MAX_TEMPORAL_TIMELINE_LIMIT,
     MAX_TRUSTED_FACT_PROMOTION_LIMIT,
     ContradictionCaseListQueryInput,
@@ -130,12 +134,20 @@ from alicebot_api.contracts import (
     MemoryOperationCommitInput,
     MemoryOperationGenerateInput,
     MemoryOperationListInput,
+    TaskBriefCompileRequestInput,
     TemporalExplainQueryInput,
     TemporalStateAtQueryInput,
     TemporalTimelineQueryInput,
     TrustSignalListQueryInput,
     TrustedFactPatternListQueryInput,
     TrustedFactPlaybookListQueryInput,
+)
+from alicebot_api.task_briefing import (
+    TaskBriefNotFoundError,
+    TaskBriefValidationError,
+    compare_task_briefs,
+    compile_and_persist_task_brief,
+    get_persisted_task_brief,
 )
 from alicebot_api.db import ping_database, user_connection
 from alicebot_api.public_evals import (
@@ -215,6 +227,53 @@ def _add_scope_filter_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--person", default=None, help="Optional person scope.")
     parser.add_argument("--since", type=_parse_datetime, default=None, help="Optional start time (ISO-8601).")
     parser.add_argument("--until", type=_parse_datetime, default=None, help="Optional end time (ISO-8601).")
+
+
+def _add_task_brief_arguments(parser: argparse.ArgumentParser) -> None:
+    _add_scope_filter_arguments(parser)
+    parser.add_argument(
+        "--workspace-id",
+        type=_parse_uuid,
+        default=None,
+        help="Optional workspace UUID used to resolve model-pack briefing defaults.",
+    )
+    parser.add_argument(
+        "--pack-id",
+        default=None,
+        help="Optional model-pack id to resolve within the workspace.",
+    )
+    parser.add_argument(
+        "--pack-version",
+        default=None,
+        help="Optional model-pack version to resolve within the workspace.",
+    )
+    parser.add_argument(
+        "--mode",
+        required=True,
+        choices=("user_recall", "resume", "worker_subtask", "agent_handoff"),
+        help="Task brief mode.",
+    )
+    parser.add_argument(
+        "--include-non-promotable-facts",
+        action="store_true",
+        help="Include searchable but non-promotable facts where the mode allows it.",
+    )
+    parser.add_argument(
+        "--provider-strategy",
+        default=None,
+        help="Optional provider briefing strategy label.",
+    )
+    parser.add_argument(
+        "--model-pack-strategy",
+        default=None,
+        help="Optional model-pack briefing strategy override.",
+    )
+    parser.add_argument(
+        "--token-budget",
+        type=int,
+        default=None,
+        help=f"Optional explicit token budget (1-{MAX_TASK_BRIEF_TOKEN_BUDGET}).",
+    )
 
 
 def _resolve_user_id(settings: Settings, user_id_flag: str | None) -> UUID:
@@ -488,6 +547,74 @@ def _run_resume(ctx: CLIContext, args: argparse.Namespace) -> str:
             ),
         )
     return format_resume_output(payload)
+
+
+def _task_brief_request_from_args(args: argparse.Namespace) -> TaskBriefCompileRequestInput:
+    return TaskBriefCompileRequestInput(
+        mode=args.mode,
+        query=args.query,
+        workspace_id=args.workspace_id,
+        pack_id=args.pack_id,
+        pack_version=args.pack_version,
+        thread_id=args.thread_id,
+        task_id=args.task_id,
+        project=args.project,
+        person=args.person,
+        since=args.since,
+        until=args.until,
+        include_non_promotable_facts=args.include_non_promotable_facts,
+        provider_strategy=args.provider_strategy,
+        model_pack_strategy=args.model_pack_strategy,
+        token_budget=args.token_budget,
+    )
+
+
+def _run_task_brief_compile(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = compile_and_persist_task_brief(
+            store,
+            user_id=ctx.user_id,
+            request=_task_brief_request_from_args(args),
+        )
+    return format_task_brief_output(payload)
+
+
+def _run_task_brief_show(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = get_persisted_task_brief(
+            store,
+            task_brief_id=args.task_brief_id,
+        )
+    return format_task_brief_output(payload)
+
+
+def _run_task_brief_compare(ctx: CLIContext, args: argparse.Namespace) -> str:
+    primary_request = _task_brief_request_from_args(args)
+    secondary_request = TaskBriefCompileRequestInput(
+        mode=args.compare_to_mode,
+        query=args.query,
+        workspace_id=args.workspace_id,
+        pack_id=args.pack_id,
+        pack_version=args.pack_version,
+        thread_id=args.thread_id,
+        task_id=args.task_id,
+        project=args.project,
+        person=args.person,
+        since=args.since,
+        until=args.until,
+        include_non_promotable_facts=args.include_non_promotable_facts,
+        provider_strategy=args.provider_strategy,
+        model_pack_strategy=args.compare_model_pack_strategy or args.model_pack_strategy,
+        token_budget=args.compare_token_budget,
+    )
+    with _store_context(ctx) as store:
+        payload = compare_task_briefs(
+            store,
+            user_id=ctx.user_id,
+            primary_request=primary_request,
+            secondary_request=secondary_request,
+        )
+    return format_task_brief_comparison_output(payload)
 
 
 def _run_open_loops(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -1099,6 +1226,50 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resume_parser.set_defaults(handler=_run_resume)
 
+    task_briefs_parser = subparsers.add_parser(
+        "task-briefs",
+        help="Compile, compare, and inspect task-adaptive briefs.",
+    )
+    task_briefs_subparsers = task_briefs_parser.add_subparsers(dest="task_briefs_command", required=True)
+
+    task_briefs_compile_parser = task_briefs_subparsers.add_parser(
+        "compile",
+        help="Compile and persist one task-adaptive brief.",
+    )
+    _add_task_brief_arguments(task_briefs_compile_parser)
+    task_briefs_compile_parser.set_defaults(handler=_run_task_brief_compile)
+
+    task_briefs_show_parser = task_briefs_subparsers.add_parser(
+        "show",
+        help="Load one persisted task brief.",
+    )
+    task_briefs_show_parser.add_argument("task_brief_id", type=_parse_uuid, help="Task brief UUID.")
+    task_briefs_show_parser.set_defaults(handler=_run_task_brief_show)
+
+    task_briefs_compare_parser = task_briefs_subparsers.add_parser(
+        "compare",
+        help="Compare two task brief modes for the same scope.",
+    )
+    _add_task_brief_arguments(task_briefs_compare_parser)
+    task_briefs_compare_parser.add_argument(
+        "--compare-to-mode",
+        required=True,
+        choices=("user_recall", "resume", "worker_subtask", "agent_handoff"),
+        help="Secondary mode for comparison.",
+    )
+    task_briefs_compare_parser.add_argument(
+        "--compare-model-pack-strategy",
+        default=None,
+        help="Optional model-pack strategy override for the comparison brief.",
+    )
+    task_briefs_compare_parser.add_argument(
+        "--compare-token-budget",
+        type=int,
+        default=None,
+        help=f"Optional comparison token budget (1-{MAX_TASK_BRIEF_TOKEN_BUDGET}).",
+    )
+    task_briefs_compare_parser.set_defaults(handler=_run_task_brief_compare)
+
     open_loops_parser = subparsers.add_parser(
         "open-loops",
         help="List open-loop dashboard grouped by posture.",
@@ -1454,6 +1625,21 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             minimum=0,
             maximum=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
         )
+    elif args.command == "task-briefs" and args.task_briefs_command in {"compile", "compare"}:
+        if args.token_budget is not None:
+            _validate_limit(
+                args.token_budget,
+                option_name="--token-budget",
+                minimum=1,
+                maximum=MAX_TASK_BRIEF_TOKEN_BUDGET,
+            )
+        if args.task_briefs_command == "compare" and args.compare_token_budget is not None:
+            _validate_limit(
+                args.compare_token_budget,
+                option_name="--compare-token-budget",
+                minimum=1,
+                maximum=MAX_TASK_BRIEF_TOKEN_BUDGET,
+            )
     elif args.command == "open-loops":
         _validate_limit(
             args.limit,
@@ -1508,6 +1694,8 @@ def main(argv: list[str] | None = None) -> int:
         ContinuityContradictionNotFoundError,
         ContinuityEvidenceNotFoundError,
         MemoryMutationValidationError,
+        TaskBriefNotFoundError,
+        TaskBriefValidationError,
         TemporalStateValidationError,
         TrustedFactPromotionNotFoundError,
     ) as exc:

@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-11 and Bridge `B1` through `B4`.
-- **Current repo execution posture:** `v0.2.0` is released; `P12-S1`, `P12-S2`, and `P12-S3` are shipped; `P12-S4` is the active sprint.
+- **Current repo execution posture:** `v0.2.0` is released; `P12-S1`, `P12-S2`, `P12-S3`, and `P12-S4` are shipped; `P12-S5` is the active sprint.
 - **Phase 12 delta:** retrieval quality, mutation explicitness, contradiction handling, public evals, and adaptive briefing.
 
 ## Current System Overview
@@ -60,6 +60,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 ### Product/Runtime
 - `workspaces`, `workspace_members`, `auth_sessions`, `devices`
 - `model_providers`, `provider_capabilities`, `model_packs`, `workspace_model_pack_bindings`
+- `task_briefs`
 - channel, task, trace, approval, and execution tables
 
 ## Current Key Flows
@@ -122,15 +123,15 @@ Delivered additions:
 Important baseline note: `P12-S3` is now the contradiction/trust baseline for the rest of Phase 12 and should not be reopened except where later sprint integration requires it.
 
 ### P12-S4: Public Eval Harness
-Expand the current retrieval evaluation foundation into public multi-suite benchmark runs and checked-in baseline reports.
+Shipped in `P12-S4`:
 
-Planned additions:
+Delivered additions:
 - `eval_suites`
 - `eval_cases`
 - `eval_runs`
 - `eval_results`
 
-Important baseline note: `P12-S4` should measure shipped retrieval, mutation, and contradiction behavior rather than redesign those systems.
+Important baseline note: `P12-S4` is now the evaluation baseline for the rest of Phase 12 and should not be reopened except where later sprint integration requires it.
 Source-of-truth note: the checked-in fixture catalog defines the authoritative suite/case set and ordering; persisted eval suite/case rows are synchronized snapshots for execution and audit, not an independent planning surface.
 
 ### P12-S5: Task-Adaptive Briefing
@@ -140,7 +141,7 @@ Planned additions:
 - `task_briefs`
 - provider/model-pack briefing strategy fields
 
-Important baseline note: Alice already has resumption, daily-brief, and chief-of-staff briefing surfaces. Phase 12 should treat those as starting points, not as greenfield briefing.
+Important baseline note: `P12-S5` should build on shipped retrieval, mutation, contradiction, and eval baselines. Existing resumption, daily-brief, and chief-of-staff briefing surfaces are starting points, not greenfield replacements.
 
 ## Security And Reliability Rules
 - Keep user/workspace isolation intact for continuity, provider, and channel data.
