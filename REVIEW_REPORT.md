@@ -4,48 +4,42 @@
 PASS
 
 ## criteria met
-- Release docs now describe shipped Alice surface through Phase 11 + Bridge `B1` through `B4` and maintain explicit pre-1.0 framing for `v0.2.0`.
-- `v0.2.0` release checklist, tag plan, and public release runbook are present and internally consistent.
-- Tag procedure targets `main` after approved merge of the release sprint branch.
-- Required verification commands were defined, executed, and now pass with recorded evidence:
-  - `python3 scripts/check_control_doc_truth.py`
-  - `./.venv/bin/python -m pytest tests/unit tests/integration -q`
-  - `pnpm --dir apps/web test`
-  - `./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py`
-  - `./.venv/bin/python scripts/run_hermes_mcp_smoke.py`
-  - `./.venv/bin/python scripts/run_hermes_bridge_demo.py`
-- `BUILD_REPORT.md` now lists the full sprint-owned changed-file set and aligns with the current diff.
-- No local identifiers (local computer paths/usernames) were found in changed docs/reports.
+- Hybrid retrieval pipeline is present and remains explainable across lexical, semantic, entity/edge, temporal, and trust-aware stages.
+- Scoped hybrid ranking now derives recency and stage normalization from scope-matching candidates, so off-scope rows no longer skew scoped recall ordering.
+- Retrieval trace persistence is implemented with `retrieval_runs` and `retrieval_candidates`.
+- Debug visibility is present across API, CLI, and MCP.
+- Retrieval evaluation coverage includes the hybrid entity-edge improvement fixture and the evaluated fixture summary still shows positive lift.
+- Non-debug recall and resumption compatibility remains intact for the exercised callers.
+- Local machine-specific identifiers were removed from the touched docs and state files.
 
 ## criteria missed
-- None.
+- None found in the reviewed tree.
 
 ## quality issues
-- No blocking quality issues remain.
-- Non-blocking note: Hermes MCP smoke used a local compatibility runtime mode (`compat_shim`) due missing upstream editable runtime imports; script assertions still validated the required Alice MCP flow and outputs.
+- None requiring follow-up before merge.
 
 ## regression risks
-- Low for product/runtime regressions (changes are release docs/control-doc alignment plus sprint-owned smoke harness hardening).
-- Low-moderate for future Hermes-environment parity if upstream editable runtime layouts change again; mitigated by deterministic fallback behavior and explicit gate outputs.
+- Low residual risk in retrieval scoring changes, but the new scoped-normalization regression test materially lowers it.
 
 ## docs issues
-- No blocking documentation issues.
-- Release docs, README framing, and policy docs are consistent with `R1` release boundary.
+- No blocking docs issues found.
+- Retrieval retention documentation now reflects operator-configured policy with a default, rather than presenting a hardcoded runtime literal as a settled product decision.
 
 ## should anything be added to RULES.md?
-- No additional mandatory rule beyond current `R1` rules.
+- Already addressed in this revision:
+  - no local machine identifiers in committed docs/reports
+  - no silent hardcoding of unresolved sprint Control Tower decisions
 
 ## should anything update ARCHITECTURE.md?
-- No further architecture update is required for `R1` closeout.
+- Already addressed for doc hygiene by removing local absolute paths.
+- No further architecture update is required for this sprint review.
 
 ## recommended next action
-1. Proceed with sprint PR review/approval for `R1`.
-2. After approved squash merge to `main`, execute `docs/release/v0.2.0-tag-plan.md`.
+- Proceed with Control Tower merge review for the current sprint branch head.
+- Keep the new scoped-ranking regression test in the retrieval verification slice.
 
-## verification evidence checked
-- `python3 scripts/check_control_doc_truth.py` -> PASS
-- `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> PASS (`1191 passed in 206.68s (0:03:26)`)
-- `pnpm --dir apps/web test` -> PASS (`62` files, `199` tests)
-- `./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py` -> PASS
-- `./.venv/bin/python scripts/run_hermes_mcp_smoke.py` -> PASS
-- `./.venv/bin/python scripts/run_hermes_bridge_demo.py` -> PASS (`status: pass`)
+## review verification
+- `./.venv/bin/pytest tests/unit/test_continuity_recall.py tests/unit/test_retrieval_evaluation.py tests/unit/test_cli.py tests/unit/test_20260414_0057_phase12_hybrid_retrieval_traces.py -q`
+- `./.venv/bin/pytest tests/integration/test_continuity_recall_api.py tests/integration/test_retrieval_evaluation_api.py tests/integration/test_cli_integration.py tests/integration/test_mcp_cli_parity.py -q`
+- `./.venv/bin/python scripts/check_control_doc_truth.py`
+- `rg -n "/Users|samirusani|Desktop/Codex" RULES.md ARCHITECTURE.md CURRENT_STATE.md BUILD_REPORT.md docs/retrieval`

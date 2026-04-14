@@ -88,8 +88,8 @@ def test_retrieval_evaluation_api_returns_deterministic_fixture_precision_summar
     )
 
     assert status == 200
-    assert payload["summary"]["fixture_count"] == 6
-    assert payload["summary"]["evaluated_fixture_count"] == 6
+    assert payload["summary"]["fixture_count"] == 7
+    assert payload["summary"]["evaluated_fixture_count"] == 7
     assert payload["summary"]["status"] == "pass"
     assert payload["summary"]["precision_at_k_mean"] >= payload["summary"]["precision_target"]
     assert payload["summary"]["precision_at_k_mean"] > payload["summary"]["baseline_precision_at_k_mean"]
@@ -101,5 +101,6 @@ def test_retrieval_evaluation_api_returns_deterministic_fixture_precision_summar
         "semantic_similarity_recovers_non_exact_query",
         "entity_signal_reduces_cross_entity_noise",
         "temporal_trust_supersession_prefers_current_valid_truth",
+        "entity_edge_expansion_recovers_related_owner",
     ]
     assert payload["fixtures"][0]["top_result_ordering"]["freshness_posture"] == "fresh"

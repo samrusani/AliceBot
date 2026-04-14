@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 from uuid import UUID
 
+from alicebot_api.config import get_settings
 from alicebot_api.continuity_objects import (
     default_continuity_searchable,
     serialize_continuity_lifecycle_state_from_record,
@@ -14,8 +16,12 @@ from alicebot_api.continuity_explainability import build_continuity_item_explana
 from alicebot_api.contracts import (
     CONTINUITY_RECALL_LIST_ORDER,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
+    DEFAULT_RETRIEVAL_RUN_LIST_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
+    MAX_RETRIEVAL_RUN_LIST_LIMIT,
     ContinuityRecallFreshnessPosture,
+    ContinuityRetrievalDebugCandidateRecord,
+    ContinuityRetrievalDebugRecord,
     ContinuityRecallOrderingMetadata,
     ContinuityRecallProvenancePosture,
     ContinuityRecallProvenanceReference,
@@ -26,15 +32,34 @@ from alicebot_api.contracts import (
     ContinuityRecallScopeKind,
     ContinuityRecallScopeMatch,
     ContinuityRecallSupersessionPosture,
+    RetrievalRunListResponse,
+    RetrievalRunListSummary,
+    RetrievalRunRecord,
+    RetrievalTraceResponse,
+    RetrievalTraceSummary,
+    RETRIEVAL_RUN_LIST_ORDER,
+    RETRIEVAL_TRACE_CANDIDATE_ORDER,
     MemoryConfirmationStatus,
     MemoryTrustClass,
     isoformat_or_none,
 )
-from alicebot_api.store import ContinuityRecallCandidateRow, ContinuityStore, JsonObject
+from alicebot_api.store import (
+    ContinuityRecallCandidateRow,
+    ContinuityStore,
+    EntityEdgeRow,
+    EntityRow,
+    JsonObject,
+    RetrievalCandidateRow,
+    RetrievalRunRow,
+)
 
 
 class ContinuityRecallValidationError(ValueError):
     """Raised when a continuity recall query is invalid."""
+
+
+class RetrievalTraceNotFoundError(LookupError):
+    """Raised when a persisted retrieval trace is not visible in the current scope."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +86,68 @@ class RankedRecallCandidate:
     posture_rank: int
     lifecycle_rank: int
     relevance: float
+
+
+@dataclass(frozen=True, slots=True)
+class EntityRetrievalContext:
+    anchor_names: tuple[str, ...]
+    expansion_names: tuple[str, ...]
+    expansion_weights: dict[str, float]
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateStageScores:
+    lexical_raw: float
+    lexical_normalized: float
+    semantic_raw: float
+    semantic_normalized: float
+    entity_edge_raw: float
+    entity_edge_normalized: float
+    temporal_raw: float
+    temporal_normalized: float
+    trust_raw: float
+    trust_normalized: float
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateScoringState:
+    row: ContinuityRecallCandidateRow
+    scope_matches: list[ContinuityRecallScopeMatch]
+    scope_matched: bool
+    query_term_match_count: int
+    semantic_similarity_score: float
+    exact_match_score: float
+    recency_score: float
+    temporal_overlap_score: float
+    entity_match_count: int
+    lexical_raw_score: float
+    semantic_raw_score: float
+    entity_edge_raw_score: float
+    temporal_raw_score: float
+    trust_raw_score: float
+    confirmation_status: MemoryConfirmationStatus
+    confirmation_rank: int
+    trust_class: MemoryTrustClass
+    trust_rank: int
+    freshness_posture: ContinuityRecallFreshnessPosture
+    freshness_rank: int
+    provenance_posture: ContinuityRecallProvenancePosture
+    provenance_rank: int
+    supersession_posture: ContinuityRecallSupersessionPosture
+    supersession_rank: int
+    supersession_freshness_score: float
+    posture_rank: int
+    lifecycle_rank: int
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalTraceCandidate:
+    ranked: RankedRecallCandidate
+    rank: int | None
+    selected: bool
+    exclusion_reason: str | None
+    stage_scores: CandidateStageScores
+    stage_reasons: dict[str, str]
 
 
 _SCOPE_FILTER_KEYS: dict[ContinuityRecallScopeKind, set[str]] = {
@@ -736,6 +823,241 @@ def _entity_match_count(row: ContinuityRecallCandidateRow, *, entity_terms: list
     return sum(1 for term in entity_terms if term in normalized_values)
 
 
+def _list_entities(store: ContinuityStore) -> list[EntityRow]:
+    list_entities = getattr(store, "list_entities", None)
+    if not callable(list_entities):
+        return []
+    entities = list_entities()
+    return entities if isinstance(entities, list) else []
+
+
+def _list_entity_edges_for_entities(
+    store: ContinuityStore,
+    entity_ids: list[UUID],
+) -> list[EntityEdgeRow]:
+    list_edges = getattr(store, "list_entity_edges_for_entities", None)
+    if callable(list_edges):
+        edges = list_edges(entity_ids)
+        if isinstance(edges, list):
+            return edges
+
+    list_edge_for_entity = getattr(store, "list_entity_edges_for_entity", None)
+    if not callable(list_edge_for_entity):
+        return []
+
+    rows: list[EntityEdgeRow] = []
+    seen: set[UUID] = set()
+    for entity_id in entity_ids:
+        edges = list_edge_for_entity(entity_id)
+        if not isinstance(edges, list):
+            continue
+        for edge in edges:
+            edge_id = edge.get("id")
+            if isinstance(edge_id, UUID):
+                if edge_id in seen:
+                    continue
+                seen.add(edge_id)
+            rows.append(edge)
+    return rows
+
+
+def _resolve_entity_retrieval_context(
+    store: ContinuityStore,
+    *,
+    request: ContinuityRecallQueryInput,
+) -> EntityRetrievalContext:
+    entities = _list_entities(store)
+    if not entities:
+        return EntityRetrievalContext(
+            anchor_names=tuple(),
+            expansion_names=tuple(),
+            expansion_weights={},
+        )
+
+    name_by_id: dict[UUID, str] = {
+        entity["id"]: entity["name"]
+        for entity in entities
+        if entity.get("name")
+    }
+    query_tokens = set(_entity_query_terms(request))
+    explicit_names = {
+        value.casefold()
+        for value in (request.project, request.person)
+        if value is not None
+    }
+
+    anchor_entities: list[EntityRow] = []
+    for entity in entities:
+        entity_name = entity["name"].strip()
+        if not entity_name:
+            continue
+        entity_name_casefold = entity_name.casefold()
+        entity_tokens = set(
+            _tokenize(
+                entity_name,
+                max_chars=_MAX_SIMILARITY_QUERY_CHARS,
+                max_tokens=_MAX_SIMILARITY_QUERY_TOKEN_COUNT,
+            )
+        )
+        if entity_name_casefold in explicit_names:
+            anchor_entities.append(entity)
+            continue
+        if query_tokens and query_tokens & entity_tokens:
+            anchor_entities.append(entity)
+
+    if not anchor_entities:
+        return EntityRetrievalContext(
+            anchor_names=tuple(),
+            expansion_names=tuple(),
+            expansion_weights={},
+        )
+
+    anchor_ids = [entity["id"] for entity in anchor_entities]
+    anchor_names = tuple(
+        sorted({entity["name"].casefold() for entity in anchor_entities if entity["name"].strip()})
+    )
+    expansion_weights: dict[str, float] = {
+        name: 0.5
+        for name in anchor_names
+    }
+
+    for edge in _list_entity_edges_for_entities(store, anchor_ids):
+        from_name = name_by_id.get(edge["from_entity_id"])
+        to_name = name_by_id.get(edge["to_entity_id"])
+        if from_name is not None and edge["from_entity_id"] not in anchor_ids:
+            expansion_weights.setdefault(from_name.casefold(), 1.25)
+        if to_name is not None and edge["to_entity_id"] not in anchor_ids:
+            expansion_weights.setdefault(to_name.casefold(), 1.25)
+
+    expansion_names = tuple(sorted(expansion_weights))
+    return EntityRetrievalContext(
+        anchor_names=anchor_names,
+        expansion_names=expansion_names,
+        expansion_weights=expansion_weights,
+    )
+
+
+def _entity_edge_raw_score(
+    row: ContinuityRecallCandidateRow,
+    *,
+    entity_context: EntityRetrievalContext,
+) -> float:
+    if not entity_context.expansion_weights:
+        return 0.0
+    entity_values = _collect_strings(row["provenance"], keys=_ENTITY_KEYS) | _collect_strings(
+        row["body"],
+        keys=_ENTITY_KEYS,
+    )
+    if not entity_values:
+        return 0.0
+    normalized_values = " ".join(sorted(entity_values)).casefold()
+    score = 0.0
+    for entity_name, weight in entity_context.expansion_weights.items():
+        if entity_name in normalized_values:
+            score += weight
+    return score
+
+
+def _token_frequency(value: str, *, max_chars: int, max_tokens: int) -> dict[str, int]:
+    frequencies: dict[str, int] = {}
+    for token in _tokenize(value, max_chars=max_chars, max_tokens=max_tokens):
+        frequencies[token] = frequencies.get(token, 0) + 1
+    return frequencies
+
+
+def _lexical_scores(
+    *,
+    corpus_rows: list[ContinuityRecallCandidateRow],
+    target_rows: list[ContinuityRecallCandidateRow],
+    query_terms: list[str],
+) -> dict[UUID, float]:
+    if not target_rows or not query_terms:
+        return {row["id"]: 0.0 for row in target_rows}
+    if not corpus_rows:
+        return {row["id"]: 0.0 for row in target_rows}
+
+    unique_terms = list(dict.fromkeys(query_terms))
+    document_frequencies: dict[str, int] = {term: 0 for term in unique_terms}
+    corpus_term_frequencies: dict[UUID, dict[str, int]] = {}
+    corpus_doc_lengths: dict[UUID, int] = {}
+
+    for row in corpus_rows:
+        frequencies = _token_frequency(
+            _candidate_text(row),
+            max_chars=_MAX_SIMILARITY_CANDIDATE_TEXT_CHARS,
+            max_tokens=_MAX_SIMILARITY_TOKEN_COUNT,
+        )
+        corpus_term_frequencies[row["id"]] = frequencies
+        corpus_doc_lengths[row["id"]] = sum(frequencies.values())
+        for term in unique_terms:
+            if frequencies.get(term, 0) > 0:
+                document_frequencies[term] += 1
+
+    average_doc_length = (
+        sum(corpus_doc_lengths.values()) / float(len(corpus_doc_lengths))
+        if corpus_doc_lengths
+        else 1.0
+    )
+    k1 = 1.2
+    b = 0.75
+    document_count = len(corpus_rows)
+    scores: dict[UUID, float] = {}
+    for row in target_rows:
+        score = 0.0
+        frequencies = corpus_term_frequencies.get(row["id"])
+        if frequencies is None:
+            frequencies = _token_frequency(
+                _candidate_text(row),
+                max_chars=_MAX_SIMILARITY_CANDIDATE_TEXT_CHARS,
+                max_tokens=_MAX_SIMILARITY_TOKEN_COUNT,
+            )
+        doc_length = max(sum(frequencies.values()), 1)
+        for term in unique_terms:
+            term_frequency = frequencies.get(term, 0)
+            if term_frequency <= 0:
+                continue
+            doc_frequency = document_frequencies.get(term, 0)
+            if doc_frequency <= 0:
+                continue
+            idf = math.log(1.0 + ((document_count - doc_frequency + 0.5) / (doc_frequency + 0.5)))
+            denominator = term_frequency + k1 * (1.0 - b + b * (doc_length / max(average_doc_length, 1.0)))
+            score += idf * ((term_frequency * (k1 + 1.0)) / denominator)
+        scores[row["id"]] = score
+    return scores
+
+
+def _normalize_stage_scores(
+    raw_scores: dict[UUID, float],
+    *,
+    reference_candidate_ids: set[UUID] | None = None,
+) -> dict[UUID, float]:
+    if not raw_scores:
+        return {}
+    if reference_candidate_ids is None:
+        reference_scores = list(raw_scores.values())
+    else:
+        reference_scores = [
+            score
+            for candidate_id, score in raw_scores.items()
+            if candidate_id in reference_candidate_ids
+        ]
+    if not reference_scores:
+        return {candidate_id: 0.0 for candidate_id in raw_scores}
+    max_score = max(reference_scores)
+    if max_score <= 0.0:
+        return {candidate_id: 0.0 for candidate_id in raw_scores}
+    return {
+        candidate_id: min(raw_score / max_score, 1.0)
+        for candidate_id, raw_score in raw_scores.items()
+    }
+
+
+def _retrieval_trace_retention_until(*, now: datetime | None = None) -> datetime:
+    current_time = datetime.now(tz=UTC) if now is None else now
+    retention_days = get_settings().retrieval_trace_retention_days
+    return current_time + timedelta(days=retention_days)
+
+
 def _supersession_freshness_score(
     *,
     freshness_rank: int,
@@ -807,13 +1129,9 @@ def _build_provenance_references(
     ]
 
 
-def _serialize_recall_result(
-    store: ContinuityStore,
-    item: RankedRecallCandidate,
-) -> ContinuityRecallResultRecord:
+def _ordering_metadata(item: RankedRecallCandidate) -> ContinuityRecallOrderingMetadata:
     row = item.row
-
-    ordering: ContinuityRecallOrderingMetadata = {
+    return {
         "scope_match_count": len(item.scope_matches),
         "query_term_match_count": item.query_term_match_count,
         "semantic_similarity_score": item.semantic_similarity_score,
@@ -835,6 +1153,15 @@ def _serialize_recall_result(
         "lifecycle_rank": item.lifecycle_rank,
         "confidence": float(row["confidence"]),
     }
+
+
+def _serialize_recall_result(
+    store: ContinuityStore,
+    item: RankedRecallCandidate,
+) -> ContinuityRecallResultRecord:
+    row = item.row
+
+    ordering = _ordering_metadata(item)
 
     return {
         "id": str(row["id"]),
@@ -910,186 +1237,42 @@ def _validate_request(request: ContinuityRecallQueryInput) -> None:
         raise ContinuityRecallValidationError("until must be greater than or equal to since")
 
 
-def _ordered_recall_candidates(
-    store: ContinuityStore,
+def _build_ranked_candidate(
+    state: CandidateScoringState,
     *,
-    request: ContinuityRecallQueryInput,
-    ranking_strategy: Literal["legacy_v1", "hybrid_v2"] = "hybrid_v2",
+    relevance: float,
+) -> RankedRecallCandidate:
+    return RankedRecallCandidate(
+        row=state.row,
+        scope_matches=state.scope_matches,
+        query_term_match_count=state.query_term_match_count,
+        semantic_similarity_score=state.semantic_similarity_score,
+        exact_match_score=state.exact_match_score,
+        recency_score=state.recency_score,
+        temporal_overlap_score=state.temporal_overlap_score,
+        entity_match_count=state.entity_match_count,
+        confirmation_status=state.confirmation_status,
+        confirmation_rank=state.confirmation_rank,
+        trust_class=state.trust_class,
+        trust_rank=state.trust_rank,
+        freshness_posture=state.freshness_posture,
+        freshness_rank=state.freshness_rank,
+        provenance_posture=state.provenance_posture,
+        provenance_rank=state.provenance_rank,
+        supersession_posture=state.supersession_posture,
+        supersession_rank=state.supersession_rank,
+        supersession_freshness_score=state.supersession_freshness_score,
+        posture_rank=state.posture_rank,
+        lifecycle_rank=state.lifecycle_rank,
+        relevance=relevance,
+    )
+
+
+def _sort_ranked_candidates(
+    ranked_candidates: list[RankedRecallCandidate],
+    *,
+    ranking_strategy: Literal["legacy_v1", "hybrid_v2"],
 ) -> list[RankedRecallCandidate]:
-    thread_filter = _normalize_uuid_string(request.thread_id)
-    task_filter = _normalize_uuid_string(request.task_id)
-    project_filter = (
-        request.project.casefold()
-        if request.project is not None
-        else None
-    )
-    person_filter = (
-        request.person.casefold()
-        if request.person is not None
-        else None
-    )
-    query_terms = _query_terms(request.query)
-    query_features = _build_similarity_query_features(request.query)
-    entity_terms = _entity_query_terms(request)
-    scoped_candidates: list[tuple[ContinuityRecallCandidateRow, list[ContinuityRecallScopeMatch]]] = []
-    required_scope_count = sum(
-        value is not None
-        for value in (thread_filter, task_filter, project_filter, person_filter)
-    )
-
-    for row in store.list_continuity_recall_candidates():
-        if row["status"] == "deleted":
-            continue
-        if not bool(row.get("is_searchable", default_continuity_searchable(row["object_type"]))):
-            continue
-
-        if not _matches_time_window(
-            row,
-            since=request.since,
-            until=request.until,
-        ):
-            continue
-
-        scope_matches = _compute_scope_matches(
-            row,
-            thread_filter=thread_filter,
-            task_filter=task_filter,
-            project_filter=project_filter,
-            person_filter=person_filter,
-        )
-        if len(scope_matches) != required_scope_count:
-            continue
-        scoped_candidates.append((row, scope_matches))
-
-    if not scoped_candidates:
-        return []
-
-    newest_created_at = max(
-        row["object_created_at"]
-        for row, _scope_matches in scoped_candidates
-    )
-    ranked_candidates: list[RankedRecallCandidate] = []
-
-    for row, scope_matches in scoped_candidates:
-
-        candidate_text = _candidate_text(row)
-        candidate_text_casefold = candidate_text.casefold()
-        query_term_match_count = _count_query_term_matches(
-            candidate_text_casefold=candidate_text_casefold,
-            terms=query_terms,
-        )
-        semantic_similarity_score = _semantic_similarity_score(
-            query_features=query_features,
-            candidate_text=candidate_text,
-        )
-        exact_match_score = _exact_match_score(
-            query_features=query_features,
-            candidate_text_casefold=candidate_text_casefold,
-            title=row["title"],
-        )
-        if ranking_strategy == "legacy_v1":
-            if query_terms and query_term_match_count == 0:
-                continue
-        elif query_terms and query_term_match_count == 0:
-            if exact_match_score <= 0.0 and semantic_similarity_score < _SEMANTIC_MATCH_THRESHOLD:
-                continue
-
-        confirmation_status = _extract_confirmation_status(row)
-        confirmation_rank = _CONFIRMATION_RANK[confirmation_status]
-        freshness_posture = _extract_freshness_posture(
-            row,
-            confirmation_status=confirmation_status,
-        )
-        freshness_rank = _FRESHNESS_RANK[freshness_posture]
-        provenance_posture = _extract_provenance_posture(
-            row,
-            scope_matches=scope_matches,
-        )
-        provenance_rank = _PROVENANCE_RANK[provenance_posture]
-        trust_class = _extract_trust_class(
-            row,
-            confirmation_status=confirmation_status,
-            provenance_posture=provenance_posture,
-        )
-        trust_rank = _TRUST_CLASS_RANK[trust_class]
-        supersession_posture = _extract_supersession_posture(row)
-        supersession_rank = _SUPERSESSION_RANK[supersession_posture]
-        temporal_overlap_score = _temporal_overlap_score(
-            row,
-            since=request.since,
-            until=request.until,
-        )
-        recency_score = _recency_score(
-            created_at=row["object_created_at"],
-            newest_created_at=newest_created_at,
-        )
-        entity_match_count = _entity_match_count(
-            row,
-            entity_terms=entity_terms,
-        )
-        supersession_freshness_score = _supersession_freshness_score(
-            freshness_rank=freshness_rank,
-            supersession_rank=supersession_rank,
-        )
-        posture_rank = _POSTURE_RANK.get(row["admission_posture"], 0)
-        lifecycle_rank = _LIFECYCLE_RANK.get(row["status"], 0)
-        if ranking_strategy == "legacy_v1":
-            relevance = (
-                float(len(scope_matches)) * 100.0
-                + float(query_term_match_count) * 20.0
-                + float(confirmation_rank) * 14.0
-                + float(freshness_rank) * 12.0
-                + float(provenance_rank) * 8.0
-                + float(supersession_rank) * 10.0
-                + float(posture_rank) * 4.0
-                + float(lifecycle_rank) * 2.0
-                + float(row["confidence"])
-            )
-        else:
-            relevance = (
-                float(len(scope_matches)) * 100.0
-                + float(entity_match_count) * 35.0
-                + exact_match_score * 36.0
-                + semantic_similarity_score * 28.0
-                + float(query_term_match_count) * 14.0
-                + temporal_overlap_score * 16.0
-                + float(trust_rank) * 12.0
-                + supersession_freshness_score * 8.0
-                + float(confirmation_rank) * 8.0
-                + float(provenance_rank) * 6.0
-                + float(posture_rank) * 4.0
-                + float(lifecycle_rank) * 3.0
-                + recency_score * 4.0
-                + float(row["confidence"])
-            )
-
-        ranked_candidates.append(
-            RankedRecallCandidate(
-                row=row,
-                scope_matches=scope_matches,
-                query_term_match_count=query_term_match_count,
-                semantic_similarity_score=semantic_similarity_score,
-                exact_match_score=exact_match_score,
-                recency_score=recency_score,
-                temporal_overlap_score=temporal_overlap_score,
-                entity_match_count=entity_match_count,
-                confirmation_status=confirmation_status,
-                confirmation_rank=confirmation_rank,
-                trust_class=trust_class,
-                trust_rank=trust_rank,
-                freshness_posture=freshness_posture,
-                freshness_rank=freshness_rank,
-                provenance_posture=provenance_posture,
-                provenance_rank=provenance_rank,
-                supersession_posture=supersession_posture,
-                supersession_rank=supersession_rank,
-                supersession_freshness_score=supersession_freshness_score,
-                posture_rank=posture_rank,
-                lifecycle_rank=lifecycle_rank,
-                relevance=relevance,
-            )
-        )
-
     if ranking_strategy == "legacy_v1":
         return sorted(
             ranked_candidates,
@@ -1134,6 +1317,518 @@ def _ordered_recall_candidates(
     )
 
 
+def _ordered_recall_candidates(
+    store: ContinuityStore,
+    *,
+    request: ContinuityRecallQueryInput,
+    ranking_strategy: Literal["legacy_v1", "hybrid_v2"] = "hybrid_v2",
+) -> tuple[list[RankedRecallCandidate], list[RetrievalTraceCandidate], list[str], EntityRetrievalContext]:
+    thread_filter = _normalize_uuid_string(request.thread_id)
+    task_filter = _normalize_uuid_string(request.task_id)
+    project_filter = request.project.casefold() if request.project is not None else None
+    person_filter = request.person.casefold() if request.person is not None else None
+    query_terms = _query_terms(request.query)
+    query_features = _build_similarity_query_features(request.query)
+    entity_terms = _entity_query_terms(request)
+    entity_context = _resolve_entity_retrieval_context(store, request=request)
+    required_scope_count = sum(
+        value is not None
+        for value in (thread_filter, task_filter, project_filter, person_filter)
+    )
+
+    visible_candidates: list[tuple[ContinuityRecallCandidateRow, list[ContinuityRecallScopeMatch], bool]] = []
+    for row in store.list_continuity_recall_candidates():
+        if row["status"] == "deleted":
+            continue
+        if not bool(row.get("is_searchable", default_continuity_searchable(row["object_type"]))):
+            continue
+        if not _matches_time_window(row, since=request.since, until=request.until):
+            continue
+
+        scope_matches = _compute_scope_matches(
+            row,
+            thread_filter=thread_filter,
+            task_filter=task_filter,
+            project_filter=project_filter,
+            person_filter=person_filter,
+        )
+        scope_matched = len(scope_matches) == required_scope_count
+        visible_candidates.append((row, scope_matches, scope_matched))
+
+    if not visible_candidates:
+        return [], [], query_terms, entity_context
+
+    candidate_rows = [row for row, _scope_matches, _scope_matched in visible_candidates]
+    scope_matched_rows = [
+        row
+        for row, _scope_matches, scope_matched in visible_candidates
+        if scope_matched
+    ]
+    scoring_reference_rows = scope_matched_rows if scope_matched_rows else candidate_rows
+    reference_candidate_ids = {row["id"] for row in scoring_reference_rows}
+    newest_created_at = max(row["object_created_at"] for row in scoring_reference_rows)
+    lexical_raw_scores = _lexical_scores(
+        corpus_rows=scoring_reference_rows,
+        target_rows=candidate_rows,
+        query_terms=query_terms,
+    )
+
+    scoring_states: list[CandidateScoringState] = []
+    for row, scope_matches, scope_matched in visible_candidates:
+        candidate_text = _candidate_text(row)
+        candidate_text_casefold = candidate_text.casefold()
+        query_term_match_count = _count_query_term_matches(
+            candidate_text_casefold=candidate_text_casefold,
+            terms=query_terms,
+        )
+        semantic_similarity_score = _semantic_similarity_score(
+            query_features=query_features,
+            candidate_text=candidate_text,
+        )
+        exact_match_score = _exact_match_score(
+            query_features=query_features,
+            candidate_text_casefold=candidate_text_casefold,
+            title=row["title"],
+        )
+        confirmation_status = _extract_confirmation_status(row)
+        confirmation_rank = _CONFIRMATION_RANK[confirmation_status]
+        freshness_posture = _extract_freshness_posture(
+            row,
+            confirmation_status=confirmation_status,
+        )
+        freshness_rank = _FRESHNESS_RANK[freshness_posture]
+        provenance_posture = _extract_provenance_posture(
+            row,
+            scope_matches=scope_matches,
+        )
+        provenance_rank = _PROVENANCE_RANK[provenance_posture]
+        trust_class = _extract_trust_class(
+            row,
+            confirmation_status=confirmation_status,
+            provenance_posture=provenance_posture,
+        )
+        trust_rank = _TRUST_CLASS_RANK[trust_class]
+        supersession_posture = _extract_supersession_posture(row)
+        supersession_rank = _SUPERSESSION_RANK[supersession_posture]
+        temporal_overlap_score = _temporal_overlap_score(
+            row,
+            since=request.since,
+            until=request.until,
+        )
+        recency_score = _recency_score(
+            created_at=row["object_created_at"],
+            newest_created_at=newest_created_at,
+        )
+        entity_match_count = _entity_match_count(row, entity_terms=entity_terms)
+        supersession_freshness_score = _supersession_freshness_score(
+            freshness_rank=freshness_rank,
+            supersession_rank=supersession_rank,
+        )
+        posture_rank = _POSTURE_RANK.get(row["admission_posture"], 0)
+        lifecycle_rank = _LIFECYCLE_RANK.get(row["status"], 0)
+
+        scoring_states.append(
+            CandidateScoringState(
+                row=row,
+                scope_matches=scope_matches,
+                scope_matched=scope_matched,
+                query_term_match_count=query_term_match_count,
+                semantic_similarity_score=semantic_similarity_score,
+                exact_match_score=exact_match_score,
+                recency_score=recency_score,
+                temporal_overlap_score=temporal_overlap_score,
+                entity_match_count=entity_match_count,
+                lexical_raw_score=lexical_raw_scores.get(row["id"], 0.0),
+                semantic_raw_score=exact_match_score + semantic_similarity_score,
+                entity_edge_raw_score=_entity_edge_raw_score(
+                    row,
+                    entity_context=entity_context,
+                ),
+                temporal_raw_score=(temporal_overlap_score * 0.65) + (recency_score * 0.35),
+                trust_raw_score=(
+                    float(trust_rank)
+                    + (float(confirmation_rank) * 0.5)
+                    + (float(provenance_rank) * 0.35)
+                    + (supersession_freshness_score * 0.35)
+                ),
+                confirmation_status=confirmation_status,
+                confirmation_rank=confirmation_rank,
+                trust_class=trust_class,
+                trust_rank=trust_rank,
+                freshness_posture=freshness_posture,
+                freshness_rank=freshness_rank,
+                provenance_posture=provenance_posture,
+                provenance_rank=provenance_rank,
+                supersession_posture=supersession_posture,
+                supersession_rank=supersession_rank,
+                supersession_freshness_score=supersession_freshness_score,
+                posture_rank=posture_rank,
+                lifecycle_rank=lifecycle_rank,
+            )
+        )
+
+    lexical_normalized = _normalize_stage_scores(
+        {state.row["id"]: state.lexical_raw_score for state in scoring_states},
+        reference_candidate_ids=reference_candidate_ids,
+    )
+    semantic_normalized = _normalize_stage_scores(
+        {state.row["id"]: state.semantic_raw_score for state in scoring_states},
+        reference_candidate_ids=reference_candidate_ids,
+    )
+    entity_edge_normalized = _normalize_stage_scores(
+        {state.row["id"]: state.entity_edge_raw_score for state in scoring_states},
+        reference_candidate_ids=reference_candidate_ids,
+    )
+    temporal_normalized = _normalize_stage_scores(
+        {state.row["id"]: state.temporal_raw_score for state in scoring_states},
+        reference_candidate_ids=reference_candidate_ids,
+    )
+    trust_normalized = _normalize_stage_scores(
+        {state.row["id"]: state.trust_raw_score for state in scoring_states},
+        reference_candidate_ids=reference_candidate_ids,
+    )
+
+    ranked_candidates: list[RankedRecallCandidate] = []
+    excluded_by_id: dict[UUID, str] = {}
+    stage_scores_by_id: dict[UUID, CandidateStageScores] = {}
+    stage_reasons_by_id: dict[UUID, dict[str, str]] = {}
+
+    has_stream_query = bool(query_terms) or bool(entity_context.expansion_names)
+    for state in scoring_states:
+        candidate_id = state.row["id"]
+        stage_scores = CandidateStageScores(
+            lexical_raw=state.lexical_raw_score,
+            lexical_normalized=lexical_normalized.get(candidate_id, 0.0),
+            semantic_raw=state.semantic_raw_score,
+            semantic_normalized=semantic_normalized.get(candidate_id, 0.0),
+            entity_edge_raw=state.entity_edge_raw_score,
+            entity_edge_normalized=entity_edge_normalized.get(candidate_id, 0.0),
+            temporal_raw=state.temporal_raw_score,
+            temporal_normalized=temporal_normalized.get(candidate_id, 0.0),
+            trust_raw=state.trust_raw_score,
+            trust_normalized=trust_normalized.get(candidate_id, 0.0),
+        )
+        stage_scores_by_id[candidate_id] = stage_scores
+        stage_reasons_by_id[candidate_id] = {
+            "lexical": (
+                "BM25-style lexical overlap across scoped continuity text."
+                if stage_scores.lexical_raw > 0.0
+                else "No lexical overlap with the query terms."
+            ),
+            "semantic": (
+                "Exact or semantic similarity matched the query wording."
+                if stage_scores.semantic_raw > 0.0
+                else "No semantic similarity above the retrieval threshold."
+            ),
+            "entity_edge": (
+                "Entity anchors or connected entities matched continuity provenance/body."
+                if stage_scores.entity_edge_raw > 0.0
+                else "No direct or traversed entity match was found."
+            ),
+            "temporal": (
+                "Recency and temporal overlap favored this candidate."
+                if stage_scores.temporal_raw > 0.0
+                else "No temporal signal applied."
+            ),
+            "trust": (
+                "Trust, confirmation, provenance, and supersession posture favored this candidate."
+                if stage_scores.trust_raw > 0.0
+                else "Trust reranking contributed no score."
+            ),
+        }
+
+        if not state.scope_matched:
+            excluded_by_id[candidate_id] = "scope_mismatch"
+            continue
+
+        if ranking_strategy == "legacy_v1":
+            if query_terms and state.query_term_match_count == 0:
+                excluded_by_id[candidate_id] = "no_lexical_match"
+                continue
+            relevance = (
+                float(len(state.scope_matches)) * 100.0
+                + float(state.query_term_match_count) * 20.0
+                + float(state.confirmation_rank) * 14.0
+                + float(state.freshness_rank) * 12.0
+                + float(state.provenance_rank) * 8.0
+                + float(state.supersession_rank) * 10.0
+                + float(state.posture_rank) * 4.0
+                + float(state.lifecycle_rank) * 2.0
+                + float(state.row["confidence"])
+            )
+        else:
+            stream_matched = (
+                stage_scores.lexical_raw > 0.0
+                or stage_scores.semantic_raw > 0.0
+                or stage_scores.entity_edge_raw > 0.0
+            )
+            if has_stream_query and not stream_matched:
+                excluded_by_id[candidate_id] = "no_stream_match"
+                continue
+            relevance = (
+                float(len(state.scope_matches)) * 100.0
+                + stage_scores.entity_edge_normalized * 30.0
+                + stage_scores.lexical_normalized * 28.0
+                + stage_scores.semantic_normalized * 26.0
+                + stage_scores.temporal_normalized * 16.0
+                + stage_scores.trust_normalized * 18.0
+                + float(state.confirmation_rank) * 6.0
+                + float(state.provenance_rank) * 5.0
+                + state.supersession_freshness_score * 6.0
+                + float(state.posture_rank) * 4.0
+                + float(state.lifecycle_rank) * 3.0
+                + float(state.row["confidence"])
+            )
+
+        ranked_candidates.append(_build_ranked_candidate(state, relevance=relevance))
+
+    ordered_ranked_candidates = _sort_ranked_candidates(
+        ranked_candidates,
+        ranking_strategy=ranking_strategy,
+    )
+    selected_ids = [candidate.row["id"] for candidate in ordered_ranked_candidates]
+    selected_rank_by_id = {
+        candidate_id: index
+        for index, candidate_id in enumerate(selected_ids, start=1)
+    }
+
+    trace_candidates: list[RetrievalTraceCandidate] = []
+    for state in scoring_states:
+        candidate_id = state.row["id"]
+        selected = candidate_id in selected_rank_by_id
+        rank = selected_rank_by_id.get(candidate_id)
+        ranked = next(
+            (
+                candidate
+                for candidate in ordered_ranked_candidates
+                if candidate.row["id"] == candidate_id
+            ),
+            _build_ranked_candidate(
+                state,
+                relevance=0.0,
+            ),
+        )
+        trace_candidates.append(
+            RetrievalTraceCandidate(
+                ranked=ranked,
+                rank=rank,
+                selected=selected,
+                exclusion_reason=excluded_by_id.get(candidate_id),
+                stage_scores=stage_scores_by_id[candidate_id],
+                stage_reasons=stage_reasons_by_id[candidate_id],
+            )
+        )
+
+    trace_candidates.sort(
+        key=lambda candidate: (
+            0 if candidate.selected else 1,
+            candidate.rank if candidate.rank is not None else MAX_CONTINUITY_RECALL_LIMIT + 1,
+            -candidate.ranked.relevance,
+            str(candidate.ranked.row["id"]),
+        )
+    )
+    return ordered_ranked_candidates, trace_candidates, query_terms, entity_context
+
+
+def _serialize_debug_candidate(
+    trace_candidate: RetrievalTraceCandidate,
+) -> ContinuityRetrievalDebugCandidateRecord:
+    ordering = _ordering_metadata(trace_candidate.ranked)
+    stage_scores = trace_candidate.stage_scores
+    return {
+        "object_id": str(trace_candidate.ranked.row["id"]),
+        "title": trace_candidate.ranked.row["title"],
+        "object_type": trace_candidate.ranked.row["object_type"],  # type: ignore[typeddict-item]
+        "status": trace_candidate.ranked.row["status"],  # type: ignore[typeddict-item]
+        "selected": trace_candidate.selected,
+        "rank": trace_candidate.rank,
+        "exclusion_reason": trace_candidate.exclusion_reason,
+        "scope_matches": trace_candidate.ranked.scope_matches,
+        "ordering": ordering,
+        "stage_scores": {
+            "lexical": {
+                "raw_score": stage_scores.lexical_raw,
+                "normalized_score": stage_scores.lexical_normalized,
+                "matched": stage_scores.lexical_raw > 0.0,
+                "reason": trace_candidate.stage_reasons["lexical"],
+            },
+            "semantic": {
+                "raw_score": stage_scores.semantic_raw,
+                "normalized_score": stage_scores.semantic_normalized,
+                "matched": stage_scores.semantic_raw > 0.0,
+                "reason": trace_candidate.stage_reasons["semantic"],
+            },
+            "entity_edge": {
+                "raw_score": stage_scores.entity_edge_raw,
+                "normalized_score": stage_scores.entity_edge_normalized,
+                "matched": stage_scores.entity_edge_raw > 0.0,
+                "reason": trace_candidate.stage_reasons["entity_edge"],
+            },
+            "temporal": {
+                "raw_score": stage_scores.temporal_raw,
+                "normalized_score": stage_scores.temporal_normalized,
+                "matched": stage_scores.temporal_raw > 0.0,
+                "reason": trace_candidate.stage_reasons["temporal"],
+            },
+            "trust": {
+                "raw_score": stage_scores.trust_raw,
+                "normalized_score": stage_scores.trust_normalized,
+                "matched": stage_scores.trust_raw > 0.0,
+                "reason": trace_candidate.stage_reasons["trust"],
+            },
+        },
+        "relevance": trace_candidate.ranked.relevance,
+    }
+
+
+def _serialize_retrieval_run(run: RetrievalRunRow) -> RetrievalRunRecord:
+    return {
+        "id": str(run["id"]),
+        "source_surface": run["source_surface"],
+        "ranking_strategy": run["ranking_strategy"],
+        "query_text": run["query_text"],
+        "request_scope": run["request_scope"],
+        "result_ids": run["result_ids"],
+        "exclusion_summary": run["exclusion_summary"],
+        "candidate_count": run["candidate_count"],
+        "selected_count": run["selected_count"],
+        "debug_enabled": run["debug_enabled"],
+        "retention_until": run["retention_until"].isoformat(),
+        "created_at": run["created_at"].isoformat(),
+    }
+
+
+def _debug_candidate_from_row(row: RetrievalCandidateRow) -> ContinuityRetrievalDebugCandidateRecord:
+    ordering = cast(ContinuityRecallOrderingMetadata, row["ordering"])
+    stage_details = row["stage_details"]
+    return {
+        "object_id": str(row["continuity_object_id"]),
+        "title": row["title"],
+        "object_type": row["object_type"],  # type: ignore[typeddict-item]
+        "status": row["status"],  # type: ignore[typeddict-item]
+        "selected": row["selected"],
+        "rank": row["rank"],
+        "exclusion_reason": row["exclusion_reason"],
+        "scope_matches": cast(list[ContinuityRecallScopeMatch], row["scope_matches"]),
+        "ordering": ordering,
+        "stage_scores": cast(dict[str, dict[str, object]], stage_details),
+        "relevance": float(row["relevance"]),
+    }
+
+
+def _persist_retrieval_trace(
+    store: ContinuityStore,
+    *,
+    request: ContinuityRecallQueryInput,
+    ranking_strategy: Literal["legacy_v1", "hybrid_v2"],
+    source_surface: str,
+    returned_candidates: list[RankedRecallCandidate],
+    trace_candidates: list[RetrievalTraceCandidate],
+) -> str | None:
+    create_retrieval_run = getattr(store, "create_retrieval_run", None)
+    create_retrieval_candidate = getattr(store, "create_retrieval_candidate", None)
+    if not callable(create_retrieval_run) or not callable(create_retrieval_candidate):
+        return None
+
+    exclusion_summary: JsonObject = {}
+    for trace_candidate in trace_candidates:
+        if trace_candidate.exclusion_reason is None:
+            continue
+        exclusion_summary[trace_candidate.exclusion_reason] = int(
+            exclusion_summary.get(trace_candidate.exclusion_reason, 0)
+        ) + 1
+
+    run = create_retrieval_run(
+        source_surface=source_surface,
+        ranking_strategy=ranking_strategy,
+        query_text=request.query,
+        request_scope=cast(JsonObject, request.as_payload()),
+        result_ids=[str(candidate.row["id"]) for candidate in returned_candidates],
+        exclusion_summary=exclusion_summary,
+        candidate_count=len(trace_candidates),
+        selected_count=len(returned_candidates),
+        debug_enabled=request.debug,
+        retention_until=_retrieval_trace_retention_until(),
+    )
+
+    for trace_candidate in trace_candidates:
+        debug_candidate = _serialize_debug_candidate(trace_candidate)
+        create_retrieval_candidate(
+            retrieval_run_id=run["id"],
+            continuity_object_id=trace_candidate.ranked.row["id"],
+            rank=trace_candidate.rank,
+            selected=trace_candidate.selected,
+            exclusion_reason=trace_candidate.exclusion_reason,
+            lexical_score=trace_candidate.stage_scores.lexical_raw,
+            semantic_score=trace_candidate.stage_scores.semantic_raw,
+            entity_edge_score=trace_candidate.stage_scores.entity_edge_raw,
+            temporal_score=trace_candidate.stage_scores.temporal_raw,
+            trust_score=trace_candidate.stage_scores.trust_raw,
+            relevance=trace_candidate.ranked.relevance,
+            scope_matches=cast(list[JsonObject], debug_candidate["scope_matches"]),
+            stage_details=cast(JsonObject, debug_candidate["stage_scores"]),
+            ordering=cast(JsonObject, debug_candidate["ordering"]),
+            title=trace_candidate.ranked.row["title"],
+            object_type=trace_candidate.ranked.row["object_type"],
+            status=trace_candidate.ranked.row["status"],
+        )
+
+    return str(run["id"])
+
+
+def list_retrieval_runs(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    limit: int = DEFAULT_RETRIEVAL_RUN_LIST_LIMIT,
+) -> RetrievalRunListResponse:
+    del user_id
+    if limit < 1 or limit > MAX_RETRIEVAL_RUN_LIST_LIMIT:
+        raise ContinuityRecallValidationError(
+            f"limit must be between 1 and {MAX_RETRIEVAL_RUN_LIST_LIMIT}"
+        )
+
+    rows = store.list_retrieval_runs(limit=limit)
+    items = [_serialize_retrieval_run(row) for row in rows]
+    summary: RetrievalRunListSummary = {
+        "limit": limit,
+        "returned_count": len(items),
+        "total_count": len(items),
+        "order": list(RETRIEVAL_RUN_LIST_ORDER),
+    }
+    return {
+        "items": items,
+        "summary": summary,
+    }
+
+
+def get_retrieval_trace(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    retrieval_run_id: UUID,
+) -> RetrievalTraceResponse:
+    del user_id
+    run = store.get_retrieval_run_optional(retrieval_run_id)
+    if run is None:
+        raise RetrievalTraceNotFoundError(f"retrieval run {retrieval_run_id} was not found")
+
+    candidates = [
+        _debug_candidate_from_row(row)
+        for row in store.list_retrieval_candidates_for_run(retrieval_run_id)
+    ]
+    summary: RetrievalTraceSummary = {
+        "candidate_count": len(candidates),
+        "selected_count": sum(1 for candidate in candidates if candidate["selected"]),
+        "order": list(RETRIEVAL_TRACE_CANDIDATE_ORDER),
+    }
+    return {
+        "retrieval_run": _serialize_retrieval_run(run),
+        "candidates": candidates,
+        "summary": summary,
+    }
+
+
 def query_continuity_recall(
     store: ContinuityStore,
     *,
@@ -1141,6 +1836,7 @@ def query_continuity_recall(
     request: ContinuityRecallQueryInput,
     apply_limit: bool = True,
     ranking_strategy: Literal["legacy_v1", "hybrid_v2"] = "hybrid_v2",
+    source_surface: str = "continuity_recall",
 ) -> ContinuityRecallResponse:
     del user_id
 
@@ -1156,11 +1852,12 @@ def query_continuity_recall(
         since=request.since,
         until=request.until,
         limit=request.limit,
+        debug=request.debug,
     )
 
     _validate_request(normalized_request)
 
-    ordered_candidates = _ordered_recall_candidates(
+    ordered_candidates, trace_candidates, query_terms, entity_context = _ordered_recall_candidates(
         store,
         request=normalized_request,
         ranking_strategy=ranking_strategy,
@@ -1170,9 +1867,46 @@ def query_continuity_recall(
         returned_candidates = ordered_candidates[: normalized_request.limit]
     else:
         returned_candidates = ordered_candidates
+    returned_candidate_ids = {candidate.row["id"] for candidate in returned_candidates}
+    final_trace_candidates = [
+        RetrievalTraceCandidate(
+            ranked=trace_candidate.ranked,
+            rank=trace_candidate.rank,
+            selected=trace_candidate.ranked.row["id"] in returned_candidate_ids,
+            exclusion_reason=(
+                trace_candidate.exclusion_reason
+                if trace_candidate.ranked.row["id"] not in returned_candidate_ids
+                and trace_candidate.exclusion_reason is not None
+                else (
+                    None
+                    if trace_candidate.ranked.row["id"] in returned_candidate_ids
+                    else "trimmed_by_limit"
+                )
+            ),
+            stage_scores=trace_candidate.stage_scores,
+            stage_reasons=trace_candidate.stage_reasons,
+        )
+        for trace_candidate in trace_candidates
+    ]
+    final_trace_candidates.sort(
+        key=lambda candidate: (
+            0 if candidate.selected else 1,
+            candidate.rank if candidate.rank is not None else MAX_CONTINUITY_RECALL_LIMIT + 1,
+            -candidate.ranked.relevance,
+            str(candidate.ranked.row["id"]),
+        )
+    )
     items = [_serialize_recall_result(store, item) for item in returned_candidates]
+    retrieval_run_id = _persist_retrieval_trace(
+        store,
+        request=normalized_request,
+        ranking_strategy=ranking_strategy,
+        source_surface=source_surface,
+        returned_candidates=returned_candidates,
+        trace_candidates=final_trace_candidates,
+    )
 
-    return {
+    payload: ContinuityRecallResponse = {
         "items": items,
         "summary": {
             "query": normalized_request.query,
@@ -1183,6 +1917,19 @@ def query_continuity_recall(
             "order": list(CONTINUITY_RECALL_LIST_ORDER),
         },
     }
+    if normalized_request.debug:
+        payload["debug"] = {
+            "retrieval_run_id": retrieval_run_id,
+            "source_surface": source_surface,
+            "ranking_strategy": ranking_strategy,
+            "query_terms": query_terms,
+            "entity_anchor_names": list(entity_context.anchor_names),
+            "entity_expansion_names": list(entity_context.expansion_names),
+            "candidate_count": len(final_trace_candidates),
+            "selected_count": len(returned_candidates),
+            "candidates": [_serialize_debug_candidate(candidate) for candidate in final_trace_candidates],
+        }
+    return payload
 
 
 def build_default_recall_query_input() -> ContinuityRecallQueryInput:

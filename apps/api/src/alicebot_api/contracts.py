@@ -503,6 +503,8 @@ DEFAULT_MEMORY_TRUST_CLASS: MemoryTrustClass = "deterministic"
 DEFAULT_MEMORY_PROMOTION_ELIGIBILITY: MemoryPromotionEligibility = "promotable"
 DEFAULT_CONTINUITY_LIFECYCLE_LIMIT = 50
 MAX_CONTINUITY_LIFECYCLE_LIMIT = 200
+DEFAULT_RETRIEVAL_RUN_LIST_LIMIT = 20
+MAX_RETRIEVAL_RUN_LIST_LIMIT = 100
 DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT = 50
 MAX_TRUSTED_FACT_PROMOTION_LIMIT = 200
 ENTITY_TYPES = [
@@ -525,6 +527,13 @@ RETRIEVAL_EVALUATION_RESULT_ORDER = [
     "precision_at_k_desc",
     "precision_lift_at_k_desc",
     "fixture_id_asc",
+]
+RETRIEVAL_RUN_LIST_ORDER = ["created_at_desc", "id_desc"]
+RETRIEVAL_TRACE_CANDIDATE_ORDER = [
+    "selected_desc",
+    "rank_asc",
+    "relevance_desc",
+    "id_asc",
 ]
 EMBEDDING_CONFIG_STATUSES = ["active", "deprecated", "disabled"]
 CONSENT_STATUSES = ["granted", "revoked"]
@@ -1910,6 +1919,7 @@ class ContinuityRecallQueryInput:
     since: datetime | None = None
     until: datetime | None = None
     limit: int = DEFAULT_CONTINUITY_RECALL_LIMIT
+    debug: bool = False
 
     def as_payload(self) -> JsonObject:
         payload: JsonObject = {
@@ -1919,6 +1929,7 @@ class ContinuityRecallQueryInput:
             "project": self.project,
             "person": self.person,
             "limit": self.limit,
+            "debug": self.debug,
         }
         payload["since"] = isoformat_or_none(self.since)
         payload["until"] = isoformat_or_none(self.until)
@@ -1937,6 +1948,7 @@ class ContinuityResumptionBriefRequestInput:
     max_recent_changes: int = DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT
     max_open_loops: int = DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT
     include_non_promotable_facts: bool = False
+    debug: bool = False
 
     def as_payload(self) -> JsonObject:
         payload: JsonObject = {
@@ -1948,6 +1960,7 @@ class ContinuityResumptionBriefRequestInput:
             "max_recent_changes": self.max_recent_changes,
             "max_open_loops": self.max_open_loops,
             "include_non_promotable_facts": self.include_non_promotable_facts,
+            "debug": self.debug,
         }
         payload["since"] = isoformat_or_none(self.since)
         payload["until"] = isoformat_or_none(self.until)
@@ -3058,6 +3071,39 @@ class ContinuityRecallOrderingMetadata(TypedDict):
     confidence: float
 
 
+class ContinuityRetrievalStageScoreRecord(TypedDict):
+    raw_score: float
+    normalized_score: float
+    matched: bool
+    reason: str
+
+
+class ContinuityRetrievalDebugCandidateRecord(TypedDict):
+    object_id: str
+    title: str
+    object_type: ContinuityObjectType
+    status: str
+    selected: bool
+    rank: int | None
+    exclusion_reason: str | None
+    scope_matches: list[ContinuityRecallScopeMatch]
+    ordering: ContinuityRecallOrderingMetadata
+    stage_scores: dict[str, ContinuityRetrievalStageScoreRecord]
+    relevance: float
+
+
+class ContinuityRetrievalDebugRecord(TypedDict):
+    retrieval_run_id: str | None
+    source_surface: str
+    ranking_strategy: str
+    query_terms: list[str]
+    entity_anchor_names: list[str]
+    entity_expansion_names: list[str]
+    candidate_count: int
+    selected_count: int
+    candidates: list[ContinuityRetrievalDebugCandidateRecord]
+
+
 class ContinuityRecallResultRecord(TypedDict):
     id: str
     capture_event_id: str
@@ -3094,6 +3140,7 @@ class ContinuityRecallSummary(TypedDict):
 class ContinuityRecallResponse(TypedDict):
     items: list[ContinuityRecallResultRecord]
     summary: ContinuityRecallSummary
+    debug: NotRequired[ContinuityRetrievalDebugRecord]
 
 
 class ContinuityLifecycleCounts(TypedDict):
@@ -3147,8 +3194,52 @@ class ContinuityResumptionBriefRecord(TypedDict):
     sources: list[str]
 
 
+class ContinuityResumptionDebugRecord(TypedDict):
+    retrieval: ContinuityRetrievalDebugRecord
+
+
 class ContinuityResumptionBriefResponse(TypedDict):
     brief: ContinuityResumptionBriefRecord
+    debug: NotRequired[ContinuityResumptionDebugRecord]
+
+
+class RetrievalRunRecord(TypedDict):
+    id: str
+    source_surface: str
+    ranking_strategy: str
+    query_text: str | None
+    request_scope: JsonObject
+    result_ids: list[str]
+    exclusion_summary: JsonObject
+    candidate_count: int
+    selected_count: int
+    debug_enabled: bool
+    retention_until: str
+    created_at: str
+
+
+class RetrievalRunListSummary(TypedDict):
+    limit: int
+    returned_count: int
+    total_count: int
+    order: list[str]
+
+
+class RetrievalRunListResponse(TypedDict):
+    items: list[RetrievalRunRecord]
+    summary: RetrievalRunListSummary
+
+
+class RetrievalTraceSummary(TypedDict):
+    candidate_count: int
+    selected_count: int
+    order: list[str]
+
+
+class RetrievalTraceResponse(TypedDict):
+    retrieval_run: RetrievalRunRecord
+    candidates: list[ContinuityRetrievalDebugCandidateRecord]
+    summary: RetrievalTraceSummary
 
 
 class ContinuityOpenLoopSectionSummary(TypedDict):

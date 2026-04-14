@@ -249,11 +249,29 @@ def test_mcp_recall_and_resume_match_core_and_cli_behavior(migrated_database_url
                 "max_open_loops": 5,
             },
         )
+        mcp_recall_debug = _call_tool(
+            client,
+            name="alice_recall_debug",
+            arguments={
+                "thread_id": str(thread_id),
+                "query": "release",
+                "limit": 20,
+            },
+        )
+        retrieval_run_id = mcp_recall_debug["debug"]["retrieval_run_id"]
+        mcp_retrieval_trace = _call_tool(
+            client,
+            name="alice_retrieval_trace",
+            arguments={"retrieval_run_id": retrieval_run_id},
+        )
     finally:
         client.close()
 
     assert mcp_recall == core_recall
     assert mcp_resume == core_resume
+    assert mcp_recall_debug["items"] == core_recall["items"]
+    assert mcp_recall_debug["debug"]["candidate_count"] >= 1
+    assert mcp_retrieval_trace["retrieval_run"]["id"] == retrieval_run_id
 
     env = build_runtime_env(database_url=migrated_database_urls["app"], user_id=user_id)
     cli_recall = run_cli(

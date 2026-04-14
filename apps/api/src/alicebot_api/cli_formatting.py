@@ -227,6 +227,68 @@ def _render_recall_list_section(
     return lines
 
 
+def _render_retrieval_debug(payload: Mapping[str, object]) -> list[str]:
+    debug = payload.get("debug")
+    if not isinstance(debug, dict):
+        return []
+
+    lines = [
+        "debug:",
+        f"  retrieval_run_id: {debug.get('retrieval_run_id')}",
+        f"  source_surface: {debug.get('source_surface')}",
+        f"  ranking_strategy: {debug.get('ranking_strategy')}",
+        f"  query_terms: {', '.join(debug.get('query_terms', [])) if isinstance(debug.get('query_terms'), list) else '(none)'}",
+        (
+            "  entity_anchors: "
+            + (
+                ", ".join(debug.get("entity_anchor_names", []))
+                if isinstance(debug.get("entity_anchor_names"), list) and debug.get("entity_anchor_names")
+                else "(none)"
+            )
+        ),
+        (
+            "  entity_expansion: "
+            + (
+                ", ".join(debug.get("entity_expansion_names", []))
+                if isinstance(debug.get("entity_expansion_names"), list) and debug.get("entity_expansion_names")
+                else "(none)"
+            )
+        ),
+        f"  candidates: {debug.get('candidate_count')} selected={debug.get('selected_count')}",
+    ]
+
+    candidates = debug.get("candidates")
+    if not isinstance(candidates, list) or len(candidates) == 0:
+        return lines
+
+    lines.append("  trace:")
+    for index, candidate in enumerate(candidates, start=1):
+        if not isinstance(candidate, dict):
+            continue
+        lines.append(
+            "    "
+            f"{index}. rank={candidate.get('rank')} selected={candidate.get('selected')} "
+            f"relevance={_format_float(float(candidate.get('relevance', 0.0)))} "
+            f"object_id={candidate.get('object_id')} title={candidate.get('title')}"
+        )
+        lines.append(f"       exclusion_reason={candidate.get('exclusion_reason')}")
+        stage_scores = candidate.get("stage_scores")
+        if not isinstance(stage_scores, dict):
+            continue
+        for stage_name in ("lexical", "semantic", "entity_edge", "temporal", "trust"):
+            stage = stage_scores.get(stage_name)
+            if not isinstance(stage, dict):
+                continue
+            raw_score = float(stage.get("raw_score", 0.0))
+            normalized_score = float(stage.get("normalized_score", 0.0))
+            lines.append(
+                "       "
+                f"{stage_name}: raw={_format_float(raw_score)} normalized={_format_float(normalized_score)} "
+                f"matched={stage.get('matched')} reason={stage.get('reason')}"
+            )
+    return lines
+
+
 def format_capture_output(payload: ContinuityCaptureCreateResponse) -> str:
     capture = payload["capture"]["capture_event"]
     derived = payload["capture"]["derived_object"]
@@ -278,11 +340,13 @@ def format_recall_output(payload: ContinuityRecallResponse) -> str:
     items = payload["items"]
     if len(items) == 0:
         lines.append("empty: no continuity results in requested scope.")
+        lines.extend(_render_retrieval_debug(payload))
         return "\n".join(lines)
 
     lines.append("items:")
     for index, item in enumerate(items, start=1):
         lines.extend(_render_recall_item(item, index=index))
+    lines.extend(_render_retrieval_debug(payload))
     return "\n".join(lines)
 
 
@@ -330,6 +394,7 @@ def format_resume_output(payload: ContinuityResumptionBriefResponse) -> str:
     else:
         lines.extend(_render_recall_item(next_action["item"]))
 
+    lines.extend(_render_retrieval_debug(payload))
     return "\n".join(lines)
 
 

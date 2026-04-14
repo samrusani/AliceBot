@@ -82,6 +82,7 @@ DEFAULT_SECURITY_HEADERS_HSTS_INCLUDE_SUBDOMAINS = True
 DEFAULT_TRUST_PROXY_HEADERS = False
 DEFAULT_TRUSTED_PROXY_IPS: tuple[str, ...] = ()
 DEFAULT_ENTRYPOINT_RATE_LIMIT_BACKEND = "redis"
+DEFAULT_RETRIEVAL_TRACE_RETENTION_DAYS = 14
 
 Environment = Mapping[str, str]
 
@@ -191,6 +192,7 @@ class Settings:
     trust_proxy_headers: bool = DEFAULT_TRUST_PROXY_HEADERS
     trusted_proxy_ips: tuple[str, ...] = DEFAULT_TRUSTED_PROXY_IPS
     entrypoint_rate_limit_backend: str = DEFAULT_ENTRYPOINT_RATE_LIMIT_BACKEND
+    retrieval_trace_retention_days: int = DEFAULT_RETRIEVAL_TRACE_RETENTION_DAYS
 
     @classmethod
     def from_env(cls, env: Environment | None = None) -> "Settings":
@@ -418,6 +420,11 @@ class Settings:
                 "ENTRYPOINT_RATE_LIMIT_BACKEND",
                 cls.entrypoint_rate_limit_backend,
             ).strip().lower(),
+            retrieval_trace_retention_days=_get_env_int(
+                current_env,
+                "RETRIEVAL_TRACE_RETENTION_DAYS",
+                cls.retrieval_trace_retention_days,
+            ),
         )
         return _validate_settings(settings)
 
@@ -475,6 +482,8 @@ def _validate_settings(settings: Settings) -> Settings:
         raise ValueError("SECURITY_HEADERS_HSTS_MAX_AGE_SECONDS must be a positive integer")
     if settings.entrypoint_rate_limit_backend not in {"redis", "memory"}:
         raise ValueError("ENTRYPOINT_RATE_LIMIT_BACKEND must be either 'redis' or 'memory'")
+    if settings.retrieval_trace_retention_days <= 0:
+        raise ValueError("RETRIEVAL_TRACE_RETENTION_DAYS must be a positive integer")
     if settings.trust_proxy_headers and len(settings.trusted_proxy_ips) == 0:
         raise ValueError("TRUSTED_PROXY_IPS must include at least one IP when TRUST_PROXY_HEADERS is enabled")
 

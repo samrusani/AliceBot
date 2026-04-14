@@ -23,8 +23,8 @@ def test_retrieval_evaluation_summary_is_deterministic_and_fixture_backed() -> N
     )
 
     assert payload_first == payload_second
-    assert payload_first["summary"]["fixture_count"] == 6
-    assert payload_first["summary"]["evaluated_fixture_count"] == 6
+    assert payload_first["summary"]["fixture_count"] == 7
+    assert payload_first["summary"]["evaluated_fixture_count"] == 7
     assert payload_first["summary"]["precision_target"] == RETRIEVAL_EVALUATION_PRECISION_TARGET
     assert payload_first["summary"]["precision_at_k_mean"] >= RETRIEVAL_EVALUATION_PRECISION_TARGET
     assert payload_first["summary"]["precision_at_k_mean"] > payload_first["summary"]["baseline_precision_at_k_mean"]
@@ -37,6 +37,7 @@ def test_retrieval_evaluation_summary_is_deterministic_and_fixture_backed() -> N
         "semantic_similarity_recovers_non_exact_query",
         "entity_signal_reduces_cross_entity_noise",
         "temporal_trust_supersession_prefers_current_valid_truth",
+        "entity_edge_expansion_recovers_related_owner",
     ]
     assert all(fixture["precision_at_k"] >= fixture["baseline_precision_at_k"] for fixture in payload_first["fixtures"])
     assert payload_first["fixtures"][0]["top_result_ordering"] is not None

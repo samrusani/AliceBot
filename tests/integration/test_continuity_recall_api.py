@@ -283,6 +283,129 @@ def test_continuity_recall_api_rejects_invalid_time_window(
     assert payload == {"detail": "until must be greater than or equal to since"}
 
 
+def test_continuity_recall_debug_api_persists_and_exposes_trace(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="trace-owner@example.com")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        capture = store.create_continuity_capture_event(
+            raw_content="Decision: Keep rollout phased",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        continuity_object = store.create_continuity_object(
+            capture_event_id=capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: Keep rollout phased",
+            body={"decision_text": "Keep rollout phased"},
+            provenance={"project": "Project Phoenix", "confirmation_status": "confirmed"},
+            confidence=0.95,
+        )
+
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=continuity_object["id"],
+        created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status, payload = invoke_request(
+        "GET",
+        "/v0/continuity/recall",
+        query_params={
+            "user_id": str(user_id),
+            "query": "rollout",
+            "limit": "20",
+            "debug": "true",
+        },
+    )
+
+    assert status == 200
+    assert payload["debug"]["candidate_count"] == 1
+    assert payload["debug"]["candidates"][0]["stage_scores"]["lexical"]["matched"] is True
+    retrieval_run_id = payload["debug"]["retrieval_run_id"]
+    assert retrieval_run_id is not None
+
+    list_status, list_payload = invoke_request(
+        "GET",
+        "/v0/continuity/retrieval-runs",
+        query_params={"user_id": str(user_id), "limit": "10"},
+    )
+    assert list_status == 200
+    assert list_payload["items"][0]["id"] == retrieval_run_id
+
+    trace_status, trace_payload = invoke_request(
+        "GET",
+        f"/v0/continuity/retrieval-runs/{retrieval_run_id}",
+        query_params={"user_id": str(user_id)},
+    )
+    assert trace_status == 200
+    assert trace_payload["retrieval_run"]["id"] == retrieval_run_id
+    assert trace_payload["candidates"][0]["object_id"] == str(continuity_object["id"])
+
+
+def test_continuity_resumption_debug_api_includes_underlying_retrieval_trace(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="resume-trace@example.com")
+    thread_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        decision_capture = store.create_continuity_capture_event(
+            raw_content="Decision: Keep rollout phased",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        decision = store.create_continuity_object(
+            capture_event_id=decision_capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: Keep rollout phased",
+            body={"decision_text": "Keep rollout phased"},
+            provenance={"thread_id": str(thread_id), "confirmation_status": "confirmed"},
+            confidence=0.95,
+        )
+
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=decision["id"],
+        created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+    )
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status, payload = invoke_request(
+        "GET",
+        "/v0/continuity/resumption-brief",
+        query_params={
+            "user_id": str(user_id),
+            "thread_id": str(thread_id),
+            "debug": "true",
+        },
+    )
+
+    assert status == 200
+    assert payload["brief"]["last_decision"]["item"]["id"] == str(decision["id"])
+    assert payload["debug"]["retrieval"]["candidate_count"] >= 1
+
+
 def test_continuity_recall_api_prefers_confirmed_fresh_active_truth_over_superseded_chain(
     migrated_database_urls,
     monkeypatch,

@@ -1,39 +1,60 @@
 # Product Brief
 
 ## Product Summary
-Alice is a shipped continuity platform for AI agents and agent-assisted workflows. It provides typed memory, provenance, correction-aware recall, open-loop tracking, resumable context, and cross-surface continuity through CLI, MCP, provider runtime, and Hermes bridge paths.
+Alice is a pre-1.0 continuity platform for AI agents and agent-assisted workflows. It provides typed memory, provenance, correction-aware recall, open-loop tracking, resumable context, provider/runtime portability, and Hermes bridge integration.
 
-The current control-tower objective is not a new feature phase. It is a pre-1.0 public release pass that packages the shipped platform into `v0.2.0`.
+## Baseline Truth (Shipped)
+- Phase 9 shipped the continuity core, CLI, MCP, importers, approvals, and evaluation foundation.
+- Phase 10 shipped the hosted/product layer, identity/workspace model, and channel surfaces.
+- Phase 11 shipped provider runtime abstraction, provider adapters, and model packs.
+- Bridge `B1` through `B4` shipped Hermes lifecycle hooks, auto-capture, review flow, explainability, packaging docs, smoke validation, and demo path.
+
+## Current Repo Posture
+- `v0.2.0` is tagged and released.
+- Release Sprint 1 (`R1`) is complete and now baseline truth.
+- Phase 12 is the active next feature phase.
+
+## Next Phase
+### Phase 12: Retrieval Quality + Adaptive Continuity
+Raise Alice from a strong continuity substrate to a measurably better memory system by improving:
+- retrieval precision
+- memory freshness handling
+- contradiction handling
+- public quality evidence
+- task-specific briefing for agents and workers
 
 ## Who It Is For
-- Teams building or operating MCP-capable agents that need durable continuity instead of chat-only context.
-- Developers who want model-agnostic memory infrastructure across local, self-hosted, enterprise, and external-agent runtimes.
-- Hermes users who want always-on continuity prefetch, capture, review, and explainability without forking memory semantics.
+- Teams operating MCP-capable or provider-integrated agents that need durable continuity across sessions and runtimes.
+- Developers who want one continuity layer across local, self-hosted, enterprise, and external-agent paths.
+- Operators using Hermes who want always-on continuity without giving up reviewability or trust controls.
 
-## Problem
-Most agent stacks still lose decisions, commitments, blockers, and corrections across sessions. When teams switch models, runtimes, or agent shells, continuity behavior often fragments as well.
+## Why This Phase Now
+Alice already has durable memory, provenance, trust classes, revision/supersession behavior, resumption, open loops, and provider/MCP interoperability. The next phase is a quality step in the core loop:
 
-## Why It Matters
-- Preserves continuity semantics across providers and agent surfaces.
-- Makes memory quality auditable through provenance, correction, and review flows.
-- Reduces operator friction by supporting both explicit workflows and Hermes lifecycle automation.
+`capture -> retrieve -> resume -> correct -> prove`
 
-## Shipped Baseline Truth
-- Phase 9 shipped the local continuity core, CLI, MCP, importers, approvals, and evaluation harness.
-- Phase 10 shipped the hosted/product layer.
-- Phase 11 shipped provider runtime abstraction, adapters, and model packs across local, self-hosted, enterprise, and external-agent paths.
-- Bridge `B1` through `B4` shipped Hermes provider lifecycle hooks, auto-capture, review queue, explainability, packaging docs, smoke validation, and demoable operator setup.
-
-## Current Release Scope
-- `R1` prepares `v0.2.0` as the next public tag for the shipped baseline above.
-- Scope is limited to release docs, verification evidence, and repo-facing release clarity.
+## In Scope For Phase 12
+- Hybrid retrieval and reranking.
+- Explicit memory mutation operations.
+- First-class contradiction detection and trust calibration.
+- Public multi-suite eval harness and baseline reports.
+- Task-adaptive briefing for user recall, resume, worker subtask, and agent handoff.
 
 ## Non-Goals
-- No new runtime, provider, agent, or channel features in the release sprint.
-- No widening into `v1.0.0` positioning or long-term compatibility guarantees.
-- No reopening already shipped Phase 11 or bridge implementation work except where a release gate exposes a genuine defect.
+- Full graph database migration.
+- Marketplace work.
+- Enterprise/compliance expansion.
+- Latent KV-compaction research.
+- New channels such as WhatsApp.
+- New vertical products.
 
 ## Success Criteria
-- A technically literate external user can understand what Alice ships today from the repo docs alone.
-- Public release docs match the actual shipped surface through Phase 11 + Bridge `B4`.
-- `v0.2.0` can be tagged with evidence-backed confidence and without overstating maturity.
+- Retrieval precision improves on baseline fixtures.
+- Stale or superseded facts are less likely to outrank current truth.
+- Contradictions become explicit, reviewable, and visible in explain flows.
+- Public evals can demonstrate recall, resumption, correction, contradiction, and open-loop quality.
+- Worker-task briefs are smaller and sharper than generic recall context without degrading resumption quality.
+
+## Control Tower Decisions Needed
+- Whether new Phase 12 APIs should live under new `/v1` feature namespaces or extend the existing continuity surface.
+- Whether `DELETE` in memory operations means hard delete, logical tombstone, or a restricted administrative path.

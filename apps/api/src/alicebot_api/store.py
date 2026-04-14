@@ -481,6 +481,45 @@ class EntityEdgeRow(TypedDict):
     created_at: datetime
 
 
+class RetrievalRunRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    source_surface: str
+    ranking_strategy: str
+    query_text: str | None
+    request_scope: JsonObject
+    result_ids: list[str]
+    exclusion_summary: JsonObject
+    candidate_count: int
+    selected_count: int
+    debug_enabled: bool
+    retention_until: datetime
+    created_at: datetime
+
+
+class RetrievalCandidateRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    retrieval_run_id: UUID
+    continuity_object_id: UUID
+    rank: int | None
+    selected: bool
+    exclusion_reason: str | None
+    lexical_score: float
+    semantic_score: float
+    entity_edge_score: float
+    temporal_score: float
+    trust_score: float
+    relevance: float
+    scope_matches: list[JsonObject]
+    stage_details: JsonObject
+    ordering: JsonObject
+    title: str
+    object_type: str
+    status: str
+    created_at: datetime
+
+
 class ConsentRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -4940,6 +4979,179 @@ LIST_CONTINUITY_RECALL_CANDIDATES_SQL = """
                 ORDER BY continuity_objects.created_at DESC, continuity_objects.id DESC
                 """
 
+INSERT_RETRIEVAL_RUN_SQL = """
+                INSERT INTO retrieval_runs (
+                  user_id,
+                  source_surface,
+                  ranking_strategy,
+                  query_text,
+                  request_scope,
+                  result_ids,
+                  exclusion_summary,
+                  candidate_count,
+                  selected_count,
+                  debug_enabled,
+                  retention_until
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  source_surface,
+                  ranking_strategy,
+                  query_text,
+                  request_scope,
+                  result_ids,
+                  exclusion_summary,
+                  candidate_count,
+                  selected_count,
+                  debug_enabled,
+                  retention_until,
+                  created_at
+                """
+
+LIST_RETRIEVAL_RUNS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  source_surface,
+                  ranking_strategy,
+                  query_text,
+                  request_scope,
+                  result_ids,
+                  exclusion_summary,
+                  candidate_count,
+                  selected_count,
+                  debug_enabled,
+                  retention_until,
+                  created_at
+                FROM retrieval_runs
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """
+
+GET_RETRIEVAL_RUN_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  source_surface,
+                  ranking_strategy,
+                  query_text,
+                  request_scope,
+                  result_ids,
+                  exclusion_summary,
+                  candidate_count,
+                  selected_count,
+                  debug_enabled,
+                  retention_until,
+                  created_at
+                FROM retrieval_runs
+                WHERE id = %s
+                """
+
+INSERT_RETRIEVAL_CANDIDATE_SQL = """
+                INSERT INTO retrieval_candidates (
+                  user_id,
+                  retrieval_run_id,
+                  continuity_object_id,
+                  rank,
+                  selected,
+                  exclusion_reason,
+                  lexical_score,
+                  semantic_score,
+                  entity_edge_score,
+                  temporal_score,
+                  trust_score,
+                  relevance,
+                  scope_matches,
+                  stage_details,
+                  ordering,
+                  title,
+                  object_type,
+                  status
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  retrieval_run_id,
+                  continuity_object_id,
+                  rank,
+                  selected,
+                  exclusion_reason,
+                  lexical_score,
+                  semantic_score,
+                  entity_edge_score,
+                  temporal_score,
+                  trust_score,
+                  relevance,
+                  scope_matches,
+                  stage_details,
+                  ordering,
+                  title,
+                  object_type,
+                  status,
+                  created_at
+                """
+
+LIST_RETRIEVAL_CANDIDATES_FOR_RUN_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  retrieval_run_id,
+                  continuity_object_id,
+                  rank,
+                  selected,
+                  exclusion_reason,
+                  lexical_score,
+                  semantic_score,
+                  entity_edge_score,
+                  temporal_score,
+                  trust_score,
+                  relevance,
+                  scope_matches,
+                  stage_details,
+                  ordering,
+                  title,
+                  object_type,
+                  status,
+                  created_at
+                FROM retrieval_candidates
+                WHERE retrieval_run_id = %s
+                ORDER BY selected DESC, rank ASC NULLS LAST, relevance DESC, id ASC
+                """
+
 UPSERT_CONTINUITY_ARTIFACT_SQL = """
                 INSERT INTO continuity_artifacts (
                   user_id,
@@ -6057,6 +6269,94 @@ class ContinuityStore:
 
     def list_continuity_recall_candidates(self) -> list[ContinuityRecallCandidateRow]:
         return self._fetch_all(LIST_CONTINUITY_RECALL_CANDIDATES_SQL)
+
+    def create_retrieval_run(
+        self,
+        *,
+        source_surface: str,
+        ranking_strategy: str,
+        query_text: str | None,
+        request_scope: JsonObject,
+        result_ids: list[str],
+        exclusion_summary: JsonObject,
+        candidate_count: int,
+        selected_count: int,
+        debug_enabled: bool,
+        retention_until: datetime,
+    ) -> RetrievalRunRow:
+        return self._fetch_one(
+            "create_retrieval_run",
+            INSERT_RETRIEVAL_RUN_SQL,
+            (
+                source_surface,
+                ranking_strategy,
+                query_text,
+                Jsonb(request_scope),
+                Jsonb(result_ids),
+                Jsonb(exclusion_summary),
+                candidate_count,
+                selected_count,
+                debug_enabled,
+                retention_until,
+            ),
+        )
+
+    def list_retrieval_runs(self, *, limit: int) -> list[RetrievalRunRow]:
+        return self._fetch_all(LIST_RETRIEVAL_RUNS_SQL, (limit,))
+
+    def get_retrieval_run_optional(self, retrieval_run_id: UUID) -> RetrievalRunRow | None:
+        return self._fetch_optional_one(GET_RETRIEVAL_RUN_SQL, (retrieval_run_id,))
+
+    def create_retrieval_candidate(
+        self,
+        *,
+        retrieval_run_id: UUID,
+        continuity_object_id: UUID,
+        rank: int | None,
+        selected: bool,
+        exclusion_reason: str | None,
+        lexical_score: float,
+        semantic_score: float,
+        entity_edge_score: float,
+        temporal_score: float,
+        trust_score: float,
+        relevance: float,
+        scope_matches: list[JsonObject],
+        stage_details: JsonObject,
+        ordering: JsonObject,
+        title: str,
+        object_type: str,
+        status: str,
+    ) -> RetrievalCandidateRow:
+        return self._fetch_one(
+            "create_retrieval_candidate",
+            INSERT_RETRIEVAL_CANDIDATE_SQL,
+            (
+                retrieval_run_id,
+                continuity_object_id,
+                rank,
+                selected,
+                exclusion_reason,
+                lexical_score,
+                semantic_score,
+                entity_edge_score,
+                temporal_score,
+                trust_score,
+                relevance,
+                Jsonb(scope_matches),
+                Jsonb(stage_details),
+                Jsonb(ordering),
+                title,
+                object_type,
+                status,
+            ),
+        )
+
+    def list_retrieval_candidates_for_run(
+        self,
+        retrieval_run_id: UUID,
+    ) -> list[RetrievalCandidateRow]:
+        return self._fetch_all(LIST_RETRIEVAL_CANDIDATES_FOR_RUN_SQL, (retrieval_run_id,))
 
     def upsert_continuity_artifact(
         self,
