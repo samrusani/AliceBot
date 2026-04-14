@@ -125,12 +125,15 @@ def test_cli_command_surface_and_correction_flow(migrated_database_urls) -> None
             str(thread_id),
             "--limit",
             "20",
+            "--debug",
         ],
         env=env,
     )
     assert recall_before.returncode == 0
     assert "Decision: Legacy rollout plan" in recall_before.stdout
     assert "lifecycle=preserved:True searchable:True promotable:True" in recall_before.stdout
+    assert "debug:" in recall_before.stdout
+    assert "lexical: raw=" in recall_before.stdout
 
     lifecycle_list_result = run_cli(
         ["lifecycle", "list", "--limit", "20"],
@@ -156,12 +159,14 @@ def test_cli_command_surface_and_correction_flow(migrated_database_urls) -> None
             "5",
             "--max-open-loops",
             "5",
+            "--debug",
         ],
         env=env,
     )
     assert resume_before.returncode == 0
     assert "last_decision:" in resume_before.stdout
     assert "Decision: Legacy rollout plan" in resume_before.stdout
+    assert "debug:" in resume_before.stdout
 
     open_loops_result = run_cli(
         ["open-loops", "--thread-id", str(thread_id), "--limit", "20"],

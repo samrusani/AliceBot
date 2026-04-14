@@ -28,15 +28,15 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="ROADMAP.md",
         required_markers=(
             "Bridge Phase (`B1`-`B4`): shipped",
-            "Release Sprint 1 (`R1`) is the active execution sprint.",
+            "Phase 12 Sprint 1 (`P12-S1`) is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Release Sprint 1 (R1): v0.2.0 Public Release Readiness",
-            "Phase 10 is complete and shipped.",
-            "Phase 11 is complete and shipped.",
+            "Phase 12 Sprint 1 (`P12-S1`): Hybrid Retrieval + Reranking",
+            "`v0.2.0` is released baseline truth.",
+            "stale or superseded facts are less likely to outrank current truth",
         ),
     ),
     ControlDocTruthRule(
@@ -52,7 +52,8 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
             "Phase 9 is shipped.",
             "Phase 10 is shipped.",
             "Phase 11 is shipped.",
-            "Release Sprint 1 (`R1`) is the active execution sprint.",
+            "`v0.2.0` is released.",
+            "Phase 12 Sprint 1 (`P12-S1`) is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
 
+import alicebot_api.continuity_recall as continuity_recall_module
+from alicebot_api.config import Settings
 from alicebot_api.continuity_recall import ContinuityRecallValidationError, query_continuity_recall
 from alicebot_api.contracts import ContinuityRecallQueryInput
 
@@ -15,9 +17,30 @@ class ContinuityRecallStoreStub:
         self._capture_events: dict[UUID, dict[str, object]] = {}
         self._evidence_by_object: dict[UUID, list[dict[str, object]]] = {}
         self._corrections_by_object: dict[UUID, list[dict[str, object]]] = {}
+        self._entities: list[dict[str, object]] = []
+        self._entity_edges: list[dict[str, object]] = []
+        self._retrieval_runs: list[dict[str, object]] = []
+        self._retrieval_candidates: list[dict[str, object]] = []
 
     def list_continuity_recall_candidates(self):
         return list(self._rows)
+
+    def list_entities(self):
+        return list(self._entities)
+
+    def list_entity_edges_for_entities(self, entity_ids: list[UUID]):
+        requested = set(entity_ids)
+        return [
+            dict(edge)
+            for edge in self._entity_edges
+            if edge["from_entity_id"] in requested or edge["to_entity_id"] in requested
+        ]
+
+    def add_entity(self, entity_row: dict[str, object]) -> None:
+        self._entities.append(dict(entity_row))
+
+    def add_entity_edge(self, edge_row: dict[str, object]) -> None:
+        self._entity_edges.append(dict(edge_row))
 
     def add_capture_event(self, capture_event_id: UUID, *, raw_content: str, created_at: datetime) -> None:
         self._capture_events[capture_event_id] = {
@@ -47,6 +70,26 @@ class ContinuityRecallStoreStub:
         rows = [dict(row) for row in self._corrections_by_object.get(continuity_object_id, [])]
         rows.sort(key=lambda row: (row["created_at"], row["id"]), reverse=True)
         return rows[:limit]
+
+    def create_retrieval_run(self, **kwargs):
+        row = {
+            "id": uuid4(),
+            "user_id": UUID("11111111-1111-4111-8111-111111111111"),
+            "created_at": datetime(2026, 4, 14, 12, 0, tzinfo=UTC),
+            **kwargs,
+        }
+        self._retrieval_runs.append(row)
+        return row
+
+    def create_retrieval_candidate(self, **kwargs):
+        row = {
+            "id": uuid4(),
+            "user_id": UUID("11111111-1111-4111-8111-111111111111"),
+            "created_at": datetime(2026, 4, 14, 12, 0, tzinfo=UTC),
+            **kwargs,
+        }
+        self._retrieval_candidates.append(row)
+        return row
 
 
 def make_candidate_row(
@@ -529,3 +572,172 @@ def test_recall_selects_ranked_explicit_values_deterministically_within_source()
 
     assert payload["items"][0]["confirmation_status"] == "confirmed"
     assert payload["items"][0]["ordering"]["freshness_posture"] == "fresh"
+
+
+def test_recall_debug_surfaces_stage_scores_and_exclusion_reasons() -> None:
+    rows = [
+        make_candidate_row(
+            title="Decision: Keep rollout phased",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+            confidence=0.9,
+            body={"decision_text": "keep rollout phased"},
+            provenance={"confirmation_status": "confirmed", "source_event_ids": ["event-1"]},
+            last_confirmed_at=datetime(2026, 3, 29, 10, 30, tzinfo=UTC),
+        ),
+        make_candidate_row(
+            title="Decision: Budget note",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 1, tzinfo=UTC),
+            confidence=0.95,
+            body={"decision_text": "budget note only"},
+            provenance={"confirmation_status": "confirmed", "source_event_ids": ["event-2"]},
+        ),
+    ]
+
+    payload = query_continuity_recall(
+        ContinuityRecallStoreStub(rows),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityRecallQueryInput(query="rollout", limit=20, debug=True),
+    )
+
+    debug = payload["debug"]
+    assert debug["ranking_strategy"] == "hybrid_v2"
+    assert debug["candidate_count"] == 2
+    assert debug["selected_count"] == 1
+    assert debug["candidates"][0]["selected"] is True
+    assert debug["candidates"][0]["stage_scores"]["lexical"]["matched"] is True
+    assert debug["candidates"][0]["stage_scores"]["semantic"]["matched"] is True
+    assert debug["candidates"][1]["selected"] is False
+    assert debug["candidates"][1]["exclusion_reason"] == "no_stream_match"
+    assert debug["candidates"][1]["stage_scores"]["trust"]["matched"] is True
+
+
+def test_recall_uses_entity_edge_expansion_to_prefer_related_owner() -> None:
+    rows = [
+        make_candidate_row(
+            title="Decision: Alex owns dependency follow-up",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 4, 1, 9, 0, tzinfo=UTC),
+            confidence=0.72,
+            body={"decision_text": "dependency owner follow-up is Alex"},
+            provenance={"person": "Alex", "confirmation_status": "confirmed", "source_event_ids": ["event-1"]},
+            last_confirmed_at=datetime(2026, 4, 1, 9, 30, tzinfo=UTC),
+        ),
+        make_candidate_row(
+            title="Decision: Phoenix dependency note",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 4, 1, 9, 5, tzinfo=UTC),
+            confidence=0.95,
+            body={"decision_text": "dependency owner follow-up is Taylor"},
+            provenance={
+                "project": "Project Phoenix",
+                "person": "Taylor",
+                "confirmation_status": "confirmed",
+                "source_event_ids": ["event-2"],
+            },
+            status="stale",
+        ),
+    ]
+    store = ContinuityRecallStoreStub(rows)  # type: ignore[arg-type]
+    store.add_entity(
+        {
+            "id": UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            "user_id": UUID("11111111-1111-4111-8111-111111111111"),
+            "entity_type": "project",
+            "name": "Project Phoenix",
+            "source_memory_ids": ["memory-1"],
+            "created_at": datetime(2026, 4, 1, 8, 0, tzinfo=UTC),
+        }
+    )
+    store.add_entity(
+        {
+            "id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            "user_id": UUID("11111111-1111-4111-8111-111111111111"),
+            "entity_type": "person",
+            "name": "Alex",
+            "source_memory_ids": ["memory-2"],
+            "created_at": datetime(2026, 4, 1, 8, 5, tzinfo=UTC),
+        }
+    )
+    store.add_entity_edge(
+        {
+            "id": UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc"),
+            "user_id": UUID("11111111-1111-4111-8111-111111111111"),
+            "from_entity_id": UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+            "to_entity_id": UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            "relationship_type": "owner_of",
+            "valid_from": None,
+            "valid_to": None,
+            "source_memory_ids": ["memory-3"],
+            "created_at": datetime(2026, 4, 1, 8, 10, tzinfo=UTC),
+        }
+    )
+
+    payload = query_continuity_recall(
+        store,  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityRecallQueryInput(query="Project Phoenix dependency owner", limit=20, debug=True),
+    )
+
+    assert payload["items"][0]["title"] == "Decision: Alex owns dependency follow-up"
+    assert payload["debug"]["candidates"][0]["stage_scores"]["entity_edge"]["matched"] is True
+
+
+def test_recall_debug_normalizes_against_scope_matched_candidates_only() -> None:
+    thread_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    rows = [
+        make_candidate_row(
+            title="Decision: Keep rollout phased",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 10, 0, tzinfo=UTC),
+            confidence=0.9,
+            body={"decision_text": "keep rollout phased"},
+            provenance={"thread_id": str(thread_id), "confirmation_status": "confirmed"},
+        ),
+        make_candidate_row(
+            title="Decision: Off-scope rollout archive",
+            object_type="Decision",
+            capture_created_at=datetime(2026, 3, 29, 11, 0, tzinfo=UTC),
+            confidence=0.99,
+            body={"decision_text": "rollout rollout rollout rollout rollout rollout rollout rollout"},
+            provenance={
+                "thread_id": str(UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")),
+                "confirmation_status": "confirmed",
+            },
+        ),
+    ]
+
+    payload = query_continuity_recall(
+        ContinuityRecallStoreStub(rows),  # type: ignore[arg-type]
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+        request=ContinuityRecallQueryInput(
+            query="rollout",
+            thread_id=thread_id,
+            limit=20,
+            debug=True,
+        ),
+    )
+
+    assert [item["title"] for item in payload["items"]] == ["Decision: Keep rollout phased"]
+    selected_candidate = payload["debug"]["candidates"][0]
+    assert selected_candidate["object_id"] == str(rows[0]["id"])
+    assert selected_candidate["stage_scores"]["lexical"]["normalized_score"] == pytest.approx(1.0)
+
+    excluded_candidate = next(
+        candidate
+        for candidate in payload["debug"]["candidates"]
+        if candidate["object_id"] == str(rows[1]["id"])
+    )
+    assert excluded_candidate["exclusion_reason"] == "scope_mismatch"
+
+
+def test_retrieval_trace_retention_uses_configured_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime(2026, 4, 14, 12, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        continuity_recall_module,
+        "get_settings",
+        lambda: Settings(retrieval_trace_retention_days=3),
+    )
+
+    assert continuity_recall_module._retrieval_trace_retention_until(now=now) == now + timedelta(days=3)

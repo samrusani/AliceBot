@@ -311,6 +311,7 @@ def _run_recall(ctx: CLIContext, args: argparse.Namespace) -> str:
                 since=args.since,
                 until=args.until,
                 limit=args.limit,
+                debug=args.debug,
             ),
         )
     return format_recall_output(payload)
@@ -380,6 +381,7 @@ def _run_resume(ctx: CLIContext, args: argparse.Namespace) -> str:
                 max_recent_changes=args.max_recent_changes,
                 max_open_loops=args.max_open_loops,
                 include_non_promotable_facts=args.include_non_promotable_facts,
+                debug=args.debug,
             ),
         )
     return format_resume_output(payload)
@@ -719,6 +721,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CONTINUITY_RECALL_LIMIT,
         help=f"Max results (1-{MAX_CONTINUITY_RECALL_LIMIT}).",
     )
+    recall_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Include hybrid retrieval stage scores and exclusion reasons.",
+    )
     recall_parser.set_defaults(handler=_run_recall)
 
     state_at_parser = subparsers.add_parser(
@@ -782,6 +789,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-non-promotable-facts",
         action="store_true",
         help="Include searchable but non-promotable facts in recent changes.",
+    )
+    resume_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Include the underlying hybrid retrieval trace.",
     )
     resume_parser.set_defaults(handler=_run_resume)
 

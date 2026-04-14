@@ -24,6 +24,8 @@ from alicebot_api.continuity_open_loops import (
 )
 from alicebot_api.continuity_recall import (
     ContinuityRecallValidationError,
+    RetrievalTraceNotFoundError,
+    get_retrieval_trace,
     query_continuity_recall,
 )
 from alicebot_api.continuity_resumption import (
@@ -483,6 +485,36 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
         )
 
 
+def _handle_alice_recall_debug(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    limit = _parse_int(
+        arguments,
+        key="limit",
+        default=DEFAULT_CONTINUITY_RECALL_LIMIT,
+        minimum=1,
+        maximum=MAX_CONTINUITY_RECALL_LIMIT,
+    )
+
+    with _store_context(context) as store:
+        return query_continuity_recall(
+            store,
+            user_id=context.user_id,
+            request=ContinuityRecallQueryInput(
+                query=_parse_optional_text(arguments, "query"),
+                thread_id=_parse_optional_uuid(arguments, "thread_id"),
+                task_id=_parse_optional_uuid(arguments, "task_id"),
+                project=_parse_optional_text(arguments, "project"),
+                person=_parse_optional_text(arguments, "person"),
+                since=_parse_optional_datetime(arguments, "since"),
+                until=_parse_optional_datetime(arguments, "until"),
+                limit=limit,
+                debug=True,
+            ),
+        )
+
+
 def _handle_alice_state_at(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     with _store_context(context) as store:
         return get_temporal_state_at(
@@ -531,6 +563,61 @@ def _handle_alice_resume(context: MCPRuntimeContext, arguments: Mapping[str, obj
                     default=False,
                 ),
             ),
+        )
+
+
+def _handle_alice_resume_debug(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    max_recent_changes = _parse_int(
+        arguments,
+        key="max_recent_changes",
+        default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+        minimum=0,
+        maximum=MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    )
+    max_open_loops = _parse_int(
+        arguments,
+        key="max_open_loops",
+        default=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+        minimum=0,
+        maximum=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+    )
+
+    with _store_context(context) as store:
+        return compile_continuity_resumption_brief(
+            store,
+            user_id=context.user_id,
+            request=ContinuityResumptionBriefRequestInput(
+                query=_parse_optional_text(arguments, "query"),
+                thread_id=_parse_optional_uuid(arguments, "thread_id"),
+                task_id=_parse_optional_uuid(arguments, "task_id"),
+                project=_parse_optional_text(arguments, "project"),
+                person=_parse_optional_text(arguments, "person"),
+                since=_parse_optional_datetime(arguments, "since"),
+                until=_parse_optional_datetime(arguments, "until"),
+                max_recent_changes=max_recent_changes,
+                max_open_loops=max_open_loops,
+                include_non_promotable_facts=_parse_bool(
+                    arguments,
+                    key="include_non_promotable_facts",
+                    default=False,
+                ),
+                debug=True,
+            ),
+        )
+
+
+def _handle_alice_retrieval_trace(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    with _store_context(context) as store:
+        return get_retrieval_trace(
+            store,
+            user_id=context.user_id,
+            retrieval_run_id=_parse_required_uuid(arguments, "retrieval_run_id"),
         )
 
 
@@ -1018,6 +1105,24 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_recall_debug",
+        "description": "Run hybrid continuity retrieval with per-candidate stage scores and exclusion reasons.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string"},
+                "thread_id": {"type": "string", "format": "uuid"},
+                "task_id": {"type": "string", "format": "uuid"},
+                "project": {"type": "string"},
+                "person": {"type": "string"},
+                "since": {"type": "string", "format": "date-time"},
+                "until": {"type": "string", "format": "date-time"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_CONTINUITY_RECALL_LIMIT},
+            },
+        },
+    },
+    {
         "name": "alice_state_at",
         "description": "Show entity facts and edges that were effective at a specific point in time.",
         "inputSchema": {
@@ -1055,6 +1160,46 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "maximum": MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
                 },
                 "include_non_promotable_facts": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "alice_resume_debug",
+        "description": "Compile a resumption brief with the underlying hybrid retrieval trace attached.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string"},
+                "thread_id": {"type": "string", "format": "uuid"},
+                "task_id": {"type": "string", "format": "uuid"},
+                "project": {"type": "string"},
+                "person": {"type": "string"},
+                "since": {"type": "string", "format": "date-time"},
+                "until": {"type": "string", "format": "date-time"},
+                "max_recent_changes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+                },
+                "max_open_loops": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+                },
+                "include_non_promotable_facts": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "alice_retrieval_trace",
+        "description": "Load one persisted retrieval trace by run id.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["retrieval_run_id"],
+            "properties": {
+                "retrieval_run_id": {"type": "string", "format": "uuid"},
             },
         },
     },
@@ -1299,8 +1444,11 @@ _TOOL_HANDLERS = {
     "alice_capture_candidates": _handle_alice_capture_candidates,
     "alice_commit_captures": _handle_alice_commit_captures,
     "alice_recall": _handle_alice_recall,
+    "alice_recall_debug": _handle_alice_recall_debug,
     "alice_state_at": _handle_alice_state_at,
     "alice_resume": _handle_alice_resume,
+    "alice_resume_debug": _handle_alice_resume_debug,
+    "alice_retrieval_trace": _handle_alice_retrieval_trace,
     "alice_prefetch_context": _handle_alice_prefetch_context,
     "alice_open_loops": _handle_alice_open_loops,
     "alice_recent_decisions": _handle_alice_recent_decisions,
@@ -1340,6 +1488,7 @@ def call_mcp_tool(
         ContinuityOpenLoopValidationError,
         ContinuityReviewValidationError,
         ContinuityReviewNotFoundError,
+        RetrievalTraceNotFoundError,
         ContinuityEvidenceNotFoundError,
         TemporalStateValidationError,
     ) as exc:

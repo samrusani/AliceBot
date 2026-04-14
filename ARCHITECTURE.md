@@ -1,91 +1,167 @@
 # Architecture
 
 ## Scope Boundary
-This document treats Phases 9-11 and Bridge `B1` through `B4` as shipped baseline truth. The current active work is `R1` release readiness only.
+- **Shipped baseline:** Phases 9-11 and Bridge `B1` through `B4`.
+- **Current repo execution posture:** `v0.2.0` is released; `P12-S1` is the active sprint.
+- **Phase 12 delta:** retrieval quality, mutation explicitness, contradiction handling, public evals, and adaptive briefing.
 
-## System Overview
-Alice is a modular continuity platform with four shipped surface groups:
-
-- **Alice Core:** typed continuity objects, provenance, correction/supersession, open loops, recall/resume/explain flows
-- **Access Surfaces:** CLI, MCP, web/admin, hosted/product interfaces
-- **Provider Runtime:** workspace-scoped provider registration, capability snapshots, model packs, runtime invocation, provider secret handling
-- **Hermes Bridge:** external memory provider path with lifecycle automation, capture/review pipeline, explainable memory actions, and MCP fallback
+## Current System Overview
+Alice is a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, MCP, and Hermes-integrated surfaces.
 
 ## Technical Stack
-- Core API/runtime: Python + FastAPI (`apps/api/src/alicebot_api`)
-- Persistence: Postgres
-- Web surface: `apps/web`
-- Worker/ops scripts: `scripts/`
-- Hermes integration artifacts: provider plugin + operator config/docs under `docs/integrations/`
+- API/runtime: Python + FastAPI in [`apps/api/src/alicebot_api`](apps/api/src/alicebot_api)
+- Persistence: Postgres with Alembic migrations in [`apps/api/alembic/versions`](apps/api/alembic/versions)
+- Optional cache/runtime support: Redis
+- Web/admin: Next.js app in [`apps/web`](apps/web)
+- CLI + MCP: Python CLI/MCP plus package shims in [`packages/alice-cli`](packages/alice-cli) and [`packages/alice-core`](packages/alice-core)
+- Ops/demo/test scripts: [`scripts`](scripts)
 
-## Module Boundaries
+## Shipped Module Boundaries
 
-### Alice Core
-- continuity object graph
-- provenance evidence links
-- corrections and supersession history
-- recall, resume, explain, and open-loop flows
+### Continuity Core
+- Capture, review, lifecycle, explainability, recall, resumption, and open-loop flows.
+- Primary modules:
+  - [`continuity_capture.py`](apps/api/src/alicebot_api/continuity_capture.py)
+  - [`continuity_review.py`](apps/api/src/alicebot_api/continuity_review.py)
+  - [`continuity_recall.py`](apps/api/src/alicebot_api/continuity_recall.py)
+  - [`continuity_resumption.py`](apps/api/src/alicebot_api/continuity_resumption.py)
+  - [`continuity_open_loops.py`](apps/api/src/alicebot_api/continuity_open_loops.py)
+
+### Retrieval And Evidence Foundations
+- Existing baseline already includes semantic retrieval, embeddings, entities, trusted-fact promotion, and fixture-based retrieval evaluation.
+- Primary modules:
+  - [`semantic_retrieval.py`](apps/api/src/alicebot_api/semantic_retrieval.py)
+  - [`retrieval_evaluation.py`](apps/api/src/alicebot_api/retrieval_evaluation.py)
+  - [`entity.py`](apps/api/src/alicebot_api/entity.py)
+  - [`entity_edge.py`](apps/api/src/alicebot_api/entity_edge.py)
+  - [`trusted_fact_promotions.py`](apps/api/src/alicebot_api/trusted_fact_promotions.py)
 
 ### Hosted/Product Layer
-- identity/workspace/channel ownership from prior shipped phases
-- user-facing control surfaces built on top of core continuity semantics
+- Workspace, identity, devices, preferences, telemetry, web/admin, and channel surfaces.
 
 ### Provider Runtime
-- provider registration and testing
-- model-pack binding and invocation
-- local/self-hosted/enterprise adapter support
-- provider secret management and workspace isolation
+- Workspace-scoped provider registration, capability snapshots, model packs, invocation, and secret handling.
 
 ### Hermes Bridge
-- pre-turn prefetch
-- post-turn capture candidate generation and commit policy
-- review queue and review apply flow
-- explainability chain for bridge-generated memory actions
-- provider-plus-MCP recommended deployment shape with MCP-only fallback
+- Provider hook integration, prefetch, post-turn capture, review queue, explainability, and MCP fallback.
 
-## Runtime Flows
+## Current Data Model Summary
 
-### Flow 1: Explicit Continuity
-1. CLI or MCP calls Alice continuity endpoints.
-2. Alice returns typed recall/resume/open-loop/explain outputs.
-3. Provenance and trust posture remain inspectable.
+### Continuity And Memory
+- `memories`, `memory_revisions`, `memory_review_labels`
+- `continuity_capture_events`, `continuity_objects`, `continuity_correction_events`
+- `open_loops`
 
-### Flow 2: Provider Runtime
-1. Workspace registers a provider and optional model packs.
-2. Runtime invokes provider through the workspace-scoped adapter boundary.
-3. Continuity behavior remains in Alice rather than in provider-specific logic.
+### Retrieval Foundations
+- `embedding_configs`, `memory_embeddings`
+- `entities`, `entity_edges`
+- task-artifact chunk embeddings for artifact-scoped retrieval
 
-### Flow 3: Hermes Lifecycle Automation
-1. Hermes calls Alice prefetch before a turn.
-2. Hermes sends turn output to Alice capture/review paths after the response.
-3. Alice auto-saves only policy-eligible high-confidence items and routes the rest to review.
-4. MCP remains available for explicit deep workflows.
+### Product/Runtime
+- `workspaces`, `workspace_members`, `auth_sessions`, `devices`
+- `model_providers`, `provider_capabilities`, `model_packs`, `workspace_model_pack_bindings`
+- channel, task, trace, approval, and execution tables
 
-## Security And Trust Controls
-- Continuity truth remains governed by provenance, correction, and supersession rules.
-- Consequential side effects remain approval-bounded.
-- Provider/runtime access stays workspace-scoped.
-- Provider credentials and sensitive connection details must be redacted from logs and outward-facing error payloads.
-- Hermes automation must not fork or bypass Alice trust rules.
+## Current Key Flows
+
+### Capture And Review
+1. Raw content enters continuity capture.
+2. Alice creates capture events and candidate continuity objects.
+3. Review/correction can confirm, edit, supersede, or delete.
+4. Explainability preserves provenance and lifecycle state.
+
+### Recall And Resumption
+1. Recall loads continuity candidates.
+2. Ranking already considers semantic similarity, trust, freshness, provenance, supersession, and entity/scope matches.
+3. Resumption composes ranked recall into decisions, open loops, recent changes, and next action.
+
+### Provider/Hermes Runtime
+1. Workspace binds provider and model-pack configuration.
+2. Runtime invokes through provider adapter boundaries.
+3. Hermes can prefetch before a turn and capture after a turn while Alice remains the system of record.
+
+## Phase 12 Architecture Delta
+
+### P12-S1: Hybrid Retrieval + Reranking
+Extend the current recall path from a single ranked query into an explicit scored pipeline:
+- semantic stream
+- lexical/BM25-style stream
+- entity/edge traversal stream
+- temporal filtering/weighting
+- trust-aware reranking
+- persisted retrieval traces
+
+Planned additions:
+- `retrieval_runs`
+- `retrieval_candidates`
+- debug surfaces for API, CLI, and MCP
+
+Important baseline note: semantic retrieval, trust-aware ranking, entities, and retrieval evaluation already exist. Phase 12 should layer on those primitives rather than replace them.
+
+### P12-S2: Automated Memory Operations
+Promote post-turn capture from loose candidate save/commit behavior into explicit mutation operations:
+- `ADD`
+- `UPDATE`
+- `SUPERSEDE`
+- `DELETE`
+- `NOOP`
+
+Planned additions:
+- `memory_operation_candidates`
+- `memory_operations`
+
+### P12-S3: Contradiction Detection + Trust Calibration
+Add first-class conflict records and auditable trust adjustments.
+
+Planned additions:
+- `contradiction_cases`
+- `trust_signals`
+
+### P12-S4: Public Eval Harness
+Expand the current retrieval evaluation foundation into public multi-suite benchmark runs and checked-in baseline reports.
+
+Planned additions:
+- `eval_suites`
+- `eval_cases`
+- `eval_runs`
+- `eval_results`
+
+### P12-S5: Task-Adaptive Briefing
+Separate durable memory from output-specific briefing layers.
+
+Planned additions:
+- `task_briefs`
+- provider/model-pack briefing strategy fields
+
+Important baseline note: Alice already has resumption, daily-brief, and chief-of-staff briefing surfaces. Phase 12 should treat those as starting points, not as greenfield briefing.
+
+## Security And Reliability Rules
+- Keep user/workspace isolation intact for continuity, provider, and channel data.
+- Keep provider credentials and secret references out of logs and outward-facing errors.
+- Preserve approval-bounded execution for consequential side effects.
+- Keep capture, mutation, and Hermes sync paths idempotent.
+- Preserve append-only evidence where the system depends on auditability.
 
 ## Deployment Topology
 
 ### Recommended
-- Alice API + Postgres for the continuity system of record
-- Alice MCP server for explicit workflows
-- provider runtime where model/provider abstraction is needed
-- Hermes provider-plus-MCP when always-on continuity is desired
+- Alice API + Postgres as system of record
+- Alice MCP for explicit workflows
+- Provider runtime where model abstraction is needed
+- Hermes provider-plus-MCP for always-on continuity
 
 ### Fallback
-- MCP-only integrations remain valid where provider automation is not available.
+- MCP-only remains supported when provider automation is unavailable
 
 ## Testing Strategy
-- control-doc truth checks for canonical planning/doc alignment
-- Python unit and integration suites for API/core/runtime regressions
-- web tests for shipped UI/admin surfaces
-- Hermes provider smoke, MCP smoke, and one-command demo for bridge validation
+- unit/integration tests for continuity, runtime, and API behavior
+- fixture-based retrieval and eval suites
+- web tests for shipped user/admin surfaces
+- Hermes provider smoke, MCP smoke, and demo flows
+- release/eval artifacts committed only when they correspond to exact commands and fixtures
 
-## Release-Readiness Focus
-- public release docs must describe the shipped architecture accurately
-- release gates must verify the surfaces the repo actively claims
-- no architecture expansion is allowed inside the release sprint
+## Control Tower Decisions Needed
+- Should Phase 12 retrieval ship behind a feature flag before it replaces the default recall path?
+- Should new endpoints use `/v1/retrieval/*`, `/v1/evals/*`, `/v1/briefs/*`, or extend existing continuity endpoints?
+- Should contradictions attach to continuity objects only, memories only, or both with a shared abstraction?
+- Should `DELETE` be restricted to logical deletion/tombstoning by default?

@@ -22,7 +22,13 @@ from alicebot_api.contracts import (
     RetrievalEvaluationSummary,
 )
 from alicebot_api.semantic_retrieval import calculate_mean_precision, calculate_precision_at_k
-from alicebot_api.store import ContinuityRecallCandidateRow, ContinuityStore, JsonObject
+from alicebot_api.store import (
+    ContinuityRecallCandidateRow,
+    ContinuityStore,
+    EntityEdgeRow,
+    EntityRow,
+    JsonObject,
+)
 
 RETRIEVAL_EVALUATION_PRECISION_TARGET = 0.8
 
@@ -34,15 +40,36 @@ class RetrievalEvaluationFixture:
     request: ContinuityRecallQueryInput
     candidates: tuple[ContinuityRecallCandidateRow, ...]
     expected_relevant_ids: tuple[str, ...]
+    entities: tuple[EntityRow, ...] = ()
+    entity_edges: tuple[EntityEdgeRow, ...] = ()
     top_k: int = 1
 
 
 class _FixtureStore:
-    def __init__(self, rows: tuple[ContinuityRecallCandidateRow, ...]) -> None:
+    def __init__(
+        self,
+        rows: tuple[ContinuityRecallCandidateRow, ...],
+        *,
+        entities: tuple[EntityRow, ...] = (),
+        entity_edges: tuple[EntityEdgeRow, ...] = (),
+    ) -> None:
         self._rows = rows
+        self._entities = entities
+        self._entity_edges = entity_edges
 
     def list_continuity_recall_candidates(self) -> list[ContinuityRecallCandidateRow]:
         return list(self._rows)
+
+    def list_entities(self) -> list[EntityRow]:
+        return list(self._entities)
+
+    def list_entity_edges_for_entities(self, entity_ids: list[UUID]) -> list[EntityEdgeRow]:
+        requested = set(entity_ids)
+        return [
+            edge
+            for edge in self._entity_edges
+            if edge["from_entity_id"] in requested or edge["to_entity_id"] in requested
+        ]
 
 
 def _candidate(
@@ -83,6 +110,42 @@ def _candidate(
         "capture_created_at": created_at,
     }
     return row
+
+
+def _fixture_entity(
+    *,
+    entity_id: str,
+    entity_type: str,
+    name: str,
+) -> EntityRow:
+    return {
+        "id": UUID(entity_id),
+        "user_id": UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        "entity_type": entity_type,
+        "name": name,
+        "source_memory_ids": ["fixture-memory"],
+        "created_at": datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
+    }
+
+
+def _fixture_entity_edge(
+    *,
+    edge_id: str,
+    from_entity_id: str,
+    to_entity_id: str,
+    relationship_type: str,
+) -> EntityEdgeRow:
+    return {
+        "id": UUID(edge_id),
+        "user_id": UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        "from_entity_id": UUID(from_entity_id),
+        "to_entity_id": UUID(to_entity_id),
+        "relationship_type": relationship_type,
+        "valid_from": None,
+        "valid_to": None,
+        "source_memory_ids": ["fixture-memory"],
+        "created_at": datetime(2026, 3, 1, 9, 5, tzinfo=UTC),
+    }
 
 
 def _fixture_suite() -> tuple[RetrievalEvaluationFixture, ...]:
@@ -316,6 +379,66 @@ def _fixture_suite() -> tuple[RetrievalEvaluationFixture, ...]:
             ),
             expected_relevant_ids=("00000000-0000-4000-8000-000000000051",),
         ),
+        RetrievalEvaluationFixture(
+            fixture_id="entity_edge_expansion_recovers_related_owner",
+            title="Entity-edge expansion recovers the related owner when the query names only the project",
+            request=ContinuityRecallQueryInput(
+                query="Project Phoenix dependency owner",
+                limit=5,
+            ),
+            candidates=(
+                _candidate(
+                    object_id="00000000-0000-4000-8000-000000000061",
+                    capture_event_id="10000000-0000-4000-8000-000000000061",
+                    title="Decision: Alex owns dependency follow-up",
+                    body={"decision_text": "dependency owner follow-up is Alex"},
+                    provenance={
+                        "person": "Alex",
+                        "source_event_ids": ["e-61"],
+                        "confirmation_status": "confirmed",
+                    },
+                    confidence=0.72,
+                    created_at=datetime(2026, 4, 1, 9, 0, tzinfo=UTC),
+                    last_confirmed_at=datetime(2026, 4, 1, 9, 30, tzinfo=UTC),
+                ),
+                _candidate(
+                    object_id="00000000-0000-4000-8000-000000000062",
+                    capture_event_id="10000000-0000-4000-8000-000000000062",
+                    title="Decision: Phoenix dependency note",
+                    body={"decision_text": "dependency owner follow-up is Taylor"},
+                    provenance={
+                        "project": "Project Phoenix",
+                        "person": "Taylor",
+                        "source_event_ids": ["e-62"],
+                        "confirmation_status": "confirmed",
+                    },
+                    confidence=0.95,
+                    created_at=datetime(2026, 4, 1, 9, 5, tzinfo=UTC),
+                    last_confirmed_at=datetime(2026, 4, 1, 9, 35, tzinfo=UTC),
+                ),
+            ),
+            expected_relevant_ids=("00000000-0000-4000-8000-000000000061",),
+            entities=(
+                _fixture_entity(
+                    entity_id="00000000-0000-4000-8000-100000000061",
+                    entity_type="project",
+                    name="Project Phoenix",
+                ),
+                _fixture_entity(
+                    entity_id="00000000-0000-4000-8000-100000000062",
+                    entity_type="person",
+                    name="Alex",
+                ),
+            ),
+            entity_edges=(
+                _fixture_entity_edge(
+                    edge_id="00000000-0000-4000-8000-200000000061",
+                    from_entity_id="00000000-0000-4000-8000-100000000062",
+                    to_entity_id="00000000-0000-4000-8000-100000000061",
+                    relationship_type="owner_of",
+                ),
+            ),
+        ),
     )
 
 
@@ -323,14 +446,22 @@ def _evaluate_fixture(
     fixture: RetrievalEvaluationFixture,
 ) -> tuple[RetrievalEvaluationFixtureResult, float, float]:
     payload = query_continuity_recall(
-        _FixtureStore(fixture.candidates),  # type: ignore[arg-type]
+        _FixtureStore(
+            fixture.candidates,
+            entities=fixture.entities,
+            entity_edges=fixture.entity_edges,
+        ),  # type: ignore[arg-type]
         user_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
         request=fixture.request,
         apply_limit=False,
         ranking_strategy="hybrid_v2",
     )
     baseline_payload = query_continuity_recall(
-        _FixtureStore(fixture.candidates),  # type: ignore[arg-type]
+        _FixtureStore(
+            fixture.candidates,
+            entities=fixture.entities,
+            entity_edges=fixture.entity_edges,
+        ),  # type: ignore[arg-type]
         user_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
         request=fixture.request,
         apply_limit=False,

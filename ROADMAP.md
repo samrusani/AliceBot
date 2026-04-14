@@ -1,37 +1,53 @@
 # Roadmap
 
-## Baseline Context (Shipped, Not Roadmap Work)
+## Baseline Context (Not Roadmap Work)
 - Phase 9: shipped
 - Phase 10: shipped
 - Phase 11: shipped
+- Bridge `B1`-`B4`: shipped
 - Bridge Phase (`B1`-`B4`): shipped
+- `v0.2.0`: released
 
-These are baseline truth and not future scope.
+These remain baseline truth and are not future milestones.
 
 ## Active Planning Status
-- Release Sprint 1 (`R1`) is the active execution sprint.
-- `R1` is a release-readiness sprint for `v0.2.0`.
+- Phase 12 Sprint 1 (`P12-S1`) is the active execution sprint.
+- `P12-S1` is the foundation sprint for the Phase 12 retrieval-quality stack.
 
-## Release Sprint R1: v0.2.0 Public Release Readiness
-- refresh the release checklist, tag plan, and runbook for the real shipped Alice surface
-- align README, changelog, and public policy docs with current shipped truth
-- verify the quickstart, integration docs, and release evidence paths
-- run and record release gates:
-  - control-doc truth
-  - unit/integration tests
-  - web tests
-  - Hermes provider smoke
-  - Hermes MCP smoke
-  - Hermes bridge one-command demo
-- prepare a clean annotated-tag path for `v0.2.0` on `main`
+## Phase 12 Milestones
+
+### P12-S1: Hybrid Retrieval + Reranking
+- add hybrid retrieval pipeline
+- add reranking and retrieval traces
+- expose debug visibility through API, CLI, and MCP
+
+### P12-S2: Automated Memory Operations
+- add explicit memory operation candidates and commit engine
+- define auto-apply vs review thresholds
+
+### P12-S3: Contradiction Detection + Trust Calibration
+- add contradiction cases and resolution flow
+- add trust-signal computation and retrieval penalties
+
+### P12-S4: Public Eval Harness
+- ship public fixture suites and local eval runner
+- commit baseline reports and eval docs
+
+### P12-S5: Task-Adaptive Briefing
+- add brief compiler and brief modes
+- integrate provider/model-pack briefing strategy
+
+## Release Sequencing
+- `v0.3.0`: retrieval and memory quality (`P12-S1` through `P12-S3`)
+- `v0.3.1`: public evaluation (`P12-S4`)
+- `v0.3.2`: task-adaptive briefing (`P12-S5`)
 
 ## Sequencing Rules
-- Do not add new product/runtime features during `R1`.
-- Refresh release docs before cutting the tag.
-- Run release gates after doc alignment and before merge approval.
-- Keep the release explicitly pre-1.0.
-- Treat old `v0.1.x` release docs as historical reference, not active release truth.
+- Keep shipped baseline out of roadmap sections.
+- Do not widen Phase 12 into graph migration, marketplace, enterprise/compliance, or new channel work.
+- Use eval evidence to justify public quality claims before updating release docs.
+- Treat later releases as separate contracts; do not collapse all Phase 12 work into one oversized sprint.
 
-## Beyond v0.2.0 (Future, Not Yet Defined)
-- Post-release feature planning is not active inside `R1`.
-- If additional hardening is needed after `R1`, scope it as a separate sprint rather than widening the release sprint.
+## Beyond Phase 12
+- No post-Phase-12 feature plan is defined in the source packet.
+- Additional work after `v0.3.2` requires a new planning pass.

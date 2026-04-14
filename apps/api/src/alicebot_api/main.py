@@ -51,6 +51,7 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_LIFECYCLE_LIMIT,
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
+    DEFAULT_RETRIEVAL_RUN_LIST_LIMIT,
     DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT,
     DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT,
@@ -82,6 +83,7 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_LIFECYCLE_LIMIT,
     MAX_CONTINUITY_REVIEW_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
+    MAX_RETRIEVAL_RUN_LIST_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_DAILY_BRIEF_LIMIT,
     MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT,
@@ -140,6 +142,8 @@ from alicebot_api.contracts import (
     ContinuityWeeklyReviewResponse,
     MemoryTrustDashboardResponse,
     RetrievalEvaluationResponse,
+    RetrievalRunListResponse,
+    RetrievalTraceResponse,
     EmbeddingConfigStatus,
     EmbeddingConfigCreateInput,
     ExecutionBudgetCreateInput,
@@ -407,6 +411,9 @@ from alicebot_api.continuity_lifecycle import (
 )
 from alicebot_api.continuity_recall import (
     ContinuityRecallValidationError,
+    RetrievalTraceNotFoundError,
+    get_retrieval_trace,
+    list_retrieval_runs,
     query_continuity_recall,
 )
 from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
@@ -5358,6 +5365,7 @@ def list_continuity_recall(
         ge=1,
         le=MAX_CONTINUITY_RECALL_LIMIT,
     ),
+    debug: bool = False,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -5375,10 +5383,61 @@ def list_continuity_recall(
                     since=since,
                     until=until,
                     limit=limit,
+                    debug=debug,
                 ),
             )
     except ContinuityRecallValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/retrieval-runs")
+def get_continuity_retrieval_runs(
+    user_id: UUID,
+    limit: int = Query(
+        default=DEFAULT_RETRIEVAL_RUN_LIST_LIMIT,
+        ge=1,
+        le=MAX_RETRIEVAL_RUN_LIST_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: RetrievalRunListResponse = list_retrieval_runs(
+                ContinuityStore(conn),
+                user_id=user_id,
+                limit=limit,
+            )
+    except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/continuity/retrieval-runs/{retrieval_run_id}")
+def get_continuity_retrieval_trace(
+    retrieval_run_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: RetrievalTraceResponse = get_retrieval_trace(
+                ContinuityStore(conn),
+                user_id=user_id,
+                retrieval_run_id=retrieval_run_id,
+            )
+    except RetrievalTraceNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,
@@ -5423,6 +5482,7 @@ def get_continuity_resumption_brief(
         le=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     ),
     include_non_promotable_facts: bool = False,
+    debug: bool = False,
 ) -> JSONResponse:
     settings = get_settings()
 
@@ -5442,6 +5502,7 @@ def get_continuity_resumption_brief(
                     max_recent_changes=max_recent_changes,
                     max_open_loops=max_open_loops,
                     include_non_promotable_facts=include_non_promotable_facts,
+                    debug=debug,
                 ),
             )
     except ContinuityResumptionValidationError as exc:

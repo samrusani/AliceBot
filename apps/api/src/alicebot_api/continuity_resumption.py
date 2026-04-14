@@ -134,8 +134,10 @@ def compile_continuity_resumption_brief(
             since=request.since,
             until=request.until,
             limit=MAX_CONTINUITY_RECALL_LIMIT,
+            debug=request.debug,
         ),
         apply_limit=False,
+        source_surface="continuity_resumption",
     )
 
     ranked_items = list(recall_payload["items"])
@@ -217,7 +219,12 @@ def compile_continuity_resumption_brief(
         "sources": ["continuity_capture_events", "continuity_objects"],
     }
 
-    return {"brief": brief}
+    payload: ContinuityResumptionBriefResponse = {"brief": brief}
+    if request.debug and "debug" in recall_payload:
+        payload["debug"] = {
+            "retrieval": recall_payload["debug"],
+        }
+    return payload
 
 
 def build_default_resumption_request() -> ContinuityResumptionBriefRequestInput:
