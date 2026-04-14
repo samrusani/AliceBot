@@ -11,7 +11,8 @@ Canonical handoff state lives at [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURR
 - `v0.2.0` is released.
 - Phase 12 Sprint 1 (`P12-S1`) is shipped.
 - Phase 12 Sprint 2 (`P12-S2`) is shipped.
-- Phase 12 Sprint 3 (`P12-S3`) is the active execution sprint.
+- Phase 12 Sprint 3 (`P12-S3`) is shipped.
+- Phase 12 Sprint 4 (`P12-S4`) is the active execution sprint.
 
 ## Current Baseline Truth
 - Alice has typed memory, provenance, trust classes, correction/supersession behavior, open loops, recall, resumption, and explainability.
@@ -20,17 +21,17 @@ Canonical handoff state lives at [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURR
 - The codebase also includes the shipped `P12-S2` memory mutation candidate and operation foundation.
 
 ## Not Yet First-Class In Repo
-- public multi-suite eval harness for recall/resumption/correction/contradiction/open-loops
 - task-adaptive brief compiler separated from current briefing surfaces
 
 ## Phase Transition Note
 - Phase 12 is active.
 - `P12-S1` is complete and establishes the retrieval baseline.
 - `P12-S2` is complete and establishes the mutation baseline.
-- `P12-S3` is the active sprint and should build contradiction and trust handling on top of shipped retrieval and mutation behavior.
-- The current `P12-S3` branch implements contradiction cases and trust-signal storage, pending Control Tower merge approval.
+- `P12-S3` is complete and establishes the contradiction/trust baseline.
+- `P12-S4` is the active sprint and should benchmark shipped retrieval, mutation, and contradiction behavior without reopening those systems.
+- The current `P12-S4` branch implements the public eval harness, fixture catalog, and checked-in baseline artifact, pending Control Tower merge approval.
 
 ## Immediate Control Tower Decisions Needed
-- Decide contradiction object attachment scope: continuity objects, memories, or both.
-- Decide trust-signal storage and ranking integration policy.
-- Decide the final contradiction and trust API surface shape for Phase 12.
+- Decide public eval suite taxonomy and baseline artifact format.
+- Decide what eval artifacts are committed versus generated locally.
+- Decide whether `P12-S4` stays CLI-first or keeps the current branch `/v1/evals/*` API surface.

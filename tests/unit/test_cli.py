@@ -45,6 +45,10 @@ def test_parser_routes_required_commands() -> None:
         (["playbooks", "list"], "_run_playbook_list"),
         (["playbooks", "explain", continuity_object_id], "_run_playbook_explain"),
         (["status"], "_run_status"),
+        (["evals", "suites"], "_run_eval_suites"),
+        (["evals", "run"], "_run_eval_run"),
+        (["evals", "runs"], "_run_eval_runs"),
+        (["evals", "show", continuity_object_id], "_run_eval_show"),
     ]
 
     for argv, expected_handler_name in cases:

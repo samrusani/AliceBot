@@ -141,6 +141,9 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v1/contradictions/cases/{contradiction_case_id}" in route_paths
     assert "/v1/contradictions/cases/{contradiction_case_id}/resolve" in route_paths
     assert "/v1/trust/signals" in route_paths
+    assert "/v1/evals/suites" in route_paths
+    assert "/v1/evals/runs" in route_paths
+    assert "/v1/evals/runs/{eval_run_id}" in route_paths
     assert "/v0/patterns" in route_paths
     assert "/v0/patterns/{pattern_id}" in route_paths
     assert "/v0/playbooks" in route_paths

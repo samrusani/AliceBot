@@ -41,6 +41,7 @@
 - Keep local filesystem paths, workstation usernames, and machine-specific identifiers out of committed docs and reports.
 - Keep consequential side effects approval-bounded.
 - Commit public evidence only from exact commands and stable fixtures, never from inferred pass states.
+- When a checked-in fixture catalog is declared canonical, runtime sync must prune removed definitions or read directly from the catalog as the source of truth.
 
 ## Scope Rules
 - Do not widen Phase 12 into graph migration, marketplace, enterprise/compliance, or new channel work.

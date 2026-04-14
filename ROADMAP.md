@@ -13,8 +13,9 @@ These remain baseline truth and are not future milestones.
 ## Active Planning Status
 - Phase 12 Sprint 1 (`P12-S1`) is shipped.
 - Phase 12 Sprint 2 (`P12-S2`) is shipped.
-- Phase 12 Sprint 3 (`P12-S3`) is the active execution sprint.
-- `P12-S3` is the contradiction-and-trust sprint for the Phase 12 quality stack.
+- Phase 12 Sprint 3 (`P12-S3`) is shipped.
+- Phase 12 Sprint 4 (`P12-S4`) is the active execution sprint.
+- `P12-S4` is the public-eval sprint for the Phase 12 quality stack.
 
 ## Phase 12 Milestones
 

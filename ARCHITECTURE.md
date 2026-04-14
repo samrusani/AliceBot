@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-11 and Bridge `B1` through `B4`.
-- **Current repo execution posture:** `v0.2.0` is released; `P12-S1` and `P12-S2` are shipped; `P12-S3` is the active sprint.
+- **Current repo execution posture:** `v0.2.0` is released; `P12-S1`, `P12-S2`, and `P12-S3` are shipped; `P12-S4` is the active sprint.
 - **Phase 12 delta:** retrieval quality, mutation explicitness, contradiction handling, public evals, and adaptive briefing.
 
 ## Current System Overview
@@ -113,13 +113,13 @@ Delivered additions:
 Important baseline note: `P12-S2` is now the mutation baseline for the rest of Phase 12 and should not be reopened except where later sprint integration requires it.
 
 ### P12-S3: Contradiction Detection + Trust Calibration
-Add first-class conflict records and auditable trust adjustments.
+Shipped in `P12-S3`:
 
-Planned additions:
+Delivered additions:
 - `contradiction_cases`
 - `trust_signals`
 
-Important baseline note: `P12-S3` should layer on top of shipped retrieval traces and shipped mutation operations rather than redesigning either subsystem.
+Important baseline note: `P12-S3` is now the contradiction/trust baseline for the rest of Phase 12 and should not be reopened except where later sprint integration requires it.
 
 ### P12-S4: Public Eval Harness
 Expand the current retrieval evaluation foundation into public multi-suite benchmark runs and checked-in baseline reports.
@@ -129,6 +129,9 @@ Planned additions:
 - `eval_cases`
 - `eval_runs`
 - `eval_results`
+
+Important baseline note: `P12-S4` should measure shipped retrieval, mutation, and contradiction behavior rather than redesign those systems.
+Source-of-truth note: the checked-in fixture catalog defines the authoritative suite/case set and ordering; persisted eval suite/case rows are synchronized snapshots for execution and audit, not an independent planning surface.
 
 ### P12-S5: Task-Adaptive Briefing
 Separate durable memory from output-specific briefing layers.

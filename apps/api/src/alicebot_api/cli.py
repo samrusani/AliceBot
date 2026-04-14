@@ -138,6 +138,13 @@ from alicebot_api.contracts import (
     TrustedFactPlaybookListQueryInput,
 )
 from alicebot_api.db import ping_database, user_connection
+from alicebot_api.public_evals import (
+    get_public_eval_run,
+    list_public_eval_runs,
+    list_public_eval_suites,
+    run_public_evals,
+    write_public_eval_report,
+)
 from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
 from alicebot_api.store import ContinuityStore, JsonObject
 from alicebot_api.temporal_state import (
@@ -846,6 +853,51 @@ def _run_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
     return format_status_output(status_payload)
 
 
+def _run_eval_suites(ctx: CLIContext, _args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = list_public_eval_suites(
+            store,
+            user_id=ctx.user_id,
+        )
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _run_eval_runs(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = list_public_eval_runs(
+            store,
+            user_id=ctx.user_id,
+            limit=args.limit,
+        )
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _run_eval_show(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = get_public_eval_run(
+            store,
+            user_id=ctx.user_id,
+            eval_run_id=args.eval_run_id,
+        )
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def _run_eval_run(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = run_public_evals(
+            store,
+            user_id=ctx.user_id,
+            suite_keys=args.suite_key,
+        )
+    if args.report_path is not None:
+        written_path = write_public_eval_report(
+            report=payload["report"],
+            report_path=args.report_path,
+        )
+        payload["written_report_path"] = str(written_path)
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="alicebot",
@@ -1298,6 +1350,39 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="Show local continuity runtime status.")
     status_parser.set_defaults(handler=_run_status)
 
+    evals_parser = subparsers.add_parser("evals", help="Run and inspect public eval suites.")
+    evals_subparsers = evals_parser.add_subparsers(dest="evals_command", required=True)
+
+    evals_suites_parser = evals_subparsers.add_parser("suites", help="List public eval suites.")
+    evals_suites_parser.set_defaults(handler=_run_eval_suites)
+
+    evals_run_parser = evals_subparsers.add_parser("run", help="Run the public eval harness.")
+    evals_run_parser.add_argument(
+        "--suite-key",
+        action="append",
+        default=None,
+        help="Optional suite key filter. Repeat to run multiple suites.",
+    )
+    evals_run_parser.add_argument(
+        "--report-path",
+        default=None,
+        help="Optional output path for the canonical JSON report artifact.",
+    )
+    evals_run_parser.set_defaults(handler=_run_eval_run)
+
+    evals_runs_parser = evals_subparsers.add_parser("runs", help="List persisted public eval runs.")
+    evals_runs_parser.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of eval runs to list.",
+    )
+    evals_runs_parser.set_defaults(handler=_run_eval_runs)
+
+    evals_show_parser = evals_subparsers.add_parser("show", help="Show one persisted public eval run.")
+    evals_show_parser.add_argument("eval_run_id", type=_parse_uuid, help="Eval run UUID.")
+    evals_show_parser.set_defaults(handler=_run_eval_show)
+
     return parser
 
 
@@ -1334,6 +1419,13 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             option_name="--limit",
             minimum=1,
             maximum=MAX_CONTINUITY_REVIEW_LIMIT,
+        )
+    elif args.command == "evals" and args.evals_command == "runs":
+        _validate_limit(
+            args.limit,
+            option_name="--limit",
+            minimum=1,
+            maximum=100,
         )
     elif args.command == "timeline":
         _validate_limit(

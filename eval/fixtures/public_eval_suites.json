@@ -1,0 +1,476 @@
+{
+  "schema_version": "public_eval_fixture_v1",
+  "suites": [
+    {
+      "suite_key": "recall",
+      "title": "Recall quality",
+      "description": "Measures retrieval ranking over the public continuity recall fixture corpus.",
+      "evaluator_kind": "retrieval_evaluation",
+      "metric_key": "pass_rate",
+      "cases": [
+        {
+          "case_key": "confirmed_fresh_truth_preferred",
+          "title": "Confirmed fresher truth preferred",
+          "evaluator_kind": "retrieval_evaluation",
+          "fixture": {
+            "fixture_id": "confirmed_fresh_truth_preferred"
+          },
+          "expectations": {
+            "minimum_precision_at_k": 1.0,
+            "minimum_precision_lift_at_k": 0.0
+          }
+        },
+        {
+          "case_key": "provenance_breaks_tie",
+          "title": "Provenance breaks ties",
+          "evaluator_kind": "retrieval_evaluation",
+          "fixture": {
+            "fixture_id": "provenance_breaks_tie"
+          },
+          "expectations": {
+            "minimum_precision_at_k": 1.0,
+            "minimum_precision_lift_at_k": 0.0
+          }
+        },
+        {
+          "case_key": "supersession_chain_prefers_current_truth",
+          "title": "Supersession chain prefers current truth",
+          "evaluator_kind": "retrieval_evaluation",
+          "fixture": {
+            "fixture_id": "supersession_chain_prefers_current_truth"
+          },
+          "expectations": {
+            "minimum_precision_at_k": 1.0,
+            "minimum_precision_lift_at_k": 0.0
+          }
+        },
+        {
+          "case_key": "semantic_similarity_recovers_non_exact_query",
+          "title": "Semantic similarity recovers non exact queries",
+          "evaluator_kind": "retrieval_evaluation",
+          "fixture": {
+            "fixture_id": "semantic_similarity_recovers_non_exact_query"
+          },
+          "expectations": {
+            "minimum_precision_at_k": 1.0,
+            "minimum_precision_lift_at_k": 1.0
+          }
+        },
+        {
+          "case_key": "entity_signal_reduces_cross_entity_noise",
+          "title": "Entity signal reduces cross entity noise",
+          "evaluator_kind": "retrieval_evaluation",
+          "fixture": {
+            "fixture_id": "entity_signal_reduces_cross_entity_noise"
+          },
+          "expectations": {
+            "minimum_precision_at_k": 1.0,
+            "minimum_precision_lift_at_k": 0.0
+          }
+        },
+        {
+          "case_key": "temporal_trust_supersession_prefers_current_valid_truth",
+          "title": "Temporal trust prefers current valid truth",
+          "evaluator_kind": "retrieval_evaluation",
+          "fixture": {
+            "fixture_id": "temporal_trust_supersession_prefers_current_valid_truth"
+          },
+          "expectations": {
+            "minimum_precision_at_k": 1.0,
+            "minimum_precision_lift_at_k": 0.0
+          }
+        },
+        {
+          "case_key": "entity_edge_expansion_recovers_related_owner",
+          "title": "Entity edge expansion coverage snapshot",
+          "evaluator_kind": "retrieval_evaluation",
+          "fixture": {
+            "fixture_id": "entity_edge_expansion_recovers_related_owner"
+          },
+          "expectations": {
+            "minimum_precision_at_k": 0.0,
+            "minimum_precision_lift_at_k": 0.0,
+            "require_expected_top_result": false
+          }
+        }
+      ]
+    },
+    {
+      "suite_key": "resumption",
+      "title": "Resumption quality",
+      "description": "Measures whether the resumption brief surfaces the latest decision, next action, and recent changes.",
+      "evaluator_kind": "resumption_brief",
+      "metric_key": "pass_rate",
+      "cases": [
+        {
+          "case_key": "staged_rollout_resume",
+          "title": "Staged rollout resume bundle",
+          "evaluator_kind": "resumption_brief",
+          "fixture": {
+            "request": {
+              "max_recent_changes": 3,
+              "max_open_loops": 2
+            },
+            "rows": [
+              {
+                "object_key": "decision",
+                "object_type": "Decision",
+                "status": "active",
+                "title": "Decision: Keep staged rollout",
+                "body": {
+                  "decision_text": "Keep staged rollout"
+                },
+                "provenance": {
+                  "thread_id": "thread-staged-rollout"
+                },
+                "confidence": 0.94,
+                "created_at": "2026-04-01T09:00:00+00:00",
+                "last_confirmed_at": "2026-04-01T09:15:00+00:00"
+              },
+              {
+                "object_key": "commitment",
+                "object_type": "Commitment",
+                "status": "active",
+                "title": "Commitment: Send partner update",
+                "body": {
+                  "commitment_text": "Send partner update"
+                },
+                "provenance": {
+                  "thread_id": "thread-staged-rollout"
+                },
+                "confidence": 0.91,
+                "created_at": "2026-04-01T09:10:00+00:00"
+              },
+              {
+                "object_key": "next_action",
+                "object_type": "NextAction",
+                "status": "active",
+                "title": "Next Action: Send partner update",
+                "body": {
+                  "action_text": "Send partner update"
+                },
+                "provenance": {
+                  "thread_id": "thread-staged-rollout"
+                },
+                "confidence": 0.92,
+                "created_at": "2026-04-01T09:20:00+00:00"
+              }
+            ]
+          },
+          "expectations": {
+            "last_decision_title": "Decision: Keep staged rollout",
+            "next_action_title": "Next Action: Send partner update",
+            "open_loop_titles": [
+              "Commitment: Send partner update"
+            ],
+            "recent_change_titles": [
+              "Next Action: Send partner update",
+              "Commitment: Send partner update",
+              "Decision: Keep staged rollout"
+            ]
+          }
+        },
+        {
+          "case_key": "followup_resume_with_waiting_for",
+          "title": "Resume bundle with waiting for and blocker",
+          "evaluator_kind": "resumption_brief",
+          "fixture": {
+            "request": {
+              "max_recent_changes": 4,
+              "max_open_loops": 3
+            },
+            "rows": [
+              {
+                "object_key": "decision",
+                "object_type": "Decision",
+                "status": "active",
+                "title": "Decision: Keep invoice workflow manual",
+                "body": {
+                  "decision_text": "Keep invoice workflow manual"
+                },
+                "provenance": {
+                  "thread_id": "thread-invoices"
+                },
+                "confidence": 0.93,
+                "created_at": "2026-04-02T08:00:00+00:00",
+                "last_confirmed_at": "2026-04-02T08:05:00+00:00"
+              },
+              {
+                "object_key": "waiting_for",
+                "object_type": "WaitingFor",
+                "status": "active",
+                "title": "Waiting For: Finance signoff",
+                "body": {
+                  "waiting_for_text": "Finance signoff"
+                },
+                "provenance": {
+                  "thread_id": "thread-invoices"
+                },
+                "confidence": 0.88,
+                "created_at": "2026-04-02T08:10:00+00:00"
+              },
+              {
+                "object_key": "blocker",
+                "object_type": "Blocker",
+                "status": "active",
+                "title": "Blocker: Missing approved template",
+                "body": {
+                  "blocker_text": "Missing approved template"
+                },
+                "provenance": {
+                  "thread_id": "thread-invoices"
+                },
+                "confidence": 0.9,
+                "created_at": "2026-04-02T08:15:00+00:00"
+              },
+              {
+                "object_key": "next_action",
+                "object_type": "NextAction",
+                "status": "active",
+                "title": "Next Action: Draft the final invoice email",
+                "body": {
+                  "action_text": "Draft the final invoice email"
+                },
+                "provenance": {
+                  "thread_id": "thread-invoices"
+                },
+                "confidence": 0.92,
+                "created_at": "2026-04-02T08:20:00+00:00"
+              }
+            ]
+          },
+          "expectations": {
+            "last_decision_title": "Decision: Keep invoice workflow manual",
+            "next_action_title": "Next Action: Draft the final invoice email",
+            "open_loop_titles": [
+              "Blocker: Missing approved template",
+              "Waiting For: Finance signoff"
+            ],
+            "recent_change_titles": [
+              "Next Action: Draft the final invoice email",
+              "Blocker: Missing approved template",
+              "Waiting For: Finance signoff",
+              "Decision: Keep invoice workflow manual"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "suite_key": "correction",
+      "title": "Correction behavior",
+      "description": "Measures that superseding a stale or active object updates lifecycle state and creates a replacement.",
+      "evaluator_kind": "continuity_correction",
+      "metric_key": "pass_rate",
+      "cases": [
+        {
+          "case_key": "supersede_replaces_legacy_decision",
+          "title": "Supersede replaces legacy decision",
+          "evaluator_kind": "continuity_correction",
+          "fixture": {
+            "target_object_key": "legacy_decision",
+            "rows": [
+              {
+                "object_key": "legacy_decision",
+                "object_type": "Decision",
+                "status": "active",
+                "title": "Decision: Use the legacy rollout path",
+                "body": {
+                  "decision_text": "Use the legacy rollout path"
+                },
+                "provenance": {
+                  "thread_id": "thread-correction"
+                },
+                "confidence": 0.84,
+                "created_at": "2026-04-03T09:00:00+00:00"
+              }
+            ],
+            "request": {
+              "action": "supersede",
+              "reason": "Reviewed the latest launch notes",
+              "replacement_title": "Decision: Use the staged rollout path",
+              "replacement_body": {
+                "decision_text": "Use the staged rollout path"
+              },
+              "replacement_provenance": {
+                "thread_id": "thread-correction"
+              },
+              "replacement_confidence": 0.97
+            }
+          },
+          "expectations": {
+            "updated_status": "superseded",
+            "replacement_created": true,
+            "replacement_status": "active",
+            "replacement_title": "Decision: Use the staged rollout path"
+          }
+        }
+      ]
+    },
+    {
+      "suite_key": "contradiction",
+      "title": "Contradiction handling",
+      "description": "Measures contradiction detection and trust signal updates for conflicting active truths.",
+      "evaluator_kind": "contradiction_sync",
+      "metric_key": "pass_rate",
+      "cases": [
+        {
+          "case_key": "conflicting_release_modes",
+          "title": "Conflicting release modes produce an open case",
+          "evaluator_kind": "contradiction_sync",
+          "fixture": {
+            "rows": [
+              {
+                "object_key": "release_mode_manual",
+                "object_type": "Decision",
+                "status": "active",
+                "title": "Decision: Release mode is manual",
+                "body": {
+                  "fact_key": "release_mode",
+                  "fact_value": "manual",
+                  "decision_text": "Release mode is manual"
+                },
+                "provenance": {
+                  "thread_id": "thread-contradiction"
+                },
+                "confidence": 0.95,
+                "created_at": "2026-04-04T08:00:00+00:00"
+              },
+              {
+                "object_key": "release_mode_auto",
+                "object_type": "Decision",
+                "status": "active",
+                "title": "Decision: Release mode is automatic",
+                "body": {
+                  "fact_key": "release_mode",
+                  "fact_value": "automatic",
+                  "decision_text": "Release mode is automatic"
+                },
+                "provenance": {
+                  "thread_id": "thread-contradiction"
+                },
+                "confidence": 0.95,
+                "created_at": "2026-04-04T08:05:00+00:00"
+              }
+            ]
+          },
+          "expectations": {
+            "open_case_count": 1,
+            "open_case_kinds": [
+              "direct_fact_conflict"
+            ],
+            "active_signal_types": [
+              "contradiction"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "suite_key": "open_loop",
+      "title": "Open loop usefulness",
+      "description": "Measures that the open loop dashboard groups waiting for, blockers, stale items, and next actions deterministically.",
+      "evaluator_kind": "open_loop_dashboard",
+      "metric_key": "pass_rate",
+      "cases": [
+        {
+          "case_key": "open_loop_grouping",
+          "title": "Open loop grouping is deterministic",
+          "evaluator_kind": "open_loop_dashboard",
+          "fixture": {
+            "request": {
+              "limit": 10
+            },
+            "rows": [
+              {
+                "object_key": "waiting_legal",
+                "object_type": "WaitingFor",
+                "status": "active",
+                "title": "Waiting For: Legal signoff",
+                "body": {
+                  "waiting_for_text": "Legal signoff"
+                },
+                "provenance": {
+                  "thread_id": "thread-open-loop"
+                },
+                "confidence": 0.9,
+                "created_at": "2026-04-05T10:03:00+00:00"
+              },
+              {
+                "object_key": "waiting_vendor",
+                "object_type": "WaitingFor",
+                "status": "active",
+                "title": "Waiting For: Vendor quote",
+                "body": {
+                  "waiting_for_text": "Vendor quote"
+                },
+                "provenance": {
+                  "thread_id": "thread-open-loop"
+                },
+                "confidence": 0.9,
+                "created_at": "2026-04-05T10:01:00+00:00"
+              },
+              {
+                "object_key": "blocker_api_key",
+                "object_type": "Blocker",
+                "status": "active",
+                "title": "Blocker: Missing API key",
+                "body": {
+                  "blocker_text": "Missing API key"
+                },
+                "provenance": {
+                  "thread_id": "thread-open-loop"
+                },
+                "confidence": 0.88,
+                "created_at": "2026-04-05T10:04:00+00:00"
+              },
+              {
+                "object_key": "next_followup",
+                "object_type": "NextAction",
+                "status": "active",
+                "title": "Next Action: Send follow up",
+                "body": {
+                  "action_text": "Send follow up"
+                },
+                "provenance": {
+                  "thread_id": "thread-open-loop"
+                },
+                "confidence": 0.9,
+                "created_at": "2026-04-05T10:05:00+00:00"
+              },
+              {
+                "object_key": "stale_invoice",
+                "object_type": "WaitingFor",
+                "status": "stale",
+                "title": "Waiting For: Stale invoice response",
+                "body": {
+                  "waiting_for_text": "Stale invoice response"
+                },
+                "provenance": {
+                  "thread_id": "thread-open-loop"
+                },
+                "confidence": 0.84,
+                "created_at": "2026-04-05T10:06:00+00:00"
+              }
+            ]
+          },
+          "expectations": {
+            "waiting_for_titles": [
+              "Waiting For: Legal signoff",
+              "Waiting For: Vendor quote"
+            ],
+            "blocker_titles": [
+              "Blocker: Missing API key"
+            ],
+            "stale_titles": [
+              "Waiting For: Stale invoice response"
+            ],
+            "next_action_titles": [
+              "Next Action: Send follow up"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
