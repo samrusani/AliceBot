@@ -11,8 +11,9 @@
 These remain baseline truth and are not future milestones.
 
 ## Active Planning Status
-- Phase 12 Sprint 1 (`P12-S1`) is the active execution sprint.
-- `P12-S1` is the foundation sprint for the Phase 12 retrieval-quality stack.
+- Phase 12 Sprint 1 (`P12-S1`) is shipped.
+- Phase 12 Sprint 2 (`P12-S2`) is the active execution sprint.
+- `P12-S2` is the mutation-foundation sprint for the Phase 12 quality stack.
 
 ## Phase 12 Milestones
 

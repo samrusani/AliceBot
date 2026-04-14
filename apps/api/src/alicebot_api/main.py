@@ -116,6 +116,9 @@ from alicebot_api.contracts import (
     ContinuityReviewQueueResponse,
     ContinuityResumptionBriefRequestInput,
     ContinuityResumptionBriefResponse,
+    MemoryOperationCommitInput,
+    MemoryOperationGenerateInput,
+    MemoryOperationListInput,
     TemporalExplainQueryInput,
     TemporalExplainResponse,
     TemporalStateAtQueryInput,
@@ -383,6 +386,13 @@ from alicebot_api.continuity_capture import (
     commit_continuity_captures,
     get_continuity_capture_detail,
     list_continuity_capture_inbox,
+)
+from alicebot_api.memory_mutations import (
+    MemoryMutationValidationError,
+    commit_memory_operations,
+    generate_memory_operation_candidates,
+    list_memory_operation_candidates,
+    list_memory_operations,
 )
 from alicebot_api.continuity_evidence import (
     ContinuityEvidenceNotFoundError,
@@ -1070,6 +1080,28 @@ class ContinuityCaptureCommitRequest(BaseModel):
     candidates: list[dict[str, object]] = Field(default_factory=list)
     sync_fingerprint: str | None = Field(default=None, min_length=1, max_length=200)
     source_kind: str = Field(default="sync_turn", min_length=1, max_length=80)
+
+
+class MemoryOperationGenerateRequest(BaseModel):
+    user_id: UUID
+    user_content: str = Field(default="", max_length=4000)
+    assistant_content: str = Field(default="", max_length=4000)
+    mode: str = Field(default="assist", min_length=1, max_length=20)
+    sync_fingerprint: str | None = Field(default=None, min_length=1, max_length=200)
+    source_kind: str = Field(default="sync_turn", min_length=1, max_length=80)
+    session_id: str | None = Field(default=None, min_length=1, max_length=200)
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = Field(default=None, min_length=1, max_length=200)
+    person: str | None = Field(default=None, min_length=1, max_length=200)
+    target_continuity_object_id: UUID | None = None
+
+
+class MemoryOperationCommitRequest(BaseModel):
+    user_id: UUID
+    candidate_ids: list[UUID] = Field(default_factory=list)
+    sync_fingerprint: str | None = Field(default=None, min_length=1, max_length=200)
+    include_review_required: bool = False
 
 
 class ContinuityCorrectionRequest(BaseModel):
@@ -4775,6 +4807,122 @@ def commit_continuity_capture_candidates(request: ContinuityCaptureCommitRequest
                 ),
             )
     except (ContinuityCaptureValidationError, ContinuityObjectValidationError) as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v1/memory/operations/candidates/generate")
+def generate_memory_operation_candidates_endpoint(request: MemoryOperationGenerateRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = generate_memory_operation_candidates(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=MemoryOperationGenerateInput(
+                    user_content=request.user_content,
+                    assistant_content=request.assistant_content,
+                    mode=request.mode,  # type: ignore[arg-type]
+                    sync_fingerprint=request.sync_fingerprint,
+                    source_kind=request.source_kind,
+                    session_id=request.session_id,
+                    thread_id=request.thread_id,
+                    task_id=request.task_id,
+                    project=request.project,
+                    person=request.person,
+                    target_continuity_object_id=request.target_continuity_object_id,
+                ),
+            )
+    except MemoryMutationValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityCaptureValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v1/memory/operations/candidates")
+def list_memory_operation_candidates_endpoint(
+    user_id: UUID,
+    limit: int = Query(default=DEFAULT_CONTINUITY_CAPTURE_LIMIT, ge=1, le=100),
+    policy_action: str | None = Query(default=None, min_length=1, max_length=40),
+    operation_type: str | None = Query(default=None, min_length=1, max_length=40),
+    sync_fingerprint: str | None = Query(default=None, min_length=1, max_length=200),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_memory_operation_candidates(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=MemoryOperationListInput(
+                    limit=limit,
+                    policy_action=policy_action,  # type: ignore[arg-type]
+                    operation_type=operation_type,  # type: ignore[arg-type]
+                    sync_fingerprint=sync_fingerprint,
+                ),
+            )
+    except MemoryMutationValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v1/memory/operations/commit")
+def commit_memory_operations_endpoint(request: MemoryOperationCommitRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload = commit_memory_operations(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=MemoryOperationCommitInput(
+                    candidate_ids=request.candidate_ids,
+                    sync_fingerprint=request.sync_fingerprint,
+                    include_review_required=request.include_review_required,
+                ),
+            )
+    except MemoryMutationValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v1/memory/operations")
+def list_memory_operations_endpoint(
+    user_id: UUID,
+    limit: int = Query(default=DEFAULT_CONTINUITY_CAPTURE_LIMIT, ge=1, le=100),
+    sync_fingerprint: str | None = Query(default=None, min_length=1, max_length=200),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = list_memory_operations(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=MemoryOperationListInput(
+                    limit=limit,
+                    sync_fingerprint=sync_fingerprint,
+                ),
+            )
+    except MemoryMutationValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(
