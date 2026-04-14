@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
+from alicebot_api.continuity_contradictions import sync_contradiction_state_for_objects
 from alicebot_api.continuity_explainability import build_continuity_item_explanation
 from alicebot_api.continuity_objects import serialize_continuity_lifecycle_state_from_record
 from alicebot_api.contracts import (
@@ -203,6 +204,10 @@ def list_continuity_review_queue(
     statuses = _validate_queue_query(request)
     rows = store.list_continuity_review_queue(statuses=statuses, limit=request.limit)
     total_count = store.count_continuity_review_queue(statuses=statuses)
+    sync_contradiction_state_for_objects(
+        store,
+        continuity_object_ids=[row["id"] for row in rows],
+    )
 
     return {
         "items": [_serialize_review_object(store, row) for row in rows],
@@ -224,6 +229,14 @@ def get_continuity_review_detail(
 ) -> ContinuityReviewDetailResponse:
     del user_id
 
+    continuity_object = _lookup_object_or_raise(
+        store,
+        continuity_object_id=continuity_object_id,
+    )
+    sync_contradiction_state_for_objects(
+        store,
+        continuity_object_ids=[continuity_object["id"]],
+    )
     continuity_object = _lookup_object_or_raise(
         store,
         continuity_object_id=continuity_object_id,
@@ -453,6 +466,14 @@ def apply_continuity_correction(
         )
         if updated is None:
             raise ContinuityReviewNotFoundError(f"continuity object {continuity_object_id} was not found")
+        sync_contradiction_state_for_objects(
+            store,
+            continuity_object_ids=[updated["id"], replacement_object["id"]],
+        )
+        updated = _lookup_object_or_raise(store, continuity_object_id=continuity_object_id)
+        replacement_refreshed = store.get_continuity_object_optional(replacement_object["id"])
+        if replacement_refreshed is not None:
+            replacement_object = replacement_refreshed
 
         return {
             "continuity_object": _serialize_review_object(store, updated),
@@ -505,6 +526,11 @@ def apply_continuity_correction(
     )
     if updated is None:
         raise ContinuityReviewNotFoundError(f"continuity object {continuity_object_id} was not found")
+    sync_contradiction_state_for_objects(
+        store,
+        continuity_object_ids=[updated["id"]],
+    )
+    updated = _lookup_object_or_raise(store, continuity_object_id=continuity_object_id)
 
     return {
         "continuity_object": _serialize_review_object(store, updated),

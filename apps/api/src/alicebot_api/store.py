@@ -227,6 +227,42 @@ class ContinuityCorrectionEventRow(TypedDict):
     created_at: datetime
 
 
+class ContradictionCaseRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    canonical_key: str
+    continuity_object_id: UUID
+    counterpart_object_id: UUID
+    kind: str
+    status: str
+    rationale: str
+    detection_payload: JsonObject
+    resolution_action: str | None
+    resolution_note: str | None
+    continuity_object_updated_at: datetime
+    counterpart_object_updated_at: datetime
+    resolved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TrustSignalRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    continuity_object_id: UUID
+    signal_key: str
+    signal_type: str
+    signal_state: str
+    direction: str
+    magnitude: float
+    reason: str
+    contradiction_case_id: UUID | None
+    related_continuity_object_id: UUID | None
+    payload: JsonObject
+    created_at: datetime
+    updated_at: datetime
+
+
 class MemoryOperationCandidateRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -5567,6 +5603,281 @@ LIST_CONTINUITY_CORRECTION_EVENTS_SQL = """
                 LIMIT %s
                 """
 
+INSERT_CONTRADICTION_CASE_SQL = """
+                INSERT INTO contradiction_cases (
+                  user_id,
+                  canonical_key,
+                  continuity_object_id,
+                  counterpart_object_id,
+                  kind,
+                  status,
+                  rationale,
+                  detection_payload,
+                  resolution_action,
+                  resolution_note,
+                  continuity_object_updated_at,
+                  counterpart_object_updated_at,
+                  resolved_at
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  canonical_key,
+                  continuity_object_id,
+                  counterpart_object_id,
+                  kind,
+                  status,
+                  rationale,
+                  detection_payload,
+                  resolution_action,
+                  resolution_note,
+                  continuity_object_updated_at,
+                  counterpart_object_updated_at,
+                  resolved_at,
+                  created_at,
+                  updated_at
+                """
+
+UPDATE_CONTRADICTION_CASE_SQL = """
+                UPDATE contradiction_cases
+                SET continuity_object_id = %s,
+                    counterpart_object_id = %s,
+                    kind = %s,
+                    status = %s,
+                    rationale = %s,
+                    detection_payload = %s,
+                    resolution_action = %s,
+                    resolution_note = %s,
+                    continuity_object_updated_at = %s,
+                    counterpart_object_updated_at = %s,
+                    resolved_at = %s,
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                RETURNING
+                  id,
+                  user_id,
+                  canonical_key,
+                  continuity_object_id,
+                  counterpart_object_id,
+                  kind,
+                  status,
+                  rationale,
+                  detection_payload,
+                  resolution_action,
+                  resolution_note,
+                  continuity_object_updated_at,
+                  counterpart_object_updated_at,
+                  resolved_at,
+                  created_at,
+                  updated_at
+                """
+
+GET_CONTRADICTION_CASE_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  canonical_key,
+                  continuity_object_id,
+                  counterpart_object_id,
+                  kind,
+                  status,
+                  rationale,
+                  detection_payload,
+                  resolution_action,
+                  resolution_note,
+                  continuity_object_updated_at,
+                  counterpart_object_updated_at,
+                  resolved_at,
+                  created_at,
+                  updated_at
+                FROM contradiction_cases
+                WHERE id = %s
+                """
+
+GET_CONTRADICTION_CASE_BY_CANONICAL_KEY_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  canonical_key,
+                  continuity_object_id,
+                  counterpart_object_id,
+                  kind,
+                  status,
+                  rationale,
+                  detection_payload,
+                  resolution_action,
+                  resolution_note,
+                  continuity_object_updated_at,
+                  counterpart_object_updated_at,
+                  resolved_at,
+                  created_at,
+                  updated_at
+                FROM contradiction_cases
+                WHERE canonical_key = %s
+                """
+
+LIST_CONTRADICTION_CASES_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  canonical_key,
+                  continuity_object_id,
+                  counterpart_object_id,
+                  kind,
+                  status,
+                  rationale,
+                  detection_payload,
+                  resolution_action,
+                  resolution_note,
+                  continuity_object_updated_at,
+                  counterpart_object_updated_at,
+                  resolved_at,
+                  created_at,
+                  updated_at
+                FROM contradiction_cases
+                WHERE status = ANY(%s)
+                  AND (%s::uuid IS NULL OR continuity_object_id = %s OR counterpart_object_id = %s)
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """
+
+COUNT_CONTRADICTION_CASES_SQL = """
+                SELECT COUNT(*) AS count
+                FROM contradiction_cases
+                WHERE status = ANY(%s)
+                  AND (%s::uuid IS NULL OR continuity_object_id = %s OR counterpart_object_id = %s)
+                """
+
+LIST_CONTRADICTION_CASES_FOR_OBJECTS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  canonical_key,
+                  continuity_object_id,
+                  counterpart_object_id,
+                  kind,
+                  status,
+                  rationale,
+                  detection_payload,
+                  resolution_action,
+                  resolution_note,
+                  continuity_object_updated_at,
+                  counterpart_object_updated_at,
+                  resolved_at,
+                  created_at,
+                  updated_at
+                FROM contradiction_cases
+                WHERE status = ANY(%s)
+                  AND (
+                    continuity_object_id = ANY(%s)
+                    OR counterpart_object_id = ANY(%s)
+                  )
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                """
+
+UPSERT_TRUST_SIGNAL_SQL = """
+                INSERT INTO trust_signals (
+                  user_id,
+                  continuity_object_id,
+                  signal_key,
+                  signal_type,
+                  signal_state,
+                  direction,
+                  magnitude,
+                  reason,
+                  contradiction_case_id,
+                  related_continuity_object_id,
+                  payload
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                ON CONFLICT (user_id, signal_key)
+                DO UPDATE
+                SET continuity_object_id = EXCLUDED.continuity_object_id,
+                    signal_type = EXCLUDED.signal_type,
+                    signal_state = EXCLUDED.signal_state,
+                    direction = EXCLUDED.direction,
+                    magnitude = EXCLUDED.magnitude,
+                    reason = EXCLUDED.reason,
+                    contradiction_case_id = EXCLUDED.contradiction_case_id,
+                    related_continuity_object_id = EXCLUDED.related_continuity_object_id,
+                    payload = EXCLUDED.payload,
+                    updated_at = clock_timestamp()
+                RETURNING
+                  id,
+                  user_id,
+                  continuity_object_id,
+                  signal_key,
+                  signal_type,
+                  signal_state,
+                  direction,
+                  magnitude,
+                  reason,
+                  contradiction_case_id,
+                  related_continuity_object_id,
+                  payload,
+                  created_at,
+                  updated_at
+                """
+
+LIST_TRUST_SIGNALS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  continuity_object_id,
+                  signal_key,
+                  signal_type,
+                  signal_state,
+                  direction,
+                  magnitude,
+                  reason,
+                  contradiction_case_id,
+                  related_continuity_object_id,
+                  payload,
+                  created_at,
+                  updated_at
+                FROM trust_signals
+                WHERE (%s::uuid IS NULL OR continuity_object_id = %s)
+                  AND (%s::text IS NULL OR signal_state = %s)
+                  AND (%s::text IS NULL OR signal_type = %s)
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """
+
+COUNT_TRUST_SIGNALS_SQL = """
+                SELECT COUNT(*) AS count
+                FROM trust_signals
+                WHERE (%s::uuid IS NULL OR continuity_object_id = %s)
+                  AND (%s::text IS NULL OR signal_state = %s)
+                  AND (%s::text IS NULL OR signal_type = %s)
+                """
+
 INSERT_MEMORY_OPERATION_CANDIDATE_SQL = """
                 INSERT INTO memory_operation_candidates (
                   user_id,
@@ -6883,6 +7194,216 @@ class ContinuityStore:
         return self._fetch_all(
             LIST_CONTINUITY_CORRECTION_EVENTS_SQL,
             (continuity_object_id, limit),
+        )
+
+    def create_contradiction_case(
+        self,
+        *,
+        canonical_key: str,
+        continuity_object_id: UUID,
+        counterpart_object_id: UUID,
+        kind: str,
+        status: str,
+        rationale: str,
+        detection_payload: JsonObject,
+        resolution_action: str | None,
+        resolution_note: str | None,
+        continuity_object_updated_at: datetime,
+        counterpart_object_updated_at: datetime,
+        resolved_at: datetime | None,
+    ) -> ContradictionCaseRow:
+        return self._fetch_one(
+            "create_contradiction_case",
+            INSERT_CONTRADICTION_CASE_SQL,
+            (
+                canonical_key,
+                continuity_object_id,
+                counterpart_object_id,
+                kind,
+                status,
+                rationale,
+                Jsonb(detection_payload),
+                resolution_action,
+                resolution_note,
+                continuity_object_updated_at,
+                counterpart_object_updated_at,
+                resolved_at,
+            ),
+        )
+
+    def update_contradiction_case_optional(
+        self,
+        *,
+        contradiction_case_id: UUID,
+        continuity_object_id: UUID,
+        counterpart_object_id: UUID,
+        kind: str,
+        status: str,
+        rationale: str,
+        detection_payload: JsonObject,
+        resolution_action: str | None,
+        resolution_note: str | None,
+        continuity_object_updated_at: datetime,
+        counterpart_object_updated_at: datetime,
+        resolved_at: datetime | None,
+    ) -> ContradictionCaseRow | None:
+        return self._fetch_optional_one(
+            UPDATE_CONTRADICTION_CASE_SQL,
+            (
+                continuity_object_id,
+                counterpart_object_id,
+                kind,
+                status,
+                rationale,
+                Jsonb(detection_payload),
+                resolution_action,
+                resolution_note,
+                continuity_object_updated_at,
+                counterpart_object_updated_at,
+                resolved_at,
+                contradiction_case_id,
+            ),
+        )
+
+    def get_contradiction_case_optional(
+        self,
+        contradiction_case_id: UUID,
+    ) -> ContradictionCaseRow | None:
+        return self._fetch_optional_one(
+            GET_CONTRADICTION_CASE_SQL,
+            (contradiction_case_id,),
+        )
+
+    def get_contradiction_case_by_canonical_key_optional(
+        self,
+        *,
+        canonical_key: str,
+    ) -> ContradictionCaseRow | None:
+        return self._fetch_optional_one(
+            GET_CONTRADICTION_CASE_BY_CANONICAL_KEY_SQL,
+            (canonical_key,),
+        )
+
+    def list_contradiction_cases(
+        self,
+        *,
+        statuses: list[str],
+        limit: int,
+        continuity_object_id: UUID | None = None,
+    ) -> list[ContradictionCaseRow]:
+        return self._fetch_all(
+            LIST_CONTRADICTION_CASES_SQL,
+            (
+                statuses,
+                continuity_object_id,
+                continuity_object_id,
+                continuity_object_id,
+                limit,
+            ),
+        )
+
+    def count_contradiction_cases(
+        self,
+        *,
+        statuses: list[str],
+        continuity_object_id: UUID | None = None,
+    ) -> int:
+        return self._fetch_count(
+            COUNT_CONTRADICTION_CASES_SQL,
+            (
+                statuses,
+                continuity_object_id,
+                continuity_object_id,
+                continuity_object_id,
+            ),
+        )
+
+    def list_contradiction_cases_for_objects(
+        self,
+        *,
+        continuity_object_ids: list[UUID],
+        statuses: list[str],
+    ) -> list[ContradictionCaseRow]:
+        if not continuity_object_ids:
+            return []
+        return self._fetch_all(
+            LIST_CONTRADICTION_CASES_FOR_OBJECTS_SQL,
+            (
+                statuses,
+                continuity_object_ids,
+                continuity_object_ids,
+            ),
+        )
+
+    def upsert_trust_signal(
+        self,
+        *,
+        continuity_object_id: UUID,
+        signal_key: str,
+        signal_type: str,
+        signal_state: str,
+        direction: str,
+        magnitude: float,
+        reason: str,
+        contradiction_case_id: UUID | None,
+        related_continuity_object_id: UUID | None,
+        payload: JsonObject,
+    ) -> TrustSignalRow:
+        return self._fetch_one(
+            "upsert_trust_signal",
+            UPSERT_TRUST_SIGNAL_SQL,
+            (
+                continuity_object_id,
+                signal_key,
+                signal_type,
+                signal_state,
+                direction,
+                magnitude,
+                reason,
+                contradiction_case_id,
+                related_continuity_object_id,
+                Jsonb(payload),
+            ),
+        )
+
+    def list_trust_signals(
+        self,
+        *,
+        limit: int,
+        continuity_object_id: UUID | None = None,
+        signal_state: str | None = None,
+        signal_type: str | None = None,
+    ) -> list[TrustSignalRow]:
+        return self._fetch_all(
+            LIST_TRUST_SIGNALS_SQL,
+            (
+                continuity_object_id,
+                continuity_object_id,
+                signal_state,
+                signal_state,
+                signal_type,
+                signal_type,
+                limit,
+            ),
+        )
+
+    def count_trust_signals(
+        self,
+        *,
+        continuity_object_id: UUID | None = None,
+        signal_state: str | None = None,
+        signal_type: str | None = None,
+    ) -> int:
+        return self._fetch_count(
+            COUNT_TRUST_SIGNALS_SQL,
+            (
+                continuity_object_id,
+                continuity_object_id,
+                signal_state,
+                signal_state,
+                signal_type,
+                signal_type,
+            ),
         )
 
     def create_memory_operation_candidate(

@@ -289,3 +289,112 @@ def test_mcp_recall_and_resume_match_core_and_cli_behavior(migrated_database_url
     assert cli_resume.returncode == 0
     assert core_resume["brief"]["last_decision"]["item"]["title"] in cli_resume.stdout
     assert core_resume["brief"]["next_action"]["item"]["title"] in cli_resume.stdout
+
+
+def test_mcp_contradiction_and_trust_tools_smoke(migrated_database_urls) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="mcp-contradictions@example.com")
+    thread_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+
+        first_capture = store.create_continuity_capture_event(
+            raw_content="Decision: Release mode canary",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        first_object = store.create_continuity_object(
+            capture_event_id=first_capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: Release mode canary",
+            body={
+                "fact_key": "release_mode",
+                "fact_value": "canary",
+                "decision_text": "Release mode canary",
+            },
+            provenance={"thread_id": str(thread_id)},
+            confidence=0.94,
+        )
+
+        second_capture = store.create_continuity_capture_event(
+            raw_content="Decision: Release mode beta",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        store.create_continuity_object(
+            capture_event_id=second_capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: Release mode beta",
+            body={
+                "fact_key": "release_mode",
+                "fact_value": "beta",
+                "decision_text": "Release mode beta",
+            },
+            provenance={"thread_id": str(thread_id)},
+            confidence=0.94,
+        )
+
+    client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
+    try:
+        detected = _call_tool(
+            client,
+            name="alice_contradictions_detect",
+            arguments={"limit": 20},
+        )
+        assert detected["summary"]["open_case_count"] == 1
+        contradiction_case_id = detected["items"][0]["id"]
+
+        listed = _call_tool(
+            client,
+            name="alice_contradictions_list",
+            arguments={"status": "open", "limit": 20},
+        )
+        assert listed["summary"]["returned_count"] == 1
+        assert listed["items"][0]["id"] == contradiction_case_id
+
+        detailed = _call_tool(
+            client,
+            name="alice_contradictions_list",
+            arguments={"contradiction_case_id": contradiction_case_id},
+        )
+        assert detailed["contradiction_case"]["id"] == contradiction_case_id
+
+        signals = _call_tool(
+            client,
+            name="alice_trust_signals",
+            arguments={
+                "continuity_object_id": str(first_object["id"]),
+                "signal_state": "active",
+                "limit": 20,
+            },
+        )
+        assert signals["summary"]["returned_count"] == 1
+        assert signals["items"][0]["signal_type"] == "contradiction"
+
+        resolved = _call_tool(
+            client,
+            name="alice_contradictions_resolve",
+            arguments={
+                "contradiction_case_id": contradiction_case_id,
+                "action": "confirm_primary",
+                "note": "Primary record remains current.",
+            },
+        )
+        assert resolved["contradiction_case"]["status"] == "resolved"
+
+        active_after = _call_tool(
+            client,
+            name="alice_trust_signals",
+            arguments={
+                "continuity_object_id": str(first_object["id"]),
+                "signal_state": "active",
+                "limit": 20,
+            },
+        )
+        assert active_after["items"] == []
+    finally:
+        client.close()

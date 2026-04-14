@@ -1,58 +1,50 @@
-# REVIEW_REPORT
+# REVIEW REPORT
 
-- verdict: PASS
+## verdict
+PASS
 
 ## criteria met
-
-- Explicit mutation persistence is implemented with `memory_operation_candidates` and `memory_operations`.
-- Candidate generation, operation classification, policy gating, deterministic commit application, and audit inspection are present across API, CLI, and MCP.
-- All required operation types are implemented: `ADD`, `UPDATE`, `SUPERSEDE`, `DELETE`, and `NOOP`.
-- Explicit corrections and changed facts route through `SUPERSEDE` or `UPDATE` instead of silent overwrite.
-- Low-confidence candidates default to `review_required`.
-- Repeated sync handling is idempotent and verified by replay coverage.
-- Mutation-created `ADD` records now preserve request scope provenance, and scoped recall verification covers the committed result.
-- Invalid mutation `mode` values now fail consistently instead of diverging by surface.
-- The sprint stays layered on top of shipped capture/review flows and does not reopen `P12-S1` retrieval behavior.
+- Obvious contradictory facts are flagged automatically and persisted as contradiction cases.
+- Contradiction status appears in explain output, including open/resolved counts and penalty score.
+- Unresolved contradictions reduce retrieval confidence/rank through contradiction penalty integration.
+- Trust changes are stored and inspectable through API, CLI, and MCP trust-signal surfaces.
+- Contradiction review actions are auditable with stored resolution action, note, and timestamps.
+- `P12-S3` layers onto shipped retrieval and correction/mutation behavior without reopening those systems.
+- No local workstation paths, usernames, or machine-specific identifiers were found in the reviewed changed files or sprint docs.
 
 ## criteria missed
-
-- None found in the reviewed tree.
+- None.
 
 ## quality issues
-
-- No blocking implementation quality issues remain.
-- Minor follow-up: `memory_operation_candidates.applied_operation_id` is still enforced by application logic rather than a database foreign key. That is acceptable for this sprint, but the audit chain would be stronger with a relational constraint in a later cleanup.
+- Minor scope spill remains in control-doc churn outside the sprint-owned runtime surface, but it is not causing behavioral or acceptance risk.
 
 ## regression risks
-
-- Low residual risk. The added tests materially reduce the main mutation risks around replay idempotency, scoped recall after `ADD`, and invalid API mode handling.
+- Low after the follow-up fix.
+- The main previously identified risks are now covered by regression tests:
+  - superseded history no longer reopens active contradictions
+  - naive temporal ISO values are normalized before overlap detection
 
 ## docs issues
-
-- No blocking docs issues found.
-- `BUILD_REPORT.md` now matches the control-doc updates in the current diff.
-- The sprint doc now describes `/v1/memory/operations/*` and tombstone-style `DELETE` as current branch behavior rather than silently treating those unresolved Control Tower decisions as settled product policy.
+- None blocking.
+- Sprint docs now clarify that contradiction detection only uses live continuity objects (`active` and `stale`) and normalizes temporal bounds to UTC.
+- Sprint docs frame contradiction attachment, trust-ledger durability, and API surface choices as current branch behavior where Control Tower decisions are still pending, rather than as permanently settled product policy.
 - The local-path scrub command excludes `BUILD_REPORT.md` and `REVIEW_REPORT.md` because the reports now carry the literal search pattern as part of their recorded verification steps.
-- I did not find local workstation paths, usernames, or similar machine-specific identifiers in the changed files.
 
 ## should anything be added to RULES.md?
-
-- No mandatory rules update is required.
-- Optional: add an explicit rule that mutation-created objects must preserve source scope provenance when no prior target object exists. The code now does this, and the rule would make the expectation harder to regress.
+- No required update.
 
 ## should anything update ARCHITECTURE.md?
-
-- No further architecture update is required for this sprint review.
-- If Control Tower wants the `/v1/memory/operations/*` endpoint shape and the current auto-apply gate treated as settled decisions, those should be recorded explicitly in `ARCHITECTURE.md`.
+- No required update for sprint acceptance.
+- When `P12-S3` becomes shipped baseline truth, the data-model summary should explicitly include `contradiction_cases` and `trust_signals`.
 
 ## recommended next action
+- Proceed with merge review for `P12-S3`.
+- Carry the new superseded-history and naive-temporal contradiction cases forward in future regression suites.
 
-- Proceed with merge review for `P12-S2`.
-- Keep the new scoped `ADD` recall test and invalid-mode API test in the mutation verification slice as permanent regression coverage.
-
-## review verification
-
-- `./.venv/bin/pytest tests/unit/test_20260414_0058_phase12_memory_operations.py tests/unit/test_memory_mutations.py tests/unit/test_cli.py tests/unit/test_mcp.py -q`
-- `./.venv/bin/pytest tests/integration/test_memory_mutations_api.py tests/integration/test_cli_integration.py tests/integration/test_mcp_server.py -q`
+## reviewer verification
+- `./.venv/bin/pytest tests/unit/test_continuity_contradictions.py tests/unit/test_20260414_0059_phase12_contradictions_trust_calibration.py tests/unit/test_continuity_recall.py tests/unit/test_continuity_review.py tests/unit/test_cli.py tests/unit/test_mcp.py tests/unit/test_main.py tests/integration/test_contradictions_api.py tests/integration/test_cli_integration.py tests/integration/test_mcp_cli_parity.py -q`
+  - Result: PASS (`104 passed`)
 - `./.venv/bin/python scripts/check_control_doc_truth.py`
+  - Result: PASS
 - `rg -n "/Users|samirusani|Desktop/Codex" RULES.md ARCHITECTURE.md CURRENT_STATE.md .ai/handoff/CURRENT_STATE.md PRODUCT_BRIEF.md ROADMAP.md docs/memory`
+  - Result: PASS (no matches)

@@ -14,7 +14,8 @@ Alice is a pre-1.0 continuity platform for AI agents and agent-assisted workflow
 - Release Sprint 1 (`R1`) is complete and now baseline truth.
 - Phase 12 is active.
 - `P12-S1` Hybrid Retrieval + Reranking is shipped.
-- `P12-S2` Automated Memory Operations is the active sprint.
+- `P12-S2` Automated Memory Operations is shipped.
+- `P12-S3` Contradiction Detection + Trust Calibration is the active sprint.
 
 ## Next Phase
 ### Phase 12: Retrieval Quality + Adaptive Continuity

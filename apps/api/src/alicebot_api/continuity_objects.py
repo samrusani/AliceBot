@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from uuid import UUID
 
+from alicebot_api.continuity_contradictions import sync_contradiction_state_for_objects
 from alicebot_api.contracts import (
     CONTINUITY_OBJECT_TYPES,
     ContinuityLifecycleStateRecord,
@@ -129,6 +130,10 @@ def create_continuity_object_record(
         body=body,
         provenance=provenance,
         confidence=confidence,
+    )
+    sync_contradiction_state_for_objects(
+        store,
+        continuity_object_ids=[row["id"]],
     )
     return _serialize_continuity_object(row)
 

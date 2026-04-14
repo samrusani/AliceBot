@@ -29,6 +29,14 @@ def test_parser_routes_required_commands() -> None:
         (["review", "queue"], "_run_review_queue"),
         (["review", "show", continuity_object_id], "_run_review_show"),
         (["review", "apply", continuity_object_id, "--action", "confirm"], "_run_review_apply"),
+        (["contradictions", "detect"], "_run_contradictions_detect"),
+        (["contradictions", "list"], "_run_contradictions_list"),
+        (["contradictions", "show", continuity_object_id], "_run_contradictions_show"),
+        (
+            ["contradictions", "resolve", continuity_object_id, "--action", "confirm_primary"],
+            "_run_contradictions_resolve",
+        ),
+        (["trust", "signals"], "_run_trust_signals"),
         (["explain", continuity_object_id], "_run_explain"),
         (["explain", "--entity-id", continuity_object_id], "_run_explain"),
         (["evidence", "artifact", continuity_object_id], "_run_evidence_artifact"),
@@ -129,6 +137,8 @@ def test_recall_formatting_is_deterministic() -> None:
                     "supersession_rank": 3,
                     "posture_rank": 2,
                     "lifecycle_rank": 4,
+                    "open_contradiction_count": 0,
+                    "contradiction_penalty_score": 0.0,
                     "confidence": 0.95,
                 },
                 "explanation": {
@@ -144,6 +154,15 @@ def test_recall_formatting_is_deterministic() -> None:
                         "provenance_posture": "strong",
                         "evidence_segment_count": 1,
                         "correction_count": 0,
+                        "active_signal_count": 0,
+                    },
+                    "contradictions": {
+                        "open_case_count": 0,
+                        "resolved_case_count": 0,
+                        "open_case_ids": [],
+                        "kinds": [],
+                        "counterpart_object_ids": [],
+                        "penalty_score": 0.0,
                     },
                     "evidence_segments": [
                         {
@@ -194,9 +213,11 @@ def test_recall_formatting_is_deterministic() -> None:
         "    lifecycle=preserved:True searchable:True promotable:True\n"
         "    confidence=0.950 relevance=1.000 confirmation=confirmed\n"
         "    freshness=fresh provenance=strong supersession=current\n"
+        "    contradictions=0 penalty=0.000\n"
         "    source=(unknown)\n"
         "    provenance_refs=continuity_capture_event:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb; thread:thread-1\n"
-        "    trust=human_curated reason=Inferred from confirmation or correction history. evidence_segments=1 corrections=0\n"
+        "    trust=human_curated reason=Inferred from confirmation or correction history. evidence_segments=1 corrections=0 active_signals=0\n"
+        "    contradiction_summary=open=0 resolved=0 kinds= penalty=0.000\n"
         "    timestamps=capture_created_at=2026-03-30T09:58:00+00:00 created_at=2026-03-30T09:59:00+00:00 updated_at=2026-03-30T10:00:00+00:00 last_confirmed_at=2026-03-30T10:00:00+00:00\n"
         "    source_facts=raw_content=Decision: Keep rollout phased | decision_text=Keep rollout phased\n"
         "    evidence_segments=continuity_capture_event:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb \"Decision: Keep rollout phased\"\n"

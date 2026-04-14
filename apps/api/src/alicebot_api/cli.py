@@ -16,6 +16,9 @@ import psycopg
 from alicebot_api.cli_formatting import (
     format_artifact_detail_output,
     format_capture_output,
+    format_contradiction_case_detail_output,
+    format_contradiction_case_list_output,
+    format_contradiction_sync_output,
     format_explain_output,
     format_lifecycle_detail_output,
     format_lifecycle_list_output,
@@ -32,6 +35,7 @@ from alicebot_api.cli_formatting import (
     format_temporal_explain_output,
     format_temporal_state_output,
     format_temporal_timeline_output,
+    format_trust_signals_output,
     format_trusted_fact_pattern_explain_output,
     format_trusted_fact_pattern_list_output,
     format_trusted_fact_playbook_explain_output,
@@ -46,6 +50,14 @@ from alicebot_api.continuity_evidence import (
     ContinuityEvidenceNotFoundError,
     build_continuity_explain,
     get_continuity_artifact_detail,
+)
+from alicebot_api.continuity_contradictions import (
+    ContinuityContradictionNotFoundError,
+    ContinuityContradictionValidationError,
+    get_contradiction_case,
+    list_contradiction_cases,
+    resolve_contradiction_case,
+    sync_contradictions,
 )
 from alicebot_api.memory_mutations import (
     MemoryMutationValidationError,
@@ -83,9 +95,11 @@ from alicebot_api.continuity_review import (
     get_continuity_review_detail,
     list_continuity_review_queue,
 )
+from alicebot_api.continuity_trust import list_trust_signals
 from alicebot_api.contracts import (
     CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
     CONTINUITY_CORRECTION_ACTIONS,
+    CONTRADICTION_RESOLUTION_ACTIONS,
     DEFAULT_CONTINUITY_CAPTURE_LIMIT,
     DEFAULT_CONTINUITY_LIFECYCLE_LIMIT,
     DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
@@ -95,14 +109,17 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
     DEFAULT_TEMPORAL_TIMELINE_LIMIT,
     DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT,
+    MAX_CONTINUITY_REVIEW_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_LIFECYCLE_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
-    MAX_CONTINUITY_REVIEW_LIMIT,
     MAX_TEMPORAL_TIMELINE_LIMIT,
     MAX_TRUSTED_FACT_PROMOTION_LIMIT,
+    ContradictionCaseListQueryInput,
+    ContradictionResolveInput,
+    ContradictionSyncInput,
     ContinuityCaptureCreateInput,
     ContinuityCorrectionInput,
     ContinuityLifecycleQueryInput,
@@ -116,6 +133,7 @@ from alicebot_api.contracts import (
     TemporalExplainQueryInput,
     TemporalStateAtQueryInput,
     TemporalTimelineQueryInput,
+    TrustSignalListQueryInput,
     TrustedFactPatternListQueryInput,
     TrustedFactPlaybookListQueryInput,
 )
@@ -538,6 +556,74 @@ def _run_review_apply(ctx: CLIContext, args: argparse.Namespace) -> str:
             ),
         )
     return format_review_apply_output(payload)
+
+
+def _run_contradictions_detect(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = sync_contradictions(
+            store,
+            user_id=ctx.user_id,
+            request=ContradictionSyncInput(
+                continuity_object_id=args.continuity_object_id,
+                limit=args.limit,
+            ),
+        )
+    return format_contradiction_sync_output(payload)
+
+
+def _run_contradictions_list(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = list_contradiction_cases(
+            store,
+            user_id=ctx.user_id,
+            request=ContradictionCaseListQueryInput(
+                status=args.status,
+                limit=args.limit,
+                continuity_object_id=args.continuity_object_id,
+            ),
+        )
+    return format_contradiction_case_list_output(payload)
+
+
+def _run_contradictions_show(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = get_contradiction_case(
+            store,
+            user_id=ctx.user_id,
+            contradiction_case_id=args.contradiction_case_id,
+        )
+    return format_contradiction_case_detail_output(payload)
+
+
+def _run_contradictions_resolve(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = resolve_contradiction_case(
+            store,
+            user_id=ctx.user_id,
+            contradiction_case_id=args.contradiction_case_id,
+            request=ContradictionResolveInput(
+                action=args.action,
+                note=args.note,
+            ),
+        )
+    return format_contradiction_case_detail_output(
+        {"contradiction_case": payload["contradiction_case"]}
+    )
+
+
+def _run_trust_signals(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = list_trust_signals(
+            store,
+            user_id=ctx.user_id,
+            request=TrustSignalListQueryInput(
+                limit=args.limit,
+                continuity_object_id=args.continuity_object_id,
+                signal_state=args.signal_state,
+                signal_type=args.signal_type,
+            ),
+        )
+    return format_trust_signals_output(payload)
 
 
 def _run_explain(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -1045,6 +1131,122 @@ def build_parser() -> argparse.ArgumentParser:
     )
     review_apply_parser.set_defaults(handler=_run_review_apply)
 
+    contradictions_parser = subparsers.add_parser(
+        "contradictions",
+        help="Detect, inspect, and resolve continuity contradictions.",
+    )
+    contradictions_subparsers = contradictions_parser.add_subparsers(
+        dest="contradictions_command",
+        required=True,
+    )
+
+    contradictions_detect_parser = contradictions_subparsers.add_parser(
+        "detect",
+        help="Run contradiction detection and persist current cases.",
+    )
+    contradictions_detect_parser.add_argument(
+        "--continuity-object-id",
+        type=_parse_uuid,
+        default=None,
+        help="Optional continuity object UUID to scope detection.",
+    )
+    contradictions_detect_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_CONTINUITY_REVIEW_LIMIT,
+        help=f"Max contradiction rows to print (1-{MAX_CONTINUITY_REVIEW_LIMIT}).",
+    )
+    contradictions_detect_parser.set_defaults(handler=_run_contradictions_detect)
+
+    contradictions_list_parser = contradictions_subparsers.add_parser(
+        "list",
+        help="List contradiction cases.",
+    )
+    contradictions_list_parser.add_argument(
+        "--status",
+        choices=("open", "resolved", "dismissed"),
+        default="open",
+        help="Case status filter.",
+    )
+    contradictions_list_parser.add_argument(
+        "--continuity-object-id",
+        type=_parse_uuid,
+        default=None,
+        help="Optional continuity object UUID filter.",
+    )
+    contradictions_list_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_CONTINUITY_REVIEW_LIMIT,
+        help=f"Max contradiction rows (1-{MAX_CONTINUITY_REVIEW_LIMIT}).",
+    )
+    contradictions_list_parser.set_defaults(handler=_run_contradictions_list)
+
+    contradictions_show_parser = contradictions_subparsers.add_parser(
+        "show",
+        help="Show one contradiction case.",
+    )
+    contradictions_show_parser.add_argument(
+        "contradiction_case_id",
+        type=_parse_uuid,
+        help="Contradiction case UUID.",
+    )
+    contradictions_show_parser.set_defaults(handler=_run_contradictions_show)
+
+    contradictions_resolve_parser = contradictions_subparsers.add_parser(
+        "resolve",
+        help="Resolve one contradiction case.",
+    )
+    contradictions_resolve_parser.add_argument(
+        "contradiction_case_id",
+        type=_parse_uuid,
+        help="Contradiction case UUID.",
+    )
+    contradictions_resolve_parser.add_argument(
+        "--action",
+        required=True,
+        choices=CONTRADICTION_RESOLUTION_ACTIONS,
+        help="Resolution action.",
+    )
+    contradictions_resolve_parser.add_argument(
+        "--note",
+        default=None,
+        help="Optional operator note.",
+    )
+    contradictions_resolve_parser.set_defaults(handler=_run_contradictions_resolve)
+
+    trust_parser = subparsers.add_parser(
+        "trust",
+        help="Inspect stored trust signals.",
+    )
+    trust_subparsers = trust_parser.add_subparsers(dest="trust_command", required=True)
+    trust_signals_parser = trust_subparsers.add_parser("signals", help="List trust signals.")
+    trust_signals_parser.add_argument(
+        "--continuity-object-id",
+        type=_parse_uuid,
+        default=None,
+        help="Optional continuity object UUID filter.",
+    )
+    trust_signals_parser.add_argument(
+        "--signal-state",
+        choices=("active", "inactive"),
+        default="active",
+        help="Signal state filter.",
+    )
+    trust_signals_parser.add_argument(
+        "--signal-type",
+        choices=("correction", "corroboration", "contradiction", "weak_inference"),
+        default=None,
+        help="Optional signal type filter.",
+    )
+    trust_signals_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_CONTINUITY_REVIEW_LIMIT,
+        help=f"Max trust signals (1-{MAX_CONTINUITY_REVIEW_LIMIT}).",
+    )
+    trust_signals_parser.set_defaults(handler=_run_trust_signals)
+
     explain_parser = subparsers.add_parser(
         "explain",
         help="Show continuity evidence or temporal explain output.",
@@ -1118,6 +1320,20 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             option_name="--limit",
             minimum=1,
             maximum=MAX_CONTINUITY_RECALL_LIMIT,
+        )
+    elif args.command == "contradictions" and args.contradictions_command in {"detect", "list"}:
+        _validate_limit(
+            args.limit,
+            option_name="--limit",
+            minimum=1,
+            maximum=MAX_CONTINUITY_REVIEW_LIMIT,
+        )
+    elif args.command == "trust" and args.trust_command == "signals":
+        _validate_limit(
+            args.limit,
+            option_name="--limit",
+            minimum=1,
+            maximum=MAX_CONTINUITY_REVIEW_LIMIT,
         )
     elif args.command == "timeline":
         _validate_limit(
@@ -1196,6 +1412,8 @@ def main(argv: list[str] | None = None) -> int:
         ContinuityOpenLoopValidationError,
         ContinuityReviewValidationError,
         ContinuityReviewNotFoundError,
+        ContinuityContradictionValidationError,
+        ContinuityContradictionNotFoundError,
         ContinuityEvidenceNotFoundError,
         MemoryMutationValidationError,
         TemporalStateValidationError,

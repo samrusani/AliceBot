@@ -4,7 +4,9 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID
 
+from alicebot_api.continuity_contradictions import build_explanation_contradiction_summary
 from alicebot_api.contracts import (
+    ContinuityExplanationContradictionRecord,
     ContinuityExplanationEvidenceSegmentRecord,
     ContinuityExplanationRecord,
     ContinuityExplanationSourceFactRecord,
@@ -20,6 +22,7 @@ from alicebot_api.store import (
     ContinuityCaptureEventRow,
     ContinuityCorrectionEventRow,
     ContinuityObjectEvidenceRow,
+    ContinuityStore,
     JsonObject,
 )
 
@@ -334,6 +337,7 @@ def _trust_record(
     evidence_segment_count: int,
     correction_count: int,
     source_event_count: int,
+    active_signal_count: int,
 ) -> ContinuityExplanationTrustRecord:
     trust_class, trust_reason = _infer_trust_class(
         confirmation_status=confirmation_status,
@@ -350,6 +354,7 @@ def _trust_record(
         "provenance_posture": provenance_posture,
         "evidence_segment_count": evidence_segment_count,
         "correction_count": correction_count,
+        "active_signal_count": active_signal_count,
     }
 
 
@@ -484,6 +489,18 @@ def build_continuity_item_explanation(
     capture_event = _load_capture_event(store, capture_event_id=capture_event_id)
     evidence_rows = _load_evidence_rows(store, continuity_object_id=continuity_object_id)
     correction_events = _load_correction_events(store, continuity_object_id=continuity_object_id)
+    contradiction_summary: ContinuityExplanationContradictionRecord = build_explanation_contradiction_summary(
+        cast(ContinuityStore, store),
+        continuity_object_id=continuity_object_id,
+    )
+    active_signal_count = _safe_call(
+        store,
+        "count_trust_signals",
+        0,
+        continuity_object_id=continuity_object_id,
+        signal_state="active",
+        signal_type=None,
+    )
     resolved_confirmation_status = (
         confirmation_status
         if confirmation_status is not None
@@ -518,6 +535,7 @@ def build_continuity_item_explanation(
         evidence_segment_count=len(evidence_segments),
         correction_count=len(correction_events),
         source_event_count=source_event_count,
+        active_signal_count=active_signal_count,
     )
     supersession_notes = _supersession_notes(
         status=status,
@@ -528,6 +546,7 @@ def build_continuity_item_explanation(
     return {
         "source_facts": source_facts,
         "trust": trust,
+        "contradictions": contradiction_summary,
         "evidence_segments": evidence_segments,
         "supersession_notes": supersession_notes,
         "timestamps": _timestamps_record(

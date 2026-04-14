@@ -7,6 +7,9 @@ from alicebot_api.contracts import (
     ContinuityArtifactDetailResponse,
     ContinuityCaptureCreateResponse,
     ContinuityCorrectionApplyResponse,
+    ContradictionCaseDetailResponse,
+    ContradictionCaseListResponse,
+    ContradictionSyncResponse,
     ContinuityExplainResponse,
     ContinuityLifecycleDetailResponse,
     ContinuityLifecycleListResponse,
@@ -23,6 +26,7 @@ from alicebot_api.contracts import (
     TemporalExplainResponse,
     TemporalStateAtResponse,
     TemporalTimelineResponse,
+    TrustSignalListResponse,
     TrustedFactPatternExplainResponse,
     TrustedFactPatternListResponse,
     TrustedFactPlaybookExplainResponse,
@@ -169,7 +173,23 @@ def _format_explanation_trust(item: ContinuityRecallResultRecord) -> str:
         f"{trust.get('trust_class')} "
         f"reason={trust.get('trust_reason')} "
         f"evidence_segments={trust.get('evidence_segment_count')} "
-        f"corrections={trust.get('correction_count')}"
+        f"corrections={trust.get('correction_count')} "
+        f"active_signals={trust.get('active_signal_count')}"
+    )
+
+
+def _format_explanation_contradictions(item: ContinuityRecallResultRecord) -> str:
+    explanation = item.get("explanation")
+    if not isinstance(explanation, dict):
+        return "(none)"
+    contradictions = explanation.get("contradictions")
+    if not isinstance(contradictions, dict):
+        return "(none)"
+    return (
+        f"open={contradictions.get('open_case_count')} "
+        f"resolved={contradictions.get('resolved_case_count')} "
+        f"kinds={','.join(contradictions.get('kinds', [])) if isinstance(contradictions.get('kinds'), list) else '(none)'} "
+        f"penalty={_format_float(float(contradictions.get('penalty_score', 0.0)))}"
     )
 
 
@@ -198,9 +218,14 @@ def _render_recall_item(
             f"provenance={item['ordering']['provenance_posture']} "
             f"supersession={item['ordering']['supersession_posture']}"
         ),
+        (
+            f"{prefix}  contradictions={item['ordering'].get('open_contradiction_count')} "
+            f"penalty={_format_float(float(item['ordering'].get('contradiction_penalty_score', 0.0)))}"
+        ),
         f"{prefix}  source={_format_provenance_source(item)}",
         f"{prefix}  provenance_refs={_format_provenance_refs(item)}",
         f"{prefix}  trust={_format_explanation_trust(item)}",
+        f"{prefix}  contradiction_summary={_format_explanation_contradictions(item)}",
         f"{prefix}  timestamps={_format_explanation_timestamps(item)}",
         f"{prefix}  source_facts={_format_explanation_source_facts(item)}",
         f"{prefix}  evidence_segments={_format_explanation_evidence(item)}",
@@ -519,6 +544,7 @@ def format_explain_output(payload: ContinuityExplainResponse) -> str:
     ]
     if isinstance(explanation, dict):
         trust = explanation.get("trust", {})
+        contradictions = explanation.get("contradictions", {})
         timestamps = explanation.get("timestamps", {})
         source_facts = explanation.get("source_facts", [])
         supersession_notes = explanation.get("supersession_notes", [])
@@ -526,6 +552,7 @@ def format_explain_output(payload: ContinuityExplainResponse) -> str:
         lines.extend(
             [
                 f"trust: {_format_json(trust)}",
+                f"contradictions: {_format_json(contradictions)}",
                 f"timestamps: {_format_json(timestamps)}",
                 f"source_facts: {_format_json(source_facts)}",
                 f"evidence_segments: {_format_json(evidence_segments)}",
@@ -566,6 +593,105 @@ def format_explain_output(payload: ContinuityExplainResponse) -> str:
                     f"   raw_evidence={segment['raw_content']}",
                 ]
             )
+    return "\n".join(lines)
+
+
+def format_contradiction_sync_output(payload: ContradictionSyncResponse) -> str:
+    summary = payload["summary"]
+    lines = [
+        "contradiction sync",
+        f"continuity_object_id: {summary['continuity_object_id']}",
+        (
+            f"scanned={summary['scanned_object_count']} "
+            f"open={summary['open_case_count']} "
+            f"resolved={summary['resolved_case_count']} "
+            f"updated={summary['updated_case_count']}"
+        ),
+    ]
+    if len(payload["items"]) == 0:
+        lines.append("empty: no contradiction cases.")
+        return "\n".join(lines)
+    lines.append("items:")
+    for index, item in enumerate(payload["items"], start=1):
+        lines.extend(
+            [
+                f"  {index}. [{item['kind']}|{item['status']}] {item['id']}",
+                f"    continuity_object_id={item['continuity_object']['id']}",
+                f"    counterpart_object_id={item['counterpart_object']['id']}",
+                f"    rationale={item['rationale']}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_contradiction_case_list_output(payload: ContradictionCaseListResponse) -> str:
+    summary = payload["summary"]
+    lines = [
+        "contradiction cases",
+        (
+            f"status={summary['status']} "
+            f"returned={summary['returned_count']}/{summary['total_count']} "
+            f"limit={summary['limit']}"
+        ),
+        f"order: {', '.join(summary['order'])}",
+    ]
+    if len(payload["items"]) == 0:
+        lines.append("empty: no contradiction cases.")
+        return "\n".join(lines)
+    for index, item in enumerate(payload["items"], start=1):
+        lines.extend(
+            [
+                f"{index}. [{item['kind']}|{item['status']}] {item['id']}",
+                f"   continuity_object_id={item['continuity_object']['id']} counterpart_object_id={item['counterpart_object']['id']}",
+                f"   rationale={item['rationale']}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def format_contradiction_case_detail_output(payload: ContradictionCaseDetailResponse) -> str:
+    item = payload["contradiction_case"]
+    return "\n".join(
+        [
+            "contradiction case",
+            f"id: {item['id']}",
+            f"kind: {item['kind']}",
+            f"status: {item['status']}",
+            f"continuity_object_id: {item['continuity_object']['id']}",
+            f"counterpart_object_id: {item['counterpart_object']['id']}",
+            f"rationale: {item['rationale']}",
+            f"resolution_action: {item['resolution_action']}",
+            f"resolution_note: {item['resolution_note']}",
+            f"resolved_at: {item['resolved_at']}",
+            f"detection_payload: {_format_json(item['detection_payload'])}",
+        ]
+    )
+
+
+def format_trust_signals_output(payload: TrustSignalListResponse) -> str:
+    summary = payload["summary"]
+    lines = [
+        "trust signals",
+        (
+            f"continuity_object_id={summary['continuity_object_id']} "
+            f"signal_state={summary['signal_state']} "
+            f"signal_type={summary['signal_type']}"
+        ),
+        f"returned: {summary['returned_count']}/{summary['total_count']} (limit={summary['limit']})",
+        f"order: {', '.join(summary['order'])}",
+    ]
+    if len(payload["items"]) == 0:
+        lines.append("empty: no trust signals.")
+        return "\n".join(lines)
+    for index, item in enumerate(payload["items"], start=1):
+        lines.extend(
+            [
+                f"{index}. [{item['signal_type']}|{item['signal_state']}|{item['direction']}] {item['signal_key']}",
+                f"   continuity_object_id={item['continuity_object_id']} magnitude={_format_float(item['magnitude'])}",
+                f"   contradiction_case_id={item['contradiction_case_id']} related_continuity_object_id={item['related_continuity_object_id']}",
+                f"   reason={item['reason']}",
+            ]
+        )
     return "\n".join(lines)
 
 

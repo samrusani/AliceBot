@@ -28,15 +28,15 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="ROADMAP.md",
         required_markers=(
             "Bridge Phase (`B1`-`B4`): shipped",
-            "Phase 12 Sprint 2 (`P12-S2`) is the active execution sprint.",
+            "Phase 12 Sprint 3 (`P12-S3`) is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Phase 12 Sprint 2 (`P12-S2`): Automated Memory Operations",
+            "Phase 12 Sprint 3 (`P12-S3`): Contradiction Detection + Trust Calibration",
             "`v0.2.0` is released baseline truth.",
-            "repeated syncs do not duplicate mutations",
+            "unresolved contradictions reduce retrieval rank or confidence",
         ),
     ),
     ControlDocTruthRule(
@@ -53,7 +53,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
             "Phase 10 is shipped.",
             "Phase 11 is shipped.",
             "`v0.2.0` is released.",
-            "Phase 12 Sprint 2 (`P12-S2`) is the active execution sprint.",
+            "Phase 12 Sprint 3 (`P12-S3`) is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(

@@ -264,6 +264,23 @@ ContinuityRecallScopeKind = Literal["thread", "task", "project", "person"]
 ContinuityCorrectionAction = Literal["confirm", "edit", "delete", "supersede", "mark_stale"]
 ContinuityReviewStatus = Literal["active", "stale", "superseded", "deleted"]
 ContinuityReviewStatusFilter = Literal["correction_ready", "active", "stale", "superseded", "deleted", "all"]
+ContradictionKind = Literal[
+    "direct_fact_conflict",
+    "preference_conflict",
+    "temporal_conflict",
+    "source_hierarchy_conflict",
+]
+ContradictionStatus = Literal["open", "resolved", "dismissed"]
+ContradictionResolutionAction = Literal[
+    "confirm_primary",
+    "confirm_counterpart",
+    "mark_historical",
+    "dismiss_false_positive",
+    "auto_resolved",
+]
+TrustSignalType = Literal["correction", "corroboration", "contradiction", "weak_inference"]
+TrustSignalState = Literal["active", "inactive"]
+TrustSignalDirection = Literal["positive", "negative", "neutral"]
 ContinuityOpenLoopPosture = Literal["waiting_for", "blocker", "stale", "next_action"]
 ContinuityOpenLoopReviewAction = Literal["done", "deferred", "still_blocked"]
 ChiefOfStaffPriorityPosture = Literal["urgent", "important", "waiting", "blocked", "stale", "defer"]
@@ -625,6 +642,8 @@ CONTINUITY_CAPTURE_LIST_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_OBJECT_LIST_ORDER = ["created_at_desc", "id_desc"]
 CONTINUITY_REVIEW_QUEUE_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
 CONTINUITY_CORRECTION_EVENT_ORDER = ["created_at_desc", "id_desc"]
+CONTRADICTION_CASE_LIST_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
+TRUST_SIGNAL_LIST_ORDER = ["updated_at_desc", "created_at_desc", "id_desc"]
 CONTINUITY_RECALL_LIST_ORDER = ["relevance_desc", "created_at_desc", "id_desc"]
 CONTINUITY_LIFECYCLE_LIST_ORDER = ["updated_at_desc", "id_desc"]
 CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER = ["created_at_desc", "id_desc"]
@@ -840,6 +859,39 @@ CONTINUITY_REVIEW_STATUSES = [
     "stale",
     "superseded",
     "deleted",
+]
+CONTRADICTION_KINDS = [
+    "direct_fact_conflict",
+    "preference_conflict",
+    "temporal_conflict",
+    "source_hierarchy_conflict",
+]
+CONTRADICTION_STATUSES = [
+    "open",
+    "resolved",
+    "dismissed",
+]
+CONTRADICTION_RESOLUTION_ACTIONS = [
+    "confirm_primary",
+    "confirm_counterpart",
+    "mark_historical",
+    "dismiss_false_positive",
+    "auto_resolved",
+]
+TRUST_SIGNAL_TYPES = [
+    "correction",
+    "corroboration",
+    "contradiction",
+    "weak_inference",
+]
+TRUST_SIGNAL_STATES = [
+    "active",
+    "inactive",
+]
+TRUST_SIGNAL_DIRECTIONS = [
+    "positive",
+    "negative",
+    "neutral",
 ]
 CONTINUITY_OPEN_LOOP_POSTURES = [
     "waiting_for",
@@ -1978,6 +2030,66 @@ class ContinuityCorrectionInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ContradictionCaseListQueryInput:
+    status: ContradictionStatus = "open"
+    limit: int = DEFAULT_CONTINUITY_REVIEW_LIMIT
+    continuity_object_id: UUID | None = None
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "status": self.status,
+            "limit": self.limit,
+            "continuity_object_id": (
+                None if self.continuity_object_id is None else str(self.continuity_object_id)
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ContradictionSyncInput:
+    continuity_object_id: UUID | None = None
+    limit: int = DEFAULT_CONTINUITY_REVIEW_LIMIT
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "continuity_object_id": (
+                None if self.continuity_object_id is None else str(self.continuity_object_id)
+            ),
+            "limit": self.limit,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ContradictionResolveInput:
+    action: ContradictionResolutionAction
+    note: str | None = None
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "action": self.action,
+            "note": self.note,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TrustSignalListQueryInput:
+    limit: int = DEFAULT_CONTINUITY_REVIEW_LIMIT
+    continuity_object_id: UUID | None = None
+    signal_state: TrustSignalState = "active"
+    signal_type: TrustSignalType | None = None
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "limit": self.limit,
+            "continuity_object_id": (
+                None if self.continuity_object_id is None else str(self.continuity_object_id)
+            ),
+            "signal_state": self.signal_state,
+            "signal_type": self.signal_type,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuityRecallQueryInput:
     query: str | None = None
     thread_id: UUID | None = None
@@ -3067,6 +3179,89 @@ class ContinuityReviewDetailResponse(TypedDict):
     review: ContinuityReviewDetail
 
 
+class ContradictionCaseRecord(TypedDict):
+    id: str
+    canonical_key: str
+    status: ContradictionStatus
+    kind: ContradictionKind
+    rationale: str
+    detection_payload: JsonObject
+    resolution_action: ContradictionResolutionAction | None
+    resolution_note: str | None
+    resolved_at: str | None
+    continuity_object_updated_at: str
+    counterpart_object_updated_at: str
+    created_at: str
+    updated_at: str
+    continuity_object: ContinuityReviewObjectRecord
+    counterpart_object: ContinuityReviewObjectRecord
+
+
+class ContradictionCaseListSummary(TypedDict):
+    status: ContradictionStatus
+    limit: int
+    returned_count: int
+    total_count: int
+    order: list[str]
+
+
+class ContradictionCaseListResponse(TypedDict):
+    items: list[ContradictionCaseRecord]
+    summary: ContradictionCaseListSummary
+
+
+class ContradictionCaseDetailResponse(TypedDict):
+    contradiction_case: ContradictionCaseRecord
+
+
+class ContradictionSyncSummary(TypedDict):
+    continuity_object_id: str | None
+    scanned_object_count: int
+    open_case_count: int
+    resolved_case_count: int
+    updated_case_count: int
+
+
+class ContradictionSyncResponse(TypedDict):
+    items: list[ContradictionCaseRecord]
+    summary: ContradictionSyncSummary
+
+
+class ContradictionResolveResponse(TypedDict):
+    contradiction_case: ContradictionCaseRecord
+
+
+class TrustSignalRecord(TypedDict):
+    id: str
+    continuity_object_id: str
+    signal_key: str
+    signal_type: TrustSignalType
+    signal_state: TrustSignalState
+    direction: TrustSignalDirection
+    magnitude: float
+    reason: str
+    contradiction_case_id: str | None
+    related_continuity_object_id: str | None
+    payload: JsonObject
+    created_at: str
+    updated_at: str
+
+
+class TrustSignalListSummary(TypedDict):
+    continuity_object_id: str | None
+    signal_state: TrustSignalState
+    signal_type: TrustSignalType | None
+    limit: int
+    returned_count: int
+    total_count: int
+    order: list[str]
+
+
+class TrustSignalListResponse(TypedDict):
+    items: list[TrustSignalRecord]
+    summary: TrustSignalListSummary
+
+
 class ContinuityEvidenceArtifactRecord(TypedDict):
     id: str
     source_kind: str
@@ -3132,6 +3327,15 @@ class ContinuityExplanationSupersessionNoteRecord(TypedDict):
     created_at: str | None
 
 
+class ContinuityExplanationContradictionRecord(TypedDict):
+    open_case_count: int
+    resolved_case_count: int
+    open_case_ids: list[str]
+    kinds: list[ContradictionKind]
+    counterpart_object_ids: list[str]
+    penalty_score: float
+
+
 class ContinuityExplanationTrustRecord(TypedDict):
     trust_class: MemoryTrustClass
     trust_reason: str
@@ -3140,6 +3344,7 @@ class ContinuityExplanationTrustRecord(TypedDict):
     provenance_posture: ContinuityRecallProvenancePosture
     evidence_segment_count: int
     correction_count: int
+    active_signal_count: int
 
 
 class ContinuityExplanationTimestampsRecord(TypedDict):
@@ -3152,6 +3357,7 @@ class ContinuityExplanationTimestampsRecord(TypedDict):
 class ContinuityExplanationRecord(TypedDict):
     source_facts: list[ContinuityExplanationSourceFactRecord]
     trust: ContinuityExplanationTrustRecord
+    contradictions: ContinuityExplanationContradictionRecord
     evidence_segments: list[ContinuityExplanationEvidenceSegmentRecord]
     supersession_notes: list[ContinuityExplanationSupersessionNoteRecord]
     timestamps: ContinuityExplanationTimestampsRecord
@@ -3217,6 +3423,8 @@ class ContinuityRecallOrderingMetadata(TypedDict):
     supersession_freshness_score: float
     posture_rank: int
     lifecycle_rank: int
+    open_contradiction_count: int
+    contradiction_penalty_score: float
     confidence: float
 
 
