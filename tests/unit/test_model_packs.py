@@ -13,6 +13,8 @@ from alicebot_api.model_packs import (
     build_model_pack_runtime_shape,
     ensure_tier1_model_packs_for_workspace,
     is_reserved_tier1_pack_key,
+    normalize_briefing_max_tokens,
+    normalize_briefing_strategy,
     normalize_model_pack_contract,
     normalize_pack_id,
     normalize_pack_version,
@@ -57,6 +59,8 @@ def _pack_row(*, pack_id: str, pack_version: str = "1.0.0") -> dict[str, object]
         "family": "custom",
         "description": "desc",
         "status": "active",
+        "briefing_strategy": "balanced",
+        "briefing_max_tokens": 192,
         "contract": normalize_model_pack_contract(_contract()),
         "metadata": {},
         "created_at": _NOW,
@@ -101,6 +105,8 @@ class FakeModelPackStore:
         family: str,
         description: str,
         status: str,
+        briefing_strategy: str,
+        briefing_max_tokens,
         contract,
         metadata,
     ):
@@ -114,6 +120,8 @@ class FakeModelPackStore:
             "family": family,
             "description": description,
             "status": status,
+            "briefing_strategy": briefing_strategy,
+            "briefing_max_tokens": briefing_max_tokens,
             "contract": contract,
             "metadata": metadata,
             "created_at": _NOW,
@@ -134,6 +142,8 @@ class FakeModelPackStore:
         family: str,
         description: str,
         status: str,
+        briefing_strategy: str,
+        briefing_max_tokens,
         contract,
         metadata,
     ):
@@ -149,6 +159,8 @@ class FakeModelPackStore:
             family=family,
             description=description,
             status=status,
+            briefing_strategy=briefing_strategy,
+            briefing_max_tokens=briefing_max_tokens,
             contract=contract,
             metadata=metadata,
         )
@@ -178,6 +190,8 @@ class SimulatedSeedRaceModelPackStore(FakeModelPackStore):
         family: str,
         description: str,
         status: str,
+        briefing_strategy: str,
+        briefing_max_tokens,
         contract,
         metadata,
     ):
@@ -193,6 +207,8 @@ class SimulatedSeedRaceModelPackStore(FakeModelPackStore):
                 family=family,
                 description=description,
                 status=status,
+                briefing_strategy=briefing_strategy,
+                briefing_max_tokens=briefing_max_tokens,
                 contract=contract,
                 metadata=metadata,
             )
@@ -206,6 +222,8 @@ class SimulatedSeedRaceModelPackStore(FakeModelPackStore):
             family=family,
             description=description,
             status=status,
+            briefing_strategy=briefing_strategy,
+            briefing_max_tokens=briefing_max_tokens,
             contract=contract,
             metadata=metadata,
         )
@@ -214,11 +232,17 @@ class SimulatedSeedRaceModelPackStore(FakeModelPackStore):
 def test_normalize_pack_id_and_version() -> None:
     assert normalize_pack_id(" GPT-OSS ") == "gpt-oss"
     assert normalize_pack_version("1.2.3") == "1.2.3"
+    assert normalize_briefing_strategy(" compact ") == "compact"
+    assert normalize_briefing_max_tokens(256) == 256
 
     with pytest.raises(ModelPackValidationError, match="pack_id"):
         normalize_pack_id("Bad ID")
     with pytest.raises(ModelPackValidationError, match="semver"):
         normalize_pack_version("v1")
+    with pytest.raises(ModelPackValidationError, match="briefing_strategy"):
+        normalize_briefing_strategy("verbose")
+    with pytest.raises(ModelPackValidationError, match="briefing_max_tokens"):
+        normalize_briefing_max_tokens(12)
 
 
 def test_normalize_model_pack_contract_rejects_invalid_provider_key() -> None:

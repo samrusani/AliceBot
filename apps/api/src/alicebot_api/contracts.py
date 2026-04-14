@@ -204,7 +204,9 @@ ModelPackFamily = Literal[
 ]
 ModelPackStatus = Literal["active"]
 ModelPackBindingSource = Literal["manual", "runtime_override"]
+ModelPackBriefingStrategy = Literal["balanced", "compact", "detailed"]
 ModelFinishReason = Literal["completed", "incomplete"]
+TaskBriefMode = Literal["user_recall", "resume", "worker_subtask", "agent_handoff"]
 ExplicitPreferencePattern = Literal[
     "i_like",
     "i_dont_like",
@@ -441,6 +443,8 @@ MODEL_PACK_LIST_ORDER = ["pack_id_asc", "created_at_desc", "id_desc"]
 DEFAULT_AGENT_PROFILE_ID = "assistant_default"
 RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "resumption_brief_v0"
 CONTINUITY_RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_resumption_brief_v0"
+TASK_BRIEF_ASSEMBLY_VERSION_V0 = "task_brief_v0"
+TASK_BRIEF_COMPARISON_VERSION_V0 = "task_brief_comparison_v0"
 CONTINUITY_DAILY_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_daily_brief_v0"
 CONTINUITY_WEEKLY_REVIEW_ASSEMBLY_VERSION_V0 = "continuity_weekly_review_v0"
 CHIEF_OF_STAFF_PRIORITY_BRIEF_ASSEMBLY_VERSION_V0 = "chief_of_staff_priority_brief_v0"
@@ -455,6 +459,20 @@ MEMORY_REVIEW_QUEUE_PRIORITY_MODES: list[MemoryReviewQueuePriorityMode] = [
     "recent_first",
     "high_risk_first",
     "stale_truth_first",
+]
+DEFAULT_TASK_BRIEF_TOKEN_BUDGET = 220
+MAX_TASK_BRIEF_TOKEN_BUDGET = 4000
+TASK_BRIEF_MODE_ORDER: list[TaskBriefMode] = [
+    "user_recall",
+    "resume",
+    "worker_subtask",
+    "agent_handoff",
+]
+TASK_BRIEF_SECTION_ITEM_ORDER = ["created_at_desc", "id_desc"]
+MODEL_PACK_BRIEFING_STRATEGIES: list[ModelPackBriefingStrategy] = [
+    "balanced",
+    "compact",
+    "detailed",
 ]
 MEMORY_REVIEW_QUEUE_ORDER_BY_PRIORITY_MODE: dict[MemoryReviewQueuePriorityMode, list[str]] = {
     "oldest_first": ["updated_at_asc", "created_at_asc", "id_asc"],
@@ -1723,6 +1741,8 @@ class ModelPackRecord(TypedDict):
     family: ModelPackFamily
     description: str
     status: ModelPackStatus
+    briefing_strategy: ModelPackBriefingStrategy
+    briefing_max_tokens: int | None
     contract: JsonObject
     metadata: JsonObject
     created_at: str
@@ -2145,6 +2165,57 @@ class ContinuityResumptionBriefRequestInput:
         payload["since"] = isoformat_or_none(self.since)
         payload["until"] = isoformat_or_none(self.until)
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class TaskBriefCompileRequestInput:
+    mode: TaskBriefMode
+    query: str | None = None
+    workspace_id: UUID | None = None
+    pack_id: str | None = None
+    pack_version: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    include_non_promotable_facts: bool = False
+    provider_strategy: str | None = None
+    model_pack_strategy: str | None = None
+    token_budget: int | None = None
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "mode": self.mode,
+            "query": self.query,
+            "workspace_id": None if self.workspace_id is None else str(self.workspace_id),
+            "pack_id": self.pack_id,
+            "pack_version": self.pack_version,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+            "include_non_promotable_facts": self.include_non_promotable_facts,
+            "provider_strategy": self.provider_strategy,
+            "model_pack_strategy": self.model_pack_strategy,
+            "token_budget": self.token_budget,
+        }
+        payload["since"] = isoformat_or_none(self.since)
+        payload["until"] = isoformat_or_none(self.until)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class TaskBriefComparisonRequestInput:
+    primary: TaskBriefCompileRequestInput
+    secondary: TaskBriefCompileRequestInput
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "primary": self.primary.as_payload(),
+            "secondary": self.secondary.as_payload(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -3558,6 +3629,85 @@ class ContinuityResumptionDebugRecord(TypedDict):
 class ContinuityResumptionBriefResponse(TypedDict):
     brief: ContinuityResumptionBriefRecord
     debug: NotRequired[ContinuityResumptionDebugRecord]
+
+
+class TaskBriefEmptyState(TypedDict):
+    is_empty: bool
+    message: str
+
+
+class TaskBriefSectionSummary(TypedDict):
+    candidate_count: int
+    selected_count: int
+    truncated_count: int
+    token_budget: int
+    estimated_tokens: int
+    order: list[str]
+
+
+class TaskBriefSectionRecord(TypedDict):
+    section_key: str
+    title: str
+    intent: str
+    selection_rule: str
+    items: list[ContinuityRecallResultRecord]
+    summary: TaskBriefSectionSummary
+    empty_state: TaskBriefEmptyState
+
+
+class TaskBriefStrategyRecord(TypedDict):
+    provider_strategy: str
+    model_pack_strategy: str
+    token_budget: int
+    budget_source: str
+
+
+class TaskBriefSummary(TypedDict):
+    candidate_count: int
+    selected_item_count: int
+    estimated_tokens: int
+    token_budget: int
+    truncated: bool
+    deterministic_key: str
+    section_order: list[str]
+    mode_order: list[str]
+
+
+class TaskBriefRecord(TypedDict):
+    assembly_version: str
+    mode: TaskBriefMode
+    scope: ContinuityRecallScopeFilters
+    strategy: TaskBriefStrategyRecord
+    summary: TaskBriefSummary
+    sections: list[TaskBriefSectionRecord]
+    sources: list[str]
+
+
+class TaskBriefPersistenceRecord(TypedDict):
+    task_brief_id: str
+    created_at: str
+
+
+class TaskBriefResponse(TypedDict):
+    task_brief: TaskBriefRecord
+    persistence: TaskBriefPersistenceRecord
+
+
+class TaskBriefComparisonStats(TypedDict):
+    primary_mode: TaskBriefMode
+    secondary_mode: TaskBriefMode
+    smaller_mode: TaskBriefMode | None
+    estimated_token_delta: int
+    selected_item_delta: int
+    shared_item_ids: list[str]
+    primary_is_smaller: bool
+
+
+class TaskBriefComparisonResponse(TypedDict):
+    comparison_version: str
+    primary: TaskBriefRecord
+    secondary: TaskBriefRecord
+    comparison: TaskBriefComparisonStats
 
 
 class RetrievalRunRecord(TypedDict):

@@ -26,6 +26,8 @@ from alicebot_api.contracts import (
     TemporalExplainResponse,
     TemporalStateAtResponse,
     TemporalTimelineResponse,
+    TaskBriefComparisonResponse,
+    TaskBriefResponse,
     TrustSignalListResponse,
     TrustedFactPatternExplainResponse,
     TrustedFactPatternListResponse,
@@ -424,6 +426,81 @@ def format_resume_output(payload: ContinuityResumptionBriefResponse) -> str:
         lines.extend(_render_recall_item(next_action["item"]))
 
     lines.extend(_render_retrieval_debug(payload))
+    return "\n".join(lines)
+
+
+def format_task_brief_output(payload: TaskBriefResponse) -> str:
+    brief = payload["task_brief"]
+    persistence = payload["persistence"]
+    summary = brief["summary"]
+    strategy = brief["strategy"]
+    lines = [
+        "task brief",
+        f"mode: {brief['mode']}",
+        f"assembly_version: {brief['assembly_version']}",
+        f"scope: {_format_scope(brief['scope'])}",
+        f"task_brief_id: {persistence['task_brief_id']}",
+        f"created_at: {persistence['created_at']}",
+        (
+            f"strategy: provider={strategy['provider_strategy']} "
+            f"model_pack={strategy['model_pack_strategy']} "
+            f"token_budget={strategy['token_budget']} "
+            f"budget_source={strategy['budget_source']}"
+        ),
+        (
+            f"summary: candidates={summary['candidate_count']} "
+            f"selected={summary['selected_item_count']} "
+            f"estimated_tokens={summary['estimated_tokens']} "
+            f"truncated={summary['truncated']}"
+        ),
+        f"deterministic_key: {summary['deterministic_key']}",
+        f"sources: {', '.join(brief['sources'])}",
+    ]
+    for section in brief["sections"]:
+        lines.extend(
+            _render_recall_list_section(
+                title=section["section_key"],
+                items=section["items"],
+                limit=section["summary"]["selected_count"],
+                total_count=section["summary"]["candidate_count"],
+                order=section["summary"]["order"],
+                empty_message=section["empty_state"]["message"],
+            )
+        )
+        lines.append(f"  intent: {section['intent']}")
+        lines.append(f"  rule: {section['selection_rule']}")
+        lines.append(
+            "  budget: "
+            f"token_budget={section['summary']['token_budget']} "
+            f"estimated_tokens={section['summary']['estimated_tokens']} "
+            f"truncated={section['summary']['truncated_count']}"
+        )
+    return "\n".join(lines)
+
+
+def format_task_brief_comparison_output(payload: TaskBriefComparisonResponse) -> str:
+    comparison = payload["comparison"]
+    lines = [
+        "task brief comparison",
+        f"comparison_version: {payload['comparison_version']}",
+        f"primary_mode: {comparison['primary_mode']}",
+        f"secondary_mode: {comparison['secondary_mode']}",
+        f"smaller_mode: {comparison['smaller_mode']}",
+        f"estimated_token_delta: {comparison['estimated_token_delta']}",
+        f"selected_item_delta: {comparison['selected_item_delta']}",
+        f"shared_item_ids: {', '.join(comparison['shared_item_ids']) if comparison['shared_item_ids'] else '(none)'}",
+        f"primary_is_smaller: {comparison['primary_is_smaller']}",
+        (
+            f"primary_summary: selected={payload['primary']['summary']['selected_item_count']} "
+            f"estimated_tokens={payload['primary']['summary']['estimated_tokens']} "
+            f"deterministic_key={payload['primary']['summary']['deterministic_key']}"
+        ),
+        (
+            f"secondary_summary: selected={payload['secondary']['summary']['selected_item_count']} "
+            f"estimated_tokens={payload['secondary']['summary']['estimated_tokens']} "
+            f"deterministic_key={payload['secondary']['summary']['deterministic_key']}"
+        ),
+    ]
     return "\n".join(lines)
 
 

@@ -57,6 +57,7 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_WEEKLY_REVIEW_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    DEFAULT_TASK_BRIEF_TOKEN_BUDGET,
     DEFAULT_TEMPORAL_TIMELINE_LIMIT,
     DEFAULT_TRUSTED_FACT_PROMOTION_LIMIT,
     DEFAULT_CHIEF_OF_STAFF_PRIORITY_LIMIT,
@@ -89,6 +90,7 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_WEEKLY_REVIEW_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    MAX_TASK_BRIEF_TOKEN_BUDGET,
     MAX_TEMPORAL_TIMELINE_LIMIT,
     MAX_TRUSTED_FACT_PROMOTION_LIMIT,
     MAX_CHIEF_OF_STAFF_PRIORITY_LIMIT,
@@ -123,6 +125,10 @@ from alicebot_api.contracts import (
     ContinuityReviewQueueResponse,
     ContinuityResumptionBriefRequestInput,
     ContinuityResumptionBriefResponse,
+    TaskBriefComparisonRequestInput,
+    TaskBriefComparisonResponse,
+    TaskBriefCompileRequestInput,
+    TaskBriefResponse,
     MemoryOperationCommitInput,
     MemoryOperationGenerateInput,
     MemoryOperationListInput,
@@ -680,11 +686,20 @@ from alicebot_api.model_packs import (
     build_model_pack_runtime_shape,
     ensure_tier1_model_packs_for_workspace,
     is_reserved_tier1_pack_key,
+    normalize_briefing_max_tokens,
+    normalize_briefing_strategy,
     normalize_model_pack_contract,
     normalize_pack_family,
     normalize_pack_id,
     normalize_pack_version,
     resolve_workspace_model_pack_selection,
+)
+from alicebot_api.task_briefing import (
+    TaskBriefNotFoundError,
+    TaskBriefValidationError,
+    compare_task_briefs,
+    compile_and_persist_task_brief,
+    get_persisted_task_brief,
 )
 from alicebot_api.provider_secrets import (
     ProviderSecretManagerError,
@@ -1604,6 +1619,8 @@ def _serialize_model_pack(pack: ModelPackRow) -> dict[str, object]:
         "family": pack["family"],
         "description": pack["description"],
         "status": pack["status"],
+        "briefing_strategy": pack["briefing_strategy"],
+        "briefing_max_tokens": pack["briefing_max_tokens"],
         "contract": pack["contract"],
         "metadata": pack["metadata"],
         "created_at": pack["created_at"].isoformat(),
@@ -1624,6 +1641,8 @@ def _serialize_workspace_model_pack_binding(
         "family": binding["pack_family"],
         "description": binding["pack_description"],
         "status": binding["pack_status"],
+        "briefing_strategy": binding["pack_briefing_strategy"],
+        "briefing_max_tokens": binding["pack_briefing_max_tokens"],
         "contract": binding["pack_contract"],
         "metadata": binding["pack_metadata"],
         "created_at": binding["pack_created_at"],
@@ -2461,6 +2480,8 @@ class CreateModelPackRequest(BaseModel):
     display_name: str = Field(min_length=1, max_length=120)
     family: str = Field(min_length=1, max_length=40)
     description: str = Field(default="", max_length=1000)
+    briefing_strategy: str = Field(default="balanced", min_length=1, max_length=40)
+    briefing_max_tokens: int | None = Field(default=None, ge=32, le=4000)
     contract: dict[str, object]
     metadata: dict[str, object] = Field(default_factory=dict)
 
@@ -2470,6 +2491,38 @@ class BindModelPackRequest(BaseModel):
 
     pack_version: str | None = Field(default=None, min_length=1, max_length=40)
     metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class TaskBriefCompileSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["user_recall", "resume", "worker_subtask", "agent_handoff"]
+    query: str | None = Field(default=None, min_length=1, max_length=4000)
+    workspace_id: UUID | None = None
+    pack_id: str | None = Field(default=None, min_length=1, max_length=80)
+    pack_version: str | None = Field(default=None, min_length=1, max_length=40)
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = Field(default=None, min_length=1, max_length=200)
+    person: str | None = Field(default=None, min_length=1, max_length=200)
+    since: datetime | None = None
+    until: datetime | None = None
+    include_non_promotable_facts: bool = False
+    provider_strategy: str | None = Field(default=None, min_length=1, max_length=80)
+    model_pack_strategy: str | None = Field(default=None, min_length=1, max_length=40)
+    token_budget: int | None = Field(default=None, ge=1, le=MAX_TASK_BRIEF_TOKEN_BUDGET)
+
+
+class TaskBriefCompileRequest(TaskBriefCompileSpec):
+    user_id: UUID
+
+
+class TaskBriefCompareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: UUID
+    primary: TaskBriefCompileSpec
+    secondary: TaskBriefCompileSpec
 
 
 class RuntimeInvokeRequest(BaseModel):
@@ -5912,6 +5965,122 @@ def get_continuity_resumption_brief(
     )
 
 
+@app.post("/v0/task-briefs/compile")
+def post_v0_task_brief_compile(body: TaskBriefCompileRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, body.user_id) as conn:
+            payload: TaskBriefResponse = compile_and_persist_task_brief(
+                ContinuityStore(conn),
+                user_id=body.user_id,
+                request=TaskBriefCompileRequestInput(
+                    mode=body.mode,
+                    query=body.query,
+                    workspace_id=body.workspace_id,
+                    pack_id=body.pack_id,
+                    pack_version=body.pack_version,
+                    thread_id=body.thread_id,
+                    task_id=body.task_id,
+                    project=body.project,
+                    person=body.person,
+                    since=body.since,
+                    until=body.until,
+                    include_non_promotable_facts=body.include_non_promotable_facts,
+                    provider_strategy=body.provider_strategy,
+                    model_pack_strategy=body.model_pack_strategy,
+                    token_budget=body.token_budget,
+                ),
+            )
+    except (
+        TaskBriefValidationError,
+        ContinuityRecallValidationError,
+        ContinuityResumptionValidationError,
+    ) as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/task-briefs/{task_brief_id}")
+def get_v0_task_brief(task_brief_id: UUID, user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = get_persisted_task_brief(
+                ContinuityStore(conn),
+                task_brief_id=task_brief_id,
+            )
+    except TaskBriefNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v0/task-briefs/compare")
+def post_v0_task_brief_compare(body: TaskBriefCompareRequest) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, body.user_id) as conn:
+            payload: TaskBriefComparisonResponse = compare_task_briefs(
+                ContinuityStore(conn),
+                user_id=body.user_id,
+                primary_request=TaskBriefCompileRequestInput(
+                    mode=body.primary.mode,
+                    query=body.primary.query,
+                    workspace_id=body.primary.workspace_id,
+                    pack_id=body.primary.pack_id,
+                    pack_version=body.primary.pack_version,
+                    thread_id=body.primary.thread_id,
+                    task_id=body.primary.task_id,
+                    project=body.primary.project,
+                    person=body.primary.person,
+                    since=body.primary.since,
+                    until=body.primary.until,
+                    include_non_promotable_facts=body.primary.include_non_promotable_facts,
+                    provider_strategy=body.primary.provider_strategy,
+                    model_pack_strategy=body.primary.model_pack_strategy,
+                    token_budget=body.primary.token_budget,
+                ),
+                secondary_request=TaskBriefCompileRequestInput(
+                    mode=body.secondary.mode,
+                    query=body.secondary.query,
+                    workspace_id=body.secondary.workspace_id,
+                    pack_id=body.secondary.pack_id,
+                    pack_version=body.secondary.pack_version,
+                    thread_id=body.secondary.thread_id,
+                    task_id=body.secondary.task_id,
+                    project=body.secondary.project,
+                    person=body.secondary.person,
+                    since=body.secondary.since,
+                    until=body.secondary.until,
+                    include_non_promotable_facts=body.secondary.include_non_promotable_facts,
+                    provider_strategy=body.secondary.provider_strategy,
+                    model_pack_strategy=body.secondary.model_pack_strategy,
+                    token_budget=body.secondary.token_budget,
+                ),
+            )
+    except (
+        TaskBriefValidationError,
+        ContinuityRecallValidationError,
+        ContinuityResumptionValidationError,
+    ) as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
 @app.get("/v0/chief-of-staff")
 def get_chief_of_staff_priority_brief(
     user_id: UUID,
@@ -7548,6 +7717,8 @@ def create_v1_model_pack(request: Request, body: CreateModelPackRequest) -> JSON
         normalized_pack_id = normalize_pack_id(body.pack_id)
         normalized_pack_version = normalize_pack_version(body.pack_version)
         normalized_family = normalize_pack_family(body.family)
+        normalized_briefing_strategy = normalize_briefing_strategy(body.briefing_strategy)
+        normalized_briefing_max_tokens = normalize_briefing_max_tokens(body.briefing_max_tokens)
         normalized_contract = normalize_model_pack_contract(body.contract)
         normalized_display_name = body.display_name.strip()
         if normalized_display_name == "":
@@ -7593,6 +7764,8 @@ def create_v1_model_pack(request: Request, body: CreateModelPackRequest) -> JSON
                     family=normalized_family,
                     description=body.description.strip(),
                     status=MODEL_PACK_STATUS_ACTIVE,
+                    briefing_strategy=normalized_briefing_strategy,
+                    briefing_max_tokens=normalized_briefing_max_tokens,
                     contract=normalized_contract,
                     metadata=body.metadata,
                 )

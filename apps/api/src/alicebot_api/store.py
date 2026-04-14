@@ -457,6 +457,8 @@ class ModelPackRow(TypedDict):
     family: str
     description: str
     status: str
+    briefing_strategy: str
+    briefing_max_tokens: int | None
     contract: JsonObject
     metadata: JsonObject
     created_at: datetime
@@ -487,6 +489,8 @@ class WorkspaceModelPackBindingDetailRow(TypedDict):
     pack_family: str
     pack_description: str
     pack_status: str
+    pack_briefing_strategy: str
+    pack_briefing_max_tokens: int | None
     pack_contract: JsonObject
     pack_metadata: JsonObject
     pack_created_by_user_account_id: UUID
@@ -566,6 +570,22 @@ class RetrievalRunRow(TypedDict):
     selected_count: int
     debug_enabled: bool
     retention_until: datetime
+    created_at: datetime
+
+
+class TaskBriefRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    mode: str
+    query_text: str | None
+    scope: JsonObject
+    provider_strategy: str
+    model_pack_strategy: str
+    token_budget: int
+    estimated_tokens: int
+    item_count: int
+    deterministic_key: str
+    payload: JsonObject
     created_at: datetime
 
 
@@ -2447,12 +2467,16 @@ INSERT_MODEL_PACK_SQL = """
                   family,
                   description,
                   status,
+                  briefing_strategy,
+                  briefing_max_tokens,
                   contract,
                   metadata,
                   created_at,
                   updated_at
                 )
                 VALUES (
+                  %s,
+                  %s,
                   %s,
                   %s,
                   %s,
@@ -2476,6 +2500,8 @@ INSERT_MODEL_PACK_SQL = """
                   family,
                   description,
                   status,
+                  briefing_strategy,
+                  briefing_max_tokens,
                   contract,
                   metadata,
                   created_at,
@@ -2492,12 +2518,16 @@ INSERT_MODEL_PACK_IF_ABSENT_SQL = """
                   family,
                   description,
                   status,
+                  briefing_strategy,
+                  briefing_max_tokens,
                   contract,
                   metadata,
                   created_at,
                   updated_at
                 )
                 VALUES (
+                  %s,
+                  %s,
                   %s,
                   %s,
                   %s,
@@ -2522,6 +2552,8 @@ INSERT_MODEL_PACK_IF_ABSENT_SQL = """
                   family,
                   description,
                   status,
+                  briefing_strategy,
+                  briefing_max_tokens,
                   contract,
                   metadata,
                   created_at,
@@ -2539,6 +2571,8 @@ GET_MODEL_PACK_FOR_WORKSPACE_BY_ID_AND_VERSION_SQL = """
                   family,
                   description,
                   status,
+                  briefing_strategy,
+                  briefing_max_tokens,
                   contract,
                   metadata,
                   created_at,
@@ -2560,6 +2594,8 @@ GET_LATEST_MODEL_PACK_FOR_WORKSPACE_BY_ID_SQL = """
                   family,
                   description,
                   status,
+                  briefing_strategy,
+                  briefing_max_tokens,
                   contract,
                   metadata,
                   created_at,
@@ -2582,6 +2618,8 @@ GET_MODEL_PACK_FOR_WORKSPACE_BY_ROW_ID_SQL = """
                   family,
                   description,
                   status,
+                  briefing_strategy,
+                  briefing_max_tokens,
                   contract,
                   metadata,
                   created_at,
@@ -2602,6 +2640,8 @@ LIST_MODEL_PACKS_FOR_WORKSPACE_SQL = """
                   family,
                   description,
                   status,
+                  briefing_strategy,
+                  briefing_max_tokens,
                   contract,
                   metadata,
                   created_at,
@@ -2646,6 +2686,8 @@ GET_LATEST_WORKSPACE_MODEL_PACK_BINDING_SQL = """
                   p.family AS pack_family,
                   p.description AS pack_description,
                   p.status AS pack_status,
+                  p.briefing_strategy AS pack_briefing_strategy,
+                  p.briefing_max_tokens AS pack_briefing_max_tokens,
                   p.contract AS pack_contract,
                   p.metadata AS pack_metadata,
                   p.created_by_user_account_id AS pack_created_by_user_account_id,
@@ -2657,6 +2699,78 @@ GET_LATEST_WORKSPACE_MODEL_PACK_BINDING_SQL = """
                 WHERE b.workspace_id = %s
                 ORDER BY b.created_at DESC, b.id DESC
                 LIMIT 1
+                """
+
+WORKSPACE_VISIBLE_TO_USER_ACCOUNT_SQL = """
+                SELECT 1
+                FROM workspace_members
+                WHERE workspace_id = %s
+                  AND user_account_id = %s
+                LIMIT 1
+                """
+
+INSERT_TASK_BRIEF_SQL = """
+                INSERT INTO task_briefs (
+                  user_id,
+                  mode,
+                  query_text,
+                  scope,
+                  provider_strategy,
+                  model_pack_strategy,
+                  token_budget,
+                  estimated_tokens,
+                  item_count,
+                  deterministic_key,
+                  payload,
+                  created_at
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  mode,
+                  query_text,
+                  scope,
+                  provider_strategy,
+                  model_pack_strategy,
+                  token_budget,
+                  estimated_tokens,
+                  item_count,
+                  deterministic_key,
+                  payload,
+                  created_at
+                """
+
+GET_TASK_BRIEF_BY_ID_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  mode,
+                  query_text,
+                  scope,
+                  provider_strategy,
+                  model_pack_strategy,
+                  token_budget,
+                  estimated_tokens,
+                  item_count,
+                  deterministic_key,
+                  payload,
+                  created_at
+                FROM task_briefs
+                WHERE id = %s
                 """
 
 INSERT_EMBEDDING_CONFIG_SQL = """
@@ -8142,6 +8256,8 @@ class ContinuityStore:
         family: str,
         description: str,
         status: str,
+        briefing_strategy: str,
+        briefing_max_tokens: int | None,
         contract: JsonObject,
         metadata: JsonObject,
     ) -> ModelPackRow:
@@ -8157,6 +8273,8 @@ class ContinuityStore:
                 family,
                 description,
                 status,
+                briefing_strategy,
+                briefing_max_tokens,
                 Jsonb(contract),
                 Jsonb(metadata),
             ),
@@ -8173,6 +8291,8 @@ class ContinuityStore:
         family: str,
         description: str,
         status: str,
+        briefing_strategy: str,
+        briefing_max_tokens: int | None,
         contract: JsonObject,
         metadata: JsonObject,
     ) -> ModelPackRow | None:
@@ -8187,6 +8307,8 @@ class ContinuityStore:
                 family,
                 description,
                 status,
+                briefing_strategy,
+                briefing_max_tokens,
                 Jsonb(contract),
                 Jsonb(metadata),
             ),
@@ -8255,6 +8377,56 @@ class ContinuityStore:
         return self._fetch_optional_one(
             GET_LATEST_WORKSPACE_MODEL_PACK_BINDING_SQL,
             (workspace_id,),
+        )
+
+    def workspace_visible_to_user_account(
+        self,
+        *,
+        workspace_id: UUID,
+        user_account_id: UUID,
+    ) -> bool:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                WORKSPACE_VISIBLE_TO_USER_ACCOUNT_SQL,
+                (workspace_id, user_account_id),
+            )
+            return cur.fetchone() is not None
+
+    def create_task_brief(
+        self,
+        *,
+        mode: str,
+        query_text: str | None,
+        scope: JsonObject,
+        provider_strategy: str,
+        model_pack_strategy: str,
+        token_budget: int,
+        estimated_tokens: int,
+        item_count: int,
+        deterministic_key: str,
+        payload: JsonObject,
+    ) -> TaskBriefRow:
+        return self._fetch_one(
+            "create_task_brief",
+            INSERT_TASK_BRIEF_SQL,
+            (
+                mode,
+                query_text,
+                Jsonb(scope),
+                provider_strategy,
+                model_pack_strategy,
+                token_budget,
+                estimated_tokens,
+                item_count,
+                deterministic_key,
+                Jsonb(payload),
+            ),
+        )
+
+    def get_task_brief_optional(self, *, task_brief_id: UUID) -> TaskBriefRow | None:
+        return self._fetch_optional_one(
+            GET_TASK_BRIEF_BY_ID_SQL,
+            (task_brief_id,),
         )
 
     def create_embedding_config(

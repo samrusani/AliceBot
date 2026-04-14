@@ -66,12 +66,14 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_RECALL_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    DEFAULT_TASK_BRIEF_TOKEN_BUDGET,
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
     DEFAULT_TEMPORAL_TIMELINE_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    MAX_TASK_BRIEF_TOKEN_BUDGET,
     MAX_CONTINUITY_REVIEW_LIMIT,
     MAX_TEMPORAL_TIMELINE_LIMIT,
     ContinuityCaptureCandidatesInput,
@@ -88,6 +90,7 @@ from alicebot_api.contracts import (
     MemoryOperationCommitInput,
     MemoryOperationGenerateInput,
     MemoryOperationListInput,
+    TaskBriefCompileRequestInput,
     TemporalExplainQueryInput,
     TemporalStateAtQueryInput,
     TemporalTimelineQueryInput,
@@ -101,6 +104,13 @@ from alicebot_api.temporal_state import (
     get_temporal_explain,
     get_temporal_state_at,
     get_temporal_timeline,
+)
+from alicebot_api.task_briefing import (
+    TaskBriefNotFoundError,
+    TaskBriefValidationError,
+    compare_task_briefs,
+    compile_and_persist_task_brief,
+    get_persisted_task_brief,
 )
 
 
@@ -257,6 +267,48 @@ def _parse_optional_json_object(arguments: Mapping[str, object], key: str) -> Js
     if not isinstance(value, dict):
         raise MCPToolError(f"{key} must be a JSON object")
     return value
+
+
+def _parse_task_brief_request(arguments: Mapping[str, object], *, mode_key: str = "mode") -> TaskBriefCompileRequestInput:
+    mode_value = arguments.get(mode_key)
+    if not isinstance(mode_value, str):
+        raise MCPToolError(f"{mode_key} is required and must be a string")
+    normalized_mode = mode_value.strip()
+    if normalized_mode == "":
+        raise MCPToolError(f"{mode_key} must not be empty")
+    token_budget = arguments.get("token_budget")
+    parsed_token_budget: int | None
+    if token_budget is None:
+        parsed_token_budget = None
+    else:
+        parsed_token_budget = _parse_int(
+            arguments,
+            key="token_budget",
+            default=DEFAULT_TASK_BRIEF_TOKEN_BUDGET,
+            minimum=1,
+            maximum=MAX_TASK_BRIEF_TOKEN_BUDGET,
+        )
+    return TaskBriefCompileRequestInput(
+        mode=normalized_mode,  # type: ignore[arg-type]
+        query=_parse_optional_text(arguments, "query"),
+        workspace_id=_parse_optional_uuid(arguments, "workspace_id"),
+        pack_id=_parse_optional_text(arguments, "pack_id"),
+        pack_version=_parse_optional_text(arguments, "pack_version"),
+        thread_id=_parse_optional_uuid(arguments, "thread_id"),
+        task_id=_parse_optional_uuid(arguments, "task_id"),
+        project=_parse_optional_text(arguments, "project"),
+        person=_parse_optional_text(arguments, "person"),
+        since=_parse_optional_datetime(arguments, "since"),
+        until=_parse_optional_datetime(arguments, "until"),
+        include_non_promotable_facts=_parse_bool(
+            arguments,
+            key="include_non_promotable_facts",
+            default=False,
+        ),
+        provider_strategy=_parse_optional_text(arguments, "provider_strategy"),
+        model_pack_strategy=_parse_optional_text(arguments, "model_pack_strategy"),
+        token_budget=parsed_token_budget,
+    )
 
 
 def _parse_optional_float(arguments: Mapping[str, object], key: str) -> float | None:
@@ -722,6 +774,51 @@ def _handle_alice_resume_debug(
                 ),
                 debug=True,
             ),
+        )
+
+
+def _handle_alice_task_brief(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _store_context(context) as store:
+        return compile_and_persist_task_brief(
+            store,
+            user_id=context.user_id,
+            request=_parse_task_brief_request(arguments),
+        )
+
+
+def _handle_alice_task_brief_show(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    with _store_context(context) as store:
+        return get_persisted_task_brief(
+            store,
+            task_brief_id=_parse_required_uuid(arguments, "task_brief_id"),
+        )
+
+
+def _handle_alice_task_brief_compare(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    compare_to_mode = arguments.get("compare_to_mode")
+    if not isinstance(compare_to_mode, str) or compare_to_mode.strip() == "":
+        raise MCPToolError("compare_to_mode is required and must be a string")
+
+    primary_request = _parse_task_brief_request(arguments)
+    secondary_arguments = dict(arguments)
+    secondary_arguments["mode"] = compare_to_mode
+    if "compare_model_pack_strategy" in arguments:
+        secondary_arguments["model_pack_strategy"] = arguments["compare_model_pack_strategy"]
+    if "compare_token_budget" in arguments:
+        secondary_arguments["token_budget"] = arguments["compare_token_budget"]
+
+    with _store_context(context) as store:
+        return compare_task_briefs(
+            store,
+            user_id=context.user_id,
+            primary_request=primary_request,
+            secondary_request=_parse_task_brief_request(secondary_arguments),
         )
 
 
@@ -1467,6 +1564,86 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_task_brief",
+        "description": "Compile and persist one task-adaptive brief for recall, resume, worker, or handoff workloads.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["mode"],
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["user_recall", "resume", "worker_subtask", "agent_handoff"],
+                },
+                "query": {"type": "string"},
+                "workspace_id": {"type": "string", "format": "uuid"},
+                "pack_id": {"type": "string"},
+                "pack_version": {"type": "string"},
+                "thread_id": {"type": "string", "format": "uuid"},
+                "task_id": {"type": "string", "format": "uuid"},
+                "project": {"type": "string"},
+                "person": {"type": "string"},
+                "since": {"type": "string", "format": "date-time"},
+                "until": {"type": "string", "format": "date-time"},
+                "include_non_promotable_facts": {"type": "boolean"},
+                "provider_strategy": {"type": "string"},
+                "model_pack_strategy": {"type": "string"},
+                "token_budget": {"type": "integer", "minimum": 1, "maximum": MAX_TASK_BRIEF_TOKEN_BUDGET},
+            },
+        },
+    },
+    {
+        "name": "alice_task_brief_show",
+        "description": "Load one persisted task-adaptive brief by id.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["task_brief_id"],
+            "properties": {
+                "task_brief_id": {"type": "string", "format": "uuid"},
+            },
+        },
+    },
+    {
+        "name": "alice_task_brief_compare",
+        "description": "Compare two task-brief modes for the same scope and show which one is smaller.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["mode", "compare_to_mode"],
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["user_recall", "resume", "worker_subtask", "agent_handoff"],
+                },
+                "compare_to_mode": {
+                    "type": "string",
+                    "enum": ["user_recall", "resume", "worker_subtask", "agent_handoff"],
+                },
+                "query": {"type": "string"},
+                "workspace_id": {"type": "string", "format": "uuid"},
+                "pack_id": {"type": "string"},
+                "pack_version": {"type": "string"},
+                "thread_id": {"type": "string", "format": "uuid"},
+                "task_id": {"type": "string", "format": "uuid"},
+                "project": {"type": "string"},
+                "person": {"type": "string"},
+                "since": {"type": "string", "format": "date-time"},
+                "until": {"type": "string", "format": "date-time"},
+                "include_non_promotable_facts": {"type": "boolean"},
+                "provider_strategy": {"type": "string"},
+                "model_pack_strategy": {"type": "string"},
+                "compare_model_pack_strategy": {"type": "string"},
+                "token_budget": {"type": "integer", "minimum": 1, "maximum": MAX_TASK_BRIEF_TOKEN_BUDGET},
+                "compare_token_budget": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_TASK_BRIEF_TOKEN_BUDGET,
+                },
+            },
+        },
+    },
+    {
         "name": "alice_retrieval_trace",
         "description": "Load one persisted retrieval trace by run id.",
         "inputSchema": {
@@ -1784,6 +1961,9 @@ _TOOL_HANDLERS = {
     "alice_state_at": _handle_alice_state_at,
     "alice_resume": _handle_alice_resume,
     "alice_resume_debug": _handle_alice_resume_debug,
+    "alice_task_brief": _handle_alice_task_brief,
+    "alice_task_brief_show": _handle_alice_task_brief_show,
+    "alice_task_brief_compare": _handle_alice_task_brief_compare,
     "alice_retrieval_trace": _handle_alice_retrieval_trace,
     "alice_prefetch_context": _handle_alice_prefetch_context,
     "alice_open_loops": _handle_alice_open_loops,
@@ -1833,6 +2013,8 @@ def call_mcp_tool(
         RetrievalTraceNotFoundError,
         ContinuityEvidenceNotFoundError,
         MemoryMutationValidationError,
+        TaskBriefNotFoundError,
+        TaskBriefValidationError,
         TemporalStateValidationError,
     ) as exc:
         raise MCPToolError(str(exc)) from exc

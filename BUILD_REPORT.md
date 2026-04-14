@@ -1,82 +1,64 @@
 # BUILD_REPORT
 
 ## Sprint Objective
-
-Implement `P12-S4` public eval harness so Alice can run reproducible local eval suites, persist suite/case/run/result records, emit stable baseline report artifacts, and document what the measured quality surface means.
+Implement `P12-S5` task-adaptive briefing so the system can generate deterministic, explainable, role-specific context packs for `user_recall`, `resume`, `worker_subtask`, and `agent_handoff`, while preserving shipped retrieval, mutation, contradiction, trust, and eval behavior.
 
 ## Completed Work
-
-- Added public eval persistence tables for `eval_suites`, `eval_cases`, `eval_runs`, and `eval_results`.
-- Added `alicebot_api.public_evals` with:
-  - fixture-catalog loading
-  - suite/case syncing into the database
-  - fixture-backed recall, resumption, correction, contradiction, and open-loop evaluators
-  - canonical report generation with stable digests
-  - report writing helper for checked-in baseline artifacts
-- Added current-branch public eval API surfaces:
-  - `GET /v1/evals/suites`
-  - `POST /v1/evals/runs`
-  - `GET /v1/evals/runs`
-  - `GET /v1/evals/runs/{eval_run_id}`
-- Made the checked-in fixture catalog authoritative for suite listing and run selection.
-- Added pruning for persisted suite/case rows so removed catalog entries do not survive as stale runtime state.
-- Added explicit validation for unknown `suite_key` filters instead of silently returning partial or empty runs.
-- Added CLI surfaces:
-  - `alicebot evals suites`
-  - `alicebot evals run`
-  - `alicebot evals runs`
-  - `alicebot evals show`
-- Added public fixture definitions in `eval/fixtures/public_eval_suites.json`.
-- Added checked-in current-branch baseline report artifact in `eval/baselines/public_eval_harness_v1.json`, with final committed artifact format still pending Control Tower confirmation.
-- Added sprint-owned docs in `docs/evals/public_eval_harness.md`, explicitly framed as current branch behavior where API and artifact decisions are still pending.
-- Added focused unit and integration coverage for the runner, migration, API, CLI, and baseline reproduction path.
+- Added a dedicated task briefing compiler with four briefing modes.
+- Added deterministic briefing summaries, selection rules, truncation metadata, token budgeting, and comparison output.
+- Added task brief persistence through a new `task_briefs` table.
+- Added current-branch API surfaces for task-brief compile, inspect, and compare.
+- Added CLI surfaces for task-brief compile, inspect, and compare.
+- Added MCP tools for task-brief compile, inspect, and compare.
+- Added model-pack briefing defaults through `briefing_strategy` and `briefing_max_tokens`, and task-brief compilation now resolves those defaults when a workspace-selected model pack is available.
+- Added focused docs under `docs/briefing/`, explicitly framed as current branch behavior where briefing payload and surface-shape decisions are still pending.
+- Added unit and integration coverage for determinism, size reduction, persistence, CLI smoke, MCP smoke, API behavior, migration shape, and model-pack strategy fields.
 
 ## Incomplete Work
-
-- None inside the sprint packet scope.
+- None within the sprint packet scope.
 
 ## Files Changed
-
-- `BUILD_REPORT.md`
-- `RULES.md`
-- `ARCHITECTURE.md`
-- `CURRENT_STATE.md`
 - `.ai/handoff/CURRENT_STATE.md`
+- `ARCHITECTURE.md`
+- `BUILD_REPORT.md`
+- `CURRENT_STATE.md`
 - `PRODUCT_BRIEF.md`
-- `ROADMAP.md`
 - `REVIEW_REPORT.md`
-- `apps/api/alembic/versions/20260414_0060_phase12_public_eval_harness.py`
-- `apps/api/src/alicebot_api/cli.py`
+- `ROADMAP.md`
+- `RULES.md`
+- `apps/api/src/alicebot_api/task_briefing.py`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/public_evals.py`
 - `apps/api/src/alicebot_api/store.py`
-- `scripts/check_control_doc_truth.py`
-- `docs/evals/public_eval_harness.md`
-- `eval/baselines/public_eval_harness_v1.json`
-- `eval/fixtures/public_eval_suites.json`
-- `tests/integration/test_cli_integration.py`
-- `tests/integration/test_public_evals_api.py`
-- `tests/unit/test_20260414_0060_phase12_public_eval_harness.py`
+- `apps/api/src/alicebot_api/model_packs.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/cli.py`
+- `apps/api/src/alicebot_api/cli_formatting.py`
+- `apps/api/src/alicebot_api/mcp_tools.py`
+- `apps/api/alembic/versions/20260414_0061_phase12_task_adaptive_briefing.py`
+- `docs/briefing/task-adaptive-briefing.md`
+- `tests/unit/test_task_briefing.py`
+- `tests/unit/test_model_packs.py`
 - `tests/unit/test_cli.py`
-- `tests/unit/test_main.py`
-- `tests/unit/test_public_evals.py`
+- `tests/unit/test_mcp.py`
+- `tests/unit/test_20260414_0061_phase12_task_adaptive_briefing.py`
+- `tests/integration/test_task_briefing_api.py`
+- `tests/integration/test_cli_integration.py`
+- `tests/integration/test_mcp_cli_parity.py`
+- `tests/integration/test_mcp_server.py`
+- `tests/integration/test_phase11_model_packs_api.py`
+- `scripts/check_control_doc_truth.py`
 
 ## Tests Run
-
-- `./.venv/bin/pytest tests/unit/test_public_evals.py tests/unit/test_20260414_0060_phase12_public_eval_harness.py tests/unit/test_cli.py tests/unit/test_main.py tests/integration/test_public_evals_api.py tests/integration/test_cli_integration.py tests/integration/test_retrieval_evaluation_api.py -q`
-  - Result: PASS (`83 passed`)
+- `./.venv/bin/pytest tests/unit/test_task_briefing.py tests/unit/test_model_packs.py tests/unit/test_cli.py tests/unit/test_mcp.py tests/unit/test_20260414_0061_phase12_task_adaptive_briefing.py tests/unit/test_continuity_resumption.py tests/unit/test_continuity_recall.py tests/unit/test_public_evals.py tests/integration/test_task_briefing_api.py tests/integration/test_cli_integration.py tests/integration/test_mcp_cli_parity.py tests/integration/test_phase11_model_packs_api.py tests/integration/test_mcp_server.py tests/integration/test_public_evals_api.py tests/integration/test_continuity_resumption_api.py tests/integration/test_retrieval_evaluation_api.py -q`
+  - Result: PASS (`73 passed`)
 - `./.venv/bin/python scripts/check_control_doc_truth.py`
   - Result: PASS
-- `rg -n "/Users|samirusani|Desktop/Codex" RULES.md ARCHITECTURE.md CURRENT_STATE.md .ai/handoff/CURRENT_STATE.md PRODUCT_BRIEF.md ROADMAP.md docs/evals eval/fixtures eval/baselines`
+- `rg -n "/Users|samirusani|Desktop/Codex" RULES.md ARCHITECTURE.md CURRENT_STATE.md .ai/handoff/CURRENT_STATE.md PRODUCT_BRIEF.md ROADMAP.md docs/briefing`
   - Result: PASS (no matches)
 
 ## Blockers/Issues
-
-- No sprint blocker remains.
-- The recall suite keeps one non-gating coverage snapshot for entity-edge expansion. It records the current shipped output with `score=0.0` while the suite still passes because the catalog marks that case as observational rather than a strict gate.
-- Final product policy is still pending for the Control Tower decisions called out in the sprint packet, including the committed artifact format and whether `/v1/evals/*` remains part of the accepted Phase 12 surface.
+- No remaining blockers.
+- Final product policy is still pending for the Control Tower decisions called out in the sprint packet, including the canonical persisted briefing payload shape, required model-pack briefing fields, and whether generation and comparison APIs should both ship in `P12-S5`.
 
 ## Recommended Next Step
-
-Request Control Tower merge review against the current `P12-S4` branch head.
+Request Control Tower merge review against the current `P12-S5` branch head.

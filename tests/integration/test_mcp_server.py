@@ -214,6 +214,8 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         tool_names = [tool["name"] for tool in tools_list["result"]["tools"]]
         assert "alice_recall" in tool_names
         assert "alice_resume" in tool_names
+        assert "alice_task_brief" in tool_names
+        assert "alice_task_brief_compare" in tool_names
         assert "alice_prefetch_context" in tool_names
         assert "alice_open_loops" in tool_names
         assert "alice_review_queue" in tool_names

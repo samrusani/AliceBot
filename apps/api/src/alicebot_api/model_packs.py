@@ -22,6 +22,7 @@ MODEL_PACK_FAMILIES: tuple[str, ...] = (
     "mistral",
     "custom",
 )
+MODEL_PACK_BRIEFING_STRATEGIES: tuple[str, ...] = ("balanced", "compact", "detailed")
 MAX_CONTEXT_SESSIONS = 50
 MAX_CONTEXT_EVENTS = 200
 MAX_CONTEXT_MEMORIES = 200
@@ -52,6 +53,8 @@ class Tier1PackSpec:
     display_name: str
     family: str
     description: str
+    briefing_strategy: str
+    briefing_max_tokens: int | None
     contract: JsonObject
     seed: str
     seed_version: str
@@ -127,6 +130,28 @@ def normalize_pack_family(family: str) -> str:
     if normalized not in MODEL_PACK_FAMILIES:
         raise ModelPackValidationError(f"unsupported model-pack family: {family}")
     return normalized
+
+
+def normalize_briefing_strategy(strategy: str | None) -> str:
+    if strategy is None:
+        return "balanced"
+    normalized = strategy.strip().lower()
+    if normalized not in MODEL_PACK_BRIEFING_STRATEGIES:
+        raise ModelPackValidationError(
+            "briefing_strategy must be one of: "
+            + ", ".join(MODEL_PACK_BRIEFING_STRATEGIES)
+        )
+    return normalized
+
+
+def normalize_briefing_max_tokens(value: object) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int):
+        raise ModelPackValidationError("briefing_max_tokens must be an integer")
+    if value < 32 or value > 4000:
+        raise ModelPackValidationError("briefing_max_tokens must be between 32 and 4000")
+    return value
 
 
 def _normalize_optional_instruction(*, field_name: str, value: object) -> str:
@@ -314,6 +339,8 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
             display_name="Llama Tier 1",
             family="llama",
             description="Tier-1 declarative runtime shaping for Llama-family instruct models.",
+            briefing_strategy="compact",
+            briefing_max_tokens=160,
             contract=normalize_model_pack_contract(
                 {
                     "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
@@ -349,6 +376,8 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
             display_name="Qwen Tier 1",
             family="qwen",
             description="Tier-1 declarative runtime shaping for Qwen-family instruct models.",
+            briefing_strategy="compact",
+            briefing_max_tokens=144,
             contract=normalize_model_pack_contract(
                 {
                     "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
@@ -384,6 +413,8 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
             display_name="Gemma Tier 1",
             family="gemma",
             description="Tier-1 declarative runtime shaping for Gemma-family instruct models.",
+            briefing_strategy="compact",
+            briefing_max_tokens=128,
             contract=normalize_model_pack_contract(
                 {
                     "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
@@ -419,6 +450,8 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
             display_name="gpt-oss Tier 1",
             family="gpt-oss",
             description="Tier-1 declarative runtime shaping for gpt-oss-family instruct models.",
+            briefing_strategy="balanced",
+            briefing_max_tokens=192,
             contract=normalize_model_pack_contract(
                 {
                     "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
@@ -459,6 +492,8 @@ def _tier2_pack_specs() -> tuple[Tier1PackSpec, ...]:
             display_name="DeepSeek Tier 2",
             family="deepseek",
             description="Tier-2 declarative runtime shaping for DeepSeek-family instruct models.",
+            briefing_strategy="balanced",
+            briefing_max_tokens=192,
             contract=normalize_model_pack_contract(
                 {
                     "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
@@ -494,6 +529,8 @@ def _tier2_pack_specs() -> tuple[Tier1PackSpec, ...]:
             display_name="Kimi Tier 2",
             family="kimi",
             description="Tier-2 declarative runtime shaping for Kimi-family instruct models.",
+            briefing_strategy="detailed",
+            briefing_max_tokens=224,
             contract=normalize_model_pack_contract(
                 {
                     "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
@@ -529,6 +566,8 @@ def _tier2_pack_specs() -> tuple[Tier1PackSpec, ...]:
             display_name="Mistral Tier 2",
             family="mistral",
             description="Tier-2 declarative runtime shaping for Mistral-family instruct models.",
+            briefing_strategy="balanced",
+            briefing_max_tokens=176,
             contract=normalize_model_pack_contract(
                 {
                     "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
@@ -591,6 +630,8 @@ def ensure_tier1_model_packs_for_workspace(
             family=spec.family,
             description=spec.description,
             status=MODEL_PACK_STATUS_ACTIVE,
+            briefing_strategy=spec.briefing_strategy,
+            briefing_max_tokens=spec.briefing_max_tokens,
             contract=spec.contract,
             metadata={"seed": spec.seed, "seed_version": spec.seed_version},
         )
