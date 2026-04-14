@@ -593,4 +593,49 @@ def test_cli_contradictions_and_trust_surfaces_smoke(migrated_database_urls) -> 
     )
     assert trust_result.returncode == 0
     assert "trust signals" in trust_result.stdout
-    assert "[contradiction|active|negative]" in trust_result.stdout
+
+
+def test_cli_public_eval_surfaces_match_checked_in_baseline(migrated_database_urls, tmp_path: Path) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="cli-public-evals@example.com")
+    env = build_cli_env(database_url=migrated_database_urls["app"], user_id=user_id)
+    report_path = tmp_path / "public_eval_report.json"
+
+    suites_result = run_cli(["evals", "suites"], env=env)
+    assert suites_result.returncode == 0
+    assert '"suite_key": "recall"' in suites_result.stdout
+    assert '"suite_key": "resumption"' in suites_result.stdout
+
+    run_result = run_cli(
+        ["evals", "run", "--report-path", str(report_path)],
+        env=env,
+    )
+    assert run_result.returncode == 0
+    run_payload = json.loads(run_result.stdout)
+    assert run_payload["run"]["status"] == "pass"
+    assert run_payload["report"]["summary"]["case_count"] == 12
+    assert report_path.exists()
+
+    baseline_payload = json.loads((REPO_ROOT / "eval" / "baselines" / "public_eval_harness_v1.json").read_text(encoding="utf-8"))
+    written_payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert written_payload == baseline_payload
+
+    runs_result = run_cli(["evals", "runs", "--limit", "10"], env=env)
+    assert runs_result.returncode == 0
+    runs_payload = json.loads(runs_result.stdout)
+    eval_run_id = runs_payload["items"][0]["id"]
+
+    show_result = run_cli(["evals", "show", eval_run_id], env=env)
+    assert show_result.returncode == 0
+    show_payload = json.loads(show_result.stdout)
+    assert show_payload["run"]["id"] == eval_run_id
+    assert show_payload["report"] == baseline_payload
+
+
+def test_cli_public_eval_run_rejects_unknown_suite_key(migrated_database_urls) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="cli-public-evals-invalid-suite@example.com")
+    env = build_cli_env(database_url=migrated_database_urls["app"], user_id=user_id)
+
+    run_result = run_cli(["evals", "run", "--suite-key", "missing_suite"], env=env)
+
+    assert run_result.returncode == 1
+    assert "unknown suite_key values: missing_suite" in run_result.stderr

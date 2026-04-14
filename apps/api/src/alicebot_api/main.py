@@ -201,6 +201,9 @@ from alicebot_api.contracts import (
     ProxyExecutionStatus,
     ToolAllowlistEvaluationRequestInput,
     ProxyExecutionRequestInput,
+    PublicEvalRunDetailResponse,
+    PublicEvalRunListResponse,
+    PublicEvalSuiteDefinitionListResponse,
     TaskArtifactIngestInput,
     TaskArtifactRegisterInput,
     TaskScopedSemanticArtifactChunkRetrievalInput,
@@ -443,6 +446,12 @@ from alicebot_api.continuity_recall import (
     get_retrieval_trace,
     list_retrieval_runs,
     query_continuity_recall,
+)
+from alicebot_api.public_evals import (
+    get_public_eval_run,
+    list_public_eval_runs,
+    list_public_eval_suites,
+    run_public_evals,
 )
 from alicebot_api.retrieval_evaluation import get_retrieval_evaluation_summary
 from alicebot_api.hosted_auth import (
@@ -5759,6 +5768,88 @@ def get_continuity_retrieval_evaluation(user_id: UUID) -> JSONResponse:
             ContinuityStore(conn),
             user_id=user_id,
         )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v1/evals/suites")
+def get_public_eval_suites(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload: PublicEvalSuiteDefinitionListResponse = list_public_eval_suites(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v1/evals/runs")
+def create_public_eval_run(
+    user_id: UUID,
+    suite_key: list[str] | None = Query(default=None),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: PublicEvalRunDetailResponse = run_public_evals(
+                ContinuityStore(conn),
+                user_id=user_id,
+                suite_keys=suite_key,
+            )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v1/evals/runs")
+def get_public_eval_runs(
+    user_id: UUID,
+    limit: int = Query(default=20, ge=1, le=100),
+) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload: PublicEvalRunListResponse = list_public_eval_runs(
+            ContinuityStore(conn),
+            user_id=user_id,
+            limit=limit,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v1/evals/runs/{eval_run_id}")
+def get_public_eval_run_detail(
+    eval_run_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: PublicEvalRunDetailResponse = get_public_eval_run(
+                ContinuityStore(conn),
+                user_id=user_id,
+                eval_run_id=eval_run_id,
+            )
+    except LookupError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,

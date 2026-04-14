@@ -5002,6 +5002,52 @@ class RetrievalEvaluationResponse(TypedDict):
     summary: RetrievalEvaluationSummary
 
 
+class PublicEvalSuiteDefinitionRecord(TypedDict):
+    suite_key: str
+    title: str
+    description: str
+    evaluator_kind: str
+    case_count: int
+    fixture_schema_version: str
+    fixture_source_path: str
+    case_keys: list[str]
+
+
+class PublicEvalSuiteDefinitionListResponse(TypedDict):
+    items: list[PublicEvalSuiteDefinitionRecord]
+    summary: JsonObject
+
+
+class PublicEvalRunRecord(TypedDict):
+    id: str
+    status: str
+    report_digest: str
+    summary: JsonObject
+    created_at: str
+
+
+class PublicEvalResultRecord(TypedDict):
+    id: str
+    suite_key: str
+    case_key: str
+    status: str
+    score: float
+    summary: JsonObject
+    details: JsonObject
+    created_at: str
+
+
+class PublicEvalRunListResponse(TypedDict):
+    items: list[PublicEvalRunRecord]
+    summary: JsonObject
+
+
+class PublicEvalRunDetailResponse(TypedDict):
+    run: PublicEvalRunRecord
+    report: JsonObject
+    results: list[PublicEvalResultRecord]
+
+
 class ConsentRecord(TypedDict):
     id: str
     consent_key: str

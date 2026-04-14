@@ -1,0 +1,415 @@
+{
+  "fixture_schema_version": "public_eval_fixture_v1",
+  "fixture_source_path": "eval/fixtures/public_eval_suites.json",
+  "schema_version": "public_eval_report_v1",
+  "suites": [
+    {
+      "average_score": 0.8571428571428571,
+      "case_count": 7,
+      "cases": [
+        {
+          "case_key": "confirmed_fresh_truth_preferred",
+          "details": {
+            "baseline_returned_ids": [
+              "00000000-0000-4000-8000-000000000001",
+              "00000000-0000-4000-8000-000000000002",
+              "00000000-0000-4000-8000-000000000003"
+            ],
+            "expected_relevant_ids": [
+              "00000000-0000-4000-8000-000000000001"
+            ],
+            "query": "rollout",
+            "returned_ids": [
+              "00000000-0000-4000-8000-000000000001",
+              "00000000-0000-4000-8000-000000000002",
+              "00000000-0000-4000-8000-000000000003"
+            ]
+          },
+          "score": 1.0,
+          "status": "pass",
+          "suite_key": "recall",
+          "summary": {
+            "baseline_precision_at_k": 1.0,
+            "expected_top_result_id": "00000000-0000-4000-8000-000000000001",
+            "hit_count": 1,
+            "precision_at_k": 1.0,
+            "precision_lift_at_k": 0.0,
+            "require_expected_top_result": true,
+            "top_k": 1,
+            "top_result_id": "00000000-0000-4000-8000-000000000001"
+          },
+          "title": "Confirmed fresher truth preferred"
+        },
+        {
+          "case_key": "provenance_breaks_tie",
+          "details": {
+            "baseline_returned_ids": [
+              "00000000-0000-4000-8000-000000000011",
+              "00000000-0000-4000-8000-000000000012"
+            ],
+            "expected_relevant_ids": [
+              "00000000-0000-4000-8000-000000000011"
+            ],
+            "query": "pricing",
+            "returned_ids": [
+              "00000000-0000-4000-8000-000000000011",
+              "00000000-0000-4000-8000-000000000012"
+            ]
+          },
+          "score": 1.0,
+          "status": "pass",
+          "suite_key": "recall",
+          "summary": {
+            "baseline_precision_at_k": 1.0,
+            "expected_top_result_id": "00000000-0000-4000-8000-000000000011",
+            "hit_count": 1,
+            "precision_at_k": 1.0,
+            "precision_lift_at_k": 0.0,
+            "require_expected_top_result": true,
+            "top_k": 1,
+            "top_result_id": "00000000-0000-4000-8000-000000000011"
+          },
+          "title": "Provenance breaks ties"
+        },
+        {
+          "case_key": "supersession_chain_prefers_current_truth",
+          "details": {
+            "baseline_returned_ids": [
+              "00000000-0000-4000-8000-000000000021",
+              "00000000-0000-4000-8000-000000000022"
+            ],
+            "expected_relevant_ids": [
+              "00000000-0000-4000-8000-000000000021"
+            ],
+            "query": "api timeout",
+            "returned_ids": [
+              "00000000-0000-4000-8000-000000000021",
+              "00000000-0000-4000-8000-000000000022"
+            ]
+          },
+          "score": 1.0,
+          "status": "pass",
+          "suite_key": "recall",
+          "summary": {
+            "baseline_precision_at_k": 1.0,
+            "expected_top_result_id": "00000000-0000-4000-8000-000000000021",
+            "hit_count": 1,
+            "precision_at_k": 1.0,
+            "precision_lift_at_k": 0.0,
+            "require_expected_top_result": true,
+            "top_k": 1,
+            "top_result_id": "00000000-0000-4000-8000-000000000021"
+          },
+          "title": "Supersession chain prefers current truth"
+        },
+        {
+          "case_key": "semantic_similarity_recovers_non_exact_query",
+          "details": {
+            "baseline_returned_ids": [],
+            "expected_relevant_ids": [
+              "00000000-0000-4000-8000-000000000031"
+            ],
+            "query": "synchronize calendars",
+            "returned_ids": [
+              "00000000-0000-4000-8000-000000000031"
+            ]
+          },
+          "score": 1.0,
+          "status": "pass",
+          "suite_key": "recall",
+          "summary": {
+            "baseline_precision_at_k": 0.0,
+            "expected_top_result_id": "00000000-0000-4000-8000-000000000031",
+            "hit_count": 1,
+            "precision_at_k": 1.0,
+            "precision_lift_at_k": 1.0,
+            "require_expected_top_result": true,
+            "top_k": 1,
+            "top_result_id": "00000000-0000-4000-8000-000000000031"
+          },
+          "title": "Semantic similarity recovers non exact queries"
+        },
+        {
+          "case_key": "entity_signal_reduces_cross_entity_noise",
+          "details": {
+            "baseline_returned_ids": [
+              "00000000-0000-4000-8000-000000000041",
+              "00000000-0000-4000-8000-000000000042"
+            ],
+            "expected_relevant_ids": [
+              "00000000-0000-4000-8000-000000000041"
+            ],
+            "query": "alex dependency owner",
+            "returned_ids": [
+              "00000000-0000-4000-8000-000000000041",
+              "00000000-0000-4000-8000-000000000042"
+            ]
+          },
+          "score": 1.0,
+          "status": "pass",
+          "suite_key": "recall",
+          "summary": {
+            "baseline_precision_at_k": 1.0,
+            "expected_top_result_id": "00000000-0000-4000-8000-000000000041",
+            "hit_count": 1,
+            "precision_at_k": 1.0,
+            "precision_lift_at_k": 0.0,
+            "require_expected_top_result": true,
+            "top_k": 1,
+            "top_result_id": "00000000-0000-4000-8000-000000000041"
+          },
+          "title": "Entity signal reduces cross entity noise"
+        },
+        {
+          "case_key": "temporal_trust_supersession_prefers_current_valid_truth",
+          "details": {
+            "baseline_returned_ids": [
+              "00000000-0000-4000-8000-000000000051",
+              "00000000-0000-4000-8000-000000000052"
+            ],
+            "expected_relevant_ids": [
+              "00000000-0000-4000-8000-000000000051"
+            ],
+            "query": "contract window",
+            "returned_ids": [
+              "00000000-0000-4000-8000-000000000051",
+              "00000000-0000-4000-8000-000000000052"
+            ]
+          },
+          "score": 1.0,
+          "status": "pass",
+          "suite_key": "recall",
+          "summary": {
+            "baseline_precision_at_k": 1.0,
+            "expected_top_result_id": "00000000-0000-4000-8000-000000000051",
+            "hit_count": 1,
+            "precision_at_k": 1.0,
+            "precision_lift_at_k": 0.0,
+            "require_expected_top_result": true,
+            "top_k": 1,
+            "top_result_id": "00000000-0000-4000-8000-000000000051"
+          },
+          "title": "Temporal trust prefers current valid truth"
+        },
+        {
+          "case_key": "entity_edge_expansion_recovers_related_owner",
+          "details": {
+            "baseline_returned_ids": [
+              "00000000-0000-4000-8000-000000000062",
+              "00000000-0000-4000-8000-000000000061"
+            ],
+            "expected_relevant_ids": [
+              "00000000-0000-4000-8000-000000000061"
+            ],
+            "query": "Project Phoenix dependency owner",
+            "returned_ids": [
+              "00000000-0000-4000-8000-000000000062",
+              "00000000-0000-4000-8000-000000000061"
+            ]
+          },
+          "score": 0.0,
+          "status": "pass",
+          "suite_key": "recall",
+          "summary": {
+            "baseline_precision_at_k": 0.0,
+            "expected_top_result_id": "00000000-0000-4000-8000-000000000061",
+            "hit_count": 0,
+            "precision_at_k": 0.0,
+            "precision_lift_at_k": 0.0,
+            "require_expected_top_result": false,
+            "top_k": 1,
+            "top_result_id": "00000000-0000-4000-8000-000000000062"
+          },
+          "title": "Entity edge expansion coverage snapshot"
+        }
+      ],
+      "description": "Measures retrieval ranking over the public continuity recall fixture corpus.",
+      "evaluator_kind": "retrieval_evaluation",
+      "failed_case_count": 0,
+      "pass_rate": 1.0,
+      "passed_case_count": 7,
+      "status": "pass",
+      "suite_key": "recall",
+      "title": "Recall quality"
+    },
+    {
+      "average_score": 1.0,
+      "case_count": 2,
+      "cases": [
+        {
+          "case_key": "staged_rollout_resume",
+          "details": {
+            "open_loop_titles": [
+              "Commitment: Send partner update"
+            ],
+            "recent_change_titles": [
+              "Next Action: Send partner update",
+              "Commitment: Send partner update",
+              "Decision: Keep staged rollout"
+            ]
+          },
+          "score": 1.0,
+          "status": "pass",
+          "suite_key": "resumption",
+          "summary": {
+            "last_decision_title": "Decision: Keep staged rollout",
+            "next_action_title": "Next Action: Send partner update",
+            "open_loop_count": 1,
+            "recent_change_count": 3
+          },
+          "title": "Staged rollout resume bundle"
+        },
+        {
+          "case_key": "followup_resume_with_waiting_for",
+          "details": {
+            "open_loop_titles": [
+              "Blocker: Missing approved template",
+              "Waiting For: Finance signoff"
+            ],
+            "recent_change_titles": [
+              "Next Action: Draft the final invoice email",
+              "Blocker: Missing approved template",
+              "Waiting For: Finance signoff",
+              "Decision: Keep invoice workflow manual"
+            ]
+          },
+          "score": 1.0,
+          "status": "pass",
+          "suite_key": "resumption",
+          "summary": {
+            "last_decision_title": "Decision: Keep invoice workflow manual",
+            "next_action_title": "Next Action: Draft the final invoice email",
+            "open_loop_count": 2,
+            "recent_change_count": 4
+          },
+          "title": "Resume bundle with waiting for and blocker"
+        }
+      ],
+      "description": "Measures whether the resumption brief surfaces the latest decision, next action, and recent changes.",
+      "evaluator_kind": "resumption_brief",
+      "failed_case_count": 0,
+      "pass_rate": 1.0,
+      "passed_case_count": 2,
+      "status": "pass",
+      "suite_key": "resumption",
+      "title": "Resumption quality"
+    },
+    {
+      "average_score": 1.0,
+      "case_count": 1,
+      "cases": [
+        {
+          "case_key": "supersede_replaces_legacy_decision",
+          "details": {
+            "correction_action": "supersede",
+            "replacement_title": "Decision: Use the staged rollout path",
+            "updated_title": "Decision: Use the legacy rollout path"
+          },
+          "score": 1.0,
+          "status": "pass",
+          "suite_key": "correction",
+          "summary": {
+            "replacement_created": true,
+            "replacement_status": "active",
+            "updated_status": "superseded"
+          },
+          "title": "Supersede replaces legacy decision"
+        }
+      ],
+      "description": "Measures that superseding a stale or active object updates lifecycle state and creates a replacement.",
+      "evaluator_kind": "continuity_correction",
+      "failed_case_count": 0,
+      "pass_rate": 1.0,
+      "passed_case_count": 1,
+      "status": "pass",
+      "suite_key": "correction",
+      "title": "Correction behavior"
+    },
+    {
+      "average_score": 1.0,
+      "case_count": 1,
+      "cases": [
+        {
+          "case_key": "conflicting_release_modes",
+          "details": {
+            "resolved_case_count": 0,
+            "updated_case_count": 1
+          },
+          "score": 1.0,
+          "status": "pass",
+          "suite_key": "contradiction",
+          "summary": {
+            "active_signal_types": [
+              "contradiction"
+            ],
+            "open_case_count": 1,
+            "open_case_kinds": [
+              "direct_fact_conflict"
+            ],
+            "scanned_object_count": 2
+          },
+          "title": "Conflicting release modes produce an open case"
+        }
+      ],
+      "description": "Measures contradiction detection and trust signal updates for conflicting active truths.",
+      "evaluator_kind": "contradiction_sync",
+      "failed_case_count": 0,
+      "pass_rate": 1.0,
+      "passed_case_count": 1,
+      "status": "pass",
+      "suite_key": "contradiction",
+      "title": "Contradiction handling"
+    },
+    {
+      "average_score": 1.0,
+      "case_count": 1,
+      "cases": [
+        {
+          "case_key": "open_loop_grouping",
+          "details": {
+            "blocker": [
+              "Blocker: Missing API key"
+            ],
+            "next_action": [
+              "Next Action: Send follow up"
+            ],
+            "stale": [
+              "Waiting For: Stale invoice response"
+            ],
+            "waiting_for": [
+              "Waiting For: Legal signoff",
+              "Waiting For: Vendor quote"
+            ]
+          },
+          "score": 1.0,
+          "status": "pass",
+          "suite_key": "open_loop",
+          "summary": {
+            "blocker_count": 1,
+            "next_action_count": 1,
+            "stale_count": 1,
+            "total_count": 5,
+            "waiting_for_count": 2
+          },
+          "title": "Open loop grouping is deterministic"
+        }
+      ],
+      "description": "Measures that the open loop dashboard groups waiting for, blockers, stale items, and next actions deterministically.",
+      "evaluator_kind": "open_loop_dashboard",
+      "failed_case_count": 0,
+      "pass_rate": 1.0,
+      "passed_case_count": 1,
+      "status": "pass",
+      "suite_key": "open_loop",
+      "title": "Open loop usefulness"
+    }
+  ],
+  "summary": {
+    "case_count": 12,
+    "failed_case_count": 0,
+    "pass_rate": 1.0,
+    "passed_case_count": 12,
+    "status": "pass",
+    "suite_count": 5
+  }
+}

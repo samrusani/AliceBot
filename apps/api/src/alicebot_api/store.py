@@ -569,6 +569,62 @@ class RetrievalRunRow(TypedDict):
     created_at: datetime
 
 
+class EvalSuiteRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    suite_key: str
+    title: str
+    description: str
+    evaluator_kind: str
+    fixture_schema_version: str
+    fixture_source_path: str
+    case_count: int
+    suite_order: int
+    metadata: JsonObject
+    created_at: datetime
+    updated_at: datetime
+
+
+class EvalCaseRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    suite_id: UUID
+    case_key: str
+    title: str
+    evaluator_kind: str
+    case_order: int
+    fixture: JsonObject
+    expectations: JsonObject
+    created_at: datetime
+    updated_at: datetime
+
+
+class EvalRunRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    fixture_schema_version: str
+    fixture_source_path: str
+    requested_suite_keys: list[str]
+    status: str
+    summary: JsonObject
+    report: JsonObject
+    report_digest: str
+    created_at: datetime
+
+
+class EvalResultRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    eval_run_id: UUID
+    suite_key: str
+    case_key: str
+    status: str
+    score: float
+    summary: JsonObject
+    details: JsonObject
+    created_at: datetime
+
+
 class RetrievalCandidateRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -5133,6 +5189,269 @@ GET_RETRIEVAL_RUN_SQL = """
                 WHERE id = %s
                 """
 
+UPSERT_EVAL_SUITE_SQL = """
+                INSERT INTO eval_suites (
+                  user_id,
+                  suite_key,
+                  title,
+                  description,
+                  evaluator_kind,
+                  fixture_schema_version,
+                  fixture_source_path,
+                  case_count,
+                  suite_order,
+                  metadata
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                ON CONFLICT (user_id, suite_key)
+                DO UPDATE
+                SET title = EXCLUDED.title,
+                    description = EXCLUDED.description,
+                    evaluator_kind = EXCLUDED.evaluator_kind,
+                    fixture_schema_version = EXCLUDED.fixture_schema_version,
+                    fixture_source_path = EXCLUDED.fixture_source_path,
+                    case_count = EXCLUDED.case_count,
+                    suite_order = EXCLUDED.suite_order,
+                    metadata = EXCLUDED.metadata,
+                    updated_at = clock_timestamp()
+                RETURNING
+                  id,
+                  user_id,
+                  suite_key,
+                  title,
+                  description,
+                  evaluator_kind,
+                  fixture_schema_version,
+                  fixture_source_path,
+                  case_count,
+                  suite_order,
+                  metadata,
+                  created_at,
+                  updated_at
+                """
+
+LIST_EVAL_SUITES_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  suite_key,
+                  title,
+                  description,
+                  evaluator_kind,
+                  fixture_schema_version,
+                  fixture_source_path,
+                  case_count,
+                  suite_order,
+                  metadata,
+                  created_at,
+                  updated_at
+                FROM eval_suites
+                ORDER BY suite_order ASC, suite_key ASC
+                """
+
+DELETE_EVAL_SUITES_NOT_IN_SQL = """
+                DELETE FROM eval_suites
+                WHERE user_id = app.current_user_id()
+                  AND NOT (suite_key = ANY(%s))
+                """
+
+UPSERT_EVAL_CASE_SQL = """
+                INSERT INTO eval_cases (
+                  user_id,
+                  suite_id,
+                  case_key,
+                  title,
+                  evaluator_kind,
+                  case_order,
+                  fixture,
+                  expectations
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                ON CONFLICT (user_id, suite_id, case_key)
+                DO UPDATE
+                SET title = EXCLUDED.title,
+                    evaluator_kind = EXCLUDED.evaluator_kind,
+                    case_order = EXCLUDED.case_order,
+                    fixture = EXCLUDED.fixture,
+                    expectations = EXCLUDED.expectations,
+                    updated_at = clock_timestamp()
+                RETURNING
+                  id,
+                  user_id,
+                  suite_id,
+                  case_key,
+                  title,
+                  evaluator_kind,
+                  case_order,
+                  fixture,
+                  expectations,
+                  created_at,
+                  updated_at
+                """
+
+LIST_EVAL_CASES_FOR_SUITE_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  suite_id,
+                  case_key,
+                  title,
+                  evaluator_kind,
+                  case_order,
+                  fixture,
+                  expectations,
+                  created_at,
+                  updated_at
+                FROM eval_cases
+                WHERE suite_id = %s
+                ORDER BY case_order ASC, case_key ASC
+                """
+
+DELETE_EVAL_CASES_FOR_SUITE_NOT_IN_SQL = """
+                DELETE FROM eval_cases
+                WHERE user_id = app.current_user_id()
+                  AND suite_id = %s
+                  AND NOT (case_key = ANY(%s))
+                """
+
+INSERT_EVAL_RUN_SQL = """
+                INSERT INTO eval_runs (
+                  user_id,
+                  fixture_schema_version,
+                  fixture_source_path,
+                  requested_suite_keys,
+                  status,
+                  summary,
+                  report,
+                  report_digest
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  fixture_schema_version,
+                  fixture_source_path,
+                  requested_suite_keys,
+                  status,
+                  summary,
+                  report,
+                  report_digest,
+                  created_at
+                """
+
+LIST_EVAL_RUNS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  fixture_schema_version,
+                  fixture_source_path,
+                  requested_suite_keys,
+                  status,
+                  summary,
+                  report,
+                  report_digest,
+                  created_at
+                FROM eval_runs
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """
+
+GET_EVAL_RUN_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  fixture_schema_version,
+                  fixture_source_path,
+                  requested_suite_keys,
+                  status,
+                  summary,
+                  report,
+                  report_digest,
+                  created_at
+                FROM eval_runs
+                WHERE id = %s
+                """
+
+INSERT_EVAL_RESULT_SQL = """
+                INSERT INTO eval_results (
+                  user_id,
+                  eval_run_id,
+                  suite_key,
+                  case_key,
+                  status,
+                  score,
+                  summary,
+                  details
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  eval_run_id,
+                  suite_key,
+                  case_key,
+                  status,
+                  score,
+                  summary,
+                  details,
+                  created_at
+                """
+
+LIST_EVAL_RESULTS_FOR_RUN_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  eval_run_id,
+                  suite_key,
+                  case_key,
+                  status,
+                  score,
+                  summary,
+                  details,
+                  created_at
+                FROM eval_results
+                WHERE eval_run_id = %s
+                ORDER BY suite_key ASC, case_key ASC, created_at ASC, id ASC
+                """
+
 INSERT_RETRIEVAL_CANDIDATE_SQL = """
                 INSERT INTO retrieval_candidates (
                   user_id,
@@ -6865,6 +7184,135 @@ class ContinuityStore:
 
     def list_continuity_recall_candidates(self) -> list[ContinuityRecallCandidateRow]:
         return self._fetch_all(LIST_CONTINUITY_RECALL_CANDIDATES_SQL)
+
+    def upsert_eval_suite(
+        self,
+        *,
+        suite_key: str,
+        title: str,
+        description: str,
+        evaluator_kind: str,
+        fixture_schema_version: str,
+        fixture_source_path: str,
+        case_count: int,
+        suite_order: int,
+        metadata: JsonObject,
+    ) -> EvalSuiteRow:
+        return self._fetch_one(
+            "upsert_eval_suite",
+            UPSERT_EVAL_SUITE_SQL,
+            (
+                suite_key,
+                title,
+                description,
+                evaluator_kind,
+                fixture_schema_version,
+                fixture_source_path,
+                case_count,
+                suite_order,
+                Jsonb(metadata),
+            ),
+        )
+
+    def list_eval_suites(self) -> list[EvalSuiteRow]:
+        return self._fetch_all(LIST_EVAL_SUITES_SQL)
+
+    def delete_eval_suites_not_in(self, suite_keys: list[str]) -> None:
+        self._execute("delete_eval_suites_not_in", DELETE_EVAL_SUITES_NOT_IN_SQL, (suite_keys,))
+
+    def upsert_eval_case(
+        self,
+        *,
+        suite_id: UUID,
+        case_key: str,
+        title: str,
+        evaluator_kind: str,
+        case_order: int,
+        fixture: JsonObject,
+        expectations: JsonObject,
+    ) -> EvalCaseRow:
+        return self._fetch_one(
+            "upsert_eval_case",
+            UPSERT_EVAL_CASE_SQL,
+            (
+                suite_id,
+                case_key,
+                title,
+                evaluator_kind,
+                case_order,
+                Jsonb(fixture),
+                Jsonb(expectations),
+            ),
+        )
+
+    def list_eval_cases_for_suite(self, suite_id: UUID) -> list[EvalCaseRow]:
+        return self._fetch_all(LIST_EVAL_CASES_FOR_SUITE_SQL, (suite_id,))
+
+    def delete_eval_cases_for_suite_not_in(self, *, suite_id: UUID, case_keys: list[str]) -> None:
+        self._execute(
+            "delete_eval_cases_for_suite_not_in",
+            DELETE_EVAL_CASES_FOR_SUITE_NOT_IN_SQL,
+            (suite_id, case_keys),
+        )
+
+    def create_eval_run(
+        self,
+        *,
+        fixture_schema_version: str,
+        fixture_source_path: str,
+        requested_suite_keys: list[str],
+        status: str,
+        summary: JsonObject,
+        report: JsonObject,
+        report_digest: str,
+    ) -> EvalRunRow:
+        return self._fetch_one(
+            "create_eval_run",
+            INSERT_EVAL_RUN_SQL,
+            (
+                fixture_schema_version,
+                fixture_source_path,
+                Jsonb(requested_suite_keys),
+                status,
+                Jsonb(summary),
+                Jsonb(report),
+                report_digest,
+            ),
+        )
+
+    def list_eval_runs(self, *, limit: int) -> list[EvalRunRow]:
+        return self._fetch_all(LIST_EVAL_RUNS_SQL, (limit,))
+
+    def get_eval_run_optional(self, eval_run_id: UUID) -> EvalRunRow | None:
+        return self._fetch_optional_one(GET_EVAL_RUN_SQL, (eval_run_id,))
+
+    def create_eval_result(
+        self,
+        *,
+        eval_run_id: UUID,
+        suite_key: str,
+        case_key: str,
+        status: str,
+        score: float,
+        summary: JsonObject,
+        details: JsonObject,
+    ) -> EvalResultRow:
+        return self._fetch_one(
+            "create_eval_result",
+            INSERT_EVAL_RESULT_SQL,
+            (
+                eval_run_id,
+                suite_key,
+                case_key,
+                status,
+                score,
+                Jsonb(summary),
+                Jsonb(details),
+            ),
+        )
+
+    def list_eval_results_for_run(self, eval_run_id: UUID) -> list[EvalResultRow]:
+        return self._fetch_all(LIST_EVAL_RESULTS_FOR_RUN_SQL, (eval_run_id,))
 
     def create_retrieval_run(
         self,
