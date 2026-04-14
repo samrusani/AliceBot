@@ -94,6 +94,18 @@ def test_verify_archive_checksums_detects_manifest_drift(tmp_path: Path) -> None
     assert any("archive checksum mismatch" in message for message in second["errors"])
 
 
+def test_verify_archive_checksums_skips_when_archive_index_is_absent(tmp_path: Path) -> None:
+    result = maintenance._verify_archive_checksums(  # type: ignore[attr-defined]
+        index_path=tmp_path / "missing" / "index.json",
+        checksum_manifest_path=tmp_path / "archive_checksum_manifest.json",
+    )
+
+    assert result["status"] == "skipped"
+    assert result["errors"] == []
+    assert result["details"]["verified_file_count"] == 0
+    assert result["details"]["reason"] == "archive index not present; checksum verification skipped"
+
+
 def test_collect_archive_paths_rejects_outside_allowed_root(tmp_path: Path) -> None:
     archive_dir = tmp_path / "archive"
     archive_dir.mkdir(parents=True)
