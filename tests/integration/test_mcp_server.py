@@ -371,3 +371,81 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         assert all(item["id"] != str(waiting_for["id"]) for item in recall_rejected_payload["items"])
     finally:
         client.close()
+
+
+def test_mcp_memory_mutation_tools_smoke(migrated_database_urls) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="mcp-mutations@example.com")
+    thread_id = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        capture = store.create_continuity_capture_event(
+            raw_content="Decision: Legacy MCP mutation plan",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        store.create_continuity_object(
+            capture_event_id=capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: Legacy MCP mutation plan",
+            body={"decision_text": "Legacy MCP mutation plan"},
+            provenance={"thread_id": str(thread_id)},
+            confidence=0.95,
+        )
+
+    client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
+    try:
+        generated = _call_tool(
+            client,
+            name="alice_memory_mutations_generate",
+            arguments={
+                "user_content": "Correction: Updated MCP mutation plan",
+                "assistant_content": "",
+                "mode": "assist",
+                "sync_fingerprint": "mcp-mutation-sync-001",
+                "thread_id": str(thread_id),
+            },
+        )
+        assert generated["isError"] is False
+        generated_payload = generated["structuredContent"]
+        assert generated_payload["summary"]["operation_types"] == ["SUPERSEDE"]
+        candidate_id = generated_payload["items"][0]["id"]
+
+        listed_candidates = _call_tool(
+            client,
+            name="alice_memory_mutations_list_candidates",
+            arguments={
+                "sync_fingerprint": "mcp-mutation-sync-001",
+                "limit": 20,
+            },
+        )
+        assert listed_candidates["isError"] is False
+        assert listed_candidates["structuredContent"]["summary"]["returned_count"] == 1
+
+        committed = _call_tool(
+            client,
+            name="alice_memory_mutations_commit",
+            arguments={
+                "candidate_ids": [candidate_id],
+            },
+        )
+        assert committed["isError"] is False
+        committed_payload = committed["structuredContent"]
+        assert committed_payload["summary"]["applied_count"] == 1
+        assert committed_payload["operations"][0]["operation_type"] == "SUPERSEDE"
+
+        listed_operations = _call_tool(
+            client,
+            name="alice_memory_mutations_list_operations",
+            arguments={
+                "sync_fingerprint": "mcp-mutation-sync-001",
+                "limit": 20,
+            },
+        )
+        assert listed_operations["isError"] is False
+        assert listed_operations["structuredContent"]["summary"]["returned_count"] == 1
+        assert listed_operations["structuredContent"]["items"][0]["operation_type"] == "SUPERSEDE"
+    finally:
+        client.close()

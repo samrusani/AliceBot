@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-11 and Bridge `B1` through `B4`.
-- **Current repo execution posture:** `v0.2.0` is released; `P12-S1` is the active sprint.
+- **Current repo execution posture:** `v0.2.0` is released; `P12-S1` is shipped; `P12-S2` is the active sprint.
 - **Phase 12 delta:** retrieval quality, mutation explicitness, contradiction handling, public evals, and adaptive briefing.
 
 ## Current System Overview
@@ -83,7 +83,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 ## Phase 12 Architecture Delta
 
 ### P12-S1: Hybrid Retrieval + Reranking
-Extend the current recall path from a single ranked query into an explicit scored pipeline:
+Shipped in `P12-S1`:
 - semantic stream
 - lexical/BM25-style stream
 - entity/edge traversal stream
@@ -96,7 +96,7 @@ Planned additions:
 - `retrieval_candidates`
 - debug surfaces for API, CLI, and MCP
 
-Important baseline note: semantic retrieval, trust-aware ranking, entities, and retrieval evaluation already exist. Phase 12 should layer on those primitives rather than replace them.
+Important baseline note: `P12-S1` is now the retrieval baseline for the rest of Phase 12 and should not be reopened except where later sprint integration requires it.
 
 ### P12-S2: Automated Memory Operations
 Promote post-turn capture from loose candidate save/commit behavior into explicit mutation operations:
@@ -109,6 +109,8 @@ Promote post-turn capture from loose candidate save/commit behavior into explici
 Planned additions:
 - `memory_operation_candidates`
 - `memory_operations`
+
+Important baseline note: `P12-S2` should reuse shipped capture/review flows and shipped `P12-S1` retrieval improvements rather than reimplementing retrieval ranking.
 
 ### P12-S3: Contradiction Detection + Trust Calibration
 Add first-class conflict records and auditable trust adjustments.

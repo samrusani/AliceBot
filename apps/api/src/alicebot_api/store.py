@@ -227,6 +227,42 @@ class ContinuityCorrectionEventRow(TypedDict):
     created_at: datetime
 
 
+class MemoryOperationCandidateRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    sync_fingerprint: str
+    source_kind: str
+    source_candidate_id: str
+    source_candidate_type: str
+    candidate_payload: JsonObject
+    source_scope: JsonObject
+    operation_type: str
+    operation_reason: str
+    policy_action: str
+    policy_reason: str
+    target_continuity_object_id: UUID | None
+    target_snapshot: JsonObject
+    applied_operation_id: UUID | None
+    created_at: datetime
+    applied_at: datetime | None
+
+
+class MemoryOperationRow(TypedDict):
+    id: UUID
+    user_id: UUID
+    candidate_id: UUID
+    operation_type: str
+    status: str
+    sync_fingerprint: str
+    target_continuity_object_id: UUID | None
+    resulting_continuity_object_id: UUID | None
+    correction_event_id: UUID | None
+    before_snapshot: JsonObject
+    after_snapshot: JsonObject
+    details: JsonObject
+    created_at: datetime
+
+
 class ContinuityRecallCandidateRow(TypedDict):
     id: UUID
     user_id: UUID
@@ -5531,6 +5567,255 @@ LIST_CONTINUITY_CORRECTION_EVENTS_SQL = """
                 LIMIT %s
                 """
 
+INSERT_MEMORY_OPERATION_CANDIDATE_SQL = """
+                INSERT INTO memory_operation_candidates (
+                  user_id,
+                  sync_fingerprint,
+                  source_kind,
+                  source_candidate_id,
+                  source_candidate_type,
+                  candidate_payload,
+                  source_scope,
+                  operation_type,
+                  operation_reason,
+                  policy_action,
+                  policy_reason,
+                  target_continuity_object_id,
+                  target_snapshot
+                )
+                VALUES (
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  sync_fingerprint,
+                  source_kind,
+                  source_candidate_id,
+                  source_candidate_type,
+                  candidate_payload,
+                  source_scope,
+                  operation_type,
+                  operation_reason,
+                  policy_action,
+                  policy_reason,
+                  target_continuity_object_id,
+                  target_snapshot,
+                  applied_operation_id,
+                  created_at,
+                  applied_at
+                """
+
+GET_MEMORY_OPERATION_CANDIDATE_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  sync_fingerprint,
+                  source_kind,
+                  source_candidate_id,
+                  source_candidate_type,
+                  candidate_payload,
+                  source_scope,
+                  operation_type,
+                  operation_reason,
+                  policy_action,
+                  policy_reason,
+                  target_continuity_object_id,
+                  target_snapshot,
+                  applied_operation_id,
+                  created_at,
+                  applied_at
+                FROM memory_operation_candidates
+                WHERE id = %s
+                """
+
+GET_MEMORY_OPERATION_CANDIDATE_BY_SYNC_SOURCE_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  sync_fingerprint,
+                  source_kind,
+                  source_candidate_id,
+                  source_candidate_type,
+                  candidate_payload,
+                  source_scope,
+                  operation_type,
+                  operation_reason,
+                  policy_action,
+                  policy_reason,
+                  target_continuity_object_id,
+                  target_snapshot,
+                  applied_operation_id,
+                  created_at,
+                  applied_at
+                FROM memory_operation_candidates
+                WHERE sync_fingerprint = %s
+                  AND source_candidate_id = %s
+                """
+
+LIST_MEMORY_OPERATION_CANDIDATES_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  sync_fingerprint,
+                  source_kind,
+                  source_candidate_id,
+                  source_candidate_type,
+                  candidate_payload,
+                  source_scope,
+                  operation_type,
+                  operation_reason,
+                  policy_action,
+                  policy_reason,
+                  target_continuity_object_id,
+                  target_snapshot,
+                  applied_operation_id,
+                  created_at,
+                  applied_at
+                FROM memory_operation_candidates
+                WHERE (%s::text IS NULL OR policy_action = %s::text)
+                  AND (%s::text IS NULL OR operation_type = %s::text)
+                  AND (%s::text IS NULL OR sync_fingerprint = %s::text)
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """
+
+COUNT_MEMORY_OPERATION_CANDIDATES_SQL = """
+                SELECT COUNT(*) AS count
+                FROM memory_operation_candidates
+                WHERE (%s::text IS NULL OR policy_action = %s::text)
+                  AND (%s::text IS NULL OR operation_type = %s::text)
+                  AND (%s::text IS NULL OR sync_fingerprint = %s::text)
+                """
+
+UPDATE_MEMORY_OPERATION_CANDIDATE_APPLICATION_SQL = """
+                UPDATE memory_operation_candidates
+                SET applied_operation_id = %s,
+                    applied_at = %s
+                WHERE id = %s
+                RETURNING
+                  id,
+                  user_id,
+                  sync_fingerprint,
+                  source_kind,
+                  source_candidate_id,
+                  source_candidate_type,
+                  candidate_payload,
+                  source_scope,
+                  operation_type,
+                  operation_reason,
+                  policy_action,
+                  policy_reason,
+                  target_continuity_object_id,
+                  target_snapshot,
+                  applied_operation_id,
+                  created_at,
+                  applied_at
+                """
+
+INSERT_MEMORY_OPERATION_SQL = """
+                INSERT INTO memory_operations (
+                  id,
+                  user_id,
+                  candidate_id,
+                  operation_type,
+                  status,
+                  sync_fingerprint,
+                  target_continuity_object_id,
+                  resulting_continuity_object_id,
+                  correction_event_id,
+                  before_snapshot,
+                  after_snapshot,
+                  details
+                )
+                VALUES (
+                  %s,
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING
+                  id,
+                  user_id,
+                  candidate_id,
+                  operation_type,
+                  status,
+                  sync_fingerprint,
+                  target_continuity_object_id,
+                  resulting_continuity_object_id,
+                  correction_event_id,
+                  before_snapshot,
+                  after_snapshot,
+                  details,
+                  created_at
+                """
+
+GET_MEMORY_OPERATION_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  candidate_id,
+                  operation_type,
+                  status,
+                  sync_fingerprint,
+                  target_continuity_object_id,
+                  resulting_continuity_object_id,
+                  correction_event_id,
+                  before_snapshot,
+                  after_snapshot,
+                  details,
+                  created_at
+                FROM memory_operations
+                WHERE id = %s
+                """
+
+LIST_MEMORY_OPERATIONS_SQL = """
+                SELECT
+                  id,
+                  user_id,
+                  candidate_id,
+                  operation_type,
+                  status,
+                  sync_fingerprint,
+                  target_continuity_object_id,
+                  resulting_continuity_object_id,
+                  correction_event_id,
+                  before_snapshot,
+                  after_snapshot,
+                  details,
+                  created_at
+                FROM memory_operations
+                WHERE (%s::text IS NULL OR sync_fingerprint = %s::text)
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """
+
+COUNT_MEMORY_OPERATIONS_SQL = """
+                SELECT COUNT(*) AS count
+                FROM memory_operations
+                WHERE (%s::text IS NULL OR sync_fingerprint = %s::text)
+                """
+
 UPDATE_EVENT_ERROR = "events are append-only and must be superseded by new records"
 DELETE_EVENT_ERROR = "events are append-only and must not be deleted in place"
 UPDATE_TRACE_EVENT_ERROR = "trace events are append-only and must be superseded by new records"
@@ -6598,6 +6883,187 @@ class ContinuityStore:
         return self._fetch_all(
             LIST_CONTINUITY_CORRECTION_EVENTS_SQL,
             (continuity_object_id, limit),
+        )
+
+    def create_memory_operation_candidate(
+        self,
+        *,
+        sync_fingerprint: str,
+        source_kind: str,
+        source_candidate_id: str,
+        source_candidate_type: str,
+        candidate_payload: JsonObject,
+        source_scope: JsonObject,
+        operation_type: str,
+        operation_reason: str,
+        policy_action: str,
+        policy_reason: str,
+        target_continuity_object_id: UUID | None,
+        target_snapshot: JsonObject,
+    ) -> MemoryOperationCandidateRow:
+        return self._fetch_one(
+            "create_memory_operation_candidate",
+            INSERT_MEMORY_OPERATION_CANDIDATE_SQL,
+            (
+                sync_fingerprint,
+                source_kind,
+                source_candidate_id,
+                source_candidate_type,
+                Jsonb(candidate_payload),
+                Jsonb(source_scope),
+                operation_type,
+                operation_reason,
+                policy_action,
+                policy_reason,
+                target_continuity_object_id,
+                Jsonb(target_snapshot),
+            ),
+        )
+
+    def get_memory_operation_candidate_optional(
+        self,
+        candidate_id: UUID,
+    ) -> MemoryOperationCandidateRow | None:
+        return self._fetch_optional_one(
+            GET_MEMORY_OPERATION_CANDIDATE_SQL,
+            (candidate_id,),
+        )
+
+    def get_memory_operation_candidate_by_sync_source_optional(
+        self,
+        *,
+        sync_fingerprint: str,
+        source_candidate_id: str,
+    ) -> MemoryOperationCandidateRow | None:
+        return self._fetch_optional_one(
+            GET_MEMORY_OPERATION_CANDIDATE_BY_SYNC_SOURCE_SQL,
+            (sync_fingerprint, source_candidate_id),
+        )
+
+    def list_memory_operation_candidates(
+        self,
+        *,
+        limit: int,
+        policy_action: str | None = None,
+        operation_type: str | None = None,
+        sync_fingerprint: str | None = None,
+    ) -> list[MemoryOperationCandidateRow]:
+        return self._fetch_all(
+            LIST_MEMORY_OPERATION_CANDIDATES_SQL,
+            (
+                policy_action,
+                policy_action,
+                operation_type,
+                operation_type,
+                sync_fingerprint,
+                sync_fingerprint,
+                limit,
+            ),
+        )
+
+    def count_memory_operation_candidates(
+        self,
+        *,
+        policy_action: str | None = None,
+        operation_type: str | None = None,
+        sync_fingerprint: str | None = None,
+    ) -> int:
+        return self._fetch_count(
+            COUNT_MEMORY_OPERATION_CANDIDATES_SQL,
+            (
+                policy_action,
+                policy_action,
+                operation_type,
+                operation_type,
+                sync_fingerprint,
+                sync_fingerprint,
+            ),
+        )
+
+    def update_memory_operation_candidate_application(
+        self,
+        *,
+        candidate_id: UUID,
+        applied_operation_id: UUID,
+        applied_at: datetime,
+    ) -> MemoryOperationCandidateRow | None:
+        return self._fetch_optional_one(
+            UPDATE_MEMORY_OPERATION_CANDIDATE_APPLICATION_SQL,
+            (
+                applied_operation_id,
+                applied_at,
+                candidate_id,
+            ),
+        )
+
+    def create_memory_operation(
+        self,
+        *,
+        operation_id: UUID,
+        candidate_id: UUID,
+        operation_type: str,
+        status: str,
+        sync_fingerprint: str,
+        target_continuity_object_id: UUID | None,
+        resulting_continuity_object_id: UUID | None,
+        correction_event_id: UUID | None,
+        before_snapshot: JsonObject,
+        after_snapshot: JsonObject,
+        details: JsonObject,
+    ) -> MemoryOperationRow:
+        return self._fetch_one(
+            "create_memory_operation",
+            INSERT_MEMORY_OPERATION_SQL,
+            (
+                operation_id,
+                candidate_id,
+                operation_type,
+                status,
+                sync_fingerprint,
+                target_continuity_object_id,
+                resulting_continuity_object_id,
+                correction_event_id,
+                Jsonb(before_snapshot),
+                Jsonb(after_snapshot),
+                Jsonb(details),
+            ),
+        )
+
+    def get_memory_operation_optional(
+        self,
+        operation_id: UUID,
+    ) -> MemoryOperationRow | None:
+        return self._fetch_optional_one(
+            GET_MEMORY_OPERATION_SQL,
+            (operation_id,),
+        )
+
+    def list_memory_operations(
+        self,
+        *,
+        limit: int,
+        sync_fingerprint: str | None = None,
+    ) -> list[MemoryOperationRow]:
+        return self._fetch_all(
+            LIST_MEMORY_OPERATIONS_SQL,
+            (
+                sync_fingerprint,
+                sync_fingerprint,
+                limit,
+            ),
+        )
+
+    def count_memory_operations(
+        self,
+        *,
+        sync_fingerprint: str | None = None,
+    ) -> int:
+        return self._fetch_count(
+            COUNT_MEMORY_OPERATIONS_SQL,
+            (
+                sync_fingerprint,
+                sync_fingerprint,
+            ),
         )
 
     def create_model_provider(

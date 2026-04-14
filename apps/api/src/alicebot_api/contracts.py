@@ -257,6 +257,9 @@ ContinuityCaptureCommitDecision = Literal[
     "duplicate_noop",
 ]
 ContinuityCaptureProposedAction = Literal["auto_save_candidate", "queue_for_review", "no_op"]
+MemoryOperationType = Literal["ADD", "UPDATE", "SUPERSEDE", "DELETE", "NOOP"]
+MemoryOperationPolicyAction = Literal["auto_apply", "review_required", "skip"]
+MemoryOperationStatus = Literal["applied", "no_op", "skipped", "duplicate"]
 ContinuityRecallScopeKind = Literal["thread", "task", "project", "person"]
 ContinuityCorrectionAction = Literal["confirm", "edit", "delete", "supersede", "mark_stale"]
 ContinuityReviewStatus = Literal["active", "stale", "superseded", "deleted"]
@@ -810,6 +813,9 @@ CONTINUITY_CAPTURE_ASSIST_AUTOSAVE_TYPES = [
     "blocker",
 ]
 CONTINUITY_CAPTURE_REVIEW_REQUIRED_TYPES = ["note"]
+MEMORY_OPERATION_TYPES = ["ADD", "UPDATE", "SUPERSEDE", "DELETE", "NOOP"]
+MEMORY_OPERATION_POLICY_ACTIONS = ["auto_apply", "review_required", "skip"]
+MEMORY_OPERATION_STATUSES = ["applied", "no_op", "skipped", "duplicate"]
 CONTINUITY_CORRECTION_ACTIONS = [
     "confirm",
     "edit",
@@ -1869,6 +1875,68 @@ class ContinuityCaptureCommitInput:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryOperationGenerateInput:
+    user_content: str
+    assistant_content: str
+    mode: ContinuityCaptureCommitMode = "assist"
+    sync_fingerprint: str | None = None
+    source_kind: str = "sync_turn"
+    session_id: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+    target_continuity_object_id: UUID | None = None
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "user_content": self.user_content,
+            "assistant_content": self.assistant_content,
+            "mode": self.mode,
+            "sync_fingerprint": self.sync_fingerprint,
+            "source_kind": self.source_kind,
+            "session_id": self.session_id,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+            "target_continuity_object_id": (
+                None if self.target_continuity_object_id is None else str(self.target_continuity_object_id)
+            ),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryOperationCommitInput:
+    candidate_ids: list[UUID] = field(default_factory=list)
+    sync_fingerprint: str | None = None
+    include_review_required: bool = False
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "candidate_ids": [str(candidate_id) for candidate_id in self.candidate_ids],
+            "sync_fingerprint": self.sync_fingerprint,
+            "include_review_required": self.include_review_required,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryOperationListInput:
+    limit: int = DEFAULT_CONTINUITY_CAPTURE_LIMIT
+    policy_action: MemoryOperationPolicyAction | None = None
+    operation_type: MemoryOperationType | None = None
+    sync_fingerprint: str | None = None
+
+    def as_payload(self) -> JsonObject:
+        return {
+            "limit": self.limit,
+            "policy_action": self.policy_action,
+            "operation_type": self.operation_type,
+            "sync_fingerprint": self.sync_fingerprint,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ContinuityReviewQueueQueryInput:
     status: ContinuityReviewStatusFilter = "correction_ready"
     limit: int = DEFAULT_CONTINUITY_REVIEW_LIMIT
@@ -2809,6 +2877,87 @@ class ContinuityCaptureCommitSummary(TypedDict):
 class ContinuityCaptureCommitResponse(TypedDict):
     commits: list[ContinuityCaptureCommitRecord]
     summary: ContinuityCaptureCommitSummary
+
+
+class MemoryOperationCandidateRecord(TypedDict):
+    id: str
+    sync_fingerprint: str
+    source_kind: str
+    source_candidate_id: str
+    source_candidate_type: str
+    candidate_payload: JsonObject
+    source_scope: JsonObject
+    operation_type: MemoryOperationType
+    operation_reason: str
+    policy_action: MemoryOperationPolicyAction
+    policy_reason: str
+    target_continuity_object_id: str | None
+    target_snapshot: JsonObject
+    applied_operation_id: str | None
+    created_at: str
+    applied_at: str | None
+
+
+class MemoryOperationRecord(TypedDict):
+    id: str
+    candidate_id: str
+    operation_type: MemoryOperationType
+    status: MemoryOperationStatus
+    sync_fingerprint: str
+    target_continuity_object_id: str | None
+    resulting_continuity_object_id: str | None
+    correction_event_id: str | None
+    before_snapshot: JsonObject
+    after_snapshot: JsonObject
+    details: JsonObject
+    created_at: str
+
+
+class MemoryOperationCandidateGenerateSummary(TypedDict):
+    candidate_count: int
+    auto_apply_count: int
+    review_required_count: int
+    noop_count: int
+    operation_types: list[str]
+
+
+class MemoryOperationCandidateGenerateResponse(TypedDict):
+    items: list[MemoryOperationCandidateRecord]
+    summary: MemoryOperationCandidateGenerateSummary
+
+
+class MemoryOperationCommitSummary(TypedDict):
+    requested_count: int
+    applied_count: int
+    no_op_count: int
+    skipped_count: int
+    duplicate_count: int
+    operation_types: list[str]
+
+
+class MemoryOperationCommitResponse(TypedDict):
+    candidates: list[MemoryOperationCandidateRecord]
+    operations: list[MemoryOperationRecord]
+    summary: MemoryOperationCommitSummary
+
+
+class MemoryOperationListSummary(TypedDict):
+    limit: int
+    returned_count: int
+    total_count: int
+    policy_action: MemoryOperationPolicyAction | None
+    operation_type: MemoryOperationType | None
+    sync_fingerprint: str | None
+
+
+class MemoryOperationCandidateListResponse(TypedDict):
+    items: list[MemoryOperationCandidateRecord]
+    summary: MemoryOperationListSummary
+
+
+class MemoryOperationListResponse(TypedDict):
+    items: list[MemoryOperationRecord]
+    summary: MemoryOperationListSummary
 
 
 class ContinuityLifecycleStateRecord(TypedDict):

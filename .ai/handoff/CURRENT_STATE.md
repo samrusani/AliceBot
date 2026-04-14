@@ -1,8 +1,5 @@
 # Current State
 
-This file is a synced repo-root copy for planning visibility.
-Canonical handoff state lives at [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURRENT_STATE.md).
-
 ## Status Snapshot
 - Phase 9 is shipped.
 - Phase 10 is shipped.

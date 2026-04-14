@@ -324,6 +324,96 @@ def test_cli_command_surface_and_correction_flow(migrated_database_urls) -> None
     assert "segments:" in artifact_result.stdout
 
 
+def test_cli_memory_mutation_commands_smoke(migrated_database_urls) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="cli-mutations@example.com")
+    thread_id = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        capture = store.create_continuity_capture_event(
+            raw_content="Decision: Legacy mutation plan",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        store.create_continuity_object(
+            capture_event_id=capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: Legacy mutation plan",
+            body={"decision_text": "Legacy mutation plan"},
+            provenance={"thread_id": str(thread_id)},
+            confidence=0.96,
+        )
+
+    env = build_cli_env(database_url=migrated_database_urls["app"], user_id=user_id)
+
+    generate_result = run_cli(
+        [
+            "mutations",
+            "generate",
+            "--user-content",
+            "Correction: Updated mutation plan",
+            "--mode",
+            "assist",
+            "--sync-fingerprint",
+            "cli-mutation-sync-001",
+            "--thread-id",
+            str(thread_id),
+        ],
+        env=env,
+    )
+    assert generate_result.returncode == 0
+    assert "memory operation candidates" in generate_result.stdout
+    assert "[SUPERSEDE|auto_apply]" in generate_result.stdout
+
+    candidates_result = run_cli(
+        [
+            "mutations",
+            "candidates",
+            "--sync-fingerprint",
+            "cli-mutation-sync-001",
+            "--limit",
+            "20",
+        ],
+        env=env,
+    )
+    assert candidates_result.returncode == 0
+    assert "source_candidate_id=" in candidates_result.stdout
+
+    candidate_id_line = next(
+        line for line in candidates_result.stdout.splitlines() if "id=" in line and "source_candidate_id=" in line
+    )
+    candidate_id = candidate_id_line.split("id=", 1)[1].split(" ", 1)[0]
+
+    commit_result = run_cli(
+        [
+            "mutations",
+            "commit",
+            candidate_id,
+        ],
+        env=env,
+    )
+    assert commit_result.returncode == 0
+    assert "memory operation commit" in commit_result.stdout
+    assert "[SUPERSEDE|applied]" in commit_result.stdout
+
+    operations_result = run_cli(
+        [
+            "mutations",
+            "operations",
+            "--sync-fingerprint",
+            "cli-mutation-sync-001",
+            "--limit",
+            "20",
+        ],
+        env=env,
+    )
+    assert operations_result.returncode == 0
+    assert "memory operations" in operations_result.stdout
+    assert "[SUPERSEDE|applied]" in operations_result.stdout
+
+
 def test_cli_lists_and_explains_trusted_fact_promotions(migrated_database_urls) -> None:
     user_id = seed_user(migrated_database_urls["app"], email="trusted-cli@example.invalid")
 

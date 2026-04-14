@@ -15,6 +15,10 @@ def test_parser_routes_required_commands() -> None:
 
     cases = [
         (["capture", "Decision: Keep rollout phased"], "_run_capture"),
+        (["mutations", "generate"], "_run_mutation_generate"),
+        (["mutations", "candidates"], "_run_mutation_candidates"),
+        (["mutations", "commit"], "_run_mutation_commit"),
+        (["mutations", "operations"], "_run_mutation_operations"),
         (["recall"], "_run_recall"),
         (["state-at", continuity_object_id], "_run_state_at"),
         (["timeline", continuity_object_id], "_run_timeline"),

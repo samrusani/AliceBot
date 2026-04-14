@@ -16,6 +16,10 @@ from alicebot_api.contracts import (
     ContinuityResumptionBriefResponse,
     ContinuityReviewDetailResponse,
     ContinuityReviewQueueResponse,
+    MemoryOperationCandidateGenerateResponse,
+    MemoryOperationCandidateListResponse,
+    MemoryOperationCommitResponse,
+    MemoryOperationListResponse,
     TemporalExplainResponse,
     TemporalStateAtResponse,
     TemporalTimelineResponse,
@@ -879,6 +883,114 @@ def format_review_apply_output(payload: ContinuityCorrectionApplyResponse) -> st
                 f"replacement_object_id: {replacement_object['id']}",
                 f"replacement_status: {replacement_object['status']}",
                 f"replacement_title: {replacement_object['title']}",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def format_memory_operation_candidates_output(
+    payload: MemoryOperationCandidateGenerateResponse | MemoryOperationCandidateListResponse,
+) -> str:
+    summary = payload["summary"]
+    lines = [
+        "memory operation candidates",
+        f"returned: {summary['returned_count']}/{summary['total_count']} (limit={summary['limit']})"
+        if "returned_count" in summary
+        else (
+            "generated: "
+            f"{summary['candidate_count']} "
+            f"auto_apply={summary['auto_apply_count']} "
+            f"review_required={summary['review_required_count']} "
+            f"noop={summary['noop_count']}"
+        ),
+    ]
+    if "operation_types" in summary:
+        lines.append(f"operation_types: {', '.join(summary['operation_types'])}")
+    if "policy_action" in summary:
+        lines.append(
+            "filters: "
+            f"policy_action={summary['policy_action']} "
+            f"operation_type={summary['operation_type']} "
+            f"sync_fingerprint={summary['sync_fingerprint']}"
+        )
+
+    items = payload["items"]
+    if len(items) == 0:
+        lines.append("empty: no memory operation candidates.")
+        return "\n".join(lines)
+
+    for index, item in enumerate(items, start=1):
+        lines.extend(
+            [
+                f"{index}. [{item['operation_type']}|{item['policy_action']}] {item['source_candidate_type']}",
+                f"   id={item['id']} source_candidate_id={item['source_candidate_id']}",
+                f"   sync_fingerprint={item['sync_fingerprint']}",
+                f"   target_continuity_object_id={item['target_continuity_object_id']}",
+                f"   operation_reason={item['operation_reason']} policy_reason={item['policy_reason']}",
+                f"   candidate_payload={_format_json(item['candidate_payload'])}",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def format_memory_operation_commit_output(payload: MemoryOperationCommitResponse) -> str:
+    summary = payload["summary"]
+    lines = [
+        "memory operation commit",
+        (
+            f"requested={summary['requested_count']} "
+            f"applied={summary['applied_count']} "
+            f"noop={summary['no_op_count']} "
+            f"skipped={summary['skipped_count']} "
+            f"duplicate={summary['duplicate_count']}"
+        ),
+        f"operation_types: {', '.join(summary['operation_types']) if summary['operation_types'] else '(none)'}",
+    ]
+    if len(payload["operations"]) == 0:
+        lines.append("empty: no memory operations were written.")
+        return "\n".join(lines)
+
+    for index, item in enumerate(payload["operations"], start=1):
+        lines.extend(
+            [
+                f"{index}. [{item['operation_type']}|{item['status']}] {item['id']}",
+                f"   candidate_id={item['candidate_id']} sync_fingerprint={item['sync_fingerprint']}",
+                (
+                    "   links="
+                    f"target={item['target_continuity_object_id']} "
+                    f"result={item['resulting_continuity_object_id']} "
+                    f"correction_event={item['correction_event_id']}"
+                ),
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def format_memory_operations_output(payload: MemoryOperationListResponse) -> str:
+    summary = payload["summary"]
+    lines = [
+        "memory operations",
+        f"returned: {summary['returned_count']}/{summary['total_count']} (limit={summary['limit']})",
+        f"sync_fingerprint: {summary['sync_fingerprint']}",
+    ]
+    if len(payload["items"]) == 0:
+        lines.append("empty: no memory operations.")
+        return "\n".join(lines)
+
+    for index, item in enumerate(payload["items"], start=1):
+        lines.extend(
+            [
+                f"{index}. [{item['operation_type']}|{item['status']}] {item['id']}",
+                f"   candidate_id={item['candidate_id']} sync_fingerprint={item['sync_fingerprint']}",
+                (
+                    "   links="
+                    f"target={item['target_continuity_object_id']} "
+                    f"result={item['resulting_continuity_object_id']} "
+                    f"correction_event={item['correction_event_id']}"
+                ),
             ]
         )
 

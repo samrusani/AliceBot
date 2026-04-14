@@ -1,82 +1,73 @@
 # BUILD_REPORT
 
-## sprint objective
-Implement `P12-S1` hybrid retrieval + reranking by extending continuity recall into an explicit multi-stage retrieval pipeline with persisted retrieval traces, debug visibility across API/CLI/MCP, and updated retrieval evaluation coverage.
+## Sprint Objective
 
-## completed work
-- Implemented an explicit hybrid retrieval pipeline in `apps/api/src/alicebot_api/continuity_recall.py`:
-  - lexical BM25-style scoring
-  - semantic similarity and exact-match scoring
-  - entity/edge-expanded retrieval signals
-  - temporal weighting
-  - trust-aware reranking
-  - per-candidate inclusion and exclusion tracking
-- Added persisted retrieval trace storage:
-  - Alembic migration `20260414_0057_phase12_hybrid_retrieval_traces.py`
-  - `retrieval_runs` table
-  - `retrieval_candidates` table
-  - store APIs for creating and reading retrieval traces
-  - operator-configurable trace retention via `RETRIEVAL_TRACE_RETENTION_DAYS`
-- Added retrieval debug API support:
-  - `GET /v0/continuity/recall?debug=true`
-  - `GET /v0/continuity/resumption-brief?debug=true`
-  - `GET /v0/continuity/retrieval-runs`
-  - `GET /v0/continuity/retrieval-runs/{retrieval_run_id}`
-- Added CLI debug support:
-  - `recall --debug`
-  - `resume --debug`
-- Added MCP retrieval debug tooling:
-  - `alice_recall_debug`
-  - `alice_resume_debug`
-  - `alice_retrieval_trace`
-- Updated retrieval evaluation coverage with a new entity-edge expansion fixture proving hybrid retrieval improves a real weakness.
-- Added sprint-scoped retrieval documentation in `docs/retrieval/hybrid_tracing.md`.
+Implement `P12-S2` automated memory operations with explicit mutation candidates, operation classification, policy gating, deterministic commit application, auditability, and inspection surfaces.
 
-## incomplete work
-- None within `P12-S1` scope.
+## Completed Work
 
-## files changed
+- Added `memory_operation_candidates` and `memory_operations` schema with RLS, grants, indexes, and migration coverage.
+- Added store contracts and persistence methods for mutation candidates and operations.
+- Implemented `apps/api/src/alicebot_api/memory_mutations.py` for:
+  - post-turn candidate generation
+  - `ADD` / `UPDATE` / `SUPERSEDE` / `DELETE` / `NOOP` classification
+  - policy decisions for `auto_apply`, `review_required`, and `skip`
+  - deterministic commit application
+  - idempotent repeated sync handling
+- Added current-branch API endpoints under `/v1/memory/operations/*` to generate, inspect, and commit mutation work, with final endpoint contract still subject to the Control Tower Phase 12 API decision.
+- Added CLI mutation commands for generate, inspect, commit, and applied-operation listing.
+- Added MCP mutation tools for generate, inspect, commit, and applied-operation listing.
+- Added sprint-focused docs in `docs/memory/p12-s2-automated-memory-operations.md`, explicitly framed as branch behavior where Control Tower decisions are still pending.
+- Added unit and integration tests for mutation classification, commit behavior, idempotency, CLI smoke, MCP smoke, and migration shape.
+
+## Incomplete Work
+
+- None within the sprint packet scope.
+
+## Files Changed
+
+- `.ai/handoff/CURRENT_STATE.md`
 - `ARCHITECTURE.md`
+- `apps/api/alembic/versions/20260414_0058_phase12_memory_operations.py`
+- `apps/api/src/alicebot_api/memory_mutations.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/cli.py`
+- `apps/api/src/alicebot_api/cli_formatting.py`
+- `apps/api/src/alicebot_api/mcp_tools.py`
 - `BUILD_REPORT.md`
 - `CURRENT_STATE.md`
 - `PRODUCT_BRIEF.md`
 - `REVIEW_REPORT.md`
 - `ROADMAP.md`
-- `RULES.md`
-- `apps/api/alembic/versions/20260414_0057_phase12_hybrid_retrieval_traces.py`
-- `apps/api/src/alicebot_api/cli.py`
-- `apps/api/src/alicebot_api/cli_formatting.py`
-- `apps/api/src/alicebot_api/config.py`
-- `apps/api/src/alicebot_api/continuity_recall.py`
-- `apps/api/src/alicebot_api/continuity_resumption.py`
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/mcp_tools.py`
-- `apps/api/src/alicebot_api/retrieval_evaluation.py`
-- `apps/api/src/alicebot_api/store.py`
-- `docs/retrieval/hybrid_tracing.md`
 - `scripts/check_control_doc_truth.py`
+- `tests/unit/test_20260414_0058_phase12_memory_operations.py`
+- `tests/unit/test_memory_mutations.py`
+- `tests/unit/test_cli.py`
+- `tests/unit/test_mcp.py`
+- `tests/integration/test_memory_mutations_api.py`
 - `tests/integration/test_cli_integration.py`
-- `tests/integration/test_continuity_recall_api.py`
-- `tests/integration/test_mcp_cli_parity.py`
-- `tests/integration/test_retrieval_evaluation_api.py`
-- `tests/unit/test_20260414_0057_phase12_hybrid_retrieval_traces.py`
-- `tests/unit/test_continuity_recall.py`
-- `tests/unit/test_retrieval_evaluation.py`
+- `tests/integration/test_mcp_server.py`
+- `docs/memory/p12-s2-automated-memory-operations.md`
 
-## tests run
-- `./.venv/bin/pytest tests/unit/test_continuity_recall.py tests/unit/test_retrieval_evaluation.py tests/unit/test_cli.py tests/unit/test_20260414_0057_phase12_hybrid_retrieval_traces.py -q`
-  - Result: PASS (`25 passed`)
-- `./.venv/bin/pytest tests/integration/test_continuity_recall_api.py tests/integration/test_retrieval_evaluation_api.py tests/integration/test_cli_integration.py tests/integration/test_mcp_cli_parity.py -q`
-  - Result: PASS (`11 passed`)
+## Tests Run
+
+- `./.venv/bin/pytest tests/unit/test_20260414_0058_phase12_memory_operations.py tests/unit/test_memory_mutations.py tests/unit/test_cli.py tests/unit/test_mcp.py -q`
+  - Result: PASS (`19 passed`)
+- `./.venv/bin/pytest tests/integration/test_memory_mutations_api.py tests/integration/test_cli_integration.py tests/integration/test_mcp_server.py -q`
+  - Result: PASS (`8 passed`)
 - `./.venv/bin/python scripts/check_control_doc_truth.py`
   - Result: PASS
-- `rg -n "/Users|samirusani|Desktop/Codex" RULES.md ARCHITECTURE.md CURRENT_STATE.md BUILD_REPORT.md docs/retrieval`
+- `rg -n "/Users|samirusani|Desktop/Codex" RULES.md ARCHITECTURE.md CURRENT_STATE.md .ai/handoff/CURRENT_STATE.md PRODUCT_BRIEF.md ROADMAP.md docs/memory`
   - Result: PASS (no matches)
 
-## blockers/issues
-- No code blockers remain.
-- Required verification has been executed successfully on the current branch head.
+## Blockers/Issues
 
-## recommended next step
-Request Control Tower merge review against the current sprint branch head.
+- No sprint blocker remains.
+- Top-level control documents were updated to reflect `P12-S2` as the active sprint and align control-doc truth checks.
+- Control Tower still owns the final decision on the `/v1/memory/operations/*` endpoint contract and whether `DELETE` remains tombstone-only beyond current branch behavior.
+
+## Recommended Next Step
+
+Request Control Tower merge review against the current `P12-S2` branch head.

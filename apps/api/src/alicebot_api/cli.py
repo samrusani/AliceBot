@@ -19,6 +19,9 @@ from alicebot_api.cli_formatting import (
     format_explain_output,
     format_lifecycle_detail_output,
     format_lifecycle_list_output,
+    format_memory_operation_candidates_output,
+    format_memory_operation_commit_output,
+    format_memory_operations_output,
     format_open_loops_output,
     format_recall_output,
     format_resume_output,
@@ -43,6 +46,13 @@ from alicebot_api.continuity_evidence import (
     ContinuityEvidenceNotFoundError,
     build_continuity_explain,
     get_continuity_artifact_detail,
+)
+from alicebot_api.memory_mutations import (
+    MemoryMutationValidationError,
+    commit_memory_operations,
+    generate_memory_operation_candidates,
+    list_memory_operation_candidates,
+    list_memory_operations,
 )
 from alicebot_api.continuity_objects import (
     default_continuity_promotable,
@@ -76,6 +86,7 @@ from alicebot_api.continuity_review import (
 from alicebot_api.contracts import (
     CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
     CONTINUITY_CORRECTION_ACTIONS,
+    DEFAULT_CONTINUITY_CAPTURE_LIMIT,
     DEFAULT_CONTINUITY_LIFECYCLE_LIMIT,
     DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
@@ -99,6 +110,9 @@ from alicebot_api.contracts import (
     ContinuityRecallQueryInput,
     ContinuityResumptionBriefRequestInput,
     ContinuityReviewQueueQueryInput,
+    MemoryOperationCommitInput,
+    MemoryOperationGenerateInput,
+    MemoryOperationListInput,
     TemporalExplainQueryInput,
     TemporalStateAtQueryInput,
     TemporalTimelineQueryInput,
@@ -295,6 +309,70 @@ def _run_capture(ctx: CLIContext, args: argparse.Namespace) -> str:
             ),
         )
     return format_capture_output(payload)
+
+
+def _run_mutation_generate(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = generate_memory_operation_candidates(
+            store,
+            user_id=ctx.user_id,
+            request=MemoryOperationGenerateInput(
+                user_content=args.user_content or "",
+                assistant_content=args.assistant_content or "",
+                mode=args.mode,
+                sync_fingerprint=args.sync_fingerprint,
+                source_kind=args.source_kind,
+                session_id=args.session_id,
+                thread_id=args.thread_id,
+                task_id=args.task_id,
+                project=args.project,
+                person=args.person,
+                target_continuity_object_id=args.target_continuity_object_id,
+            ),
+        )
+    return format_memory_operation_candidates_output(payload)
+
+
+def _run_mutation_candidates(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = list_memory_operation_candidates(
+            store,
+            user_id=ctx.user_id,
+            request=MemoryOperationListInput(
+                limit=args.limit,
+                policy_action=args.policy_action,
+                operation_type=args.operation_type,
+                sync_fingerprint=args.sync_fingerprint,
+            ),
+        )
+    return format_memory_operation_candidates_output(payload)
+
+
+def _run_mutation_commit(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = commit_memory_operations(
+            store,
+            user_id=ctx.user_id,
+            request=MemoryOperationCommitInput(
+                candidate_ids=args.candidate_ids,
+                sync_fingerprint=args.sync_fingerprint,
+                include_review_required=args.include_review_required,
+            ),
+        )
+    return format_memory_operation_commit_output(payload)
+
+
+def _run_mutation_operations(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = list_memory_operations(
+            store,
+            user_id=ctx.user_id,
+            request=MemoryOperationListInput(
+                limit=args.limit,
+                sync_fingerprint=args.sync_fingerprint,
+            ),
+        )
+    return format_memory_operations_output(payload)
 
 
 def _run_recall(ctx: CLIContext, args: argparse.Namespace) -> str:
@@ -713,6 +791,92 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capture_parser.set_defaults(handler=_run_capture)
 
+    mutations_parser = subparsers.add_parser("mutations", help="Generate, inspect, and apply memory operations.")
+    mutations_subparsers = mutations_parser.add_subparsers(dest="mutations_command", required=True)
+
+    mutation_generate_parser = mutations_subparsers.add_parser(
+        "generate",
+        help="Generate explicit mutation candidates from a turn pair.",
+    )
+    mutation_generate_parser.add_argument("--user-content", default="", help="User turn content.")
+    mutation_generate_parser.add_argument("--assistant-content", default="", help="Assistant turn content.")
+    mutation_generate_parser.add_argument(
+        "--mode",
+        choices=("manual", "assist", "auto"),
+        default="assist",
+        help="Mutation policy mode.",
+    )
+    mutation_generate_parser.add_argument("--sync-fingerprint", default=None, help="Optional sync fingerprint.")
+    mutation_generate_parser.add_argument("--source-kind", default="sync_turn", help="Source kind label.")
+    mutation_generate_parser.add_argument("--session-id", default=None, help="Optional session id.")
+    mutation_generate_parser.add_argument("--thread-id", type=_parse_uuid, default=None, help="Optional thread UUID.")
+    mutation_generate_parser.add_argument("--task-id", type=_parse_uuid, default=None, help="Optional task UUID.")
+    mutation_generate_parser.add_argument("--project", default=None, help="Optional project scope.")
+    mutation_generate_parser.add_argument("--person", default=None, help="Optional person scope.")
+    mutation_generate_parser.add_argument(
+        "--target-continuity-object-id",
+        type=_parse_uuid,
+        default=None,
+        help="Optional explicit target continuity object UUID.",
+    )
+    mutation_generate_parser.set_defaults(handler=_run_mutation_generate)
+
+    mutation_candidates_parser = mutations_subparsers.add_parser(
+        "candidates",
+        help="List generated mutation candidates.",
+    )
+    mutation_candidates_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_CONTINUITY_CAPTURE_LIMIT,
+        help="Max candidates (1-100).",
+    )
+    mutation_candidates_parser.add_argument(
+        "--policy-action",
+        choices=("auto_apply", "review_required", "skip"),
+        default=None,
+        help="Optional policy filter.",
+    )
+    mutation_candidates_parser.add_argument(
+        "--operation-type",
+        choices=("ADD", "UPDATE", "SUPERSEDE", "DELETE", "NOOP"),
+        default=None,
+        help="Optional operation filter.",
+    )
+    mutation_candidates_parser.add_argument("--sync-fingerprint", default=None, help="Optional sync fingerprint.")
+    mutation_candidates_parser.set_defaults(handler=_run_mutation_candidates)
+
+    mutation_commit_parser = mutations_subparsers.add_parser(
+        "commit",
+        help="Apply generated mutation candidates.",
+    )
+    mutation_commit_parser.add_argument(
+        "candidate_ids",
+        nargs="*",
+        type=_parse_uuid,
+        help="Candidate UUIDs to apply.",
+    )
+    mutation_commit_parser.add_argument("--sync-fingerprint", default=None, help="Optional sync fingerprint.")
+    mutation_commit_parser.add_argument(
+        "--include-review-required",
+        action="store_true",
+        help="Allow review-required candidates to apply.",
+    )
+    mutation_commit_parser.set_defaults(handler=_run_mutation_commit)
+
+    mutation_operations_parser = mutations_subparsers.add_parser(
+        "operations",
+        help="List committed memory operations.",
+    )
+    mutation_operations_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_CONTINUITY_CAPTURE_LIMIT,
+        help="Max operations (1-100).",
+    )
+    mutation_operations_parser.add_argument("--sync-fingerprint", default=None, help="Optional sync fingerprint.")
+    mutation_operations_parser.set_defaults(handler=_run_mutation_operations)
+
     recall_parser = subparsers.add_parser("recall", help="Recall continuity objects.")
     _add_scope_filter_arguments(recall_parser)
     recall_parser.add_argument(
@@ -941,7 +1105,14 @@ def _validate_limit(value: int, *, option_name: str, minimum: int, maximum: int)
 
 
 def _validate_arguments(args: argparse.Namespace) -> None:
-    if args.command == "recall":
+    if args.command == "mutations" and args.mutations_command in {"candidates", "operations"}:
+        _validate_limit(
+            args.limit,
+            option_name="--limit",
+            minimum=1,
+            maximum=100,
+        )
+    elif args.command == "recall":
         _validate_limit(
             args.limit,
             option_name="--limit",
@@ -1026,6 +1197,7 @@ def main(argv: list[str] | None = None) -> int:
         ContinuityReviewValidationError,
         ContinuityReviewNotFoundError,
         ContinuityEvidenceNotFoundError,
+        MemoryMutationValidationError,
         TemporalStateValidationError,
         TrustedFactPromotionNotFoundError,
     ) as exc:

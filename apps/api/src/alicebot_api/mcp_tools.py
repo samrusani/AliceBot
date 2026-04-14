@@ -39,6 +39,13 @@ from alicebot_api.continuity_review import (
     get_continuity_review_detail,
     list_continuity_review_queue,
 )
+from alicebot_api.memory_mutations import (
+    MemoryMutationValidationError,
+    commit_memory_operations,
+    generate_memory_operation_candidates,
+    list_memory_operation_candidates,
+    list_memory_operations,
+)
 from alicebot_api.contracts import (
     CONTINUITY_CAPTURE_COMMIT_MODES,
     CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
@@ -65,6 +72,9 @@ from alicebot_api.contracts import (
     ContinuityRecallQueryInput,
     ContinuityResumptionBriefRequestInput,
     ContinuityReviewQueueQueryInput,
+    MemoryOperationCommitInput,
+    MemoryOperationGenerateInput,
+    MemoryOperationListInput,
     TemporalExplainQueryInput,
     TemporalStateAtQueryInput,
     TemporalTimelineQueryInput,
@@ -464,6 +474,98 @@ def _handle_alice_commit_captures(
                 candidates=list(raw_candidates),
                 sync_fingerprint=_parse_optional_text(arguments, "sync_fingerprint"),
                 source_kind=_parse_optional_text(arguments, "source_kind") or "sync_turn",
+            ),
+        )
+
+
+def _handle_alice_memory_mutations_generate(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    raw_mode = _parse_optional_text(arguments, "mode") or "assist"
+    mode = raw_mode.lower()
+    if mode not in CONTINUITY_CAPTURE_COMMIT_MODES:
+        allowed = ", ".join(CONTINUITY_CAPTURE_COMMIT_MODES)
+        raise MCPToolError(f"mode must be one of: {allowed}")
+
+    with _store_context(context) as store:
+        return generate_memory_operation_candidates(
+            store,
+            user_id=context.user_id,
+            request=MemoryOperationGenerateInput(
+                user_content=_parse_optional_text(arguments, "user_content") or "",
+                assistant_content=_parse_optional_text(arguments, "assistant_content") or "",
+                mode=mode,  # type: ignore[arg-type]
+                sync_fingerprint=_parse_optional_text(arguments, "sync_fingerprint"),
+                source_kind=_parse_optional_text(arguments, "source_kind") or "sync_turn",
+                session_id=_parse_optional_text(arguments, "session_id"),
+                thread_id=_parse_optional_uuid(arguments, "thread_id"),
+                task_id=_parse_optional_uuid(arguments, "task_id"),
+                project=_parse_optional_text(arguments, "project"),
+                person=_parse_optional_text(arguments, "person"),
+                target_continuity_object_id=_parse_optional_uuid(arguments, "target_continuity_object_id"),
+            ),
+        )
+
+
+def _handle_alice_memory_mutations_list_candidates(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    limit = _parse_int(arguments, key="limit", default=20, minimum=1, maximum=100)
+    with _store_context(context) as store:
+        return list_memory_operation_candidates(
+            store,
+            user_id=context.user_id,
+            request=MemoryOperationListInput(
+                limit=limit,
+                policy_action=_parse_optional_text(arguments, "policy_action"),  # type: ignore[arg-type]
+                operation_type=_parse_optional_text(arguments, "operation_type"),  # type: ignore[arg-type]
+                sync_fingerprint=_parse_optional_text(arguments, "sync_fingerprint"),
+            ),
+        )
+
+
+def _handle_alice_memory_mutations_commit(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    raw_candidate_ids = arguments.get("candidate_ids", [])
+    if not isinstance(raw_candidate_ids, list):
+        raise MCPToolError("candidate_ids must be a JSON array")
+    candidate_ids: list[UUID] = []
+    for item in raw_candidate_ids:
+        if not isinstance(item, str):
+            raise MCPToolError("candidate_ids must contain UUID strings")
+        try:
+            candidate_ids.append(UUID(item))
+        except ValueError as exc:
+            raise MCPToolError("candidate_ids must contain UUID strings") from exc
+
+    with _store_context(context) as store:
+        return commit_memory_operations(
+            store,
+            user_id=context.user_id,
+            request=MemoryOperationCommitInput(
+                candidate_ids=candidate_ids,
+                sync_fingerprint=_parse_optional_text(arguments, "sync_fingerprint"),
+                include_review_required=_parse_bool(arguments, key="include_review_required", default=False),
+            ),
+        )
+
+
+def _handle_alice_memory_mutations_list_operations(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    limit = _parse_int(arguments, key="limit", default=20, minimum=1, maximum=100)
+    with _store_context(context) as store:
+        return list_memory_operations(
+            store,
+            user_id=context.user_id,
+            request=MemoryOperationListInput(
+                limit=limit,
+                sync_fingerprint=_parse_optional_text(arguments, "sync_fingerprint"),
             ),
         )
 
@@ -1087,6 +1189,69 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_memory_mutations_generate",
+        "description": "Generate explicit memory mutation candidates with ADD/UPDATE/SUPERSEDE/DELETE/NOOP classification.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "user_content": {"type": "string"},
+                "assistant_content": {"type": "string"},
+                "mode": {"type": "string", "enum": list(CONTINUITY_CAPTURE_COMMIT_MODES)},
+                "sync_fingerprint": {"type": "string"},
+                "source_kind": {"type": "string"},
+                "session_id": {"type": "string"},
+                "thread_id": {"type": "string", "format": "uuid"},
+                "task_id": {"type": "string", "format": "uuid"},
+                "project": {"type": "string"},
+                "person": {"type": "string"},
+                "target_continuity_object_id": {"type": "string", "format": "uuid"},
+            },
+        },
+    },
+    {
+        "name": "alice_memory_mutations_list_candidates",
+        "description": "Inspect generated explicit memory mutation candidates.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "policy_action": {"type": "string", "enum": ["auto_apply", "review_required", "skip"]},
+                "operation_type": {"type": "string", "enum": ["ADD", "UPDATE", "SUPERSEDE", "DELETE", "NOOP"]},
+                "sync_fingerprint": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "alice_memory_mutations_commit",
+        "description": "Apply explicit memory mutation candidates with idempotent audit records.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "candidate_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "format": "uuid"},
+                },
+                "sync_fingerprint": {"type": "string"},
+                "include_review_required": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "alice_memory_mutations_list_operations",
+        "description": "Inspect committed explicit memory operations and their result links.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "sync_fingerprint": {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "alice_recall",
         "description": "Recall continuity objects with deterministic ranking and provenance fields.",
         "inputSchema": {
@@ -1443,6 +1608,10 @@ _TOOL_HANDLERS = {
     "alice_capture": _handle_alice_capture,
     "alice_capture_candidates": _handle_alice_capture_candidates,
     "alice_commit_captures": _handle_alice_commit_captures,
+    "alice_memory_mutations_generate": _handle_alice_memory_mutations_generate,
+    "alice_memory_mutations_list_candidates": _handle_alice_memory_mutations_list_candidates,
+    "alice_memory_mutations_commit": _handle_alice_memory_mutations_commit,
+    "alice_memory_mutations_list_operations": _handle_alice_memory_mutations_list_operations,
     "alice_recall": _handle_alice_recall,
     "alice_recall_debug": _handle_alice_recall_debug,
     "alice_state_at": _handle_alice_state_at,
@@ -1490,6 +1659,7 @@ def call_mcp_tool(
         ContinuityReviewNotFoundError,
         RetrievalTraceNotFoundError,
         ContinuityEvidenceNotFoundError,
+        MemoryMutationValidationError,
         TemporalStateValidationError,
     ) as exc:
         raise MCPToolError(str(exc)) from exc
