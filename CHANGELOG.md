@@ -2,6 +2,18 @@
 
 ## 2026-04-14
 
+- Closed out Phase 12 after shipping all five planned sprints:
+  - `P12-S1` hybrid retrieval + reranking
+  - `P12-S2` automated memory operations
+  - `P12-S3` contradiction detection + trust calibration
+  - `P12-S4` public eval harness
+  - `P12-S5` task-adaptive briefing
+- Added Phase 12 closeout summary and closeout packet.
+- Updated the documented release target from `v0.2.0` to `v0.3.2` for the completed Phase 12 boundary.
+- Aligned Python, API, web, CLI, core-package, and Hermes plugin version metadata to `0.3.2`.
+- Added `v0.3.2` release checklist, tag plan, and public release runbook.
+- Kept the published release truth explicit: the latest published tag remains `v0.2.0` until `v0.3.2` is cut.
+
 - Prepared `R1` release-readiness package for `v0.2.0` as a pre-1.0 public release boundary.
 - Added `v0.2.0` release checklist, tag plan, and public release runbook.
 - Realigned launch-facing docs to shipped scope through Phase 11 and Bridge `B1` through `B4`.

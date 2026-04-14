@@ -18,9 +18,10 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="README.md",
         required_markers=(
-            "`v0.2.0` is a **pre-1.0 public release**.",
-            "## Release Boundary (`v0.2.0`)",
+            "`v0.3.2` is the current **pre-1.0 release target** for the completed Phase 12 boundary.",
+            "## Release Boundary (`v0.3.2` Target)",
             "Bridge `B1` through `B4` provider contract, auto-capture flow, review/explainability flow, and bridge docs/smoke validation",
+            "Phase 12 retrieval quality stack:",
             "Historical planning/control artifacts remain available in:",
         ),
     ),
@@ -28,15 +29,15 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="ROADMAP.md",
         required_markers=(
             "Bridge Phase (`B1`-`B4`): shipped",
-            "Phase 12 Sprint 5 (`P12-S5`) is the active execution sprint.",
+            "Phase 12 closeout and `v0.3.2` release update are the active control packet.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Phase 12 Sprint 5 (`P12-S5`): Task-Adaptive Briefing",
-            "`v0.2.0` is released baseline truth.",
-            "worker-task brief is smaller than the generic recall pack",
+            "Phase 12 Closeout and `v0.3.2` Release Update",
+            "`v0.2.0` is the latest published tag.",
+            "The documented release target is `v0.3.2`",
         ),
     ),
     ControlDocTruthRule(
@@ -52,8 +53,16 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
             "Phase 9 is shipped.",
             "Phase 10 is shipped.",
             "Phase 11 is shipped.",
-            "`v0.2.0` is released.",
-            "Phase 12 Sprint 5 (`P12-S5`) is the active execution sprint.",
+            "`v0.2.0` is the latest published tag.",
+            "`v0.3.2` is the current release target.",
+            "Phase 12 closeout and `v0.3.2` release update are the active control packet.",
+        ),
+    ),
+    ControlDocTruthRule(
+        relative_path="docs/runbooks/phase12-closeout-packet.md",
+        required_markers=(
+            "# Phase 12 Closeout Packet",
+            "This runbook is the source-of-truth closeout packet for the accepted Phase 12 baseline through `P12-S5`.",
         ),
     ),
     ControlDocTruthRule(

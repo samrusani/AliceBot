@@ -732,7 +732,7 @@ from alicebot_api.traces import (
 LOGGER = logging.getLogger(__name__)
 
 
-app = FastAPI(title="AliceBot API", version="0.1.0")
+app = FastAPI(title="AliceBot API", version="0.3.2")
 provider_adapter_registry = make_provider_adapter_registry()
 HealthStatus = Literal["ok", "degraded"]
 ServiceStatus = Literal["ok", "unreachable", "not_checked"]

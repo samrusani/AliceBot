@@ -3,6 +3,7 @@
 ## State Discipline
 - Treat Phases 9-11 and Bridge `B1` through `B4` as shipped baseline truth.
 - Treat `v0.2.0` as released baseline truth.
+- Treat `v0.3.2` as the current completed release target until the next tag is cut.
 - Keep shipped baseline, active phase scope, and later roadmap scope separate.
 - Keep [CURRENT_STATE.md](CURRENT_STATE.md) factual/current and [ROADMAP.md](ROADMAP.md) future-facing.
 - Keep [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURRENT_STATE.md) as the canonical handoff copy when duplicate current-state files exist.
