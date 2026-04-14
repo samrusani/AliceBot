@@ -2,7 +2,7 @@
 
 ## Supported Scope
 
-Alice v0.1 is local-first. Security posture in this repo is scoped to local runtime defaults and deterministic command paths.
+Alice `v0.2.0` is a pre-1.0 release. Security posture in this repo is scoped to shipped local/runtime surfaces and deterministic verification paths through Phase 11 and Bridge `B1` through `B4`.
 
 ## Reporting a Vulnerability
 

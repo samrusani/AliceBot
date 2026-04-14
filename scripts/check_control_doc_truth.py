@@ -18,24 +18,23 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="README.md",
         required_markers=(
-            "Phase 10 is complete and shipped.",
-            "Phase 11 is complete and shipped:",
-            "`B2` Auto-Capture Pipeline is shipped",
-            "`B4` Packaging, Docs, and Smoke Validation is the active sprint",
-            "Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md]",
+            "`v0.2.0` is a **pre-1.0 public release**.",
+            "## Release Boundary (`v0.2.0`)",
+            "Bridge `B1` through `B4` provider contract, auto-capture flow, review/explainability flow, and bridge docs/smoke validation",
+            "Historical planning/control artifacts remain available in:",
         ),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "Phase 11 remains baseline truth and is not future scope.",
-            "Bridge Sprint 4 (`B4`) is the active execution sprint.",
+            "Bridge Phase (`B1`-`B4`): shipped",
+            "Release Sprint 1 (`R1`) is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Bridge Sprint 4 (B4): Packaging, Docs, and Smoke Validation",
+            "Release Sprint 1 (R1): v0.2.0 Public Release Readiness",
             "Phase 10 is complete and shipped.",
             "Phase 11 is complete and shipped.",
         ),
@@ -52,8 +51,8 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         required_markers=(
             "Phase 9 is shipped.",
             "Phase 10 is shipped.",
-            "Phase 11 is shipped and remains baseline truth.",
-            "Bridge Sprint 4 (`B4`) is the active execution sprint.",
+            "Phase 11 is shipped.",
+            "Release Sprint 1 (`R1`) is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(

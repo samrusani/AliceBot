@@ -1,78 +1,39 @@
 # Product Brief
 
 ## Product Summary
-Alice is a shipped continuity platform (Phases 9-11). The new bridge-phase product scope is **Hermes Auto-Capture**: automatic continuity prefetch and post-turn capture through a Hermes memory provider, with MCP tools kept for explicit deep workflows.
+Alice is a shipped continuity platform for AI agents and agent-assisted workflows. It provides typed memory, provenance, correction-aware recall, open-loop tracking, resumable context, and cross-surface continuity through CLI, MCP, provider runtime, and Hermes bridge paths.
+
+The current control-tower objective is not a new feature phase. It is a pre-1.0 public release pass that packages the shipped platform into `v0.2.0`.
 
 ## Who It Is For
-- Hermes users who want continuity without manually calling memory tools every turn.
-- Teams already using Alice continuity objects and provenance/correction rules who need a low-friction Hermes path.
+- Teams building or operating MCP-capable agents that need durable continuity instead of chat-only context.
+- Developers who want model-agnostic memory infrastructure across local, self-hosted, enterprise, and external-agent runtimes.
+- Hermes users who want always-on continuity prefetch, capture, review, and explainability without forking memory semantics.
 
 ## Problem
-Current MCP-only use is explicit and reliable but requires manual invocation discipline. Users forget capture calls and lose continuity quality.
+Most agent stacks still lose decisions, commitments, blockers, and corrections across sessions. When teams switch models, runtimes, or agent shells, continuity behavior often fragments as well.
 
 ## Why It Matters
-- Makes continuity automatic in normal chat flow.
-- Preserves Alice’s existing semantic contracts instead of creating a Hermes-only memory model.
-- Keeps power-user explicit actions available through MCP.
+- Preserves continuity semantics across providers and agent surfaces.
+- Makes memory quality auditable through provenance, correction, and review flows.
+- Reduces operator friction by supporting both explicit workflows and Hermes lifecycle automation.
 
-## Shipped Baseline Truth (Not New Scope)
-- Phase 9 shipped: local-first continuity engine, deterministic CLI/MCP semantics, importers, approvals, eval harness.
-- Phase 10 shipped: hosted/product layer (identity/workspaces/channels, Telegram, daily brief loop).
-- Phase 11 shipped: provider adapters and model packs across local/self-hosted/enterprise paths.
+## Shipped Baseline Truth
+- Phase 9 shipped the local continuity core, CLI, MCP, importers, approvals, and evaluation harness.
+- Phase 10 shipped the hosted/product layer.
+- Phase 11 shipped provider runtime abstraction, adapters, and model packs across local, self-hosted, enterprise, and external-agent paths.
+- Bridge `B1` through `B4` shipped Hermes provider lifecycle hooks, auto-capture, review queue, explainability, packaging docs, smoke validation, and demoable operator setup.
 
-## Bridge-Phase V1 Scope (Planned)
-- Extend the shipped Alice Hermes external memory provider with standardized lifecycle automation hooks:
-  - pre-turn prefetch
-  - post-response candidate extraction + commit policy
-  - session-end flush
-- Keep Alice MCP server available for explicit actions (recall, review, explainability, corrections).
-- Add/standardize automation-oriented tool surface:
-  - `alice_prefetch_context`
-  - `alice_capture_candidates`
-  - `alice_commit_captures`
-  - `alice_session_flush`
-  - `alice_review_queue`
-  - `alice_review_apply`
-- Ship operating modes:
-  - `manual`
-  - `assist` (default)
-  - `auto`
-- Provide docs, config examples, smoke tests, and MCP-only fallback guidance.
+## Current Release Scope
+- `R1` prepares `v0.2.0` as the next public tag for the shipped baseline above.
+- Scope is limited to release docs, verification evidence, and repo-facing release clarity.
 
-## Non-Goals (Bridge Phase)
-- Rebuilding shipped Phase 11 provider/model-pack scope.
-- Replacing MCP with provider-only workflows.
-- Expanding into unrelated channels/agent surfaces in this bridge phase.
-- Auto-promoting single-turn inferences into higher-order trusted patterns/playbooks.
+## Non-Goals
+- No new runtime, provider, agent, or channel features in the release sprint.
+- No widening into `v1.0.0` positioning or long-term compatibility guarantees.
+- No reopening already shipped Phase 11 or bridge implementation work except where a release gate exposes a genuine defect.
 
 ## Success Criteria
-A Hermes user can enable Alice once and get:
-- automatic pre-turn continuity context
-- automatic post-turn candidate extraction
-- automatic save of high-confidence explicit items
-- low-confidence items routed to review queue
-- explicit deep actions still accessible via MCP
-- session-end consolidation
-
-## Auto-Save Policy (Product Contract)
-Auto-save eligible in `assist`:
-- explicit correction
-- explicit preference
-- explicit decision
-- explicit commitment
-- explicit open-loop create/resolve
-
-Review-required:
-- inferred preferences
-- weakly implied project state
-- broad summaries
-- speculative patterns
-- low-confidence extractions
-
-## Active Sprint Status
-Bridge Sprint 4 (`B4`) is now the active execution sprint. It is limited to packaging, docs, config examples, smoke validation, and local-demo closeout on top of the shipped `B1` through `B3` bridge foundations.
-
-## Known Gaps To Resolve Before Build
-- Candidate scoring rubric and confidence calibration method are not specified.
-- Final storage contract for review queue/candidates is not explicitly defined in source.
-- Provider authentication/authorization boundary for local vs hosted deployments is not explicitly defined.
+- A technically literate external user can understand what Alice ships today from the repo docs alone.
+- Public release docs match the actual shipped surface through Phase 11 + Bridge `B4`.
+- `v0.2.0` can be tagged with evidence-backed confidence and without overstating maturity.

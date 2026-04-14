@@ -1,37 +1,38 @@
 # Rules
 
 ## Baseline Truth Discipline
-- Treat Phase 11 as shipped baseline truth; do not restate it as future roadmap scope.
-- Keep shipped baseline, bridge-phase plan, and future roadmap clearly separated.
+- Treat Phases 9-11 and Bridge `B1` through `B4` as shipped baseline truth.
+- Keep shipped baseline, active release work, and future roadmap clearly separated.
 - Keep `ROADMAP.md` future-facing and `.ai/handoff/CURRENT_STATE.md` factual/current.
+
+## Continuity Semantics Rules
+- Never fork continuity semantics by surface or runtime.
+- Provider runtime and Hermes automation may change timing or transport, but memory truth remains in Alice continuity contracts.
+- Preserve provenance, correction, and supersession behavior across all capture paths.
 
 ## Integration Rules
 - For Hermes, use provider hooks for automation and MCP for explicit deep actions.
 - Do not collapse to provider-only or MCP-only as the canonical target architecture.
-- Keep MCP fallback viable while provider mode matures.
-
-## Continuity Semantics Rules
-- Never fork continuity semantics by surface or runtime.
-- Provider behavior may automate lifecycle timing, but memory truth remains in Alice continuity contracts.
-- Preserve provenance, correction, and supersession behavior across all capture paths.
+- Keep MCP fallback viable even when provider mode is the recommended deployment shape.
 
 ## Capture Policy Rules
-- Default mode is `assist` unless explicitly overridden.
-- Auto-save only explicit high-confidence items: correction, preference, decision, commitment, open-loop create/resolve.
-- Route inferred/weak/speculative or low-confidence items to review queue.
-- Never auto-promote a single-turn inference into higher-order trusted patterns/playbooks.
+- Default automation mode is `assist` unless explicitly overridden.
+- Auto-save only explicit high-confidence items that are policy-eligible.
+- Route inferred, weak, speculative, or low-confidence items to review.
+- Never auto-promote a single-turn inference into higher-order trusted patterns or playbooks.
 
 ## Reliability Rules
-- Post-response capture/commit paths must be idempotent.
-- Session-end flush must run dedupe, contradiction checks, open-loop normalization, and summary refresh.
+- Post-response capture and commit paths must be idempotent.
 - No-op turns must not create memory writes.
+- Release evidence must be based on exact commands actually executed, not inferred pass states.
 
 ## Security Rules
 - Maintain workspace/session isolation for provider and MCP calls.
-- Keep provider/API credentials out of logs and error payloads.
+- Keep provider and API credentials out of logs, serialized responses, and outward-facing error payloads.
 - Keep consequential actions approval-bounded regardless of integration mode.
 
-## Documentation Rules
-- Keep canonical files concise and durable.
-- Move major technical commitments into ADRs instead of expanding architecture prose.
-- Archive investor framing, long sprint diaries, and superseded planning drafts out of active memory docs.
+## Release Discipline Rules
+- `v0.2.0` is a pre-1.0 release, not a `1.0.0` contract.
+- Do not widen release-prep sprints into feature work.
+- Do not let README, release docs, or changelog claims outrun shipped behavior.
+- Keep superseded release docs as historical references only.

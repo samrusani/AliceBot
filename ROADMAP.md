@@ -4,54 +4,34 @@
 - Phase 9: shipped
 - Phase 10: shipped
 - Phase 11: shipped
+- Bridge Phase (`B1`-`B4`): shipped
 
-Phase 11 remains baseline truth and is not future scope.
+These are baseline truth and not future scope.
 
 ## Active Planning Status
-- Bridge Sprint 4 (`B4`) is the active execution sprint.
-- `B4` is the final planned bridge-phase sprint.
+- Release Sprint 1 (`R1`) is the active execution sprint.
+- `R1` is a release-readiness sprint for `v0.2.0`.
 
-## Bridge Phase: Hermes Auto-Capture (Planned)
-
-### B1: Hermes Memory Provider Foundation
-- formalize the shipped Alice Hermes external memory provider into the bridge-phase contract
-- wire pre-turn hook, post-response hook, and session-end hook
-- parse provider config and expose provider status checks
-- preserve additive coexistence with Hermes built-in `MEMORY.md` and `USER.md`
-- standardize the preferred provider-plus-MCP integration shape
-
-### B2: Auto-Capture Pipeline
-- ship `alice_capture_candidates` + `alice_commit_captures`
-- enforce mode policy (`manual`, `assist`, `auto`) and confidence thresholds
-- add candidate type classification for decision, commitment, waiting-for, blocker, preference, correction, note, and no-op
-- persist review-queue candidates
-- guarantee idempotent repeated sync behavior
-- ensure no-op turns produce no memory writes
-- implement the auto-save vs review-required policy contract from the product brief
-
-### B3: Review Queue + Explainability
-- ship `alice_review_queue` + `alice_review_apply`
-- support approve/reject/edit/supersede actions
-- preserve provenance/explanation chain for candidate proposals
-- ensure correction-aware parity across UI/CLI/MCP paths
-- make approved review actions change subsequent recall/resume results deterministically
-
-### B4: Packaging, Docs, and Smoke Validation
-- publish Hermes integration guide and config examples
-- publish example `config.yaml` for provider-plus-MCP and MCP-only fallback modes
-- document provider+MCP recommended architecture
-- publish a short "why provider + MCP" operator decision doc
-- publish MCP-only fallback and migration path
-- deliver smoke-test scripts and one-command local demo path
-- make provider mode the clearly recommended path in docs once smoke evidence passes
+## Release Sprint R1: v0.2.0 Public Release Readiness
+- refresh the release checklist, tag plan, and runbook for the real shipped Alice surface
+- align README, changelog, and public policy docs with current shipped truth
+- verify the quickstart, integration docs, and release evidence paths
+- run and record release gates:
+  - control-doc truth
+  - unit/integration tests
+  - web tests
+  - Hermes provider smoke
+  - Hermes MCP smoke
+  - Hermes bridge one-command demo
+- prepare a clean annotated-tag path for `v0.2.0` on `main`
 
 ## Sequencing Rules
-- Build provider lifecycle hooks before capture policy automation.
-- Land capture/commit policy before review UX/process expansion.
-- Validate idempotency and trust gating before broad rollout.
-- Keep MCP fallback available during bridge rollout.
-- Keep the shipped Hermes provider as baseline and extend it rather than replacing it.
+- Do not add new product/runtime features during `R1`.
+- Refresh release docs before cutting the tag.
+- Run release gates after doc alignment and before merge approval.
+- Keep the release explicitly pre-1.0.
+- Treat old `v0.1.x` release docs as historical reference, not active release truth.
 
-## Beyond Bridge (Future, Not Yet Defined)
-- Post-bridge roadmap phases are not yet defined in canonical planning.
-- Phase naming, sprinting, and scope for beyond-bridge work require a new planning packet.
+## Beyond v0.2.0 (Future, Not Yet Defined)
+- Post-release feature planning is not active inside `R1`.
+- If additional hardening is needed after `R1`, scope it as a separate sprint rather than widening the release sprint.

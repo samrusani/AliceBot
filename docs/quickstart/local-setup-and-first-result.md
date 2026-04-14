@@ -1,12 +1,13 @@
 # Local Setup and First Useful Result
 
-This quickstart is the canonical `P9-S38` path for external technical testers.
+This quickstart is the canonical local path for the shipped `v0.2.0` pre-1.0 surface.
 
 ## Prerequisites
 
 - Python `3.12+`
 - Docker + Docker Compose
-- Node + pnpm (only required if you run web tests)
+- Node + pnpm (required for web tests)
+- Hermes runtime modules available in `.venv` for bridge smoke commands (`agent` and `tools` imports)
 
 ## 1) Prepare Environment and Install
 
@@ -46,10 +47,11 @@ Expected: JSON with `"status": "ok"`.
 ./.venv/bin/python -m alicebot_api status
 ./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
 ./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
+./.venv/bin/python -m alicebot_api open-loops --limit 5
 ```
 
-- `recall` should return deterministic continuity items with provenance snippets.
-- `resume` should return deterministic brief fields (`last_decision`, `next_action`, recent changes/open loops).
+- `recall` returns deterministic continuity items with provenance snippets.
+- `resume` returns deterministic brief fields (`last_decision`, `next_action`, recent changes/open loops).
 
 ## 6) Optional: Prove Shipped Importer Paths
 
@@ -64,25 +66,18 @@ Expected: JSON with `"status": "ok"`.
 Repeat the same command to verify deterministic dedupe posture (`status=noop`, duplicate skips).
 OpenClaw details: `docs/integrations/openclaw.md`.
 
-## 7) Optional: Generate Evaluation Evidence
+## 7) Required Validation Commands for Release Readiness
 
 ```bash
-EVAL_USER_ID="$(./.venv/bin/python -c 'import uuid; print(uuid.uuid4())')"
-EVAL_USER_EMAIL="phase9-eval-${EVAL_USER_ID}@example.com"
-./scripts/run_phase9_eval.sh --user-id "${EVAL_USER_ID}" --user-email "${EVAL_USER_EMAIL}" --display-name "Phase9 Eval" --report-path eval/reports/phase9_eval_latest.json
-```
-
-- baseline reference: `eval/baselines/phase9_s37_baseline.json`
-- generated report: `eval/reports/phase9_eval_latest.json`
-
-## 8) Required Validation Commands for Sprint Acceptance
-
-```bash
-./.venv/bin/python -m pytest tests/unit tests/integration
+python3 scripts/check_control_doc_truth.py
+./.venv/bin/python -m pytest tests/unit tests/integration -q
 pnpm --dir apps/web test
+./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py
+./.venv/bin/python scripts/run_hermes_mcp_smoke.py
+./.venv/bin/python scripts/run_hermes_bridge_demo.py
 ```
 
 ## Scope Guard
 
-This quickstart documents only shipped local runtime behavior (`P9-S33` to `P9-S37`).
-It does not promise hosted deployment, new importer families, or MCP tool expansion.
+This quickstart documents shipped behavior through Phase 11 and Bridge `B1` through `B4`.
+It does not promise `v1.0.0` compatibility/support guarantees or unshipped feature scope.
