@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-11 and Bridge `B1` through `B4`.
-- **Current repo execution posture:** `v0.2.0` is released; `P12-S1` is shipped; `P12-S2` is the active sprint.
+- **Current repo execution posture:** `v0.2.0` is released; `P12-S1` and `P12-S2` are shipped; `P12-S3` is the active sprint.
 - **Phase 12 delta:** retrieval quality, mutation explicitness, contradiction handling, public evals, and adaptive briefing.
 
 ## Current System Overview
@@ -99,18 +99,18 @@ Planned additions:
 Important baseline note: `P12-S1` is now the retrieval baseline for the rest of Phase 12 and should not be reopened except where later sprint integration requires it.
 
 ### P12-S2: Automated Memory Operations
-Promote post-turn capture from loose candidate save/commit behavior into explicit mutation operations:
+Shipped in `P12-S2`:
 - `ADD`
 - `UPDATE`
 - `SUPERSEDE`
 - `DELETE`
 - `NOOP`
 
-Planned additions:
+Delivered additions:
 - `memory_operation_candidates`
 - `memory_operations`
 
-Important baseline note: `P12-S2` should reuse shipped capture/review flows and shipped `P12-S1` retrieval improvements rather than reimplementing retrieval ranking.
+Important baseline note: `P12-S2` is now the mutation baseline for the rest of Phase 12 and should not be reopened except where later sprint integration requires it.
 
 ### P12-S3: Contradiction Detection + Trust Calibration
 Add first-class conflict records and auditable trust adjustments.
@@ -118,6 +118,8 @@ Add first-class conflict records and auditable trust adjustments.
 Planned additions:
 - `contradiction_cases`
 - `trust_signals`
+
+Important baseline note: `P12-S3` should layer on top of shipped retrieval traces and shipped mutation operations rather than redesigning either subsystem.
 
 ### P12-S4: Public Eval Harness
 Expand the current retrieval evaluation foundation into public multi-suite benchmark runs and checked-in baseline reports.

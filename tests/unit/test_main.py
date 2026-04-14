@@ -136,6 +136,11 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v0/admin/debug/continuity/lifecycle/{continuity_object_id}" in route_paths
     assert "/v0/admin/debug/continuity/artifacts/{artifact_id}" in route_paths
     assert "/v0/continuity/explain/{continuity_object_id}" in route_paths
+    assert "/v1/contradictions/detect" in route_paths
+    assert "/v1/contradictions/cases" in route_paths
+    assert "/v1/contradictions/cases/{contradiction_case_id}" in route_paths
+    assert "/v1/contradictions/cases/{contradiction_case_id}/resolve" in route_paths
+    assert "/v1/trust/signals" in route_paths
     assert "/v0/patterns" in route_paths
     assert "/v0/patterns/{pattern_id}" in route_paths
     assert "/v0/playbooks" in route_paths

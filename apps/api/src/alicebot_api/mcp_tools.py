@@ -18,6 +18,14 @@ from alicebot_api.continuity_evidence import (
     build_continuity_explain,
     get_continuity_artifact_detail,
 )
+from alicebot_api.continuity_contradictions import (
+    ContinuityContradictionNotFoundError,
+    ContinuityContradictionValidationError,
+    get_contradiction_case,
+    list_contradiction_cases,
+    resolve_contradiction_case,
+    sync_contradictions,
+)
 from alicebot_api.continuity_open_loops import (
     ContinuityOpenLoopValidationError,
     compile_continuity_open_loop_dashboard,
@@ -39,6 +47,7 @@ from alicebot_api.continuity_review import (
     get_continuity_review_detail,
     list_continuity_review_queue,
 )
+from alicebot_api.continuity_trust import list_trust_signals
 from alicebot_api.memory_mutations import (
     MemoryMutationValidationError,
     commit_memory_operations,
@@ -50,6 +59,7 @@ from alicebot_api.contracts import (
     CONTINUITY_CAPTURE_COMMIT_MODES,
     CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
     CONTINUITY_CORRECTION_ACTIONS,
+    CONTRADICTION_RESOLUTION_ACTIONS,
     CONTINUITY_REVIEW_QUEUE_ORDER,
     CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER,
     DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
@@ -67,6 +77,9 @@ from alicebot_api.contracts import (
     ContinuityCaptureCandidatesInput,
     ContinuityCaptureCommitInput,
     ContinuityCaptureCreateInput,
+    ContradictionCaseListQueryInput,
+    ContradictionResolveInput,
+    ContradictionSyncInput,
     ContinuityCorrectionInput,
     ContinuityOpenLoopDashboardQueryInput,
     ContinuityRecallQueryInput,
@@ -78,6 +91,7 @@ from alicebot_api.contracts import (
     TemporalExplainQueryInput,
     TemporalStateAtQueryInput,
     TemporalTimelineQueryInput,
+    TrustSignalListQueryInput,
 )
 from alicebot_api.config import get_settings
 from alicebot_api.db import user_connection
@@ -1031,6 +1045,102 @@ def _handle_alice_memory_correct(context: MCPRuntimeContext, arguments: Mapping[
     )
 
 
+def _handle_alice_contradictions_detect(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    limit = _parse_int(
+        arguments,
+        key="limit",
+        default=DEFAULT_CONTINUITY_REVIEW_LIMIT,
+        minimum=1,
+        maximum=MAX_CONTINUITY_REVIEW_LIMIT,
+    )
+    with _store_context(context) as store:
+        return sync_contradictions(
+            store,
+            user_id=context.user_id,
+            request=ContradictionSyncInput(
+                continuity_object_id=_parse_optional_uuid(arguments, "continuity_object_id"),
+                limit=limit,
+            ),
+        )
+
+
+def _handle_alice_contradictions_list(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    contradiction_case_id = _parse_optional_uuid(arguments, "contradiction_case_id")
+    if contradiction_case_id is not None:
+        with _store_context(context) as store:
+            return get_contradiction_case(
+                store,
+                user_id=context.user_id,
+                contradiction_case_id=contradiction_case_id,
+            )
+    limit = _parse_int(
+        arguments,
+        key="limit",
+        default=DEFAULT_CONTINUITY_REVIEW_LIMIT,
+        minimum=1,
+        maximum=MAX_CONTINUITY_REVIEW_LIMIT,
+    )
+    raw_status = _parse_optional_text(arguments, "status") or "open"
+    with _store_context(context) as store:
+        return list_contradiction_cases(
+            store,
+            user_id=context.user_id,
+            request=ContradictionCaseListQueryInput(
+                status=cast("ContradictionStatus", raw_status),
+                limit=limit,
+                continuity_object_id=_parse_optional_uuid(arguments, "continuity_object_id"),
+            ),
+        )
+
+
+def _handle_alice_contradictions_resolve(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    contradiction_case_id = _parse_required_uuid(arguments, "contradiction_case_id")
+    action = _parse_required_text(arguments, "action")
+    with _store_context(context) as store:
+        return resolve_contradiction_case(
+            store,
+            user_id=context.user_id,
+            contradiction_case_id=contradiction_case_id,
+            request=ContradictionResolveInput(
+                action=cast("ContradictionResolutionAction", action),
+                note=_parse_optional_text(arguments, "note"),
+            ),
+        )
+
+
+def _handle_alice_trust_signals(
+    context: MCPRuntimeContext,
+    arguments: Mapping[str, object],
+) -> JsonObject:
+    limit = _parse_int(
+        arguments,
+        key="limit",
+        default=DEFAULT_CONTINUITY_REVIEW_LIMIT,
+        minimum=1,
+        maximum=MAX_CONTINUITY_REVIEW_LIMIT,
+    )
+    with _store_context(context) as store:
+        return list_trust_signals(
+            store,
+            user_id=context.user_id,
+            request=TrustSignalListQueryInput(
+                limit=limit,
+                continuity_object_id=_parse_optional_uuid(arguments, "continuity_object_id"),
+                signal_state=cast("TrustSignalState", _parse_optional_text(arguments, "signal_state") or "active"),
+                signal_type=cast("TrustSignalType | None", _parse_optional_text(arguments, "signal_type")),
+            ),
+        )
+
+
 def _handle_alice_explain(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     continuity_object_id = _parse_optional_uuid(arguments, "continuity_object_id")
     entity_id = _parse_optional_uuid(arguments, "entity_id")
@@ -1507,6 +1617,63 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_contradictions_detect",
+        "description": "Run contradiction detection and persist current contradiction and trust state.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "continuity_object_id": {"type": "string", "format": "uuid"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_CONTINUITY_REVIEW_LIMIT},
+            },
+        },
+    },
+    {
+        "name": "alice_contradictions_list",
+        "description": "List contradiction cases or fetch one contradiction case detail.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "contradiction_case_id": {"type": "string", "format": "uuid"},
+                "continuity_object_id": {"type": "string", "format": "uuid"},
+                "status": {"type": "string", "enum": ["open", "resolved", "dismissed"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_CONTINUITY_REVIEW_LIMIT},
+            },
+        },
+    },
+    {
+        "name": "alice_contradictions_resolve",
+        "description": "Resolve one contradiction case with an explicit audit action.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["contradiction_case_id", "action"],
+            "properties": {
+                "contradiction_case_id": {"type": "string", "format": "uuid"},
+                "action": {"type": "string", "enum": list(CONTRADICTION_RESOLUTION_ACTIONS)},
+                "note": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "alice_trust_signals",
+        "description": "Inspect current stored trust signals for continuity objects.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "continuity_object_id": {"type": "string", "format": "uuid"},
+                "signal_state": {"type": "string", "enum": ["active", "inactive"]},
+                "signal_type": {
+                    "type": "string",
+                    "enum": ["correction", "corroboration", "contradiction", "weak_inference"],
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_CONTINUITY_REVIEW_LIMIT},
+            },
+        },
+    },
+    {
         "name": "alice_memory_review",
         "description": "Legacy alias for review queue/detail (use alice_review_queue).",
         "inputSchema": {
@@ -1625,6 +1792,10 @@ _TOOL_HANDLERS = {
     "alice_timeline": _handle_alice_timeline,
     "alice_review_queue": _handle_alice_review_queue,
     "alice_review_apply": _handle_alice_review_apply,
+    "alice_contradictions_detect": _handle_alice_contradictions_detect,
+    "alice_contradictions_list": _handle_alice_contradictions_list,
+    "alice_contradictions_resolve": _handle_alice_contradictions_resolve,
+    "alice_trust_signals": _handle_alice_trust_signals,
     "alice_memory_review": _handle_alice_memory_review,
     "alice_memory_correct": _handle_alice_memory_correct,
     "alice_explain": _handle_alice_explain,
@@ -1657,6 +1828,8 @@ def call_mcp_tool(
         ContinuityOpenLoopValidationError,
         ContinuityReviewValidationError,
         ContinuityReviewNotFoundError,
+        ContinuityContradictionValidationError,
+        ContinuityContradictionNotFoundError,
         RetrievalTraceNotFoundError,
         ContinuityEvidenceNotFoundError,
         MemoryMutationValidationError,

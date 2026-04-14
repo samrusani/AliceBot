@@ -8,6 +8,10 @@ from typing import Literal, cast
 from uuid import UUID
 
 from alicebot_api.config import get_settings
+from alicebot_api.continuity_contradictions import (
+    contradiction_metrics_by_object,
+    sync_contradiction_state_for_objects,
+)
 from alicebot_api.continuity_objects import (
     default_continuity_searchable,
     serialize_continuity_lifecycle_state_from_record,
@@ -85,6 +89,8 @@ class RankedRecallCandidate:
     supersession_freshness_score: float
     posture_rank: int
     lifecycle_rank: int
+    open_contradiction_count: int
+    contradiction_penalty_score: float
     relevance: float
 
 
@@ -138,6 +144,8 @@ class CandidateScoringState:
     supersession_freshness_score: float
     posture_rank: int
     lifecycle_rank: int
+    open_contradiction_count: int
+    contradiction_penalty_score: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -1151,6 +1159,8 @@ def _ordering_metadata(item: RankedRecallCandidate) -> ContinuityRecallOrderingM
         "supersession_freshness_score": item.supersession_freshness_score,
         "posture_rank": item.posture_rank,
         "lifecycle_rank": item.lifecycle_rank,
+        "open_contradiction_count": item.open_contradiction_count,
+        "contradiction_penalty_score": item.contradiction_penalty_score,
         "confidence": float(row["confidence"]),
     }
 
@@ -1264,6 +1274,8 @@ def _build_ranked_candidate(
         supersession_freshness_score=state.supersession_freshness_score,
         posture_rank=state.posture_rank,
         lifecycle_rank=state.lifecycle_rank,
+        open_contradiction_count=state.open_contradiction_count,
+        contradiction_penalty_score=state.contradiction_penalty_score,
         relevance=relevance,
     )
 
@@ -1359,6 +1371,14 @@ def _ordered_recall_candidates(
         return [], [], query_terms, entity_context
 
     candidate_rows = [row for row, _scope_matches, _scope_matched in visible_candidates]
+    sync_contradiction_state_for_objects(
+        store,
+        continuity_object_ids=[row["id"] for row in candidate_rows],
+    )
+    contradiction_metrics = contradiction_metrics_by_object(
+        store,
+        continuity_object_ids=[row["id"] for row in candidate_rows],
+    )
     scope_matched_rows = [
         row
         for row, _scope_matches, scope_matched in visible_candidates
@@ -1426,6 +1446,10 @@ def _ordered_recall_candidates(
         )
         posture_rank = _POSTURE_RANK.get(row["admission_posture"], 0)
         lifecycle_rank = _LIFECYCLE_RANK.get(row["status"], 0)
+        open_contradiction_count, contradiction_penalty_score = contradiction_metrics.get(
+            row["id"],
+            (0, 0.0),
+        )
 
         scoring_states.append(
             CandidateScoringState(
@@ -1445,11 +1469,15 @@ def _ordered_recall_candidates(
                     entity_context=entity_context,
                 ),
                 temporal_raw_score=(temporal_overlap_score * 0.65) + (recency_score * 0.35),
-                trust_raw_score=(
-                    float(trust_rank)
-                    + (float(confirmation_rank) * 0.5)
-                    + (float(provenance_rank) * 0.35)
-                    + (supersession_freshness_score * 0.35)
+                trust_raw_score=max(
+                    0.0,
+                    (
+                        float(trust_rank)
+                        + (float(confirmation_rank) * 0.5)
+                        + (float(provenance_rank) * 0.35)
+                        + (supersession_freshness_score * 0.35)
+                    )
+                    - contradiction_penalty_score,
                 ),
                 confirmation_status=confirmation_status,
                 confirmation_rank=confirmation_rank,
@@ -1464,6 +1492,8 @@ def _ordered_recall_candidates(
                 supersession_freshness_score=supersession_freshness_score,
                 posture_rank=posture_rank,
                 lifecycle_rank=lifecycle_rank,
+                open_contradiction_count=open_contradiction_count,
+                contradiction_penalty_score=contradiction_penalty_score,
             )
         )
 
@@ -1531,8 +1561,8 @@ def _ordered_recall_candidates(
                 else "No temporal signal applied."
             ),
             "trust": (
-                "Trust, confirmation, provenance, and supersession posture favored this candidate."
-                if stage_scores.trust_raw > 0.0
+                "Trust, confirmation, provenance, supersession posture, and contradiction penalties adjusted this candidate."
+                if state.open_contradiction_count > 0 or stage_scores.trust_raw > 0.0
                 else "Trust reranking contributed no score."
             ),
         }
@@ -1555,6 +1585,7 @@ def _ordered_recall_candidates(
                 + float(state.posture_rank) * 4.0
                 + float(state.lifecycle_rank) * 2.0
                 + float(state.row["confidence"])
+                - (state.contradiction_penalty_score * 6.0)
             )
         else:
             stream_matched = (
@@ -1578,6 +1609,7 @@ def _ordered_recall_candidates(
                 + float(state.posture_rank) * 4.0
                 + float(state.lifecycle_rank) * 3.0
                 + float(state.row["confidence"])
+                - (state.contradiction_penalty_score * 8.0)
             )
 
         ranked_candidates.append(_build_ranked_candidate(state, relevance=relevance))

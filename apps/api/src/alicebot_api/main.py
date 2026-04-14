@@ -98,6 +98,13 @@ from alicebot_api.contracts import (
     ContinuityCaptureCandidatesInput,
     ContinuityCaptureCommitInput,
     ContinuityCaptureCreateInput,
+    ContradictionCaseDetailResponse,
+    ContradictionCaseListQueryInput,
+    ContradictionCaseListResponse,
+    ContradictionResolveInput,
+    ContradictionResolveResponse,
+    ContradictionSyncInput,
+    ContradictionSyncResponse,
     ContinuityExplainResponse,
     ContinuityLifecycleDetailResponse,
     ContinuityLifecycleListResponse,
@@ -147,6 +154,8 @@ from alicebot_api.contracts import (
     RetrievalEvaluationResponse,
     RetrievalRunListResponse,
     RetrievalTraceResponse,
+    TrustSignalListQueryInput,
+    TrustSignalListResponse,
     EmbeddingConfigStatus,
     EmbeddingConfigCreateInput,
     ExecutionBudgetCreateInput,
@@ -394,11 +403,20 @@ from alicebot_api.memory_mutations import (
     list_memory_operation_candidates,
     list_memory_operations,
 )
+from alicebot_api.continuity_contradictions import (
+    ContinuityContradictionNotFoundError,
+    ContinuityContradictionValidationError,
+    get_contradiction_case,
+    list_contradiction_cases,
+    resolve_contradiction_case,
+    sync_contradictions,
+)
 from alicebot_api.continuity_evidence import (
     ContinuityEvidenceNotFoundError,
     build_continuity_explain,
     get_continuity_artifact_detail,
 )
+from alicebot_api.continuity_trust import list_trust_signals
 from alicebot_api.temporal_state import (
     TemporalStateNotFoundError,
     TemporalStateValidationError,
@@ -1116,6 +1134,18 @@ class ContinuityCorrectionRequest(BaseModel):
     replacement_body: dict[str, object] | None = None
     replacement_provenance: dict[str, object] | None = None
     replacement_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class ContradictionDetectRequest(BaseModel):
+    user_id: UUID
+    continuity_object_id: UUID | None = None
+    limit: int = Field(default=DEFAULT_CONTINUITY_REVIEW_LIMIT, ge=1, le=MAX_CONTINUITY_REVIEW_LIMIT)
+
+
+class ContradictionResolveRequest(BaseModel):
+    user_id: UUID
+    action: str = Field(min_length=1, max_length=60)
+    note: str | None = Field(default=None, min_length=1, max_length=1000)
 
 
 class ContinuityOpenLoopReviewActionRequest(BaseModel):
@@ -5097,6 +5127,133 @@ def get_continuity_explain_endpoint(
         status_code=200,
         content=jsonable_encoder(payload),
     )
+
+
+@app.post("/v1/contradictions/detect")
+def detect_contradictions_endpoint(
+    request: ContradictionDetectRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload: ContradictionSyncResponse = sync_contradictions(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                request=ContradictionSyncInput(
+                    continuity_object_id=request.continuity_object_id,
+                    limit=request.limit,
+                ),
+            )
+    except ContinuityContradictionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v1/contradictions/cases")
+def list_contradiction_cases_endpoint(
+    user_id: UUID,
+    status: str = Query(default="open", min_length=1, max_length=40),
+    continuity_object_id: UUID | None = None,
+    limit: int = Query(
+        default=DEFAULT_CONTINUITY_REVIEW_LIMIT,
+        ge=1,
+        le=MAX_CONTINUITY_REVIEW_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContradictionCaseListResponse = list_contradiction_cases(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=ContradictionCaseListQueryInput(
+                    status=status,  # type: ignore[arg-type]
+                    limit=limit,
+                    continuity_object_id=continuity_object_id,
+                ),
+            )
+    except ContinuityContradictionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v1/contradictions/cases/{contradiction_case_id}")
+def get_contradiction_case_endpoint(
+    contradiction_case_id: UUID,
+    user_id: UUID,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContradictionCaseDetailResponse = get_contradiction_case(
+                ContinuityStore(conn),
+                user_id=user_id,
+                contradiction_case_id=contradiction_case_id,
+            )
+    except ContinuityContradictionNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v1/contradictions/cases/{contradiction_case_id}/resolve")
+def resolve_contradiction_case_endpoint(
+    contradiction_case_id: UUID,
+    request: ContradictionResolveRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            payload: ContradictionResolveResponse = resolve_contradiction_case(
+                ContinuityStore(conn),
+                user_id=request.user_id,
+                contradiction_case_id=contradiction_case_id,
+                request=ContradictionResolveInput(
+                    action=request.action,  # type: ignore[arg-type]
+                    note=request.note,
+                ),
+            )
+    except ContinuityContradictionValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+    except ContinuityContradictionNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v1/trust/signals")
+def list_trust_signals_endpoint(
+    user_id: UUID,
+    continuity_object_id: UUID | None = None,
+    signal_state: str = Query(default="active", min_length=1, max_length=40),
+    signal_type: str | None = Query(default=None, min_length=1, max_length=40),
+    limit: int = Query(
+        default=DEFAULT_CONTINUITY_REVIEW_LIMIT,
+        ge=1,
+        le=MAX_CONTINUITY_REVIEW_LIMIT,
+    ),
+) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload: TrustSignalListResponse = list_trust_signals(
+            ContinuityStore(conn),
+            user_id=user_id,
+            request=TrustSignalListQueryInput(
+                limit=limit,
+                continuity_object_id=continuity_object_id,
+                signal_state=signal_state,  # type: ignore[arg-type]
+                signal_type=signal_type,  # type: ignore[arg-type]
+            ),
+        )
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
 @app.get("/v0/state-at")

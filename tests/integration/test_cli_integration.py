@@ -510,3 +510,87 @@ def test_cli_lists_and_explains_trusted_fact_promotions(migrated_database_urls) 
     assert playbook_explain.returncode == 0
     assert "steps:" in playbook_explain.stdout
     assert "[prefer]" in playbook_explain.stdout
+
+
+def test_cli_contradictions_and_trust_surfaces_smoke(migrated_database_urls) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="cli-contradictions@example.com")
+    thread_id = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+
+        first_capture = store.create_continuity_capture_event(
+            raw_content="Decision: Release mode canary",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        first_object = store.create_continuity_object(
+            capture_event_id=first_capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: Release mode canary",
+            body={
+                "fact_key": "release_mode",
+                "fact_value": "canary",
+                "decision_text": "Release mode canary",
+            },
+            provenance={"thread_id": str(thread_id)},
+            confidence=0.94,
+        )
+
+        second_capture = store.create_continuity_capture_event(
+            raw_content="Decision: Release mode beta",
+            explicit_signal="decision",
+            admission_posture="DERIVED",
+            admission_reason="explicit_signal_decision",
+        )
+        store.create_continuity_object(
+            capture_event_id=second_capture["id"],
+            object_type="Decision",
+            status="active",
+            title="Decision: Release mode beta",
+            body={
+                "fact_key": "release_mode",
+                "fact_value": "beta",
+                "decision_text": "Release mode beta",
+            },
+            provenance={"thread_id": str(thread_id)},
+            confidence=0.94,
+        )
+
+    env = build_cli_env(database_url=migrated_database_urls["app"], user_id=user_id)
+
+    detect_result = run_cli(["contradictions", "detect", "--limit", "20"], env=env)
+    assert detect_result.returncode == 0
+    assert "contradiction sync" in detect_result.stdout
+    assert "[direct_fact_conflict|open]" in detect_result.stdout
+
+    list_result = run_cli(["contradictions", "list", "--limit", "20"], env=env)
+    assert list_result.returncode == 0
+    assert "contradiction cases" in list_result.stdout
+
+    case_line = next(
+        line for line in list_result.stdout.splitlines() if line.startswith("1. [")
+    )
+    contradiction_case_id = case_line.rsplit(" ", 1)[-1]
+
+    show_result = run_cli(["contradictions", "show", contradiction_case_id], env=env)
+    assert show_result.returncode == 0
+    assert "contradiction case" in show_result.stdout
+    assert f"id: {contradiction_case_id}" in show_result.stdout
+
+    trust_result = run_cli(
+        [
+            "trust",
+            "signals",
+            "--continuity-object-id",
+            str(first_object["id"]),
+            "--limit",
+            "20",
+        ],
+        env=env,
+    )
+    assert trust_result.returncode == 0
+    assert "trust signals" in trust_result.stdout
+    assert "[contradiction|active|negative]" in trust_result.stdout

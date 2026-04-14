@@ -2,23 +2,19 @@
 
 ## Sprint Objective
 
-Implement `P12-S2` automated memory operations with explicit mutation candidates, operation classification, policy gating, deterministic commit application, auditability, and inspection surfaces.
+Implement `P12-S3` contradiction detection and trust calibration so conflicting continuity state becomes reviewable, auditable, and visible in retrieval and explain flows.
 
 ## Completed Work
 
-- Added `memory_operation_candidates` and `memory_operations` schema with RLS, grants, indexes, and migration coverage.
-- Added store contracts and persistence methods for mutation candidates and operations.
-- Implemented `apps/api/src/alicebot_api/memory_mutations.py` for:
-  - post-turn candidate generation
-  - `ADD` / `UPDATE` / `SUPERSEDE` / `DELETE` / `NOOP` classification
-  - policy decisions for `auto_apply`, `review_required`, and `skip`
-  - deterministic commit application
-  - idempotent repeated sync handling
-- Added current-branch API endpoints under `/v1/memory/operations/*` to generate, inspect, and commit mutation work, with final endpoint contract still subject to the Control Tower Phase 12 API decision.
-- Added CLI mutation commands for generate, inspect, commit, and applied-operation listing.
-- Added MCP mutation tools for generate, inspect, commit, and applied-operation listing.
-- Added sprint-focused docs in `docs/memory/p12-s2-automated-memory-operations.md`, explicitly framed as branch behavior where Control Tower decisions are still pending.
-- Added unit and integration tests for mutation classification, commit behavior, idempotency, CLI smoke, MCP smoke, and migration shape.
+- Added contradiction and trust persistence with `contradiction_cases` and `trust_signals`.
+- Added contradiction detection for direct fact, preference, temporal, and source-hierarchy conflicts.
+- Added contradiction syncing on continuity create, review, explain, and recall paths.
+- Added contradiction-aware retrieval penalties and exposed contradiction counts and penalty scores in recall ordering metadata.
+- Added contradiction visibility and active trust-signal counts in continuity explain output.
+- Added current-branch contradiction case inspection and resolution flows in API, CLI, and MCP.
+- Added current-branch trust signal inspection in API, CLI, and MCP.
+- Added focused sprint documentation in `docs/memory/p12-s3-contradictions-trust-calibration.md`, explicitly framed as branch behavior where Control Tower decisions are still pending.
+- Added sprint-owned unit and integration coverage for detection, trust persistence, retrieval penalty behavior, explain visibility, CLI smoke, MCP smoke, and migration shape.
 
 ## Incomplete Work
 
@@ -28,35 +24,40 @@ Implement `P12-S2` automated memory operations with explicit mutation candidates
 
 - `.ai/handoff/CURRENT_STATE.md`
 - `ARCHITECTURE.md`
-- `apps/api/alembic/versions/20260414_0058_phase12_memory_operations.py`
-- `apps/api/src/alicebot_api/memory_mutations.py`
-- `apps/api/src/alicebot_api/store.py`
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/cli.py`
-- `apps/api/src/alicebot_api/cli_formatting.py`
-- `apps/api/src/alicebot_api/mcp_tools.py`
 - `BUILD_REPORT.md`
 - `CURRENT_STATE.md`
 - `PRODUCT_BRIEF.md`
 - `REVIEW_REPORT.md`
 - `ROADMAP.md`
-- `scripts/check_control_doc_truth.py`
-- `tests/unit/test_20260414_0058_phase12_memory_operations.py`
-- `tests/unit/test_memory_mutations.py`
+- `apps/api/alembic/versions/20260414_0059_phase12_contradictions_trust_calibration.py`
+- `apps/api/src/alicebot_api/continuity_contradictions.py`
+- `apps/api/src/alicebot_api/continuity_trust.py`
+- `apps/api/src/alicebot_api/store.py`
+- `apps/api/src/alicebot_api/contracts.py`
+- `apps/api/src/alicebot_api/continuity_recall.py`
+- `apps/api/src/alicebot_api/continuity_explainability.py`
+- `apps/api/src/alicebot_api/continuity_evidence.py`
+- `apps/api/src/alicebot_api/continuity_objects.py`
+- `apps/api/src/alicebot_api/continuity_review.py`
+- `apps/api/src/alicebot_api/main.py`
+- `apps/api/src/alicebot_api/cli.py`
+- `apps/api/src/alicebot_api/cli_formatting.py`
+- `apps/api/src/alicebot_api/mcp_tools.py`
+- `tests/unit/test_20260414_0059_phase12_contradictions_trust_calibration.py`
+- `tests/unit/test_continuity_contradictions.py`
 - `tests/unit/test_cli.py`
 - `tests/unit/test_mcp.py`
-- `tests/integration/test_memory_mutations_api.py`
+- `tests/unit/test_main.py`
+- `tests/integration/test_contradictions_api.py`
 - `tests/integration/test_cli_integration.py`
-- `tests/integration/test_mcp_server.py`
-- `docs/memory/p12-s2-automated-memory-operations.md`
+- `tests/integration/test_mcp_cli_parity.py`
+- `docs/memory/p12-s3-contradictions-trust-calibration.md`
+- `scripts/check_control_doc_truth.py`
 
 ## Tests Run
 
-- `./.venv/bin/pytest tests/unit/test_20260414_0058_phase12_memory_operations.py tests/unit/test_memory_mutations.py tests/unit/test_cli.py tests/unit/test_mcp.py -q`
-  - Result: PASS (`19 passed`)
-- `./.venv/bin/pytest tests/integration/test_memory_mutations_api.py tests/integration/test_cli_integration.py tests/integration/test_mcp_server.py -q`
-  - Result: PASS (`8 passed`)
+- `./.venv/bin/pytest tests/unit/test_continuity_contradictions.py tests/unit/test_20260414_0059_phase12_contradictions_trust_calibration.py tests/unit/test_continuity_recall.py tests/unit/test_continuity_review.py tests/unit/test_cli.py tests/unit/test_mcp.py tests/unit/test_main.py tests/integration/test_contradictions_api.py tests/integration/test_cli_integration.py tests/integration/test_mcp_cli_parity.py -q`
+  - Result: PASS (`104 passed`)
 - `./.venv/bin/python scripts/check_control_doc_truth.py`
   - Result: PASS
 - `rg -n "/Users|samirusani|Desktop/Codex" RULES.md ARCHITECTURE.md CURRENT_STATE.md .ai/handoff/CURRENT_STATE.md PRODUCT_BRIEF.md ROADMAP.md docs/memory`
@@ -65,9 +66,8 @@ Implement `P12-S2` automated memory operations with explicit mutation candidates
 ## Blockers/Issues
 
 - No sprint blocker remains.
-- Top-level control documents were updated to reflect `P12-S2` as the active sprint and align control-doc truth checks.
-- Control Tower still owns the final decision on the `/v1/memory/operations/*` endpoint contract and whether `DELETE` remains tombstone-only beyond current branch behavior.
+- Final product policy is still pending for the Control Tower decisions called out in the sprint packet, including contradiction attachment scope, long-term API shape, and the durable trust-signal policy boundary.
 
 ## Recommended Next Step
 
-Request Control Tower merge review against the current `P12-S2` branch head.
+Request Control Tower merge review against the current `P12-S3` branch head.

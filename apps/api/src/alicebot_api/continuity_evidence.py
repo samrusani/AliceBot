@@ -6,6 +6,7 @@ from uuid import UUID
 
 from psycopg.conninfo import make_conninfo
 
+from alicebot_api.continuity_contradictions import sync_contradiction_state_for_objects
 from alicebot_api.continuity_explainability import build_continuity_item_explanation
 from alicebot_api.continuity_objects import serialize_continuity_lifecycle_state_from_record
 from alicebot_api.contracts import (
@@ -251,6 +252,15 @@ def build_continuity_explain(
 ) -> ContinuityExplainResponse:
     del user_id
 
+    continuity_object = store.get_continuity_object_optional(continuity_object_id)
+    if continuity_object is None:
+        raise ContinuityEvidenceNotFoundError(
+            f"continuity object {continuity_object_id} was not found"
+        )
+    sync_contradiction_state_for_objects(
+        store,
+        continuity_object_ids=[continuity_object["id"]],
+    )
     continuity_object = store.get_continuity_object_optional(continuity_object_id)
     if continuity_object is None:
         raise ContinuityEvidenceNotFoundError(
