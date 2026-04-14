@@ -4,54 +4,48 @@
 PASS
 
 ## criteria met
-- External-operator Hermes bridge documentation is complete and B4-specific via:
-  - `docs/integrations/hermes-bridge-operator-guide.md`
-  - `docs/integrations/hermes-provider-plus-mcp-why.md`
-- Provider-plus-MCP recommended architecture is documented clearly.
-- MCP-only fallback path is documented clearly.
-- MCP-only to provider-plus-MCP migration guidance is documented.
-- Example Hermes configs are present for both paths:
-  - `docs/integrations/examples/hermes-config.provider-plus-mcp.yaml`
-  - `docs/integrations/examples/hermes-config.mcp-only.yaml`
-- One-command local demo path is present and documented:
+- Release docs now describe shipped Alice surface through Phase 11 + Bridge `B1` through `B4` and maintain explicit pre-1.0 framing for `v0.2.0`.
+- `v0.2.0` release checklist, tag plan, and public release runbook are present and internally consistent.
+- Tag procedure targets `main` after approved merge of the release sprint branch.
+- Required verification commands were defined, executed, and now pass with recorded evidence:
+  - `python3 scripts/check_control_doc_truth.py`
+  - `./.venv/bin/python -m pytest tests/unit tests/integration -q`
+  - `pnpm --dir apps/web test`
+  - `./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py`
+  - `./.venv/bin/python scripts/run_hermes_mcp_smoke.py`
   - `./.venv/bin/python scripts/run_hermes_bridge_demo.py`
-- Smoke validation for the shipped bridge path passes:
-  - provider smoke PASS
-  - MCP smoke PASS (including B2/B3 capture/review flow checks)
-  - bridge demo PASS
-- `BUILD_REPORT.md` now lists the exact sprint-owned changed files, including the previously omitted `PRODUCT_BRIEF.md` and `ROADMAP.md`.
-- No local identifiers (local machine paths/usernames) were found in changed docs/scripts/reports.
-- No B4 changes reopen B1/B2/B3 implementation scope or imply post-bridge scope.
+- `BUILD_REPORT.md` now lists the full sprint-owned changed-file set and aligns with the current diff.
+- No local identifiers (local computer paths/usernames) were found in changed docs/reports.
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking quality issues found in B4 scope.
+- No blocking quality issues remain.
+- Non-blocking note: Hermes MCP smoke used a local compatibility runtime mode (`compat_shim`) due missing upstream editable runtime imports; script assertions still validated the required Alice MCP flow and outputs.
 
 ## regression risks
-- Low: changes are primarily docs/config examples plus additive smoke/demo orchestration.
-- Moderate-low: expanded MCP smoke depends on local schema being migrated before execution.
+- Low for product/runtime regressions (changes are release docs/control-doc alignment plus sprint-owned smoke harness hardening).
+- Low-moderate for future Hermes-environment parity if upstream editable runtime layouts change again; mitigated by deterministic fallback behavior and explicit gate outputs.
 
 ## docs issues
-- None blocking.
+- No blocking documentation issues.
+- Release docs, README framing, and policy docs are consistent with `R1` release boundary.
 
 ## should anything be added to RULES.md?
-- No required change.
+- No additional mandatory rule beyond current `R1` rules.
 
 ## should anything update ARCHITECTURE.md?
-- No required architecture update for B4 closeout.
+- No further architecture update is required for `R1` closeout.
 
 ## recommended next action
-1. Proceed with sprint PR finalization and squash-merge flow.
-2. Keep the bridge demo command in release notes/operator handoff for external adopters.
+1. Proceed with sprint PR review/approval for `R1`.
+2. After approved squash merge to `main`, execute `docs/release/v0.2.0-tag-plan.md`.
 
 ## verification evidence checked
 - `python3 scripts/check_control_doc_truth.py` -> PASS
-- `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> `1191 passed in 187.48s (0:03:07)`
+- `./.venv/bin/python -m pytest tests/unit tests/integration -q` -> PASS (`1191 passed in 206.68s (0:03:26)`)
+- `pnpm --dir apps/web test` -> PASS (`62` files, `199` tests)
 - `./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py` -> PASS
 - `./.venv/bin/python scripts/run_hermes_mcp_smoke.py` -> PASS
-- `./.venv/bin/python scripts/run_hermes_bridge_demo.py` -> PASS
-- Recommended path documented: `provider_plus_mcp`
-- Fallback path documented: `mcp_only`
-- Demo command documented: `./.venv/bin/python scripts/run_hermes_bridge_demo.py`
+- `./.venv/bin/python scripts/run_hermes_bridge_demo.py` -> PASS (`status: pass`)

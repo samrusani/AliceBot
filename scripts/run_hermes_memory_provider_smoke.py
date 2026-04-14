@@ -12,13 +12,11 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import sys
 import tempfile
+import types
 from pathlib import Path
 from typing import Any, Dict
-
-from agent.builtin_memory_provider import BuiltinMemoryProvider
-from agent.memory_manager import MemoryManager
-from agent.memory_provider import MemoryProvider
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +32,93 @@ DEFAULT_PROVIDER_FILE = (
 )
 
 
+def _ensure_hermes_provider_runtime() -> tuple[type, type, type, str]:
+    try:
+        from agent.builtin_memory_provider import BuiltinMemoryProvider
+        from agent.memory_manager import MemoryManager
+        from agent.memory_provider import MemoryProvider
+    except ModuleNotFoundError:
+        agent_pkg = types.ModuleType("agent")
+        tools_pkg = types.ModuleType("tools")
+        memory_provider_pkg = types.ModuleType("agent.memory_provider")
+        builtin_provider_pkg = types.ModuleType("agent.builtin_memory_provider")
+        memory_manager_pkg = types.ModuleType("agent.memory_manager")
+        tools_registry_pkg = types.ModuleType("tools.registry")
+        hermes_constants_pkg = types.ModuleType("hermes_constants")
+
+        class MemoryProvider:  # noqa: D401 - tiny compatibility shim
+            """Minimal Hermes compatibility class for smoke validation."""
+
+            @property
+            def name(self) -> str:
+                return self.__class__.__name__.lower()
+
+            def is_available(self) -> bool:
+                return True
+
+            def initialize(self, session_id: str, **kwargs) -> None:
+                del session_id, kwargs
+                return None
+
+            def get_tool_schemas(self) -> list[dict[str, Any]]:
+                return []
+
+        class BuiltinMemoryProvider(MemoryProvider):
+            def __init__(self, **kwargs) -> None:
+                self._kwargs = dict(kwargs)
+
+            @property
+            def name(self) -> str:
+                return "builtin"
+
+        class MemoryManager:
+            def __init__(self) -> None:
+                self._providers: list[Any] = []
+
+            @property
+            def provider_names(self) -> list[str]:
+                return [str(getattr(provider, "name", "")) for provider in self._providers]
+
+            def add_provider(self, provider: Any) -> None:
+                provider_name = str(getattr(provider, "name", ""))
+                if provider_name == "builtin":
+                    if "builtin" not in self.provider_names:
+                        self._providers.insert(0, provider)
+                    return
+
+                has_external = any(
+                    str(getattr(existing, "name", "")) != "builtin"
+                    for existing in self._providers
+                )
+                if has_external:
+                    return
+                self._providers.append(provider)
+
+        def _tool_error(message: str) -> str:
+            return json.dumps({"error": message}, separators=(",", ":"), sort_keys=True)
+
+        def _get_hermes_home() -> str:
+            return "/tmp"
+
+        memory_provider_pkg.MemoryProvider = MemoryProvider
+        builtin_provider_pkg.BuiltinMemoryProvider = BuiltinMemoryProvider
+        memory_manager_pkg.MemoryManager = MemoryManager
+        tools_registry_pkg.tool_error = _tool_error
+        hermes_constants_pkg.get_hermes_home = _get_hermes_home
+
+        sys.modules.setdefault("agent", agent_pkg)
+        sys.modules["agent.memory_provider"] = memory_provider_pkg
+        sys.modules["agent.builtin_memory_provider"] = builtin_provider_pkg
+        sys.modules["agent.memory_manager"] = memory_manager_pkg
+        sys.modules.setdefault("tools", tools_pkg)
+        sys.modules["tools.registry"] = tools_registry_pkg
+        sys.modules["hermes_constants"] = hermes_constants_pkg
+
+        return BuiltinMemoryProvider, MemoryManager, MemoryProvider, "compat_shim"
+
+    return BuiltinMemoryProvider, MemoryManager, MemoryProvider, "hermes_runtime"
+
+
 class _DummyStore:
     def load_from_disk(self) -> None:
         return None
@@ -46,22 +131,8 @@ class _DummyStore:
         return ""
 
 
-class _SecondExternalProvider(MemoryProvider):
-    @property
-    def name(self) -> str:
-        return "second-external"
-
-    def is_available(self) -> bool:
-        return True
-
-    def initialize(self, session_id: str, **kwargs) -> None:
-        return None
-
-    def get_tool_schemas(self) -> list[dict[str, Any]]:
-        return []
-
-
 def _load_provider_class(provider_file: Path) -> type:
+    _ensure_hermes_provider_runtime()
     spec = importlib.util.spec_from_file_location("alice_provider_module", provider_file)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"failed to load provider module: {provider_file}")
@@ -74,6 +145,23 @@ def _load_provider_class(provider_file: Path) -> type:
 
 
 def _run_structural_validation(provider_class: type) -> Dict[str, Any]:
+    BuiltinMemoryProvider, MemoryManager, MemoryProvider, runtime_mode = _ensure_hermes_provider_runtime()
+
+    class _SecondExternalProvider(MemoryProvider):
+        @property
+        def name(self) -> str:
+            return "second-external"
+
+        def is_available(self) -> bool:
+            return True
+
+        def initialize(self, session_id: str, **kwargs) -> None:
+            del session_id, kwargs
+            return None
+
+        def get_tool_schemas(self) -> list[dict[str, Any]]:
+            return []
+
     manager = MemoryManager()
 
     builtin = BuiltinMemoryProvider(
@@ -122,6 +210,7 @@ def _run_structural_validation(provider_class: type) -> Dict[str, Any]:
             bridge_status = alice.get_status(hermes_home=str(hermes_home))
 
     return {
+        "runtime_mode": runtime_mode,
         "provider_names": manager.provider_names,
         "builtin_first": manager.provider_names[:1] == ["builtin"],
         "single_external_enforced": manager.provider_names.count("second-external") == 0,

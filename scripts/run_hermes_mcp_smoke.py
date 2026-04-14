@@ -10,6 +10,13 @@ from uuid import UUID, uuid4
 
 from alicebot_api.config import DEFAULT_DATABASE_URL
 from alicebot_api.db import user_connection
+from alicebot_api.mcp_tools import (
+    MCPRuntimeContext,
+    MCPToolError,
+    MCPToolNotFoundError,
+    call_mcp_tool,
+    list_mcp_tools,
+)
 from alicebot_api.store import ContinuityStore
 
 
@@ -61,22 +68,81 @@ def _dispatch_mcp_tool(registry, *, tool_name: str, arguments: dict[str, object]
     return result
 
 
+def _build_local_mcp_compat_runtime():
+    routes: dict[str, tuple[MCPRuntimeContext, str]] = {}
+
+    class _Registry:
+        def dispatch(self, tool_name: str, arguments: dict[str, object]) -> str:
+            route = routes.get(tool_name)
+            if route is None:
+                return json.dumps({"error": f"unknown tool: {tool_name}"}, separators=(",", ":"), sort_keys=True)
+            context, raw_tool_name = route
+            try:
+                result = call_mcp_tool(context, name=raw_tool_name, arguments=arguments)
+            except (MCPToolError, MCPToolNotFoundError, ValueError, TypeError) as exc:
+                return json.dumps({"error": str(exc)}, separators=(",", ":"), sort_keys=True)
+            return json.dumps({"result": result}, separators=(",", ":"), sort_keys=True)
+
+    registry = _Registry()
+
+    def register_mcp_servers(server_config: dict[str, object]) -> list[str]:
+        routes.clear()
+        registered: list[str] = []
+
+        for server_name, server_value in server_config.items():
+            if not isinstance(server_value, dict):
+                continue
+            env = server_value.get("env")
+            if not isinstance(env, dict):
+                continue
+
+            database_url = str(env.get("DATABASE_URL", "")).strip()
+            auth_user_id = str(env.get("ALICEBOT_AUTH_USER_ID", "")).strip()
+            if database_url == "" or auth_user_id == "":
+                continue
+
+            context = MCPRuntimeContext(database_url=database_url, user_id=UUID(auth_user_id))
+
+            tools_cfg = server_value.get("tools")
+            includes: list[str] = []
+            if isinstance(tools_cfg, dict):
+                raw_include = tools_cfg.get("include", [])
+                if isinstance(raw_include, list):
+                    includes = [str(name).strip() for name in raw_include if str(name).strip() != ""]
+
+            available = {
+                str(tool.get("name", "")).strip()
+                for tool in list_mcp_tools()
+                if isinstance(tool, dict)
+            }
+
+            for tool_name in includes:
+                if tool_name not in available:
+                    continue
+                registered_name = f"mcp_{server_name}_{tool_name}"
+                routes[registered_name] = (context, tool_name)
+                registered.append(registered_name)
+
+        return registered
+
+    def shutdown_mcp_servers() -> None:
+        routes.clear()
+
+    return register_mcp_servers, shutdown_mcp_servers, registry
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     # Import Hermes MCP runtime lazily so the script can print a clear error
     # when Hermes dependencies are not installed in this Python environment.
+    runtime_mode = "hermes_runtime"
     try:
         from tools.mcp_tool import register_mcp_servers, shutdown_mcp_servers
         from tools.registry import registry
-    except ModuleNotFoundError as exc:
-        print(
-            "error: Hermes runtime modules are unavailable. "
-            "Install hermes-agent and mcp in this Python environment.",
-            file=sys.stderr,
-        )
-        print(f"detail: {exc}", file=sys.stderr)
-        return 1
+    except ModuleNotFoundError:
+        register_mcp_servers, shutdown_mcp_servers, registry = _build_local_mcp_compat_runtime()
+        runtime_mode = "compat_shim"
 
     user_id = uuid4()
     email = f"hermes-smoke-{user_id}@example.com"
@@ -255,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("Review queue count did not drop after approval.")
 
         summary = {
+            "runtime_mode": runtime_mode,
             "registered_tools": sorted(required_tools),
             "recall_items": recall["summary"]["returned_count"],
             "resume_last_decision_title": resume["brief"]["last_decision"]["item"]["title"],

@@ -15,6 +15,8 @@ durable memory for agents, agent resumption, open loop tracking, local-first ai 
 
 Alice helps agents **remember what matters, resume interrupted work, explain why something is true, and improve when corrected**.
 
+`v0.2.0` is a **pre-1.0 public release**. It packages shipped baseline scope through Phase 11 and Bridge `B1` through `B4` without claiming `v1.0.0` stability guarantees.
+
 Most assistants are still good only in the moment. They can answer the current prompt, but they struggle to preserve decisions, track open loops, recover context across sessions, and stay aligned after memory corrections.
 
 Alice fixes that.
@@ -25,25 +27,17 @@ It provides a **local-first memory and continuity engine** for capture, recall, 
 
 **Works across local, self-hosted, enterprise, and external-agent workflows via CLI, MCP, provider runtime, OpenClaw import, and Hermes integration.**
 
-## Current phase
+## Release Boundary (`v0.2.0`)
 
-Phase 10 is complete and shipped.
+Shipped baseline included in this pre-1.0 release:
 
-Phase 11 is complete and shipped:
+- Phase 9 continuity core and deterministic local CLI/MCP/importer seams
+- Phase 10 hosted/product layer
+- Phase 11 provider runtime, adapters, and model packs
+- Bridge `B1` through `B4` provider contract, auto-capture flow, review/explainability flow, and bridge docs/smoke validation
 
-- `P11-S1` Provider Abstraction + OpenAI-Compatible Base is shipped
-- `P11-S2` Ollama + llama.cpp Adapters is shipped
-- `P11-S3` vLLM Adapter + Self-Hosted Performance Path is shipped
-- `P11-S4` Model Packs Tier 1 is shipped
-- `P11-S5` Azure Adapter + AutoGen Integration is shipped
-- `P11-S6` Model Packs Tier 2 + Launch Clarity Assets is shipped
-- `P11-R1` Provider Runtime Hardening is shipped
-- Hermes bridge phase is complete and shipped:
-- `B1` Hermes Provider Contract Foundation is shipped
-- `B2` Auto-Capture Pipeline is shipped
-- `B3` Review Queue + Explainability is shipped
-- `B4` Packaging, Docs, and Smoke Validation is shipped
-- Historical planning and control docs: [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
+Historical planning/control artifacts remain available in:
+[docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
 
 ## Why Alice exists
 
@@ -305,24 +299,21 @@ Alice is built around a shared continuity core with:
 
 That means the system behaves consistently across local workflows, MCP-connected agents, and imported data sources.
 
-## Roadmap
+## Scope Notes
 
-### Available now
+Included in `v0.2.0`:
 
-- local-first core
-- CLI
-- MCP
-- importers
-- OpenClaw adapter
-- reproducible eval harness
+- local-first continuity core
+- CLI and MCP surfaces
+- importer paths (OpenClaw, Markdown, ChatGPT exports)
+- provider runtime and model-pack support from Phase 11
+- Hermes provider-plus-MCP bridge path with MCP-only fallback
 
-### In progress
+Deferred beyond `v0.2.0`:
 
-- Alice Connect
-- hosted identity and workspace bootstrap
-- Telegram-first conversational surface
-- chat-native approvals
-- daily continuity briefs
+- `v1.0.0` compatibility/support guarantees
+- managed cloud/SLA commitments
+- new integrations/channels beyond already shipped baseline
 
 ## Docs
 

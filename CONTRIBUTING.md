@@ -22,14 +22,18 @@ docker compose up -d
 Before opening a PR, run:
 
 ```bash
-./.venv/bin/python -m pytest tests/unit tests/integration
+python3 scripts/check_control_doc_truth.py
+./.venv/bin/python -m pytest tests/unit tests/integration -q
 pnpm --dir apps/web test
+./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py
+./.venv/bin/python scripts/run_hermes_mcp_smoke.py
+./.venv/bin/python scripts/run_hermes_bridge_demo.py
 ```
 
-For Phase 9 public-surface changes, also run:
+For `v0.2.0` release-doc or release-process changes:
 
 ```bash
-./scripts/run_phase9_eval.sh --report-path eval/reports/phase9_eval_latest.json
+python3 scripts/check_control_doc_truth.py
 ```
 
 ## Pull Request Expectations
