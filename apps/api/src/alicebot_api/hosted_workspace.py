@@ -5,6 +5,8 @@ import re
 from typing import TypedDict
 from uuid import UUID
 
+import psycopg
+
 
 SLUG_SANITIZE_PATTERN = re.compile(r"[^a-z0-9-]+")
 SLUG_COLLAPSE_PATTERN = re.compile(r"-+")
@@ -38,16 +40,10 @@ def slugify_workspace_name(value: str) -> str:
     return normalized[:120]
 
 
-def _next_available_slug(conn, *, preferred_slug: str) -> str:
+def _iter_candidate_slugs(*, preferred_slug: str):
     base_slug = slugify_workspace_name(preferred_slug)
-    with conn.cursor() as cur:
-        for suffix in range(1, 201):
-            candidate = base_slug if suffix == 1 else f"{base_slug}-{suffix}"
-            cur.execute("SELECT 1 FROM workspaces WHERE slug = %s", (candidate,))
-            if cur.fetchone() is None:
-                return candidate
-
-    raise RuntimeError("unable to allocate unique workspace slug")
+    for suffix in range(1, 201):
+        yield base_slug if suffix == 1 else f"{base_slug}-{suffix}"
 
 
 def create_workspace(
@@ -62,35 +58,39 @@ def create_workspace(
         raise ValueError("workspace name is required")
 
     preferred_slug = slug if slug is not None and slug.strip() != "" else workspace_name
-    workspace_slug = _next_available_slug(conn, preferred_slug=preferred_slug)
+    for workspace_slug in _iter_candidate_slugs(preferred_slug=preferred_slug):
+        try:
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO workspaces (owner_user_account_id, slug, name, bootstrap_status)
+                        VALUES (%s, %s, %s, 'pending')
+                        RETURNING id, owner_user_account_id, slug, name, bootstrap_status, bootstrapped_at,
+                                  created_at, updated_at
+                        """,
+                        (user_account_id, workspace_slug, workspace_name),
+                    )
+                    workspace = cur.fetchone()
 
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO workspaces (owner_user_account_id, slug, name, bootstrap_status)
-            VALUES (%s, %s, %s, 'pending')
-            RETURNING id, owner_user_account_id, slug, name, bootstrap_status, bootstrapped_at,
-                      created_at, updated_at
-            """,
-            (user_account_id, workspace_slug, workspace_name),
-        )
-        workspace = cur.fetchone()
+                    if workspace is None:
+                        raise RuntimeError("failed to create workspace")
 
-    if workspace is None:
-        raise RuntimeError("failed to create workspace")
+                    cur.execute(
+                        """
+                        INSERT INTO workspace_members (workspace_id, user_account_id, role)
+                        VALUES (%s, %s, 'owner')
+                        ON CONFLICT (workspace_id, user_account_id) DO UPDATE
+                        SET role = EXCLUDED.role
+                        """,
+                        (workspace["id"], user_account_id),
+                    )
+                return workspace
+        except psycopg.errors.UniqueViolation as exc:
+            if exc.diag.constraint_name != "workspaces_slug_key":
+                raise
 
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO workspace_members (workspace_id, user_account_id, role)
-            VALUES (%s, %s, 'owner')
-            ON CONFLICT (workspace_id, user_account_id) DO UPDATE
-            SET role = EXCLUDED.role
-            """,
-            (workspace["id"], user_account_id),
-        )
-
-    return workspace
+    raise RuntimeError("unable to allocate unique workspace slug")
 
 
 def get_workspace_for_member(

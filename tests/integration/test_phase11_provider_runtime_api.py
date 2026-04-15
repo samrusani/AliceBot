@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import socket
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -9,6 +10,7 @@ from uuid import UUID, uuid4
 
 import anyio
 import psycopg
+import pytest
 
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
@@ -70,6 +72,19 @@ def invoke_request(
 
 def auth_header(session_token: str) -> dict[str, str]:
     return {"authorization": f"Bearer {session_token}"}
+
+
+@pytest.fixture(autouse=True)
+def allow_documentation_provider_hosts(monkeypatch) -> None:
+    original_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(hostname: str, port, type=0, proto=0):
+        if hostname.endswith(".example"):
+            sockaddr = ("93.184.216.34", 0)
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)]
+        return original_getaddrinfo(hostname, port, type=type, proto=proto)
+
+    monkeypatch.setattr("alicebot_api.provider_security.socket.getaddrinfo", fake_getaddrinfo)
 
 
 def _configure_settings(migrated_database_urls, monkeypatch) -> None:
@@ -449,6 +464,155 @@ def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
     captured_urls = [record["url"] for record in captured_requests]
     assert "http://ollama.example:11434/api/chat" in captured_urls
     assert "http://llamacpp.example:8080/v1/chat/completions" in captured_urls
+
+
+def test_phase13_hosted_provider_rows_respect_workspace_rls(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    owner_session_token, owner_workspace_id, owner_user_account_id = _bootstrap_workspace_session(
+        "provider-rls-owner@example.com"
+    )
+    _, _, other_user_account_id = _bootstrap_workspace_session("provider-rls-other@example.com")
+
+    create_status, create_payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "RLS Scoped Provider",
+            "base_url": "https://provider.example/v1",
+            "api_key": "provider-secret-key",
+            "default_model": "gpt-5-mini",
+        },
+        headers=auth_header(owner_session_token),
+    )
+    assert create_status == 201
+    provider_id = create_payload["provider"]["id"]
+
+    with psycopg.connect(migrated_database_urls["app"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT set_config('app.current_user_account_id', %s, true)",
+                (other_user_account_id,),
+            )
+            cur.execute("SELECT count(*) FROM model_providers WHERE id = %s", (provider_id,))
+            other_visible_count = cur.fetchone()[0]
+            cur.execute("SELECT count(*) FROM workspaces WHERE id = %s", (owner_workspace_id,))
+            other_workspace_count = cur.fetchone()[0]
+
+            cur.execute(
+                "SELECT set_config('app.current_user_account_id', %s, true)",
+                (owner_user_account_id,),
+            )
+            cur.execute("SELECT count(*) FROM model_providers WHERE id = %s", (provider_id,))
+            owner_visible_count = cur.fetchone()[0]
+
+    assert other_visible_count == 0
+    assert other_workspace_count == 0
+    assert owner_visible_count == 1
+
+
+def test_phase13_hosted_rls_blocks_cross_workspace_membership_forgery(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    _, owner_workspace_id, _ = _bootstrap_workspace_session("provider-rls-owner-forgery@example.com")
+    _, _, other_user_account_id = _bootstrap_workspace_session("provider-rls-other-forgery@example.com")
+
+    with psycopg.connect(migrated_database_urls["app"]) as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT set_config('app.current_user_account_id', %s, true)",
+                        (other_user_account_id,),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO workspace_members (workspace_id, user_account_id, role)
+                        VALUES (%s, %s, 'member')
+                        """,
+                        (owner_workspace_id, other_user_account_id),
+                    )
+
+    with psycopg.connect(migrated_database_urls["app"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT set_config('app.current_user_account_id', %s, true)",
+                (other_user_account_id,),
+            )
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM workspace_members
+                WHERE workspace_id = %s
+                  AND user_account_id = %s
+                """,
+                (owner_workspace_id, other_user_account_id),
+            )
+            member_count = cur.fetchone()[0]
+
+    assert member_count == 0
+
+
+def test_phase13_hosted_rls_blocks_cross_workspace_channel_identity_forgery(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    _, owner_workspace_id, _ = _bootstrap_workspace_session("provider-rls-owner-channel@example.com")
+    _, _, other_user_account_id = _bootstrap_workspace_session("provider-rls-other-channel@example.com")
+
+    with psycopg.connect(migrated_database_urls["app"]) as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            with conn.transaction():
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT set_config('app.current_user_account_id', %s, true)",
+                        (other_user_account_id,),
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO channel_identities (
+                          user_account_id,
+                          workspace_id,
+                          channel_type,
+                          external_user_id,
+                          external_chat_id,
+                          external_username
+                        )
+                        VALUES (%s, %s, 'telegram', %s, %s, %s)
+                        """,
+                        (
+                            other_user_account_id,
+                            owner_workspace_id,
+                            "telegram-user-1",
+                            "telegram-chat-1",
+                            "other-user",
+                        ),
+                    )
+
+    with psycopg.connect(migrated_database_urls["app"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT set_config('app.current_user_account_id', %s, true)",
+                (other_user_account_id,),
+            )
+            cur.execute(
+                """
+                SELECT count(*)
+                FROM channel_identities
+                WHERE workspace_id = %s
+                  AND user_account_id = %s
+                """,
+                (owner_workspace_id, other_user_account_id),
+            )
+            identity_count = cur.fetchone()[0]
+
+    assert identity_count == 0
 
 
 def test_phase11_openai_compatible_registration_still_works(migrated_database_urls, monkeypatch) -> None:

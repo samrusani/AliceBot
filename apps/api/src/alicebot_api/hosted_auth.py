@@ -9,6 +9,8 @@ from uuid import UUID
 
 from psycopg.types.json import Jsonb
 
+from alicebot_api.db import set_current_user_account
+
 
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -291,6 +293,7 @@ def verify_magic_link_challenge(
         raise MagicLinkTokenExpiredError("magic-link token has expired")
 
     user_account = get_or_create_user_account_by_email(conn, email=challenge["email"])
+    set_current_user_account(conn, user_account["id"])
     workspace_id = _get_current_workspace_id(conn, user_account_id=user_account["id"])
     normalized_device_label = device_label.strip() or "Primary device"
     resolved_device_key = (device_key or "").strip() or _derive_device_key(
@@ -451,6 +454,7 @@ def resolve_auth_session(conn, *, session_token: str) -> SessionResolution:
         "beta_cohort_key": row["user_beta_cohort_key"],
         "created_at": row["user_created_at"],
     }
+    set_current_user_account(conn, user_account["id"])
     return {
         "session": session,
         "user_account": user_account,

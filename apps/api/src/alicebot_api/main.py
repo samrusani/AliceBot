@@ -4,6 +4,7 @@ from collections import defaultdict, deque
 from datetime import datetime
 import hmac
 import hashlib
+import ipaddress
 import json
 import logging
 import threading
@@ -284,7 +285,13 @@ from alicebot_api.approvals import (
     reject_approval_record,
     submit_approval_request,
 )
-from alicebot_api.db import ping_database, user_connection
+from alicebot_api.db import (
+    ping_database,
+    set_current_user_account,
+    set_hosted_admin_bypass,
+    set_hosted_service_bypass,
+    user_connection,
+)
 from alicebot_api.executions import (
     ToolExecutionNotFoundError,
     get_tool_execution_record,
@@ -2131,6 +2138,15 @@ def _request_client_identifier(request: Request, settings: Settings) -> str:
     return peer_host
 
 
+def _request_client_is_loopback(request: Request, settings: Settings) -> bool:
+    client_identifier = _request_client_identifier(request, settings)
+    try:
+        client_ip = ipaddress.ip_address(client_identifier)
+    except ValueError:
+        return client_identifier in {"localhost", "localhost.localdomain"}
+    return client_ip.is_loopback
+
+
 def _entrypoint_rate_limit_error(
     *,
     detail_code: str,
@@ -2299,6 +2315,18 @@ async def enforce_authenticated_user_identity(
         return await call_next(request)
 
     settings = get_settings()
+
+    if settings.app_env not in {"development", "test"}:
+        if not settings.legacy_v0_enabled_outside_dev:
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "legacy v0 API is disabled outside development and test"},
+            )
+        if not _request_client_is_loopback(request, settings):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "legacy v0 API is restricted to loopback clients"},
+            )
 
     try:
         authenticated_user_id = _resolve_authenticated_user_id(settings, request)
@@ -2690,6 +2718,7 @@ def _ensure_hosted_admin_access(conn, *, user_account_id: UUID) -> None:
         raise PermissionError(
             "hosted admin access requires hosted_admin_read and hosted_admin_operator flags"
         )
+    set_hosted_admin_bypass(conn, True)
 
 
 def _allow_raw_evidence_debug_access(settings: Settings) -> bool:
@@ -7054,6 +7083,7 @@ def verify_v1_magic_link(http_request: Request, request: MagicLinkVerifyRequest)
                     device_label=request.device_label,
                     device_key=request.device_key,
                 )
+                set_current_user_account(conn, user_account["id"])
                 ensure_user_preferences_row(conn, user_account_id=user_account["id"])
                 preferences = ensure_user_preferences(conn, user_account_id=user_account["id"])
                 workspace = None
@@ -7204,6 +7234,7 @@ def bootstrap_v1_workspace(
 ) -> JSONResponse:
     settings = get_settings()
     resolved_workspace_id: UUID | None = None
+    user_account_id: UUID | None = None
 
     try:
         session_token = _extract_bearer_token(request)
@@ -7253,9 +7284,10 @@ def bootstrap_v1_workspace(
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
     except HostedWorkspaceNotFoundError as exc:
-        if resolved_workspace_id is not None:
+        if resolved_workspace_id is not None and user_account_id is not None:
             with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
                 with conn.transaction():
+                    set_current_user_account(conn, user_account_id)
                     _record_workspace_onboarding_failure(
                         conn,
                         workspace_id=resolved_workspace_id,
@@ -7264,9 +7296,10 @@ def bootstrap_v1_workspace(
                     )
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except HostedWorkspaceBootstrapConflictError as exc:
-        if resolved_workspace_id is not None:
+        if resolved_workspace_id is not None and user_account_id is not None:
             with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
                 with conn.transaction():
+                    set_current_user_account(conn, user_account_id)
                     _record_workspace_onboarding_failure(
                         conn,
                         workspace_id=resolved_workspace_id,
@@ -8941,6 +8974,7 @@ async def ingest_v1_telegram_webhook(request: Request) -> JSONResponse:
     try:
         with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
             with conn.transaction():
+                set_hosted_service_bypass(conn, True)
                 ingest_result = ingest_telegram_webhook(
                     conn,
                     payload=payload,
