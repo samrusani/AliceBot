@@ -123,6 +123,7 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v0/memories" in route_paths
     assert "/v0/memories/review-queue" in route_paths
     assert "/v0/memories/quality-gate" in route_paths
+    assert "/v0/memories/hygiene-dashboard" in route_paths
     assert "/v0/memories/evaluation-summary" in route_paths
     assert "/v0/memories/semantic-retrieval" in route_paths
     assert "/v0/memories/{memory_id}" in route_paths
@@ -165,6 +166,7 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v0/tasks/{task_id}" in route_paths
     assert "/v0/tasks/{task_id}/workspace" in route_paths
     assert "/v0/tasks/{task_id}/steps" in route_paths
+    assert "/v0/threads/health-dashboard" in route_paths
     assert "/v0/threads/{thread_id}/resumption-brief" in route_paths
     assert "/v0/task-workspaces" in route_paths
     assert "/v0/task-workspaces/{task_workspace_id}" in route_paths
@@ -2641,6 +2643,310 @@ def test_get_memories_quality_gate_returns_canonical_payload(monkeypatch) -> Non
                 "outdated_label_count": 0,
                 "insufficient_evidence_label_count": 0,
             },
+        }
+    }
+    assert captured["database_url"] == "postgresql://app"
+    assert captured["current_user_id"] == user_id
+    assert captured["user_id"] == user_id
+
+
+def test_get_memories_hygiene_dashboard_returns_canonical_payload(monkeypatch) -> None:
+    user_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_user_connection(database_url: str, current_user_id):
+        captured["database_url"] = database_url
+        captured["current_user_id"] = current_user_id
+        yield object()
+
+    def fake_get_memory_hygiene_dashboard_summary(store, *, user_id):
+        captured["store_type"] = type(store).__name__
+        captured["user_id"] = user_id
+        return {
+            "dashboard": {
+                "posture": "watch",
+                "reason": "Duplicate and contradiction pressure is visible.",
+                "duplicate_group_count": 1,
+                "duplicate_memory_count": 2,
+                "stale_fact_count": 1,
+                "unresolved_contradiction_count": 1,
+                "weak_trust_count": 2,
+                "review_queue_pressure": {
+                    "posture": "watch",
+                    "total_count": 2,
+                    "stale_over_72h_count": 0,
+                    "aging_24h_to_72h_count": 1,
+                    "reason": "Backlog exists and should be drained before it becomes stale.",
+                },
+                "duplicate_groups": [
+                    {
+                        "group_key": "preference:{\"merchant\":\"Fixture\"}",
+                        "memory_type": "preference",
+                        "normalized_value": "{\"merchant\":\"Fixture\"}",
+                        "count": 2,
+                        "memory_ids": ["memory-1", "memory-2"],
+                        "memory_keys": ["user.preference.primary", "user.preference.secondary"],
+                        "latest_updated_at": "2026-03-18T10:05:00+00:00",
+                    }
+                ],
+                "focus": [
+                    {
+                        "kind": "duplicates",
+                        "posture": "watch",
+                        "count": 2,
+                        "reason": "Multiple active memories share the same normalized value.",
+                        "action": "Review duplicate groups and keep one canonical fact per repeated value.",
+                        "sample_ids": ["memory-1", "memory-2"],
+                    }
+                ],
+                "sources": ["memories", "contradiction_cases", "trust_signals", "continuity_recall"],
+            }
+        }
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "get_memory_hygiene_dashboard_summary",
+        fake_get_memory_hygiene_dashboard_summary,
+    )
+
+    response = main_module.get_memories_hygiene_dashboard(user_id=user_id)
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {
+        "dashboard": {
+            "posture": "watch",
+            "reason": "Duplicate and contradiction pressure is visible.",
+            "duplicate_group_count": 1,
+            "duplicate_memory_count": 2,
+            "stale_fact_count": 1,
+            "unresolved_contradiction_count": 1,
+            "weak_trust_count": 2,
+            "review_queue_pressure": {
+                "posture": "watch",
+                "total_count": 2,
+                "stale_over_72h_count": 0,
+                "aging_24h_to_72h_count": 1,
+                "reason": "Backlog exists and should be drained before it becomes stale.",
+            },
+            "duplicate_groups": [
+                {
+                    "group_key": "preference:{\"merchant\":\"Fixture\"}",
+                    "memory_type": "preference",
+                    "normalized_value": "{\"merchant\":\"Fixture\"}",
+                    "count": 2,
+                    "memory_ids": ["memory-1", "memory-2"],
+                    "memory_keys": ["user.preference.primary", "user.preference.secondary"],
+                    "latest_updated_at": "2026-03-18T10:05:00+00:00",
+                }
+            ],
+            "focus": [
+                {
+                    "kind": "duplicates",
+                    "posture": "watch",
+                    "count": 2,
+                    "reason": "Multiple active memories share the same normalized value.",
+                    "action": "Review duplicate groups and keep one canonical fact per repeated value.",
+                    "sample_ids": ["memory-1", "memory-2"],
+                }
+            ],
+            "sources": ["memories", "contradiction_cases", "trust_signals", "continuity_recall"],
+        }
+    }
+    assert captured["database_url"] == "postgresql://app"
+    assert captured["current_user_id"] == user_id
+    assert captured["user_id"] == user_id
+
+
+def test_get_threads_health_dashboard_returns_canonical_payload(monkeypatch) -> None:
+    user_id = uuid4()
+    settings = Settings(database_url="postgresql://app")
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_user_connection(database_url: str, current_user_id):
+        captured["database_url"] = database_url
+        captured["current_user_id"] = current_user_id
+        yield object()
+
+    def fake_get_thread_health_dashboard(store, *, user_id):
+        captured["store_type"] = type(store).__name__
+        captured["user_id"] = user_id
+        return {
+            "dashboard": {
+                "posture": "critical",
+                "total_thread_count": 2,
+                "recent_thread_count": 1,
+                "stale_thread_count": 0,
+                "risky_thread_count": 1,
+                "watch_thread_count": 0,
+                "thresholds": {
+                    "recent_window_hours": 24.0,
+                    "stale_window_hours": 72.0,
+                    "risky_score_threshold": 2,
+                },
+                "recent_threads": [
+                    {
+                        "thread": {
+                            "id": "thread-1",
+                            "title": "Recent thread",
+                            "agent_profile_id": "assistant_default",
+                            "created_at": "2026-03-18T09:00:00+00:00",
+                            "updated_at": "2026-03-18T10:00:00+00:00",
+                        },
+                        "health_posture": "healthy",
+                        "activity_posture": "recent",
+                        "risk_posture": "normal",
+                        "risk_score": 0,
+                        "last_activity_at": "2026-03-18T10:00:00+00:00",
+                        "last_conversation_at": "2026-03-18T10:00:00+00:00",
+                        "hours_since_last_activity": 2.0,
+                        "conversation_event_count": 3,
+                        "operational_event_count": 1,
+                        "active_session_count": 1,
+                        "open_loop_count": 0,
+                        "stale_open_loop_count": 0,
+                        "unresolved_contradiction_count": 0,
+                        "weak_trust_signal_count": 0,
+                        "reasons": [
+                            "No active contradiction, stale open-loop, or weak-trust pressure is currently visible."
+                        ],
+                        "recommended_action": "No immediate intervention required.",
+                    }
+                ],
+                "stale_threads": [],
+                "risky_threads": [
+                    {
+                        "thread": {
+                            "id": "thread-2",
+                            "title": "Risky thread",
+                            "agent_profile_id": "assistant_default",
+                            "created_at": "2026-03-18T09:00:00+00:00",
+                            "updated_at": "2026-03-18T08:00:00+00:00",
+                        },
+                        "health_posture": "critical",
+                        "activity_posture": "current",
+                        "risk_posture": "risky",
+                        "risk_score": 3,
+                        "last_activity_at": "2026-03-18T08:00:00+00:00",
+                        "last_conversation_at": "2026-03-18T08:00:00+00:00",
+                        "hours_since_last_activity": 26.0,
+                        "conversation_event_count": 2,
+                        "operational_event_count": 0,
+                        "active_session_count": 0,
+                        "open_loop_count": 1,
+                        "stale_open_loop_count": 1,
+                        "unresolved_contradiction_count": 1,
+                        "weak_trust_signal_count": 1,
+                        "reasons": ["1 unresolved contradiction case(s).", "1 stale open-loop item(s)."],
+                        "recommended_action": "Resolve contradiction cases before trusting this thread for recall or briefing.",
+                    }
+                ],
+                "items": [],
+                "sources": [
+                    "threads",
+                    "thread_sessions",
+                    "thread_events",
+                    "continuity_recall",
+                    "contradiction_cases",
+                    "trust_signals",
+                ],
+            }
+        }
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "user_connection", fake_user_connection)
+    monkeypatch.setattr(
+        main_module,
+        "get_thread_health_dashboard",
+        fake_get_thread_health_dashboard,
+    )
+
+    response = main_module.get_threads_health_dashboard(user_id=user_id)
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {
+        "dashboard": {
+            "posture": "critical",
+            "total_thread_count": 2,
+            "recent_thread_count": 1,
+            "stale_thread_count": 0,
+            "risky_thread_count": 1,
+            "watch_thread_count": 0,
+            "thresholds": {
+                "recent_window_hours": 24.0,
+                "stale_window_hours": 72.0,
+                "risky_score_threshold": 2,
+            },
+            "recent_threads": [
+                {
+                    "thread": {
+                        "id": "thread-1",
+                        "title": "Recent thread",
+                        "agent_profile_id": "assistant_default",
+                        "created_at": "2026-03-18T09:00:00+00:00",
+                        "updated_at": "2026-03-18T10:00:00+00:00",
+                    },
+                    "health_posture": "healthy",
+                    "activity_posture": "recent",
+                    "risk_posture": "normal",
+                    "risk_score": 0,
+                    "last_activity_at": "2026-03-18T10:00:00+00:00",
+                    "last_conversation_at": "2026-03-18T10:00:00+00:00",
+                    "hours_since_last_activity": 2.0,
+                    "conversation_event_count": 3,
+                    "operational_event_count": 1,
+                    "active_session_count": 1,
+                    "open_loop_count": 0,
+                    "stale_open_loop_count": 0,
+                    "unresolved_contradiction_count": 0,
+                    "weak_trust_signal_count": 0,
+                    "reasons": [
+                        "No active contradiction, stale open-loop, or weak-trust pressure is currently visible."
+                    ],
+                    "recommended_action": "No immediate intervention required.",
+                }
+            ],
+            "stale_threads": [],
+            "risky_threads": [
+                {
+                    "thread": {
+                        "id": "thread-2",
+                        "title": "Risky thread",
+                        "agent_profile_id": "assistant_default",
+                        "created_at": "2026-03-18T09:00:00+00:00",
+                        "updated_at": "2026-03-18T08:00:00+00:00",
+                    },
+                    "health_posture": "critical",
+                    "activity_posture": "current",
+                    "risk_posture": "risky",
+                    "risk_score": 3,
+                    "last_activity_at": "2026-03-18T08:00:00+00:00",
+                    "last_conversation_at": "2026-03-18T08:00:00+00:00",
+                    "hours_since_last_activity": 26.0,
+                    "conversation_event_count": 2,
+                    "operational_event_count": 0,
+                    "active_session_count": 0,
+                    "open_loop_count": 1,
+                    "stale_open_loop_count": 1,
+                    "unresolved_contradiction_count": 1,
+                    "weak_trust_signal_count": 1,
+                    "reasons": ["1 unresolved contradiction case(s).", "1 stale open-loop item(s)."],
+                    "recommended_action": "Resolve contradiction cases before trusting this thread for recall or briefing.",
+                }
+            ],
+            "items": [],
+            "sources": [
+                "threads",
+                "thread_sessions",
+                "thread_events",
+                "continuity_recall",
+                "contradiction_cases",
+                "trust_signals",
+            ],
         }
     }
     assert captured["database_url"] == "postgresql://app"

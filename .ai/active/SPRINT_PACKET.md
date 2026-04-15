@@ -1,7 +1,7 @@
 # Sprint Packet
 
 ## Sprint Title
-P13-S2: Alice Lite
+P13-S3: Memory Hygiene + Conversation Health
 
 ## Activation Note
 - This packet is active.
@@ -9,17 +9,17 @@ P13-S2: Alice Lite
 - Phase 13 is active.
 - Phase 13 sequence is fixed for now:
   - `P13-S1` One-Call Continuity (shipped)
-  - `P13-S2` Alice Lite
+  - `P13-S2` Alice Lite (shipped)
   - `P13-S3` Memory Hygiene + Conversation Health
 
 ## Sprint Type
 feature
 
 ## Sprint Reason
-`P13-S1` already shipped the one-call continuity surface. The next job is to make Alice easier to start, lighter to run locally, and faster to understand in the first ten minutes without creating a second product or weakening semantics.
+`P13-S1` already reduced integration complexity, and `P13-S2` already reduced startup friction. The final Phase 13 sprint should make memory quality and conversation risk visible enough that Alice feels polished, legible, and operationally trustworthy.
 
 ## Git Instructions
-- Branch Name: `codex/phase13-s2-alice-lite`
+- Branch Name: `codex/phase13-s3-memory-hygiene-conversation-health`
 - Base Branch: `main`
 - PR Strategy: one implementation branch, one PR
 - Merge Policy: squash merge after review `PASS` and explicit approval
@@ -29,67 +29,69 @@ feature
 - shipped Bridge `B1` through `B4`
 - published `v0.3.2` baseline
 - shipped `P13-S1` one-call continuity surface
+- shipped `P13-S2` Alice Lite profile
 - no semantic fork between API, CLI, MCP, hosted, provider-runtime, and Hermes paths
 
 ## Exact Goal
-Create Alice Lite as a lighter deployment and onboarding profile:
-- one-command local startup
-- smaller-footprint deployment profile
-- simplified quickstart
-- sample workspace/bootstrap path
-- faster first useful result
+Make memory hygiene and conversation health visible and actionable:
+- duplicates
+- stale facts
+- unresolved contradictions
+- weakly trusted memory
+- review queue pressure
+- recent threads
+- stale threads
+- risky threads
+- thread health posture
 
-Alice Lite must use the same continuity semantics and the same one-call continuity entrypoint already shipped in `P13-S1`.
+This sprint should improve operational legibility without adding new substrate work.
 
 ## In Scope
-- lighter local startup path
-- smaller-footprint profile for local/dev use
-- quickstart and first-result tightening
-- sample workspace/bootstrap flow
-- docs and scripts that make the one-call continuity surface the default demo/integration entrypoint
-- startup/smoke verification for the Lite profile
+- hygiene visibility for duplicates, stale facts, unresolved contradictions, weak trust, and review pressure
+- conversation/thread health visibility for recent, stale, and risky threads
+- bounded UI/API/CLI surfaces needed to inspect those states
+- prioritization or summary views that make the quality/risk posture obvious
+- tests and docs for the new hygiene and conversation-health surfaces
 
 ## Out Of Scope
-- hygiene or thread-health dashboards
 - new connectors or channels
 - new retrieval research
 - graph or persistence rearchitecture
-- SQLite or embedded-mode redesign unless it is strictly necessary and semantics remain intact
-- new provider/runtime substrate work unless directly required for the lighter profile
+- new provider/runtime substrate work
+- deeper Alice Lite packaging work
+- new continuity-surface work beyond what is required to expose the quality/health views
 
 ## Proposed Files And Modules
-- `README.md`
-- `docs/quickstart/`
-- `scripts/`
-- local startup/profile config files
-- `docker-compose` / deployment-profile files if needed
-- startup/smoke tests
-- docs that describe Lite as a profile, not a separate product
+- `apps/api/src/alicebot_api/`
+- `apps/web/` if UI surfaces are part of the implemented sprint
+- `docs/memory/` or related docs paths
+- `tests/unit/`
+- `tests/integration/`
+- control docs if sprint status updates are needed
 
 ## Planned Deliverables
-- one-command local start for Alice Lite
-- smaller-footprint local/dev profile
-- simplified quickstart and fast first useful result
-- docs/examples that use the shipped one-call continuity surface as the default Alice demo path
-- smoke coverage for the Lite path
+- memory hygiene surfaces
+- conversation health surfaces
+- prioritization/summary outputs for stale, risky, contradictory, or review-heavy states
+- docs and tests that make those surfaces usable and trustworthy
 
 ## Acceptance Criteria
-- a solo builder can start Alice more easily through a lighter local path
-- Alice Lite preserves the same continuity semantics as the full baseline
-- the shipped one-call continuity surface remains the default integration/demo entrypoint
-- quickstart and first-result path are materially simpler than before
-- Lite is clearly documented as a deployment profile, not a separate product
+- duplicates, stale facts, unresolved contradictions, weak trust, and review pressure are visible and actionable
+- stale or risky conversations are visible without deep system knowledge
+- the sprint improves quality visibility without introducing new substrate work
+- the shipped one-call continuity surface and Alice Lite path remain intact and non-forked
+- the result feels like visibility/polish work, not a fourth hidden architecture sprint
 
 ## Required Verification
 - `python3 scripts/check_control_doc_truth.py`
 - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-- targeted startup/smoke coverage for the Lite path
-- any docs/quickstart verification required by the implemented Lite profile
+- targeted unit/integration coverage for the hygiene and conversation-health surfaces
+- any UI/API/CLI verification required by the implemented sprint surface
 
 ## Control Tower Decisions Needed
-- whether Alice Lite can reduce services or bootstrap steps without harming semantics or release credibility
-- whether Lite is strictly Docker-profile based or also exposes a scripted local bootstrap path
-- what the canonical "first useful result" flow is for Lite
+- threshold model for risky/stale thread health
+- whether review queue pressure is summarized only at a global level or also per thread/workspace slice
+- whether the first shipped thread-health surface is API-only, UI-visible, or both
 
 ## Exit Condition
-This sprint is complete when Alice offers a meaningfully simpler local/dev startup path and first-run experience while preserving the shipped continuity semantics and one-call continuity surface.
+This sprint is complete when Alice makes memory hygiene and conversation health clearly visible and operationally useful without weakening the shipped continuity semantics or expanding into new substrate work.

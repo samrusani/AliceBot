@@ -168,10 +168,12 @@ from alicebot_api.contracts import (
     ChiefOfStaffRecommendationOutcomeCaptureResponse,
     ContinuityWeeklyReviewRequestInput,
     ContinuityWeeklyReviewResponse,
+    MemoryHygieneDashboardResponse,
     MemoryTrustDashboardResponse,
     RetrievalEvaluationResponse,
     RetrievalRunListResponse,
     RetrievalTraceResponse,
+    ThreadHealthDashboardResponse,
     TrustSignalListQueryInput,
     TrustSignalListResponse,
     EmbeddingConfigStatus,
@@ -606,6 +608,7 @@ from alicebot_api.continuity_open_loops import (
     compile_continuity_open_loop_dashboard,
     compile_continuity_weekly_review,
 )
+from alicebot_api.conversation_health import get_thread_health_dashboard
 from alicebot_api.continuity_objects import ContinuityObjectValidationError
 from alicebot_api.memory import (
     MemoryAdmissionValidationError,
@@ -617,6 +620,7 @@ from alicebot_api.memory import (
     create_memory_review_label_record,
     get_open_loop_record,
     get_memory_evaluation_summary,
+    get_memory_hygiene_dashboard_summary,
     get_memory_quality_gate_summary,
     get_memory_trust_dashboard_summary,
     get_memory_review_record,
@@ -3026,6 +3030,22 @@ def list_threads(user_id: UUID) -> JSONResponse:
         "items": items,
         "summary": summary,
     }
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/threads/health-dashboard")
+def get_threads_health_dashboard(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload: ThreadHealthDashboardResponse = get_thread_health_dashboard(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
     return JSONResponse(
         status_code=200,
         content=jsonable_encoder(payload),
@@ -6487,6 +6507,22 @@ def get_memories_trust_dashboard(user_id: UUID) -> JSONResponse:
 
     with user_connection(settings.database_url, user_id) as conn:
         payload: MemoryTrustDashboardResponse = get_memory_trust_dashboard_summary(
+            ContinuityStore(conn),
+            user_id=user_id,
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.get("/v0/memories/hygiene-dashboard")
+def get_memories_hygiene_dashboard(user_id: UUID) -> JSONResponse:
+    settings = get_settings()
+
+    with user_connection(settings.database_url, user_id) as conn:
+        payload: MemoryHygieneDashboardResponse = get_memory_hygiene_dashboard_summary(
             ContinuityStore(conn),
             user_id=user_id,
         )

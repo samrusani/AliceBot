@@ -8,6 +8,7 @@ const {
   getApiConfigMock,
   getMemoryDetailMock,
   getMemoryEvaluationSummaryMock,
+  getMemoryHygieneDashboardMock,
   getMemoryTrustDashboardMock,
   getMemoryRevisionsMock,
   getOpenLoopDetailMock,
@@ -20,6 +21,7 @@ const {
   getApiConfigMock: vi.fn(),
   getMemoryDetailMock: vi.fn(),
   getMemoryEvaluationSummaryMock: vi.fn(),
+  getMemoryHygieneDashboardMock: vi.fn(),
   getMemoryTrustDashboardMock: vi.fn(),
   getMemoryRevisionsMock: vi.fn(),
   getOpenLoopDetailMock: vi.fn(),
@@ -61,6 +63,7 @@ vi.mock("../../lib/api", async () => {
     getApiConfig: getApiConfigMock,
     getMemoryDetail: getMemoryDetailMock,
     getMemoryEvaluationSummary: getMemoryEvaluationSummaryMock,
+    getMemoryHygieneDashboard: getMemoryHygieneDashboardMock,
     getMemoryTrustDashboard: getMemoryTrustDashboardMock,
     getMemoryRevisions: getMemoryRevisionsMock,
     getOpenLoopDetail: getOpenLoopDetailMock,
@@ -77,6 +80,7 @@ describe("MemoriesPage", () => {
     getApiConfigMock.mockReset();
     getMemoryDetailMock.mockReset();
     getMemoryEvaluationSummaryMock.mockReset();
+    getMemoryHygieneDashboardMock.mockReset();
     getMemoryTrustDashboardMock.mockReset();
     getMemoryRevisionsMock.mockReset();
     getOpenLoopDetailMock.mockReset();
@@ -104,8 +108,10 @@ describe("MemoriesPage", () => {
 
     expect(screen.getByText("Fixture-backed")).toBeInTheDocument();
     expect(screen.getByText("Summary Fixture")).toBeInTheDocument();
+    expect(screen.getByText("Operational hygiene posture")).toBeInTheDocument();
     expect(screen.getByText("Canonical quality posture")).toBeInTheDocument();
     expect(screen.getByText(/Fixture dashboard/)).toBeInTheDocument();
+    expect(screen.getByText(/Fixture hygiene dashboard/)).toBeInTheDocument();
     expect(screen.getByText("Queue Fixture")).toBeInTheDocument();
     expect(screen.getAllByText("Insufficient sample").length).toBeGreaterThan(0);
     expect(screen.getByText("Fixture list")).toBeInTheDocument();
@@ -116,6 +122,7 @@ describe("MemoriesPage", () => {
       ),
     ).toBeInTheDocument();
     expect(listMemoriesMock).not.toHaveBeenCalled();
+    expect(getMemoryHygieneDashboardMock).not.toHaveBeenCalled();
   });
 
   it("renders live-backed memory summary, detail, revisions, and labels when live reads succeed", async () => {
@@ -274,6 +281,47 @@ describe("MemoriesPage", () => {
         ],
       },
     });
+    getMemoryHygieneDashboardMock.mockResolvedValue({
+      dashboard: {
+        posture: "watch",
+        reason: "Live duplicate and contradiction posture remains visible.",
+        duplicate_group_count: 1,
+        duplicate_memory_count: 2,
+        stale_fact_count: 1,
+        unresolved_contradiction_count: 1,
+        weak_trust_count: 2,
+        review_queue_pressure: {
+          posture: "watch",
+          total_count: 2,
+          stale_over_72h_count: 0,
+          aging_24h_to_72h_count: 1,
+          reason: "Backlog exists and should be drained before it becomes stale.",
+        },
+        duplicate_groups: [
+          {
+            group_key: "preference:{\"merchant\":\"Live Merchant\"}",
+            memory_type: "preference",
+            normalized_value: "{\"merchant\":\"Live Merchant\"}",
+            count: 2,
+            memory_ids: ["memory-live-1", "memory-live-2"],
+            memory_keys: ["user.preference.live", "user.preference.live_backup"],
+            latest_updated_at: "2026-03-18T10:05:00Z",
+          },
+        ],
+        focus: [
+          {
+            kind: "duplicates",
+            posture: "watch",
+            count: 2,
+            reason:
+              "Multiple active memories share the same normalized value and should be reviewed for consolidation.",
+            action: "Review duplicate groups and keep one canonical fact per repeated value.",
+            sample_ids: ["memory-live-1", "memory-live-2"],
+          },
+        ],
+        sources: ["memories", "contradiction_cases", "trust_signals", "continuity_recall"],
+      },
+    });
     listOpenLoopsMock.mockResolvedValue({
       items: [
         {
@@ -389,9 +437,11 @@ describe("MemoriesPage", () => {
     expect(screen.getByText("Live API")).toBeInTheDocument();
     expect(screen.getByText("Summary Live")).toBeInTheDocument();
     expect(screen.getByText(/Live dashboard/)).toBeInTheDocument();
+    expect(screen.getByText("Live hygiene dashboard")).toBeInTheDocument();
     expect(screen.getByText("review_high_risk_queue")).toBeInTheDocument();
     expect(screen.getByText("Queue Live")).toBeInTheDocument();
     expect(screen.getByText("Healthy")).toBeInTheDocument();
+    expect(screen.getByText("Live duplicate and contradiction posture remains visible.")).toBeInTheDocument();
     expect(screen.getByText("Live list")).toBeInTheDocument();
     expect(screen.getByText("Live detail")).toBeInTheDocument();
     expect(screen.getByText("Live revisions")).toBeInTheDocument();
@@ -423,6 +473,7 @@ describe("MemoriesPage", () => {
       priorityMode: "recent_first",
     });
     expect(getMemoryTrustDashboardMock).toHaveBeenCalledWith("https://api.example.com", "user-1");
+    expect(getMemoryHygieneDashboardMock).toHaveBeenCalledWith("https://api.example.com", "user-1");
   });
 
   it("keeps fallback state explicit when live reads partially fail and shows unavailable revision/label panels", async () => {
@@ -457,6 +508,7 @@ describe("MemoriesPage", () => {
     });
     listMemoryReviewQueueMock.mockRejectedValue(new Error("queue down"));
     getMemoryEvaluationSummaryMock.mockRejectedValue(new Error("summary down"));
+    getMemoryHygieneDashboardMock.mockRejectedValue(new Error("hygiene dashboard down"));
     getMemoryTrustDashboardMock.mockRejectedValue(new Error("trust dashboard down"));
     listOpenLoopsMock.mockRejectedValue(new Error("open loops down"));
     getMemoryDetailMock.mockRejectedValue(new Error("detail down"));
@@ -472,6 +524,7 @@ describe("MemoriesPage", () => {
     );
 
     expect(screen.getByText("Summary: summary down")).toBeInTheDocument();
+    expect(screen.getByText(/hygiene dashboard down/)).toBeInTheDocument();
     expect(screen.getByText(/trust dashboard down/)).toBeInTheDocument();
     expect(screen.getByText("Queue: queue down")).toBeInTheDocument();
     expect(screen.getByText(/open loops down/)).toBeInTheDocument();

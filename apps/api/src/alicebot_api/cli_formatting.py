@@ -1321,6 +1321,15 @@ def format_status_output(status: Mapping[str, object]) -> str:
         "alice-core status",
         f"user_id: {status['user_id']}",
         f"database: {status['database_status']}",
+        (
+            "memory_hygiene: "
+            f"posture={status['memory_hygiene_posture']} "
+            f"duplicate_groups={status['memory_duplicate_groups']} "
+            f"stale_facts={status['memory_stale_facts']} "
+            f"open_contradictions={status['memory_unresolved_contradictions']} "
+            f"weak_trust={status['memory_weak_trust']} "
+            f"queue_pressure={status['memory_review_queue_pressure']}"
+        ),
         f"continuity_capture_events: {status['continuity_capture_events']}",
         f"continuity_objects_total: {status['continuity_objects_total']}",
         (
@@ -1336,6 +1345,14 @@ def format_status_output(status: Mapping[str, object]) -> str:
             f"non_searchable={status['continuity_objects_non_searchable']} "
             f"promotable={status['continuity_objects_promotable']} "
             f"non_promotable={status['continuity_objects_non_promotable']}"
+        ),
+        (
+            "thread_health: "
+            f"posture={status['thread_health_posture']} "
+            f"recent={status['threads_recent']} "
+            f"stale={status['threads_stale']} "
+            f"risky={status['threads_risky']} "
+            f"watch={status['threads_watch']}"
         ),
         (
             "review_queue: "

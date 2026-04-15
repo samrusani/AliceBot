@@ -1,4 +1,5 @@
 import { MemoryDetail } from "../../components/memory-detail";
+import { MemoryHygieneDashboard } from "../../components/memory-hygiene-dashboard";
 import { MemoryLabelForm } from "../../components/memory-label-form";
 import { MemoryLabelList } from "../../components/memory-label-list";
 import { MemoryList } from "../../components/memory-list";
@@ -7,6 +8,7 @@ import { MemorySummary } from "../../components/memory-summary";
 import { PageHeader } from "../../components/page-header";
 import type {
   ApiSource,
+  MemoryHygieneDashboardSummary,
   MemoryReviewLabelSummary,
   MemoryReviewQueuePriorityMode,
   MemoryReviewRecord,
@@ -21,6 +23,7 @@ import {
   getApiConfig,
   getMemoryDetail,
   getMemoryEvaluationSummary,
+  getMemoryHygieneDashboard,
   getMemoryTrustDashboard,
   getMemoryRevisions,
   hasLiveApiConfig,
@@ -209,6 +212,59 @@ const trustDashboardFixture: MemoryTrustDashboardSummary = {
   ],
 };
 
+const hygieneDashboardFixture: MemoryHygieneDashboardSummary = {
+  posture: "watch",
+  reason: "Fixture posture keeps duplicate, stale, contradiction, weak-trust, and queue-pressure visibility explicit.",
+  duplicate_group_count: 1,
+  duplicate_memory_count: 2,
+  stale_fact_count: 1,
+  unresolved_contradiction_count: 1,
+  weak_trust_count: 2,
+  review_queue_pressure: {
+    posture: "watch",
+    total_count: 2,
+    stale_over_72h_count: 0,
+    aging_24h_to_72h_count: 1,
+    reason: "Fixture queue backlog exists and should be drained before it becomes stale.",
+  },
+  duplicate_groups: [
+    {
+      group_key: "preference:{\"merchant\":\"Fixture Store\"}",
+      memory_type: "preference",
+      normalized_value: "{\"merchant\":\"Fixture Store\"}",
+      count: 2,
+      memory_ids: [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+      ],
+      memory_keys: ["user.preference.store", "user.preference.backup_store"],
+      latest_updated_at: "2026-03-23T09:00:00Z",
+    },
+  ],
+  focus: [
+    {
+      kind: "duplicates",
+      posture: "watch",
+      count: 2,
+      reason: "Fixture duplicate facts are visible for consolidation review.",
+      action: "Review duplicate groups and keep one canonical fact per repeated value.",
+      sample_ids: [
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+      ],
+    },
+    {
+      kind: "unresolved_contradictions",
+      posture: "critical",
+      count: 1,
+      reason: "Fixture contradiction pressure is visible in the hygiene surface.",
+      action: "Resolve contradiction cases before relying on those facts in continuity surfaces.",
+      sample_ids: [],
+    },
+  ],
+  sources: ["memories", "contradiction_cases", "trust_signals", "continuity_recall"],
+};
+
 const openLoopFixtures: OpenLoopRecord[] = [
   {
     id: "loop-fixture-1",
@@ -292,13 +348,24 @@ export default async function MemoriesPage({
   let trustDashboardSource: ApiSource = "fixture";
   let trustDashboardUnavailableReason: string | undefined;
 
+  let hygieneDashboard = hygieneDashboardFixture;
+  let hygieneDashboardSource: ApiSource = "fixture";
+  let hygieneDashboardUnavailableReason: string | undefined;
+
   let openLoops = openLoopFixtures;
   let openLoopSummary = openLoopSummaryFixture;
   let openLoopSource: ApiSource = "fixture";
   let openLoopUnavailableReason: string | undefined;
 
   if (liveModeReady) {
-    const [memoryResult, queueResult, summaryResult, trustDashboardResult, openLoopResult] =
+    const [
+      memoryResult,
+      queueResult,
+      summaryResult,
+      trustDashboardResult,
+      hygieneDashboardResult,
+      openLoopResult,
+    ] =
       await Promise.allSettled([
       listMemories(apiConfig.apiBaseUrl, apiConfig.userId, { status: "active" }),
       listMemoryReviewQueue(apiConfig.apiBaseUrl, apiConfig.userId, {
@@ -306,6 +373,7 @@ export default async function MemoriesPage({
       }),
       getMemoryEvaluationSummary(apiConfig.apiBaseUrl, apiConfig.userId),
       getMemoryTrustDashboard(apiConfig.apiBaseUrl, apiConfig.userId),
+      getMemoryHygieneDashboard(apiConfig.apiBaseUrl, apiConfig.userId),
       listOpenLoops(apiConfig.apiBaseUrl, apiConfig.userId, { status: "open", limit: 20 }),
     ]);
 
@@ -349,6 +417,16 @@ export default async function MemoriesPage({
         trustDashboardResult.reason instanceof Error
           ? trustDashboardResult.reason.message
           : "Memory trust dashboard could not be loaded.";
+    }
+
+    if (hygieneDashboardResult.status === "fulfilled") {
+      hygieneDashboard = hygieneDashboardResult.value.dashboard;
+      hygieneDashboardSource = "live";
+    } else {
+      hygieneDashboardUnavailableReason =
+        hygieneDashboardResult.reason instanceof Error
+          ? hygieneDashboardResult.reason.message
+          : "Memory hygiene dashboard could not be loaded.";
     }
 
     if (openLoopResult.status === "fulfilled") {
@@ -491,6 +569,7 @@ export default async function MemoriesPage({
     reviewQueueSource,
     evaluationSummarySource,
     trustDashboardSource,
+    hygieneDashboardSource,
     openLoopSource,
     selectedMemorySource,
     selectedOpenLoopSource,
@@ -527,6 +606,12 @@ export default async function MemoriesPage({
         queueSource={reviewQueueSource}
         queueUnavailableReason={reviewQueueUnavailableReason}
         activeFilter={activeFilter}
+      />
+
+      <MemoryHygieneDashboard
+        dashboard={hygieneDashboard}
+        source={hygieneDashboardSource}
+        unavailableReason={hygieneDashboardUnavailableReason}
       />
 
       <div className="section-card">

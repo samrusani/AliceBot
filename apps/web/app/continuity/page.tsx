@@ -11,6 +11,7 @@ import { PageHeader } from "../../components/page-header";
 import { ResumptionBrief } from "../../components/resumption-brief";
 import { SectionCard } from "../../components/section-card";
 import { StatusBadge } from "../../components/status-badge";
+import { ThreadHealthDashboard } from "../../components/thread-health-dashboard";
 import type {
   ApiSource,
   ContinuityCaptureInboxItem,
@@ -25,6 +26,7 @@ import type {
   ContinuityReviewStatusFilter,
   ContinuityResumptionBrief,
   ContinuityWeeklyReview,
+  ThreadHealthDashboardSummary,
 } from "../../lib/api";
 import {
   getContinuityReviewDetail,
@@ -34,6 +36,7 @@ import {
   getContinuityDailyBrief,
   getContinuityOpenLoopDashboard,
   getContinuityResumptionBrief,
+  getThreadHealthDashboard,
   getContinuityWeeklyReview,
   hasLiveApiConfig,
   listContinuityReviewQueue,
@@ -539,6 +542,110 @@ const continuityReviewDetailFixture: ContinuityReviewDetail = {
   },
 };
 
+const threadHealthDashboardFixture: ThreadHealthDashboardSummary = {
+  posture: "watch",
+  total_thread_count: 3,
+  recent_thread_count: 1,
+  stale_thread_count: 1,
+  risky_thread_count: 1,
+  watch_thread_count: 1,
+  thresholds: {
+    recent_window_hours: 24,
+    stale_window_hours: 72,
+    risky_score_threshold: 2,
+  },
+  recent_threads: [
+    {
+      thread: {
+        id: "thread-fixture-1",
+        title: "Launch Project",
+        agent_profile_id: "assistant_default",
+        created_at: "2026-03-29T09:00:00Z",
+        updated_at: "2026-03-29T09:20:00Z",
+      },
+      health_posture: "healthy",
+      activity_posture: "recent",
+      risk_posture: "normal",
+      risk_score: 0,
+      last_activity_at: "2026-03-29T09:20:00Z",
+      last_conversation_at: "2026-03-29T09:20:00Z",
+      hours_since_last_activity: 4,
+      conversation_event_count: 3,
+      operational_event_count: 1,
+      active_session_count: 1,
+      open_loop_count: 1,
+      stale_open_loop_count: 0,
+      unresolved_contradiction_count: 0,
+      weak_trust_signal_count: 0,
+      reasons: ["No active contradiction, stale open-loop, or weak-trust pressure is currently visible."],
+      recommended_action: "No immediate intervention required.",
+    },
+  ],
+  stale_threads: [
+    {
+      thread: {
+        id: "thread-fixture-2",
+        title: "Vendor Follow-up",
+        agent_profile_id: "assistant_default",
+        created_at: "2026-03-20T09:00:00Z",
+        updated_at: "2026-03-21T09:00:00Z",
+      },
+      health_posture: "watch",
+      activity_posture: "stale",
+      risk_posture: "watch",
+      risk_score: 1,
+      last_activity_at: "2026-03-21T09:00:00Z",
+      last_conversation_at: "2026-03-21T09:00:00Z",
+      hours_since_last_activity: 96,
+      conversation_event_count: 1,
+      operational_event_count: 1,
+      active_session_count: 0,
+      open_loop_count: 1,
+      stale_open_loop_count: 1,
+      unresolved_contradiction_count: 0,
+      weak_trust_signal_count: 0,
+      reasons: ["1 stale open-loop item(s)."],
+      recommended_action: "Review stale waiting-for or blocker items linked to this thread.",
+    },
+  ],
+  risky_threads: [
+    {
+      thread: {
+        id: "thread-fixture-3",
+        title: "Preference conflict",
+        agent_profile_id: "assistant_default",
+        created_at: "2026-03-25T09:00:00Z",
+        updated_at: "2026-03-28T09:00:00Z",
+      },
+      health_posture: "critical",
+      activity_posture: "current",
+      risk_posture: "risky",
+      risk_score: 2,
+      last_activity_at: "2026-03-28T09:00:00Z",
+      last_conversation_at: "2026-03-28T09:00:00Z",
+      hours_since_last_activity: 28,
+      conversation_event_count: 2,
+      operational_event_count: 0,
+      active_session_count: 0,
+      open_loop_count: 0,
+      stale_open_loop_count: 0,
+      unresolved_contradiction_count: 1,
+      weak_trust_signal_count: 0,
+      reasons: ["1 unresolved contradiction case(s)."],
+      recommended_action: "Resolve contradiction cases before trusting this thread for recall or briefing.",
+    },
+  ],
+  items: [],
+  sources: [
+    "threads",
+    "thread_sessions",
+    "thread_events",
+    "continuity_recall",
+    "contradiction_cases",
+    "trust_signals",
+  ],
+};
+
 function renderDetail(item: ContinuityCaptureInboxItem | null, source: ApiSource | "unavailable" | null, unavailableReason?: string) {
   if (!item) {
     return (
@@ -841,6 +948,23 @@ export default async function ContinuityPage({
     }
   }
 
+  let threadHealthDashboard = threadHealthDashboardFixture;
+  let threadHealthSource: ApiSource = "fixture";
+  let threadHealthUnavailableReason: string | undefined;
+
+  if (liveModeReady) {
+    try {
+      const payload = await getThreadHealthDashboard(apiConfig.apiBaseUrl, apiConfig.userId);
+      threadHealthDashboard = payload.dashboard;
+      threadHealthSource = "live";
+    } catch (error) {
+      threadHealthUnavailableReason =
+        error instanceof Error
+          ? error.message
+          : "Thread health dashboard could not be loaded.";
+    }
+  }
+
   let reviewItems = continuityReviewFixtures;
   let reviewSummary = continuityReviewSummaryFixture;
   let reviewSource: ApiSource = "fixture";
@@ -897,6 +1021,7 @@ export default async function ContinuityPage({
     openLoopSource,
     dailyBriefSource,
     weeklyReviewSource,
+    threadHealthSource,
     reviewSource,
     correctionSource,
   );
@@ -970,6 +1095,12 @@ export default async function ContinuityPage({
         review={weeklyReview}
         source={weeklyReviewSource}
         unavailableReason={weeklyReviewUnavailableReason}
+      />
+
+      <ThreadHealthDashboard
+        dashboard={threadHealthDashboard}
+        source={threadHealthSource}
+        unavailableReason={threadHealthUnavailableReason}
       />
 
       <div className="grid grid--two">

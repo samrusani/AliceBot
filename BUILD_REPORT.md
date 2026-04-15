@@ -1,45 +1,44 @@
 # BUILD_REPORT
 
 - sprint objective
-  - Implement `P13-S2` Alice Lite as a lighter local/dev startup and onboarding profile while preserving the shipped continuity semantics and one-call continuity entrypoint.
+  - Implement `P13-S3` Memory Hygiene + Conversation Health by making duplicate facts, stale facts, unresolved contradictions, weak trust, review pressure, recent threads, stale threads, risky threads, and overall thread posture visible through bounded API, web, and CLI status surfaces.
 - completed work
-  - Added `docker-compose.lite.yml` with a Lite Postgres-only local profile.
-  - Added `.env.lite.example` for the Lite entrypoint-rate-limit and reload defaults.
-  - Added `scripts/alice_lite_up.sh` for one-command Lite startup, migration, sample-data load, and API launch.
-  - Added `scripts/bootstrap_alice_lite_workspace.py` for the sample hosted workspace bootstrap flow plus first one-call continuity result without printing session tokens.
-  - Added `scripts/run_alice_lite_smoke.py` for Lite health and one-call CLI smoke verification.
-  - Updated `scripts/api_dev.sh` so the Lite entrypoint-rate-limit override survives `.env` loading.
-  - Updated `README.md` and `docs/quickstart/local-setup-and-first-result.md` so Alice Lite is the default quickstart/demo path, `brief` is the default first useful result, and the Lite prerequisites stay scoped to the Lite path.
-  - Updated Phase 13 control docs and architecture docs so `P13-S1` is recorded as shipped and `P13-S2` as active.
-  - Added focused unit coverage for the Lite profile assets, including token-output guardrails and quickstart scope checks.
+  - Added `GET /v0/memories/hygiene-dashboard` with grouped duplicate detection, stale-fact visibility, unresolved contradiction counts, weak-trust counts, review-queue pressure, and actionable focus items.
+  - Added `GET /v0/threads/health-dashboard` with recent/stale/risky thread summaries, deterministic thresholds, per-thread reasons, and recommended actions.
+  - Extended `alicebot status` to include memory-hygiene posture and thread-health posture from the same canonical dashboard builders.
+  - Added a memory hygiene panel to the memory review workspace.
+  - Added a thread health panel to the continuity workspace.
+  - Added focused unit coverage for memory hygiene aggregation and thread health aggregation.
+  - Added focused web page coverage for the new memory and continuity dashboard panels.
+  - Added `docs/memory/p13-s3-memory-hygiene-conversation-health.md` documenting the shipped surfaces and threshold model.
 - incomplete work
-  - None identified during implementation.
+  - None identified within sprint scope.
 - files changed
-  - `.ai/active/SPRINT_PACKET.md`
-  - `.ai/handoff/CURRENT_STATE.md`
-  - `BUILD_REPORT.md`
-  - `CURRENT_STATE.md`
-  - `PRODUCT_BRIEF.md`
-  - `.env.lite.example`
-  - `ARCHITECTURE.md`
-  - `README.md`
-  - `ROADMAP.md`
-  - `docker-compose.lite.yml`
-  - `docs/quickstart/local-setup-and-first-result.md`
-  - `scripts/check_control_doc_truth.py`
-  - `scripts/alice_lite_up.sh`
-  - `scripts/api_dev.sh`
-  - `scripts/bootstrap_alice_lite_workspace.py`
-  - `scripts/run_alice_lite_smoke.py`
-  - `tests/unit/test_phase13_alice_lite_assets.py`
+  - `apps/api/src/alicebot_api/cli.py`
+  - `apps/api/src/alicebot_api/cli_formatting.py`
+  - `apps/api/src/alicebot_api/contracts.py`
+  - `apps/api/src/alicebot_api/conversation_health.py`
+  - `apps/api/src/alicebot_api/main.py`
+  - `apps/api/src/alicebot_api/memory.py`
+  - `apps/web/app/continuity/page.test.tsx`
+  - `apps/web/app/continuity/page.tsx`
+  - `apps/web/app/memories/page.test.tsx`
+  - `apps/web/app/memories/page.tsx`
+  - `apps/web/components/memory-hygiene-dashboard.tsx`
+  - `apps/web/components/thread-health-dashboard.tsx`
+  - `apps/web/lib/api.ts`
+  - `docs/memory/p13-s3-memory-hygiene-conversation-health.md`
+  - `tests/unit/test_conversation_health.py`
+  - `tests/unit/test_main.py`
+  - `tests/unit/test_memory.py`
 - tests run
   - `python3 scripts/check_control_doc_truth.py`
   - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-  - `./.venv/bin/python -m pytest tests/unit/test_phase13_alice_lite_assets.py -q`
-  - live `./scripts/alice_lite_up.sh` startup verification against `docker-compose.lite.yml`
-  - live `./.venv/bin/python scripts/bootstrap_alice_lite_workspace.py`
-  - live `./.venv/bin/python scripts/run_alice_lite_smoke.py`
+  - `./.venv/bin/python -m pytest tests/unit/test_memory.py tests/unit/test_conversation_health.py tests/unit/test_main.py -q`
+  - `./.venv/bin/python -m pytest tests/unit/test_events.py -q`
+  - `./.venv/bin/python -m pytest tests/unit/test_cli.py -q`
+  - `pnpm test app/memories/page.test.tsx app/continuity/page.test.tsx` (run from `apps/web`)
 - blockers/issues
-  - No implementation blockers remained after fixing the authenticated-user sample-data seeding path, aligning the smoke matcher with the current CLI formatter output, and removing the bootstrap-token log leak from the sample flow.
+  - The sprint packet left thread-health thresholds and first-surface scope open. Implementation uses a bounded deterministic model: recent within 24h, stale after 72h, risky at score `>= 2`, and ships the first surface in both API and web.
 - recommended next step
-  - Review whether the full-stack quickstart should also link to the Lite profile now that Lite is the default local/dev onboarding path.
+  - Validate the risk-score thresholds against live operator usage and adjust only the scoring constants if the first dashboard proves too noisy or too quiet.
