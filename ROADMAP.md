@@ -7,18 +7,16 @@
 - Bridge `B1`-`B4`: shipped
 - Bridge Phase (`B1`-`B4`): shipped
 - `v0.2.0`: released
+- Phase 12: shipped
+- `v0.3.2`: current release target
 
 These remain baseline truth and are not future milestones.
 
 ## Active Planning Status
-- Phase 12 Sprint 1 (`P12-S1`) is shipped.
-- Phase 12 Sprint 2 (`P12-S2`) is shipped.
-- Phase 12 Sprint 3 (`P12-S3`) is shipped.
-- Phase 12 Sprint 4 (`P12-S4`) is shipped.
-- Phase 12 Sprint 5 (`P12-S5`) is the active execution sprint.
-- `P12-S5` is the task-adaptive-briefing sprint for the Phase 12 quality stack.
+- Phase 12 closeout and `v0.3.2` release update are the active control packet.
+- No remaining Phase 12 feature sprints are open.
 
-## Phase 12 Milestones
+## Phase 12 Completed Milestones
 
 ### P12-S1: Hybrid Retrieval + Reranking
 - add hybrid retrieval pipeline
@@ -41,7 +39,7 @@ These remain baseline truth and are not future milestones.
 - add brief compiler and brief modes
 - integrate provider/model-pack briefing strategy
 
-## Release Sequencing
+## Release Sequencing Applied
 - `v0.3.0`: retrieval and memory quality (`P12-S1` through `P12-S3`)
 - `v0.3.1`: public evaluation (`P12-S4`)
 - `v0.3.2`: task-adaptive briefing (`P12-S5`)
@@ -53,5 +51,5 @@ These remain baseline truth and are not future milestones.
 - Treat later releases as separate contracts; do not collapse all Phase 12 work into one oversized sprint.
 
 ## Beyond Phase 12
-- No post-Phase-12 feature plan is defined in the source packet.
-- Additional work after `v0.3.2` requires a new planning pass.
+- No post-Phase-12 feature plan is currently defined.
+- The next step is either cutting the `v0.3.2` release or planning the next phase.

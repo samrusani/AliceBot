@@ -10,14 +10,23 @@ apps/web/node_modules/
 artifacts/
 
 # Internal operating docs (keep local, exclude from public repo)
-.ai/
+.ai/*
+!.ai/active/
+!.ai/handoff/
+.ai/active/*
+!.ai/active/SPRINT_PACKET.md
+.ai/handoff/*
+!.ai/handoff/CURRENT_STATE.md
 BUILD_REPORT.md
 REVIEW_REPORT.md
 ARCHIVE_RECOMMENDATIONS.md
 RECOMMENDED_ADRS.md
 
 # Internal planning/process docs (keep local, exclude from public repo)
-docs/archive/planning/
+docs/archive/planning/*
+!docs/archive/planning/2026-04-08-context-compaction/
+docs/archive/planning/2026-04-08-context-compaction/*
+!docs/archive/planning/2026-04-08-context-compaction/README.md
 docs/archive/sprints/
 docs/phase5-sprint-17-20-plan.md
 docs/phase8-sprint-29-32-plan.md

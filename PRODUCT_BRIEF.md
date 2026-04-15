@@ -11,15 +11,17 @@ Alice is a pre-1.0 continuity platform for AI agents and agent-assisted workflow
 
 ## Current Repo Posture
 - `v0.2.0` is tagged and released.
+- `v0.3.2` is the current release target for the completed Phase 12 boundary.
 - Release Sprint 1 (`R1`) is complete and now baseline truth.
-- Phase 12 is active.
+- Phase 12 is complete.
 - `P12-S1` Hybrid Retrieval + Reranking is shipped.
 - `P12-S2` Automated Memory Operations is shipped.
 - `P12-S3` Contradiction Detection + Trust Calibration is shipped.
 - `P12-S4` Public Eval Harness is shipped.
-- `P12-S5` Task-Adaptive Briefing is the active sprint.
+- `P12-S5` Task-Adaptive Briefing is shipped.
+- Phase 12 closeout and `v0.3.2` release update are the active control-doc task.
 
-## Next Phase
+## Completed Phase
 ### Phase 12: Retrieval Quality + Adaptive Continuity
 Raise Alice from a strong continuity substrate to a measurably better memory system by improving:
 - retrieval precision
@@ -61,5 +63,5 @@ Alice already has durable memory, provenance, trust classes, revision/supersessi
 - Worker-task briefs are smaller and sharper than generic recall context without degrading resumption quality.
 
 ## Control Tower Decisions Needed
-- Whether new Phase 12 APIs should live under new `/v1` feature namespaces or extend the existing continuity surface.
-- Whether `DELETE` in memory operations means hard delete, logical tombstone, or a restricted administrative path.
+- When to cut and publish the `v0.3.2` tag/release.
+- What the next planned phase is after Phase 12 closeout.

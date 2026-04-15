@@ -2,8 +2,8 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-11 and Bridge `B1` through `B4`.
-- **Current repo execution posture:** `v0.2.0` is released; `P12-S1`, `P12-S2`, `P12-S3`, and `P12-S4` are shipped; `P12-S5` is the active sprint.
-- **Phase 12 delta:** retrieval quality, mutation explicitness, contradiction handling, public evals, and adaptive briefing.
+- **Current repo execution posture:** `v0.2.0` is the latest published tag; `v0.3.2` is the current release target; Phase 12 is complete.
+- **Active control-doc task:** Phase 12 closeout and `v0.3.2` release update.
 
 ## Current System Overview
 Alice is a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, MCP, and Hermes-integrated surfaces.
@@ -92,7 +92,7 @@ Shipped in `P12-S1`:
 - trust-aware reranking
 - persisted retrieval traces
 
-Planned additions:
+Delivered additions:
 - `retrieval_runs`
 - `retrieval_candidates`
 - debug surfaces for API, CLI, and MCP
@@ -135,13 +135,13 @@ Important baseline note: `P12-S4` is now the evaluation baseline for the rest of
 Source-of-truth note: the checked-in fixture catalog defines the authoritative suite/case set and ordering; persisted eval suite/case rows are synchronized snapshots for execution and audit, not an independent planning surface.
 
 ### P12-S5: Task-Adaptive Briefing
-Separate durable memory from output-specific briefing layers.
+Shipped in `P12-S5`:
 
-Planned additions:
+Delivered additions:
 - `task_briefs`
 - provider/model-pack briefing strategy fields
 
-Important baseline note: `P12-S5` should build on shipped retrieval, mutation, contradiction, and eval baselines. Existing resumption, daily-brief, and chief-of-staff briefing surfaces are starting points, not greenfield replacements.
+Important baseline note: `P12-S5` closes the planned Phase 12 implementation scope. Existing resumption, daily-brief, and chief-of-staff briefing surfaces remain the starting points rather than being replaced wholesale.
 
 ## Security And Reliability Rules
 - Keep user/workspace isolation intact for continuity, provider, and channel data.
@@ -169,7 +169,5 @@ Important baseline note: `P12-S5` should build on shipped retrieval, mutation, c
 - release/eval artifacts committed only when they correspond to exact commands and fixtures
 
 ## Control Tower Decisions Needed
-- Should Phase 12 retrieval ship behind a feature flag before it replaces the default recall path?
-- Should new endpoints use `/v1/retrieval/*`, `/v1/evals/*`, `/v1/briefs/*`, or extend existing continuity endpoints?
-- Should contradictions attach to continuity objects only, memories only, or both with a shared abstraction?
-- Should `DELETE` be restricted to logical deletion/tombstoning by default?
+- Whether `v0.3.2` should be tagged immediately or held until a dedicated release pass.
+- What the next planned phase is after the completed Phase 12 architecture baseline.

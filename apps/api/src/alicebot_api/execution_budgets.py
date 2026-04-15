@@ -200,6 +200,61 @@ def _invalid_transition_error(
     )
 
 
+def _optional_uuid_string(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
+def _optional_datetime_string(value: object) -> str | None:
+    return None if value is None else cast(datetime, value).isoformat()
+
+
+def _lifecycle_state_payload(
+    *,
+    row: ExecutionBudgetRow,
+    requested_action: ExecutionBudgetLifecycleAction,
+    previous_status: str,
+    replacement_budget: ExecutionBudgetRow | None,
+    replacement_max_completed_executions: int | None,
+    replacement_rolling_window_seconds: int | None,
+    rejection_reason: str | None,
+) -> ExecutionBudgetLifecycleStateTracePayload:
+    return {
+        "execution_budget_id": str(row["id"]),
+        "requested_action": requested_action,
+        "previous_status": cast(str, previous_status),
+        "current_status": cast(str, row["status"]),
+        "tool_key": row["tool_key"],
+        "domain_hint": row["domain_hint"],
+        "max_completed_executions": row["max_completed_executions"],
+        "rolling_window_seconds": row["rolling_window_seconds"],
+        "deactivated_at": _optional_datetime_string(row["deactivated_at"]),
+        "superseded_by_budget_id": _optional_uuid_string(row["superseded_by_budget_id"]),
+        "supersedes_budget_id": _optional_uuid_string(row["supersedes_budget_id"]),
+        "replacement_budget_id": None if replacement_budget is None else str(replacement_budget["id"]),
+        "replacement_status": None if replacement_budget is None else cast(str, replacement_budget["status"]),
+        "replacement_max_completed_executions": replacement_max_completed_executions,
+        "replacement_rolling_window_seconds": replacement_rolling_window_seconds,
+        "rejection_reason": rejection_reason,
+    }
+
+
+def _lifecycle_summary_payload(
+    *,
+    execution_budget_id: UUID,
+    requested_action: ExecutionBudgetLifecycleAction,
+    outcome: ExecutionBudgetLifecycleOutcome,
+    replacement_budget_id: UUID | None,
+    active_budget_id: UUID | None,
+) -> ExecutionBudgetLifecycleSummaryTracePayload:
+    return {
+        "execution_budget_id": str(execution_budget_id),
+        "requested_action": requested_action,
+        "outcome": outcome,
+        "replacement_budget_id": _optional_uuid_string(replacement_budget_id),
+        "active_budget_id": _optional_uuid_string(active_budget_id),
+    }
+
+
 def _record_lifecycle_trace(
     store: ContinuityStore,
     *,
@@ -338,37 +393,22 @@ def deactivate_execution_budget_record(
             store,
             thread=thread,
             request_payload=request_payload,
-            state_payload={
-                "execution_budget_id": str(row["id"]),
-                "requested_action": "deactivate",
-                "previous_status": cast(str, row["status"]),
-                "current_status": cast(str, row["status"]),
-                "tool_key": row["tool_key"],
-                "domain_hint": row["domain_hint"],
-                "max_completed_executions": row["max_completed_executions"],
-                "rolling_window_seconds": row["rolling_window_seconds"],
-                "deactivated_at": (
-                    None if row["deactivated_at"] is None else row["deactivated_at"].isoformat()
-                ),
-                "superseded_by_budget_id": (
-                    None if row["superseded_by_budget_id"] is None else str(row["superseded_by_budget_id"])
-                ),
-                "supersedes_budget_id": (
-                    None if row["supersedes_budget_id"] is None else str(row["supersedes_budget_id"])
-                ),
-                "replacement_budget_id": None,
-                "replacement_status": None,
-                "replacement_max_completed_executions": None,
-                "replacement_rolling_window_seconds": None,
-                "rejection_reason": str(error),
-            },
-            summary_payload={
-                "execution_budget_id": str(row["id"]),
-                "requested_action": "deactivate",
-                "outcome": "rejected",
-                "replacement_budget_id": None,
-                "active_budget_id": None,
-            },
+            state_payload=_lifecycle_state_payload(
+                row=row,
+                requested_action="deactivate",
+                previous_status=cast(str, row["status"]),
+                replacement_budget=None,
+                replacement_max_completed_executions=None,
+                replacement_rolling_window_seconds=None,
+                rejection_reason=str(error),
+            ),
+            summary_payload=_lifecycle_summary_payload(
+                execution_budget_id=cast(UUID, row["id"]),
+                requested_action="deactivate",
+                outcome="rejected",
+                replacement_budget_id=None,
+                active_budget_id=None,
+            ),
             requested_action="deactivate",
             outcome="rejected",
         )
@@ -385,37 +425,22 @@ def deactivate_execution_budget_record(
         store,
         thread=thread,
         request_payload=request_payload,
-        state_payload={
-            "execution_budget_id": str(updated["id"]),
-            "requested_action": "deactivate",
-            "previous_status": "active",
-            "current_status": cast(str, updated["status"]),
-            "tool_key": updated["tool_key"],
-            "domain_hint": updated["domain_hint"],
-            "max_completed_executions": updated["max_completed_executions"],
-            "rolling_window_seconds": updated["rolling_window_seconds"],
-            "deactivated_at": (
-                None if updated["deactivated_at"] is None else updated["deactivated_at"].isoformat()
-            ),
-            "superseded_by_budget_id": (
-                None if updated["superseded_by_budget_id"] is None else str(updated["superseded_by_budget_id"])
-            ),
-            "supersedes_budget_id": (
-                None if updated["supersedes_budget_id"] is None else str(updated["supersedes_budget_id"])
-            ),
-            "replacement_budget_id": None,
-            "replacement_status": None,
-            "replacement_max_completed_executions": None,
-            "replacement_rolling_window_seconds": None,
-            "rejection_reason": None,
-        },
-        summary_payload={
-            "execution_budget_id": str(updated["id"]),
-            "requested_action": "deactivate",
-            "outcome": "deactivated",
-            "replacement_budget_id": None,
-            "active_budget_id": None,
-        },
+        state_payload=_lifecycle_state_payload(
+            row=updated,
+            requested_action="deactivate",
+            previous_status="active",
+            replacement_budget=None,
+            replacement_max_completed_executions=None,
+            replacement_rolling_window_seconds=None,
+            rejection_reason=None,
+        ),
+        summary_payload=_lifecycle_summary_payload(
+            execution_budget_id=cast(UUID, updated["id"]),
+            requested_action="deactivate",
+            outcome="deactivated",
+            replacement_budget_id=None,
+            active_budget_id=None,
+        ),
         requested_action="deactivate",
         outcome="deactivated",
     )
@@ -453,37 +478,22 @@ def supersede_execution_budget_record(
             store,
             thread=thread,
             request_payload=request_payload,
-            state_payload={
-                "execution_budget_id": str(current["id"]),
-                "requested_action": "supersede",
-                "previous_status": cast(str, current["status"]),
-                "current_status": cast(str, current["status"]),
-                "tool_key": current["tool_key"],
-                "domain_hint": current["domain_hint"],
-                "max_completed_executions": current["max_completed_executions"],
-                "rolling_window_seconds": current["rolling_window_seconds"],
-                "deactivated_at": (
-                    None if current["deactivated_at"] is None else current["deactivated_at"].isoformat()
-                ),
-                "superseded_by_budget_id": (
-                    None if current["superseded_by_budget_id"] is None else str(current["superseded_by_budget_id"])
-                ),
-                "supersedes_budget_id": (
-                    None if current["supersedes_budget_id"] is None else str(current["supersedes_budget_id"])
-                ),
-                "replacement_budget_id": None,
-                "replacement_status": None,
-                "replacement_max_completed_executions": request.max_completed_executions,
-                "replacement_rolling_window_seconds": current["rolling_window_seconds"],
-                "rejection_reason": str(error),
-            },
-            summary_payload={
-                "execution_budget_id": str(current["id"]),
-                "requested_action": "supersede",
-                "outcome": "rejected",
-                "replacement_budget_id": None,
-                "active_budget_id": str(current["id"]) if cast(str, current["status"]) == "active" else None,
-            },
+            state_payload=_lifecycle_state_payload(
+                row=current,
+                requested_action="supersede",
+                previous_status=cast(str, current["status"]),
+                replacement_budget=None,
+                replacement_max_completed_executions=request.max_completed_executions,
+                replacement_rolling_window_seconds=current["rolling_window_seconds"],
+                rejection_reason=str(error),
+            ),
+            summary_payload=_lifecycle_summary_payload(
+                execution_budget_id=cast(UUID, current["id"]),
+                requested_action="supersede",
+                outcome="rejected",
+                replacement_budget_id=None,
+                active_budget_id=cast(UUID, current["id"]) if cast(str, current["status"]) == "active" else None,
+            ),
             requested_action="supersede",
             outcome="rejected",
         )
@@ -505,33 +515,22 @@ def supersede_execution_budget_record(
             store,
             thread=thread,
             request_payload=request_payload,
-            state_payload={
-                "execution_budget_id": str(current["id"]),
-                "requested_action": "supersede",
-                "previous_status": "active",
-                "current_status": "active",
-                "tool_key": current["tool_key"],
-                "domain_hint": current["domain_hint"],
-                "max_completed_executions": current["max_completed_executions"],
-                "rolling_window_seconds": current["rolling_window_seconds"],
-                "deactivated_at": None,
-                "superseded_by_budget_id": None,
-                "supersedes_budget_id": (
-                    None if current["supersedes_budget_id"] is None else str(current["supersedes_budget_id"])
-                ),
-                "replacement_budget_id": None,
-                "replacement_status": None,
-                "replacement_max_completed_executions": request.max_completed_executions,
-                "replacement_rolling_window_seconds": current["rolling_window_seconds"],
-                "rejection_reason": str(error),
-            },
-            summary_payload={
-                "execution_budget_id": str(current["id"]),
-                "requested_action": "supersede",
-                "outcome": "rejected",
-                "replacement_budget_id": None,
-                "active_budget_id": str(current["id"]),
-            },
+            state_payload=_lifecycle_state_payload(
+                row=current,
+                requested_action="supersede",
+                previous_status="active",
+                replacement_budget=None,
+                replacement_max_completed_executions=request.max_completed_executions,
+                replacement_rolling_window_seconds=current["rolling_window_seconds"],
+                rejection_reason=str(error),
+            ),
+            summary_payload=_lifecycle_summary_payload(
+                execution_budget_id=cast(UUID, current["id"]),
+                requested_action="supersede",
+                outcome="rejected",
+                replacement_budget_id=None,
+                active_budget_id=cast(UUID, current["id"]),
+            ),
             requested_action="supersede",
             outcome="rejected",
         )
@@ -584,47 +583,26 @@ def supersede_execution_budget_record(
             store,
             thread=thread,
             request_payload=request_payload,
-            state_payload={
-                "execution_budget_id": str(current_state["id"]),
-                "requested_action": "supersede",
-                "previous_status": cast(str, current["status"]),
-                "current_status": cast(str, current_state["status"]),
-                "tool_key": current_state["tool_key"],
-                "domain_hint": current_state["domain_hint"],
-                "max_completed_executions": current_state["max_completed_executions"],
-                "rolling_window_seconds": current_state["rolling_window_seconds"],
-                "deactivated_at": (
-                    None
-                    if current_state["deactivated_at"] is None
-                    else current_state["deactivated_at"].isoformat()
-                ),
-                "superseded_by_budget_id": (
-                    None
-                    if current_state["superseded_by_budget_id"] is None
-                    else str(current_state["superseded_by_budget_id"])
-                ),
-                "supersedes_budget_id": (
-                    None
-                    if current_state["supersedes_budget_id"] is None
-                    else str(current_state["supersedes_budget_id"])
-                ),
-                "replacement_budget_id": None,
-                "replacement_status": None,
-                "replacement_max_completed_executions": request.max_completed_executions,
-                "replacement_rolling_window_seconds": current["rolling_window_seconds"],
-                "rejection_reason": str(error),
-            },
-            summary_payload={
-                "execution_budget_id": str(current_state["id"]),
-                "requested_action": "supersede",
-                "outcome": "rejected",
-                "replacement_budget_id": None,
-                "active_budget_id": (
-                    str(current_state["id"])
+            state_payload=_lifecycle_state_payload(
+                row=current_state,
+                requested_action="supersede",
+                previous_status=cast(str, current["status"]),
+                replacement_budget=None,
+                replacement_max_completed_executions=request.max_completed_executions,
+                replacement_rolling_window_seconds=current["rolling_window_seconds"],
+                rejection_reason=str(error),
+            ),
+            summary_payload=_lifecycle_summary_payload(
+                execution_budget_id=cast(UUID, current_state["id"]),
+                requested_action="supersede",
+                outcome="rejected",
+                replacement_budget_id=None,
+                active_budget_id=(
+                    cast(UUID, current_state["id"])
                     if cast(str, current_state["status"]) == "active"
                     else None
                 ),
-            },
+            ),
             requested_action="supersede",
             outcome="rejected",
         )
@@ -635,37 +613,22 @@ def supersede_execution_budget_record(
         store,
         thread=thread,
         request_payload=request_payload,
-        state_payload={
-            "execution_budget_id": str(superseded["id"]),
-            "requested_action": "supersede",
-            "previous_status": "active",
-            "current_status": cast(str, superseded["status"]),
-            "tool_key": superseded["tool_key"],
-            "domain_hint": superseded["domain_hint"],
-            "max_completed_executions": superseded["max_completed_executions"],
-            "rolling_window_seconds": superseded["rolling_window_seconds"],
-            "deactivated_at": (
-                None if superseded["deactivated_at"] is None else superseded["deactivated_at"].isoformat()
-            ),
-            "superseded_by_budget_id": (
-                None if superseded["superseded_by_budget_id"] is None else str(superseded["superseded_by_budget_id"])
-            ),
-            "supersedes_budget_id": (
-                None if superseded["supersedes_budget_id"] is None else str(superseded["supersedes_budget_id"])
-            ),
-            "replacement_budget_id": str(replacement["id"]),
-            "replacement_status": cast(str, replacement["status"]),
-            "replacement_max_completed_executions": replacement["max_completed_executions"],
-            "replacement_rolling_window_seconds": replacement["rolling_window_seconds"],
-            "rejection_reason": None,
-        },
-        summary_payload={
-            "execution_budget_id": str(superseded["id"]),
-            "requested_action": "supersede",
-            "outcome": "superseded",
-            "replacement_budget_id": str(replacement["id"]),
-            "active_budget_id": str(replacement["id"]),
-        },
+        state_payload=_lifecycle_state_payload(
+            row=superseded,
+            requested_action="supersede",
+            previous_status="active",
+            replacement_budget=replacement,
+            replacement_max_completed_executions=replacement["max_completed_executions"],
+            replacement_rolling_window_seconds=replacement["rolling_window_seconds"],
+            rejection_reason=None,
+        ),
+        summary_payload=_lifecycle_summary_payload(
+            execution_budget_id=cast(UUID, superseded["id"]),
+            requested_action="supersede",
+            outcome="superseded",
+            replacement_budget_id=cast(UUID, replacement["id"]),
+            active_budget_id=cast(UUID, replacement["id"]),
+        ),
         requested_action="supersede",
         outcome="superseded",
     )

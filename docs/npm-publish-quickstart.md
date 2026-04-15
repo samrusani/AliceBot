@@ -45,9 +45,9 @@ Workflow file:
 
 - `.github/workflows/publish-npm.yml`
 
-After that, push a semver tag:
+After that, push the current semver tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.3.2
+git push origin v0.3.2
 ```

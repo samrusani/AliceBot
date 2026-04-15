@@ -1,7 +1,7 @@
 # MCP Integration
 
-The shipped MCP server for `v0.2.0` exposes a deliberately scoped deterministic tool surface over Alice continuity seams.
-`v0.2.0` remains a pre-1.0 release boundary.
+The shipped MCP server for the `v0.3.2` release target exposes a deliberately scoped deterministic tool surface over Alice continuity seams.
+`v0.3.2` remains a pre-1.0 release target until the tag is cut.
 
 ## Entrypoints
 
@@ -88,7 +88,7 @@ One-command bridge demo:
 
 - tool set is intentionally narrow and stable
 - tool output is deterministic for parity testing
-- MCP does not widen core product semantics beyond shipped Phase 11 and Bridge `B1` through `B4`
+- MCP does not widen core product semantics beyond the shipped Phase 12 baseline and Bridge `B1` through `B4`
 
 See tests:
 

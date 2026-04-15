@@ -15,7 +15,7 @@ durable memory for agents, agent resumption, open loop tracking, local-first ai 
 
 Alice helps agents **remember what matters, resume interrupted work, explain why something is true, and improve when corrected**.
 
-`v0.2.0` is a **pre-1.0 public release**. It packages shipped baseline scope through Phase 11 and Bridge `B1` through `B4` without claiming `v1.0.0` stability guarantees.
+`v0.3.2` is the current **pre-1.0 release target** for the completed Phase 12 boundary. The latest published tag remains `v0.2.0` until the `v0.3.2` release is cut.
 
 Most assistants are still good only in the moment. They can answer the current prompt, but they struggle to preserve decisions, track open loops, recover context across sessions, and stay aligned after memory corrections.
 
@@ -27,14 +27,20 @@ It provides a **local-first memory and continuity engine** for capture, recall, 
 
 **Works across local, self-hosted, enterprise, and external-agent workflows via CLI, MCP, provider runtime, OpenClaw import, and Hermes integration.**
 
-## Release Boundary (`v0.2.0`)
+## Release Boundary (`v0.3.2` Target)
 
-Shipped baseline included in this pre-1.0 release:
+Completed baseline included in this pre-1.0 release target:
 
 - Phase 9 continuity core and deterministic local CLI/MCP/importer seams
 - Phase 10 hosted/product layer
 - Phase 11 provider runtime, adapters, and model packs
 - Bridge `B1` through `B4` provider contract, auto-capture flow, review/explainability flow, and bridge docs/smoke validation
+- Phase 12 retrieval quality stack:
+  - hybrid retrieval and reranking
+  - explicit memory mutation operations
+  - contradiction detection and trust calibration
+  - public eval harness and baseline reports
+  - task-adaptive briefing
 
 Historical planning/control artifacts remain available in:
 [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
@@ -136,6 +142,11 @@ The current open-source surface includes:
 - scheduled archive maintenance, ops status reporting, and failure alerting
 - Hermes bridge with provider lifecycle hooks, always-on continuity prefetch, turn auto-capture, policy-based commit modes (`manual` / `assist` / `auto`), and reviewable explainable candidate memory flows
 - provider runtime abstraction with workspace-scoped provider registration, capability snapshots, OpenAI-compatible base adapter, local Ollama/llama.cpp, self-hosted vLLM, enterprise Azure, model packs, and external-agent integration paths
+- hybrid retrieval with persisted retrieval traces and debug visibility
+- explicit memory mutation operations with auditability and idempotent replay behavior
+- contradiction detection, contradiction-aware ranking penalties, and trust-signal inspection
+- public eval harness with fixture catalog and checked-in baseline report support
+- task-adaptive briefing for user recall, resume, worker subtask, and agent handoff
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -301,15 +312,16 @@ That means the system behaves consistently across local workflows, MCP-connected
 
 ## Scope Notes
 
-Included in `v0.2.0`:
+Included in the `v0.3.2` target:
 
 - local-first continuity core
 - CLI and MCP surfaces
 - importer paths (OpenClaw, Markdown, ChatGPT exports)
 - provider runtime and model-pack support from Phase 11
 - Hermes provider-plus-MCP bridge path with MCP-only fallback
+- Phase 12 retrieval, mutation, contradiction/trust, public eval, and task-adaptive briefing surfaces
 
-Deferred beyond `v0.2.0`:
+Deferred beyond `v0.3.2`:
 
 - `v1.0.0` compatibility/support guarantees
 - managed cloud/SLA commitments

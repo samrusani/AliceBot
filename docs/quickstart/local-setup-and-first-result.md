@@ -1,6 +1,6 @@
 # Local Setup and First Useful Result
 
-This quickstart is the canonical local path for the shipped `v0.2.0` pre-1.0 surface.
+This quickstart is the canonical local path for the completed `v0.3.2` pre-1.0 release target.
 
 ## Prerequisites
 
@@ -79,5 +79,5 @@ pnpm --dir apps/web test
 
 ## Scope Guard
 
-This quickstart documents shipped behavior through Phase 11 and Bridge `B1` through `B4`.
+This quickstart documents shipped behavior through Phase 12 and Bridge `B1` through `B4`.
 It does not promise `v1.0.0` compatibility/support guarantees or unshipped feature scope.
