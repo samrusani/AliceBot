@@ -3,57 +3,81 @@
 ## verdict
 PASS
 
+## review scope
+Review the completed `v0.3.2` release-checklist run on current `main`, including the one release-blocking failure encountered during the checklist and the remediation applied to clear it.
+
 ## criteria met
-- Different workloads receive different context packs:
-  - `user_recall`
-  - `resume`
-  - `worker_subtask`
-  - `agent_handoff`
-- Worker-task briefs are smaller than generic recall packs, with dedicated test coverage for the size/comparison requirement.
-- Resume briefs continue to build on the shipped resumption compiler rather than replacing it.
-- Brief outputs remain deterministic and explainable:
-  - deterministic digest
-  - section-level selection rules
-  - truncation metadata
-  - explicit strategy/budget reporting
-- `P12-S5` builds on shipped retrieval, mutation, contradiction, and eval behavior without reopening those systems.
-- Provider/model-pack briefing fields are now active inputs, not write-only metadata:
-  - workspace-selected model packs can supply `briefing_strategy`
-  - workspace-selected model packs can supply `briefing_max_tokens`
-  - explicit request values still override defaults
-- API, CLI, and MCP surfaces for compile/show/compare exist and are covered by targeted tests.
-- Docs now describe the briefing modes, budgeting order, and workspace-selected model-pack defaults.
-- No local workstation paths, usernames, or similar machine-specific identifiers were found in the changed sprint files/docs.
+- Runtime bring-up passed:
+  - containers running
+  - migrations applied through `20260414_0061`
+  - sample data present
+  - `/healthz` returned `status=ok`
+- Control-doc guardrails passed.
+- Full Python regression suite passed after remediation:
+  - final result `1247 passed`
+- Web test suite passed:
+  - final result `199 passed`
+- Hermes provider smoke passed.
+- Hermes MCP smoke passed.
+- Hermes bridge demo passed.
+- Public eval harness run passed:
+  - `suite_count=5`
+  - `case_count=12`
+  - `failed_case_count=0`
+  - overall status `pass`
+- Public docs and release-boundary docs remain coherent with the completed Phase 12 baseline and the `v0.3.2` release target.
+- `CONTRIBUTING.md`, `SECURITY.md`, and `LICENSE` are present.
 
 ## criteria missed
-- None found in the reviewed sprint scope.
+- None in the release gates themselves.
 
-## quality issues
-- No blocking quality issues found in the sprint-owned implementation.
+## release blocker encountered and resolved
+- The first full Python-suite run failed on:
+  - `tests/unit/test_memory.py::test_get_memory_trust_dashboard_summary_is_deterministic_and_uses_canonical_components`
+- Cause:
+  - stale test expectation for retrieval `fixture_count`
+  - canonical retrieval fixture suite now contains `7` fixtures, while the test still asserted `6`
+- Resolution:
+  - updated the stale assertion to `7`
+  - reran the targeted test successfully
+  - reran the full Python gate successfully
 
-## regression risks
-- Low after the broader Phase 12 regression slice.
-- The main prior cross-surface risk around briefing integration with recall, resumption, eval, and model-pack defaults is now covered by the verification run recorded below.
+## residual risk
+- Low for the current code and docs state.
+- The remaining operational risk is procedural:
+  - the working tree is still dirty because the checklist evidence and test-fix changes are not yet committed
+  - explicit tag approval is still required
 
 ## docs issues
-- No blocking docs issues remain for the sprint scope.
-- Sprint docs now frame briefing payload shape, model-pack strategy defaults, and API surface breadth as current branch behavior where Control Tower decisions are still pending, rather than silently treating those choices as permanently settled product policy.
-
-## should anything be added to RULES.md?
-- No additional rule is required beyond the current rule set.
-
-## should anything update ARCHITECTURE.md?
-- Already addressed in this sprint:
-  - `task_briefs` is reflected in the data-model summary.
-- No further architecture update is required for this review.
+- No blocking docs issue remains.
+- One checklist wording issue was identified during execution:
+  - release verification on merged `main` is valid per the tag plan, even though the checklist currently emphasizes a closeout/release-prep branch
 
 ## recommended next action
-Proceed with merge review for `P12-S5`.
+Commit the release-checklist evidence updates and the stale test fix, then proceed to the `v0.3.2` tag plan once explicit tag approval is granted.
 
 ## reviewer verification
-- `./.venv/bin/pytest tests/unit/test_task_briefing.py tests/unit/test_model_packs.py tests/unit/test_cli.py tests/unit/test_mcp.py tests/unit/test_20260414_0061_phase12_task_adaptive_briefing.py tests/unit/test_continuity_resumption.py tests/unit/test_continuity_recall.py tests/unit/test_public_evals.py tests/integration/test_task_briefing_api.py tests/integration/test_cli_integration.py tests/integration/test_mcp_cli_parity.py tests/integration/test_phase11_model_packs_api.py tests/integration/test_mcp_server.py tests/integration/test_public_evals_api.py tests/integration/test_continuity_resumption_api.py tests/integration/test_retrieval_evaluation_api.py -q`
-  - Result: PASS (`73 passed`)
-- `./.venv/bin/python scripts/check_control_doc_truth.py`
+- `docker compose up -d`
   - Result: PASS
-- `rg -n "/Users|samirusani|Desktop/Codex" RULES.md ARCHITECTURE.md CURRENT_STATE.md .ai/handoff/CURRENT_STATE.md PRODUCT_BRIEF.md ROADMAP.md docs/briefing`
-  - Result: PASS (no matches)
+- `./scripts/migrate.sh`
+  - Result: PASS
+- `./scripts/load_sample_data.sh`
+  - Result: PASS (`status=noop`)
+- `curl -sS http://127.0.0.1:8000/healthz`
+  - Result: PASS
+- `python3 scripts/check_control_doc_truth.py`
+  - Result: PASS
+- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
+  - Result: PASS (`5 passed`)
+- `./.venv/bin/python -m pytest tests/unit tests/integration -q`
+  - Result: PASS (`1247 passed`) after correcting one stale assertion in `tests/unit/test_memory.py`
+- `pnpm --dir apps/web test`
+  - Result: PASS (`199 passed`)
+- `./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py`
+  - Result: PASS
+- `./.venv/bin/python scripts/run_hermes_mcp_smoke.py`
+  - Result: PASS
+- `./.venv/bin/python scripts/run_hermes_bridge_demo.py`
+  - Result: PASS
+- `./.venv/bin/python -m alicebot_api --database-url postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot --user-id 00000000-0000-0000-0000-000000000001 evals run --report-path eval/baselines/public_eval_harness_v1.json`
+  - Result: PASS

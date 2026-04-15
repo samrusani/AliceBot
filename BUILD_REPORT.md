@@ -1,64 +1,89 @@
 # BUILD_REPORT
 
-## Sprint Objective
-Implement `P12-S5` task-adaptive briefing so the system can generate deterministic, explainable, role-specific context packs for `user_recall`, `resume`, `worker_subtask`, and `agent_handoff`, while preserving shipped retrieval, mutation, contradiction, trust, and eval behavior.
+## Objective
+Execute the `v0.3.2` release checklist against the completed Phase 12 baseline on `main`, record exact release-gate evidence, and determine whether the repo is ready for tagging.
 
-## Completed Work
-- Added a dedicated task briefing compiler with four briefing modes.
-- Added deterministic briefing summaries, selection rules, truncation metadata, token budgeting, and comparison output.
-- Added task brief persistence through a new `task_briefs` table.
-- Added current-branch API surfaces for task-brief compile, inspect, and compare.
-- Added CLI surfaces for task-brief compile, inspect, and compare.
-- Added MCP tools for task-brief compile, inspect, and compare.
-- Added model-pack briefing defaults through `briefing_strategy` and `briefing_max_tokens`, and task-brief compilation now resolves those defaults when a workspace-selected model pack is available.
-- Added focused docs under `docs/briefing/`, explicitly framed as current branch behavior where briefing payload and surface-shape decisions are still pending.
-- Added unit and integration coverage for determinism, size reduction, persistence, CLI smoke, MCP smoke, API behavior, migration shape, and model-pack strategy fields.
+## Release Baseline
+- branch: `main`
+- `HEAD`: `60430b7`
+- latest published tag: `v0.2.0`
+- current release target: `v0.3.2`
+- merged implementation baseline:
+  - `P12-S1` `e019f72`
+  - `P12-S2` `0c849fd`
+  - `P12-S3` `6d10d1b`
+  - `P12-S4` `dd77643`
+  - `P12-S5` `de19350`
+- merged closeout / release-prep baseline:
+  - `2e68fcb` Phase 12 closeout and `v0.3.2` release prep
+  - `60430b7` bearer-auth follow-up for Phase 12 v1 APIs
 
-## Incomplete Work
-- None within the sprint packet scope.
-
-## Files Changed
-- `.ai/handoff/CURRENT_STATE.md`
-- `ARCHITECTURE.md`
-- `BUILD_REPORT.md`
-- `CURRENT_STATE.md`
-- `PRODUCT_BRIEF.md`
-- `REVIEW_REPORT.md`
-- `ROADMAP.md`
-- `RULES.md`
-- `apps/api/src/alicebot_api/task_briefing.py`
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/store.py`
-- `apps/api/src/alicebot_api/model_packs.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/cli.py`
-- `apps/api/src/alicebot_api/cli_formatting.py`
-- `apps/api/src/alicebot_api/mcp_tools.py`
-- `apps/api/alembic/versions/20260414_0061_phase12_task_adaptive_briefing.py`
-- `docs/briefing/task-adaptive-briefing.md`
-- `tests/unit/test_task_briefing.py`
-- `tests/unit/test_model_packs.py`
-- `tests/unit/test_cli.py`
-- `tests/unit/test_mcp.py`
-- `tests/unit/test_20260414_0061_phase12_task_adaptive_briefing.py`
-- `tests/integration/test_task_briefing_api.py`
-- `tests/integration/test_cli_integration.py`
-- `tests/integration/test_mcp_cli_parity.py`
-- `tests/integration/test_mcp_server.py`
-- `tests/integration/test_phase11_model_packs_api.py`
-- `scripts/check_control_doc_truth.py`
-
-## Tests Run
-- `./.venv/bin/pytest tests/unit/test_task_briefing.py tests/unit/test_model_packs.py tests/unit/test_cli.py tests/unit/test_mcp.py tests/unit/test_20260414_0061_phase12_task_adaptive_briefing.py tests/unit/test_continuity_resumption.py tests/unit/test_continuity_recall.py tests/unit/test_public_evals.py tests/integration/test_task_briefing_api.py tests/integration/test_cli_integration.py tests/integration/test_mcp_cli_parity.py tests/integration/test_phase11_model_packs_api.py tests/integration/test_mcp_server.py tests/integration/test_public_evals_api.py tests/integration/test_continuity_resumption_api.py tests/integration/test_retrieval_evaluation_api.py -q`
-  - Result: PASS (`73 passed`)
-- `./.venv/bin/python scripts/check_control_doc_truth.py`
+## Exact Commands Run
+- `docker compose up -d`
   - Result: PASS
-- `rg -n "/Users|samirusani|Desktop/Codex" RULES.md ARCHITECTURE.md CURRENT_STATE.md .ai/handoff/CURRENT_STATE.md PRODUCT_BRIEF.md ROADMAP.md docs/briefing`
-  - Result: PASS (no matches)
+  - Evidence: `alicebot-postgres`, `alicebot-redis`, and `alicebot-minio` reported `Running`
+- `./scripts/migrate.sh`
+  - Result: PASS
+  - Evidence: upgraded through `20260414_0061` (`Phase 12 task-adaptive briefing persistence and model-pack strategy fields`)
+- `./scripts/load_sample_data.sh`
+  - Result: PASS
+  - Evidence: fixture already present; returned `status=noop` for default user `00000000-0000-0000-0000-000000000001`
+- `env APP_RELOAD=false ALICEBOT_AUTH_USER_ID=00000000-0000-0000-0000-000000000001 ./scripts/api_dev.sh`
+  - Result: PASS
+  - Evidence: API served on `http://127.0.0.1:8000`
+- `curl -sS http://127.0.0.1:8000/healthz`
+  - Result: PASS
+  - Evidence: `{"status":"ok","environment":"development","services":{"database":{"status":"ok"}}...}`
+- `python3 scripts/check_control_doc_truth.py`
+  - Result: PASS
+- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
+  - Result: PASS (`5 passed in 0.03s`)
+- `./.venv/bin/python -m pytest tests/unit tests/integration -q`
+  - Initial result: FAIL
+  - Failure: `tests/unit/test_memory.py::test_get_memory_trust_dashboard_summary_is_deterministic_and_uses_canonical_components`
+  - Root cause: stale expected retrieval fixture count (`6`) after the canonical retrieval fixture suite had already grown to `7`
+  - Remediation: updated the stale assertion in `tests/unit/test_memory.py`
+  - Re-run result: PASS (`1247 passed in 228.94s`)
+- `pnpm --dir apps/web test`
+  - Result: PASS (`199 passed`)
+- `./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py`
+  - Result: PASS
+  - Evidence: provider registered, bridge ready, single external enforced
+- `./.venv/bin/python scripts/run_hermes_mcp_smoke.py`
+  - Result: PASS
+  - Evidence: recall/resume/review flow validated; review queue resolved cleanly
+- `./.venv/bin/python scripts/run_hermes_bridge_demo.py`
+  - Result: PASS
+  - Evidence: `recommended_path=provider_plus_mcp`, `fallback_path=mcp_only`, both smoke steps returned `0`
+- `./.venv/bin/python -m alicebot_api --database-url postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot --user-id 00000000-0000-0000-0000-000000000001 evals run --report-path eval/baselines/public_eval_harness_v1.json`
+  - Result: PASS
+  - Evidence: report status `pass`, `suite_count=5`, `case_count=12`, `failed_case_count=0`, report digest `bf3ac58edc070a74bb6faa7a66536a08154d114494932c4d231a500e6899ed29`
 
-## Blockers/Issues
-- No remaining blockers.
-- Final product policy is still pending for the Control Tower decisions called out in the sprint packet, including the canonical persisted briefing payload shape, required model-pack briefing fields, and whether generation and comparison APIs should both ship in `P12-S5`.
+## Documentation / Public Repo Readiness
+- `README.md` aligned to completed Phase 12 and `v0.3.2` release target
+- `docs/quickstart/local-setup-and-first-result.md` aligned
+- `docs/integrations/mcp.md` aligned
+- `docs/integrations/hermes-bridge-operator-guide.md` aligned
+- `docs/evals/public_eval_harness.md` aligned
+- `docs/briefing/task-adaptive-briefing.md` aligned
+- `CONTRIBUTING.md`: present
+- `SECURITY.md`: present
+- `LICENSE`: present
+- `CHANGELOG.md` contains a Phase 12 closeout / `v0.3.2` release-target entry
+
+## Files Changed During Checklist Execution
+- `BUILD_REPORT.md`
+- `REVIEW_REPORT.md`
+- `tests/unit/test_memory.py`
+
+## Outcome
+- All runtime, test, web, Hermes, and eval release gates now pass on the current working tree.
+- The only code-level issue uncovered by the checklist was a stale unit-test expectation; that has been corrected.
+- The repo is release-ready in substance, but the working tree is not clean because the report updates and the test expectation fix are not yet committed.
+
+## Remaining Before Tag
+- commit the release-evidence updates and the stale test fix
+- obtain explicit tag approval
 
 ## Recommended Next Step
-Request Control Tower merge review against the current `P12-S5` branch head.
+Commit the release-checklist fixes/evidence, verify the worktree is clean, then execute `docs/release/v0.3.2-tag-plan.md`.
