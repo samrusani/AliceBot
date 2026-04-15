@@ -13,8 +13,8 @@ These remain baseline truth and are not future milestones.
 
 ## Active Planning Status
 - Phase 13 is active.
-- `P13-S1` One-Call Continuity is the active execution sprint.
-- `P13-S2` Alice Lite is queued next.
+- `P13-S1` One-Call Continuity is shipped.
+- `P13-S2` Alice Lite is the active execution sprint.
 - `P13-S3` Memory Hygiene + Conversation Health follows after Alice Lite.
 
 ## Phase 13 Planned Milestones
@@ -26,16 +26,22 @@ These remain baseline truth and are not future milestones.
 - return one continuity bundle containing summary, recent changes, open loops, conflicts, next action, provenance, and trust posture
 - make this the default integration surface for external agents
 
+Status: shipped
+
 ### P13-S2: Alice Lite
 - add one-command local startup
 - add smaller-footprint deployment profile
 - tighten quickstart and first-result path
 - keep semantics aligned with the full Alice baseline
 
+Status: active
+
 ### P13-S3: Memory Hygiene + Conversation Health
 - surface duplicates, stale facts, unresolved contradictions, and review queue pressure
 - surface recent threads, stale threads, risky threads, and thread health
 - improve operational visibility without adding new substrate work
+
+Status: queued
 
 ## Sequencing Rules
 - Phase 13 is an adoption layer on top of the shipped Phase 12 baseline.

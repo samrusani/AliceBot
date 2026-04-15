@@ -11,21 +11,22 @@ Canonical handoff state lives at [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURR
 - Phase 12 is shipped.
 - `v0.3.2` is the latest published tag.
 - Phase 13 is active.
-- `P13-S1` One-Call Continuity is the active execution sprint.
-- `P13-S2` Alice Lite is planned next.
+- `P13-S1` One-Call Continuity is shipped.
+- `P13-S2` Alice Lite is the active execution sprint.
 - `P13-S3` Memory Hygiene + Conversation Health is planned after Alice Lite.
 
 ## Current Baseline Truth
 - Alice has typed memory, provenance, trust classes, correction/supersession behavior, open loops, recall, resumption, and explainability.
 - Alice exposes CLI, MCP, hosted/product, provider-runtime, and Hermes bridge surfaces.
 - The shipped baseline now includes hybrid retrieval and reranking with traces, explicit memory mutation operations, contradiction/trust handling, the public eval harness, and task-adaptive briefing.
+- The shipped baseline also now includes the one-call continuity surface across API, CLI, and MCP from `P13-S1`.
 - `v0.3.2` is the current public pre-1.0 release boundary for that shipped baseline.
 
 ## Phase Transition Note
 - Phase 12 is complete and remains baseline truth.
 - Phase 13 is the adoption and ergonomics phase on top of that baseline.
-- `P13-S1` is active and should create the primary one-call continuity surface across API, CLI, and MCP.
-- `P13-S2` should simplify startup and local adoption without semantic drift.
+- `P13-S1` is complete and established the primary one-call continuity surface across API, CLI, and MCP.
+- `P13-S2` is active and should simplify startup and local adoption without semantic drift.
 - `P13-S3` should make hygiene and thread/conversation health visible and operationally useful.
 
 ## Immediate Control Tower Decisions Needed

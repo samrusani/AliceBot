@@ -1,37 +1,34 @@
 # Local Setup and First Useful Result
 
-This quickstart is the canonical local path for the completed `v0.3.2` pre-1.0 release target.
+This quickstart is the canonical Alice Lite path for the completed `v0.3.2` pre-1.0 release target.
+Alice Lite is a lighter local/dev deployment profile, not a separate product.
+It keeps the shipped continuity semantics and the shipped one-call continuity surface intact.
 
 ## Prerequisites
 
 - Python `3.12+`
 - Docker + Docker Compose
-- Node + pnpm (required for web tests)
-- Hermes runtime modules available in `.venv` for bridge smoke commands (`agent` and `tools` imports)
 
 ## 1) Prepare Environment and Install
 
 ```bash
 cp .env.example .env
+cp .env.lite.example .env.lite
 python3 -m venv .venv
 ./.venv/bin/python -m pip install -e '.[dev]'
 ```
 
-## 2) Start Local Runtime
+`.env.lite` switches the entrypoint rate limiter to in-memory mode and keeps reload off for a lighter local footprint.
+
+## 2) Start Alice Lite
 
 ```bash
-docker compose up -d
-./scripts/migrate.sh
-./scripts/load_sample_data.sh
+./scripts/alice_lite_up.sh
 ```
 
-## 3) Start API
+This command starts the Lite Postgres profile, runs migrations, loads the sample fixture, and runs the API.
 
-```bash
-APP_RELOAD=false ./scripts/api_dev.sh
-```
-
-## 4) Verify Health
+## 3) Verify Health
 
 Run in another terminal:
 
@@ -41,19 +38,36 @@ curl -sS http://127.0.0.1:8000/healthz
 
 Expected: JSON with `"status": "ok"`.
 
-## 5) Get First Useful Result (CLI)
+## 4) Bootstrap the Sample Workspace and Get a First Result
+
+```bash
+./.venv/bin/python scripts/bootstrap_alice_lite_workspace.py
+```
+
+This runs the simulated local magic-link flow, creates a sample workspace, completes workspace bootstrap, and calls `POST /v1/continuity/brief` against the seeded sample thread.
+
+## 5) Get the Same First Result from the CLI
+
+```bash
+./.venv/bin/python -m alicebot_api brief --brief-type general --query "local-first startup path"
+```
+
+The `brief` command is the shipped one-call continuity entrypoint for local CLI use.
+
+## 6) Inspect Runtime Status
 
 ```bash
 ./.venv/bin/python -m alicebot_api status
-./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
-./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
-./.venv/bin/python -m alicebot_api open-loops --limit 5
 ```
 
-- `recall` returns deterministic continuity items with provenance snippets.
-- `resume` returns deterministic brief fields (`last_decision`, `next_action`, recent changes/open loops).
+## 7) Optional: Capture and Explain
 
-## 6) Optional: Prove Shipped Importer Paths
+```bash
+./.venv/bin/python -m alicebot_api capture "Remember that the Q3 board pack is due on Thursday."
+./.venv/bin/python -m alicebot_api explain <continuity_object_id>
+```
+
+## 8) Optional: Prove Shipped Importer Paths
 
 ```bash
 ./scripts/use_alice_with_openclaw.sh
@@ -66,18 +80,26 @@ Expected: JSON with `"status": "ok"`.
 Repeat the same command to verify deterministic dedupe posture (`status=noop`, duplicate skips).
 OpenClaw details: `docs/integrations/openclaw.md`.
 
-## 7) Required Validation Commands for Release Readiness
+## 9) Lite Smoke Verification
+
+```bash
+./.venv/bin/python scripts/run_alice_lite_smoke.py
+```
+
+This verifies the Lite health endpoint and the CLI one-call continuity brief output.
+
+## 10) Required Validation Commands for Release Readiness
 
 ```bash
 python3 scripts/check_control_doc_truth.py
-./.venv/bin/python -m pytest tests/unit tests/integration -q
-pnpm --dir apps/web test
-./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py
-./.venv/bin/python scripts/run_hermes_mcp_smoke.py
-./.venv/bin/python scripts/run_hermes_bridge_demo.py
+./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q
+./.venv/bin/python -m pytest tests/unit/test_phase13_alice_lite_assets.py -q
+./.venv/bin/python scripts/run_alice_lite_smoke.py
 ```
+
+For the wider repo validation surface beyond Alice Lite, keep using the existing web and Hermes test flows separately.
 
 ## Scope Guard
 
-This quickstart documents shipped behavior through Phase 12 and Bridge `B1` through `B4`.
-It does not promise `v1.0.0` compatibility/support guarantees or unshipped feature scope.
+This quickstart documents the Alice Lite deployment profile on top of the shipped Phase 12 and Bridge `B1` through `B4` baseline.
+It does not define a second product, a semantic fork, or unshipped `v1.0.0` scope.

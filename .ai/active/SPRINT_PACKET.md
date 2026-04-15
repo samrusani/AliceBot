@@ -1,14 +1,14 @@
 # Sprint Packet
 
 ## Sprint Title
-P13-S1: One-Call Continuity
+P13-S2: Alice Lite
 
 ## Activation Note
 - This packet is active.
 - `v0.3.2` is the latest published tag.
 - Phase 13 is active.
 - Phase 13 sequence is fixed for now:
-  - `P13-S1` One-Call Continuity
+  - `P13-S1` One-Call Continuity (shipped)
   - `P13-S2` Alice Lite
   - `P13-S3` Memory Hygiene + Conversation Health
 
@@ -16,17 +16,10 @@ P13-S1: One-Call Continuity
 feature
 
 ## Sprint Reason
-Phase 12 already shipped the quality substrate:
-- hybrid retrieval
-- explicit mutation
-- contradiction and trust handling
-- public evals
-- task-adaptive briefing
-
-The first Phase 13 job is to operationalize that work behind one primary integration surface so external agents do not need tool choreography to get strong continuity.
+`P13-S1` already shipped the one-call continuity surface. The next job is to make Alice easier to start, lighter to run locally, and faster to understand in the first ten minutes without creating a second product or weakening semantics.
 
 ## Git Instructions
-- Branch Name: `codex/phase13-s1-one-call-continuity`
+- Branch Name: `codex/phase13-s2-alice-lite`
 - Base Branch: `main`
 - PR Strategy: one implementation branch, one PR
 - Merge Policy: squash merge after review `PASS` and explicit approval
@@ -35,79 +28,68 @@ The first Phase 13 job is to operationalize that work behind one primary integra
 - shipped Phases 9-12 baseline
 - shipped Bridge `B1` through `B4`
 - published `v0.3.2` baseline
+- shipped `P13-S1` one-call continuity surface
 - no semantic fork between API, CLI, MCP, hosted, provider-runtime, and Hermes paths
 
 ## Exact Goal
-Create the primary one-call continuity surface:
-- API: `POST /v1/continuity/brief`
-- CLI: `alice brief`
-- MCP: `alice_brief`
+Create Alice Lite as a lighter deployment and onboarding profile:
+- one-command local startup
+- smaller-footprint deployment profile
+- simplified quickstart
+- sample workspace/bootstrap path
+- faster first useful result
 
-This should become the default integration endpoint for external agents and should compose existing retrieval, open-loop, contradiction, trust, and briefing systems into one strong response.
+Alice Lite must use the same continuity semantics and the same one-call continuity entrypoint already shipped in `P13-S1`.
 
 ## In Scope
-- one-call continuity contract and assembly logic
-- `POST /v1/continuity/brief`
-- `alice brief`
-- `alice_brief`
-- supported brief types:
-  - `general`
-  - `resume`
-  - `agent_handoff`
-  - `coding_context`
-  - `operator_context`
-- continuity bundle output including:
-  - summary
-  - relevant facts
-  - recent changes
-  - open loops
-  - conflicts
-  - timeline highlights
-  - next suggested action
-  - provenance bundle
-  - trust posture
-- API/CLI/MCP parity tests and integration docs
+- lighter local startup path
+- smaller-footprint profile for local/dev use
+- quickstart and first-result tightening
+- sample workspace/bootstrap flow
+- docs and scripts that make the one-call continuity surface the default demo/integration entrypoint
+- startup/smoke verification for the Lite profile
 
 ## Out Of Scope
-- Alice Lite packaging/profile work
 - hygiene or thread-health dashboards
 - new connectors or channels
 - new retrieval research
-- new provider/runtime substrate work unless directly required for this surface
+- graph or persistence rearchitecture
+- SQLite or embedded-mode redesign unless it is strictly necessary and semantics remain intact
+- new provider/runtime substrate work unless directly required for the lighter profile
 
 ## Proposed Files And Modules
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/cli.py`
-- `apps/api/src/alicebot_api/mcp_tools.py`
-- `apps/api/src/alicebot_api/contracts.py`
-- one new continuity-brief assembly module if needed
-- `docs/integrations/`
-- `tests/unit/`
-- `tests/integration/`
+- `README.md`
+- `docs/quickstart/`
+- `scripts/`
+- local startup/profile config files
+- `docker-compose` / deployment-profile files if needed
+- startup/smoke tests
+- docs that describe Lite as a profile, not a separate product
 
 ## Planned Deliverables
-- API endpoint `POST /v1/continuity/brief`
-- CLI command `alice brief`
-- MCP tool `alice_brief`
-- one-call response contract
-- parity coverage and docs/examples for external runtimes
+- one-command local start for Alice Lite
+- smaller-footprint local/dev profile
+- simplified quickstart and fast first useful result
+- docs/examples that use the shipped one-call continuity surface as the default Alice demo path
+- smoke coverage for the Lite path
 
 ## Acceptance Criteria
-- an external agent can call one primary continuity surface and get a useful continuity bundle
-- the bundle includes summary, recent changes, open loops, conflicts, next action, provenance, and trust posture
-- the surface composes shipped Phase 12 systems rather than reimplementing them
-- API, CLI, and MCP surfaces stay semantically aligned
-- docs make this the default integration path for external agents
+- a solo builder can start Alice more easily through a lighter local path
+- Alice Lite preserves the same continuity semantics as the full baseline
+- the shipped one-call continuity surface remains the default integration/demo entrypoint
+- quickstart and first-result path are materially simpler than before
+- Lite is clearly documented as a deployment profile, not a separate product
 
 ## Required Verification
 - `python3 scripts/check_control_doc_truth.py`
 - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-- targeted unit/integration coverage for API, CLI, and MCP parity of the new continuity brief surface
+- targeted startup/smoke coverage for the Lite path
+- any docs/quickstart verification required by the implemented Lite profile
 
 ## Control Tower Decisions Needed
-- default `brief_type` and default inclusion posture for optional sections when the caller does not specify flags
-- whether timeline highlights are included by default or only on request
-- whether coding/operator context should differ only by selection strategy or also by response shape
+- whether Alice Lite can reduce services or bootstrap steps without harming semantics or release credibility
+- whether Lite is strictly Docker-profile based or also exposes a scripted local bootstrap path
+- what the canonical "first useful result" flow is for Lite
 
 ## Exit Condition
-This sprint is complete when Alice exposes a single primary continuity call across API, CLI, and MCP that meaningfully reduces integration complexity without weakening continuity semantics.
+This sprint is complete when Alice offers a meaningfully simpler local/dev startup path and first-run experience while preserving the shipped continuity semantics and one-call continuity surface.

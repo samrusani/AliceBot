@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-12 and Bridge `B1` through `B4`.
-- **Current repo execution posture:** `v0.3.2` is the latest published tag; Phase 13 is active; `P13-S1` is the active execution sprint.
+- **Current repo execution posture:** `v0.3.2` is the latest published tag; Phase 13 is active; `P13-S1` is shipped; `P13-S2` is the active execution sprint.
 - **Phase principle:** Phase 13 is an adoption layer on top of Phase 12, not a new substrate phase.
 
 ## Current System Overview
@@ -102,6 +102,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 ## Phase 13 Planned Delta
 
 ### P13-S1: One-Call Continuity
+- Status: shipped
 - Add the primary integration surface:
   - API: `POST /v1/continuity/brief`
   - CLI: `alice brief`
@@ -134,6 +135,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - This surface must compose shipped Phase 12 layers rather than reimplement them.
 
 ### P13-S2: Alice Lite
+- Status: active
 - Add a lighter local deployment profile for solo users and builders.
 - Target outcomes:
   - one-command local startup
@@ -144,6 +146,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - SQLite or another embedded mode is not in scope unless semantics remain intact.
 
 ### P13-S3: Memory Hygiene + Conversation Health
+- Status: queued
 - Add visible hygiene surfaces for:
   - duplicates
   - stale facts
