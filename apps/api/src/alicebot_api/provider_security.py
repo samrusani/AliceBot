@@ -37,6 +37,10 @@ def validate_provider_base_url(base_url: str) -> str:
     ip_literal = _parse_ip_literal(hostname)
     if ip_literal is not None and _is_disallowed_ip(ip_literal):
         raise ProviderURLValidationError("base_url host is not allowed by outbound policy")
+    if ip_literal is None:
+        resolved_addresses = _resolve_hostname_ips(hostname)
+        if any(_is_disallowed_ip(address) for address in resolved_addresses):
+            raise ProviderURLValidationError("base_url host is not allowed by outbound policy")
 
     return normalized
 
@@ -82,6 +86,35 @@ def _parse_ip_literal(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Ad
         return ipaddress.IPv4Address(packed_v4)
     except ipaddress.AddressValueError:
         return None
+
+
+def _resolve_hostname_ips(hostname: str) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+    try:
+        addrinfo = socket.getaddrinfo(
+            hostname,
+            None,
+            type=socket.SOCK_STREAM,
+            proto=socket.IPPROTO_TCP,
+        )
+    except socket.gaierror as exc:
+        raise ProviderURLValidationError("base_url host could not be resolved") from exc
+
+    resolved: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    for family, _socktype, _proto, _canonname, sockaddr in addrinfo:
+        if family == socket.AF_INET:
+            candidate = sockaddr[0]
+        elif family == socket.AF_INET6:
+            candidate = sockaddr[0]
+        else:
+            continue
+        resolved_ip = _parse_ip_literal(candidate)
+        if resolved_ip is not None and resolved_ip not in resolved:
+            resolved.append(resolved_ip)
+
+    if not resolved:
+        raise ProviderURLValidationError("base_url host could not be resolved")
+    return tuple(resolved)
+
 
 def _is_disallowed_ip(ip_address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     if ip_address.is_multicast:

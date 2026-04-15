@@ -83,6 +83,7 @@ DEFAULT_TRUST_PROXY_HEADERS = False
 DEFAULT_TRUSTED_PROXY_IPS: tuple[str, ...] = ()
 DEFAULT_ENTRYPOINT_RATE_LIMIT_BACKEND = "redis"
 DEFAULT_RETRIEVAL_TRACE_RETENTION_DAYS = 14
+DEFAULT_LEGACY_V0_ENABLED_OUTSIDE_DEV = False
 
 Environment = Mapping[str, str]
 
@@ -193,6 +194,7 @@ class Settings:
     trusted_proxy_ips: tuple[str, ...] = DEFAULT_TRUSTED_PROXY_IPS
     entrypoint_rate_limit_backend: str = DEFAULT_ENTRYPOINT_RATE_LIMIT_BACKEND
     retrieval_trace_retention_days: int = DEFAULT_RETRIEVAL_TRACE_RETENTION_DAYS
+    legacy_v0_enabled_outside_dev: bool = DEFAULT_LEGACY_V0_ENABLED_OUTSIDE_DEV
 
     @classmethod
     def from_env(cls, env: Environment | None = None) -> "Settings":
@@ -425,6 +427,12 @@ class Settings:
                 "RETRIEVAL_TRACE_RETENTION_DAYS",
                 cls.retrieval_trace_retention_days,
             ),
+            legacy_v0_enabled_outside_dev=_get_env_value(
+                current_env,
+                "LEGACY_V0_ENABLED_OUTSIDE_DEV",
+                "true" if cls.legacy_v0_enabled_outside_dev else "false",
+            ).strip().lower()
+            in {"1", "true", "yes", "on"},
         )
         return _validate_settings(settings)
 

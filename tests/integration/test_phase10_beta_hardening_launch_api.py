@@ -259,7 +259,7 @@ def _promote_session_to_operator(migrated_database_urls, *, session_token: str) 
 
 
 def _workspace_support_snapshot(migrated_database_urls, *, workspace_id: str) -> dict[str, Any]:
-    with psycopg.connect(migrated_database_urls["app"], row_factory=dict_row) as conn:
+    with psycopg.connect(migrated_database_urls["admin"], row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """

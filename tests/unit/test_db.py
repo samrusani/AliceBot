@@ -94,6 +94,37 @@ def test_set_current_user_sets_database_context() -> None:
     ]
 
 
+def test_set_current_user_account_sets_database_context() -> None:
+    connection = RecordingConnection()
+    user_account_id = uuid4()
+
+    db.set_current_user_account(connection, user_account_id)
+
+    assert connection.cursor_instance.executed == [
+        ("SELECT set_config('app.current_user_account_id', %s, true)", (str(user_account_id),)),
+    ]
+
+
+def test_set_hosted_admin_bypass_sets_database_context() -> None:
+    connection = RecordingConnection()
+
+    db.set_hosted_admin_bypass(connection, True)
+
+    assert connection.cursor_instance.executed == [
+        ("SELECT set_config('app.hosted_admin_bypass', %s, true)", ("true",)),
+    ]
+
+
+def test_set_hosted_service_bypass_sets_database_context() -> None:
+    connection = RecordingConnection()
+
+    db.set_hosted_service_bypass(connection, True)
+
+    assert connection.cursor_instance.executed == [
+        ("SELECT set_config('app.hosted_service_bypass', %s, true)", ("true",)),
+    ]
+
+
 def test_user_connection_sets_current_user_inside_transaction(monkeypatch) -> None:
     connection = RecordingConnection()
     user_id = uuid4()

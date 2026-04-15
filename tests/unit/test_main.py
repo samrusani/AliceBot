@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import Request
+from fastapi.responses import Response
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.artifacts import TaskArtifactNotFoundError
@@ -227,6 +228,7 @@ def _build_request(
     query_string: str = "",
     body: bytes = b"",
     headers: dict[str, str] | None = None,
+    client_host: str = "127.0.0.1",
 ) -> Request:
     encoded_headers = [
         (key.lower().encode("utf-8"), value.encode("utf-8"))
@@ -247,7 +249,7 @@ def _build_request(
             "raw_path": path.encode("utf-8"),
             "query_string": query_string.encode("utf-8"),
             "headers": encoded_headers,
-            "client": ("127.0.0.1", 12345),
+            "client": (client_host, 12345),
             "server": ("testserver", 80),
         },
         receive,
@@ -279,6 +281,62 @@ def test_resolve_authenticated_user_id_allows_dev_without_header() -> None:
     )
 
     assert resolved is None
+
+
+def test_request_client_is_loopback_accepts_localhost() -> None:
+    request = _build_request(method="GET", path="/v0/threads")
+
+    assert main_module._request_client_is_loopback(request, Settings()) is True
+
+
+def test_request_client_is_loopback_rejects_remote_clients() -> None:
+    request = _build_request(
+        method="GET",
+        path="/v0/threads",
+        client_host="203.0.113.10",
+    )
+
+    assert main_module._request_client_is_loopback(request, Settings()) is False
+
+
+def test_v0_middleware_blocks_non_dev_when_legacy_api_disabled(monkeypatch) -> None:
+    request = _build_request(method="GET", path="/v0/threads")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(app_env="production", auth_user_id=str(uuid4())),
+    )
+
+    async def call_next(_: Request) -> Response:
+        return Response(status_code=204)
+
+    response = asyncio.run(main_module.enforce_authenticated_user_identity(request, call_next))
+
+    assert response.status_code == 404
+
+
+def test_v0_middleware_blocks_remote_clients_outside_dev(monkeypatch) -> None:
+    request = _build_request(
+        method="GET",
+        path="/v0/threads",
+        client_host="203.0.113.10",
+    )
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            app_env="production",
+            auth_user_id=str(uuid4()),
+            legacy_v0_enabled_outside_dev=True,
+        ),
+    )
+
+    async def call_next(_: Request) -> Response:
+        return Response(status_code=204)
+
+    response = asyncio.run(main_module.enforce_authenticated_user_identity(request, call_next))
+
+    assert response.status_code == 403
 
 
 def test_rewrite_user_id_query_param_rejects_mismatch() -> None:

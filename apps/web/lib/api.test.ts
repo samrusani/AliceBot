@@ -63,6 +63,8 @@ import {
   listTraces,
   queryContinuityRecall,
   getContinuityRetrievalEvaluation,
+  hasLiveApiConfig,
+  isLocalApiBaseUrl,
   pageModeLabel,
   resolveApproval,
   shouldExpectThreadExecutionReview,
@@ -90,6 +92,23 @@ describe("api helpers", () => {
   it("combines live and fixture sources into a mixed page mode", () => {
     expect(combinePageModes("live", "fixture")).toBe("mixed");
     expect(pageModeLabel("mixed")).toBe("Mixed fallback");
+  });
+
+  it("only enables generic live API mode for loopback legacy v0 targets", () => {
+    expect(isLocalApiBaseUrl("http://127.0.0.1:8000")).toBe(true);
+    expect(isLocalApiBaseUrl("https://api.example.com")).toBe(false);
+    expect(
+      hasLiveApiConfig({
+        apiBaseUrl: "http://localhost:8000",
+        userId: "user-1",
+      }),
+    ).toBe(true);
+    expect(
+      hasLiveApiConfig({
+        apiBaseUrl: "https://api.example.com",
+        userId: "user-1",
+      }),
+    ).toBe(false);
   });
 
   it("does not borrow an older unrelated execution from the same thread", () => {

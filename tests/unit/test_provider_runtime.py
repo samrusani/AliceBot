@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import socket
 from uuid import uuid4
+
+import pytest
 
 from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.provider_runtime import (
@@ -36,6 +39,19 @@ class FakeHTTPResponse:
 
     def read(self) -> bytes:
         return self.body
+
+
+@pytest.fixture(autouse=True)
+def allow_documentation_provider_hosts(monkeypatch) -> None:
+    original_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(hostname: str, port, type=0, proto=0):
+        if hostname.endswith(".example"):
+            sockaddr = ("93.184.216.34", 0)
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)]
+        return original_getaddrinfo(hostname, port, type=type, proto=proto)
+
+    monkeypatch.setattr("alicebot_api.provider_security.socket.getaddrinfo", fake_getaddrinfo)
 
 
 def make_runtime_provider_config(

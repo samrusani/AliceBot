@@ -2335,8 +2335,22 @@ export function getApiConfig(): ApiConfig {
   };
 }
 
+export function isLocalApiBaseUrl(apiBaseUrl: string) {
+  const normalized = apiBaseUrl.trim();
+  if (normalized === "") {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    return ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
 export function hasLiveApiConfig(config: Pick<ApiConfig, "apiBaseUrl" | "userId">) {
-  return Boolean(config.apiBaseUrl && config.userId);
+  return Boolean(config.userId && isLocalApiBaseUrl(config.apiBaseUrl));
 }
 
 export function combinePageModes(...modes: Array<ApiSource | null | undefined>): PageDataMode {
