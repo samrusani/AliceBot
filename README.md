@@ -155,34 +155,43 @@ The current open-source surface includes:
 
 ## Quickstart
 
+Alice Lite is the lighter local/dev deployment profile. It uses the same continuity semantics and the same one-call continuity surface as the full baseline. It is a deployment profile, not a separate product.
+
 Clone the repo and install the local runtime:
 
 ```bash
 git clone https://github.com/samrusani/AliceBot.git
 cd AliceBot
 cp .env.example .env
+cp .env.lite.example .env.lite
 python3 -m venv .venv
 ./.venv/bin/python -m pip install -e '.[dev]'
 ```
 
-Start the local services and seed sample data:
+Start Alice Lite with one command:
 
 ```bash
-docker compose up -d
-./scripts/migrate.sh
-./scripts/load_sample_data.sh
-APP_RELOAD=false ./scripts/api_dev.sh
+./scripts/alice_lite_up.sh
 ```
 
 ### First useful result in 5 minutes
 
-In another terminal, verify the runtime and get a visible result:
+In another terminal, bootstrap the sample workspace flow and request the default one-call continuity result:
+
+```bash
+./.venv/bin/python scripts/bootstrap_alice_lite_workspace.py
+```
+
+Or stay on the direct local CLI path and use the shipped one-call continuity entrypoint:
+
+```bash
+./.venv/bin/python -m alicebot_api brief --brief-type general --query "local-first startup path"
+```
+
+Inspect runtime status:
 
 ```bash
 ./.venv/bin/python -m alicebot_api status
-./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
-./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
-./.venv/bin/python -m alicebot_api open-loops --limit 5
 ```
 
 Capture something new:
@@ -197,13 +206,13 @@ Inspect why something is in memory:
 ./.venv/bin/python -m alicebot_api explain <continuity_object_id>
 ```
 
-Run archive maintenance manually:
+Run the Lite smoke check:
 
 ```bash
-./scripts/run_archive_maintenance.py --schedule manual
+./.venv/bin/python scripts/run_alice_lite_smoke.py
 ```
 
-Alice also includes a deterministic maintenance runner for archive integrity checks, stale fact surfacing, missing segment re-embedding, trusted-fact pattern candidate recompute, and optional benchmark regeneration.
+For the full local/dev stack with Redis and MinIO, keep using `docker compose up -d` plus the existing `./scripts/migrate.sh`, `./scripts/load_sample_data.sh`, and `APP_RELOAD=false ./scripts/api_dev.sh` flow.
 
 See the full local setup walkthrough in [docs/quickstart/local-setup-and-first-result.md](docs/quickstart/local-setup-and-first-result.md).
 

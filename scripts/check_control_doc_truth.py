@@ -36,9 +36,9 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "P13-S1: One-Call Continuity",
+            "P13-S2: Alice Lite",
             "`v0.3.2` is the latest published tag.",
-            "POST /v1/continuity/brief",
+            "Alice Lite",
         ),
     ),
     ControlDocTruthRule(
@@ -54,7 +54,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
             "Phase 12 is shipped.",
             "`v0.3.2` is the latest published tag.",
             "Phase 13 is active.",
-            "`P13-S1` One-Call Continuity is the active execution sprint.",
+            "`P13-S2` Alice Lite is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(

@@ -1,71 +1,45 @@
 # BUILD_REPORT
 
-## Sprint Objective
-
-Implement `P13-S1: One-Call Continuity` by shipping one shared continuity bundle surface across:
-
-- API: `POST /v1/continuity/brief`
-- CLI: `alice brief`
-- MCP: `alice_brief`
-
-## Completed Work
-
-- Added a shared continuity brief assembler that composes existing resumption, recall, task-briefing, contradiction, and trust systems.
-- Added the one-call continuity request/response contract and supporting typed records.
-- Added authenticated API endpoint `POST /v1/continuity/brief`.
-- Added CLI command `brief` in the Python CLI surface and deterministic CLI rendering for the continuity bundle.
-- Added MCP tool `alice_brief` with input validation and stable schema.
-- Updated the Node `alice` wrapper so `alice brief` forwards to the Python CLI runtime without widening unrelated command behavior.
-- Added integration documentation that makes one-call continuity the default external-agent path.
-- Added targeted API, CLI, and MCP parity coverage for the new surface.
-- Added wrapper-level Node coverage for `alice brief`.
-- Updated active control docs required for the Phase 13 sprint packet and control-doc truth checks.
-
-## Incomplete Work
-
-- None for this sprint packet.
-
-## Files Changed
-
-- `.ai/active/SPRINT_PACKET.md`
-- `.ai/handoff/CURRENT_STATE.md`
-- `ARCHITECTURE.md`
-- `README.md`
-- `ROADMAP.md`
-- `RULES.md`
-- `CURRENT_STATE.md`
-- `PRODUCT_BRIEF.md`
-- `apps/api/src/alicebot_api/continuity_brief.py`
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/cli.py`
-- `apps/api/src/alicebot_api/cli_formatting.py`
-- `apps/api/src/alicebot_api/mcp_tools.py`
-- `packages/alice-cli/bin/alice.js`
-- `packages/alice-cli/package.json`
-- `packages/alice-cli/test/alice.test.mjs`
-- `docs/integrations/one-call-continuity.md`
-- `docs/integrations/cli.md`
-- `docs/integrations/mcp.md`
-- `scripts/check_control_doc_truth.py`
-- `tests/integration/test_continuity_brief_api.py`
-- `tests/integration/test_mcp_cli_parity.py`
-- `tests/unit/test_cli.py`
-- `tests/unit/test_mcp.py`
-
-## Tests Run
-
-- `./.venv/bin/pytest tests/unit/test_cli.py tests/unit/test_mcp.py -q`
-- `./.venv/bin/pytest tests/integration/test_continuity_brief_api.py tests/integration/test_mcp_cli_parity.py -q`
-- `python3 scripts/check_control_doc_truth.py`
-- `./.venv/bin/pytest tests/unit/test_control_doc_truth.py -q`
-- `node --test packages/alice-cli/test/alice.test.mjs`
-
-## Blockers/Issues
-
-- No remaining implementation blockers.
-- The active Phase 13 sprint packet required control-doc alignment in addition to the implementation and test work.
-
-## Recommended Next Step
-
-Start `P13-S2: Alice Lite`, using the new one-call continuity surface as the default continuity entrypoint for install, demo, and runtime integration flows.
+- sprint objective
+  - Implement `P13-S2` Alice Lite as a lighter local/dev startup and onboarding profile while preserving the shipped continuity semantics and one-call continuity entrypoint.
+- completed work
+  - Added `docker-compose.lite.yml` with a Lite Postgres-only local profile.
+  - Added `.env.lite.example` for the Lite entrypoint-rate-limit and reload defaults.
+  - Added `scripts/alice_lite_up.sh` for one-command Lite startup, migration, sample-data load, and API launch.
+  - Added `scripts/bootstrap_alice_lite_workspace.py` for the sample hosted workspace bootstrap flow plus first one-call continuity result without printing session tokens.
+  - Added `scripts/run_alice_lite_smoke.py` for Lite health and one-call CLI smoke verification.
+  - Updated `scripts/api_dev.sh` so the Lite entrypoint-rate-limit override survives `.env` loading.
+  - Updated `README.md` and `docs/quickstart/local-setup-and-first-result.md` so Alice Lite is the default quickstart/demo path, `brief` is the default first useful result, and the Lite prerequisites stay scoped to the Lite path.
+  - Updated Phase 13 control docs and architecture docs so `P13-S1` is recorded as shipped and `P13-S2` as active.
+  - Added focused unit coverage for the Lite profile assets, including token-output guardrails and quickstart scope checks.
+- incomplete work
+  - None identified during implementation.
+- files changed
+  - `.ai/active/SPRINT_PACKET.md`
+  - `.ai/handoff/CURRENT_STATE.md`
+  - `BUILD_REPORT.md`
+  - `CURRENT_STATE.md`
+  - `PRODUCT_BRIEF.md`
+  - `.env.lite.example`
+  - `ARCHITECTURE.md`
+  - `README.md`
+  - `ROADMAP.md`
+  - `docker-compose.lite.yml`
+  - `docs/quickstart/local-setup-and-first-result.md`
+  - `scripts/check_control_doc_truth.py`
+  - `scripts/alice_lite_up.sh`
+  - `scripts/api_dev.sh`
+  - `scripts/bootstrap_alice_lite_workspace.py`
+  - `scripts/run_alice_lite_smoke.py`
+  - `tests/unit/test_phase13_alice_lite_assets.py`
+- tests run
+  - `python3 scripts/check_control_doc_truth.py`
+  - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
+  - `./.venv/bin/python -m pytest tests/unit/test_phase13_alice_lite_assets.py -q`
+  - live `./scripts/alice_lite_up.sh` startup verification against `docker-compose.lite.yml`
+  - live `./.venv/bin/python scripts/bootstrap_alice_lite_workspace.py`
+  - live `./.venv/bin/python scripts/run_alice_lite_smoke.py`
+- blockers/issues
+  - No implementation blockers remained after fixing the authenticated-user sample-data seeding path, aligning the smoke matcher with the current CLI formatter output, and removing the bootstrap-token log leak from the sample flow.
+- recommended next step
+  - Review whether the full-stack quickstart should also link to the Lite profile now that Lite is the default local/dev onboarding path.
