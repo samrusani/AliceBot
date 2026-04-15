@@ -23,6 +23,7 @@ MCP uses the same local runtime scope as CLI:
 
 ## Shipped Tool Surface
 
+- `alice_brief`
 - `alice_capture`
 - `alice_capture_candidates`
 - `alice_commit_captures`
@@ -41,6 +42,7 @@ MCP uses the same local runtime scope as CLI:
 - `alice_explain`
 - `alice_context_pack`
 
+`alice_brief` is the default external-agent continuity lookup. It returns one continuity bundle with relevant facts, recent changes, open loops, conflicts, timeline highlights, provenance, trust posture, and a next suggested action.
 `alice_explain` now accepts either `continuity_object_id` for evidence-chain inspection or `entity_id` plus optional `at` for temporal explain output.
 `alice_prefetch_context` provides an automation-oriented pre-turn context assembly surface using the same continuity resumption semantics shipped for `alice_resume`.
 `alice_capture_candidates` and `alice_commit_captures` provide the B2 bridge auto-capture pipeline over user/assistant turns with `manual`/`assist`/`auto` commit policy support.
@@ -89,6 +91,7 @@ One-command bridge demo:
 - tool set is intentionally narrow and stable
 - tool output is deterministic for parity testing
 - MCP does not widen core product semantics beyond the shipped Phase 12 baseline and Bridge `B1` through `B4`
+- `alice_brief` is the preferred first call for external runtimes that need continuity in one request
 
 See tests:
 
@@ -96,3 +99,4 @@ See tests:
 - `tests/integration/test_mcp_server.py`
 - `tests/integration/test_temporal_state_mcp_cli.py`
 - `tests/integration/test_openclaw_mcp_integration.py`
+- `docs/integrations/one-call-continuity.md`

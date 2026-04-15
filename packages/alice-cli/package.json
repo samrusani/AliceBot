@@ -11,7 +11,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node ./bin/alice.js --help"
+    "test": "node --test ./test/alice.test.mjs"
   },
   "keywords": [
     "alice",

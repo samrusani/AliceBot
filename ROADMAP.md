@@ -6,50 +6,47 @@
 - Phase 11: shipped
 - Bridge `B1`-`B4`: shipped
 - Bridge Phase (`B1`-`B4`): shipped
-- `v0.2.0`: released
 - Phase 12: shipped
-- `v0.3.2`: current release target
+- `v0.3.2`: released
 
 These remain baseline truth and are not future milestones.
 
 ## Active Planning Status
-- Phase 12 closeout and `v0.3.2` release update are the active control packet.
-- No remaining Phase 12 feature sprints are open.
+- Phase 13 is active.
+- `P13-S1` One-Call Continuity is the active execution sprint.
+- `P13-S2` Alice Lite is queued next.
+- `P13-S3` Memory Hygiene + Conversation Health follows after Alice Lite.
 
-## Phase 12 Completed Milestones
+## Phase 13 Planned Milestones
 
-### P12-S1: Hybrid Retrieval + Reranking
-- add hybrid retrieval pipeline
-- add reranking and retrieval traces
-- expose debug visibility through API, CLI, and MCP
+### P13-S1: One-Call Continuity
+- ship `POST /v1/continuity/brief`
+- ship matching CLI `alice brief`
+- ship matching MCP `alice_brief`
+- return one continuity bundle containing summary, recent changes, open loops, conflicts, next action, provenance, and trust posture
+- make this the default integration surface for external agents
 
-### P12-S2: Automated Memory Operations
-- add explicit memory operation candidates and commit engine
-- define auto-apply vs review thresholds
+### P13-S2: Alice Lite
+- add one-command local startup
+- add smaller-footprint deployment profile
+- tighten quickstart and first-result path
+- keep semantics aligned with the full Alice baseline
 
-### P12-S3: Contradiction Detection + Trust Calibration
-- add contradiction cases and resolution flow
-- add trust-signal computation and retrieval penalties
-
-### P12-S4: Public Eval Harness
-- ship public fixture suites and local eval runner
-- commit baseline reports and eval docs
-
-### P12-S5: Task-Adaptive Briefing
-- add brief compiler and brief modes
-- integrate provider/model-pack briefing strategy
-
-## Release Sequencing Applied
-- `v0.3.0`: retrieval and memory quality (`P12-S1` through `P12-S3`)
-- `v0.3.1`: public evaluation (`P12-S4`)
-- `v0.3.2`: task-adaptive briefing (`P12-S5`)
+### P13-S3: Memory Hygiene + Conversation Health
+- surface duplicates, stale facts, unresolved contradictions, and review queue pressure
+- surface recent threads, stale threads, risky threads, and thread health
+- improve operational visibility without adding new substrate work
 
 ## Sequencing Rules
-- Keep shipped baseline out of roadmap sections.
-- Do not widen Phase 12 into graph migration, marketplace, enterprise/compliance, or new channel work.
-- Use eval evidence to justify public quality claims before updating release docs.
-- Treat later releases as separate contracts; do not collapse all Phase 12 work into one oversized sprint.
+- Phase 13 is an adoption layer on top of the shipped Phase 12 baseline.
+- Prioritize one-call continuity first, then Alice Lite, then hygiene and conversation health.
+- Do not add new substrate work unless it is required to support those deliverables.
+- Judge every Phase 13 change against three questions:
+  - does this reduce integration complexity?
+  - does this improve first-run experience?
+  - does this make memory quality more visible?
+- Do not widen Phase 13 into retrieval research, graph-database migration, new channels, new provider/runtime work, marketplace work, or enterprise/admin expansion.
 
-## Beyond Phase 12
-- No post-Phase-12 feature plan is currently defined.
-- The next step is either cutting the `v0.3.2` release or planning the next phase.
+## Beyond Phase 13
+- No post-Phase-13 feature plan is currently defined.
+- The next step after Phase 13 is to decide the next release boundary and the next phase.

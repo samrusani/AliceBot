@@ -5,6 +5,7 @@ from typing import Mapping, Sequence
 
 from alicebot_api.contracts import (
     ContinuityArtifactDetailResponse,
+    ContinuityBriefResponse,
     ContinuityCaptureCreateResponse,
     ContinuityCorrectionApplyResponse,
     ContradictionCaseDetailResponse,
@@ -426,6 +427,121 @@ def format_resume_output(payload: ContinuityResumptionBriefResponse) -> str:
         lines.extend(_render_recall_item(next_action["item"]))
 
     lines.extend(_render_retrieval_debug(payload))
+    return "\n".join(lines)
+
+
+def format_continuity_brief_output(payload: ContinuityBriefResponse) -> str:
+    brief = payload["brief"]
+    lines = [
+        "continuity brief",
+        f"brief_type: {brief['brief_type']}",
+        f"assembly_version: {brief['assembly_version']}",
+        f"scope: {_format_scope(brief['scope'])}",
+        f"summary: {brief['summary']}",
+        (
+            "selection_strategy: "
+            f"mode={brief['selection_strategy']['task_brief_mode']} "
+            f"provider={brief['selection_strategy']['provider_strategy']} "
+            f"model_pack={brief['selection_strategy']['model_pack_strategy']} "
+            f"token_budget={brief['selection_strategy']['token_budget']} "
+            f"budget_source={brief['selection_strategy']['budget_source']}"
+        ),
+        (
+            "trust_posture: "
+            f"confidence={brief['trust_posture']['confidence_posture']} "
+            f"average_confidence={_format_float(brief['trust_posture']['average_confidence'])} "
+            f"strongest_trust_class={brief['trust_posture']['strongest_trust_class']} "
+            f"weakest_provenance={brief['trust_posture']['weakest_provenance_posture']} "
+            f"active_signals={brief['trust_posture']['active_signal_count']} "
+            f"open_conflicts={brief['trust_posture']['open_conflict_count']}"
+        ),
+        f"trust_rationale: {brief['trust_posture']['rationale']}",
+        (
+            "provenance_bundle: "
+            f"source_objects={brief['provenance_bundle']['summary']['source_object_count']} "
+            f"references={brief['provenance_bundle']['summary']['reference_count']} "
+            f"reference_kinds={brief['provenance_bundle']['summary']['reference_kind_count']}"
+        ),
+        f"sources: {', '.join(brief['sources'])}",
+    ]
+
+    lines.extend(
+        _render_recall_list_section(
+            title="relevant_facts",
+            items=brief["relevant_facts"]["items"],
+            limit=brief["relevant_facts"]["summary"]["limit"],
+            total_count=brief["relevant_facts"]["summary"]["total_count"],
+            order=brief["relevant_facts"]["summary"]["order"],
+            empty_message=brief["relevant_facts"]["empty_state"]["message"],
+        )
+    )
+    lines.extend(
+        _render_recall_list_section(
+            title="recent_changes",
+            items=brief["recent_changes"]["items"],
+            limit=brief["recent_changes"]["summary"]["limit"],
+            total_count=brief["recent_changes"]["summary"]["total_count"],
+            order=brief["recent_changes"]["summary"]["order"],
+            empty_message=brief["recent_changes"]["empty_state"]["message"],
+        )
+    )
+    lines.extend(
+        _render_recall_list_section(
+            title="open_loops",
+            items=brief["open_loops"]["items"],
+            limit=brief["open_loops"]["summary"]["limit"],
+            total_count=brief["open_loops"]["summary"]["total_count"],
+            order=brief["open_loops"]["summary"]["order"],
+            empty_message=brief["open_loops"]["empty_state"]["message"],
+        )
+    )
+
+    lines.append("conflicts:")
+    if len(brief["conflicts"]["items"]) == 0:
+        lines.append(f"  empty: {brief['conflicts']['empty_state']['message']}")
+    else:
+        lines.append(
+            "  "
+            f"returned={brief['conflicts']['summary']['returned_count']} "
+            f"total={brief['conflicts']['summary']['total_count']} "
+            f"limit={brief['conflicts']['summary']['limit']}"
+        )
+        for index, case in enumerate(brief["conflicts"]["items"], start=1):
+            lines.append(
+                "  "
+                f"{index}. [{case['kind']}|{case['status']}] "
+                f"{case['continuity_object']['title']} <> {case['counterpart_object']['title']}"
+            )
+            lines.append(f"    case_id={case['id']} rationale={case['rationale']}")
+
+    lines.append("timeline_highlights:")
+    if len(brief["timeline_highlights"]["items"]) == 0:
+        lines.append(f"  empty: {brief['timeline_highlights']['empty_state']['message']}")
+    else:
+        for index, item in enumerate(brief["timeline_highlights"]["items"], start=1):
+            lines.append(
+                "  "
+                f"{index}. [{item['object_type']}|{item['status']}] {item['title']} "
+                f"created_at={item['created_at']} source_section={item['source_section']}"
+            )
+
+    lines.append("next_suggested_action:")
+    lines.append(f"  title: {brief['next_suggested_action']['title']}")
+    lines.append(f"  object_type: {brief['next_suggested_action']['object_type']}")
+    lines.append(f"  continuity_object_id: {brief['next_suggested_action']['continuity_object_id']}")
+    lines.append(f"  confidence_posture: {brief['next_suggested_action']['confidence_posture']}")
+    lines.append(f"  reason: {brief['next_suggested_action']['reason']}")
+    lines.append(
+        "  provenance_refs: "
+        + (
+            "; ".join(
+                f"{ref['source_kind']}:{ref['source_id']}"
+                for ref in brief["next_suggested_action"]["provenance_references"]
+            )
+            if brief["next_suggested_action"]["provenance_references"]
+            else "(none)"
+        )
+    )
     return "\n".join(lines)
 
 

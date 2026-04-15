@@ -18,51 +18,43 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="README.md",
         required_markers=(
-            "`v0.3.2` is the current **pre-1.0 release target** for the completed Phase 12 boundary.",
-            "## Release Boundary (`v0.3.2` Target)",
-            "Bridge `B1` through `B4` provider contract, auto-capture flow, review/explainability flow, and bridge docs/smoke validation",
+            "`v0.3.2` is the current **pre-1.0 public release**.",
+            "## Release Boundary (`v0.3.2`)",
             "Phase 12 retrieval quality stack:",
+            "Phase 13 planning is active on top of this released baseline.",
             "Historical planning/control artifacts remain available in:",
         ),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "Bridge Phase (`B1`-`B4`): shipped",
-            "Phase 12 closeout and `v0.3.2` release update are the active control packet.",
+            "`v0.3.2`: released",
+            "Phase 13 is active.",
+            "### P13-S1: One-Call Continuity",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Phase 12 Closeout and `v0.3.2` Release Update",
-            "`v0.2.0` is the latest published tag.",
-            "The documented release target is `v0.3.2`",
+            "P13-S1: One-Call Continuity",
+            "`v0.3.2` is the latest published tag.",
+            "POST /v1/continuity/brief",
         ),
     ),
     ControlDocTruthRule(
         relative_path="RULES.md",
         required_markers=(
-            "For Hermes, use provider hooks for automation and MCP for explicit deep actions.",
-            "Never fork continuity semantics by surface or runtime.",
+            "Phase 13 is an adoption layer on top of the shipped `v0.3.2` baseline.",
+            "Alice Lite is a deployment profile, not a separate product.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "Phase 9 is shipped.",
-            "Phase 10 is shipped.",
-            "Phase 11 is shipped.",
-            "`v0.2.0` is the latest published tag.",
-            "`v0.3.2` is the current release target.",
-            "Phase 12 closeout and `v0.3.2` release update are the active control packet.",
-        ),
-    ),
-    ControlDocTruthRule(
-        relative_path="docs/runbooks/phase12-closeout-packet.md",
-        required_markers=(
-            "# Phase 12 Closeout Packet",
-            "This runbook is the source-of-truth closeout packet for the accepted Phase 12 baseline through `P12-S5`.",
+            "Phase 12 is shipped.",
+            "`v0.3.2` is the latest published tag.",
+            "Phase 13 is active.",
+            "`P13-S1` One-Call Continuity is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(

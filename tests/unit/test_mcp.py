@@ -25,6 +25,7 @@ def test_mcp_tool_surface_is_adr_aligned_and_deterministic() -> None:
         "alice_state_at",
         "alice_resume",
         "alice_resume_debug",
+        "alice_brief",
         "alice_task_brief",
         "alice_task_brief_show",
         "alice_task_brief_compare",
