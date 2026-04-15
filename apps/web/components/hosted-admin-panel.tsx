@@ -32,6 +32,8 @@ type HostedOverview = {
   };
 };
 
+type HostedOverviewPayload = HostedOverview | { overview?: HostedOverview | null };
+
 type RolloutFlag = {
   flag_key: string;
   enabled: boolean;
@@ -125,7 +127,7 @@ export function HostedAdminPanel({ apiBaseUrl }: HostedAdminPanelProps) {
     await runOperation(async () => {
       const [overviewPayload, workspacesPayload, deliveryPayload, incidentsPayload, rolloutPayload, analyticsPayload, rateLimitsPayload] =
         await Promise.all([
-          requestAdminJson<{ overview?: HostedOverview } | HostedOverview>("/v1/admin/hosted/overview"),
+          requestAdminJson<HostedOverviewPayload>("/v1/admin/hosted/overview"),
           requestAdminJson<{ items: unknown[] }>("/v1/admin/hosted/workspaces"),
           requestAdminJson<{ items: unknown[] }>("/v1/admin/hosted/delivery-receipts"),
           requestAdminJson<{ items: unknown[] }>("/v1/admin/hosted/incidents?status=open"),
@@ -134,7 +136,8 @@ export function HostedAdminPanel({ apiBaseUrl }: HostedAdminPanelProps) {
           requestAdminJson<{ items: unknown[] }>("/v1/admin/hosted/rate-limits"),
         ]);
 
-      const resolvedOverview = "overview" in overviewPayload ? overviewPayload.overview ?? null : overviewPayload;
+      const resolvedOverview: HostedOverview | null =
+        "workspaces" in overviewPayload ? overviewPayload : overviewPayload.overview ?? null;
       setOverview(resolvedOverview);
       setWorkspacesCount(workspacesPayload.items.length);
       setDeliveryCount(deliveryPayload.items.length);

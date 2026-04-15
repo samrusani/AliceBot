@@ -1015,7 +1015,7 @@ export default async function ContinuityPage({
 
   const pageMode = combinePageModes(
     listSource,
-    selectedSource,
+    selectedSource === "unavailable" ? null : selectedSource,
     recallSource,
     resumptionSource,
     openLoopSource,
@@ -1023,7 +1023,7 @@ export default async function ContinuityPage({
     weeklyReviewSource,
     threadHealthSource,
     reviewSource,
-    correctionSource,
+    correctionSource === "unavailable" ? null : correctionSource,
   );
 
   return (

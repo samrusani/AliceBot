@@ -11,6 +11,7 @@ import type {
   MemoryHygieneDashboardSummary,
   MemoryReviewLabelSummary,
   MemoryReviewQueuePriorityMode,
+  MemoryReviewQueueItem,
   MemoryReviewRecord,
   MemoryTrustDashboardSummary,
   MemoryRevisionReviewListSummary,
@@ -90,22 +91,7 @@ function resolveSelectedMemoryId(requestedMemoryId: string, items: MemoryReviewR
   return items[0]?.id ?? "";
 }
 
-function queueItemAsMemory(item: {
-  id: string;
-  memory_key: string;
-  value: unknown;
-  status: "active";
-  source_event_ids: string[];
-  memory_type: MemoryReviewRecord["memory_type"];
-  confidence: MemoryReviewRecord["confidence"];
-  salience: MemoryReviewRecord["salience"];
-  confirmation_status: MemoryReviewRecord["confirmation_status"];
-  valid_from: MemoryReviewRecord["valid_from"];
-  valid_to: MemoryReviewRecord["valid_to"];
-  last_confirmed_at: MemoryReviewRecord["last_confirmed_at"];
-  created_at: string;
-  updated_at: string;
-}): MemoryReviewRecord {
+function queueItemAsMemory(item: MemoryReviewQueueItem): MemoryReviewRecord {
   return {
     ...item,
     deleted_at: null,
@@ -709,14 +695,14 @@ export default async function MemoriesPage({
                 const selected = selectedOpenLoop?.id === openLoop.id;
                 const hrefParts = [
                   `/memories?open_loop=${encodeURIComponent(openLoop.id)}`,
-                  selectedMemory?.id
-                    ? `memory=${encodeURIComponent(selectedMemory.id)}`
-                    : null,
-                  activeFilter === "queue" ? "filter=queue" : null,
-                  activeFilter === "queue"
-                    ? `priority_mode=${encodeURIComponent(queuePriorityMode)}`
-                    : null,
-                ].filter(Boolean);
+                  ...(selectedMemory?.id
+                    ? [`memory=${encodeURIComponent(selectedMemory.id)}`]
+                    : []),
+                  ...(activeFilter === "queue" ? ["filter=queue"] : []),
+                  ...(activeFilter === "queue"
+                    ? [`priority_mode=${encodeURIComponent(queuePriorityMode)}`]
+                    : []),
+                ];
                 const href = hrefParts.length > 1 ? `${hrefParts[0]}&${hrefParts.slice(1).join("&")}` : hrefParts[0];
                 return (
                   <li key={openLoop.id}>

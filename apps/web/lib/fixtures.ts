@@ -1262,6 +1262,7 @@ export const approvalFixtures: ApprovalItem[] = [
     id: "44444444-4444-4444-8444-444444444444",
     thread_id: THREAD_MAGNESIUM,
     task_step_id: "77777777-7777-4777-8777-777777777777",
+    task_run_id: null,
     status: "pending",
     request: {
       thread_id: THREAD_MAGNESIUM,
@@ -1310,6 +1311,7 @@ export const approvalFixtures: ApprovalItem[] = [
     id: "44444444-4444-4444-8444-444444444445",
     thread_id: THREAD_VITAMIN_D,
     task_step_id: "77777777-7777-4777-8777-777777777778",
+    task_run_id: null,
     status: "approved",
     request: {
       thread_id: THREAD_VITAMIN_D,
@@ -1405,6 +1407,7 @@ export const executionFixtures: ToolExecutionItem[] = [
   {
     id: "99999999-1111-4111-8111-111111111111",
     approval_id: "44444444-4444-4444-8444-444444444445",
+    task_run_id: null,
     task_step_id: "77777777-7777-4777-8777-777777777778",
     thread_id: THREAD_VITAMIN_D,
     tool_id: PURCHASE_TOOL.id,
@@ -1413,6 +1416,7 @@ export const executionFixtures: ToolExecutionItem[] = [
     result_event_id: "event-result-311",
     status: "completed",
     handler_key: "proxy.echo",
+    idempotency_key: null,
     request: {
       thread_id: THREAD_VITAMIN_D,
       tool_id: PURCHASE_TOOL.id,

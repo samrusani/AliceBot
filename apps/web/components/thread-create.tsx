@@ -1,7 +1,7 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { createThread, DEFAULT_AGENT_PROFILE_ID, type AgentProfileItem } from "../lib/api";
@@ -45,15 +45,19 @@ export function ThreadCreate({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const liveModeReady = Boolean(apiBaseUrl && userId);
-  const profileOptions = agentProfiles && agentProfiles.length > 0
-    ? agentProfiles
-    : [
-        {
-          id: DEFAULT_AGENT_PROFILE_ID,
-          name: "Assistant Default",
-          description: "General-purpose assistant profile for baseline conversations.",
-        },
-      ];
+  const profileOptions = useMemo(
+    () =>
+      agentProfiles && agentProfiles.length > 0
+        ? agentProfiles
+        : [
+            {
+              id: DEFAULT_AGENT_PROFILE_ID,
+              name: "Assistant Default",
+              description: "General-purpose assistant profile for baseline conversations.",
+            },
+          ],
+    [agentProfiles],
+  );
 
   useEffect(() => {
     if (profileOptions.some((profile) => profile.id === selectedProfileId)) {

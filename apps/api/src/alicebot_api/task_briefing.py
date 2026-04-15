@@ -64,6 +64,17 @@ class _ModeConfig:
     default_model_pack_strategy: str
 
 
+@dataclass(frozen=True, slots=True)
+class _SectionPlan:
+    section_key: str
+    title: str
+    intent: str
+    selection_rule: str
+    candidates: list[ContinuityRecallResultRecord]
+    token_budget: int
+    max_items: int
+
+
 _MODE_CONFIGS: dict[str, _ModeConfig] = {
     "user_recall": _ModeConfig(token_budget=320, default_model_pack_strategy="balanced"),
     "resume": _ModeConfig(token_budget=220, default_model_pack_strategy="balanced"),
@@ -144,6 +155,10 @@ def _empty_state(message: str, *, is_empty: bool) -> TaskBriefEmptyState:
 
 def _recent_sort_key(item: ContinuityRecallResultRecord) -> tuple[str, str]:
     return (item["created_at"], item["id"])
+
+
+def _recent_items(items: list[ContinuityRecallResultRecord]) -> list[ContinuityRecallResultRecord]:
+    return sorted(items, key=_recent_sort_key, reverse=True)
 
 
 def _is_active_truth(item: ContinuityRecallResultRecord) -> bool:
@@ -237,6 +252,27 @@ def _build_section(
             is_empty=len(selected) == 0,
         ),
     }
+
+
+def _build_sections(plans: list[_SectionPlan]) -> list[TaskBriefSectionRecord]:
+    return [
+        _build_section(
+            section_key=plan.section_key,
+            title=plan.title,
+            intent=plan.intent,
+            selection_rule=plan.selection_rule,
+            candidates=plan.candidates,
+            token_budget=plan.token_budget,
+            max_items=plan.max_items,
+        )
+        for plan in plans
+    ]
+
+
+def _single_item_candidates(
+    item: ContinuityRecallResultRecord | None,
+) -> list[ContinuityRecallResultRecord]:
+    return [] if item is None else [item]
 
 
 def _resolve_model_pack_defaults(
@@ -337,17 +373,19 @@ def _compile_user_recall_sections(
     *,
     token_budget: int,
 ) -> list[TaskBriefSectionRecord]:
-    return [
-        _build_section(
-            section_key="top_recall",
-            title="Top Recall",
-            intent="Provide the highest-ranked continuity recall items for direct user recall.",
-            selection_rule="Hybrid recall rank order with token-budget truncation.",
-            candidates=items,
-            token_budget=token_budget,
-            max_items=8,
-        )
-    ]
+    return _build_sections(
+        [
+            _SectionPlan(
+                section_key="top_recall",
+                title="Top Recall",
+                intent="Provide the highest-ranked continuity recall items for direct user recall.",
+                selection_rule="Hybrid recall rank order with token-budget truncation.",
+                candidates=items,
+                token_budget=token_budget,
+                max_items=8,
+            )
+        ]
+    )
 
 
 def _compile_worker_sections(
@@ -356,7 +394,7 @@ def _compile_worker_sections(
     token_budget: int,
     include_non_promotable_facts: bool,
 ) -> list[TaskBriefSectionRecord]:
-    recent_items = sorted(items, key=_recent_sort_key, reverse=True)
+    recent_items = _recent_items(items)
     latest_decision = next(
         (item for item in recent_items if item["object_type"] == "Decision" and _is_active_truth(item)),
         None,
@@ -387,35 +425,37 @@ def _compile_worker_sections(
     objective_budget = max(1, int(token_budget * 0.4))
     constraints_budget = max(1, int(token_budget * 0.35))
     facts_budget = max(1, token_budget - objective_budget - constraints_budget)
-    return [
-        _build_section(
-            section_key="current_objective",
-            title="Current Objective",
-            intent="Give the worker the active decision and next action first.",
-            selection_rule="Most recent active decision and next action only.",
-            candidates=objective_candidates,
-            token_budget=objective_budget,
-            max_items=2,
-        ),
-        _build_section(
-            section_key="active_constraints",
-            title="Active Constraints",
-            intent="Expose blockers, commitments, and waiting-for items that can stall execution.",
-            selection_rule="Newest active blocker, commitment, and waiting-for items under a compact budget.",
-            candidates=constraint_candidates,
-            token_budget=constraints_budget,
-            max_items=3,
-        ),
-        _build_section(
-            section_key="critical_context",
-            title="Critical Context",
-            intent="Keep only the smallest set of facts that materially change task execution.",
-            selection_rule="Newest active facts and notes that remain promotable unless explicitly overridden.",
-            candidates=fact_candidates,
-            token_budget=facts_budget,
-            max_items=2,
-        ),
-    ]
+    return _build_sections(
+        [
+            _SectionPlan(
+                section_key="current_objective",
+                title="Current Objective",
+                intent="Give the worker the active decision and next action first.",
+                selection_rule="Most recent active decision and next action only.",
+                candidates=objective_candidates,
+                token_budget=objective_budget,
+                max_items=2,
+            ),
+            _SectionPlan(
+                section_key="active_constraints",
+                title="Active Constraints",
+                intent="Expose blockers, commitments, and waiting-for items that can stall execution.",
+                selection_rule="Newest active blocker, commitment, and waiting-for items under a compact budget.",
+                candidates=constraint_candidates,
+                token_budget=constraints_budget,
+                max_items=3,
+            ),
+            _SectionPlan(
+                section_key="critical_context",
+                title="Critical Context",
+                intent="Keep only the smallest set of facts that materially change task execution.",
+                selection_rule="Newest active facts and notes that remain promotable unless explicitly overridden.",
+                candidates=fact_candidates,
+                token_budget=facts_budget,
+                max_items=2,
+            ),
+        ]
+    )
 
 
 def _compile_handoff_sections(
@@ -424,7 +464,7 @@ def _compile_handoff_sections(
     token_budget: int,
     include_non_promotable_facts: bool,
 ) -> list[TaskBriefSectionRecord]:
-    recent_items = sorted(items, key=_recent_sort_key, reverse=True)
+    recent_items = _recent_items(items)
     focus_candidates = [
         item
         for item in recent_items
@@ -447,35 +487,37 @@ def _compile_handoff_sections(
     focus_budget = max(1, int(token_budget * 0.35))
     loop_budget = max(1, int(token_budget * 0.3))
     change_budget = max(1, token_budget - focus_budget - loop_budget)
-    return [
-        _build_section(
-            section_key="handoff_focus",
-            title="Handoff Focus",
-            intent="Summarize the active decision and next action for the receiving agent.",
-            selection_rule="Newest active decision and next action first.",
-            candidates=focus_candidates,
-            token_budget=focus_budget,
-            max_items=3,
-        ),
-        _build_section(
-            section_key="handoff_open_loops",
-            title="Open Loops",
-            intent="Carry unresolved dependencies and blockers into the handoff.",
-            selection_rule="Newest active commitments, waiting-for items, and blockers.",
-            candidates=open_loop_candidates,
-            token_budget=loop_budget,
-            max_items=3,
-        ),
-        _build_section(
-            section_key="handoff_recent_changes",
-            title="Recent Changes",
-            intent="Show the most recent materially relevant changes before handoff.",
-            selection_rule="Newest change candidates, including superseded history, under token budget.",
-            candidates=recent_change_candidates,
-            token_budget=change_budget,
-            max_items=4,
-        ),
-    ]
+    return _build_sections(
+        [
+            _SectionPlan(
+                section_key="handoff_focus",
+                title="Handoff Focus",
+                intent="Summarize the active decision and next action for the receiving agent.",
+                selection_rule="Newest active decision and next action first.",
+                candidates=focus_candidates,
+                token_budget=focus_budget,
+                max_items=3,
+            ),
+            _SectionPlan(
+                section_key="handoff_open_loops",
+                title="Open Loops",
+                intent="Carry unresolved dependencies and blockers into the handoff.",
+                selection_rule="Newest active commitments, waiting-for items, and blockers.",
+                candidates=open_loop_candidates,
+                token_budget=loop_budget,
+                max_items=3,
+            ),
+            _SectionPlan(
+                section_key="handoff_recent_changes",
+                title="Recent Changes",
+                intent="Show the most recent materially relevant changes before handoff.",
+                selection_rule="Newest change candidates, including superseded history, under token budget.",
+                candidates=recent_change_candidates,
+                token_budget=change_budget,
+                max_items=4,
+            ),
+        ]
+    )
 
 
 def _compile_resume_sections(
@@ -508,126 +550,115 @@ def _compile_resume_sections(
     open_loops_budget = max(1, int(token_budget * 0.3))
     single_budget = max(1, int((token_budget - recent_changes_budget - open_loops_budget) / 2))
     return (
-        [
-            _build_section(
-                section_key="last_decision",
-                title="Last Decision",
-                intent="Keep the latest decision visible for resumption quality.",
-                selection_rule="Legacy continuity resumption latest active decision selection.",
-                candidates=[]
-                if brief["last_decision"]["item"] is None
-                else [brief["last_decision"]["item"]],
-                token_budget=single_budget,
-                max_items=1,
-            ),
-            _build_section(
-                section_key="open_loops",
-                title="Open Loops",
-                intent="Show unresolved commitments, waiting-for items, and blockers.",
-                selection_rule="Legacy continuity resumption open-loop ordering and limits.",
-                candidates=list(brief["open_loops"]["items"]),
-                token_budget=open_loops_budget,
-                max_items=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
-            ),
-            _build_section(
-                section_key="recent_changes",
-                title="Recent Changes",
-                intent="Surface recent relevant changes without reopening retrieval logic.",
-                selection_rule="Legacy continuity resumption recent-change ordering and limits.",
-                candidates=list(brief["recent_changes"]["items"]),
-                token_budget=recent_changes_budget,
-                max_items=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
-            ),
-            _build_section(
-                section_key="next_action",
-                title="Next Action",
-                intent="Keep the next action prominent for restart quality.",
-                selection_rule="Legacy continuity resumption latest active next action selection.",
-                candidates=[]
-                if brief["next_action"]["item"] is None
-                else [brief["next_action"]["item"]],
-                token_budget=single_budget,
-                max_items=1,
-            ),
-        ],
+        _build_sections(
+            [
+                _SectionPlan(
+                    section_key="last_decision",
+                    title="Last Decision",
+                    intent="Keep the latest decision visible for resumption quality.",
+                    selection_rule="Legacy continuity resumption latest active decision selection.",
+                    candidates=_single_item_candidates(brief["last_decision"]["item"]),
+                    token_budget=single_budget,
+                    max_items=1,
+                ),
+                _SectionPlan(
+                    section_key="open_loops",
+                    title="Open Loops",
+                    intent="Show unresolved commitments, waiting-for items, and blockers.",
+                    selection_rule="Legacy continuity resumption open-loop ordering and limits.",
+                    candidates=list(brief["open_loops"]["items"]),
+                    token_budget=open_loops_budget,
+                    max_items=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+                ),
+                _SectionPlan(
+                    section_key="recent_changes",
+                    title="Recent Changes",
+                    intent="Surface recent relevant changes without reopening retrieval logic.",
+                    selection_rule="Legacy continuity resumption recent-change ordering and limits.",
+                    candidates=list(brief["recent_changes"]["items"]),
+                    token_budget=recent_changes_budget,
+                    max_items=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+                ),
+                _SectionPlan(
+                    section_key="next_action",
+                    title="Next Action",
+                    intent="Keep the next action prominent for restart quality.",
+                    selection_rule="Legacy continuity resumption latest active next action selection.",
+                    candidates=_single_item_candidates(brief["next_action"]["item"]),
+                    token_budget=single_budget,
+                    max_items=1,
+                ),
+            ]
+        ),
         scope,
     )
 
 
-def compile_task_brief_record(
+def _compile_sections_for_request(
     store: ContinuityStore,
     *,
     user_id: UUID,
     request: TaskBriefCompileRequestInput,
-) -> TaskBriefRecord:
-    _validate_request(request)
-    strategy = _resolve_strategy(
-        store,
-        user_id=user_id,
-        request=request,
-    )
-
+    token_budget: int,
+) -> tuple[list[TaskBriefSectionRecord], ContinuityRecallScopeFilters, int]:
     if request.mode == "resume":
         sections, scope = _compile_resume_sections(
             store,
             user_id=user_id,
             request=request,
-            token_budget=strategy["token_budget"],
+            token_budget=token_budget,
         )
         candidate_count = sum(section["summary"]["candidate_count"] for section in sections)
-    else:
-        items, scope = _compile_recall_payload(
-            store,
-            user_id=user_id,
-            request=request,
-            source_surface=f"task_brief.{request.mode}",
-        )
-        candidate_count = len(items)
-        if request.mode == "user_recall":
-            sections = _compile_user_recall_sections(
-                items,
-                token_budget=strategy["token_budget"],
-            )
-        elif request.mode == "worker_subtask":
-            sections = _compile_worker_sections(
-                items,
-                token_budget=strategy["token_budget"],
-                include_non_promotable_facts=request.include_non_promotable_facts,
-            )
-        else:
-            sections = _compile_handoff_sections(
-                items,
-                token_budget=strategy["token_budget"],
-                include_non_promotable_facts=request.include_non_promotable_facts,
-            )
+        return sections, scope, candidate_count
 
-    selected_items = [
-        item
-        for section in sections
-        for item in section["items"]
-    ]
+    items, scope = _compile_recall_payload(
+        store,
+        user_id=user_id,
+        request=request,
+        source_surface=f"task_brief.{request.mode}",
+    )
+    if request.mode == "user_recall":
+        sections = _compile_user_recall_sections(
+            items,
+            token_budget=token_budget,
+        )
+    elif request.mode == "worker_subtask":
+        sections = _compile_worker_sections(
+            items,
+            token_budget=token_budget,
+            include_non_promotable_facts=request.include_non_promotable_facts,
+        )
+    else:
+        sections = _compile_handoff_sections(
+            items,
+            token_budget=token_budget,
+            include_non_promotable_facts=request.include_non_promotable_facts,
+        )
+    return sections, scope, len(items)
+
+
+def _build_task_brief_summary(
+    *,
+    mode: str,
+    sections: list[TaskBriefSectionRecord],
+    candidate_count: int,
+    token_budget: int,
+) -> TaskBriefSummary:
+    selected_item_count = sum(len(section["items"]) for section in sections)
     base_estimated_tokens = sum(section["summary"]["estimated_tokens"] for section in sections)
-    summary: TaskBriefSummary = {
+    return {
         "candidate_count": candidate_count,
-        "selected_item_count": len(selected_items),
-        "estimated_tokens": int(
-            round(base_estimated_tokens * _MODE_TOKEN_ESTIMATE_MULTIPLIER[request.mode])
-        ),
-        "token_budget": strategy["token_budget"],
+        "selected_item_count": selected_item_count,
+        "estimated_tokens": int(round(base_estimated_tokens * _MODE_TOKEN_ESTIMATE_MULTIPLIER[mode])),
+        "token_budget": token_budget,
         "truncated": any(section["summary"]["truncated_count"] > 0 for section in sections),
         "deterministic_key": "",
         "section_order": [section["section_key"] for section in sections],
         "mode_order": list(TASK_BRIEF_MODE_ORDER),
     }
-    brief: TaskBriefRecord = {
-        "assembly_version": TASK_BRIEF_ASSEMBLY_VERSION_V0,
-        "mode": request.mode,
-        "scope": scope,
-        "strategy": strategy,
-        "summary": summary,
-        "sections": sections,
-        "sources": ["continuity_capture_events", "continuity_objects", "retrieval_runs"],
-    }
+
+
+def _task_brief_deterministic_key(brief: TaskBriefRecord) -> str:
     deterministic_payload = {
         "assembly_version": brief["assembly_version"],
         "mode": brief["mode"],
@@ -645,9 +676,45 @@ def compile_task_brief_record(
             "mode_order": brief["summary"]["mode_order"],
         },
     }
-    brief["summary"]["deterministic_key"] = sha256(
+    return sha256(
         json.dumps(deterministic_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def compile_task_brief_record(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+    request: TaskBriefCompileRequestInput,
+) -> TaskBriefRecord:
+    _validate_request(request)
+    strategy = _resolve_strategy(
+        store,
+        user_id=user_id,
+        request=request,
+    )
+    sections, scope, candidate_count = _compile_sections_for_request(
+        store,
+        user_id=user_id,
+        request=request,
+        token_budget=strategy["token_budget"],
+    )
+    summary = _build_task_brief_summary(
+        mode=request.mode,
+        sections=sections,
+        candidate_count=candidate_count,
+        token_budget=strategy["token_budget"],
+    )
+    brief: TaskBriefRecord = {
+        "assembly_version": TASK_BRIEF_ASSEMBLY_VERSION_V0,
+        "mode": request.mode,
+        "scope": scope,
+        "strategy": strategy,
+        "summary": summary,
+        "sections": sections,
+        "sources": ["continuity_capture_events", "continuity_objects", "retrieval_runs"],
+    }
+    brief["summary"]["deterministic_key"] = _task_brief_deterministic_key(brief)
     return brief
 
 
