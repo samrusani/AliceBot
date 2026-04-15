@@ -19,6 +19,7 @@ def invoke_request(
     *,
     query_params: dict[str, str] | None = None,
     payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     messages: list[dict[str, object]] = []
     encoded_body = b"" if payload is None else json.dumps(payload).encode()
@@ -35,6 +36,10 @@ def invoke_request(
         messages.append(message)
 
     query_string = urlencode(query_params or {}).encode()
+    request_headers = [(b"content-type", b"application/json")]
+    for key, value in (headers or {}).items():
+        request_headers.append((key.lower().encode(), value.encode()))
+
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -44,7 +49,7 @@ def invoke_request(
         "path": path,
         "raw_path": path.encode(),
         "query_string": query_string,
-        "headers": [(b"content-type", b"application/json")],
+        "headers": request_headers,
         "client": ("testclient", 50000),
         "server": ("testserver", 80),
         "root_path": "",
@@ -61,18 +66,49 @@ def invoke_request(
     return start_message["status"], json.loads(body)
 
 
-def seed_user(database_url: str, *, email: str) -> UUID:
-    user_id = uuid4()
+def auth_header(session_token: str) -> dict[str, str]:
+    return {"authorization": f"Bearer {session_token}"}
+
+
+def bootstrap_authenticated_user(database_url: str, *, email: str) -> tuple[UUID, str]:
+    start_status, start_payload = invoke_request(
+        "POST",
+        "/v1/auth/magic-link/start",
+        payload={"email": email},
+    )
+    assert start_status == 200
+
+    verify_status, verify_payload = invoke_request(
+        "POST",
+        "/v1/auth/magic-link/verify",
+        payload={
+            "challenge_token": start_payload["challenge"]["challenge_token"],
+            "device_label": "Memory Mutation Test Device",
+            "device_key": f"device-{email}",
+        },
+    )
+    assert verify_status == 200
+
+    user_id = UUID(verify_payload["user_account"]["id"])
     with user_connection(database_url, user_id) as conn:
         ContinuityStore(conn).create_user(user_id, email, email.split("@", 1)[0].title())
-    return user_id
+    return user_id, verify_payload["session_token"]
 
 
 def test_memory_mutation_api_generates_commits_and_replays_idempotently(
     migrated_database_urls,
     monkeypatch,
 ) -> None:
-    user_id = seed_user(migrated_database_urls["app"], email="mutations@example.com")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    user_id, session_token = bootstrap_authenticated_user(
+        migrated_database_urls["app"],
+        email="mutations@example.com",
+    )
     thread_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
     with user_connection(migrated_database_urls["app"], user_id) as conn:
@@ -93,23 +129,17 @@ def test_memory_mutation_api_generates_commits_and_replays_idempotently(
             confidence=0.95,
         )
 
-    monkeypatch.setattr(
-        main_module,
-        "get_settings",
-        lambda: Settings(database_url=migrated_database_urls["app"]),
-    )
-
     generate_status, generate_payload = invoke_request(
         "POST",
         "/v1/memory/operations/candidates/generate",
         payload={
-            "user_id": str(user_id),
             "user_content": "Correction: Updated rollout plan",
             "assistant_content": "",
             "mode": "assist",
             "sync_fingerprint": "mutation-api-sync-001",
             "thread_id": str(thread_id),
         },
+        headers=auth_header(session_token),
     )
     assert generate_status == 200
     assert generate_payload["summary"] == {
@@ -126,9 +156,9 @@ def test_memory_mutation_api_generates_commits_and_replays_idempotently(
         "POST",
         "/v1/memory/operations/commit",
         payload={
-            "user_id": str(user_id),
             "candidate_ids": [candidate_id],
         },
+        headers=auth_header(session_token),
     )
     assert commit_status == 200
     assert commit_payload["summary"]["applied_count"] == 1
@@ -142,10 +172,10 @@ def test_memory_mutation_api_generates_commits_and_replays_idempotently(
         "GET",
         "/v1/memory/operations",
         query_params={
-            "user_id": str(user_id),
             "sync_fingerprint": "mutation-api-sync-001",
             "limit": "20",
         },
+        headers=auth_header(session_token),
     )
     assert operations_status == 200
     assert operations_payload["summary"]["returned_count"] == 1
@@ -155,13 +185,13 @@ def test_memory_mutation_api_generates_commits_and_replays_idempotently(
         "POST",
         "/v1/memory/operations/candidates/generate",
         payload={
-            "user_id": str(user_id),
             "user_content": "Correction: Updated rollout plan",
             "assistant_content": "",
             "mode": "assist",
             "sync_fingerprint": "mutation-api-sync-001",
             "thread_id": str(thread_id),
         },
+        headers=auth_header(session_token),
     )
     assert second_generate_status == 200
     assert second_generate_payload["items"][0]["id"] == candidate_id
@@ -170,9 +200,9 @@ def test_memory_mutation_api_generates_commits_and_replays_idempotently(
         "POST",
         "/v1/memory/operations/commit",
         payload={
-            "user_id": str(user_id),
             "candidate_ids": [candidate_id],
         },
+        headers=auth_header(session_token),
     )
     assert second_commit_status == 200
     assert second_commit_payload["summary"]["duplicate_count"] == 1
@@ -196,20 +226,22 @@ def test_memory_mutation_add_commit_preserves_scope_for_recall(
     migrated_database_urls,
     monkeypatch,
 ) -> None:
-    user_id = seed_user(migrated_database_urls["app"], email="mutations-add@example.com")
-    thread_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
-
     monkeypatch.setattr(
         main_module,
         "get_settings",
         lambda: Settings(database_url=migrated_database_urls["app"]),
     )
 
+    user_id, session_token = bootstrap_authenticated_user(
+        migrated_database_urls["app"],
+        email="mutations-add@example.com",
+    )
+    thread_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+
     generate_status, generate_payload = invoke_request(
         "POST",
         "/v1/memory/operations/candidates/generate",
         payload={
-            "user_id": str(user_id),
             "user_content": "Decision: Finalize beta launch checklist",
             "assistant_content": "",
             "mode": "assist",
@@ -218,6 +250,7 @@ def test_memory_mutation_add_commit_preserves_scope_for_recall(
             "project": "apollo",
             "person": "alex",
         },
+        headers=auth_header(session_token),
     )
     assert generate_status == 200
     assert generate_payload["summary"]["operation_types"] == ["ADD"]
@@ -227,9 +260,9 @@ def test_memory_mutation_add_commit_preserves_scope_for_recall(
         "POST",
         "/v1/memory/operations/commit",
         payload={
-            "user_id": str(user_id),
             "candidate_ids": [candidate_id],
         },
+        headers=auth_header(session_token),
     )
     assert commit_status == 200
     assert commit_payload["summary"]["applied_count"] == 1
@@ -262,8 +295,36 @@ def test_memory_mutation_api_rejects_unknown_mode(
     migrated_database_urls,
     monkeypatch,
 ) -> None:
-    user_id = seed_user(migrated_database_urls["app"], email="mutations-invalid-mode@example.com")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
 
+    _user_id, session_token = bootstrap_authenticated_user(
+        migrated_database_urls["app"],
+        email="mutations-invalid-mode@example.com",
+    )
+
+    status, payload = invoke_request(
+        "POST",
+        "/v1/memory/operations/candidates/generate",
+        payload={
+            "user_content": "Decision: Reject invalid mode input",
+            "assistant_content": "",
+            "mode": "banana",
+        },
+        headers=auth_header(session_token),
+    )
+
+    assert status == 400
+    assert payload == {"detail": "mode must be one of: manual, assist, auto"}
+
+
+def test_memory_mutation_api_requires_bearer_auth(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         main_module,
         "get_settings",
@@ -271,15 +332,10 @@ def test_memory_mutation_api_rejects_unknown_mode(
     )
 
     status, payload = invoke_request(
-        "POST",
-        "/v1/memory/operations/candidates/generate",
-        payload={
-            "user_id": str(user_id),
-            "user_content": "Decision: Reject invalid mode input",
-            "assistant_content": "",
-            "mode": "banana",
-        },
+        "GET",
+        "/v1/memory/operations",
+        query_params={"limit": "20"},
     )
 
-    assert status == 400
-    assert payload == {"detail": "mode must be one of: manual, assist, auto"}
+    assert status == 401
+    assert payload == {"detail": "authorization bearer token is required"}

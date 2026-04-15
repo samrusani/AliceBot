@@ -1125,7 +1125,8 @@ class ContinuityCaptureCommitRequest(BaseModel):
 
 
 class MemoryOperationGenerateRequest(BaseModel):
-    user_id: UUID
+    model_config = ConfigDict(extra="forbid")
+
     user_content: str = Field(default="", max_length=4000)
     assistant_content: str = Field(default="", max_length=4000)
     mode: str = Field(default="assist", min_length=1, max_length=20)
@@ -1140,7 +1141,8 @@ class MemoryOperationGenerateRequest(BaseModel):
 
 
 class MemoryOperationCommitRequest(BaseModel):
-    user_id: UUID
+    model_config = ConfigDict(extra="forbid")
+
     candidate_ids: list[UUID] = Field(default_factory=list)
     sync_fingerprint: str | None = Field(default=None, min_length=1, max_length=200)
     include_review_required: bool = False
@@ -1161,13 +1163,15 @@ class ContinuityCorrectionRequest(BaseModel):
 
 
 class ContradictionDetectRequest(BaseModel):
-    user_id: UUID
+    model_config = ConfigDict(extra="forbid")
+
     continuity_object_id: UUID | None = None
     limit: int = Field(default=DEFAULT_CONTINUITY_REVIEW_LIMIT, ge=1, le=MAX_CONTINUITY_REVIEW_LIMIT)
 
 
 class ContradictionResolveRequest(BaseModel):
-    user_id: UUID
+    model_config = ConfigDict(extra="forbid")
+
     action: str = Field(min_length=1, max_length=60)
     note: str | None = Field(default=None, min_length=1, max_length=1000)
 
@@ -2550,6 +2554,17 @@ def _extract_bearer_token(request: Request) -> str:
     if scheme.lower() != "bearer" or token.strip() == "":
         raise AuthSessionInvalidError("authorization header must use Bearer token format")
     return token.strip()
+
+
+def _resolve_authenticated_v1_user_id(settings: Settings, request: Request) -> UUID:
+    session_token = _extract_bearer_token(request)
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+        with conn.transaction():
+            resolution = resolve_auth_session(conn, session_token=session_token)
+    user_account_id = resolution["user_account"]["id"]
+    if not isinstance(user_account_id, UUID):
+        raise RuntimeError("authenticated hosted user context is invalid")
+    return user_account_id
 
 
 def _serialize_hosted_session_payload(
@@ -4908,14 +4923,18 @@ def commit_continuity_capture_candidates(request: ContinuityCaptureCommitRequest
 
 
 @app.post("/v1/memory/operations/candidates/generate")
-def generate_memory_operation_candidates_endpoint(request: MemoryOperationGenerateRequest) -> JSONResponse:
+def generate_memory_operation_candidates_endpoint(
+    http_request: Request,
+    request: MemoryOperationGenerateRequest,
+) -> JSONResponse:
     settings = get_settings()
 
     try:
-        with user_connection(settings.database_url, request.user_id) as conn:
+        user_id = _resolve_authenticated_v1_user_id(settings, http_request)
+        with user_connection(settings.database_url, user_id) as conn:
             payload = generate_memory_operation_candidates(
                 ContinuityStore(conn),
-                user_id=request.user_id,
+                user_id=user_id,
                 request=MemoryOperationGenerateInput(
                     user_content=request.user_content,
                     assistant_content=request.assistant_content,
@@ -4930,6 +4949,8 @@ def generate_memory_operation_candidates_endpoint(request: MemoryOperationGenera
                     target_continuity_object_id=request.target_continuity_object_id,
                 ),
             )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
     except MemoryMutationValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityCaptureValidationError as exc:
@@ -4943,7 +4964,7 @@ def generate_memory_operation_candidates_endpoint(request: MemoryOperationGenera
 
 @app.get("/v1/memory/operations/candidates")
 def list_memory_operation_candidates_endpoint(
-    user_id: UUID,
+    request: Request,
     limit: int = Query(default=DEFAULT_CONTINUITY_CAPTURE_LIMIT, ge=1, le=100),
     policy_action: str | None = Query(default=None, min_length=1, max_length=40),
     operation_type: str | None = Query(default=None, min_length=1, max_length=40),
@@ -4952,6 +4973,7 @@ def list_memory_operation_candidates_endpoint(
     settings = get_settings()
 
     try:
+        user_id = _resolve_authenticated_v1_user_id(settings, request)
         with user_connection(settings.database_url, user_id) as conn:
             payload = list_memory_operation_candidates(
                 ContinuityStore(conn),
@@ -4963,6 +4985,8 @@ def list_memory_operation_candidates_endpoint(
                     sync_fingerprint=sync_fingerprint,
                 ),
             )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
     except MemoryMutationValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -4973,20 +4997,26 @@ def list_memory_operation_candidates_endpoint(
 
 
 @app.post("/v1/memory/operations/commit")
-def commit_memory_operations_endpoint(request: MemoryOperationCommitRequest) -> JSONResponse:
+def commit_memory_operations_endpoint(
+    http_request: Request,
+    request: MemoryOperationCommitRequest,
+) -> JSONResponse:
     settings = get_settings()
 
     try:
-        with user_connection(settings.database_url, request.user_id) as conn:
+        user_id = _resolve_authenticated_v1_user_id(settings, http_request)
+        with user_connection(settings.database_url, user_id) as conn:
             payload = commit_memory_operations(
                 ContinuityStore(conn),
-                user_id=request.user_id,
+                user_id=user_id,
                 request=MemoryOperationCommitInput(
                     candidate_ids=request.candidate_ids,
                     sync_fingerprint=request.sync_fingerprint,
                     include_review_required=request.include_review_required,
                 ),
             )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
     except MemoryMutationValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -4998,13 +5028,14 @@ def commit_memory_operations_endpoint(request: MemoryOperationCommitRequest) -> 
 
 @app.get("/v1/memory/operations")
 def list_memory_operations_endpoint(
-    user_id: UUID,
+    request: Request,
     limit: int = Query(default=DEFAULT_CONTINUITY_CAPTURE_LIMIT, ge=1, le=100),
     sync_fingerprint: str | None = Query(default=None, min_length=1, max_length=200),
 ) -> JSONResponse:
     settings = get_settings()
 
     try:
+        user_id = _resolve_authenticated_v1_user_id(settings, request)
         with user_connection(settings.database_url, user_id) as conn:
             payload = list_memory_operations(
                 ContinuityStore(conn),
@@ -5014,6 +5045,8 @@ def list_memory_operations_endpoint(
                     sync_fingerprint=sync_fingerprint,
                 ),
             )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
     except MemoryMutationValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -5193,20 +5226,24 @@ def get_continuity_explain_endpoint(
 
 @app.post("/v1/contradictions/detect")
 def detect_contradictions_endpoint(
+    http_request: Request,
     request: ContradictionDetectRequest,
 ) -> JSONResponse:
     settings = get_settings()
 
     try:
-        with user_connection(settings.database_url, request.user_id) as conn:
+        user_id = _resolve_authenticated_v1_user_id(settings, http_request)
+        with user_connection(settings.database_url, user_id) as conn:
             payload: ContradictionSyncResponse = sync_contradictions(
                 ContinuityStore(conn),
-                user_id=request.user_id,
+                user_id=user_id,
                 request=ContradictionSyncInput(
                     continuity_object_id=request.continuity_object_id,
                     limit=request.limit,
                 ),
             )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
     except ContinuityContradictionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -5215,7 +5252,7 @@ def detect_contradictions_endpoint(
 
 @app.get("/v1/contradictions/cases")
 def list_contradiction_cases_endpoint(
-    user_id: UUID,
+    request: Request,
     status: str = Query(default="open", min_length=1, max_length=40),
     continuity_object_id: UUID | None = None,
     limit: int = Query(
@@ -5227,6 +5264,7 @@ def list_contradiction_cases_endpoint(
     settings = get_settings()
 
     try:
+        user_id = _resolve_authenticated_v1_user_id(settings, request)
         with user_connection(settings.database_url, user_id) as conn:
             payload: ContradictionCaseListResponse = list_contradiction_cases(
                 ContinuityStore(conn),
@@ -5237,6 +5275,8 @@ def list_contradiction_cases_endpoint(
                     continuity_object_id=continuity_object_id,
                 ),
             )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
     except ContinuityContradictionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -5246,17 +5286,20 @@ def list_contradiction_cases_endpoint(
 @app.get("/v1/contradictions/cases/{contradiction_case_id}")
 def get_contradiction_case_endpoint(
     contradiction_case_id: UUID,
-    user_id: UUID,
+    request: Request,
 ) -> JSONResponse:
     settings = get_settings()
 
     try:
+        user_id = _resolve_authenticated_v1_user_id(settings, request)
         with user_connection(settings.database_url, user_id) as conn:
             payload: ContradictionCaseDetailResponse = get_contradiction_case(
                 ContinuityStore(conn),
                 user_id=user_id,
                 contradiction_case_id=contradiction_case_id,
             )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
     except ContinuityContradictionNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
@@ -5266,21 +5309,25 @@ def get_contradiction_case_endpoint(
 @app.post("/v1/contradictions/cases/{contradiction_case_id}/resolve")
 def resolve_contradiction_case_endpoint(
     contradiction_case_id: UUID,
+    http_request: Request,
     request: ContradictionResolveRequest,
 ) -> JSONResponse:
     settings = get_settings()
 
     try:
-        with user_connection(settings.database_url, request.user_id) as conn:
+        user_id = _resolve_authenticated_v1_user_id(settings, http_request)
+        with user_connection(settings.database_url, user_id) as conn:
             payload: ContradictionResolveResponse = resolve_contradiction_case(
                 ContinuityStore(conn),
-                user_id=request.user_id,
+                user_id=user_id,
                 contradiction_case_id=contradiction_case_id,
                 request=ContradictionResolveInput(
                     action=request.action,  # type: ignore[arg-type]
                     note=request.note,
                 ),
             )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
     except ContinuityContradictionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityContradictionNotFoundError as exc:
@@ -5291,7 +5338,7 @@ def resolve_contradiction_case_endpoint(
 
 @app.get("/v1/trust/signals")
 def list_trust_signals_endpoint(
-    user_id: UUID,
+    request: Request,
     continuity_object_id: UUID | None = None,
     signal_state: str = Query(default="active", min_length=1, max_length=40),
     signal_type: str | None = Query(default=None, min_length=1, max_length=40),
@@ -5303,17 +5350,21 @@ def list_trust_signals_endpoint(
 ) -> JSONResponse:
     settings = get_settings()
 
-    with user_connection(settings.database_url, user_id) as conn:
-        payload: TrustSignalListResponse = list_trust_signals(
-            ContinuityStore(conn),
-            user_id=user_id,
-            request=TrustSignalListQueryInput(
-                limit=limit,
-                continuity_object_id=continuity_object_id,
-                signal_state=signal_state,  # type: ignore[arg-type]
-                signal_type=signal_type,  # type: ignore[arg-type]
-            ),
-        )
+    try:
+        user_id = _resolve_authenticated_v1_user_id(settings, request)
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: TrustSignalListResponse = list_trust_signals(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=TrustSignalListQueryInput(
+                    limit=limit,
+                    continuity_object_id=continuity_object_id,
+                    signal_state=signal_state,  # type: ignore[arg-type]
+                    signal_type=signal_type,  # type: ignore[arg-type]
+                ),
+            )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
@@ -5829,14 +5880,18 @@ def get_continuity_retrieval_evaluation(user_id: UUID) -> JSONResponse:
 
 
 @app.get("/v1/evals/suites")
-def get_public_eval_suites(user_id: UUID) -> JSONResponse:
+def get_public_eval_suites(request: Request) -> JSONResponse:
     settings = get_settings()
 
-    with user_connection(settings.database_url, user_id) as conn:
-        payload: PublicEvalSuiteDefinitionListResponse = list_public_eval_suites(
-            ContinuityStore(conn),
-            user_id=user_id,
-        )
+    try:
+        user_id = _resolve_authenticated_v1_user_id(settings, request)
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: PublicEvalSuiteDefinitionListResponse = list_public_eval_suites(
+                ContinuityStore(conn),
+                user_id=user_id,
+            )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,
@@ -5846,18 +5901,21 @@ def get_public_eval_suites(user_id: UUID) -> JSONResponse:
 
 @app.post("/v1/evals/runs")
 def create_public_eval_run(
-    user_id: UUID,
+    request: Request,
     suite_key: list[str] | None = Query(default=None),
 ) -> JSONResponse:
     settings = get_settings()
 
     try:
+        user_id = _resolve_authenticated_v1_user_id(settings, request)
         with user_connection(settings.database_url, user_id) as conn:
             payload: PublicEvalRunDetailResponse = run_public_evals(
                 ContinuityStore(conn),
                 user_id=user_id,
                 suite_keys=suite_key,
             )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -5869,17 +5927,21 @@ def create_public_eval_run(
 
 @app.get("/v1/evals/runs")
 def get_public_eval_runs(
-    user_id: UUID,
+    request: Request,
     limit: int = Query(default=20, ge=1, le=100),
 ) -> JSONResponse:
     settings = get_settings()
 
-    with user_connection(settings.database_url, user_id) as conn:
-        payload: PublicEvalRunListResponse = list_public_eval_runs(
-            ContinuityStore(conn),
-            user_id=user_id,
-            limit=limit,
-        )
+    try:
+        user_id = _resolve_authenticated_v1_user_id(settings, request)
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: PublicEvalRunListResponse = list_public_eval_runs(
+                ContinuityStore(conn),
+                user_id=user_id,
+                limit=limit,
+            )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
 
     return JSONResponse(
         status_code=200,
@@ -5890,17 +5952,20 @@ def get_public_eval_runs(
 @app.get("/v1/evals/runs/{eval_run_id}")
 def get_public_eval_run_detail(
     eval_run_id: UUID,
-    user_id: UUID,
+    request: Request,
 ) -> JSONResponse:
     settings = get_settings()
 
     try:
+        user_id = _resolve_authenticated_v1_user_id(settings, request)
         with user_connection(settings.database_url, user_id) as conn:
             payload: PublicEvalRunDetailResponse = get_public_eval_run(
                 ContinuityStore(conn),
                 user_id=user_id,
                 eval_run_id=eval_run_id,
             )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
     except LookupError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
