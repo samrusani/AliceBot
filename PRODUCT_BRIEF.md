@@ -9,18 +9,19 @@ Alice is a pre-1.0 continuity platform for AI agents and agent-assisted workflow
 - Phase 11 shipped provider runtime abstraction, provider adapters, and model packs.
 - Bridge `B1` through `B4` shipped Hermes lifecycle hooks, auto-capture, review flow, explainability, packaging docs, smoke validation, and demo path.
 - Phase 12 shipped hybrid retrieval and reranking, explicit memory mutation operations, contradiction/trust handling, the public eval harness, and task-adaptive briefing.
-- `v0.3.2` is the latest published pre-1.0 release tag.
+- Phase 13 shipped one-call continuity, Alice Lite, and memory hygiene / conversation health visibility.
+- `v0.4.0` is the latest published pre-1.0 release tag.
 
 ## Current Repo Posture
-- Phase 13 is active.
+- Phase 13 is shipped.
 - `P13-S1` One-Call Continuity is shipped.
 - `P13-S2` Alice Lite is shipped.
-- `P13-S3` Memory Hygiene + Conversation Health is the active execution sprint.
-- Phase 13 is an adoption and ergonomics phase built on top of the shipped Phase 12 baseline.
+- `P13-S3` Memory Hygiene + Conversation Health is shipped.
+- No post-Phase-13 execution sprint is active yet.
 
-## Active Phase
+## Latest Completed Phase
 ### Phase 13: Alice Lite + Integration Ergonomics
-Turn Alice from a powerful continuity system into an easier-to-adopt, easier-to-feel, and easier-to-integrate product for solo users, builders, and agent teams.
+Phase 13 turned Alice from a powerful continuity system into an easier-to-adopt, easier-to-feel, and easier-to-integrate product for solo users, builders, and agent teams.
 
 ## Why This Phase Now
 Phase 12 improved Alice's internal quality:
@@ -42,7 +43,7 @@ Phase 13 should make those gains easier to adopt:
 - Agent builders who want one integration surface and less orchestration complexity.
 - Teams evaluating Alice who want obvious quality, visible hygiene, and quick demo value.
 
-## In Scope For Phase 13
+## Phase 13 Scope That Shipped
 - One-call continuity API / CLI / MCP surface.
 - Alice Lite deployment profile and simplified local startup.
 - Memory hygiene visibility for duplicates, stale facts, unresolved contradictions, weak trust, and review backlog.
@@ -65,7 +66,6 @@ Phase 13 should make those gains easier to adopt:
 - Memory hygiene and conversation health become visible enough that stale/conflicting/risky states are obvious without deep system knowledge.
 - Alice feels simpler and more polished without weakening its continuity semantics.
 
-## Control Tower Decisions Needed
-- Whether the next public release boundary should wrap the whole Phase 13 sequence or ship incrementally.
-- Threshold model for risky/stale thread health in `P13-S3`.
-- Whether the first shipped thread-health surface should be API-only, UI-visible, or both.
+## Immediate Product Posture
+- `v0.4.0` is the current public release boundary for the completed Phase 13 surface.
+- The next product decision is Phase 14 definition on top of the shipped Phase 13 baseline.

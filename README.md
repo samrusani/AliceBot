@@ -15,7 +15,7 @@ durable memory for agents, agent resumption, open loop tracking, local-first ai 
 
 Alice helps agents **remember what matters, resume interrupted work, explain why something is true, and improve when corrected**.
 
-`v0.3.2` is the current **pre-1.0 public release**.
+`v0.4.0` is the current **pre-1.0 public release**.
 
 Most assistants are still good only in the moment. They can answer the current prompt, but they struggle to preserve decisions, track open loops, recover context across sessions, and stay aligned after memory corrections.
 
@@ -27,7 +27,7 @@ It provides a **local-first memory and continuity engine** for capture, recall, 
 
 **Works across local, self-hosted, enterprise, and external-agent workflows via CLI, MCP, provider runtime, OpenClaw import, and Hermes integration.**
 
-## Release Boundary (`v0.3.2`)
+## Release Boundary (`v0.4.0`)
 
 Completed baseline included in this pre-1.0 public release:
 
@@ -41,11 +41,14 @@ Completed baseline included in this pre-1.0 public release:
   - contradiction detection and trust calibration
   - public eval harness and baseline reports
   - task-adaptive briefing
+- Phase 13 adoption surfaces:
+  - one-call continuity across API, CLI, and MCP
+  - Alice Lite one-command local profile
+  - memory hygiene visibility
+  - conversation/thread health visibility
 
 Historical planning/control artifacts remain available in:
 [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
-
-Phase 13 planning is active on top of this released baseline.
 
 ## Why Alice exists
 
@@ -149,6 +152,9 @@ The current open-source surface includes:
 - contradiction detection, contradiction-aware ranking penalties, and trust-signal inspection
 - public eval harness with fixture catalog and checked-in baseline report support
 - task-adaptive briefing for user recall, resume, worker subtask, and agent handoff
+- one-call continuity through `POST /v1/continuity/brief`, `alice brief`, and `alice_brief`
+- Alice Lite one-command local startup profile
+- memory hygiene and thread-health dashboards across API, CLI, and web
 - importers for OpenClaw, Markdown, and ChatGPT exports
 - OpenClaw adapter and demo path
 - evaluation harness and integration docs
@@ -323,7 +329,7 @@ That means the system behaves consistently across local workflows, MCP-connected
 
 ## Scope Notes
 
-Included in the `v0.3.2` release:
+Included in the `v0.4.0` release:
 
 - local-first continuity core
 - CLI and MCP surfaces
@@ -331,8 +337,9 @@ Included in the `v0.3.2` release:
 - provider runtime and model-pack support from Phase 11
 - Hermes provider-plus-MCP bridge path with MCP-only fallback
 - Phase 12 retrieval, mutation, contradiction/trust, public eval, and task-adaptive briefing surfaces
+- Phase 13 one-call continuity, Alice Lite, and hygiene/thread-health visibility surfaces
 
-Deferred beyond `v0.3.2`:
+Deferred beyond `v0.4.0`:
 
 - `v1.0.0` compatibility/support guarantees
 - managed cloud/SLA commitments

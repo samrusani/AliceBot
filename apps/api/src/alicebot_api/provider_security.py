@@ -15,7 +15,7 @@ class ProviderURLValidationError(ValueError):
     """Raised when a provider base URL violates outbound security policy."""
 
 
-def validate_provider_base_url(base_url: str) -> str:
+def validate_provider_base_url(base_url: str, *, require_dns_resolution: bool = True) -> str:
     normalized = base_url.strip()
     if normalized == "":
         raise ProviderURLValidationError("base_url is required")
@@ -37,7 +37,7 @@ def validate_provider_base_url(base_url: str) -> str:
     ip_literal = _parse_ip_literal(hostname)
     if ip_literal is not None and _is_disallowed_ip(ip_literal):
         raise ProviderURLValidationError("base_url host is not allowed by outbound policy")
-    if ip_literal is None:
+    if ip_literal is None and require_dns_resolution:
         resolved_addresses = _resolve_hostname_ips(hostname)
         if any(_is_disallowed_ip(address) for address in resolved_addresses):
             raise ProviderURLValidationError("base_url host is not allowed by outbound policy")

@@ -1,44 +1,78 @@
 # BUILD_REPORT
 
-- sprint objective
-  - Implement `P13-S3` Memory Hygiene + Conversation Health by making duplicate facts, stale facts, unresolved contradictions, weak trust, review pressure, recent threads, stale threads, risky threads, and overall thread posture visible through bounded API, web, and CLI status surfaces.
+- release objective
+  - Close out Phase 13 and ship `v0.4.0` as the public pre-1.0 release boundary.
 - completed work
-  - Added `GET /v0/memories/hygiene-dashboard` with grouped duplicate detection, stale-fact visibility, unresolved contradiction counts, weak-trust counts, review-queue pressure, and actionable focus items.
-  - Added `GET /v0/threads/health-dashboard` with recent/stale/risky thread summaries, deterministic thresholds, per-thread reasons, and recommended actions.
-  - Extended `alicebot status` to include memory-hygiene posture and thread-health posture from the same canonical dashboard builders.
-  - Added a memory hygiene panel to the memory review workspace.
-  - Added a thread health panel to the continuity workspace.
-  - Added focused unit coverage for memory hygiene aggregation and thread health aggregation.
-  - Added focused web page coverage for the new memory and continuity dashboard panels.
-  - Added `docs/memory/p13-s3-memory-hygiene-conversation-health.md` documenting the shipped surfaces and threshold model.
+  - Updated the canonical control docs to treat Phase 13 as shipped baseline truth and replaced the stale active sprint packet with a release-closeout packet.
+  - Added Phase 13 closeout docs plus `v0.4.0` release checklist, tag plan, and public release runbook.
+  - Aligned Python, API, web, CLI, core-package, and Hermes plugin version markers to `0.4.0`.
+  - Updated current quickstart and integration docs to reflect the shipped Phase 13 surface.
+  - Fixed a release-gate regression exposed by the full test suite:
+    - provider registration now skips forced DNS resolution at registration time while preserving runtime-time outbound validation
+    - OpenAI-compatible capability discovery no longer hard-fails on placeholder documentation hosts
+    - the Phase 11 model-pack integration test now applies the same `.example` host fixture used by the provider-runtime suite
 - incomplete work
-  - None identified within sprint scope.
+  - None identified within release scope.
 - files changed
-  - `apps/api/src/alicebot_api/cli.py`
-  - `apps/api/src/alicebot_api/cli_formatting.py`
-  - `apps/api/src/alicebot_api/contracts.py`
-  - `apps/api/src/alicebot_api/conversation_health.py`
-  - `apps/api/src/alicebot_api/main.py`
-  - `apps/api/src/alicebot_api/memory.py`
-  - `apps/web/app/continuity/page.test.tsx`
-  - `apps/web/app/continuity/page.tsx`
-  - `apps/web/app/memories/page.test.tsx`
-  - `apps/web/app/memories/page.tsx`
-  - `apps/web/components/memory-hygiene-dashboard.tsx`
-  - `apps/web/components/thread-health-dashboard.tsx`
-  - `apps/web/lib/api.ts`
-  - `docs/memory/p13-s3-memory-hygiene-conversation-health.md`
-  - `tests/unit/test_conversation_health.py`
-  - `tests/unit/test_main.py`
-  - `tests/unit/test_memory.py`
+  - canonical docs:
+    - `README.md`
+    - `PRODUCT_BRIEF.md`
+    - `ARCHITECTURE.md`
+    - `ROADMAP.md`
+    - `RULES.md`
+    - `CURRENT_STATE.md`
+    - `.ai/handoff/CURRENT_STATE.md`
+    - `.ai/active/SPRINT_PACKET.md`
+    - `CHANGELOG.md`
+  - release/closeout docs:
+    - `docs/phase13-closeout-summary.md`
+    - `docs/runbooks/phase13-closeout-packet.md`
+    - `docs/release/v0.4.0-release-checklist.md`
+    - `docs/release/v0.4.0-tag-plan.md`
+    - `docs/runbooks/v0.4.0-public-release-runbook.md`
+    - `docs/phase13-product-spec.md`
+    - `docs/phase13-sprint-13-1-13-3-plan.md`
+  - version markers:
+    - `pyproject.toml`
+    - `apps/api/src/alicebot_api/__init__.py`
+    - `apps/api/src/alicebot_api/main.py`
+    - `apps/web/package.json`
+    - `packages/alice-cli/package.json`
+    - `packages/alice-cli/bin/alice.js`
+    - `packages/alice-core/package.json`
+    - `packages/alice-core/index.js`
+    - `docs/integrations/hermes-memory-provider/plugins/memory/alice/plugin.yaml`
+  - release-gate regression fixes:
+    - `apps/api/src/alicebot_api/provider_security.py`
+    - `apps/api/src/alicebot_api/provider_runtime.py`
+    - `tests/unit/test_provider_security.py`
+    - `tests/integration/test_phase11_model_packs_api.py`
+    - `scripts/check_control_doc_truth.py`
 - tests run
   - `python3 scripts/check_control_doc_truth.py`
+    - `PASS`
   - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-  - `./.venv/bin/python -m pytest tests/unit/test_memory.py tests/unit/test_conversation_health.py tests/unit/test_main.py -q`
-  - `./.venv/bin/python -m pytest tests/unit/test_events.py -q`
-  - `./.venv/bin/python -m pytest tests/unit/test_cli.py -q`
-  - `pnpm test app/memories/page.test.tsx app/continuity/page.test.tsx` (run from `apps/web`)
+    - `5 passed in 0.03s`
+  - `./.venv/bin/python -m pytest tests/unit/test_provider_security.py tests/integration/test_phase11_model_packs_api.py::test_phase11_model_pack_catalog_bind_and_runtime_shaping tests/integration/test_phase11_provider_runtime_api.py::test_phase11_provider_error_reflection_and_persistence_are_sanitized -q`
+    - `26 passed in 1.73s`
+  - `./.venv/bin/python -m pytest tests/unit tests/integration -q`
+    - initial run: `1 failed, 1276 passed in 258.93s`
+    - rerun after fix: `1279 passed in 249.08s`
+  - `pnpm --dir apps/web test`
+    - `200 passed`
+  - `./.venv/bin/python scripts/run_alice_lite_smoke.py`
+    - `status: ok`
+  - `./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py`
+    - provider registered, single external enforced, bridge ready
+  - `./.venv/bin/python scripts/run_hermes_mcp_smoke.py`
+    - bridge flow validated
+  - `./.venv/bin/python scripts/run_hermes_bridge_demo.py`
+    - `status: pass`
+  - `./.venv/bin/python -m alicebot_api --database-url postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot --user-id 00000000-0000-0000-0000-000000000001 evals run --report-path eval/baselines/public_eval_harness_v1.json`
+    - `12/12` cases passed
+    - report status: `pass`
 - blockers/issues
-  - The sprint packet left thread-health thresholds and first-surface scope open. Implementation uses a bounded deterministic model: recent within 24h, stale after 72h, risky at score `>= 2`, and ships the first surface in both API and web.
+  - The first full Python run exposed a Phase 11 provider-security regression in the release tree. It is fixed and the full suite now passes.
+  - Local untracked `apps/web/package-lock.json` and `packages/alice-core/package-lock.json` remain outside release scope.
 - recommended next step
-  - Validate the risk-score thresholds against live operator usage and adjust only the scoring constants if the first dashboard proves too noisy or too quiet.
+  - Create and push the `v0.4.0` tag, then publish the GitHub release.

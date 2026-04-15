@@ -18,33 +18,32 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="README.md",
         required_markers=(
-            "`v0.3.2` is the current **pre-1.0 public release**.",
-            "## Release Boundary (`v0.3.2`)",
-            "Phase 12 retrieval quality stack:",
-            "Phase 13 planning is active on top of this released baseline.",
+            "`v0.4.0` is the current **pre-1.0 public release**.",
+            "## Release Boundary (`v0.4.0`)",
+            "Phase 13 adoption surfaces:",
             "Historical planning/control artifacts remain available in:",
         ),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "`v0.3.2`: released",
-            "Phase 13 is active.",
-            "### P13-S1: One-Call Continuity",
+            "`v0.4.0`: released",
+            "Phase 13 is shipped.",
+            "No post-Phase-13 execution sprint is active yet.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "P13-S3: Memory Hygiene + Conversation Health",
-            "`v0.3.2` is the latest published tag.",
-            "Memory Hygiene + Conversation Health",
+            "Phase 13 Closeout + `v0.4.0` Release",
+            "`v0.4.0` is the current public release boundary.",
+            "release-closeout",
         ),
     ),
     ControlDocTruthRule(
         relative_path="RULES.md",
         required_markers=(
-            "Phase 13 is an adoption layer on top of the shipped `v0.3.2` baseline.",
+            "Treat Phases 9-13 and Bridge `B1` through `B4` as shipped baseline truth.",
             "Alice Lite is a deployment profile, not a separate product.",
         ),
     ),
@@ -52,9 +51,9 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
             "Phase 12 is shipped.",
-            "`v0.3.2` is the latest published tag.",
-            "Phase 13 is active.",
-            "`P13-S3` Memory Hygiene + Conversation Health is the active execution sprint.",
+            "`v0.4.0` is the latest published tag.",
+            "Phase 13 is shipped.",
+            "No post-Phase-13 build sprint is active yet.",
         ),
     ),
     ControlDocTruthRule(

@@ -1,7 +1,7 @@
 # Hermes Bridge Operator Guide (B4)
 
 This is the canonical operator guide for the shipped bridge phase.
-It is release-scoped for the `v0.3.2` pre-1.0 target and does not imply `v1.0.0` guarantees.
+It is release-scoped for the `v0.4.0` pre-1.0 boundary and does not imply `v1.0.0` guarantees.
 
 Recommended deployment shape: **provider plus MCP**.
 
@@ -100,4 +100,4 @@ hermes memory setup
 - `docs/integrations/hermes-memory-provider.md`
 - `docs/integrations/hermes.md`
 - `docs/integrations/hermes-skill-pack.md`
-- `docs/release/v0.3.2-release-checklist.md`
+- `docs/release/v0.4.0-release-checklist.md`

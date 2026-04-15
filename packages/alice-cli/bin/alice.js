@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 
 const args = process.argv.slice(2);
-const version = "0.3.2";
+const version = "0.4.0";
 const defaultPythonCommand = process.platform === "win32" ? "python" : "python3";
 
 function forwardToPython(moduleName, moduleArgs, errorLabel) {

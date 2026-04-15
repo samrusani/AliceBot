@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-04-15
+
+- Closed out Phase 13 after shipping all three planned sprints:
+  - `P13-S1` one-call continuity
+  - `P13-S2` Alice Lite
+  - `P13-S3` memory hygiene and conversation health
+- Promoted the public release boundary from `v0.3.2` to `v0.4.0`.
+- Added Phase 13 closeout summary and closeout packet.
+- Added `v0.4.0` release checklist, tag plan, and public release runbook.
+- Aligned Python, API, web, CLI, core-package, and Hermes plugin version metadata to `0.4.0`.
+- Realigned current quickstart and integration docs to the shipped Phase 13 baseline.
+
 ## 2026-04-14
 
 - Closed out Phase 12 after shipping all five planned sprints:

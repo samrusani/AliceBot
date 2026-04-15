@@ -48,6 +48,6 @@ Workflow file:
 After that, push the current semver tag:
 
 ```bash
-git tag v0.3.2
-git push origin v0.3.2
+git tag v0.4.0
+git push origin v0.4.0
 ```

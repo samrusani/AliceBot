@@ -1,9 +1,9 @@
 # Architecture
 
 ## Scope Boundary
-- **Shipped baseline:** Phases 9-12 and Bridge `B1` through `B4`.
-- **Current repo execution posture:** `v0.3.2` is the latest published tag; Phase 13 is active; `P13-S1` is shipped; `P13-S2` is shipped; `P13-S3` is the active execution sprint.
-- **Phase principle:** Phase 13 is an adoption layer on top of Phase 12, not a new substrate phase.
+- **Shipped baseline:** Phases 9-13 and Bridge `B1` through `B4`.
+- **Current repo execution posture:** `v0.4.0` is the latest published tag; Phase 13 is shipped; no post-Phase-13 execution sprint is active yet.
+- **Phase principle preserved:** Phase 13 was an adoption layer on top of Phase 12, not a new substrate phase.
 
 ## Current System Overview
 Alice is a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, MCP, and Hermes-integrated surfaces.
@@ -99,7 +99,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - The public eval harness is the quality-evidence baseline.
 - Task-adaptive briefing is the current compiled-context baseline.
 
-## Phase 13 Planned Delta
+## Phase 13 Shipped Delta
 
 ### P13-S1: One-Call Continuity
 - Status: shipped
@@ -146,7 +146,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - SQLite or another embedded mode is not in scope unless semantics remain intact.
 
 ### P13-S3: Memory Hygiene + Conversation Health
-- Status: active
+- Status: shipped
 - Add visible hygiene surfaces for:
   - duplicates
   - stale facts
@@ -192,7 +192,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - web tests for shipped user/admin surfaces
 - Hermes provider smoke, MCP smoke, and demo flows
 
-## Control Tower Decisions Needed
-- Whether Alice Lite can reduce services in `P13-S2` without harming semantics or release credibility.
-- Exact default payload posture for `/v1/continuity/brief`.
-- Threshold model for thread risk and health visibility in `P13-S3`.
+## Current Architectural Posture
+- `POST /v1/continuity/brief`, `alice brief`, and `alice_brief` are now the primary continuity integration entrypoints.
+- Alice Lite is now a shipped deployment profile around the same runtime semantics.
+- Hygiene and thread-health visibility are shipped operational surfaces, not a separate memory subsystem.

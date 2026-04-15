@@ -1,17 +1,16 @@
 # Rules
 
 ## State Discipline
-- Treat Phases 9-12 and Bridge `B1` through `B4` as shipped baseline truth.
-- Treat `v0.3.2` as released baseline truth.
+- Treat Phases 9-13 and Bridge `B1` through `B4` as shipped baseline truth.
+- Treat `v0.4.0` as released baseline truth.
 - Keep shipped baseline, active phase scope, and later roadmap scope separate.
 - Keep [CURRENT_STATE.md](CURRENT_STATE.md) factual/current and [ROADMAP.md](ROADMAP.md) future-facing.
 - Keep [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURRENT_STATE.md) as the canonical handoff copy when duplicate current-state files exist.
 
-## Phase 13 Rules
-- Phase 13 is an adoption layer on top of the shipped `v0.3.2` baseline.
-- Prioritize one-call continuity first, then Alice Lite, then hygiene and conversation health.
-- Only admit new substrate work when it is required to support those deliverables.
-- If a proposed Phase 13 change does not reduce integration complexity, improve first-run experience, or make memory quality more visible, it probably does not belong in Phase 13.
+## Phase 13 Baseline Rules
+- Phase 13 shipped as an adoption layer on top of the Phase 12 baseline; preserve that narrowness in future work.
+- One-call continuity, Alice Lite, and hygiene/thread-health visibility are baseline surfaces now, not optional experiments.
+- Do not reopen Phase 13 with redundant substrate work disguised as polish.
 
 ## Continuity Surface Rules
 - One-call continuity must compose existing retrieval, contradiction, trust, recent-change, open-loop, and briefing layers rather than fork them.
@@ -41,6 +40,6 @@
 - Commit public evidence only from exact commands and stable fixtures, never from inferred pass states.
 
 ## Scope Rules
-- Do not widen Phase 13 into retrieval research, graph migration, new channels, new provider/runtime work, marketplace work, or enterprise/admin expansion.
+- Do not widen future adoption/ergonomics work into retrieval research, graph migration, new channels, new provider/runtime work, marketplace work, or enterprise/admin expansion unless explicitly re-scoped.
 - Do not silently hardcode unresolved Control Tower decisions as permanent runtime behavior without recording the decision.
 - Surface underspecified decisions as Control Tower decisions instead of inventing scope.

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import socket
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID, uuid4
 
 import anyio
 import psycopg
+import pytest
 
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
@@ -68,6 +70,19 @@ def invoke_request(
 
 def auth_header(session_token: str) -> dict[str, str]:
     return {"authorization": f"Bearer {session_token}"}
+
+
+@pytest.fixture(autouse=True)
+def allow_documentation_provider_hosts(monkeypatch) -> None:
+    original_getaddrinfo = socket.getaddrinfo
+
+    def fake_getaddrinfo(hostname: str, port, type=0, proto=0):
+        if hostname.endswith(".example"):
+            sockaddr = ("93.184.216.34", 0)
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)]
+        return original_getaddrinfo(hostname, port, type=type, proto=proto)
+
+    monkeypatch.setattr("alicebot_api.provider_security.socket.getaddrinfo", fake_getaddrinfo)
 
 
 def _configure_settings(migrated_database_urls, monkeypatch) -> None:

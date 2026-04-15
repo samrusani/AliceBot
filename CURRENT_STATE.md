@@ -9,11 +9,12 @@ Canonical handoff state lives at [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURR
 - Phase 11 is shipped.
 - Bridge `B1` through `B4` are shipped.
 - Phase 12 is shipped.
-- `v0.3.2` is the latest published tag.
-- Phase 13 is active.
+- Phase 13 is shipped.
+- `v0.4.0` is the latest published tag.
 - `P13-S1` One-Call Continuity is shipped.
 - `P13-S2` Alice Lite is shipped.
-- `P13-S3` Memory Hygiene + Conversation Health is the active execution sprint.
+- `P13-S3` Memory Hygiene + Conversation Health is shipped.
+- No post-Phase-13 build sprint is active yet.
 
 ## Current Baseline Truth
 - Alice has typed memory, provenance, trust classes, correction/supersession behavior, open loops, recall, resumption, and explainability.
@@ -21,16 +22,16 @@ Canonical handoff state lives at [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURR
 - The shipped baseline now includes hybrid retrieval and reranking with traces, explicit memory mutation operations, contradiction/trust handling, the public eval harness, and task-adaptive briefing.
 - The shipped baseline also now includes the one-call continuity surface across API, CLI, and MCP from `P13-S1`.
 - The shipped baseline also now includes the lighter Alice Lite startup/profile path from `P13-S2`.
-- `v0.3.2` is the current public pre-1.0 release boundary for that shipped baseline.
+- The shipped baseline also now includes memory hygiene and thread/conversation health visibility from `P13-S3`.
+- `v0.4.0` is the current public pre-1.0 release boundary for that shipped baseline.
 
 ## Phase Transition Note
 - Phase 12 is complete and remains baseline truth.
-- Phase 13 is the adoption and ergonomics phase on top of that baseline.
+- Phase 13 is complete and remains baseline truth.
 - `P13-S1` is complete and established the primary one-call continuity surface across API, CLI, and MCP.
 - `P13-S2` is complete and established the lighter Alice Lite startup/profile path without semantic drift.
-- `P13-S3` is active and should make hygiene and thread/conversation health visible and operationally useful.
+- `P13-S3` is complete and made hygiene and thread/conversation health visible and operationally useful.
 
 ## Immediate Control Tower Decisions Needed
-- Decide whether the next public release should wrap the full Phase 13 sequence or ship incrementally.
-- Decide the threshold model for risky/stale thread health in `P13-S3`.
-- Decide whether the first shipped thread-health surface is API-only, UI-visible, or both.
+- Define the next phase and its first sprint packet on top of the shipped `v0.4.0` baseline.
+- Avoid reopening completed Phase 13 work unless a defect or follow-up is explicitly scoped.

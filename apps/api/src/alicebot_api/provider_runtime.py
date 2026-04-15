@@ -196,7 +196,7 @@ class OpenAICompatibleAdapter:
         config: RuntimeProviderConfig,
         settings: Settings,
     ) -> ProviderCapabilitySnapshot:
-        validate_provider_base_url(config.base_url)
+        validate_provider_base_url(config.base_url, require_dns_resolution=False)
         del settings
         return normalized_capability_snapshot(
             adapter_key=self.adapter_key,

@@ -4,33 +4,42 @@
 PASS
 
 ## criteria met
-- Memory hygiene visibility is implemented for duplicates, stale facts, unresolved contradictions, weak trust, and review queue pressure via API, web, and CLI surfaces.
-- Conversation health visibility is implemented for recent, stale, and risky threads via API, web, and CLI surfaces.
-- The thread-health weak-trust aggregation no longer relies on a global fixed-cap signal fetch; it now counts active `weak_inference` signals per continuity object, so higher-volume workspaces do not silently undercount thread risk.
-- Coverage now includes:
-  - the high-volume weak-trust aggregation case
-  - reachable-path CLI status output for the new hygiene and thread-health fields
-  - endpoint-level API tests for both new dashboard routes
-- `ARCHITECTURE.md` now matches the active Phase 13 control-doc posture.
-- I did not find local workstation identifiers, usernames, or local filesystem paths in the changed sprint files or docs.
+- Phase 13 is fully closed out in the canonical control docs and now reads as shipped baseline truth instead of an active sprint.
+- `v0.4.0` release artifacts are in place:
+  - Phase 13 closeout summary
+  - closeout packet
+  - release checklist
+  - tag plan
+  - public release runbook
+- Current-facing docs and version metadata are aligned to the shipped Phase 13 boundary.
+- Required release gates passed on the final tree:
+  - control-doc truth
+  - unit + integration test suite
+  - web suite
+  - Alice Lite smoke
+  - Hermes provider smoke
+  - Hermes MCP smoke
+  - Hermes bridge demo
+  - public eval harness
+- The release-gate regression found during the first full Python run was fixed without weakening the intended outbound-provider security posture.
 
 ## criteria missed
 - None.
 
 ## quality issues
-- No blocking quality issues found in the reviewed implementation after the fixes.
+- No blocking release-quality issues remain.
 
 ## regression risks
-- Low residual risk around future changes to thread risk scoring, because the dashboard posture depends on cross-surface shared aggregation logic. Current focused unit coverage is adequate for this sprint.
+- Low residual risk. The only material issue found during release gating was the provider-security/test-contract drift, and the final reruns passed after a narrow fix.
 
 ## docs issues
-- No blocking docs issues remain for this sprint.
+- No blocking docs issues remain.
 
 ## should anything be added to RULES.md?
-- No.
+- No further rule change is required for this release closeout.
 
 ## should anything update ARCHITECTURE.md?
-- No further update is required for this sprint.
+- No further architecture update is required before tag cut.
 
 ## recommended next action
-- Accept `P13-S3` as passed.
+- Tag and publish `v0.4.0`.

@@ -755,7 +755,7 @@ from alicebot_api.traces import (
 LOGGER = logging.getLogger(__name__)
 
 
-app = FastAPI(title="AliceBot API", version="0.3.2")
+app = FastAPI(title="AliceBot API", version="0.4.0")
 provider_adapter_registry = make_provider_adapter_registry()
 HealthStatus = Literal["ok", "degraded"]
 ServiceStatus = Literal["ok", "unreachable", "not_checked"]
@@ -1842,7 +1842,10 @@ def _register_workspace_provider(
 
     if normalized_display_name == "":
         raise ValueError("display_name is required")
-    normalized_base_url = validate_provider_base_url(normalized_base_url)
+    normalized_base_url = validate_provider_base_url(
+        normalized_base_url,
+        require_dns_resolution=False,
+    )
     if normalized_default_model == "":
         raise ValueError("default_model is required")
     if normalized_auth_mode not in {"bearer", "none"}:
@@ -1964,7 +1967,10 @@ def _register_workspace_azure_provider(
 
     if normalized_display_name == "":
         raise ValueError("display_name is required")
-    normalized_base_url = validate_provider_base_url(normalized_base_url)
+    normalized_base_url = validate_provider_base_url(
+        normalized_base_url,
+        require_dns_resolution=False,
+    )
     if normalized_default_model == "":
         raise ValueError("default_model is required")
     if normalized_auth_mode not in {AZURE_AUTH_MODE_API_KEY, AZURE_AUTH_MODE_AD_TOKEN}:

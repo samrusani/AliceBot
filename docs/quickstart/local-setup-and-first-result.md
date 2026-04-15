@@ -1,6 +1,6 @@
 # Local Setup and First Useful Result
 
-This quickstart is the canonical Alice Lite path for the completed `v0.3.2` pre-1.0 release target.
+This quickstart is the canonical Alice Lite path for the completed `v0.4.0` pre-1.0 public release.
 Alice Lite is a lighter local/dev deployment profile, not a separate product.
 It keeps the shipped continuity semantics and the shipped one-call continuity surface intact.
 
@@ -101,5 +101,5 @@ For the wider repo validation surface beyond Alice Lite, keep using the existing
 
 ## Scope Guard
 
-This quickstart documents the Alice Lite deployment profile on top of the shipped Phase 12 and Bridge `B1` through `B4` baseline.
+This quickstart documents the Alice Lite deployment profile on top of the shipped Phase 13 and Bridge `B1` through `B4` baseline.
 It does not define a second product, a semantic fork, or unshipped `v1.0.0` scope.

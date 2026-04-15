@@ -96,6 +96,33 @@ def test_validate_provider_base_url_rechecks_hostname_resolution(monkeypatch) ->
         validate_provider_base_url("https://rebind.example/v1")
 
 
+def test_validate_provider_base_url_allows_unresolved_hostname_when_resolution_is_optional(monkeypatch) -> None:
+    def fake_getaddrinfo(hostname: str, port, type=0, proto=0):
+        del hostname, port, type, proto
+        raise socket.gaierror("host not found")
+
+    monkeypatch.setattr("alicebot_api.provider_security.socket.getaddrinfo", fake_getaddrinfo)
+
+    assert (
+        validate_provider_base_url(
+            "https://provider.example/v1",
+            require_dns_resolution=False,
+        )
+        == "https://provider.example/v1"
+    )
+
+
+def test_validate_provider_base_url_rejects_unresolved_hostname_when_resolution_is_required(monkeypatch) -> None:
+    def fake_getaddrinfo(hostname: str, port, type=0, proto=0):
+        del hostname, port, type, proto
+        raise socket.gaierror("host not found")
+
+    monkeypatch.setattr("alicebot_api.provider_security.socket.getaddrinfo", fake_getaddrinfo)
+
+    with pytest.raises(ValueError, match="could not be resolved"):
+        validate_provider_base_url("https://provider.example/v1")
+
+
 def test_sanitize_provider_error_message_removes_upstream_detail() -> None:
     assert (
         sanitize_provider_error_message(
