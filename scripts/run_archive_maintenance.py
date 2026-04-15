@@ -288,6 +288,20 @@ def _verify_archive_checksums(
     index_path: Path,
     checksum_manifest_path: Path,
 ) -> dict[str, object]:
+    if not index_path.exists():
+        return {
+            "status": "skipped",
+            "details": {
+                "verified_file_count": 0,
+                "previous_manifest_file_count": 0,
+                "manifest_mismatch_count": 0,
+                "checksum_manifest_path": _repo_relative(checksum_manifest_path),
+                "archive_index_path": _repo_relative(index_path),
+                "reason": "archive index not present; checksum verification skipped",
+            },
+            "errors": [],
+        }
+
     errors = verify_rc_archive.verify_archive_index(index_path=index_path)
     archive_paths, collection_errors = _collect_archive_paths(index_path)
     errors.extend(collection_errors)
