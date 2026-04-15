@@ -255,6 +255,65 @@ def test_task_brief_compare_and_persistence_round_trip() -> None:
     ]
 
 
+def test_worker_subtask_filters_non_promotable_facts_by_default() -> None:
+    thread_id = UUID("12121212-1212-4212-8212-121212121212")
+    rows = [
+        _candidate(
+            title="Decision: Keep the existing contract",
+            object_type="Decision",
+            created_at=datetime(2026, 4, 14, 9, 0, tzinfo=UTC),
+            thread_id=thread_id,
+        ),
+        _candidate(
+            title="Memory Fact: Draft summary is stale",
+            object_type="MemoryFact",
+            created_at=datetime(2026, 4, 14, 9, 5, tzinfo=UTC),
+            thread_id=thread_id,
+            is_promotable=False,
+        ),
+        _candidate(
+            title="Note: Keep the rollout note short",
+            object_type="Note",
+            created_at=datetime(2026, 4, 14, 9, 10, tzinfo=UTC),
+            thread_id=thread_id,
+        ),
+    ]
+    store = TaskBriefStoreStub(rows)
+    user_id = UUID("11111111-1111-4111-8111-111111111111")
+
+    default_brief = compile_task_brief_record(
+        store,  # type: ignore[arg-type]
+        user_id=user_id,
+        request=TaskBriefCompileRequestInput(
+            mode="worker_subtask",
+            thread_id=thread_id,
+            token_budget=1024,
+        ),
+    )
+    override_brief = compile_task_brief_record(
+        store,  # type: ignore[arg-type]
+        user_id=user_id,
+        request=TaskBriefCompileRequestInput(
+            mode="worker_subtask",
+            thread_id=thread_id,
+            token_budget=1024,
+            include_non_promotable_facts=True,
+        ),
+    )
+
+    default_context_titles = [
+        item["title"]
+        for item in default_brief["sections"][2]["items"]
+    ]
+    override_context_titles = [
+        item["title"]
+        for item in override_brief["sections"][2]["items"]
+    ]
+
+    assert "Memory Fact: Draft summary is stale" not in default_context_titles
+    assert "Memory Fact: Draft summary is stale" in override_context_titles
+
+
 def test_task_brief_uses_workspace_selected_model_pack_defaults() -> None:
     thread_id = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
     workspace_id = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
