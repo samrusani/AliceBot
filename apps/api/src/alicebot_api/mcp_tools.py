@@ -13,6 +13,10 @@ from alicebot_api.continuity_capture import (
     capture_continuity_input,
     commit_continuity_captures,
 )
+from alicebot_api.continuity_brief import (
+    ContinuityBriefValidationError,
+    compile_continuity_brief,
+)
 from alicebot_api.continuity_evidence import (
     ContinuityEvidenceNotFoundError,
     build_continuity_explain,
@@ -59,9 +63,13 @@ from alicebot_api.contracts import (
     CONTINUITY_CAPTURE_COMMIT_MODES,
     CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
     CONTINUITY_CORRECTION_ACTIONS,
+    CONTINUITY_BRIEF_TYPE_ORDER,
     CONTRADICTION_RESOLUTION_ACTIONS,
     CONTINUITY_REVIEW_QUEUE_ORDER,
     CONTINUITY_RESUMPTION_RECENT_CHANGE_ORDER,
+    DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+    DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+    DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT,
     DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
@@ -69,6 +77,9 @@ from alicebot_api.contracts import (
     DEFAULT_TASK_BRIEF_TOKEN_BUDGET,
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
     DEFAULT_TEMPORAL_TIMELINE_LIMIT,
+    MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+    MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+    MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
@@ -79,6 +90,7 @@ from alicebot_api.contracts import (
     ContinuityCaptureCandidatesInput,
     ContinuityCaptureCommitInput,
     ContinuityCaptureCreateInput,
+    ContinuityBriefRequestInput,
     ContradictionCaseListQueryInput,
     ContradictionResolveInput,
     ContradictionSyncInput,
@@ -308,6 +320,65 @@ def _parse_task_brief_request(arguments: Mapping[str, object], *, mode_key: str 
         provider_strategy=_parse_optional_text(arguments, "provider_strategy"),
         model_pack_strategy=_parse_optional_text(arguments, "model_pack_strategy"),
         token_budget=parsed_token_budget,
+    )
+
+
+def _parse_continuity_brief_request(arguments: Mapping[str, object]) -> ContinuityBriefRequestInput:
+    brief_type_value = arguments.get("brief_type", "general")
+    if not isinstance(brief_type_value, str) or brief_type_value.strip() == "":
+        raise MCPToolError("brief_type must be a string")
+    brief_type = brief_type_value.strip()
+    if brief_type not in CONTINUITY_BRIEF_TYPE_ORDER:
+        raise MCPToolError("brief_type must be one of: " + ", ".join(CONTINUITY_BRIEF_TYPE_ORDER))
+    return ContinuityBriefRequestInput(
+        brief_type=brief_type,  # type: ignore[arg-type]
+        query=_parse_optional_text(arguments, "query"),
+        thread_id=_parse_optional_uuid(arguments, "thread_id"),
+        task_id=_parse_optional_uuid(arguments, "task_id"),
+        project=_parse_optional_text(arguments, "project"),
+        person=_parse_optional_text(arguments, "person"),
+        since=_parse_optional_datetime(arguments, "since"),
+        until=_parse_optional_datetime(arguments, "until"),
+        max_relevant_facts=_parse_int(
+            arguments,
+            key="max_relevant_facts",
+            default=DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+            minimum=0,
+            maximum=MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+        ),
+        max_recent_changes=_parse_int(
+            arguments,
+            key="max_recent_changes",
+            default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+            minimum=0,
+            maximum=MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+        ),
+        max_open_loops=_parse_int(
+            arguments,
+            key="max_open_loops",
+            default=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+            minimum=0,
+            maximum=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+        ),
+        max_conflicts=_parse_int(
+            arguments,
+            key="max_conflicts",
+            default=DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+            minimum=0,
+            maximum=MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+        ),
+        max_timeline_highlights=_parse_int(
+            arguments,
+            key="max_timeline_highlights",
+            default=DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT,
+            minimum=0,
+            maximum=MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT,
+        ),
+        include_non_promotable_facts=_parse_bool(
+            arguments,
+            key="include_non_promotable_facts",
+            default=False,
+        ),
     )
 
 
@@ -774,6 +845,15 @@ def _handle_alice_resume_debug(
                 ),
                 debug=True,
             ),
+        )
+
+
+def _handle_alice_brief(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    with _store_context(context) as store:
+        return compile_continuity_brief(
+            store,
+            user_id=context.user_id,
+            request=_parse_continuity_brief_request(arguments),
         )
 
 
@@ -1564,6 +1644,53 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_brief",
+        "description": "Compile the primary one-call continuity brief for general, resume, handoff, coding, or operator contexts.",
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "brief_type": {
+                    "type": "string",
+                    "enum": CONTINUITY_BRIEF_TYPE_ORDER,
+                },
+                "query": {"type": "string"},
+                "thread_id": {"type": "string", "format": "uuid"},
+                "task_id": {"type": "string", "format": "uuid"},
+                "project": {"type": "string"},
+                "person": {"type": "string"},
+                "since": {"type": "string", "format": "date-time"},
+                "until": {"type": "string", "format": "date-time"},
+                "max_relevant_facts": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+                },
+                "max_recent_changes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+                },
+                "max_open_loops": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+                },
+                "max_conflicts": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+                },
+                "max_timeline_highlights": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT,
+                },
+                "include_non_promotable_facts": {"type": "boolean"},
+            },
+        },
+    },
+    {
         "name": "alice_task_brief",
         "description": "Compile and persist one task-adaptive brief for recall, resume, worker, or handoff workloads.",
         "inputSchema": {
@@ -1961,6 +2088,7 @@ _TOOL_HANDLERS = {
     "alice_state_at": _handle_alice_state_at,
     "alice_resume": _handle_alice_resume,
     "alice_resume_debug": _handle_alice_resume_debug,
+    "alice_brief": _handle_alice_brief,
     "alice_task_brief": _handle_alice_task_brief,
     "alice_task_brief_show": _handle_alice_task_brief_show,
     "alice_task_brief_compare": _handle_alice_task_brief_compare,
@@ -2004,6 +2132,7 @@ def call_mcp_tool(
     except (
         ContinuityCaptureValidationError,
         ContinuityRecallValidationError,
+        ContinuityBriefValidationError,
         ContinuityResumptionValidationError,
         ContinuityOpenLoopValidationError,
         ContinuityReviewValidationError,

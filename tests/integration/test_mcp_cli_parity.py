@@ -12,9 +12,14 @@ from uuid import UUID, uuid4
 
 import psycopg
 
+from alicebot_api.continuity_brief import compile_continuity_brief
 from alicebot_api.continuity_recall import query_continuity_recall
 from alicebot_api.continuity_resumption import compile_continuity_resumption_brief
-from alicebot_api.contracts import ContinuityRecallQueryInput, ContinuityResumptionBriefRequestInput
+from alicebot_api.contracts import (
+    ContinuityBriefRequestInput,
+    ContinuityRecallQueryInput,
+    ContinuityResumptionBriefRequestInput,
+)
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
 
@@ -289,6 +294,157 @@ def test_mcp_recall_and_resume_match_core_and_cli_behavior(migrated_database_url
     assert cli_resume.returncode == 0
     assert core_resume["brief"]["last_decision"]["item"]["title"] in cli_resume.stdout
     assert core_resume["brief"]["next_action"]["item"]["title"] in cli_resume.stdout
+
+
+def test_mcp_one_call_brief_matches_core_and_cli_surface(migrated_database_urls) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="mcp-one-call@example.com")
+    thread_id = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        fact_one = store.create_continuity_object(
+            capture_event_id=store.create_continuity_capture_event(
+                raw_content="Fact: Deploy owner is Platform",
+                explicit_signal="remember_this",
+                admission_posture="DERIVED",
+                admission_reason="explicit_signal_memory",
+            )["id"],
+            object_type="MemoryFact",
+            status="active",
+            title="Fact: Deploy owner is Platform",
+            body={"fact_key": "deploy_owner", "fact_value": "Platform"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["brief-parity-1"]},
+            confidence=0.9,
+        )
+        fact_two = store.create_continuity_object(
+            capture_event_id=store.create_continuity_capture_event(
+                raw_content="Fact: Deploy owner is Infrastructure",
+                explicit_signal="remember_this",
+                admission_posture="DERIVED",
+                admission_reason="explicit_signal_memory",
+            )["id"],
+            object_type="MemoryFact",
+            status="active",
+            title="Fact: Deploy owner is Infrastructure",
+            body={"fact_key": "deploy_owner", "fact_value": "Infrastructure"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["brief-parity-2"]},
+            confidence=0.86,
+        )
+        blocker = store.create_continuity_object(
+            capture_event_id=store.create_continuity_capture_event(
+                raw_content="Blocker: Await deploy approval",
+                explicit_signal="blocker",
+                admission_posture="DERIVED",
+                admission_reason="explicit_signal_blocker",
+            )["id"],
+            object_type="Blocker",
+            status="active",
+            title="Blocker: Await deploy approval",
+            body={"blocker_text": "Await deploy approval"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["brief-parity-3"]},
+            confidence=0.91,
+        )
+        next_action = store.create_continuity_object(
+            capture_event_id=store.create_continuity_capture_event(
+                raw_content="Next Action: Send deploy plan",
+                explicit_signal="next_action",
+                admission_posture="DERIVED",
+                admission_reason="explicit_signal_next_action",
+            )["id"],
+            object_type="NextAction",
+            status="active",
+            title="Next Action: Send deploy plan",
+            body={"action_text": "Send deploy plan"},
+            provenance={"thread_id": str(thread_id), "source_event_ids": ["brief-parity-4"]},
+            confidence=0.95,
+        )
+
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=fact_one["id"],
+        created_at=datetime(2026, 4, 3, 9, 0, tzinfo=UTC),
+    )
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=fact_two["id"],
+        created_at=datetime(2026, 4, 3, 9, 5, tzinfo=UTC),
+    )
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=blocker["id"],
+        created_at=datetime(2026, 4, 3, 9, 10, tzinfo=UTC),
+    )
+    set_continuity_timestamps(
+        migrated_database_urls["admin"],
+        continuity_object_id=next_action["id"],
+        created_at=datetime(2026, 4, 3, 9, 15, tzinfo=UTC),
+    )
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = ContinuityStore(conn)
+        core_brief = compile_continuity_brief(
+            store,
+            user_id=user_id,
+            request=ContinuityBriefRequestInput(
+                brief_type="coding_context",
+                thread_id=thread_id,
+                query="deploy",
+                max_relevant_facts=4,
+                max_recent_changes=4,
+                max_open_loops=3,
+                max_conflicts=3,
+                max_timeline_highlights=4,
+            ),
+        )
+
+    client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
+    try:
+        mcp_brief = _call_tool(
+            client,
+            name="alice_brief",
+            arguments={
+                "brief_type": "coding_context",
+                "thread_id": str(thread_id),
+                "query": "deploy",
+                "max_relevant_facts": 4,
+                "max_recent_changes": 4,
+                "max_open_loops": 3,
+                "max_conflicts": 3,
+                "max_timeline_highlights": 4,
+            },
+        )
+    finally:
+        client.close()
+
+    assert mcp_brief == core_brief
+
+    env = build_runtime_env(database_url=migrated_database_urls["app"], user_id=user_id)
+    cli_brief = run_cli(
+        [
+            "brief",
+            "--brief-type",
+            "coding_context",
+            "--thread-id",
+            str(thread_id),
+            "--query",
+            "deploy",
+            "--max-relevant-facts",
+            "4",
+            "--max-recent-changes",
+            "4",
+            "--max-open-loops",
+            "3",
+            "--max-conflicts",
+            "3",
+            "--max-timeline-highlights",
+            "4",
+        ],
+        env=env,
+    )
+    assert cli_brief.returncode == 0
+    assert core_brief["brief"]["next_suggested_action"]["title"] in cli_brief.stdout
+    assert "confidence=" in cli_brief.stdout
+    assert "conflicts:" in cli_brief.stdout
 
 
 def test_mcp_task_brief_compare_smoke_matches_cli_surface(migrated_database_urls) -> None:

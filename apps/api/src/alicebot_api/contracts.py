@@ -207,6 +207,13 @@ ModelPackBindingSource = Literal["manual", "runtime_override"]
 ModelPackBriefingStrategy = Literal["balanced", "compact", "detailed"]
 ModelFinishReason = Literal["completed", "incomplete"]
 TaskBriefMode = Literal["user_recall", "resume", "worker_subtask", "agent_handoff"]
+ContinuityBriefType = Literal[
+    "general",
+    "resume",
+    "agent_handoff",
+    "coding_context",
+    "operator_context",
+]
 ExplicitPreferencePattern = Literal[
     "i_like",
     "i_dont_like",
@@ -413,6 +420,12 @@ DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT = 5
 MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT = 20
 DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT = 5
 MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT = 20
+DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT = 6
+MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT = 20
+DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT = 5
+MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT = 20
+DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT = 5
+MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT = 20
 DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT = 20
 MAX_CONTINUITY_OPEN_LOOP_LIMIT = 100
 DEFAULT_CONTINUITY_DAILY_BRIEF_LIMIT = 3
@@ -445,6 +458,7 @@ RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "resumption_brief_v0"
 CONTINUITY_RESUMPTION_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_resumption_brief_v0"
 TASK_BRIEF_ASSEMBLY_VERSION_V0 = "task_brief_v0"
 TASK_BRIEF_COMPARISON_VERSION_V0 = "task_brief_comparison_v0"
+CONTINUITY_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_brief_v0"
 CONTINUITY_DAILY_BRIEF_ASSEMBLY_VERSION_V0 = "continuity_daily_brief_v0"
 CONTINUITY_WEEKLY_REVIEW_ASSEMBLY_VERSION_V0 = "continuity_weekly_review_v0"
 CHIEF_OF_STAFF_PRIORITY_BRIEF_ASSEMBLY_VERSION_V0 = "chief_of_staff_priority_brief_v0"
@@ -467,6 +481,13 @@ TASK_BRIEF_MODE_ORDER: list[TaskBriefMode] = [
     "resume",
     "worker_subtask",
     "agent_handoff",
+]
+CONTINUITY_BRIEF_TYPE_ORDER: list[ContinuityBriefType] = [
+    "general",
+    "resume",
+    "agent_handoff",
+    "coding_context",
+    "operator_context",
 ]
 TASK_BRIEF_SECTION_ITEM_ORDER = ["created_at_desc", "id_desc"]
 MODEL_PACK_BRIEFING_STRATEGIES: list[ModelPackBriefingStrategy] = [
@@ -2168,6 +2189,43 @@ class ContinuityResumptionBriefRequestInput:
 
 
 @dataclass(frozen=True, slots=True)
+class ContinuityBriefRequestInput:
+    brief_type: ContinuityBriefType = "general"
+    query: str | None = None
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = None
+    person: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+    max_relevant_facts: int = DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT
+    max_recent_changes: int = DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT
+    max_open_loops: int = DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT
+    max_conflicts: int = DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT
+    max_timeline_highlights: int = DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT
+    include_non_promotable_facts: bool = False
+
+    def as_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "brief_type": self.brief_type,
+            "query": self.query,
+            "thread_id": None if self.thread_id is None else str(self.thread_id),
+            "task_id": None if self.task_id is None else str(self.task_id),
+            "project": self.project,
+            "person": self.person,
+            "max_relevant_facts": self.max_relevant_facts,
+            "max_recent_changes": self.max_recent_changes,
+            "max_open_loops": self.max_open_loops,
+            "max_conflicts": self.max_conflicts,
+            "max_timeline_highlights": self.max_timeline_highlights,
+            "include_non_promotable_facts": self.include_non_promotable_facts,
+        }
+        payload["since"] = isoformat_or_none(self.since)
+        payload["until"] = isoformat_or_none(self.until)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
 class TaskBriefCompileRequestInput:
     mode: TaskBriefMode
     query: str | None = None
@@ -3629,6 +3687,111 @@ class ContinuityResumptionDebugRecord(TypedDict):
 class ContinuityResumptionBriefResponse(TypedDict):
     brief: ContinuityResumptionBriefRecord
     debug: NotRequired[ContinuityResumptionDebugRecord]
+
+
+class ContinuityBriefRelevantFactsSummary(TypedDict):
+    limit: int
+    returned_count: int
+    total_count: int
+    order: list[str]
+    task_brief_mode: TaskBriefMode
+
+
+class ContinuityBriefRelevantFactsSection(TypedDict):
+    items: list[ContinuityRecallResultRecord]
+    summary: ContinuityBriefRelevantFactsSummary
+    empty_state: ContinuityResumptionEmptyState
+
+
+class ContinuityBriefConflictSummary(TypedDict):
+    limit: int
+    returned_count: int
+    total_count: int
+    order: list[str]
+
+
+class ContinuityBriefConflictSection(TypedDict):
+    items: list[ContradictionCaseRecord]
+    summary: ContinuityBriefConflictSummary
+    empty_state: ContinuityResumptionEmptyState
+
+
+class ContinuityBriefTimelineHighlightRecord(TypedDict):
+    continuity_object_id: str
+    title: str
+    object_type: ContinuityObjectType
+    status: str
+    created_at: str
+    source_section: str
+
+
+class ContinuityBriefTimelineSection(TypedDict):
+    items: list[ContinuityBriefTimelineHighlightRecord]
+    summary: ResumptionBriefSectionSummary
+    empty_state: ContinuityResumptionEmptyState
+
+
+class ContinuityBriefSuggestedActionRecord(TypedDict):
+    continuity_object_id: str | None
+    title: str
+    object_type: ContinuityObjectType | None
+    reason: str
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    provenance_references: list[ContinuityRecallProvenanceReference]
+
+
+class ContinuityBriefSelectionStrategyRecord(TypedDict):
+    task_brief_mode: TaskBriefMode
+    provider_strategy: str
+    model_pack_strategy: str
+    token_budget: int
+    budget_source: str
+
+
+class ContinuityBriefProvenanceSummary(TypedDict):
+    source_object_count: int
+    reference_count: int
+    reference_kind_count: int
+
+
+class ContinuityBriefProvenanceBundle(TypedDict):
+    source_object_ids: list[str]
+    references: list[ContinuityRecallProvenanceReference]
+    summary: ContinuityBriefProvenanceSummary
+
+
+class ContinuityBriefTrustPostureRecord(TypedDict):
+    confidence_posture: ChiefOfStaffRecommendationConfidencePosture
+    average_confidence: float
+    strongest_trust_class: MemoryTrustClass | None
+    weakest_provenance_posture: ContinuityRecallProvenancePosture | None
+    active_signal_count: int
+    positive_signal_count: int
+    negative_signal_count: int
+    neutral_signal_count: int
+    open_conflict_count: int
+    rationale: str
+
+
+class ContinuityBriefRecord(TypedDict):
+    assembly_version: str
+    brief_type: ContinuityBriefType
+    scope: ContinuityRecallScopeFilters
+    summary: str
+    selection_strategy: ContinuityBriefSelectionStrategyRecord
+    relevant_facts: ContinuityBriefRelevantFactsSection
+    recent_changes: ContinuityResumptionListSection
+    open_loops: ContinuityResumptionListSection
+    conflicts: ContinuityBriefConflictSection
+    timeline_highlights: ContinuityBriefTimelineSection
+    next_suggested_action: ContinuityBriefSuggestedActionRecord
+    provenance_bundle: ContinuityBriefProvenanceBundle
+    trust_posture: ContinuityBriefTrustPostureRecord
+    sources: list[str]
+
+
+class ContinuityBriefResponse(TypedDict):
+    brief: ContinuityBriefRecord
 
 
 class TaskBriefEmptyState(TypedDict):

@@ -19,6 +19,7 @@ def test_parser_routes_required_commands() -> None:
         (["mutations", "candidates"], "_run_mutation_candidates"),
         (["mutations", "commit"], "_run_mutation_commit"),
         (["mutations", "operations"], "_run_mutation_operations"),
+        (["brief"], "_run_brief"),
         (["recall"], "_run_recall"),
         (["state-at", continuity_object_id], "_run_state_at"),
         (["timeline", continuity_object_id], "_run_timeline"),

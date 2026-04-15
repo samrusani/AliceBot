@@ -16,6 +16,7 @@ import psycopg
 from alicebot_api.cli_formatting import (
     format_artifact_detail_output,
     format_capture_output,
+    format_continuity_brief_output,
     format_contradiction_case_detail_output,
     format_contradiction_case_list_output,
     format_contradiction_sync_output,
@@ -47,6 +48,10 @@ from alicebot_api.config import Settings, get_settings
 from alicebot_api.continuity_capture import (
     ContinuityCaptureValidationError,
     capture_continuity_input,
+)
+from alicebot_api.continuity_brief import (
+    ContinuityBriefValidationError,
+    compile_continuity_brief,
 )
 from alicebot_api.continuity_evidence import (
     ContinuityEvidenceNotFoundError,
@@ -102,7 +107,11 @@ from alicebot_api.contracts import (
     CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
     CONTINUITY_CORRECTION_ACTIONS,
     CONTRADICTION_RESOLUTION_ACTIONS,
+    CONTINUITY_BRIEF_TYPE_ORDER,
     DEFAULT_CONTINUITY_CAPTURE_LIMIT,
+    DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+    DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+    DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT,
     DEFAULT_CONTINUITY_LIFECYCLE_LIMIT,
     DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
@@ -115,6 +124,9 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_REVIEW_LIMIT,
     MAX_CONTINUITY_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
+    MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+    MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+    MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT,
     MAX_CONTINUITY_LIFECYCLE_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
@@ -125,6 +137,7 @@ from alicebot_api.contracts import (
     ContradictionResolveInput,
     ContradictionSyncInput,
     ContinuityCaptureCreateInput,
+    ContinuityBriefRequestInput,
     ContinuityCorrectionInput,
     ContinuityLifecycleQueryInput,
     ContinuityOpenLoopDashboardQueryInput,
@@ -273,6 +286,51 @@ def _add_task_brief_arguments(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         help=f"Optional explicit token budget (1-{MAX_TASK_BRIEF_TOKEN_BUDGET}).",
+    )
+
+
+def _add_continuity_brief_arguments(parser: argparse.ArgumentParser) -> None:
+    _add_scope_filter_arguments(parser)
+    parser.add_argument(
+        "--brief-type",
+        choices=CONTINUITY_BRIEF_TYPE_ORDER,
+        default="general",
+        help="One-call continuity brief type.",
+    )
+    parser.add_argument(
+        "--max-relevant-facts",
+        type=int,
+        default=DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+        help=f"Maximum relevant facts ({0}-{MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT}).",
+    )
+    parser.add_argument(
+        "--max-recent-changes",
+        type=int,
+        default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+        help=f"Maximum recent changes ({0}-{MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT}).",
+    )
+    parser.add_argument(
+        "--max-open-loops",
+        type=int,
+        default=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+        help=f"Maximum open loops ({0}-{MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT}).",
+    )
+    parser.add_argument(
+        "--max-conflicts",
+        type=int,
+        default=DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+        help=f"Maximum open conflicts ({0}-{MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT}).",
+    )
+    parser.add_argument(
+        "--max-timeline-highlights",
+        type=int,
+        default=DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT,
+        help=f"Maximum timeline highlights ({0}-{MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT}).",
+    )
+    parser.add_argument(
+        "--include-non-promotable-facts",
+        action="store_true",
+        help="Include searchable but non-promotable facts where the brief type allows it.",
     )
 
 
@@ -547,6 +605,31 @@ def _run_resume(ctx: CLIContext, args: argparse.Namespace) -> str:
             ),
         )
     return format_resume_output(payload)
+
+
+def _run_brief(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = compile_continuity_brief(
+            store,
+            user_id=ctx.user_id,
+            request=ContinuityBriefRequestInput(
+                brief_type=args.brief_type,
+                query=args.query,
+                thread_id=args.thread_id,
+                task_id=args.task_id,
+                project=args.project,
+                person=args.person,
+                since=args.since,
+                until=args.until,
+                max_relevant_facts=args.max_relevant_facts,
+                max_recent_changes=args.max_recent_changes,
+                max_open_loops=args.max_open_loops,
+                max_conflicts=args.max_conflicts,
+                max_timeline_highlights=args.max_timeline_highlights,
+                include_non_promotable_facts=args.include_non_promotable_facts,
+            ),
+        )
+    return format_continuity_brief_output(payload)
 
 
 def _task_brief_request_from_args(args: argparse.Namespace) -> TaskBriefCompileRequestInput:
@@ -1142,6 +1225,13 @@ def build_parser() -> argparse.ArgumentParser:
     mutation_operations_parser.add_argument("--sync-fingerprint", default=None, help="Optional sync fingerprint.")
     mutation_operations_parser.set_defaults(handler=_run_mutation_operations)
 
+    brief_parser = subparsers.add_parser(
+        "brief",
+        help="Compile the primary one-call continuity brief.",
+    )
+    _add_continuity_brief_arguments(brief_parser)
+    brief_parser.set_defaults(handler=_run_brief)
+
     recall_parser = subparsers.add_parser("recall", help="Recall continuity objects.")
     _add_scope_filter_arguments(recall_parser)
     recall_parser.add_argument(
@@ -1605,6 +1695,37 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             minimum=1,
             maximum=MAX_TEMPORAL_TIMELINE_LIMIT,
         )
+    elif args.command == "brief":
+        _validate_limit(
+            args.max_relevant_facts,
+            option_name="--max-relevant-facts",
+            minimum=0,
+            maximum=MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+        )
+        _validate_limit(
+            args.max_recent_changes,
+            option_name="--max-recent-changes",
+            minimum=0,
+            maximum=MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+        )
+        _validate_limit(
+            args.max_open_loops,
+            option_name="--max-open-loops",
+            minimum=0,
+            maximum=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+        )
+        _validate_limit(
+            args.max_conflicts,
+            option_name="--max-conflicts",
+            minimum=0,
+            maximum=MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+        )
+        _validate_limit(
+            args.max_timeline_highlights,
+            option_name="--max-timeline-highlights",
+            minimum=0,
+            maximum=MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT,
+        )
     elif args.command == "lifecycle" and args.lifecycle_command == "list":
         _validate_limit(
             args.limit,
@@ -1686,6 +1807,7 @@ def main(argv: list[str] | None = None) -> int:
         ContinuityLifecycleValidationError,
         ContinuityLifecycleNotFoundError,
         ContinuityRecallValidationError,
+        ContinuityBriefValidationError,
         ContinuityResumptionValidationError,
         ContinuityOpenLoopValidationError,
         ContinuityReviewValidationError,

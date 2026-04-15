@@ -19,15 +19,19 @@ alicebot --help
 ## Core Commands
 
 ```bash
+alice brief --brief-type general --query local-first
 ./.venv/bin/python -m alicebot_api status
 ./.venv/bin/python -m alicebot_api capture "Decision: Keep Alice local-first for verification." --explicit-signal decision
 ./.venv/bin/python -m alicebot_api recall --query local-first --limit 5
 ./.venv/bin/python -m alicebot_api resume --max-recent-changes 5 --max-open-loops 5
+./.venv/bin/python -m alicebot_api brief --brief-type general --query local-first
 ./.venv/bin/python -m alicebot_api open-loops
 ./.venv/bin/python -m alicebot_api state-at <entity_id> --at 2026-03-12T09:45:00+00:00
 ./.venv/bin/python -m alicebot_api timeline <entity_id> --limit 20
 ./.venv/bin/python -m alicebot_api explain --entity-id <entity_id> --at 2026-03-12T09:45:00+00:00
 ```
+
+`brief` is the default external-agent continuity entrypoint. It assembles relevant facts, recent changes, open loops, conflicts, timeline highlights, provenance, trust posture, and a next suggested action in one call.
 
 ## Temporal History Commands
 
@@ -54,3 +58,4 @@ See tests:
 - `tests/integration/test_mcp_cli_parity.py`
 - `tests/integration/test_mcp_server.py`
 - `tests/integration/test_temporal_state_mcp_cli.py`
+- `docs/integrations/one-call-continuity.md`

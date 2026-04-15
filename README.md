@@ -15,7 +15,7 @@ durable memory for agents, agent resumption, open loop tracking, local-first ai 
 
 Alice helps agents **remember what matters, resume interrupted work, explain why something is true, and improve when corrected**.
 
-`v0.3.2` is the current **pre-1.0 release target** for the completed Phase 12 boundary. The latest published tag remains `v0.2.0` until the `v0.3.2` release is cut.
+`v0.3.2` is the current **pre-1.0 public release**.
 
 Most assistants are still good only in the moment. They can answer the current prompt, but they struggle to preserve decisions, track open loops, recover context across sessions, and stay aligned after memory corrections.
 
@@ -27,9 +27,9 @@ It provides a **local-first memory and continuity engine** for capture, recall, 
 
 **Works across local, self-hosted, enterprise, and external-agent workflows via CLI, MCP, provider runtime, OpenClaw import, and Hermes integration.**
 
-## Release Boundary (`v0.3.2` Target)
+## Release Boundary (`v0.3.2`)
 
-Completed baseline included in this pre-1.0 release target:
+Completed baseline included in this pre-1.0 public release:
 
 - Phase 9 continuity core and deterministic local CLI/MCP/importer seams
 - Phase 10 hosted/product layer
@@ -44,6 +44,8 @@ Completed baseline included in this pre-1.0 release target:
 
 Historical planning/control artifacts remain available in:
 [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
+
+Phase 13 planning is active on top of this released baseline.
 
 ## Why Alice exists
 
@@ -312,7 +314,7 @@ That means the system behaves consistently across local workflows, MCP-connected
 
 ## Scope Notes
 
-Included in the `v0.3.2` target:
+Included in the `v0.3.2` release:
 
 - local-first continuity core
 - CLI and MCP surfaces

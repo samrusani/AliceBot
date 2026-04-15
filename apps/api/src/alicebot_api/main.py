@@ -28,6 +28,10 @@ except Exception:  # pragma: no cover - optional dependency for local-only test 
 
 from alicebot_api.compiler import compile_and_persist_trace, compile_resumption_brief
 from alicebot_api.config import Settings, get_settings
+from alicebot_api.continuity_brief import (
+    ContinuityBriefValidationError,
+    compile_continuity_brief,
+)
 from alicebot_api.contracts import (
     AGENT_PROFILE_LIST_ORDER,
     ApprovalApproveInput,
@@ -48,6 +52,9 @@ from alicebot_api.contracts import (
     DEFAULT_AGENT_PROFILE_ID,
     DEFAULT_CALENDAR_EVENT_LIST_LIMIT,
     DEFAULT_CONTINUITY_CAPTURE_LIMIT,
+    DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+    DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+    DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT,
     DEFAULT_CONTINUITY_LIFECYCLE_LIMIT,
     DEFAULT_CONTINUITY_REVIEW_LIMIT,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
@@ -80,6 +87,9 @@ from alicebot_api.contracts import (
     MAX_RESUMPTION_BRIEF_OPEN_LOOP_LIMIT,
     MAX_ARTIFACT_CHUNK_RETRIEVAL_LIMIT,
     MAX_CALENDAR_EVENT_LIST_LIMIT,
+    MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+    MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+    MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT,
     MAX_CONTINUITY_CAPTURE_LIMIT,
     MAX_CONTINUITY_LIFECYCLE_LIMIT,
     MAX_CONTINUITY_REVIEW_LIMIT,
@@ -97,6 +107,8 @@ from alicebot_api.contracts import (
     MAX_SEMANTIC_MEMORY_RETRIEVAL_LIMIT,
     ContextCompilerLimits,
     ContinuityArtifactDetailResponse,
+    ContinuityBriefRequestInput,
+    ContinuityBriefResponse,
     ContinuityCaptureCandidatesInput,
     ContinuityCaptureCommitInput,
     ContinuityCaptureCreateInput,
@@ -1146,6 +1158,45 @@ class MemoryOperationCommitRequest(BaseModel):
     candidate_ids: list[UUID] = Field(default_factory=list)
     sync_fingerprint: str | None = Field(default=None, min_length=1, max_length=200)
     include_review_required: bool = False
+
+
+class ContinuityBriefRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    brief_type: str = Field(default="general", min_length=1, max_length=40)
+    query: str | None = Field(default=None, min_length=1, max_length=4000)
+    thread_id: UUID | None = None
+    task_id: UUID | None = None
+    project: str | None = Field(default=None, min_length=1, max_length=200)
+    person: str | None = Field(default=None, min_length=1, max_length=200)
+    since: datetime | None = None
+    until: datetime | None = None
+    max_relevant_facts: int = Field(
+        default=DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
+    )
+    max_recent_changes: int = Field(
+        default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    )
+    max_open_loops: int = Field(
+        default=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+    )
+    max_conflicts: int = Field(
+        default=DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT,
+    )
+    max_timeline_highlights: int = Field(
+        default=DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT,
+        ge=0,
+        le=MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT,
+    )
+    include_non_promotable_facts: bool = False
 
 
 class ContinuityCorrectionRequest(BaseModel):
@@ -6022,6 +6073,52 @@ def get_continuity_resumption_brief(
     except ContinuityResumptionValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
     except ContinuityRecallValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(payload),
+    )
+
+
+@app.post("/v1/continuity/brief")
+def post_continuity_brief(
+    http_request: Request,
+    request: ContinuityBriefRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        user_id = _resolve_authenticated_v1_user_id(settings, http_request)
+        with user_connection(settings.database_url, user_id) as conn:
+            payload: ContinuityBriefResponse = compile_continuity_brief(
+                ContinuityStore(conn),
+                user_id=user_id,
+                request=ContinuityBriefRequestInput(
+                    brief_type=request.brief_type,  # type: ignore[arg-type]
+                    query=request.query,
+                    thread_id=request.thread_id,
+                    task_id=request.task_id,
+                    project=request.project,
+                    person=request.person,
+                    since=request.since,
+                    until=request.until,
+                    max_relevant_facts=request.max_relevant_facts,
+                    max_recent_changes=request.max_recent_changes,
+                    max_open_loops=request.max_open_loops,
+                    max_conflicts=request.max_conflicts,
+                    max_timeline_highlights=request.max_timeline_highlights,
+                    include_non_promotable_facts=request.include_non_promotable_facts,
+                ),
+            )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except (
+        ContinuityBriefValidationError,
+        ContinuityRecallValidationError,
+        ContinuityResumptionValidationError,
+        TaskBriefValidationError,
+    ) as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     return JSONResponse(

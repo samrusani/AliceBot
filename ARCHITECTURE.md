@@ -1,9 +1,9 @@
 # Architecture
 
 ## Scope Boundary
-- **Shipped baseline:** Phases 9-11 and Bridge `B1` through `B4`.
-- **Current repo execution posture:** `v0.2.0` is the latest published tag; `v0.3.2` is the current release target; Phase 12 is complete.
-- **Active control-doc task:** Phase 12 closeout and `v0.3.2` release update.
+- **Shipped baseline:** Phases 9-12 and Bridge `B1` through `B4`.
+- **Current repo execution posture:** `v0.3.2` is the latest published tag; Phase 13 is active; `P13-S1` is the active execution sprint.
+- **Phase principle:** Phase 13 is an adoption layer on top of Phase 12, not a new substrate phase.
 
 ## Current System Overview
 Alice is a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, MCP, and Hermes-integrated surfaces.
@@ -28,13 +28,20 @@ Alice is a modular continuity platform with shared continuity semantics across l
   - [`continuity_open_loops.py`](apps/api/src/alicebot_api/continuity_open_loops.py)
 
 ### Retrieval And Evidence Foundations
-- Existing baseline already includes semantic retrieval, embeddings, entities, trusted-fact promotion, and fixture-based retrieval evaluation.
+- Shipped baseline includes semantic retrieval, embeddings, entities, trusted-fact promotion, fixture-based retrieval evaluation, hybrid retrieval streams, reranking, and persisted retrieval traces.
 - Primary modules:
   - [`semantic_retrieval.py`](apps/api/src/alicebot_api/semantic_retrieval.py)
   - [`retrieval_evaluation.py`](apps/api/src/alicebot_api/retrieval_evaluation.py)
   - [`entity.py`](apps/api/src/alicebot_api/entity.py)
   - [`entity_edge.py`](apps/api/src/alicebot_api/entity_edge.py)
   - [`trusted_fact_promotions.py`](apps/api/src/alicebot_api/trusted_fact_promotions.py)
+
+### Mutation, Trust, And Briefing Foundations
+- Shipped baseline includes explicit memory operations, contradiction cases, trust signals, public eval persistence, and task-adaptive briefing.
+- Primary modules:
+  - [`memory.py`](apps/api/src/alicebot_api/memory.py)
+  - [`task_briefing.py`](apps/api/src/alicebot_api/task_briefing.py)
+  - [`contracts.py`](apps/api/src/alicebot_api/contracts.py)
 
 ### Hosted/Product Layer
 - Workspace, identity, devices, preferences, telemetry, web/admin, and channel surfaces.
@@ -51,13 +58,17 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - `memories`, `memory_revisions`, `memory_review_labels`
 - `continuity_capture_events`, `continuity_objects`, `continuity_correction_events`
 - `open_loops`
+- `memory_operation_candidates`, `memory_operations`
+- `contradiction_cases`, `trust_signals`
 
-### Retrieval Foundations
+### Retrieval And Evaluation
 - `embedding_configs`, `memory_embeddings`
 - `entities`, `entity_edges`
+- `retrieval_runs`, `retrieval_candidates`
+- `eval_suites`, `eval_cases`, `eval_runs`, `eval_results`
 - task-artifact chunk embeddings for artifact-scoped retrieval
 
-### Product/Runtime
+### Product / Runtime
 - `workspaces`, `workspace_members`, `auth_sessions`, `devices`
 - `model_providers`, `provider_capabilities`, `model_packs`, `workspace_model_pack_bindings`
 - `task_briefs`
@@ -73,75 +84,78 @@ Alice is a modular continuity platform with shared continuity semantics across l
 
 ### Recall And Resumption
 1. Recall loads continuity candidates.
-2. Ranking already considers semantic similarity, trust, freshness, provenance, supersession, and entity/scope matches.
+2. Ranking considers semantic similarity, lexical/entity signals, trust, freshness, provenance, and supersession.
 3. Resumption composes ranked recall into decisions, open loops, recent changes, and next action.
 
-### Provider/Hermes Runtime
+### Provider / Hermes Runtime
 1. Workspace binds provider and model-pack configuration.
 2. Runtime invokes through provider adapter boundaries.
 3. Hermes can prefetch before a turn and capture after a turn while Alice remains the system of record.
 
-## Phase 12 Architecture Delta
+## Phase 12 Baseline In Force
+- Hybrid retrieval and reranking are the recall baseline.
+- Explicit mutation operations are the memory-change baseline.
+- Contradiction cases and trust signals are the conflict/trust baseline.
+- The public eval harness is the quality-evidence baseline.
+- Task-adaptive briefing is the current compiled-context baseline.
 
-### P12-S1: Hybrid Retrieval + Reranking
-Shipped in `P12-S1`:
-- semantic stream
-- lexical/BM25-style stream
-- entity/edge traversal stream
-- temporal filtering/weighting
-- trust-aware reranking
-- persisted retrieval traces
+## Phase 13 Planned Delta
 
-Delivered additions:
-- `retrieval_runs`
-- `retrieval_candidates`
-- debug surfaces for API, CLI, and MCP
+### P13-S1: One-Call Continuity
+- Add the primary integration surface:
+  - API: `POST /v1/continuity/brief`
+  - CLI: `alice brief`
+  - MCP: `alice_brief`
+- Input should support:
+  - `query`
+  - optional `thread_id`
+  - optional `task_id`
+  - optional `project`
+  - optional `person`
+  - optional `since`
+  - optional `until`
+  - `brief_type`
+  - `max_relevant_facts`
+  - `max_recent_changes`
+  - `max_open_loops`
+  - `max_conflicts`
+  - `max_timeline_highlights`
+  - `include_non_promotable_facts`
+- Output should include:
+  - summary
+  - relevant facts
+  - recent changes
+  - open loops
+  - conflicts
+  - timeline highlights
+  - next suggested action
+  - provenance bundle
+  - trust posture
+- This surface must compose shipped Phase 12 layers rather than reimplement them.
 
-Important baseline note: `P12-S1` is now the retrieval baseline for the rest of Phase 12 and should not be reopened except where later sprint integration requires it.
+### P13-S2: Alice Lite
+- Add a lighter local deployment profile for solo users and builders.
+- Target outcomes:
+  - one-command local startup
+  - smaller-footprint profile
+  - sample workspace bootstrap
+  - faster first useful result
+- Alice Lite must remain a deployment/profile change, not a separate product or semantics fork.
+- SQLite or another embedded mode is not in scope unless semantics remain intact.
 
-### P12-S2: Automated Memory Operations
-Shipped in `P12-S2`:
-- `ADD`
-- `UPDATE`
-- `SUPERSEDE`
-- `DELETE`
-- `NOOP`
-
-Delivered additions:
-- `memory_operation_candidates`
-- `memory_operations`
-
-Important baseline note: `P12-S2` is now the mutation baseline for the rest of Phase 12 and should not be reopened except where later sprint integration requires it.
-
-### P12-S3: Contradiction Detection + Trust Calibration
-Shipped in `P12-S3`:
-
-Delivered additions:
-- `contradiction_cases`
-- `trust_signals`
-
-Important baseline note: `P12-S3` is now the contradiction/trust baseline for the rest of Phase 12 and should not be reopened except where later sprint integration requires it.
-
-### P12-S4: Public Eval Harness
-Shipped in `P12-S4`:
-
-Delivered additions:
-- `eval_suites`
-- `eval_cases`
-- `eval_runs`
-- `eval_results`
-
-Important baseline note: `P12-S4` is now the evaluation baseline for the rest of Phase 12 and should not be reopened except where later sprint integration requires it.
-Source-of-truth note: the checked-in fixture catalog defines the authoritative suite/case set and ordering; persisted eval suite/case rows are synchronized snapshots for execution and audit, not an independent planning surface.
-
-### P12-S5: Task-Adaptive Briefing
-Shipped in `P12-S5`:
-
-Delivered additions:
-- `task_briefs`
-- provider/model-pack briefing strategy fields
-
-Important baseline note: `P12-S5` closes the planned Phase 12 implementation scope. Existing resumption, daily-brief, and chief-of-staff briefing surfaces remain the starting points rather than being replaced wholesale.
+### P13-S3: Memory Hygiene + Conversation Health
+- Add visible hygiene surfaces for:
+  - duplicates
+  - stale facts
+  - unresolved contradictions
+  - weakly trusted memory
+  - review queue pressure
+- Add conversation/thread health surfaces for:
+  - recent threads
+  - stale threads
+  - risky threads
+  - thread activity / health posture
+- This work is visibility and operational legibility first, not new substrate work.
 
 ## Security And Reliability Rules
 - Keep user/workspace isolation intact for continuity, provider, and channel data.
@@ -149,6 +163,8 @@ Important baseline note: `P12-S5` closes the planned Phase 12 implementation sco
 - Preserve approval-bounded execution for consequential side effects.
 - Keep capture, mutation, and Hermes sync paths idempotent.
 - Preserve append-only evidence where the system depends on auditability.
+- Do not let the one-call continuity surface bypass provenance, trust, or supersession rules already enforced by the baseline.
+- Do not let Alice Lite weaken continuity semantics in exchange for easier install.
 
 ## Deployment Topology
 
@@ -158,16 +174,22 @@ Important baseline note: `P12-S5` closes the planned Phase 12 implementation sco
 - Provider runtime where model abstraction is needed
 - Hermes provider-plus-MCP for always-on continuity
 
+### Phase 13 Addition
+- Alice Lite should be a lighter deployment/profile around the same core runtime, not a separate architecture.
+
 ### Fallback
 - MCP-only remains supported when provider automation is unavailable
 
 ## Testing Strategy
 - unit/integration tests for continuity, runtime, and API behavior
 - fixture-based retrieval and eval suites
+- API/CLI/MCP parity tests for `P13-S1`
+- startup/smoke coverage for Alice Lite profile work in `P13-S2`
+- hygiene/thread-health tests for `P13-S3`
 - web tests for shipped user/admin surfaces
 - Hermes provider smoke, MCP smoke, and demo flows
-- release/eval artifacts committed only when they correspond to exact commands and fixtures
 
 ## Control Tower Decisions Needed
-- Whether `v0.3.2` should be tagged immediately or held until a dedicated release pass.
-- What the next planned phase is after the completed Phase 12 architecture baseline.
+- Whether Alice Lite can reduce services in `P13-S2` without harming semantics or release credibility.
+- Exact default payload posture for `/v1/continuity/brief`.
+- Threshold model for thread risk and health visibility in `P13-S3`.
