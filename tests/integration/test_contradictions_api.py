@@ -21,6 +21,7 @@ def invoke_request(
     *,
     query_params: dict[str, str] | None = None,
     payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     messages: list[dict[str, object]] = []
     encoded_body = b"" if payload is None else json.dumps(payload).encode()
@@ -37,6 +38,10 @@ def invoke_request(
         messages.append(message)
 
     query_string = urlencode(query_params or {}).encode()
+    request_headers = [(b"content-type", b"application/json")]
+    for key, value in (headers or {}).items():
+        request_headers.append((key.lower().encode(), value.encode()))
+
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -46,7 +51,7 @@ def invoke_request(
         "path": path,
         "raw_path": path.encode(),
         "query_string": query_string,
-        "headers": [(b"content-type", b"application/json")],
+        "headers": request_headers,
         "client": ("testclient", 50000),
         "server": ("testserver", 80),
         "root_path": "",
@@ -70,6 +75,35 @@ def seed_user(database_url: str, *, email: str) -> UUID:
     return user_id
 
 
+def auth_header(session_token: str) -> dict[str, str]:
+    return {"authorization": f"Bearer {session_token}"}
+
+
+def bootstrap_authenticated_user(database_url: str, *, email: str) -> tuple[UUID, str]:
+    start_status, start_payload = invoke_request(
+        "POST",
+        "/v1/auth/magic-link/start",
+        payload={"email": email},
+    )
+    assert start_status == 200
+
+    verify_status, verify_payload = invoke_request(
+        "POST",
+        "/v1/auth/magic-link/verify",
+        payload={
+            "challenge_token": start_payload["challenge"]["challenge_token"],
+            "device_label": "Contradictions Test Device",
+            "device_key": f"device-{email}",
+        },
+    )
+    assert verify_status == 200
+
+    user_id = UUID(verify_payload["user_account"]["id"])
+    with user_connection(database_url, user_id) as conn:
+        ContinuityStore(conn).create_user(user_id, email, email.split("@", 1)[0].title())
+    return user_id, verify_payload["session_token"]
+
+
 def set_continuity_timestamp(
     admin_database_url: str,
     *,
@@ -88,7 +122,16 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
     migrated_database_urls,
     monkeypatch,
 ) -> None:
-    user_id = seed_user(migrated_database_urls["app"], email="contradictions-api@example.com")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    user_id, session_token = bootstrap_authenticated_user(
+        migrated_database_urls["app"],
+        email="contradictions-api@example.com",
+    )
     thread_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
     with user_connection(migrated_database_urls["app"], user_id) as conn:
@@ -170,16 +213,11 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
         created_at=datetime(2026, 4, 14, 9, 10, tzinfo=UTC),
     )
 
-    monkeypatch.setattr(
-        main_module,
-        "get_settings",
-        lambda: Settings(database_url=migrated_database_urls["app"]),
-    )
-
     detect_status, detect_payload = invoke_request(
         "POST",
         "/v1/contradictions/detect",
-        payload={"user_id": str(user_id), "limit": 20},
+        payload={"limit": 20},
+        headers=auth_header(session_token),
     )
     assert detect_status == 200
     assert detect_payload["summary"]["open_case_count"] == 1
@@ -222,11 +260,11 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
         "GET",
         "/v1/trust/signals",
         query_params={
-            "user_id": str(user_id),
             "continuity_object_id": str(canary_object["id"]),
             "signal_state": "active",
             "limit": "20",
         },
+        headers=auth_header(session_token),
     )
     assert trust_status == 200
     assert trust_payload["summary"]["returned_count"] == 1
@@ -238,10 +276,10 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
         "POST",
         f"/v1/contradictions/cases/{contradiction_case_id}/resolve",
         payload={
-            "user_id": str(user_id),
             "action": "confirm_primary",
             "note": "Primary record remains current.",
         },
+        headers=auth_header(session_token),
     )
     assert resolve_status == 200
     assert resolve_payload["contradiction_case"]["status"] == "resolved"
@@ -251,7 +289,7 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
     detail_status, detail_payload = invoke_request(
         "GET",
         f"/v1/contradictions/cases/{contradiction_case_id}",
-        query_params={"user_id": str(user_id)},
+        headers=auth_header(session_token),
     )
     assert detail_status == 200
     assert detail_payload["contradiction_case"]["status"] == "resolved"
@@ -260,12 +298,31 @@ def test_contradictions_api_detects_surfaces_penalties_and_resolves(
         "GET",
         "/v1/trust/signals",
         query_params={
-            "user_id": str(user_id),
             "continuity_object_id": str(canary_object["id"]),
             "signal_state": "active",
             "limit": "20",
         },
+        headers=auth_header(session_token),
     )
     assert active_trust_after_status == 200
     assert active_trust_after_payload["items"] == []
 
+
+def test_contradictions_api_requires_bearer_auth(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+
+    status, payload = invoke_request(
+        "GET",
+        "/v1/contradictions/cases",
+        query_params={"status": "open", "limit": "20"},
+    )
+
+    assert status == 401
+    assert payload == {"detail": "authorization bearer token is required"}
