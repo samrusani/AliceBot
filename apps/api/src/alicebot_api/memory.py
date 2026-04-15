@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime
+import json
 from uuid import UUID
 
 import psycopg
@@ -34,6 +36,12 @@ from alicebot_api.contracts import (
     MemoryCandidateInput,
     MemoryEvaluationSummary,
     MemoryEvaluationSummaryResponse,
+    MemoryDuplicateGroupRecord,
+    MemoryHygieneDashboardResponse,
+    MemoryHygieneDashboardSummary,
+    MemoryHygieneFocusKind,
+    MemoryHygieneFocusRecord,
+    MemoryHygienePosture,
     MemoryReviewLabelCounts,
     MemoryReviewLabelCreateResponse,
     MemoryReviewLabelListResponse,
@@ -52,6 +60,7 @@ from alicebot_api.contracts import (
     MemoryTrustCorrectionFreshnessSummary,
     MemoryTrustDashboardResponse,
     MemoryTrustDashboardSummary,
+    MemoryReviewQueuePressureSummary,
     MemoryTrustQueueAgingSummary,
     MemoryTrustQueuePostureSummary,
     MemoryTrustRecommendedReview,
@@ -934,6 +943,227 @@ def get_memory_trust_dashboard_summary(
             "continuity_recall",
             "continuity_correction_events",
             "retrieval_evaluation_fixtures",
+        ],
+    }
+    return {"dashboard": dashboard}
+
+
+def _normalize_duplicate_value(value: object) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except TypeError:
+        return repr(value)
+
+
+def _memory_duplicate_groups(active_memories: list[MemoryRow]) -> list[MemoryDuplicateGroupRecord]:
+    groups: dict[tuple[str, str], list[MemoryRow]] = defaultdict(list)
+    for memory in active_memories:
+        groups[(memory["memory_type"], _normalize_duplicate_value(memory["value"]))].append(memory)
+
+    duplicate_groups: list[MemoryDuplicateGroupRecord] = []
+    for (memory_type, normalized_value), grouped_memories in groups.items():
+        if len(grouped_memories) < 2:
+            continue
+        ordered = sorted(
+            grouped_memories,
+            key=lambda memory: (memory["updated_at"], memory["created_at"], str(memory["id"])),
+            reverse=True,
+        )
+        duplicate_groups.append(
+            {
+                "group_key": f"{memory_type}:{normalized_value}",
+                "memory_type": memory_type,
+                "normalized_value": normalized_value,
+                "count": len(ordered),
+                "memory_ids": [str(memory["id"]) for memory in ordered],
+                "memory_keys": [memory["memory_key"] for memory in ordered],
+                "latest_updated_at": ordered[0]["updated_at"].isoformat(),
+            }
+        )
+
+    return sorted(
+        duplicate_groups,
+        key=lambda group: (group["count"], group["latest_updated_at"], group["group_key"]),
+        reverse=True,
+    )
+
+
+def _memory_hygiene_focus(
+    *,
+    kind: MemoryHygieneFocusKind,
+    posture: MemoryHygienePosture,
+    count: int,
+    reason: str,
+    action: str,
+    sample_ids: list[str],
+) -> MemoryHygieneFocusRecord:
+    return {
+        "kind": kind,
+        "posture": posture,
+        "count": count,
+        "reason": reason,
+        "action": action,
+        "sample_ids": sample_ids,
+    }
+
+
+def _review_queue_pressure(queue_posture: MemoryTrustQueuePostureSummary) -> MemoryReviewQueuePressureSummary:
+    stale_over_72h_count = queue_posture["aging"]["stale_over_72h_count"]
+    aging_24h_to_72h_count = queue_posture["aging"]["aging_24h_to_72h_count"]
+    total_count = queue_posture["total_count"]
+
+    posture: MemoryHygienePosture
+    reason: str
+    if stale_over_72h_count > 0 or total_count >= 10:
+        posture = "critical"
+        reason = "Review backlog contains stale queue items or has grown beyond the bounded operating range."
+    elif total_count > 0 or aging_24h_to_72h_count > 0:
+        posture = "watch"
+        reason = "Review backlog exists and should be drained before it becomes stale."
+    else:
+        posture = "healthy"
+        reason = "Review backlog is clear."
+
+    return {
+        "posture": posture,
+        "total_count": total_count,
+        "stale_over_72h_count": stale_over_72h_count,
+        "aging_24h_to_72h_count": aging_24h_to_72h_count,
+        "reason": reason,
+    }
+
+
+def _missing_contradiction_tables(exc: psycopg.errors.UndefinedTable) -> bool:
+    message = str(exc)
+    return (
+        "continuity_objects" in message
+        or "contradiction_cases" in message
+        or "trust_signals" in message
+    )
+
+
+def get_memory_hygiene_dashboard_summary(
+    store: ContinuityStore,
+    *,
+    user_id: UUID,
+) -> MemoryHygieneDashboardResponse:
+    active_memory_count = store.count_memories(status="active")
+    active_memories = (
+        []
+        if active_memory_count == 0
+        else store.list_review_memories(status="active", limit=active_memory_count)
+    )
+    duplicate_groups = _memory_duplicate_groups(active_memories)
+    duplicate_memory_count = sum(group["count"] for group in duplicate_groups)
+    stale_facts = [memory for memory in active_memories if _is_stale_truth_memory(memory)]
+    weak_trust_memories = [
+        memory
+        for memory in active_memories
+        if memory.get("promotion_eligibility") == "not_promotable"
+        or memory.get("trust_class") == "llm_single_source"
+        or memory.get("confirmation_status") != "confirmed"
+        or memory.get("confidence") is None
+        or float(memory["confidence"]) < MEMORY_QUALITY_HIGH_RISK_CONFIDENCE_THRESHOLD
+    ]
+
+    trust_dashboard = get_memory_trust_dashboard_summary(store, user_id=user_id)["dashboard"]
+    review_queue_pressure = _review_queue_pressure(trust_dashboard["queue_posture"])
+
+    unresolved_contradiction_count = 0
+    try:
+        from alicebot_api.continuity_contradictions import sync_contradiction_state_for_objects
+
+        sync_contradiction_state_for_objects(store, continuity_object_ids=None)
+        if hasattr(store, "count_contradiction_cases"):
+            unresolved_contradiction_count = store.count_contradiction_cases(statuses=["open"])
+    except psycopg.errors.UndefinedTable as exc:
+        if not _missing_contradiction_tables(exc):
+            raise
+
+    focus: list[MemoryHygieneFocusRecord] = []
+    if duplicate_groups:
+        focus.append(
+            _memory_hygiene_focus(
+                kind="duplicates",
+                posture="watch",
+                count=duplicate_memory_count,
+                reason="Multiple active memories share the same normalized value and should be reviewed for consolidation.",
+                action="Review duplicate groups and keep one canonical fact per repeated value.",
+                sample_ids=duplicate_groups[0]["memory_ids"],
+            )
+        )
+    if stale_facts:
+        focus.append(
+            _memory_hygiene_focus(
+                kind="stale_facts",
+                posture="watch",
+                count=len(stale_facts),
+                reason="Facts are marked contested or bounded by expired truth windows.",
+                action="Reconfirm or retire stale facts before they influence recall.",
+                sample_ids=[str(memory["id"]) for memory in stale_facts[:5]],
+            )
+        )
+    if unresolved_contradiction_count > 0:
+        focus.append(
+            _memory_hygiene_focus(
+                kind="unresolved_contradictions",
+                posture="critical",
+                count=unresolved_contradiction_count,
+                reason="Open contradiction cases still penalize trust and recall quality.",
+                action="Resolve contradiction cases before relying on those facts in continuity surfaces.",
+                sample_ids=[],
+            )
+        )
+    if weak_trust_memories:
+        focus.append(
+            _memory_hygiene_focus(
+                kind="weak_trust",
+                posture="watch",
+                count=len(weak_trust_memories),
+                reason="Some active memories still rely on low-confidence or non-promotable evidence.",
+                action="Add corroboration or downgrade these memories before reuse.",
+                sample_ids=[str(memory["id"]) for memory in weak_trust_memories[:5]],
+            )
+        )
+    if review_queue_pressure["total_count"] > 0:
+        focus.append(
+            _memory_hygiene_focus(
+                kind="review_queue_pressure",
+                posture=review_queue_pressure["posture"],
+                count=review_queue_pressure["total_count"],
+                reason=review_queue_pressure["reason"],
+                action="Drain the unlabeled review queue in the recommended priority mode.",
+                sample_ids=[],
+            )
+        )
+
+    if unresolved_contradiction_count > 0 or review_queue_pressure["posture"] == "critical":
+        posture: MemoryHygienePosture = "critical"
+        reason = "Contradiction or queue pressure currently blocks a healthy memory posture."
+    elif focus:
+        posture = "watch"
+        reason = "Memory hygiene issues are visible and should be handled before they accumulate."
+    else:
+        posture = "healthy"
+        reason = "No duplicate, stale, contradiction, weak-trust, or queue-pressure issue is currently visible."
+
+    dashboard: MemoryHygieneDashboardSummary = {
+        "posture": posture,
+        "reason": reason,
+        "duplicate_group_count": len(duplicate_groups),
+        "duplicate_memory_count": duplicate_memory_count,
+        "stale_fact_count": len(stale_facts),
+        "unresolved_contradiction_count": unresolved_contradiction_count,
+        "weak_trust_count": len(weak_trust_memories),
+        "review_queue_pressure": review_queue_pressure,
+        "duplicate_groups": duplicate_groups,
+        "focus": focus,
+        "sources": [
+            "memories",
+            "memory_review_labels",
+            "contradiction_cases",
+            "trust_signals",
+            "continuity_recall",
         ],
     }
     return {"dashboard": dashboard}

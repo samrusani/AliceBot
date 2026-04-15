@@ -23,6 +23,7 @@ from alicebot_api.memory import (
     create_memory_review_label_record,
     get_open_loop_record,
     get_memory_evaluation_summary,
+    get_memory_hygiene_dashboard_summary,
     get_memory_quality_gate_summary,
     get_memory_trust_dashboard_summary,
     get_memory_review_record,
@@ -592,6 +593,7 @@ class MemoryReviewStoreStub:
         self.memories: list[dict[str, object]] = []
         self.revisions: dict[UUID, list[dict[str, object]]] = {}
         self.labels: dict[UUID, list[dict[str, object]]] = {}
+        self.open_contradiction_count = 0
 
     def count_memories(self, *, status: str | None = None) -> int:
         return len(self._filtered_memories(status))
@@ -696,6 +698,10 @@ class MemoryReviewStoreStub:
         del continuity_object_id
         del limit
         return []
+
+    def count_contradiction_cases(self, *, statuses: list[str]) -> int:
+        assert statuses == ["open"]
+        return self.open_contradiction_count
 
     def _filtered_memories(self, status: str | None) -> list[dict[str, object]]:
         if status is None:
@@ -1441,6 +1447,102 @@ def test_get_memory_trust_dashboard_summary_handles_missing_continuity_tables(
         "correction_recurrence_count": 0,
         "freshness_drift_count": 0,
     }
+
+
+def test_get_memory_hygiene_dashboard_summary_surfaces_duplicates_stale_and_queue_pressure() -> None:
+    store = MemoryReviewStoreStub()
+    base_time = datetime(2026, 3, 11, 12, 0, tzinfo=UTC)
+
+    duplicate_a = uuid4()
+    duplicate_b = uuid4()
+    stale_memory = uuid4()
+    weak_memory = uuid4()
+    store.memories = [
+        {
+            "id": duplicate_a,
+            "user_id": uuid4(),
+            "memory_key": "user.preference.store",
+            "value": {"merchant": "Fixture Store"},
+            "status": "active",
+            "source_event_ids": ["event-1"],
+            "memory_type": "preference",
+            "confirmation_status": "confirmed",
+            "confidence": 0.95,
+            "promotion_eligibility": "promotable",
+            "trust_class": "deterministic",
+            "valid_to": None,
+            "created_at": base_time,
+            "updated_at": base_time + timedelta(hours=1),
+            "deleted_at": None,
+        },
+        {
+            "id": duplicate_b,
+            "user_id": uuid4(),
+            "memory_key": "user.preference.backup_store",
+            "value": {"merchant": "Fixture Store"},
+            "status": "active",
+            "source_event_ids": ["event-2"],
+            "memory_type": "preference",
+            "confirmation_status": "confirmed",
+            "confidence": 0.91,
+            "promotion_eligibility": "promotable",
+            "trust_class": "deterministic",
+            "valid_to": None,
+            "created_at": base_time,
+            "updated_at": base_time + timedelta(hours=2),
+            "deleted_at": None,
+        },
+        {
+            "id": stale_memory,
+            "user_id": uuid4(),
+            "memory_key": "user.fact.trip_window",
+            "value": {"status": "expired"},
+            "status": "active",
+            "source_event_ids": ["event-3"],
+            "memory_type": "fact",
+            "confirmation_status": "contested",
+            "confidence": 0.88,
+            "promotion_eligibility": "promotable",
+            "trust_class": "deterministic",
+            "valid_to": base_time - timedelta(days=1),
+            "created_at": base_time,
+            "updated_at": base_time + timedelta(hours=3),
+            "deleted_at": None,
+        },
+        {
+            "id": weak_memory,
+            "user_id": uuid4(),
+            "memory_key": "user.fact.single_source",
+            "value": {"status": "tentative"},
+            "status": "active",
+            "source_event_ids": ["event-4"],
+            "memory_type": "fact",
+            "confirmation_status": "unconfirmed",
+            "confidence": 0.4,
+            "promotion_eligibility": "not_promotable",
+            "trust_class": "llm_single_source",
+            "valid_to": None,
+            "created_at": base_time,
+            "updated_at": base_time + timedelta(hours=4),
+            "deleted_at": None,
+        },
+    ]
+    store.open_contradiction_count = 1
+
+    payload = get_memory_hygiene_dashboard_summary(store, user_id=uuid4())  # type: ignore[arg-type]
+
+    assert payload["dashboard"]["posture"] == "critical"
+    assert payload["dashboard"]["duplicate_group_count"] == 1
+    assert payload["dashboard"]["duplicate_memory_count"] == 2
+    assert payload["dashboard"]["stale_fact_count"] == 1
+    assert payload["dashboard"]["unresolved_contradiction_count"] == 1
+    assert payload["dashboard"]["weak_trust_count"] == 2
+    assert payload["dashboard"]["review_queue_pressure"]["total_count"] == 4
+    assert payload["dashboard"]["focus"][0]["kind"] == "duplicates"
+    assert payload["dashboard"]["duplicate_groups"][0]["memory_keys"] == [
+        "user.preference.backup_store",
+        "user.preference.store",
+    ]
 
 
 def test_list_memory_revision_review_records_returns_deterministic_revision_order() -> None:

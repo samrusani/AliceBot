@@ -1118,6 +1118,56 @@ class ThreadListResponse(TypedDict):
     summary: ThreadListSummary
 
 
+ThreadActivityPosture = Literal["recent", "current", "stale"]
+ThreadRiskPosture = Literal["normal", "watch", "risky"]
+ThreadHealthPosture = Literal["healthy", "watch", "critical"]
+
+
+class ThreadHealthThresholdsRecord(TypedDict):
+    recent_window_hours: float
+    stale_window_hours: float
+    risky_score_threshold: int
+
+
+class ThreadHealthRecord(TypedDict):
+    thread: ThreadRecord
+    health_posture: ThreadHealthPosture
+    activity_posture: ThreadActivityPosture
+    risk_posture: ThreadRiskPosture
+    risk_score: int
+    last_activity_at: str | None
+    last_conversation_at: str | None
+    hours_since_last_activity: float | None
+    conversation_event_count: int
+    operational_event_count: int
+    active_session_count: int
+    open_loop_count: int
+    stale_open_loop_count: int
+    unresolved_contradiction_count: int
+    weak_trust_signal_count: int
+    reasons: list[str]
+    recommended_action: str
+
+
+class ThreadHealthDashboardSummary(TypedDict):
+    posture: ThreadHealthPosture
+    total_thread_count: int
+    recent_thread_count: int
+    stale_thread_count: int
+    risky_thread_count: int
+    watch_thread_count: int
+    thresholds: ThreadHealthThresholdsRecord
+    recent_threads: list[ThreadHealthRecord]
+    stale_threads: list[ThreadHealthRecord]
+    risky_threads: list[ThreadHealthRecord]
+    items: list[ThreadHealthRecord]
+    sources: list[str]
+
+
+class ThreadHealthDashboardResponse(TypedDict):
+    dashboard: ThreadHealthDashboardSummary
+
+
 class ThreadDetailResponse(TypedDict):
     thread: ThreadRecord
 
@@ -4878,6 +4928,61 @@ class MemoryTrustRecommendedReview(TypedDict):
     priority_mode: MemoryReviewQueuePriorityMode
     action: MemoryQualityReviewAction
     reason: str
+
+
+MemoryHygienePosture = Literal["healthy", "watch", "critical"]
+MemoryHygieneFocusKind = Literal[
+    "duplicates",
+    "stale_facts",
+    "unresolved_contradictions",
+    "weak_trust",
+    "review_queue_pressure",
+]
+
+
+class MemoryDuplicateGroupRecord(TypedDict):
+    group_key: str
+    memory_type: str
+    normalized_value: str
+    count: int
+    memory_ids: list[str]
+    memory_keys: list[str]
+    latest_updated_at: str
+
+
+class MemoryReviewQueuePressureSummary(TypedDict):
+    posture: MemoryHygienePosture
+    total_count: int
+    stale_over_72h_count: int
+    aging_24h_to_72h_count: int
+    reason: str
+
+
+class MemoryHygieneFocusRecord(TypedDict):
+    kind: MemoryHygieneFocusKind
+    posture: MemoryHygienePosture
+    count: int
+    reason: str
+    action: str
+    sample_ids: list[str]
+
+
+class MemoryHygieneDashboardSummary(TypedDict):
+    posture: MemoryHygienePosture
+    reason: str
+    duplicate_group_count: int
+    duplicate_memory_count: int
+    stale_fact_count: int
+    unresolved_contradiction_count: int
+    weak_trust_count: int
+    review_queue_pressure: MemoryReviewQueuePressureSummary
+    duplicate_groups: list[MemoryDuplicateGroupRecord]
+    focus: list[MemoryHygieneFocusRecord]
+    sources: list[str]
+
+
+class MemoryHygieneDashboardResponse(TypedDict):
+    dashboard: MemoryHygieneDashboardSummary
 
 
 class MemoryTrustDashboardSummary(TypedDict):

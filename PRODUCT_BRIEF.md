@@ -14,8 +14,8 @@ Alice is a pre-1.0 continuity platform for AI agents and agent-assisted workflow
 ## Current Repo Posture
 - Phase 13 is active.
 - `P13-S1` One-Call Continuity is shipped.
-- `P13-S2` Alice Lite is the active execution sprint.
-- `P13-S3` Memory Hygiene + Conversation Health follows after Alice Lite.
+- `P13-S2` Alice Lite is shipped.
+- `P13-S3` Memory Hygiene + Conversation Health is the active execution sprint.
 - Phase 13 is an adoption and ergonomics phase built on top of the shipped Phase 12 baseline.
 
 ## Active Phase
@@ -67,5 +67,5 @@ Phase 13 should make those gains easier to adopt:
 
 ## Control Tower Decisions Needed
 - Whether the next public release boundary should wrap the whole Phase 13 sequence or ship incrementally.
-- Whether Alice Lite in `P13-S2` should remain a deployment-profile change only or later justify an embedded mode.
-- Exact default inclusion behavior for `/v1/continuity/brief` when query, thread, and entity context all coexist.
+- Threshold model for risky/stale thread health in `P13-S3`.
+- Whether the first shipped thread-health surface should be API-only, UI-visible, or both.

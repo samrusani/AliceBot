@@ -48,6 +48,51 @@ export type ThreadListSummary = {
   order: string[];
 };
 
+export type ThreadActivityPosture = "recent" | "current" | "stale";
+export type ThreadRiskPosture = "normal" | "watch" | "risky";
+export type ThreadHealthPosture = "healthy" | "watch" | "critical";
+
+export type ThreadHealthThresholds = {
+  recent_window_hours: number;
+  stale_window_hours: number;
+  risky_score_threshold: number;
+};
+
+export type ThreadHealthItem = {
+  thread: ThreadItem;
+  health_posture: ThreadHealthPosture;
+  activity_posture: ThreadActivityPosture;
+  risk_posture: ThreadRiskPosture;
+  risk_score: number;
+  last_activity_at: string | null;
+  last_conversation_at: string | null;
+  hours_since_last_activity: number | null;
+  conversation_event_count: number;
+  operational_event_count: number;
+  active_session_count: number;
+  open_loop_count: number;
+  stale_open_loop_count: number;
+  unresolved_contradiction_count: number;
+  weak_trust_signal_count: number;
+  reasons: string[];
+  recommended_action: string;
+};
+
+export type ThreadHealthDashboardSummary = {
+  posture: ThreadHealthPosture;
+  total_thread_count: number;
+  recent_thread_count: number;
+  stale_thread_count: number;
+  risky_thread_count: number;
+  watch_thread_count: number;
+  thresholds: ThreadHealthThresholds;
+  recent_threads: ThreadHealthItem[];
+  stale_threads: ThreadHealthItem[];
+  risky_threads: ThreadHealthItem[];
+  items: ThreadHealthItem[];
+  sources: string[];
+};
+
 export type AgentProfileItem = {
   id: string;
   name: string;
@@ -579,6 +624,55 @@ export type MemoryTrustRecommendedReview = {
   priority_mode: MemoryReviewQueuePriorityMode;
   action: MemoryQualityReviewAction;
   reason: string;
+};
+
+export type MemoryHygienePosture = "healthy" | "watch" | "critical";
+export type MemoryHygieneFocusKind =
+  | "duplicates"
+  | "stale_facts"
+  | "unresolved_contradictions"
+  | "weak_trust"
+  | "review_queue_pressure";
+
+export type MemoryDuplicateGroup = {
+  group_key: string;
+  memory_type: string;
+  normalized_value: string;
+  count: number;
+  memory_ids: string[];
+  memory_keys: string[];
+  latest_updated_at: string;
+};
+
+export type MemoryReviewQueuePressureSummary = {
+  posture: MemoryHygienePosture;
+  total_count: number;
+  stale_over_72h_count: number;
+  aging_24h_to_72h_count: number;
+  reason: string;
+};
+
+export type MemoryHygieneFocusItem = {
+  kind: MemoryHygieneFocusKind;
+  posture: MemoryHygienePosture;
+  count: number;
+  reason: string;
+  action: string;
+  sample_ids: string[];
+};
+
+export type MemoryHygieneDashboardSummary = {
+  posture: MemoryHygienePosture;
+  reason: string;
+  duplicate_group_count: number;
+  duplicate_memory_count: number;
+  stale_fact_count: number;
+  unresolved_contradiction_count: number;
+  weak_trust_count: number;
+  review_queue_pressure: MemoryReviewQueuePressureSummary;
+  duplicate_groups: MemoryDuplicateGroup[];
+  focus: MemoryHygieneFocusItem[];
+  sources: string[];
 };
 
 export type MemoryTrustDashboardSummary = {
@@ -2435,6 +2529,15 @@ export function listThreads(apiBaseUrl: string, userId: string) {
   );
 }
 
+export function getThreadHealthDashboard(apiBaseUrl: string, userId: string) {
+  return requestJson<{ dashboard: ThreadHealthDashboardSummary }>(
+    apiBaseUrl,
+    "/v0/threads/health-dashboard",
+    undefined,
+    { user_id: userId },
+  );
+}
+
 export function listAgentProfiles(apiBaseUrl: string) {
   return requestJson<{ items: AgentProfileItem[]; summary: AgentProfileListSummary }>(
     apiBaseUrl,
@@ -3426,6 +3529,15 @@ export function getMemoryTrustDashboard(apiBaseUrl: string, userId: string) {
   return requestJson<{ dashboard: MemoryTrustDashboardSummary }>(
     apiBaseUrl,
     "/v0/memories/trust-dashboard",
+    undefined,
+    { user_id: userId },
+  );
+}
+
+export function getMemoryHygieneDashboard(apiBaseUrl: string, userId: string) {
+  return requestJson<{ dashboard: MemoryHygieneDashboardSummary }>(
+    apiBaseUrl,
+    "/v0/memories/hygiene-dashboard",
     undefined,
     { user_id: userId },
   );

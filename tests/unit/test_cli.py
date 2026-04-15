@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -313,6 +314,121 @@ def test_status_command_surfaces_latest_maintenance_snapshot(monkeypatch, capsys
     assert "maintenance: status=warn schedule=nightly" in captured.out
     assert "last_run=2026-04-11T01:00:00Z" in captured.out
     assert "failures=0 warnings=2 stale_facts=3 reembedded_segments=5 pattern_candidates=8 benchmark=pass" in captured.out
+
+
+def test_status_command_reports_memory_hygiene_and_thread_health_when_database_is_reachable(
+    monkeypatch,
+    capsys,
+) -> None:
+    user_id = UUID("44444444-4444-4444-8444-444444444444")
+
+    class FakeStatusStore:
+        def count_continuity_review_queue(self, *, statuses: list[str]) -> int:
+            return {
+                ("active",): 2,
+                ("stale",): 1,
+                ("superseded",): 0,
+                ("deleted",): 0,
+            }[tuple(statuses)]
+
+        def list_continuity_recall_candidates(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "id": uuid4(),
+                    "status": "active",
+                    "object_type": "Decision",
+                    "is_searchable": True,
+                    "is_promotable": True,
+                },
+                {
+                    "id": uuid4(),
+                    "status": "stale",
+                    "object_type": "WaitingFor",
+                    "is_searchable": True,
+                    "is_promotable": False,
+                },
+            ]
+
+        def count_continuity_capture_events(self) -> int:
+            return 7
+
+    @contextmanager
+    def fake_store_context(_ctx):
+        yield FakeStatusStore()
+
+    monkeypatch.setattr(
+        cli_module,
+        "get_settings",
+        lambda: Settings(
+            database_url="postgresql://db",
+            healthcheck_timeout_seconds=2,
+            auth_user_id=str(user_id),
+        ),
+    )
+    monkeypatch.setattr(cli_module, "ping_database", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(cli_module, "_store_context", fake_store_context)
+    monkeypatch.setattr(
+        cli_module,
+        "compile_continuity_open_loop_dashboard",
+        lambda *_args, **_kwargs: {
+            "dashboard": {
+                "summary": {"total_count": 3},
+                "waiting_for": {"summary": {"total_count": 1}},
+                "blocker": {"summary": {"total_count": 1}},
+                "stale": {"summary": {"total_count": 1}},
+                "next_action": {"summary": {"total_count": 0}},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "get_retrieval_evaluation_summary",
+        lambda *_args, **_kwargs: {
+            "summary": {
+                "status": "healthy",
+                "precision_at_k_mean": 0.875,
+                "precision_at_1_mean": 1.0,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "get_memory_hygiene_dashboard_summary",
+        lambda *_args, **_kwargs: {
+            "dashboard": {
+                "posture": "watch",
+                "duplicate_group_count": 2,
+                "stale_fact_count": 1,
+                "unresolved_contradiction_count": 1,
+                "weak_trust_count": 3,
+                "review_queue_pressure": {"posture": "critical"},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "get_thread_health_dashboard",
+        lambda *_args, **_kwargs: {
+            "dashboard": {
+                "posture": "critical",
+                "recent_thread_count": 4,
+                "stale_thread_count": 2,
+                "risky_thread_count": 1,
+                "watch_thread_count": 3,
+            }
+        },
+    )
+
+    exit_code = cli_module.main(["status"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "database: reachable" in captured.out
+    assert (
+        "memory_hygiene: posture=watch duplicate_groups=2 stale_facts=1 "
+        "open_contradictions=1 weak_trust=3 queue_pressure=critical"
+    ) in captured.out
+    assert "thread_health: posture=critical recent=4 stale=2 risky=1 watch=3" in captured.out
 
 
 def test_recall_formatting_renders_provenance_source_label_when_present() -> None:

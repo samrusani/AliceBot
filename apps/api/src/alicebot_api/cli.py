@@ -87,6 +87,7 @@ from alicebot_api.continuity_open_loops import (
     ContinuityOpenLoopValidationError,
     compile_continuity_open_loop_dashboard,
 )
+from alicebot_api.conversation_health import get_thread_health_dashboard
 from alicebot_api.continuity_recall import (
     ContinuityRecallValidationError,
     query_continuity_recall,
@@ -103,6 +104,7 @@ from alicebot_api.continuity_review import (
     list_continuity_review_queue,
 )
 from alicebot_api.continuity_trust import list_trust_signals
+from alicebot_api.memory import get_memory_hygiene_dashboard_summary
 from alicebot_api.contracts import (
     CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
     CONTINUITY_CORRECTION_ACTIONS,
@@ -928,6 +930,12 @@ def _run_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
     status_payload: dict[str, object] = {
         "user_id": str(ctx.user_id),
         "database_status": "reachable" if database_reachable else "unreachable",
+        "memory_hygiene_posture": "unknown",
+        "memory_duplicate_groups": 0,
+        "memory_stale_facts": 0,
+        "memory_unresolved_contradictions": 0,
+        "memory_weak_trust": 0,
+        "memory_review_queue_pressure": "unknown",
         "continuity_capture_events": 0,
         "continuity_objects_total": 0,
         "continuity_objects_active": 0,
@@ -938,6 +946,11 @@ def _run_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
         "continuity_objects_non_searchable": 0,
         "continuity_objects_promotable": 0,
         "continuity_objects_non_promotable": 0,
+        "thread_health_posture": "unknown",
+        "threads_recent": 0,
+        "threads_stale": 0,
+        "threads_risky": 0,
+        "threads_watch": 0,
         "review_correction_ready": 0,
         "review_active": 0,
         "review_stale": 0,
@@ -995,9 +1008,23 @@ def _run_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
             store,
             user_id=ctx.user_id,
         )["summary"]
+        memory_hygiene = get_memory_hygiene_dashboard_summary(
+            store,
+            user_id=ctx.user_id,
+        )["dashboard"]
+        thread_health = get_thread_health_dashboard(
+            store,
+            user_id=ctx.user_id,
+        )["dashboard"]
 
         status_payload.update(
             {
+                "memory_hygiene_posture": memory_hygiene["posture"],
+                "memory_duplicate_groups": memory_hygiene["duplicate_group_count"],
+                "memory_stale_facts": memory_hygiene["stale_fact_count"],
+                "memory_unresolved_contradictions": memory_hygiene["unresolved_contradiction_count"],
+                "memory_weak_trust": memory_hygiene["weak_trust_count"],
+                "memory_review_queue_pressure": memory_hygiene["review_queue_pressure"]["posture"],
                 "continuity_capture_events": store.count_continuity_capture_events(),
                 "continuity_objects_total": len(recall_candidates),
                 "continuity_objects_active": object_status_counts["active"],
@@ -1044,6 +1071,11 @@ def _run_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
                         )
                     )
                 ),
+                "thread_health_posture": thread_health["posture"],
+                "threads_recent": thread_health["recent_thread_count"],
+                "threads_stale": thread_health["stale_thread_count"],
+                "threads_risky": thread_health["risky_thread_count"],
+                "threads_watch": thread_health["watch_thread_count"],
                 "review_correction_ready": review_counts["active"] + review_counts["stale"],
                 "review_active": review_counts["active"],
                 "review_stale": review_counts["stale"],

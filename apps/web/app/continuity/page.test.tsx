@@ -11,6 +11,7 @@ const {
   getContinuityCaptureDetailMock,
   getContinuityReviewDetailMock,
   getContinuityResumptionBriefMock,
+  getThreadHealthDashboardMock,
   getContinuityWeeklyReviewMock,
   hasLiveApiConfigMock,
   listContinuityReviewQueueMock,
@@ -24,6 +25,7 @@ const {
   getContinuityCaptureDetailMock: vi.fn(),
   getContinuityReviewDetailMock: vi.fn(),
   getContinuityResumptionBriefMock: vi.fn(),
+  getThreadHealthDashboardMock: vi.fn(),
   getContinuityWeeklyReviewMock: vi.fn(),
   hasLiveApiConfigMock: vi.fn(),
   listContinuityReviewQueueMock: vi.fn(),
@@ -66,6 +68,7 @@ vi.mock("../../lib/api", async () => {
     getContinuityCaptureDetail: getContinuityCaptureDetailMock,
     getContinuityReviewDetail: getContinuityReviewDetailMock,
     getContinuityResumptionBrief: getContinuityResumptionBriefMock,
+    getThreadHealthDashboard: getThreadHealthDashboardMock,
     getContinuityWeeklyReview: getContinuityWeeklyReviewMock,
     hasLiveApiConfig: hasLiveApiConfigMock,
     listContinuityReviewQueue: listContinuityReviewQueueMock,
@@ -82,6 +85,7 @@ describe("ContinuityPage", () => {
     getContinuityCaptureDetailMock.mockReset();
     getContinuityReviewDetailMock.mockReset();
     getContinuityResumptionBriefMock.mockReset();
+    getThreadHealthDashboardMock.mockReset();
     getContinuityWeeklyReviewMock.mockReset();
     hasLiveApiConfigMock.mockReset();
     listContinuityReviewQueueMock.mockReset();
@@ -112,6 +116,8 @@ describe("ContinuityPage", () => {
     expect(screen.getByText("Fixture open loops")).toBeInTheDocument();
     expect(screen.getByText("Fixture daily brief")).toBeInTheDocument();
     expect(screen.getByText("Fixture weekly review")).toBeInTheDocument();
+    expect(screen.getByText("Conversation health posture")).toBeInTheDocument();
+    expect(screen.getByText("Fixture thread dashboard")).toBeInTheDocument();
     expect(screen.getByText("Fixture review queue")).toBeInTheDocument();
     expect(screen.getByText("Continuity recall")).toBeInTheDocument();
     expect(screen.getAllByText("Correction actions").length).toBeGreaterThan(0);
@@ -121,6 +127,7 @@ describe("ContinuityPage", () => {
     expect(getContinuityOpenLoopDashboardMock).not.toHaveBeenCalled();
     expect(getContinuityDailyBriefMock).not.toHaveBeenCalled();
     expect(getContinuityWeeklyReviewMock).not.toHaveBeenCalled();
+    expect(getThreadHealthDashboardMock).not.toHaveBeenCalled();
     expect(listContinuityReviewQueueMock).not.toHaveBeenCalled();
   });
 
@@ -403,6 +410,85 @@ describe("ContinuityPage", () => {
         sources: ["continuity_capture_events", "continuity_objects", "continuity_correction_events"],
       },
     });
+    getThreadHealthDashboardMock.mockResolvedValue({
+      dashboard: {
+        posture: "critical",
+        total_thread_count: 2,
+        recent_thread_count: 1,
+        stale_thread_count: 0,
+        risky_thread_count: 1,
+        watch_thread_count: 0,
+        thresholds: {
+          recent_window_hours: 24,
+          stale_window_hours: 72,
+          risky_score_threshold: 2,
+        },
+        recent_threads: [
+          {
+            thread: {
+              id: "thread-live-1",
+              title: "Launch thread",
+              agent_profile_id: "assistant_default",
+              created_at: "2026-03-29T09:00:00Z",
+              updated_at: "2026-03-29T09:20:00Z",
+            },
+            health_posture: "healthy",
+            activity_posture: "recent",
+            risk_posture: "normal",
+            risk_score: 0,
+            last_activity_at: "2026-03-29T09:20:00Z",
+            last_conversation_at: "2026-03-29T09:20:00Z",
+            hours_since_last_activity: 2,
+            conversation_event_count: 3,
+            operational_event_count: 1,
+            active_session_count: 1,
+            open_loop_count: 0,
+            stale_open_loop_count: 0,
+            unresolved_contradiction_count: 0,
+            weak_trust_signal_count: 0,
+            reasons: ["No active contradiction, stale open-loop, or weak-trust pressure is currently visible."],
+            recommended_action: "No immediate intervention required.",
+          },
+        ],
+        stale_threads: [],
+        risky_threads: [
+          {
+            thread: {
+              id: "thread-live-2",
+              title: "Conflict thread",
+              agent_profile_id: "assistant_default",
+              created_at: "2026-03-28T09:00:00Z",
+              updated_at: "2026-03-28T09:20:00Z",
+            },
+            health_posture: "critical",
+            activity_posture: "current",
+            risk_posture: "risky",
+            risk_score: 2,
+            last_activity_at: "2026-03-28T09:20:00Z",
+            last_conversation_at: "2026-03-28T09:20:00Z",
+            hours_since_last_activity: 26,
+            conversation_event_count: 2,
+            operational_event_count: 0,
+            active_session_count: 0,
+            open_loop_count: 0,
+            stale_open_loop_count: 0,
+            unresolved_contradiction_count: 1,
+            weak_trust_signal_count: 0,
+            reasons: ["1 unresolved contradiction case(s)."],
+            recommended_action: "Resolve contradiction cases before trusting this thread for recall or briefing.",
+          },
+        ],
+        items: [],
+        sources: [
+          "threads",
+          "thread_sessions",
+          "thread_events",
+          "continuity_recall",
+          "contradiction_cases",
+          "trust_signals",
+        ],
+      },
+    });
     listContinuityReviewQueueMock.mockResolvedValue({
       items: [
         {
@@ -467,7 +553,9 @@ describe("ContinuityPage", () => {
     expect(screen.getByText("Live open loops")).toBeInTheDocument();
     expect(screen.getByText("Live daily brief")).toBeInTheDocument();
     expect(screen.getByText("Live weekly review")).toBeInTheDocument();
+    expect(screen.getByText("Live thread dashboard")).toBeInTheDocument();
     expect(screen.getByText("Live review queue")).toBeInTheDocument();
+    expect(screen.getByText("Conflict thread")).toBeInTheDocument();
     expect(screen.getAllByText("Decision: Keep admission conservative").length).toBeGreaterThan(0);
 
     expect(listContinuityCapturesMock).toHaveBeenCalledWith("https://api.example.com", "user-1", {
@@ -542,5 +630,6 @@ describe("ContinuityPage", () => {
       until: "",
       limit: 5,
     });
+    expect(getThreadHealthDashboardMock).toHaveBeenCalledWith("https://api.example.com", "user-1");
   });
 });
