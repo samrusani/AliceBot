@@ -3089,6 +3089,11 @@ def _ensure_hosted_admin_access(conn, *, user_account_id: UUID) -> None:
     set_hosted_admin_bypass(conn, True)
 
 
+def _ensure_workspace_owner_access(*, workspace, user_account_id: UUID) -> None:
+    if workspace["owner_user_account_id"] != user_account_id:
+        raise PermissionError("workspace owner access is required")
+
+
 def _allow_raw_evidence_debug_access(settings: Settings) -> bool:
     return settings.app_env in {"development", "test"}
 
@@ -7649,6 +7654,11 @@ def bootstrap_v1_workspace(
                     workspace_id=workspace["id"],
                     created_by_user_account_id=user_account_id,
                 )
+                ensure_tier1_model_packs_for_workspace(
+                    store=store,
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=user_account_id,
+                )
                 preferences = ensure_user_preferences(conn, user_account_id=user_account_id)
                 status_payload = get_bootstrap_status(
                     conn,
@@ -7756,6 +7766,10 @@ def register_v1_provider(request: Request, body: RegisterProviderRequest) -> JSO
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                _ensure_workspace_owner_access(
+                    workspace=workspace,
+                    user_account_id=resolution["user_account"]["id"],
+                )
 
                 store = ContinuityStore(conn)
                 provider, capability = _register_workspace_provider(
@@ -7785,6 +7799,8 @@ def register_v1_provider(request: Request, body: RegisterProviderRequest) -> JSO
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except ProviderSecretManagerError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -7818,6 +7834,10 @@ def register_v1_ollama_provider(
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                _ensure_workspace_owner_access(
+                    workspace=workspace,
+                    user_account_id=resolution["user_account"]["id"],
+                )
 
                 store = ContinuityStore(conn)
                 provider, capability = _register_workspace_provider(
@@ -7847,6 +7867,8 @@ def register_v1_ollama_provider(
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except ProviderSecretManagerError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -7880,6 +7902,10 @@ def register_v1_llamacpp_provider(
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                _ensure_workspace_owner_access(
+                    workspace=workspace,
+                    user_account_id=resolution["user_account"]["id"],
+                )
 
                 store = ContinuityStore(conn)
                 provider, capability = _register_workspace_provider(
@@ -7909,6 +7935,8 @@ def register_v1_llamacpp_provider(
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except ProviderSecretManagerError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -7942,6 +7970,10 @@ def register_v1_vllm_provider(
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                _ensure_workspace_owner_access(
+                    workspace=workspace,
+                    user_account_id=resolution["user_account"]["id"],
+                )
 
                 store = ContinuityStore(conn)
                 provider, capability = _register_workspace_provider(
@@ -7971,6 +8003,8 @@ def register_v1_vllm_provider(
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except ProviderSecretManagerError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -8011,6 +8045,10 @@ def register_v1_azure_provider(
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                _ensure_workspace_owner_access(
+                    workspace=workspace,
+                    user_account_id=resolution["user_account"]["id"],
+                )
 
                 store = ContinuityStore(conn)
                 provider, capability = _register_workspace_azure_provider(
@@ -8040,6 +8078,8 @@ def register_v1_azure_provider(
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except ProviderSecretManagerError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -8107,6 +8147,10 @@ def get_v1_provider(provider_id: UUID, request: Request) -> JSONResponse:
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                _ensure_workspace_owner_access(
+                    workspace=workspace,
+                    user_account_id=resolution["user_account"]["id"],
+                )
 
                 store = ContinuityStore(conn)
                 provider = store.get_model_provider_for_workspace_optional(
@@ -8155,6 +8199,10 @@ def update_v1_provider(
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                _ensure_workspace_owner_access(
+                    workspace=workspace,
+                    user_account_id=resolution["user_account"]["id"],
+                )
 
                 store = ContinuityStore(conn)
                 provider = store.get_model_provider_for_workspace_optional(
@@ -8192,6 +8240,8 @@ def update_v1_provider(
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except ProviderSecretManagerError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -8222,6 +8272,10 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                _ensure_workspace_owner_access(
+                    workspace=workspace,
+                    user_account_id=resolution["user_account"]["id"],
+                )
 
                 store = ContinuityStore(conn)
                 provider = store.get_model_provider_for_workspace_optional(
@@ -8338,6 +8392,8 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
         return JSONResponse(status_code=422, content={"detail": str(exc)})
     except ProviderSecretManagerError as exc:
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -8378,11 +8434,6 @@ def list_v1_model_packs(request: Request) -> JSONResponse:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
 
                 store = ContinuityStore(conn)
-                ensure_tier1_model_packs_for_workspace(
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=resolution["user_account"]["id"],
-                )
                 packs = store.list_model_packs_for_workspace(workspace_id=workspace["id"])
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
@@ -8428,11 +8479,6 @@ def get_v1_model_pack(
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
 
                 store = ContinuityStore(conn)
-                ensure_tier1_model_packs_for_workspace(
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=resolution["user_account"]["id"],
-                )
                 pack = store.get_model_pack_for_workspace_optional(
                     workspace_id=workspace["id"],
                     pack_id=normalized_pack_id,
@@ -8480,6 +8526,10 @@ def create_v1_model_pack(request: Request, body: CreateModelPackRequest) -> JSON
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                _ensure_workspace_owner_access(
+                    workspace=workspace,
+                    user_account_id=resolution["user_account"]["id"],
+                )
 
                 store = ContinuityStore(conn)
                 ensure_tier1_model_packs_for_workspace(
@@ -8521,6 +8571,8 @@ def create_v1_model_pack(request: Request, body: CreateModelPackRequest) -> JSON
             status_code=409,
             content={"detail": "model pack pack_id and pack_version must be unique within the workspace"},
         )
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
     except ModelPackValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -8550,6 +8602,10 @@ def bind_v1_model_pack(pack_id: str, request: Request, body: BindModelPackReques
                 )
                 if workspace is None:
                     return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+                _ensure_workspace_owner_access(
+                    workspace=workspace,
+                    user_account_id=resolution["user_account"]["id"],
+                )
 
                 store = ContinuityStore(conn)
                 ensure_tier1_model_packs_for_workspace(
@@ -8603,6 +8659,8 @@ def bind_v1_model_pack(pack_id: str, request: Request, body: BindModelPackReques
                     )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
     except ModelPackCompatibilityError as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
     except ModelPackValidationError as exc:
@@ -8706,11 +8764,6 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                         status_code=404,
                         content={"detail": f"provider {body.provider_id} was not found"},
                     )
-                ensure_tier1_model_packs_for_workspace(
-                    store=store,
-                    workspace_id=workspace["id"],
-                    created_by_user_account_id=resolution["user_account"]["id"],
-                )
                 selected_pack = resolve_workspace_model_pack_selection(
                     store=store,
                     workspace_id=workspace["id"],
