@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Container
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
@@ -1174,42 +1175,104 @@ def _build_resumption_supervision(
     }
 
 
-def _parse_recommendation_outcome_record(
+def _note_body_for_kind(
     item: ContinuityRecallResultRecord,
-) -> ChiefOfStaffRecommendationOutcomeRecord | None:
+    *,
+    kind: str,
+) -> dict[str, object] | None:
     if item["object_type"] != "Note":
         return None
-
     body = item["body"]
     if not isinstance(body, dict):
         return None
+    if body.get("kind") != kind:
+        return None
+    return body
 
-    kind = body.get("kind")
-    if kind != _OUTCOME_BODY_KIND:
+
+def _required_body_string(
+    body: dict[str, object],
+    key: str,
+    *,
+    strip: bool = False,
+) -> str | None:
+    value = body.get(key)
+    if not isinstance(value, str):
+        return None
+    if strip:
+        value = value.strip()
+        if not value:
+            return None
+    return value
+
+
+def _required_body_choice(
+    body: dict[str, object],
+    key: str,
+    *,
+    allowed: Container[str],
+) -> str | None:
+    value = _required_body_string(body, key)
+    if value is None or value not in allowed:
+        return None
+    return value
+
+
+def _optional_body_choice(
+    body: dict[str, object],
+    key: str,
+    *,
+    allowed: Container[str],
+) -> tuple[bool, str | None]:
+    value = body.get(key)
+    if value is None:
+        return True, None
+    if isinstance(value, str) and value in allowed:
+        return True, value
+    return False, None
+
+
+def _defaulted_body_reason(
+    body: dict[str, object],
+    *,
+    default: str,
+) -> str:
+    reason = _required_body_string(body, "reason", strip=True)
+    return default if reason is None else reason
+
+
+def _optional_body_note(body: dict[str, object]) -> str | None:
+    return _required_body_string(body, "note", strip=True)
+
+
+def _parse_recommendation_outcome_record(
+    item: ContinuityRecallResultRecord,
+) -> ChiefOfStaffRecommendationOutcomeRecord | None:
+    body = _note_body_for_kind(item, kind=_OUTCOME_BODY_KIND)
+    if body is None:
         return None
 
-    raw_outcome = body.get("outcome")
-    if not isinstance(raw_outcome, str) or raw_outcome not in CHIEF_OF_STAFF_RECOMMENDATION_OUTCOMES:
+    raw_outcome = _required_body_choice(
+        body,
+        "outcome",
+        allowed=CHIEF_OF_STAFF_RECOMMENDATION_OUTCOMES,
+    )
+    if raw_outcome is None:
         return None
     outcome: ChiefOfStaffRecommendationOutcome = raw_outcome  # type: ignore[assignment]
 
-    raw_action_type = body.get("recommendation_action_type")
-    if not isinstance(raw_action_type, str) or raw_action_type not in CHIEF_OF_STAFF_RECOMMENDED_ACTION_TYPES:
+    raw_action_type = _required_body_choice(
+        body,
+        "recommendation_action_type",
+        allowed=CHIEF_OF_STAFF_RECOMMENDED_ACTION_TYPES,
+    )
+    if raw_action_type is None:
         return None
     recommendation_action_type: ChiefOfStaffRecommendedActionType = raw_action_type  # type: ignore[assignment]
 
-    recommendation_title = body.get("recommendation_title")
-    if not isinstance(recommendation_title, str):
+    recommendation_title = _required_body_string(body, "recommendation_title")
+    if recommendation_title is None:
         return None
-
-    rewritten_title = body.get("rewritten_title")
-    rewritten_title_value = rewritten_title if isinstance(rewritten_title, str) else None
-
-    target_priority_id = body.get("target_priority_id")
-    target_priority_id_value = target_priority_id if isinstance(target_priority_id, str) else None
-
-    rationale = body.get("rationale")
-    rationale_value = rationale if isinstance(rationale, str) else None
 
     return {
         "id": item["id"],
@@ -1217,9 +1280,9 @@ def _parse_recommendation_outcome_record(
         "outcome": outcome,
         "recommendation_action_type": recommendation_action_type,
         "recommendation_title": recommendation_title,
-        "rewritten_title": rewritten_title_value,
-        "target_priority_id": target_priority_id_value,
-        "rationale": rationale_value,
+        "rewritten_title": _required_body_string(body, "rewritten_title"),
+        "target_priority_id": _required_body_string(body, "target_priority_id"),
+        "rationale": _required_body_string(body, "rationale"),
         "provenance_references": item["provenance_references"],
         "created_at": item["created_at"],
         "updated_at": item["updated_at"],
@@ -2005,67 +2068,53 @@ def _infer_handoff_queue_state(
 def _parse_handoff_review_action_record(
     item: ContinuityRecallResultRecord,
 ) -> ChiefOfStaffHandoffReviewActionRecord | None:
-    if item["object_type"] != "Note":
+    body = _note_body_for_kind(item, kind=_HANDOFF_REVIEW_ACTION_BODY_KIND)
+    if body is None:
         return None
 
-    body = item["body"]
-    if not isinstance(body, dict):
+    handoff_item_id = _required_body_string(body, "handoff_item_id", strip=True)
+    if handoff_item_id is None:
         return None
 
-    if body.get("kind") != _HANDOFF_REVIEW_ACTION_BODY_KIND:
-        return None
-
-    handoff_item_id = body.get("handoff_item_id")
-    if not isinstance(handoff_item_id, str) or not handoff_item_id.strip():
-        return None
-
-    raw_review_action = body.get("review_action")
-    if (
-        not isinstance(raw_review_action, str)
-        or raw_review_action not in CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS
-    ):
+    raw_review_action = _required_body_choice(
+        body,
+        "review_action",
+        allowed=CHIEF_OF_STAFF_HANDOFF_REVIEW_ACTIONS,
+    )
+    if raw_review_action is None:
         return None
     review_action: ChiefOfStaffHandoffReviewAction = raw_review_action  # type: ignore[assignment]
 
-    raw_next_state = body.get("next_lifecycle_state")
-    if (
-        not isinstance(raw_next_state, str)
-        or raw_next_state not in CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER
-    ):
+    raw_next_state = _required_body_choice(
+        body,
+        "next_lifecycle_state",
+        allowed=CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER,
+    )
+    if raw_next_state is None:
         return None
     next_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState = raw_next_state  # type: ignore[assignment]
 
-    raw_previous_state = body.get("previous_lifecycle_state")
-    previous_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState | None
-    if raw_previous_state is None:
-        previous_lifecycle_state = None
-    elif (
-        isinstance(raw_previous_state, str)
-        and raw_previous_state in CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER
-    ):
-        previous_lifecycle_state = raw_previous_state  # type: ignore[assignment]
-    else:
-        return None
-
-    raw_reason = body.get("reason")
-    reason = (
-        raw_reason
-        if isinstance(raw_reason, str) and raw_reason.strip()
-        else "Lifecycle transition captured from explicit operator review action."
+    valid_previous_state, raw_previous_state = _optional_body_choice(
+        body,
+        "previous_lifecycle_state",
+        allowed=CHIEF_OF_STAFF_HANDOFF_QUEUE_STATE_ORDER,
     )
-
-    raw_note = body.get("note")
-    note = raw_note if isinstance(raw_note, str) and raw_note.strip() else None
+    if not valid_previous_state:
+        return None
+    previous_lifecycle_state: ChiefOfStaffHandoffQueueLifecycleState | None = raw_previous_state  # type: ignore[assignment]
 
     return {
         "id": item["id"],
         "capture_event_id": item["capture_event_id"],
-        "handoff_item_id": handoff_item_id.strip(),
+        "handoff_item_id": handoff_item_id,
         "review_action": review_action,
         "previous_lifecycle_state": previous_lifecycle_state,
         "next_lifecycle_state": next_lifecycle_state,
-        "reason": reason,
-        "note": note,
+        "reason": _defaulted_body_reason(
+            body,
+            default="Lifecycle transition captured from explicit operator review action.",
+        ),
+        "note": _optional_body_note(body),
         "provenance_references": item["provenance_references"],
         "created_at": item["created_at"],
         "updated_at": item["updated_at"],
@@ -2108,59 +2157,44 @@ def _empty_handoff_outcome_counts() -> dict[ChiefOfStaffHandoffOutcomeStatus, in
 def _parse_handoff_outcome_record(
     item: ContinuityRecallResultRecord,
 ) -> ChiefOfStaffHandoffOutcomeRecord | None:
-    if item["object_type"] != "Note":
+    body = _note_body_for_kind(item, kind=_HANDOFF_OUTCOME_BODY_KIND)
+    if body is None:
         return None
 
-    body = item["body"]
-    if not isinstance(body, dict):
+    handoff_item_id = _required_body_string(body, "handoff_item_id", strip=True)
+    if handoff_item_id is None:
         return None
 
-    if body.get("kind") != _HANDOFF_OUTCOME_BODY_KIND:
-        return None
-
-    handoff_item_id = body.get("handoff_item_id")
-    if not isinstance(handoff_item_id, str) or not handoff_item_id.strip():
-        return None
-
-    raw_outcome_status = body.get("outcome_status")
-    if (
-        not isinstance(raw_outcome_status, str)
-        or raw_outcome_status not in CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES
-    ):
+    raw_outcome_status = _required_body_choice(
+        body,
+        "outcome_status",
+        allowed=CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES,
+    )
+    if raw_outcome_status is None:
         return None
     outcome_status: ChiefOfStaffHandoffOutcomeStatus = raw_outcome_status  # type: ignore[assignment]
 
-    raw_previous_outcome_status = body.get("previous_outcome_status")
-    previous_outcome_status: ChiefOfStaffHandoffOutcomeStatus | None
-    if raw_previous_outcome_status is None:
-        previous_outcome_status = None
-    elif (
-        isinstance(raw_previous_outcome_status, str)
-        and raw_previous_outcome_status in CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES
-    ):
-        previous_outcome_status = raw_previous_outcome_status  # type: ignore[assignment]
-    else:
-        return None
-
-    raw_reason = body.get("reason")
-    reason = (
-        raw_reason
-        if isinstance(raw_reason, str) and raw_reason.strip()
-        else "Routed handoff outcome captured as an explicit operator-authored immutable event."
+    valid_previous_status, raw_previous_outcome_status = _optional_body_choice(
+        body,
+        "previous_outcome_status",
+        allowed=CHIEF_OF_STAFF_HANDOFF_OUTCOME_STATUSES,
     )
-
-    raw_note = body.get("note")
-    note = raw_note if isinstance(raw_note, str) and raw_note.strip() else None
+    if not valid_previous_status:
+        return None
+    previous_outcome_status: ChiefOfStaffHandoffOutcomeStatus | None = raw_previous_outcome_status  # type: ignore[assignment]
 
     return {
         "id": item["id"],
         "capture_event_id": item["capture_event_id"],
-        "handoff_item_id": handoff_item_id.strip(),
+        "handoff_item_id": handoff_item_id,
         "outcome_status": outcome_status,
         "previous_outcome_status": previous_outcome_status,
         "is_latest_outcome": False,
-        "reason": reason,
-        "note": note,
+        "reason": _defaulted_body_reason(
+            body,
+            default="Routed handoff outcome captured as an explicit operator-authored immutable event.",
+        ),
+        "note": _optional_body_note(body),
         "provenance_references": item["provenance_references"],
         "created_at": item["created_at"],
         "updated_at": item["updated_at"],
@@ -2378,58 +2412,48 @@ def _build_stale_ignored_escalation_posture(
 def _parse_execution_routing_audit_record(
     item: ContinuityRecallResultRecord,
 ) -> ChiefOfStaffExecutionRoutingAuditRecord | None:
-    if item["object_type"] != "Note":
+    body = _note_body_for_kind(item, kind=_EXECUTION_ROUTING_ACTION_BODY_KIND)
+    if body is None:
         return None
 
-    body = item["body"]
-    if not isinstance(body, dict):
+    handoff_item_id = _required_body_string(body, "handoff_item_id", strip=True)
+    if handoff_item_id is None:
         return None
 
-    if body.get("kind") != _EXECUTION_ROUTING_ACTION_BODY_KIND:
-        return None
-
-    handoff_item_id = body.get("handoff_item_id")
-    if not isinstance(handoff_item_id, str) or not handoff_item_id.strip():
-        return None
-
-    raw_route_target = body.get("route_target")
-    if (
-        not isinstance(raw_route_target, str)
-        or raw_route_target not in CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER
-    ):
+    raw_route_target = _required_body_choice(
+        body,
+        "route_target",
+        allowed=CHIEF_OF_STAFF_EXECUTION_ROUTE_TARGET_ORDER,
+    )
+    if raw_route_target is None:
         return None
     route_target: ChiefOfStaffExecutionRouteTarget = raw_route_target  # type: ignore[assignment]
 
-    raw_transition = body.get("transition")
-    if (
-        not isinstance(raw_transition, str)
-        or raw_transition not in CHIEF_OF_STAFF_EXECUTION_ROUTING_TRANSITIONS
-    ):
+    raw_transition = _required_body_choice(
+        body,
+        "transition",
+        allowed=CHIEF_OF_STAFF_EXECUTION_ROUTING_TRANSITIONS,
+    )
+    if raw_transition is None:
         return None
     transition: ChiefOfStaffExecutionRoutingTransition = raw_transition  # type: ignore[assignment]
 
     previously_routed = bool(body.get("previously_routed", False))
     route_state = bool(body.get("route_state", True))
 
-    raw_reason = body.get("reason")
-    reason = (
-        raw_reason
-        if isinstance(raw_reason, str) and raw_reason.strip()
-        else "Governed execution routing transition captured with draft-only posture."
-    )
-    raw_note = body.get("note")
-    note = raw_note if isinstance(raw_note, str) and raw_note.strip() else None
-
     return {
         "id": item["id"],
         "capture_event_id": item["capture_event_id"],
-        "handoff_item_id": handoff_item_id.strip(),
+        "handoff_item_id": handoff_item_id,
         "route_target": route_target,
         "transition": transition,
         "previously_routed": previously_routed,
         "route_state": route_state,
-        "reason": reason,
-        "note": note,
+        "reason": _defaulted_body_reason(
+            body,
+            default="Governed execution routing transition captured with draft-only posture.",
+        ),
+        "note": _optional_body_note(body),
         "provenance_references": item["provenance_references"],
         "created_at": item["created_at"],
         "updated_at": item["updated_at"],
