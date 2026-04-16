@@ -29,16 +29,16 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path="ROADMAP.md",
         required_markers=(
             "`v0.4.0`: released",
-            "Phase 14 is active.",
-            "`P14-S5` Design Partner Launch is the active execution sprint.",
+            "Phase 14 is shipped.",
+            "`HF-001` Logging Safety And Disk Guardrails is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "P14-S5: Design Partner Launch",
+            "Hotfix: unbounded local log growth can exhaust disk",
             "`v0.4.0` is the current public release boundary.",
-            "codex/phase14-s5-design-partner-launch",
+            "codex/hotfix-unbounded-local-log-growth",
         ),
     ),
     ControlDocTruthRule(
@@ -52,8 +52,8 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
             "`v0.4.0` is the latest published tag.",
-            "Phase 14 is active.",
-            "`P14-S5` Design Partner Launch is the active execution sprint.",
+            "Phase 14 is shipped.",
+            "`HF-001` Logging Safety And Disk Guardrails is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(

@@ -23,6 +23,8 @@ fi
 
 export APP_RELOAD="${APP_RELOAD:-false}"
 export ENTRYPOINT_RATE_LIMIT_BACKEND="${ENTRYPOINT_RATE_LIMIT_BACKEND:-memory}"
+export APP_LOG_MODE="${APP_LOG_MODE:-stdout}"
+export APP_ACCESS_LOG="${APP_ACCESS_LOG:-false}"
 
 cd "${REPO_ROOT}"
 

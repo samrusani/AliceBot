@@ -10,6 +10,12 @@ def test_settings_defaults(monkeypatch):
         "APP_ENV",
         "APP_HOST",
         "APP_PORT",
+        "APP_LOG_MODE",
+        "APP_LOG_LEVEL",
+        "APP_LOG_PATH",
+        "APP_LOG_MAX_BYTES",
+        "APP_LOG_BACKUP_COUNT",
+        "APP_ACCESS_LOG",
         "DATABASE_URL",
         "DATABASE_ADMIN_URL",
         "REDIS_URL",
@@ -65,6 +71,12 @@ def test_settings_defaults(monkeypatch):
 
     assert settings.app_env == "development"
     assert settings.app_port == 8000
+    assert settings.app_log_mode == "stdout"
+    assert settings.app_log_level == "INFO"
+    assert settings.app_log_path == ""
+    assert settings.app_log_max_bytes == 10 * 1024 * 1024
+    assert settings.app_log_backup_count == 5
+    assert settings.app_access_log is True
     assert settings.database_url.endswith("/alicebot")
     assert settings.database_admin_url.endswith("/alicebot")
     assert settings.s3_bucket == "alicebot-local"
@@ -118,6 +130,12 @@ def test_settings_defaults(monkeypatch):
 def test_settings_honor_environment_overrides(monkeypatch):
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("APP_PORT", "8100")
+    monkeypatch.setenv("APP_LOG_MODE", "file")
+    monkeypatch.setenv("APP_LOG_LEVEL", "debug")
+    monkeypatch.setenv("APP_LOG_PATH", "/tmp/custom-logs/alicebot.log")
+    monkeypatch.setenv("APP_LOG_MAX_BYTES", "2048")
+    monkeypatch.setenv("APP_LOG_BACKUP_COUNT", "4")
+    monkeypatch.setenv("APP_ACCESS_LOG", "false")
     monkeypatch.setenv("DATABASE_URL", "postgresql://app:secret@localhost:5432/custom")
     monkeypatch.setenv("HEALTHCHECK_TIMEOUT_SECONDS", "9")
     monkeypatch.setenv("MODEL_BASE_URL", "https://example.test/v1")
@@ -166,6 +184,12 @@ def test_settings_honor_environment_overrides(monkeypatch):
 
     assert settings.app_env == "test"
     assert settings.app_port == 8100
+    assert settings.app_log_mode == "file"
+    assert settings.app_log_level == "DEBUG"
+    assert settings.app_log_path == "/tmp/custom-logs/alicebot.log"
+    assert settings.app_log_max_bytes == 2048
+    assert settings.app_log_backup_count == 4
+    assert settings.app_access_log is False
     assert settings.database_url == "postgresql://app:secret@localhost:5432/custom"
     assert settings.healthcheck_timeout_seconds == 9
     assert settings.model_base_url == "https://example.test/v1"
@@ -214,6 +238,12 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
         {
             "APP_ENV": "test",
             "APP_PORT": "8200",
+            "APP_LOG_MODE": "file",
+            "APP_LOG_LEVEL": "warning",
+            "APP_LOG_PATH": "/tmp/mapped-logs/alicebot.log",
+            "APP_LOG_MAX_BYTES": "4096",
+            "APP_LOG_BACKUP_COUNT": "2",
+            "APP_ACCESS_LOG": "false",
             "DATABASE_URL": "postgresql://app:secret@localhost:5432/mapped",
             "MODEL_PROVIDER": "openai_responses",
             "MODEL_NAME": "gpt-5-mini",
@@ -263,6 +293,12 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
 
     assert settings.app_env == "test"
     assert settings.app_port == 8200
+    assert settings.app_log_mode == "file"
+    assert settings.app_log_level == "WARNING"
+    assert settings.app_log_path == "/tmp/mapped-logs/alicebot.log"
+    assert settings.app_log_max_bytes == 4096
+    assert settings.app_log_backup_count == 2
+    assert settings.app_access_log is False
     assert settings.database_url == "postgresql://app:secret@localhost:5432/mapped"
     assert settings.model_provider == "openai_responses"
     assert settings.model_name == "gpt-5-mini"
@@ -320,6 +356,29 @@ def test_settings_raise_clear_error_for_invalid_integer_values() -> None:
 def test_settings_reject_invalid_auth_user_id() -> None:
     with pytest.raises(ValueError, match="ALICEBOT_AUTH_USER_ID must be a valid UUID"):
         Settings.from_env({"ALICEBOT_AUTH_USER_ID": "not-a-uuid"})
+
+
+def test_settings_reject_invalid_logging_configuration() -> None:
+    with pytest.raises(ValueError, match="APP_LOG_MODE must be either 'stdout' or 'file'"):
+        Settings.from_env({"APP_LOG_MODE": "stderr"})
+
+    with pytest.raises(
+        ValueError,
+        match="APP_LOG_LEVEL must be one of CRITICAL, ERROR, WARNING, INFO, or DEBUG",
+    ):
+        Settings.from_env({"APP_LOG_LEVEL": "TRACE"})
+
+    with pytest.raises(ValueError, match="APP_LOG_MAX_BYTES must be a positive integer"):
+        Settings.from_env({"APP_LOG_MAX_BYTES": "0"})
+
+    with pytest.raises(ValueError, match="APP_LOG_BACKUP_COUNT must be a positive integer"):
+        Settings.from_env({"APP_LOG_BACKUP_COUNT": "0"})
+
+    with pytest.raises(
+        ValueError,
+        match="APP_LOG_PATH must be configured when APP_LOG_MODE is 'file'",
+    ):
+        Settings.from_env({"APP_LOG_MODE": "file"})
 
 
 def test_settings_reject_invalid_workspace_provider_configs_json() -> None:

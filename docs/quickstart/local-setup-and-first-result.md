@@ -18,7 +18,7 @@ python3 -m venv .venv
 ./.venv/bin/python -m pip install -e '.[dev]'
 ```
 
-`.env.lite` switches the entrypoint rate limiter to in-memory mode and keeps reload off for a lighter local footprint.
+`.env.lite` switches the entrypoint rate limiter to in-memory mode, keeps reload off for a lighter local footprint, keeps logs on stdout, and disables access logs by default.
 
 ## 2) Start Alice Lite
 
@@ -27,6 +27,19 @@ python3 -m venv .venv
 ```
 
 This command starts the Lite Postgres profile, runs migrations, loads the sample fixture, and runs the API.
+The default local/Lite logging posture is stdout only. It does not create a local file log in `/tmp`.
+
+If a local file sink is explicitly required, keep it bounded:
+
+```bash
+APP_LOG_MODE=file \
+APP_LOG_PATH=/var/log/alicebot/api.log \
+APP_LOG_MAX_BYTES=10485760 \
+APP_LOG_BACKUP_COUNT=5 \
+./scripts/api_dev.sh
+```
+
+For managed environments, keep `APP_LOG_MODE=stdout` and let `systemd`/`journald` own retention instead of writing an application-managed local log file.
 
 ## 3) Verify Health
 
@@ -94,6 +107,7 @@ This verifies the Lite health endpoint and the CLI one-call continuity brief out
 python3 scripts/check_control_doc_truth.py
 ./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q
 ./.venv/bin/python -m pytest tests/unit/test_phase13_alice_lite_assets.py -q
+./.venv/bin/python -m pytest tests/unit/test_logging_config.py tests/integration/test_api_logging_smoke.py -q
 ./.venv/bin/python scripts/run_alice_lite_smoke.py
 ```
 

@@ -13,12 +13,13 @@
 These remain baseline truth and are not future milestones.
 
 ## Active Planning Status
-- Phase 14 is active.
+- Phase 14 is shipped.
 - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is shipped.
 - `P14-S2` Ollama + llama.cpp + vLLM Adapters is shipped.
 - `P14-S3` Model Packs is shipped.
 - `P14-S4` Reference Integrations is shipped.
-- `P14-S5` Design Partner Launch is the active execution sprint.
+- `P14-S5` Design Partner Launch is shipped.
+- `HF-001` Logging Safety And Disk Guardrails is the active execution sprint.
 
 ## Phase 14 Planned Milestones
 
@@ -62,16 +63,27 @@ Release target: `v0.5.0`
 - onboard 3 to 5 design partners into active or structured pilot use
 - capture at least 1 candidate case study
 
-Status: active
+Status: shipped
 Release target: `v0.5.1` or `v0.6.0-beta`
 
+## Post-Phase-14 Hotfix
+
+### HF-001: Logging Safety And Disk Guardrails
+- add explicit logging configuration
+- default to stdout instead of file logging
+- disable access logs in Lite/local profile by default
+- add rotation if file mode is enabled
+- document the recommended systemd/journald setup
+- add smoke validation that no unbounded log file is created in `/tmp`
+
+Status: active
+Release target: post-Phase-14 hotfix
+
 ## Sequencing Rules
-- Phase 14 is a platform-and-adoption phase.
-- Prioritize provider adapters, model packs, reference integrations, and design partner onboarding.
-- Do not allow scope drift into new substrate research, new channels, enterprise governance expansion, or major vertical-agent work unless required by a declared Phase 14 deliverable.
+- Phase 14 is shipped baseline truth.
+- `HF-001` must remain a defect-only sprint. Do not widen it into new product surface, unrelated refactors, or post-Phase-14 feature work.
 - Preserve one-call continuity semantics across provider classes.
 - Treat docs as sprint deliverables, not cleanup work.
-- Keep `P14-S5` narrow: it should turn the shipped platform surface into usage proof and structured pilot evidence, not reopen integration packaging or drift into general enterprise expansion.
 
 ## Beyond Phase 14
 - No post-Phase-14 feature plan is currently defined.

@@ -1,46 +1,65 @@
 # BUILD_REPORT
 
 ## sprint objective
-Turn the shipped Phase 14 platform surface into tracked design-partner usage proof through partner objects, workspace linkage, onboarding/support artifacts, structured feedback, usage summaries, and a partner success dashboard.
+
+Eliminate the disk-exhaustion risk from unbounded local logging by making local/Lite startup default to stdout, disabling access logs by default in that profile, retaining bounded file logging only as an explicit opt-in, and documenting the recommended `systemd`/`journald` posture.
 
 ## completed work
-- added hosted-admin design-partner API support for create, list, detail, patch, workspace linkage, feedback intake, and dashboard views
-- added Phase 14 database tables for `design_partners`, `design_partner_workspaces`, and `design_partner_feedback`
-- connected partner usage summaries to existing `provider_invocation_telemetry` linked through partner workspaces
-- added sprint-scoped launch artifacts under `docs/design-partners/`
-- replaced placeholder launch-set docs with an anonymized tracked pilot packet and a case-study candidate artifact for the canonical launch set
-- tightened dashboard readiness to require actual usage evidence and captured feedback instead of proxy linkage signals
-- added targeted unit and integration coverage for migration shape, route registration, admin access, linkage, feedback validation, usage summaries, and dashboard acceptance signals
+
+- Added explicit runtime logging settings to `alicebot_api.config`.
+- Added `alicebot_api.logging_config` to build explicit uvicorn logging config.
+- Added `alicebot_api.local_server` so the local launcher runs uvicorn with explicit logging behavior instead of implicit defaults.
+- Changed `scripts/api_dev.sh` to default to `APP_LOG_MODE=stdout` and `APP_ACCESS_LOG=false`.
+- Changed `scripts/alice_lite_up.sh` to enforce the same local/Lite logging defaults.
+- Added bounded rotating file logging for explicit `APP_LOG_MODE=file` usage, with required `APP_LOG_PATH`, `APP_LOG_MAX_BYTES`, and `APP_LOG_BACKUP_COUNT`.
+- Updated `.env.example` and `.env.lite.example` to make the logging posture explicit.
+- Updated local/deployment docs to recommend stdout plus `systemd`/`journald`, and documented bounded file logging as opt-in only.
+- Added unit and integration coverage for logging config, local/Lite launcher behavior, docs markers, and `/tmp` log-file safety.
 
 ## incomplete work
-- none
+
+- None.
 
 ## files changed
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/design_partners.py`
-- `apps/api/alembic/versions/20260416_0065_phase14_design_partner_launch.py`
-- `tests/integration/test_phase14_design_partner_launch_api.py`
-- `tests/unit/test_20260416_0065_phase14_design_partner_launch.py`
-- `tests/unit/test_main.py`
+
+- `.ai/active/SPRINT_PACKET.md`
+- `.ai/handoff/CURRENT_STATE.md`
+- `ARCHITECTURE.md`
+- `BUILD_REPORT.md`
+- `CURRENT_STATE.md`
+- `PRODUCT_BRIEF.md`
+- `ROADMAP.md`
 - `RULES.md`
-- `docs/design-partners/README.md`
-- `docs/design-partners/onboarding-runbook.md`
-- `docs/design-partners/support-checklist.md`
-- `docs/design-partners/canonical-launch-set.md`
-- `docs/design-partners/case-study-template.md`
-- `docs/design-partners/pilot-evidence.md`
-- `docs/design-partners/case-study-candidate-finops-console.md`
+- `apps/api/src/alicebot_api/config.py`
+- `apps/api/src/alicebot_api/logging_config.py`
+- `apps/api/src/alicebot_api/local_server.py`
+- `scripts/api_dev.sh`
+- `scripts/alice_lite_up.sh`
+- `scripts/check_control_doc_truth.py`
+- `.env.example`
+- `.env.lite.example`
+- `docs/quickstart/local-setup-and-first-result.md`
+- `docs/runbooks/v0.4.0-public-release-runbook.md`
+- `tests/unit/test_config.py`
+- `tests/unit/test_phase13_alice_lite_assets.py`
+- `tests/unit/test_logging_config.py`
+- `tests/unit/test_hotfix_logging_assets.py`
+- `tests/integration/test_api_logging_smoke.py`
 
 ## tests run
+
+- `./.venv/bin/python -m pytest tests/unit/test_config.py tests/unit/test_logging_config.py tests/unit/test_hotfix_logging_assets.py tests/unit/test_phase13_alice_lite_assets.py tests/integration/test_api_logging_smoke.py tests/integration/test_healthcheck.py -q`
+- `./.venv/bin/python -m pytest tests/unit/test_logging_config.py tests/unit/test_phase13_alice_lite_assets.py tests/integration/test_api_logging_smoke.py tests/integration/test_healthcheck.py -q`
+- `./.venv/bin/python -m pytest tests/unit/test_config.py -q`
+- `./.venv/bin/python -m pytest tests/unit/test_config.py tests/unit/test_hotfix_logging_assets.py -q`
 - `python3 scripts/check_control_doc_truth.py`
 - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-- `./.venv/bin/python -m py_compile apps/api/src/alicebot_api/design_partners.py apps/api/src/alicebot_api/main.py tests/integration/test_phase14_design_partner_launch_api.py tests/unit/test_20260416_0065_phase14_design_partner_launch.py tests/unit/test_main.py`
-- `./.venv/bin/pytest tests/unit/test_20260416_0065_phase14_design_partner_launch.py tests/unit/test_main.py -q`
-- `./.venv/bin/pytest tests/integration/test_phase14_design_partner_launch_api.py -q`
-- `./.venv/bin/pytest tests/unit/test_20260416_0065_phase14_design_partner_launch.py tests/unit/test_main.py tests/integration/test_phase14_design_partner_launch_api.py -q`
 
 ## blockers/issues
-- none
+
+- No implementation blocker remained.
+- Control Tower defaults were not finalized in the packet; this hotfix retains file logging as an opt-in mode with bounded rotation defaults of `10485760` bytes and `5` backups.
 
 ## recommended next step
-- keep the weekly pilot review moving, advance `dp-finops-console` from case-study candidate toward drafting, and only count reserve partners once linkage, usage evidence, and structured feedback are present
+
+Run review on the hotfix diff, then merge as a defect-only patch once approval is explicit.

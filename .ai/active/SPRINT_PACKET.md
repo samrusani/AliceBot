@@ -1,33 +1,34 @@
 # Sprint Packet
 
 ## Sprint Title
-P14-S5: Design Partner Launch
+Hotfix: unbounded local log growth can exhaust disk
 
 ## Activation Note
 - This packet is active.
 - `v0.4.0` is the current public release boundary.
-- Phase 14 is active on top of the shipped Phase 13 baseline.
-- Phase 14 sequence is fixed for now:
+- Phase 14 is shipped.
+- This is a post-Phase-14 hotfix sprint on top of the shipped baseline.
+- Shipped Phase 14 sequence:
   - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter: shipped
   - `P14-S2` Ollama + llama.cpp + vLLM Adapters: shipped
   - `P14-S3` Model Packs: shipped
   - `P14-S4` Reference Integrations: shipped
-  - `P14-S5` Design Partner Launch: active
+  - `P14-S5` Design Partner Launch: shipped
 
 ## Sprint Type
-feature
+bugfix
 
 ## Sprint Reason
-`P14-S1` through `P14-S4` established the provider contract, local/self-hosted compatibility layer, first-party model-pack defaults, and runnable external-builder paths. `P14-S5` now turns that platform readiness into real-world usage proof and structured launch feedback.
+The shipped local and Lite runtime paths can allow unbounded local log growth. This is an operational defect with disk-exhaustion risk, so it should be handled as a narrow hotfix sprint rather than rolled into a new feature phase.
 
 ## Git Instructions
-- Branch Name: `codex/phase14-s5-design-partner-launch`
+- Branch Name: `codex/hotfix-unbounded-local-log-growth`
 - Base Branch: `main`
 - PR Strategy: one implementation branch, one PR
 - Merge Policy: squash merge after review `PASS` and explicit approval
 
 ## Baseline To Preserve
-- shipped Phases 9-13 baseline
+- shipped Phases 9-14 baseline
 - shipped Bridge `B1` through `B4`
 - published `v0.4.0` baseline
 - shipped one-call continuity surface
@@ -37,62 +38,61 @@ feature
 - shipped `P14-S2` local/self-hosted compatibility layer, including the dedicated `vllm` provider path and aligned runtime/pack compatibility hooks
 - shipped `P14-S3` provider-aware model-pack bindings, first-party pack catalog, and pack-aware runtime/briefing defaults
 - shipped `P14-S4` reference integrations, generic examples, and reproducible demo paths
+- shipped `P14-S5` design-partner launch/admin surface
 - no semantic fork between API, CLI, MCP, hosted, provider-runtime, and Hermes paths
 
 ## Exact Goal
-Turn the shipped Phase 14 platform surface into real usage proof through tracked design-partner onboarding, support, instrumentation, and feedback.
+Eliminate the disk-exhaustion risk from unbounded local logging while preserving the shipped Phase 14 runtime and deployment behavior.
 
 ## In Scope
-- design-partner objects and workspace linkage
-- onboarding workflow and support checklist
-- partner usage summaries
-- feedback intake path
-- partner success dashboard
-- case-study template
-- first 3 to 5 partner onboardings
+- explicit logging configuration
+- stdout as the default logging sink
+- access logs disabled by default in Lite/local profile
+- bounded rotation when file logging mode is enabled
+- systemd/journald deployment guidance
+- smoke validation that no unbounded log file is created in `/tmp`
 
 ## Out Of Scope
-- general enterprise governance expansion
-- unrelated channel work
-- broad marketing-site work beyond what partner launch requires
-- retrieval research, graph migration, new channels, marketplace work, or enterprise governance expansion
+- new product surface
+- unrelated refactors
+- provider, pack, integration, or design-partner feature expansion
+- changes that are not required to remove the logging-growth defect
 
 ## Proposed Files And Modules
 - `apps/api/src/alicebot_api/`
-- `apps/api/alembic/versions/`
+- local/Lite startup scripts and runtime config
 - `tests/unit/`
 - `tests/integration/`
-- `docs/design-partners/`
-- launch/runbook/support artifacts
+- deployment and ops docs
 - control docs if baseline status markers need updates
 
 ## Planned Deliverables
-- design-partner objects and workspace linkage
-- onboarding workflow and support checklist
-- usage summaries
-- feedback intake path
-- partner success dashboard
-- case-study template
-- first 3 to 5 partner onboardings
+- explicit logging config
+- stdout default instead of file logging
+- Lite/local access-log suppression by default
+- bounded file rotation when file mode is enabled
+- systemd/journald guidance
+- smoke test for `/tmp` log-file safety
 
 ## Acceptance Criteria
-- at least 3 design partners are active or in structured pilot
-- usage summaries are visible
-- feedback is captured in a structured way
-- at least one candidate case study is underway
-- the sprint turns the shipped platform surface into usage proof rather than expanding into general enterprise scope
+- the default local and Lite paths log to stdout rather than an unbounded local file
+- access logs are disabled by default in Lite/local profile
+- file logging, when enabled, is rotated and bounded
+- deployment docs recommend systemd/journald for managed environments
+- a smoke test confirms no unbounded log file is created in `/tmp`
+- the fix does not expand the product scope beyond the logging defect
 
 ## Required Verification
 - `python3 scripts/check_control_doc_truth.py`
 - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-- targeted unit/integration coverage for design-partner objects, linkage, and feedback paths
-- usage-summary and support-flow validation
-- launch-runbook and partner-artifact validation
+- targeted unit/integration coverage for logging configuration and Lite/local behavior
+- smoke validation for `/tmp` log-file safety
+- documentation validation for the recommended systemd/journald path
 
 ## Control Tower Decisions Needed
-- which first 3 to 5 partner pilots are the canonical launch set
-- what minimum usage instrumentation is required before counting a pilot as active
-- how strict the case-study readiness bar is for phase closeout
+- whether bounded file logging is retained as an opt-in mode or limited to managed deployments only
+- what the default rotation size/count should be if file mode remains supported
+- whether the hotfix should also update any release runbook or only runtime/deployment docs
 
 ## Exit Condition
-This sprint is complete when the shipped Phase 14 platform surface is connected to tracked design-partner pilots, structured usage summaries and feedback exist, and at least one candidate case study is underway without drifting into general enterprise expansion.
+This sprint is complete when the shipped local/Lite runtime can no longer create unbounded local log growth by default, bounded file logging exists when explicitly enabled, and the `/tmp` smoke test plus deployment docs prove the intended operational posture.

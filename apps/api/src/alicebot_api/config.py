@@ -27,6 +27,12 @@ DEFAULT_S3_ACCESS_KEY = "alicebot"
 DEFAULT_S3_SECRET_KEY = "alicebot-secret"
 DEFAULT_S3_BUCKET = "alicebot-local"
 DEFAULT_HEALTHCHECK_TIMEOUT_SECONDS = 2
+DEFAULT_APP_LOG_MODE = "stdout"
+DEFAULT_APP_LOG_LEVEL = "INFO"
+DEFAULT_APP_LOG_PATH = ""
+DEFAULT_APP_LOG_MAX_BYTES = 10 * 1024 * 1024
+DEFAULT_APP_LOG_BACKUP_COUNT = 5
+DEFAULT_APP_ACCESS_LOG = True
 DEFAULT_MODEL_PROVIDER = "openai_responses"
 DEFAULT_MODEL_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL_NAME = "gpt-5-mini"
@@ -135,6 +141,14 @@ def _get_env_int(env: Environment, key: str, default: int) -> int:
         raise ValueError(f"{key} must be an integer") from exc
 
 
+def _get_env_bool(env: Environment, key: str, default: bool) -> bool:
+    raw_value = env.get(key)
+    if raw_value is None:
+        return default
+
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _get_env_csv(env: Environment, key: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw_value = env.get(key)
     if raw_value is None:
@@ -165,6 +179,12 @@ class Settings:
     app_env: str = DEFAULT_APP_ENV
     app_host: str = DEFAULT_APP_HOST
     app_port: int = DEFAULT_APP_PORT
+    app_log_mode: str = DEFAULT_APP_LOG_MODE
+    app_log_level: str = DEFAULT_APP_LOG_LEVEL
+    app_log_path: str = DEFAULT_APP_LOG_PATH
+    app_log_max_bytes: int = DEFAULT_APP_LOG_MAX_BYTES
+    app_log_backup_count: int = DEFAULT_APP_LOG_BACKUP_COUNT
+    app_access_log: bool = DEFAULT_APP_ACCESS_LOG
     database_url: str = DEFAULT_DATABASE_URL
     database_admin_url: str = DEFAULT_DATABASE_ADMIN_URL
     redis_url: str = DEFAULT_REDIS_URL
@@ -236,6 +256,24 @@ class Settings:
             app_env=_get_env_value(current_env, "APP_ENV", cls.app_env),
             app_host=_get_env_value(current_env, "APP_HOST", cls.app_host),
             app_port=_get_env_int(current_env, "APP_PORT", cls.app_port),
+            app_log_mode=_get_env_value(current_env, "APP_LOG_MODE", cls.app_log_mode).strip().lower(),
+            app_log_level=_get_env_value(current_env, "APP_LOG_LEVEL", cls.app_log_level).strip().upper(),
+            app_log_path=_get_env_value(current_env, "APP_LOG_PATH", cls.app_log_path).strip(),
+            app_log_max_bytes=_get_env_int(
+                current_env,
+                "APP_LOG_MAX_BYTES",
+                cls.app_log_max_bytes,
+            ),
+            app_log_backup_count=_get_env_int(
+                current_env,
+                "APP_LOG_BACKUP_COUNT",
+                cls.app_log_backup_count,
+            ),
+            app_access_log=_get_env_bool(
+                current_env,
+                "APP_ACCESS_LOG",
+                cls.app_access_log,
+            ),
             database_url=_get_env_value(current_env, "DATABASE_URL", cls.database_url),
             database_admin_url=_get_env_value(
                 current_env,
@@ -368,18 +406,16 @@ class Settings:
                 "HOSTED_ABUSE_BLOCK_THRESHOLD",
                 cls.hosted_abuse_block_threshold,
             ),
-            hosted_rate_limits_enabled_by_default=_get_env_value(
+            hosted_rate_limits_enabled_by_default=_get_env_bool(
                 current_env,
                 "HOSTED_RATE_LIMITS_ENABLED_BY_DEFAULT",
-                "true" if cls.hosted_rate_limits_enabled_by_default else "false",
-            ).strip().lower()
-            in {"1", "true", "yes", "on"},
-            hosted_abuse_controls_enabled_by_default=_get_env_value(
+                cls.hosted_rate_limits_enabled_by_default,
+            ),
+            hosted_abuse_controls_enabled_by_default=_get_env_bool(
                 current_env,
                 "HOSTED_ABUSE_CONTROLS_ENABLED_BY_DEFAULT",
-                "true" if cls.hosted_abuse_controls_enabled_by_default else "false",
-            ).strip().lower()
-            in {"1", "true", "yes", "on"},
+                cls.hosted_abuse_controls_enabled_by_default,
+            ),
             magic_link_start_rate_limit_window_seconds=_get_env_int(
                 current_env,
                 "MAGIC_LINK_START_RATE_LIMIT_WINDOW_SECONDS",
@@ -420,40 +456,36 @@ class Settings:
             cors_allowed_headers=_normalize_csv_tokens(
                 _get_env_csv(current_env, "CORS_ALLOWED_HEADERS", cls.cors_allowed_headers),
             ),
-            cors_allow_credentials=_get_env_value(
+            cors_allow_credentials=_get_env_bool(
                 current_env,
                 "CORS_ALLOW_CREDENTIALS",
-                "true" if cls.cors_allow_credentials else "false",
-            ).strip().lower()
-            in {"1", "true", "yes", "on"},
+                cls.cors_allow_credentials,
+            ),
             cors_preflight_max_age_seconds=_get_env_int(
                 current_env,
                 "CORS_PREFLIGHT_MAX_AGE_SECONDS",
                 cls.cors_preflight_max_age_seconds,
             ),
-            security_headers_enabled=_get_env_value(
+            security_headers_enabled=_get_env_bool(
                 current_env,
                 "SECURITY_HEADERS_ENABLED",
-                "true" if cls.security_headers_enabled else "false",
-            ).strip().lower()
-            in {"1", "true", "yes", "on"},
+                cls.security_headers_enabled,
+            ),
             security_headers_hsts_max_age_seconds=_get_env_int(
                 current_env,
                 "SECURITY_HEADERS_HSTS_MAX_AGE_SECONDS",
                 cls.security_headers_hsts_max_age_seconds,
             ),
-            security_headers_hsts_include_subdomains=_get_env_value(
+            security_headers_hsts_include_subdomains=_get_env_bool(
                 current_env,
                 "SECURITY_HEADERS_HSTS_INCLUDE_SUBDOMAINS",
-                "true" if cls.security_headers_hsts_include_subdomains else "false",
-            ).strip().lower()
-            in {"1", "true", "yes", "on"},
-            trust_proxy_headers=_get_env_value(
+                cls.security_headers_hsts_include_subdomains,
+            ),
+            trust_proxy_headers=_get_env_bool(
                 current_env,
                 "TRUST_PROXY_HEADERS",
-                "true" if cls.trust_proxy_headers else "false",
-            ).strip().lower()
-            in {"1", "true", "yes", "on"},
+                cls.trust_proxy_headers,
+            ),
             trusted_proxy_ips=_normalize_csv_tokens(
                 _get_env_csv(current_env, "TRUSTED_PROXY_IPS", cls.trusted_proxy_ips),
             ),
@@ -467,12 +499,11 @@ class Settings:
                 "RETRIEVAL_TRACE_RETENTION_DAYS",
                 cls.retrieval_trace_retention_days,
             ),
-            legacy_v0_enabled_outside_dev=_get_env_value(
+            legacy_v0_enabled_outside_dev=_get_env_bool(
                 current_env,
                 "LEGACY_V0_ENABLED_OUTSIDE_DEV",
-                "true" if cls.legacy_v0_enabled_outside_dev else "false",
-            ).strip().lower()
-            in {"1", "true", "yes", "on"},
+                cls.legacy_v0_enabled_outside_dev,
+            ),
         )
         return _validate_settings(settings)
 
@@ -529,6 +560,18 @@ def _parse_workspace_provider_configs(raw_value: str) -> tuple[WorkspaceProvider
 
 
 def _validate_settings(settings: Settings) -> Settings:
+    if settings.app_log_mode not in {"stdout", "file"}:
+        raise ValueError("APP_LOG_MODE must be either 'stdout' or 'file'")
+    if settings.app_log_level not in {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}:
+        raise ValueError(
+            "APP_LOG_LEVEL must be one of CRITICAL, ERROR, WARNING, INFO, or DEBUG"
+        )
+    if settings.app_log_max_bytes <= 0:
+        raise ValueError("APP_LOG_MAX_BYTES must be a positive integer")
+    if settings.app_log_backup_count <= 0:
+        raise ValueError("APP_LOG_BACKUP_COUNT must be a positive integer")
+    if settings.app_log_mode == "file" and settings.app_log_path == "":
+        raise ValueError("APP_LOG_PATH must be configured when APP_LOG_MODE is 'file'")
     if settings.auth_user_id != "":
         try:
             UUID(settings.auth_user_id)
