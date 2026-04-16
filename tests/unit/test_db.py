@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from uuid import uuid4
 
 import psycopg
+import pytest
 
 from alicebot_api import db
 
@@ -105,23 +106,27 @@ def test_set_current_user_account_sets_database_context() -> None:
     ]
 
 
-def test_set_hosted_admin_bypass_sets_database_context() -> None:
+@pytest.mark.parametrize(
+    ("setter", "enabled", "expected_query", "expected_params"),
+    [
+        (db.set_hosted_admin_bypass, True, db.SET_HOSTED_ADMIN_BYPASS_SQL, ("true",)),
+        (db.set_hosted_admin_bypass, False, db.SET_HOSTED_ADMIN_BYPASS_SQL, ("false",)),
+        (db.set_hosted_service_bypass, True, db.SET_HOSTED_SERVICE_BYPASS_SQL, ("true",)),
+        (db.set_hosted_service_bypass, False, db.SET_HOSTED_SERVICE_BYPASS_SQL, ("false",)),
+    ],
+)
+def test_bypass_context_setters_write_expected_flags(
+    setter,
+    enabled: bool,
+    expected_query: str,
+    expected_params: tuple[str],
+) -> None:
     connection = RecordingConnection()
 
-    db.set_hosted_admin_bypass(connection, True)
+    setter(connection, enabled)
 
     assert connection.cursor_instance.executed == [
-        ("SELECT set_config('app.hosted_admin_bypass', %s, true)", ("true",)),
-    ]
-
-
-def test_set_hosted_service_bypass_sets_database_context() -> None:
-    connection = RecordingConnection()
-
-    db.set_hosted_service_bypass(connection, True)
-
-    assert connection.cursor_instance.executed == [
-        ("SELECT set_config('app.hosted_service_bypass', %s, true)", ("true",)),
+        (expected_query, expected_params),
     ]
 
 
