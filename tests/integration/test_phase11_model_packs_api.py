@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import socket
 from typing import Any
 from urllib.parse import urlencode
@@ -12,6 +13,10 @@ import pytest
 
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
+
+TEST_PROVIDER_SECRET_MANAGER_URL = (
+    f"file://{(Path('/tmp').resolve() / 'alicebot-phase11-model-pack-secrets').as_posix()}"
+)
 
 
 def invoke_request(
@@ -91,6 +96,7 @@ def _configure_settings(migrated_database_urls, monkeypatch) -> None:
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
+            provider_secret_manager_url=TEST_PROVIDER_SECRET_MANAGER_URL,
             magic_link_ttl_seconds=600,
             auth_session_ttl_seconds=3600,
             device_link_ttl_seconds=600,
@@ -163,6 +169,34 @@ def _seed_thread_for_user(*, admin_db_url: str, user_id: str, email: str) -> str
             )
         conn.commit()
     return thread_id
+
+
+def _grant_workspace_member_access(
+    *,
+    admin_db_url: str,
+    workspace_id: str,
+    user_account_id: str,
+) -> None:
+    with psycopg.connect(admin_db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO workspace_members (workspace_id, user_account_id, role)
+                VALUES (%s, %s, 'member')
+                ON CONFLICT (workspace_id, user_account_id) DO UPDATE
+                SET role = EXCLUDED.role
+                """,
+                (workspace_id, user_account_id),
+            )
+            cur.execute(
+                """
+                UPDATE auth_sessions
+                SET workspace_id = %s
+                WHERE user_account_id = %s
+                """,
+                (workspace_id, user_account_id),
+            )
+        conn.commit()
 
 
 class FakeHTTPResponse:
@@ -719,6 +753,69 @@ def test_phase11_model_pack_smoke_covers_local_provider_paths(
     assert "http://ollama.example:11434/api/chat" in captured_urls
     assert "http://llamacpp.example:8080/v1/chat/completions" in captured_urls
     assert "http://vllm.example:8001/v1/chat/completions" in captured_urls
+
+
+def test_phase14_model_pack_control_plane_requires_workspace_owner(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    owner_session_token, owner_workspace_id, _ = _bootstrap_workspace_session(
+        "model-pack-owner-control@example.com"
+    )
+    member_session_token, _, member_user_account_id = _bootstrap_workspace_session(
+        "model-pack-member-control@example.com"
+    )
+    _grant_workspace_member_access(
+        admin_db_url=migrated_database_urls["admin"],
+        workspace_id=owner_workspace_id,
+        user_account_id=member_user_account_id,
+    )
+
+    create_status, create_payload = invoke_request(
+        "POST",
+        "/v1/model-packs",
+        payload={
+            "pack_id": "member-pack",
+            "pack_version": "1.0.0",
+            "display_name": "Member Pack",
+            "family": "custom",
+            "description": "Member should not be able to create this.",
+            "briefing_strategy": "compact",
+            "briefing_max_tokens": 160,
+            "contract": {
+                "contract_version": "model_pack_contract_v1",
+                "context": {},
+                "tools": {"mode": "none"},
+                "response": {},
+                "compatibility": {
+                    "provider_keys": ["openai_compatible"],
+                    "runtime_providers": ["openai_responses"],
+                },
+            },
+        },
+        headers=auth_header(member_session_token),
+    )
+    assert create_status == 403
+    assert create_payload["detail"] == "workspace owner access is required"
+
+    bind_status, bind_payload = invoke_request(
+        "POST",
+        "/v1/model-packs/llama/bind",
+        payload={"pack_version": "1.0.0"},
+        headers=auth_header(member_session_token),
+    )
+    assert bind_status == 403
+    assert bind_payload["detail"] == "workspace owner access is required"
+
+    owner_bind_status, owner_bind_payload = invoke_request(
+        "POST",
+        "/v1/model-packs/llama/bind",
+        payload={"pack_version": "1.0.0"},
+        headers=auth_header(owner_session_token),
+    )
+    assert owner_bind_status == 200
+    assert owner_bind_payload["binding"]["model_pack"]["pack_id"] == "llama"
 
 
 def test_phase11_workspace_model_pack_binding_is_workspace_isolated(migrated_database_urls, monkeypatch) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+from pathlib import Path
 import socket
 from typing import Any
 from urllib.error import HTTPError
@@ -14,6 +15,10 @@ import pytest
 
 import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings, WorkspaceProviderConfig
+
+TEST_PROVIDER_SECRET_MANAGER_URL = (
+    f"file://{(Path('/tmp').resolve() / 'alicebot-phase11-provider-runtime-secrets').as_posix()}"
+)
 
 
 def invoke_request(
@@ -93,6 +98,7 @@ def _configure_settings(migrated_database_urls, monkeypatch) -> None:
         "get_settings",
         lambda: Settings(
             database_url=migrated_database_urls["app"],
+            provider_secret_manager_url=TEST_PROVIDER_SECRET_MANAGER_URL,
             magic_link_ttl_seconds=600,
             auth_session_ttl_seconds=3600,
             device_link_ttl_seconds=600,
@@ -165,6 +171,34 @@ def _seed_thread_for_user(*, admin_db_url: str, user_id: str, email: str) -> str
             )
         conn.commit()
     return thread_id
+
+
+def _grant_workspace_member_access(
+    *,
+    admin_db_url: str,
+    workspace_id: str,
+    user_account_id: str,
+) -> None:
+    with psycopg.connect(admin_db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO workspace_members (workspace_id, user_account_id, role)
+                VALUES (%s, %s, 'member')
+                ON CONFLICT (workspace_id, user_account_id) DO UPDATE
+                SET role = EXCLUDED.role
+                """,
+                (workspace_id, user_account_id),
+            )
+            cur.execute(
+                """
+                UPDATE auth_sessions
+                SET workspace_id = %s
+                WHERE user_account_id = %s
+                """,
+                (workspace_id, user_account_id),
+            )
+        conn.commit()
 
 
 class FakeHTTPResponse:
@@ -632,6 +666,73 @@ def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
     assert "http://ollama.example:11434/api/chat" in captured_urls
     assert "http://llamacpp.example:8080/v1/chat/completions" in captured_urls
     assert "http://vllm.example:8001/v1/chat/completions" in captured_urls
+
+
+def test_phase14_provider_control_plane_requires_workspace_owner(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    install_openai_compatible_success(monkeypatch)
+    owner_session_token, owner_workspace_id, _ = _bootstrap_workspace_session(
+        "provider-owner-control@example.com"
+    )
+    member_session_token, _, member_user_account_id = _bootstrap_workspace_session(
+        "provider-member-control@example.com"
+    )
+    _grant_workspace_member_access(
+        admin_db_url=migrated_database_urls["admin"],
+        workspace_id=owner_workspace_id,
+        user_account_id=member_user_account_id,
+    )
+
+    register_status, register_payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "Member Controlled Provider",
+            "base_url": "https://provider.example/v1",
+            "api_key": "provider-secret-key",
+            "default_model": "gpt-5-mini",
+        },
+        headers=auth_header(member_session_token),
+    )
+    assert register_status == 403
+    assert register_payload["detail"] == "workspace owner access is required"
+
+    owner_register_status, owner_register_payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "Owner Controlled Provider",
+            "base_url": "https://provider.example/v1",
+            "api_key": "provider-secret-key",
+            "default_model": "gpt-5-mini",
+        },
+        headers=auth_header(owner_session_token),
+    )
+    assert owner_register_status == 201
+    provider_id = owner_register_payload["provider"]["id"]
+
+    update_status, update_payload = invoke_request(
+        "PATCH",
+        f"/v1/providers/{provider_id}",
+        payload={"display_name": "Renamed By Member"},
+        headers=auth_header(member_session_token),
+    )
+    assert update_status == 403
+    assert update_payload["detail"] == "workspace owner access is required"
+
+    provider_test_status, provider_test_payload = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={"provider_id": provider_id},
+        headers=auth_header(member_session_token),
+    )
+    assert provider_test_status == 403
+    assert provider_test_payload["detail"] == "workspace owner access is required"
 
 
 def test_phase13_hosted_provider_rows_respect_workspace_rls(

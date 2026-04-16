@@ -11,6 +11,7 @@ from alicebot_api.config import Settings
 _SECRET_REF_PREFIX = "provider_secret_ref:"
 _SECRET_DIRECTORY_MODE = 0o700
 _SECRET_FILE_MODE = 0o600
+_DEFAULT_PROVIDER_SECRET_ROOT = Path("~/.alicebot/provider-secrets")
 
 
 class ProviderSecretManagerError(RuntimeError):
@@ -20,7 +21,7 @@ class ProviderSecretManagerError(RuntimeError):
 def _secret_root(settings: Settings) -> Path:
     configured_url = settings.provider_secret_manager_url.strip()
     if configured_url == "":
-        return (Path(settings.task_workspace_root) / "provider-secrets").expanduser().resolve()
+        return _normalize_secret_path(_DEFAULT_PROVIDER_SECRET_ROOT)
 
     parsed = urlparse(configured_url)
     if parsed.scheme != "file":
@@ -29,19 +30,55 @@ def _secret_root(settings: Settings) -> Path:
     root_path = Path(unquote(parsed.path or "/"))
     if parsed.netloc not in ("", "localhost"):
         root_path = Path(f"/{parsed.netloc}{root_path.as_posix()}")
-    return root_path.expanduser().resolve()
+    return _normalize_secret_path(root_path)
+
+
+def _absolute_path(path: Path) -> Path:
+    expanded = path.expanduser()
+    if expanded.is_absolute():
+        return Path(os.path.abspath(os.fspath(expanded)))
+    return Path(os.path.abspath(os.fspath(Path.cwd() / expanded)))
+
+
+def _ensure_no_symlink_components(path: Path) -> None:
+    absolute_path = _absolute_path(path)
+    current = Path(absolute_path.anchor or "/")
+    for part in absolute_path.parts[1:]:
+        current = current / part
+        try:
+            if current.is_symlink():
+                raise ProviderSecretManagerError("provider secret paths must not contain symlinks")
+        except OSError as exc:
+            raise ProviderSecretManagerError(
+                "provider secret path could not be validated"
+            ) from exc
+
+
+def _normalize_secret_path(path: Path) -> Path:
+    normalized = _absolute_path(path)
+    _ensure_no_symlink_components(normalized)
+    return normalized
 
 
 def _ensure_private_directory(directory: Path) -> None:
+    _ensure_no_symlink_components(directory)
     try:
         directory.mkdir(parents=True, exist_ok=True, mode=_SECRET_DIRECTORY_MODE)
         directory.chmod(_SECRET_DIRECTORY_MODE)
     except OSError as exc:
         raise ProviderSecretManagerError("provider secret directory permissions could not be secured") from exc
+    _ensure_no_symlink_components(directory)
+    if directory.is_symlink() or not directory.is_dir():
+        raise ProviderSecretManagerError("provider secret directory permissions could not be secured")
 
 
 def _resolve_secret_path(*, root: Path, secret_ref: str) -> Path:
-    candidate = (root / secret_ref).resolve()
+    secret_path = Path(secret_ref)
+    if secret_path.is_absolute():
+        raise ProviderSecretManagerError(
+            f"provider secret {secret_ref} is outside the configured root"
+        )
+    candidate = Path(os.path.abspath(os.fspath(root / secret_path)))
     try:
         candidate.relative_to(root)
     except ValueError as exc:
@@ -49,6 +86,18 @@ def _resolve_secret_path(*, root: Path, secret_ref: str) -> Path:
             f"provider secret {secret_ref} is outside the configured root"
         ) from exc
     return candidate
+
+
+def _ensure_secret_file_is_not_symlink(*, path: Path, secret_ref: str) -> None:
+    try:
+        if path.is_symlink():
+            raise ProviderSecretManagerError(
+                f"provider secret {secret_ref} must not be stored behind a symlink"
+            )
+    except OSError as exc:
+        raise ProviderSecretManagerError(
+            f"provider secret {secret_ref} could not be validated"
+        ) from exc
 
 
 def encode_provider_secret_ref(*, secret_ref: str) -> str:
@@ -76,6 +125,8 @@ def write_provider_api_key(*, settings: Settings, secret_ref: str, api_key: str)
     _ensure_private_directory(root)
     path = _resolve_secret_path(root=root, secret_ref=secret_ref)
     _ensure_private_directory(path.parent)
+    _ensure_no_symlink_components(path.parent)
+    _ensure_secret_file_is_not_symlink(path=path, secret_ref=secret_ref)
     temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     payload = {"api_key": api_key}
     try:
@@ -104,6 +155,8 @@ def resolve_provider_api_key(*, settings: Settings, api_key_field: str) -> str:
 
     secret_ref = _decode_provider_secret_ref(api_key_field)
     path = _resolve_secret_path(root=_secret_root(settings), secret_ref=secret_ref)
+    _ensure_no_symlink_components(path.parent)
+    _ensure_secret_file_is_not_symlink(path=path, secret_ref=secret_ref)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
