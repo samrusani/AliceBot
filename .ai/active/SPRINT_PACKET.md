@@ -1,7 +1,7 @@
 # Sprint Packet
 
 ## Sprint Title
-P14-S3: Model Packs
+P14-S4: Reference Integrations
 
 ## Activation Note
 - This packet is active.
@@ -10,18 +10,18 @@ P14-S3: Model Packs
 - Phase 14 sequence is fixed for now:
   - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter: shipped
   - `P14-S2` Ollama + llama.cpp + vLLM Adapters: shipped
-  - `P14-S3` Model Packs: active
-  - `P14-S4` Reference Integrations
+  - `P14-S3` Model Packs: shipped
+  - `P14-S4` Reference Integrations: active
   - `P14-S5` Design Partner Launch
 
 ## Sprint Type
 feature
 
 ## Sprint Reason
-`P14-S1` and `P14-S2` established the provider contract, telemetry baseline, and local/self-hosted compatibility layer. `P14-S3` now turns that provider surface into usable defaults so external builders do not need to hand-tune pack behavior per workspace.
+`P14-S1` through `P14-S3` established the provider contract, local/self-hosted compatibility layer, and first-party model-pack defaults. `P14-S4` now turns that shipped substrate into runnable adoption paths for external builders.
 
 ## Git Instructions
-- Branch Name: `codex/phase14-s3-model-packs`
+- Branch Name: `codex/phase14-s4-reference-integrations`
 - Base Branch: `main`
 - PR Strategy: one implementation branch, one PR
 - Merge Policy: squash merge after review `PASS` and explicit approval
@@ -35,60 +35,59 @@ feature
 - shipped hygiene/thread-health visibility
 - shipped `P14-S1` provider contract, capability snapshot, and invocation telemetry baseline
 - shipped `P14-S2` local/self-hosted compatibility layer, including the dedicated `vllm` provider path and aligned runtime/pack compatibility hooks
+- shipped `P14-S3` provider-aware model-pack bindings, first-party pack catalog, and pack-aware runtime/briefing defaults
 - no semantic fork between API, CLI, MCP, hosted, provider-runtime, and Hermes paths
 
 ## Exact Goal
-Make common model families easy to use with sensible continuity defaults on top of the shipped provider/runtime baseline.
+Make Alice clearly adoptable by external agent builders without reopening provider or model-pack substrate work.
 
 ## In Scope
-- model-pack schema and storage hardening where needed
-- model-pack API and workspace pack-binding workflow
-- first-party packs for Llama, Qwen, Gemma, and `gpt-oss`
-- pack-aware invocation and briefing defaults
-- compatibility matrix docs
-- pack smoke tests
+- Hermes integration docs refresh around the shipped one-call continuity and pack/provider surface
+- OpenClaw integration docs refresh around import/augmentation plus one-call continuity
+- generic Python agent example
+- generic TypeScript agent example
+- integration-path guidance
+- reproducible demos for major integration paths
 
 ## Out Of Scope
-- provider-contract redesign
-- new provider classes beyond what is required to support declared pack families
-- reference integrations
+- new provider/runtime substrate work unless strictly required to support the shipped integration contract
+- new pack families or pack-schema redesign unless strictly required to document the shipped surface
 - design-partner workflows
 - retrieval research, graph migration, new channels, marketplace work, or enterprise governance expansion
 
 ## Proposed Files And Modules
-- `apps/api/src/alicebot_api/`
-- `apps/api/alembic/versions/`
-- `tests/unit/`
-- `tests/integration/`
-- `docs/` model-pack and compatibility docs
+- `docs/integrations/`
+- `docs/examples/`
+- `scripts/` demo or smoke helpers where needed
+- targeted example/runtime test coverage
 - control docs if baseline status markers need updates
 
 ## Planned Deliverables
-- model-pack schema and API surface
-- workspace pack binding flow
-- first-party pack definitions for Llama, Qwen, Gemma, and `gpt-oss`
-- pack-aware runtime and briefing defaults
-- compatibility matrix docs
-- pack smoke tests
+- polished Hermes integration docs
+- polished OpenClaw integration docs
+- generic Python agent example
+- generic TypeScript agent example
+- integration-path guidance
+- reproducible demos for major integration paths
 
 ## Acceptance Criteria
-- a workspace can bind a provider to a pack
-- pack defaults affect briefing and runtime behavior correctly
-- first-party packs are versioned and documented
-- users get good defaults without manual tuning
-- pack behavior composes the shipped provider/runtime baseline instead of reopening provider work
+- external builders can integrate Alice into Hermes from docs
+- external builders can integrate Alice into OpenClaw from docs
+- generic Python and TypeScript examples run successfully
+- at least one reproducible demo exists per major integration path
+- the sprint packages the shipped provider/pack/continuity surface instead of adding a new runtime substrate
 
 ## Required Verification
 - `python3 scripts/check_control_doc_truth.py`
 - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-- targeted unit/integration coverage for model-pack storage, binding, and runtime/briefing defaults
-- pack smoke validation against the shipped provider/runtime surface
-- compatibility-matrix and pack-doc validation
+- targeted coverage for new integration examples and demo helpers
+- integration-doc validation for Hermes and OpenClaw paths
+- reproducible demo validation for the declared major integration paths
 
 ## Control Tower Decisions Needed
-- whether DeepSeek or Mistral stay explicitly deferred after the first-party pack set ships
-- how strict the initial pack-to-provider compatibility matrix is at launch
-- which pack quirks are allowed as declarative defaults versus requiring runtime code changes
+- whether AutoGen stays deferred or becomes an extra reference example if capacity remains
+- which integration path is the default recommendation for each user profile
+- how much demo/video artifact work is required in-sprint versus follow-up packaging
 
 ## Exit Condition
-This sprint is complete when workspaces can bind documented first-party packs to the shipped provider/runtime baseline, pack-aware defaults behave correctly, and the result reduces manual tuning without creating a second continuity model.
+This sprint is complete when the shipped provider/pack/continuity baseline is exposed through polished Hermes and OpenClaw docs, runnable Python and TypeScript examples, and reproducible integration demos without creating new substrate scope.

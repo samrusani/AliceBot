@@ -1,0 +1,129 @@
+{
+  "brief": {
+    "assembly_version": "continuity_brief_v0",
+    "brief_type": "agent_handoff",
+    "scope": {
+      "thread_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "task_id": null,
+      "project": null,
+      "person": null,
+      "since": null,
+      "until": null
+    },
+    "summary": "agent handoff brief. Release work is ready for the next deterministic step.",
+    "selection_strategy": {
+      "task_brief_mode": "agent_handoff",
+      "provider_strategy": "continuity_brief.agent_handoff",
+      "model_pack_strategy": null,
+      "token_budget": 1200,
+      "budget_source": "default"
+    },
+    "relevant_facts": {
+      "items": [],
+      "summary": {
+        "limit": 6,
+        "returned_count": 0,
+        "total_count": 0,
+        "order": [],
+        "task_brief_mode": "agent_handoff"
+      },
+      "empty_state": {
+        "is_empty": true,
+        "message": "No relevant facts found in the requested scope."
+      }
+    },
+    "recent_changes": {
+      "items": [],
+      "summary": {
+        "limit": 5,
+        "returned_count": 0,
+        "total_count": 0,
+        "order": []
+      },
+      "empty_state": {
+        "is_empty": true,
+        "message": "No recent changes were available for the requested scope."
+      }
+    },
+    "open_loops": {
+      "items": [],
+      "summary": {
+        "limit": 5,
+        "returned_count": 0,
+        "total_count": 1,
+        "order": []
+      },
+      "empty_state": {
+        "is_empty": true,
+        "message": "No open loops were available for the requested scope."
+      }
+    },
+    "conflicts": {
+      "items": [],
+      "summary": {
+        "limit": 3,
+        "returned_count": 0,
+        "total_count": 0,
+        "order": []
+      },
+      "empty_state": {
+        "is_empty": true,
+        "message": "No open conflicts found in the requested scope."
+      }
+    },
+    "timeline_highlights": {
+      "items": [],
+      "summary": {
+        "limit": 5,
+        "returned_count": 0,
+        "total_count": 0,
+        "order": []
+      },
+      "empty_state": {
+        "is_empty": true,
+        "message": "No timeline highlights were available for the requested scope."
+      }
+    },
+    "next_suggested_action": {
+      "title": "Next Action: Run release smoke",
+      "rationale": "The handoff bundle already isolates the next deterministic step."
+    },
+    "provenance_bundle": {
+      "source_object_ids": [
+        "obj-1",
+        "obj-2"
+      ],
+      "references": [
+        {
+          "source_kind": "openclaw_import",
+          "source_id": "openclaw-event-1"
+        },
+        {
+          "source_kind": "runtime_capture",
+          "source_id": "capture-event-1"
+        }
+      ],
+      "summary": {
+        "source_object_count": 2,
+        "reference_count": 2,
+        "reference_kind_count": 2
+      }
+    },
+    "trust_posture": {
+      "confidence_posture": "high",
+      "positive_signal_count": 2,
+      "negative_signal_count": 0,
+      "neutral_signal_count": 0,
+      "open_conflict_count": 0,
+      "rationale": "No open conflicts are present in the canonical handoff fixture."
+    },
+    "sources": [
+      "continuity_capture_events",
+      "continuity_objects",
+      "retrieval_runs",
+      "contradiction_cases",
+      "trust_signals",
+      "task_briefs"
+    ]
+  }
+}

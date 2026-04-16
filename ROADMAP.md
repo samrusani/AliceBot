@@ -16,8 +16,8 @@ These remain baseline truth and are not future milestones.
 - Phase 14 is active.
 - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is shipped.
 - `P14-S2` Ollama + llama.cpp + vLLM Adapters is shipped.
-- `P14-S3` Model Packs is the active execution sprint.
-- `P14-S4` Reference Integrations is planned.
+- `P14-S3` Model Packs is shipped.
+- `P14-S4` Reference Integrations is the active execution sprint.
 - `P14-S5` Design Partner Launch is planned.
 
 ## Phase 14 Planned Milestones
@@ -46,7 +46,7 @@ Release target: `v0.5.0-rc1`
 - integrate pack defaults into runtime invocation and briefing
 - publish a compatibility matrix
 
-Status: active
+Status: shipped
 Release target: `v0.5.0-rc2`
 
 ### P14-S4: Reference Integrations
@@ -54,7 +54,7 @@ Release target: `v0.5.0-rc2`
 - ship generic Python and TypeScript example agents
 - add “which integration path should I use?” guidance
 
-Status: planned
+Status: active
 Release target: `v0.5.0`
 
 ### P14-S5: Design Partner Launch
@@ -71,7 +71,7 @@ Release target: `v0.5.1` or `v0.6.0-beta`
 - Do not allow scope drift into new substrate research, new channels, enterprise governance expansion, or major vertical-agent work unless required by a declared Phase 14 deliverable.
 - Preserve one-call continuity semantics across provider classes.
 - Treat docs as sprint deliverables, not cleanup work.
-- Keep `P14-S3` narrow: it should turn the shipped provider/runtime surface into usable defaults, not reopen provider compatibility work under a pack label.
+- Keep `P14-S4` narrow: it should package the shipped continuity/provider/pack surface into runnable integrations, not reopen provider or pack work under a docs label.
 
 ## Beyond Phase 14
 - No post-Phase-14 feature plan is currently defined.

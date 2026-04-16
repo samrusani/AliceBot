@@ -1,64 +1,65 @@
 # BUILD_REPORT
 
-## sprint objective
+## Sprint Objective
 
-Make common model families easy to use with sensible continuity defaults on top of the shipped provider/runtime baseline by shipping the `P14-S3` model-pack workflow.
+Make Alice clearly adoptable by external agent builders through refreshed Hermes and OpenClaw integration docs, runnable generic Python and TypeScript examples, integration-path guidance, and reproducible demos for the major reference paths.
 
-## completed work
+## Completed Work
 
-- Added provider-aware model-pack bindings by extending workspace bindings with an optional `provider_id`.
-- Kept workspace-default bindings in place so briefing defaults can still resolve without a provider id.
-- Updated model-pack resolution so runtime selection now follows request override, provider-specific binding, workspace default binding, then no pack.
-- Added runtime compatibility enforcement using declarative pack contract fields (`compatibility.provider_keys` and `compatibility.runtime_providers`).
-- Updated the bind API to accept optional `provider_id`, validate provider existence in the workspace, and reject incompatible provider-to-pack bindings with `409`.
-- Updated runtime invoke to reject incompatible pack/provider combinations with `409` instead of silently applying the wrong defaults.
-- Trimmed the built-in first-party catalog to the four `P14-S3` packs: `llama`, `qwen`, `gemma`, and `gpt-oss`.
-- Added a migration and migration unit coverage for provider-aware workspace model-pack bindings.
-- Updated targeted unit and integration coverage for provider-aware binding, first-party catalog expectations, and compatibility enforcement.
-- Added provider-surface pack smoke coverage across the shipped `ollama`, `llamacpp`, and `vllm` runtime paths.
-- Updated the model-pack contract and compatibility docs to match the shipped `P14-S3` behavior.
+- refreshed `docs/integrations/hermes.md` into a reference-integration guide centered on the shipped provider-plus-MCP recommendation, one-call continuity, and Alice-side provider/model-pack controls
+- refreshed `docs/integrations/openclaw.md` around import-plus-augmentation, one-call continuity reuse, replay/dedupe behavior, and generic agent pairing
+- added `docs/integrations/reference-paths.md` to guide builders toward the right adoption path for generic agents, Hermes, OpenClaw, and provider/model-pack controls
+- added `docs/examples/reference-agent-examples.md` documenting the generic reference examples and the reproducible demo command
+- added runnable generic examples:
+  - `docs/examples/generic_python_agent.py`
+  - `docs/examples/generic_typescript_agent.ts`
+- added `scripts/run_reference_agent_examples_demo.py` to run both generic examples against a deterministic local `/v1/continuity/brief` canonical fixture demo
+- added `fixtures/reference_integrations/continuity_brief_agent_handoff_v1.json` as the checked-in contract fixture for the generic reference demo
+- refreshed control-doc markers and phase-status docs so `P14-S4` is the active sprint across the planning and handoff surface
+- added targeted validation:
+  - `tests/unit/test_phase14_reference_integrations.py`
+  - `tests/integration/test_reference_agent_examples.py`
+  - `tests/unit/test_reference_agent_examples_contract.py`
 
-## incomplete work
+## Incomplete Work
 
-- No implementation items remain within the sprint scope.
-- Deferred families such as DeepSeek, Mistral, and Kimi remain out of the first-party catalog for this sprint.
+- none within the sprint scope implemented here
 
-## files changed
+## Files Changed
 
-- `apps/api/alembic/versions/20260416_0064_phase14_provider_model_pack_bindings.py`
+- `docs/integrations/hermes.md`
+- `docs/integrations/openclaw.md`
+- `docs/integrations/reference-paths.md`
+- `docs/examples/reference-agent-examples.md`
+- `docs/examples/generic_python_agent.py`
+- `docs/examples/generic_typescript_agent.ts`
+- `fixtures/reference_integrations/continuity_brief_agent_handoff_v1.json`
+- `scripts/run_reference_agent_examples_demo.py`
+- `scripts/check_control_doc_truth.py`
+- `tests/unit/test_phase14_reference_integrations.py`
+- `tests/unit/test_reference_agent_examples_contract.py`
+- `tests/integration/test_reference_agent_examples.py`
 - `.ai/active/SPRINT_PACKET.md`
 - `.ai/handoff/CURRENT_STATE.md`
-- `ARCHITECTURE.md`
 - `CURRENT_STATE.md`
 - `PRODUCT_BRIEF.md`
 - `ROADMAP.md`
-- `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/main.py`
-- `apps/api/src/alicebot_api/model_packs.py`
-- `apps/api/src/alicebot_api/store.py`
-- `docs/integrations/phase11-model-pack-compatibility.md`
-- `docs/integrations/phase11-model-packs-tier1.md`
-- `docs/phase14-model-pack-contract.md`
-- `docs/phase14-s3-control-tower-packet.md`
+- `ARCHITECTURE.md`
+- `docs/phase14-s4-control-tower-packet.md`
 - `docs/phase14-sprint-14-1-14-5-plan.md`
-- `scripts/check_control_doc_truth.py`
-- `tests/integration/test_phase11_model_packs_api.py`
-- `tests/unit/test_20260416_0064_phase14_provider_model_pack_bindings.py`
-- `tests/unit/test_model_packs.py`
+- `BUILD_REPORT.md`
 
-## tests run
+## Tests Run
 
 - `python3 scripts/check_control_doc_truth.py`
-- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-- `./.venv/bin/python -m pytest tests/unit/test_model_packs.py tests/unit/test_task_briefing.py tests/unit/test_20260416_0064_phase14_provider_model_pack_bindings.py -q`
-- `./.venv/bin/python -m pytest tests/integration/test_phase11_model_packs_api.py -q`
-- `./.venv/bin/python -m pytest tests/integration/test_phase11_provider_runtime_api.py -q`
+- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py tests/unit/test_phase14_reference_integrations.py tests/unit/test_reference_agent_examples_contract.py -q`
+- `./.venv/bin/python -m pytest tests/integration/test_reference_agent_examples.py tests/unit/test_hermes_bridge_demo.py tests/integration/test_openclaw_import.py tests/integration/test_openclaw_one_command_demo.py tests/integration/test_openclaw_mcp_integration.py -q`
 
-## blockers/issues
+## Blockers/Issues
 
-- No blocking implementation issues remain.
-- Pack smoke validation in this build is covered by focused integration smoke over the shipped provider/runtime surfaces (`ollama`, `llamacpp`, `vllm`) rather than by external provider processes.
+- no implementation blockers encountered
+- the worktree already contained unrelated user-owned changes outside this sprint slice; they were left untouched
 
-## recommended next step
+## Recommended Next Step
 
-Decide whether DeepSeek and Mistral stay deferred or become first-party packs in the next sprint, then extend the compatibility matrix only after that product decision is settled.
+Use the new generic examples and path guide as the handoff baseline for `P14-S5`, then decide whether any additional reference example beyond Hermes/OpenClaw is worth adding without expanding the provider or model-pack substrate.
