@@ -17,8 +17,8 @@ Alice is a pre-1.0 continuity platform for AI agents and agent-assisted workflow
 - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is shipped.
 - `P14-S2` Ollama + llama.cpp + vLLM Adapters is shipped.
 - `P14-S3` Model Packs is shipped.
-- `P14-S4` Reference Integrations is the active execution sprint.
-- `P14-S5` is planned.
+- `P14-S4` Reference Integrations is shipped.
+- `P14-S5` Design Partner Launch is the active execution sprint.
 
 ## Active Phase
 ### Phase 14: Provider Adapters + Design Partner Launch
@@ -67,4 +67,5 @@ Alice now has enough depth in continuity semantics. The next constraint is compa
 - `P14-S1` established the provider contract and telemetry baseline.
 - `P14-S2` closed the local/self-hosted compatibility sprint and added the dedicated `vllm` path to the shipped provider surface.
 - `P14-S3` shipped the first-party pack baseline and provider-aware pack binding behavior.
-- `P14-S4` is deliberately focused on reference integrations and runnable adoption paths so the phase does not drift back into provider or pack work.
+- `P14-S4` shipped the reference integration baseline for Hermes, OpenClaw, and generic external-builder paths.
+- `P14-S5` is deliberately focused on design-partner onboarding, structured feedback, and usage proof so the phase does not drift back into integration packaging or general enterprise expansion.

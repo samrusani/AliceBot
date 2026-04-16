@@ -37,6 +37,9 @@
 ## Docs And Operations Rules
 - Docs are sprint deliverables, not cleanup work.
 - Provider docs, model-pack docs, integration docs, and onboarding docs must stay aligned to shipped behavior.
+- Runnable docs/examples and demo helpers should use a shared canonical fixture or the real contract surface, not an ad hoc inline mock payload.
+- Acceptance dashboards must derive readiness from persisted evidence that matches the acceptance criteria, not from proxy signals such as linkage alone.
+- Canonical launch-set and rollout docs may use anonymized partner identifiers, but placeholders/examples must be labeled as such and must not be used as sprint-completion evidence.
 - Keep credentials, tokens, and secret references out of logs, docs, and outward-facing errors.
 - Any new workspace-scoped hosted table must ship with row-level security enablement, workspace access policies, and a regression test for that access posture.
 - Keep local filesystem paths, workstation usernames, and machine-specific identifiers out of committed docs and reports.

@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-13 and Bridge `B1` through `B4`.
-- **Current execution posture:** `v0.4.0` is the latest published tag; Phase 14 is active; `P14-S1` through `P14-S3` are shipped; `P14-S4` is active.
+- **Current execution posture:** `v0.4.0` is the latest published tag; Phase 14 is active; `P14-S1` through `P14-S4` are shipped; `P14-S5` is active.
 - **Phase principle:** Phase 14 is a platform-and-adoption phase, not a new substrate-research phase.
 
 ## Current System Overview
@@ -105,19 +105,21 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - Added pack-aware runtime and briefing defaults plus declarative compatibility enforcement.
 - Kept the sprint scoped to pack packaging/defaults instead of reopening provider work.
 
+### P14-S4: Reference Integrations
+- Status: shipped
+- Packaged the shipped continuity, provider, and pack surface into polished external-builder paths.
+- Refreshed Hermes and OpenClaw documentation around the shipped one-call continuity and provider/pack baseline.
+- Added generic Python and TypeScript reference agent examples plus reproducible demos.
+- Kept the sprint scoped to adoption packaging instead of reopening backend substrate work.
+
 ## Phase 14 Active Delta
 
-### P14-S4: Reference Integrations
-- Status: active
-- Package the shipped continuity, provider, and pack surface into polished external-builder paths.
-- Refresh Hermes and OpenClaw documentation around the shipped one-call continuity and provider/pack baseline.
-- Add generic Python and TypeScript reference agent examples plus reproducible demos.
-- This sprint is adoption packaging work, not another backend substrate sprint.
-
-## Planned Phase 14 Follow-On Deltas
-
 ### P14-S5: Design Partner Launch
-- design-partner onboarding, support, instrumentation, and usage proof
+- Status: active
+- Turn the shipped Phase 14 platform into tracked pilot adoption and structured usage proof.
+- Add design-partner objects, workspace linkage, onboarding/support flows, usage summaries, and structured feedback paths.
+- Carry at least one case-study candidate toward phase closeout.
+- This sprint is launch/usage-proof work, not another integration or enterprise platform sprint.
 
 ## Security And Reliability Rules
 - Keep user/workspace isolation intact for continuity, provider, runtime, and design-partner data.
@@ -132,7 +134,8 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - unit/integration tests for continuity, provider runtime, and API behavior
 - provider smoke tests and provider-capability parity checks
 - model-pack smoke tests and compatibility-matrix validation from `P14-S3`
-- integration smoke tests for Hermes, OpenClaw, Python example, and TypeScript example paths in `P14-S4`
+- integration smoke tests for Hermes, OpenClaw, Python example, and TypeScript example paths from `P14-S4`
+- design-partner onboarding, linkage, usage-summary, and feedback-flow validation in `P14-S5`
 - release gates remain green across Python, web, Alice Lite, Hermes smoke, and public eval harness
 - docs verification is part of sprint completion, not cleanup work
 

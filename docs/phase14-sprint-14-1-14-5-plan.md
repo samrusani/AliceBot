@@ -100,7 +100,7 @@ Make Alice clearly adoptable by external agent builders.
 `v0.5.0`
 
 ### Status
-Active
+Shipped
 
 ## P14-S5: Design Partner Launch
 
@@ -123,4 +123,4 @@ Move from platform readiness to real-world usage proof.
 `v0.5.1` or `v0.6.0-beta`
 
 ### Status
-Planned
+Active

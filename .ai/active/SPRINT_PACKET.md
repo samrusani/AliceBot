@@ -1,7 +1,7 @@
 # Sprint Packet
 
 ## Sprint Title
-P14-S4: Reference Integrations
+P14-S5: Design Partner Launch
 
 ## Activation Note
 - This packet is active.
@@ -11,17 +11,17 @@ P14-S4: Reference Integrations
   - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter: shipped
   - `P14-S2` Ollama + llama.cpp + vLLM Adapters: shipped
   - `P14-S3` Model Packs: shipped
-  - `P14-S4` Reference Integrations: active
-  - `P14-S5` Design Partner Launch
+  - `P14-S4` Reference Integrations: shipped
+  - `P14-S5` Design Partner Launch: active
 
 ## Sprint Type
 feature
 
 ## Sprint Reason
-`P14-S1` through `P14-S3` established the provider contract, local/self-hosted compatibility layer, and first-party model-pack defaults. `P14-S4` now turns that shipped substrate into runnable adoption paths for external builders.
+`P14-S1` through `P14-S4` established the provider contract, local/self-hosted compatibility layer, first-party model-pack defaults, and runnable external-builder paths. `P14-S5` now turns that platform readiness into real-world usage proof and structured launch feedback.
 
 ## Git Instructions
-- Branch Name: `codex/phase14-s4-reference-integrations`
+- Branch Name: `codex/phase14-s5-design-partner-launch`
 - Base Branch: `main`
 - PR Strategy: one implementation branch, one PR
 - Merge Policy: squash merge after review `PASS` and explicit approval
@@ -36,58 +36,63 @@ feature
 - shipped `P14-S1` provider contract, capability snapshot, and invocation telemetry baseline
 - shipped `P14-S2` local/self-hosted compatibility layer, including the dedicated `vllm` provider path and aligned runtime/pack compatibility hooks
 - shipped `P14-S3` provider-aware model-pack bindings, first-party pack catalog, and pack-aware runtime/briefing defaults
+- shipped `P14-S4` reference integrations, generic examples, and reproducible demo paths
 - no semantic fork between API, CLI, MCP, hosted, provider-runtime, and Hermes paths
 
 ## Exact Goal
-Make Alice clearly adoptable by external agent builders without reopening provider or model-pack substrate work.
+Turn the shipped Phase 14 platform surface into real usage proof through tracked design-partner onboarding, support, instrumentation, and feedback.
 
 ## In Scope
-- Hermes integration docs refresh around the shipped one-call continuity and pack/provider surface
-- OpenClaw integration docs refresh around import/augmentation plus one-call continuity
-- generic Python agent example
-- generic TypeScript agent example
-- integration-path guidance
-- reproducible demos for major integration paths
+- design-partner objects and workspace linkage
+- onboarding workflow and support checklist
+- partner usage summaries
+- feedback intake path
+- partner success dashboard
+- case-study template
+- first 3 to 5 partner onboardings
 
 ## Out Of Scope
-- new provider/runtime substrate work unless strictly required to support the shipped integration contract
-- new pack families or pack-schema redesign unless strictly required to document the shipped surface
-- design-partner workflows
+- general enterprise governance expansion
+- unrelated channel work
+- broad marketing-site work beyond what partner launch requires
 - retrieval research, graph migration, new channels, marketplace work, or enterprise governance expansion
 
 ## Proposed Files And Modules
-- `docs/integrations/`
-- `docs/examples/`
-- `scripts/` demo or smoke helpers where needed
-- targeted example/runtime test coverage
+- `apps/api/src/alicebot_api/`
+- `apps/api/alembic/versions/`
+- `tests/unit/`
+- `tests/integration/`
+- `docs/design-partners/`
+- launch/runbook/support artifacts
 - control docs if baseline status markers need updates
 
 ## Planned Deliverables
-- polished Hermes integration docs
-- polished OpenClaw integration docs
-- generic Python agent example
-- generic TypeScript agent example
-- integration-path guidance
-- reproducible demos for major integration paths
+- design-partner objects and workspace linkage
+- onboarding workflow and support checklist
+- usage summaries
+- feedback intake path
+- partner success dashboard
+- case-study template
+- first 3 to 5 partner onboardings
 
 ## Acceptance Criteria
-- external builders can integrate Alice into Hermes from docs
-- external builders can integrate Alice into OpenClaw from docs
-- generic Python and TypeScript examples run successfully
-- at least one reproducible demo exists per major integration path
-- the sprint packages the shipped provider/pack/continuity surface instead of adding a new runtime substrate
+- at least 3 design partners are active or in structured pilot
+- usage summaries are visible
+- feedback is captured in a structured way
+- at least one candidate case study is underway
+- the sprint turns the shipped platform surface into usage proof rather than expanding into general enterprise scope
 
 ## Required Verification
 - `python3 scripts/check_control_doc_truth.py`
 - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-- targeted coverage for new integration examples and demo helpers
-- integration-doc validation for Hermes and OpenClaw paths
-- reproducible demo validation for the declared major integration paths
+- targeted unit/integration coverage for design-partner objects, linkage, and feedback paths
+- usage-summary and support-flow validation
+- launch-runbook and partner-artifact validation
 
 ## Control Tower Decisions Needed
-- whether AutoGen stays deferred or becomes an extra reference example if capacity remains
-- which integration path is the default recommendation for each user profile
-- how much demo/video artifact work is required in-sprint versus follow-up packaging
+- which first 3 to 5 partner pilots are the canonical launch set
+- what minimum usage instrumentation is required before counting a pilot as active
+- how strict the case-study readiness bar is for phase closeout
 
 ## Exit Condition
-This sprint is complete when the shipped provider/pack/continuity baseline is exposed through polished Hermes and OpenClaw docs, runnable Python and TypeScript examples, and reproducible integration demos without creating new substrate scope.
+This sprint is complete when the shipped Phase 14 platform surface is connected to tracked design-partner pilots, structured usage summaries and feedback exist, and at least one candidate case study is underway without drifting into general enterprise expansion.

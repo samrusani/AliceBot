@@ -30,15 +30,15 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         required_markers=(
             "`v0.4.0`: released",
             "Phase 14 is active.",
-            "`P14-S4` Reference Integrations is the active execution sprint.",
+            "`P14-S5` Design Partner Launch is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "P14-S4: Reference Integrations",
+            "P14-S5: Design Partner Launch",
             "`v0.4.0` is the current public release boundary.",
-            "codex/phase14-s4-reference-integrations",
+            "codex/phase14-s5-design-partner-launch",
         ),
     ),
     ControlDocTruthRule(
@@ -53,7 +53,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         required_markers=(
             "`v0.4.0` is the latest published tag.",
             "Phase 14 is active.",
-            "`P14-S4` Reference Integrations is the active execution sprint.",
+            "`P14-S5` Design Partner Launch is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(
