@@ -288,6 +288,71 @@ def _record_lifecycle_trace(
     return _trace_summary(trace["id"], trace_events)
 
 
+def _get_execution_budget_or_raise(
+    store: ContinuityStore,
+    *,
+    execution_budget_id: UUID,
+) -> ExecutionBudgetRow:
+    row = store.get_execution_budget_optional(execution_budget_id)
+    if row is None:
+        raise ExecutionBudgetNotFoundError(f"execution budget {execution_budget_id} was not found")
+    return row
+
+
+def _lifecycle_request_payload(
+    *,
+    thread_id: UUID,
+    execution_budget_id: UUID,
+    requested_action: ExecutionBudgetLifecycleAction,
+    replacement_max_completed_executions: int | None,
+) -> ExecutionBudgetLifecycleRequestTracePayload:
+    return {
+        "thread_id": str(thread_id),
+        "execution_budget_id": str(execution_budget_id),
+        "requested_action": requested_action,
+        "replacement_max_completed_executions": replacement_max_completed_executions,
+    }
+
+
+def _record_rejected_lifecycle_action(
+    store: ContinuityStore,
+    *,
+    thread: dict[str, object],
+    request_payload: ExecutionBudgetLifecycleRequestTracePayload,
+    row: ExecutionBudgetRow,
+    requested_action: ExecutionBudgetLifecycleAction,
+    previous_status: str,
+    replacement_max_completed_executions: int | None,
+    replacement_rolling_window_seconds: int | None,
+    rejection_reason: str,
+    active_budget_id: UUID | None,
+) -> None:
+    trace = _record_lifecycle_trace(
+        store,
+        thread=thread,
+        request_payload=request_payload,
+        state_payload=_lifecycle_state_payload(
+            row=row,
+            requested_action=requested_action,
+            previous_status=previous_status,
+            replacement_budget=None,
+            replacement_max_completed_executions=replacement_max_completed_executions,
+            replacement_rolling_window_seconds=replacement_rolling_window_seconds,
+            rejection_reason=rejection_reason,
+        ),
+        summary_payload=_lifecycle_summary_payload(
+            execution_budget_id=cast(UUID, row["id"]),
+            requested_action=requested_action,
+            outcome="rejected",
+            replacement_budget_id=None,
+            active_budget_id=active_budget_id,
+        ),
+        requested_action=requested_action,
+        outcome="rejected",
+    )
+    del trace
+
+
 def create_execution_budget_record(
     store: ContinuityStore,
     *,
@@ -359,9 +424,7 @@ def get_execution_budget_record(
 ) -> ExecutionBudgetDetailResponse:
     del user_id
 
-    row = store.get_execution_budget_optional(execution_budget_id)
-    if row is None:
-        raise ExecutionBudgetNotFoundError(f"execution budget {execution_budget_id} was not found")
+    row = _get_execution_budget_or_raise(store, execution_budget_id=execution_budget_id)
     return {"execution_budget": serialize_execution_budget_row(row)}
 
 
@@ -374,45 +437,28 @@ def deactivate_execution_budget_record(
     del user_id
 
     thread = _validate_lifecycle_thread(store, thread_id=request.thread_id)
-    row = store.get_execution_budget_optional(request.execution_budget_id)
-    if row is None:
-        raise ExecutionBudgetNotFoundError(
-            f"execution budget {request.execution_budget_id} was not found"
-        )
-
-    request_payload: ExecutionBudgetLifecycleRequestTracePayload = {
-        "thread_id": str(request.thread_id),
-        "execution_budget_id": str(request.execution_budget_id),
-        "requested_action": "deactivate",
-        "replacement_max_completed_executions": None,
-    }
+    row = _get_execution_budget_or_raise(store, execution_budget_id=request.execution_budget_id)
+    request_payload = _lifecycle_request_payload(
+        thread_id=request.thread_id,
+        execution_budget_id=request.execution_budget_id,
+        requested_action="deactivate",
+        replacement_max_completed_executions=None,
+    )
 
     if cast(str, row["status"]) != "active":
         error = _invalid_transition_error(row=row, requested_action="deactivate")
-        trace = _record_lifecycle_trace(
+        _record_rejected_lifecycle_action(
             store,
             thread=thread,
             request_payload=request_payload,
-            state_payload=_lifecycle_state_payload(
-                row=row,
-                requested_action="deactivate",
-                previous_status=cast(str, row["status"]),
-                replacement_budget=None,
-                replacement_max_completed_executions=None,
-                replacement_rolling_window_seconds=None,
-                rejection_reason=str(error),
-            ),
-            summary_payload=_lifecycle_summary_payload(
-                execution_budget_id=cast(UUID, row["id"]),
-                requested_action="deactivate",
-                outcome="rejected",
-                replacement_budget_id=None,
-                active_budget_id=None,
-            ),
             requested_action="deactivate",
-            outcome="rejected",
+            row=row,
+            previous_status=cast(str, row["status"]),
+            replacement_max_completed_executions=None,
+            replacement_rolling_window_seconds=None,
+            rejection_reason=str(error),
+            active_budget_id=None,
         )
-        del trace
         raise error
 
     updated = store.deactivate_execution_budget_optional(request.execution_budget_id)
@@ -459,45 +505,28 @@ def supersede_execution_budget_record(
     del user_id
 
     thread = _validate_lifecycle_thread(store, thread_id=request.thread_id)
-    current = store.get_execution_budget_optional(request.execution_budget_id)
-    if current is None:
-        raise ExecutionBudgetNotFoundError(
-            f"execution budget {request.execution_budget_id} was not found"
-        )
-
-    request_payload: ExecutionBudgetLifecycleRequestTracePayload = {
-        "thread_id": str(request.thread_id),
-        "execution_budget_id": str(request.execution_budget_id),
-        "requested_action": "supersede",
-        "replacement_max_completed_executions": request.max_completed_executions,
-    }
+    current = _get_execution_budget_or_raise(store, execution_budget_id=request.execution_budget_id)
+    request_payload = _lifecycle_request_payload(
+        thread_id=request.thread_id,
+        execution_budget_id=request.execution_budget_id,
+        requested_action="supersede",
+        replacement_max_completed_executions=request.max_completed_executions,
+    )
 
     if cast(str, current["status"]) != "active":
         error = _invalid_transition_error(row=current, requested_action="supersede")
-        trace = _record_lifecycle_trace(
+        _record_rejected_lifecycle_action(
             store,
             thread=thread,
             request_payload=request_payload,
-            state_payload=_lifecycle_state_payload(
-                row=current,
-                requested_action="supersede",
-                previous_status=cast(str, current["status"]),
-                replacement_budget=None,
-                replacement_max_completed_executions=request.max_completed_executions,
-                replacement_rolling_window_seconds=current["rolling_window_seconds"],
-                rejection_reason=str(error),
-            ),
-            summary_payload=_lifecycle_summary_payload(
-                execution_budget_id=cast(UUID, current["id"]),
-                requested_action="supersede",
-                outcome="rejected",
-                replacement_budget_id=None,
-                active_budget_id=cast(UUID, current["id"]) if cast(str, current["status"]) == "active" else None,
-            ),
             requested_action="supersede",
-            outcome="rejected",
+            row=current,
+            previous_status=cast(str, current["status"]),
+            replacement_max_completed_executions=request.max_completed_executions,
+            replacement_rolling_window_seconds=current["rolling_window_seconds"],
+            rejection_reason=str(error),
+            active_budget_id=cast(UUID, current["id"]) if cast(str, current["status"]) == "active" else None,
         )
-        del trace
         raise error
 
     active_scope_rows = _active_budget_rows_for_scope(
@@ -511,30 +540,18 @@ def supersede_execution_budget_record(
             "execution budget selector scope must have exactly one active budget to supersede: "
             f"{_scope_label(agent_profile_id=cast(str | None, current['agent_profile_id']), tool_key=current['tool_key'], domain_hint=current['domain_hint'])}"
         )
-        trace = _record_lifecycle_trace(
+        _record_rejected_lifecycle_action(
             store,
             thread=thread,
             request_payload=request_payload,
-            state_payload=_lifecycle_state_payload(
-                row=current,
-                requested_action="supersede",
-                previous_status="active",
-                replacement_budget=None,
-                replacement_max_completed_executions=request.max_completed_executions,
-                replacement_rolling_window_seconds=current["rolling_window_seconds"],
-                rejection_reason=str(error),
-            ),
-            summary_payload=_lifecycle_summary_payload(
-                execution_budget_id=cast(UUID, current["id"]),
-                requested_action="supersede",
-                outcome="rejected",
-                replacement_budget_id=None,
-                active_budget_id=cast(UUID, current["id"]),
-            ),
             requested_action="supersede",
-            outcome="rejected",
+            row=current,
+            previous_status="active",
+            replacement_max_completed_executions=request.max_completed_executions,
+            replacement_rolling_window_seconds=current["rolling_window_seconds"],
+            rejection_reason=str(error),
+            active_budget_id=cast(UUID, current["id"]),
         )
-        del trace
         raise error
 
     replacement_budget_id = uuid4()
@@ -574,39 +591,26 @@ def supersede_execution_budget_record(
         error = None
 
     if error is not None:
-        current_state = store.get_execution_budget_optional(request.execution_budget_id)
-        if current_state is None:
-            raise ExecutionBudgetNotFoundError(
-                f"execution budget {request.execution_budget_id} was not found"
-            )
-        trace = _record_lifecycle_trace(
+        current_state = _get_execution_budget_or_raise(
+            store,
+            execution_budget_id=request.execution_budget_id,
+        )
+        _record_rejected_lifecycle_action(
             store,
             thread=thread,
             request_payload=request_payload,
-            state_payload=_lifecycle_state_payload(
-                row=current_state,
-                requested_action="supersede",
-                previous_status=cast(str, current["status"]),
-                replacement_budget=None,
-                replacement_max_completed_executions=request.max_completed_executions,
-                replacement_rolling_window_seconds=current["rolling_window_seconds"],
-                rejection_reason=str(error),
-            ),
-            summary_payload=_lifecycle_summary_payload(
-                execution_budget_id=cast(UUID, current_state["id"]),
-                requested_action="supersede",
-                outcome="rejected",
-                replacement_budget_id=None,
-                active_budget_id=(
-                    cast(UUID, current_state["id"])
-                    if cast(str, current_state["status"]) == "active"
-                    else None
-                ),
-            ),
             requested_action="supersede",
-            outcome="rejected",
+            row=current_state,
+            previous_status=cast(str, current["status"]),
+            replacement_max_completed_executions=request.max_completed_executions,
+            replacement_rolling_window_seconds=current["rolling_window_seconds"],
+            rejection_reason=str(error),
+            active_budget_id=(
+                cast(UUID, current_state["id"])
+                if cast(str, current_state["status"]) == "active"
+                else None
+            ),
         )
-        del trace
         raise error
 
     trace = _record_lifecycle_trace(

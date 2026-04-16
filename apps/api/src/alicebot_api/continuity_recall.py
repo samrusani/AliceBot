@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import math
 import re
 from dataclasses import dataclass
@@ -253,67 +254,51 @@ def _normalize_uuid_string(value: UUID | str | None) -> str | None:
     return str(value).strip().lower()
 
 
+def _iter_keyed_payload_values(payload: object, *, keys: set[str]) -> Iterator[object]:
+    if isinstance(payload, dict):
+        for key, child in payload.items():
+            if key.strip().casefold() in keys:
+                yield child
+            yield from _iter_keyed_payload_values(child, keys=keys)
+        return
+
+    if isinstance(payload, list):
+        for child in payload:
+            yield from _iter_keyed_payload_values(child, keys=keys)
+
+
+def _iter_normalized_string_values(value: object) -> Iterator[str]:
+    if isinstance(value, str):
+        normalized = _normalize_optional_text(value)
+        if normalized is not None:
+            yield normalized
+        return
+
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                normalized = _normalize_optional_text(item)
+                if normalized is not None:
+                    yield normalized
+
+
 def _collect_strings(payload: object, *, keys: set[str]) -> set[str]:
-    values: set[str] = set()
-
-    def visit(value: object) -> None:
-        if isinstance(value, dict):
-            for key, child in value.items():
-                normalized_key = key.strip().casefold()
-                if normalized_key in keys:
-                    if isinstance(child, str):
-                        normalized = _normalize_optional_text(child)
-                        if normalized is not None:
-                            values.add(normalized)
-                    elif isinstance(child, list):
-                        for item in child:
-                            if isinstance(item, str):
-                                normalized = _normalize_optional_text(item)
-                                if normalized is not None:
-                                    values.add(normalized)
-                visit(child)
-            return
-
-        if isinstance(value, list):
-            for child in value:
-                visit(child)
-
-    visit(payload)
-    return values
+    return {
+        value
+        for child in _iter_keyed_payload_values(payload, keys=keys)
+        for value in _iter_normalized_string_values(child)
+    }
 
 
 def _collect_strings_in_order(payload: object, *, keys: set[str]) -> list[str]:
     values: list[str] = []
     seen: set[str] = set()
-
-    def add_value(value: str) -> None:
-        normalized = _normalize_optional_text(value)
-        if normalized is None:
-            return
-        if normalized in seen:
-            return
-        seen.add(normalized)
-        values.append(normalized)
-
-    def visit(value: object) -> None:
-        if isinstance(value, dict):
-            for key, child in value.items():
-                normalized_key = key.strip().casefold()
-                if normalized_key in keys:
-                    if isinstance(child, str):
-                        add_value(child)
-                    elif isinstance(child, list):
-                        for item in child:
-                            if isinstance(item, str):
-                                add_value(item)
-                visit(child)
-            return
-
-        if isinstance(value, list):
-            for child in value:
-                visit(child)
-
-    visit(payload)
+    for child in _iter_keyed_payload_values(payload, keys=keys):
+        for normalized in _iter_normalized_string_values(child):
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            values.append(normalized)
     return values
 
 
@@ -356,11 +341,13 @@ def _flatten_text(payload: object) -> str:
 
 def _extract_confirmation_status(row: ContinuityRecallCandidateRow) -> MemoryConfirmationStatus:
     for source in (row["provenance"], row["body"]):
-        values = _collect_strings_in_order(
-            source,
-            keys={"confirmation_status", "memory_confirmation_status"},
+        ranked_value = _select_ranked_value(
+            _collect_strings_in_order(
+                source,
+                keys={"confirmation_status", "memory_confirmation_status"},
+            ),
+            rank_map=_CONFIRMATION_RANK,
         )
-        ranked_value = _select_ranked_value(values, rank_map=_CONFIRMATION_RANK)
         if ranked_value is not None:
             return cast(MemoryConfirmationStatus, ranked_value)
 
@@ -376,11 +363,13 @@ def _extract_freshness_posture(
     confirmation_status: MemoryConfirmationStatus,
 ) -> ContinuityRecallFreshnessPosture:
     for source in (row["provenance"], row["body"]):
-        explicit_values = _collect_strings_in_order(
-            source,
-            keys={"freshness_posture", "freshness_status"},
+        ranked_value = _select_ranked_value(
+            _collect_strings_in_order(
+                source,
+                keys={"freshness_posture", "freshness_status"},
+            ),
+            rank_map=_FRESHNESS_RANK,
         )
-        ranked_value = _select_ranked_value(explicit_values, rank_map=_FRESHNESS_RANK)
         if ranked_value is not None:
             return cast(ContinuityRecallFreshnessPosture, ranked_value)
 
@@ -425,12 +414,7 @@ def _extract_provenance_posture(
     has_scope_context = len(scope_matches) > 0 or bool(
         _collect_strings(
             row["provenance"],
-            keys=(
-                _SCOPE_FILTER_KEYS["thread"]
-                | _SCOPE_FILTER_KEYS["task"]
-                | _SCOPE_FILTER_KEYS["project"]
-                | _SCOPE_FILTER_KEYS["person"]
-            ),
+            keys=_ENTITY_KEYS,
         )
     )
     if has_source_events and has_scope_context:
@@ -451,66 +435,24 @@ def _compute_scope_matches(
     person_filter: str | None,
 ) -> list[ContinuityRecallScopeMatch]:
     scope_matches: list[ContinuityRecallScopeMatch] = []
-
-    if thread_filter is not None:
+    filters_by_kind: tuple[tuple[ContinuityRecallScopeKind, str | None], ...] = (
+        ("thread", thread_filter),
+        ("task", task_filter),
+        ("project", project_filter),
+        ("person", person_filter),
+    )
+    for kind, filter_value in filters_by_kind:
+        if filter_value is None:
+            continue
         candidate_values = {
             value.casefold()
-            for value in _collect_strings(
-                row["provenance"],
-                keys=_SCOPE_FILTER_KEYS["thread"],
-            )
-            | _collect_strings(
-                row["body"],
-                keys=_SCOPE_FILTER_KEYS["thread"],
+            for value in (
+                _collect_strings(row["provenance"], keys=_SCOPE_FILTER_KEYS[kind])
+                | _collect_strings(row["body"], keys=_SCOPE_FILTER_KEYS[kind])
             )
         }
-        if thread_filter in candidate_values:
-            scope_matches.append({"kind": "thread", "value": thread_filter})
-
-    if task_filter is not None:
-        candidate_values = {
-            value.casefold()
-            for value in _collect_strings(
-                row["provenance"],
-                keys=_SCOPE_FILTER_KEYS["task"],
-            )
-            | _collect_strings(
-                row["body"],
-                keys=_SCOPE_FILTER_KEYS["task"],
-            )
-        }
-        if task_filter in candidate_values:
-            scope_matches.append({"kind": "task", "value": task_filter})
-
-    if project_filter is not None:
-        candidate_values = {
-            value.casefold()
-            for value in _collect_strings(
-                row["provenance"],
-                keys=_SCOPE_FILTER_KEYS["project"],
-            )
-            | _collect_strings(
-                row["body"],
-                keys=_SCOPE_FILTER_KEYS["project"],
-            )
-        }
-        if project_filter in candidate_values:
-            scope_matches.append({"kind": "project", "value": project_filter})
-
-    if person_filter is not None:
-        candidate_values = {
-            value.casefold()
-            for value in _collect_strings(
-                row["provenance"],
-                keys=_SCOPE_FILTER_KEYS["person"],
-            )
-            | _collect_strings(
-                row["body"],
-                keys=_SCOPE_FILTER_KEYS["person"],
-            )
-        }
-        if person_filter in candidate_values:
-            scope_matches.append({"kind": "person", "value": person_filter})
+        if filter_value in candidate_values:
+            scope_matches.append({"kind": kind, "value": filter_value})
 
     return scope_matches
 
