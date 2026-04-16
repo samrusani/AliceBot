@@ -30,15 +30,15 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         required_markers=(
             "`v0.4.0`: released",
             "Phase 14 is active.",
-            "`P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is the active execution sprint.",
+            "`P14-S2` Ollama + llama.cpp + vLLM Adapters is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "P14-S1: Provider Abstraction Cleanup + OpenAI-Compatible Adapter",
+            "P14-S2: Ollama + llama.cpp + vLLM Adapters",
             "`v0.4.0` is the current public release boundary.",
-            "codex/phase14-s1-provider-foundation-openai-compatible",
+            "codex/phase14-s2-local-self-hosted-adapters",
         ),
     ),
     ControlDocTruthRule(
@@ -53,7 +53,7 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
         required_markers=(
             "`v0.4.0` is the latest published tag.",
             "Phase 14 is active.",
-            "`P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is the active execution sprint.",
+            "`P14-S2` Ollama + llama.cpp + vLLM Adapters is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(

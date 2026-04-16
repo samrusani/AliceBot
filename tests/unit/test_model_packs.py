@@ -41,7 +41,7 @@ def _contract(*, system_append: str = "", developer_append: str = "") -> dict[st
             "developer_instruction_append": developer_append,
         },
         "compatibility": {
-            "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+            "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
             "runtime_providers": ["openai_responses"],
             "notes": "unit test",
         },

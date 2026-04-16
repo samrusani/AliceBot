@@ -293,7 +293,7 @@ def test_phase11_model_pack_catalog_bind_and_runtime_shaping(migrated_database_u
                     "developer_instruction_append": "Prioritize explicit next actions.",
                 },
                 "compatibility": {
-                    "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+                    "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
                     "runtime_providers": ["openai_responses"],
                     "notes": "Custom workspace brief style.",
                 },

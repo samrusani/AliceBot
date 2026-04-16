@@ -42,6 +42,8 @@ Capability discovery runs during registration and stores:
 
 Workspace bootstrap can seed OpenAI-compatible providers from config with `WORKSPACE_PROVIDER_CONFIGS_JSON`.
 
+Phase 14 local/self-hosted adapter work also allows dedicated `vllm` entries in the same config surface. Keep using this page for the OpenAI-compatible path, and use `docs/integrations/phase11-local-provider-adapters.md` for the dedicated vLLM adapter defaults and registration flow.
+
 Example:
 
 ```bash

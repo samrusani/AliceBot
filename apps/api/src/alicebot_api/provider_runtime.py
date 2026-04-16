@@ -27,7 +27,10 @@ from alicebot_api.local_provider_helpers import (
     parse_llamacpp_models,
     parse_ollama_invoke_response,
     parse_ollama_models,
+    parse_vllm_invoke_response,
+    parse_vllm_models,
     prompt_sections_to_messages,
+    request_ok,
     request_json,
 )
 from alicebot_api.provider_security import validate_provider_base_url
@@ -42,6 +45,7 @@ from alicebot_api.store import JsonObject
 OPENAI_COMPATIBLE_ADAPTER_KEY = "openai_compatible"
 OLLAMA_ADAPTER_KEY = "ollama"
 LLAMACPP_ADAPTER_KEY = "llamacpp"
+VLLM_ADAPTER_KEY = "vllm"
 AZURE_ADAPTER_KEY = "azure"
 OPENAI_RESPONSES_PROVIDER = "openai_responses"
 PROVIDER_CAPABILITY_VERSION_V1 = "provider_capability_v1"
@@ -628,12 +632,82 @@ class LlamaCppAdapter(BaseProviderAdapter):
         return parse_llamacpp_invoke_response(request=request, payload=payload)
 
 
+class VllmAdapter(BaseProviderAdapter):
+    adapter_key = VLLM_ADAPTER_KEY
+    runtime_provider = OPENAI_RESPONSES_PROVIDER
+    default_healthcheck_path = "/health"
+    default_model_list_path = "/v1/models"
+    default_invoke_path = "/v1/chat/completions"
+
+    def healthcheck(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderHealthcheckResult:
+        validated_base_url = validate_provider_base_url(config.base_url)
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
+        request_ok(
+            method="GET",
+            base_url=validated_base_url,
+            path=healthcheck_path,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
+        )
+        return {"status": "ok", "endpoint": healthcheck_path}
+
+    def list_models(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderModelCatalogResult:
+        validated_base_url = validate_provider_base_url(config.base_url)
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        model_list_path = config.model_list_path or self.default_model_list_path
+        model_payload = request_json(
+            method="GET",
+            base_url=validated_base_url,
+            path=model_list_path,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
+        )
+        return {"endpoint": model_list_path, "models": parse_vllm_models(model_payload)}
+
+    def invoke_responses(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+        request: ModelInvocationRequest,
+    ) -> ModelInvocationResponse:
+        if request.provider != self.runtime_provider:
+            raise ModelInvocationError(f"unsupported model provider: {request.provider}")
+        validated_base_url = validate_provider_base_url(config.base_url)
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        payload = request_json(
+            method="POST",
+            base_url=validated_base_url,
+            path=config.invoke_path or self.default_invoke_path,
+            timeout_seconds=settings.model_timeout_seconds,
+            headers=headers,
+            payload={
+                "model": request.model,
+                "stream": False,
+                "messages": prompt_sections_to_messages(request),
+            },
+        )
+        return parse_vllm_invoke_response(request=request, payload=payload)
+
+
 def make_provider_adapter_registry() -> ProviderAdapterRegistry:
     registry = ProviderAdapterRegistry()
     registry.register(OpenAICompatibleAdapter())
     registry.register(AzureAdapter())
     registry.register(OllamaAdapter())
     registry.register(LlamaCppAdapter())
+    registry.register(VllmAdapter())
     return registry
 
 

@@ -13,6 +13,7 @@ from alicebot_api.provider_runtime import (
     OLLAMA_ADAPTER_KEY,
     OPENAI_COMPATIBLE_ADAPTER_KEY,
     OPENAI_RESPONSES_PROVIDER,
+    VLLM_ADAPTER_KEY,
     ProviderAdapterNotFoundError,
     RuntimeProviderConfig,
     build_provider_test_model_request,
@@ -94,17 +95,20 @@ def test_provider_registry_resolves_registered_adapter() -> None:
     azure_adapter = registry.resolve(AZURE_ADAPTER_KEY)
     ollama_adapter = registry.resolve(OLLAMA_ADAPTER_KEY)
     llamacpp_adapter = registry.resolve(LLAMACPP_ADAPTER_KEY)
+    vllm_adapter = registry.resolve(VLLM_ADAPTER_KEY)
 
     assert adapter.adapter_key == OPENAI_COMPATIBLE_ADAPTER_KEY
     assert adapter.runtime_provider == OPENAI_RESPONSES_PROVIDER
     assert azure_adapter.adapter_key == AZURE_ADAPTER_KEY
     assert ollama_adapter.adapter_key == OLLAMA_ADAPTER_KEY
     assert llamacpp_adapter.adapter_key == LLAMACPP_ADAPTER_KEY
+    assert vllm_adapter.adapter_key == VLLM_ADAPTER_KEY
     assert registry.keys() == [
         AZURE_ADAPTER_KEY,
         LLAMACPP_ADAPTER_KEY,
         OLLAMA_ADAPTER_KEY,
         OPENAI_COMPATIBLE_ADAPTER_KEY,
+        VLLM_ADAPTER_KEY,
     ]
 
 
@@ -356,6 +360,84 @@ def test_llamacpp_adapter_discovers_capabilities_and_invokes(monkeypatch) -> Non
     assert captured[0]["url"] == "http://llamacpp.example:8080/health"
     assert captured[1]["url"] == "http://llamacpp.example:8080/v1/models"
     assert captured[2]["url"] == "http://llamacpp.example:8080/v1/chat/completions"
+
+
+def test_vllm_adapter_discovers_capabilities_and_invokes(monkeypatch) -> None:
+    captured: list[dict[str, object]] = []
+    registry = make_provider_adapter_registry()
+    adapter = registry.resolve(VLLM_ADAPTER_KEY)
+    runtime_provider = make_runtime_provider_config(
+        provider_key=VLLM_ADAPTER_KEY,
+        base_url="http://vllm.example:8001",
+        api_key="",
+        auth_mode="none",
+        model_list_path="/v1/models",
+        healthcheck_path="/health",
+        invoke_path="/v1/chat/completions",
+    )
+
+    def fake_urlopen(request, timeout):
+        body = None if request.data is None else json.loads(request.data.decode("utf-8"))
+        captured.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": body,
+            }
+        )
+        if request.full_url.endswith("/health"):
+            return FakeHTTPResponse(b"")
+        if request.full_url.endswith("/v1/models"):
+            return FakeHTTPResponse(
+                json.dumps({"data": [{"id": "mistral-small-instruct"}, {"id": "deepseek-r1-distill"}]}).encode("utf-8")
+            )
+        return FakeHTTPResponse(
+            json.dumps(
+                {
+                    "id": "chatcmpl-vllm-1",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "vLLM says hi"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 16,
+                        "completion_tokens": 5,
+                        "total_tokens": 21,
+                    },
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_urlopen)
+
+    capabilities = adapter.discover_capabilities(
+        config=runtime_provider,
+        settings=Settings(healthcheck_timeout_seconds=5),
+    )
+    response = adapter.invoke(
+        config=runtime_provider,
+        settings=Settings(model_timeout_seconds=11),
+        request=build_provider_test_model_request(
+            runtime_provider=OPENAI_RESPONSES_PROVIDER,
+            model="mistral-small-instruct",
+            prompt_text="Reply from self-hosted vllm",
+        ),
+    )
+
+    assert capabilities["adapter_key"] == VLLM_ADAPTER_KEY
+    assert capabilities["health_status"] == "ok"
+    assert capabilities["model_count"] == 2
+    assert capabilities["models"] == ["deepseek-r1-distill", "mistral-small-instruct"]
+    assert response.output_text == "vLLM says hi"
+    assert response.response_id == "chatcmpl-vllm-1"
+    assert response.usage["total_tokens"] == 21
+    assert captured[0]["url"] == "http://vllm.example:8001/health"
+    assert captured[1]["url"] == "http://vllm.example:8001/v1/models"
+    assert captured[2]["url"] == "http://vllm.example:8001/v1/chat/completions"
 
 
 def test_azure_adapter_discovers_capabilities_and_invokes_with_api_key(monkeypatch) -> None:

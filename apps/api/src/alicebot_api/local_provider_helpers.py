@@ -60,6 +60,30 @@ def request_json(
     return parsed_payload
 
 
+def request_ok(
+    *,
+    method: str,
+    base_url: str,
+    path: str,
+    timeout_seconds: int,
+    headers: dict[str, str] | None = None,
+) -> None:
+    validated_base_url = validate_provider_base_url(base_url)
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    endpoint = validated_base_url.rstrip("/") + normalized_path
+    request_headers = {"Accept": "*/*"}
+    if headers:
+        request_headers.update(headers)
+    request = Request(endpoint, headers=request_headers, method=method)
+    try:
+        with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
+            response.read()
+    except HTTPError as exc:
+        raise ModelInvocationError(f"model provider returned HTTP {exc.code}") from exc
+    except URLError as exc:
+        raise ModelInvocationError("model provider request failed") from exc
+
+
 def prompt_sections_to_messages(request: ModelInvocationRequest) -> list[dict[str, str]]:
     sections = {section.name: section.content for section in request.prompt.sections}
     return [
@@ -88,6 +112,20 @@ def parse_llamacpp_models(payload: dict[str, Any]) -> list[str]:
     data_payload = payload.get("data")
     if not isinstance(data_payload, list):
         raise ModelInvocationError("llamacpp model enumeration payload is invalid")
+    model_names: set[str] = set()
+    for model_payload in data_payload:
+        if not isinstance(model_payload, dict):
+            continue
+        raw_name = model_payload.get("id")
+        if isinstance(raw_name, str) and raw_name.strip():
+            model_names.add(raw_name.strip())
+    return sorted(model_names)
+
+
+def parse_vllm_models(payload: dict[str, Any]) -> list[str]:
+    data_payload = payload.get("data")
+    if not isinstance(data_payload, list):
+        raise ModelInvocationError("vllm model enumeration payload is invalid")
     model_names: set[str] = set()
     for model_payload in data_payload:
         if not isinstance(model_payload, dict):
@@ -146,6 +184,57 @@ def parse_llamacpp_invoke_response(
     output_text = message.get("content")
     if not isinstance(output_text, str) or output_text.strip() == "":
         raise ModelInvocationError("llamacpp response did not include assistant output text")
+    raw_finish_reason = first_choice.get("finish_reason")
+    finish_reason = "completed" if raw_finish_reason in {"stop", "completed", "eos"} else "incomplete"
+    usage_payload = payload.get("usage")
+    if isinstance(usage_payload, dict):
+        usage: ModelUsagePayload = {
+            "input_tokens": (
+                usage_payload.get("prompt_tokens")
+                if isinstance(usage_payload.get("prompt_tokens"), int)
+                else None
+            ),
+            "output_tokens": (
+                usage_payload.get("completion_tokens")
+                if isinstance(usage_payload.get("completion_tokens"), int)
+                else None
+            ),
+            "total_tokens": (
+                usage_payload.get("total_tokens")
+                if isinstance(usage_payload.get("total_tokens"), int)
+                else None
+            ),
+        }
+    else:
+        usage = {"input_tokens": None, "output_tokens": None, "total_tokens": None}
+    response_id = payload.get("id") if isinstance(payload.get("id"), str) else None
+    return ModelInvocationResponse(
+        provider=request.provider,
+        model=request.model,
+        response_id=response_id,
+        finish_reason=finish_reason,
+        output_text=output_text,
+        usage=usage,
+    )
+
+
+def parse_vllm_invoke_response(
+    *,
+    request: ModelInvocationRequest,
+    payload: dict[str, Any],
+) -> ModelInvocationResponse:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or len(choices) == 0:
+        raise ModelInvocationError("vllm response did not include choices")
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        raise ModelInvocationError("vllm response did not include choices")
+    message = first_choice.get("message")
+    if not isinstance(message, dict):
+        raise ModelInvocationError("vllm response did not include message payload")
+    output_text = message.get("content")
+    if not isinstance(output_text, str) or output_text.strip() == "":
+        raise ModelInvocationError("vllm response did not include assistant output text")
     raw_finish_reason = first_choice.get("finish_reason")
     finish_reason = "completed" if raw_finish_reason in {"stop", "completed", "eos"} else "incomplete"
     usage_payload = payload.get("usage")

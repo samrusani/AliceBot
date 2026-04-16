@@ -690,6 +690,7 @@ from alicebot_api.provider_runtime import (
     LLAMACPP_ADAPTER_KEY,
     OLLAMA_ADAPTER_KEY,
     OPENAI_COMPATIBLE_ADAPTER_KEY,
+    VLLM_ADAPTER_KEY,
     OPENAI_RESPONSES_PROVIDER,
     ProviderAdapter,
     ProviderAdapterNotFoundError,
@@ -2766,6 +2767,20 @@ class RegisterLlamaCppProviderRequest(BaseModel):
 
     display_name: str = Field(min_length=1, max_length=120)
     base_url: str = Field(default="http://127.0.0.1:8080", min_length=1, max_length=500)
+    api_key: str | None = Field(default=None, max_length=8000)
+    auth_mode: Literal["bearer", "none"] = "none"
+    default_model: str = Field(min_length=1, max_length=200)
+    model_list_path: str = Field(default="/v1/models", min_length=1, max_length=200)
+    healthcheck_path: str = Field(default="/health", min_length=1, max_length=200)
+    invoke_path: str = Field(default="/v1/chat/completions", min_length=1, max_length=200)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class RegisterVllmProviderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=120)
+    base_url: str = Field(default="http://127.0.0.1:8001", min_length=1, max_length=500)
     api_key: str | None = Field(default=None, max_length=8000)
     auth_mode: Literal["bearer", "none"] = "none"
     default_model: str = Field(min_length=1, max_length=200)
@@ -7798,6 +7813,68 @@ def register_v1_llamacpp_provider(
                     workspace_id=workspace["id"],
                     created_by_user_account_id=resolution["user_account"]["id"],
                     provider_key=LLAMACPP_ADAPTER_KEY,
+                    display_name=body.display_name,
+                    base_url=body.base_url,
+                    api_key=body.api_key or "",
+                    auth_mode=body.auth_mode,
+                    default_model=body.default_model,
+                    model_list_path=body.model_list_path,
+                    healthcheck_path=body.healthcheck_path,
+                    invoke_path=body.invoke_path,
+                    metadata=body.metadata,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except psycopg.errors.UniqueViolation:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "provider display_name must be unique within the workspace"},
+        )
+    except ProviderAdapterNotFoundError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except ProviderSecretManagerError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=201,
+        content=jsonable_encoder(
+            {
+                "provider": _serialize_model_provider(provider),
+                "capabilities": _serialize_provider_capability(capability),
+            }
+        ),
+    )
+
+
+@app.post("/v1/providers/vllm/register")
+def register_v1_vllm_provider(
+    request: Request,
+    body: RegisterVllmProviderRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                provider, capability = _register_workspace_provider(
+                    settings=settings,
+                    store=store,
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=resolution["user_account"]["id"],
+                    provider_key=VLLM_ADAPTER_KEY,
                     display_name=body.display_name,
                     base_url=body.base_url,
                     api_key=body.api_key or "",

@@ -29,7 +29,7 @@ MAX_CONTEXT_MEMORIES = 200
 MAX_CONTEXT_ENTITIES = 200
 MAX_CONTEXT_ENTITY_EDGES = 400
 
-_ALLOWED_PROVIDER_KEYS: tuple[str, ...] = ("openai_compatible", "ollama", "llamacpp")
+_ALLOWED_PROVIDER_KEYS: tuple[str, ...] = ("openai_compatible", "ollama", "llamacpp", "vllm")
 _ALLOWED_RUNTIME_PROVIDERS: tuple[str, ...] = ("openai_responses",)
 _PACK_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,79}$")
 _PACK_VERSION_PATTERN = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
@@ -361,7 +361,7 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
                         ),
                     },
                     "compatibility": {
-                        "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+                        "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
                         "runtime_providers": ["openai_responses"],
                         "notes": "Tier-1 baseline for Llama-family backends.",
                     },
@@ -398,7 +398,7 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
                         ),
                     },
                     "compatibility": {
-                        "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+                        "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
                         "runtime_providers": ["openai_responses"],
                         "notes": "Tier-1 baseline for Qwen-family backends.",
                     },
@@ -435,7 +435,7 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
                         ),
                     },
                     "compatibility": {
-                        "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+                        "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
                         "runtime_providers": ["openai_responses"],
                         "notes": "Tier-1 baseline for Gemma-family backends.",
                     },
@@ -472,7 +472,7 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
                         ),
                     },
                     "compatibility": {
-                        "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+                        "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
                         "runtime_providers": ["openai_responses"],
                         "notes": "Tier-1 baseline for gpt-oss-family backends.",
                     },
@@ -514,7 +514,7 @@ def _tier2_pack_specs() -> tuple[Tier1PackSpec, ...]:
                         ),
                     },
                     "compatibility": {
-                        "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+                        "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
                         "runtime_providers": ["openai_responses"],
                         "notes": "Tier-2 baseline for DeepSeek-family backends.",
                     },
@@ -551,7 +551,7 @@ def _tier2_pack_specs() -> tuple[Tier1PackSpec, ...]:
                         ),
                     },
                     "compatibility": {
-                        "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+                        "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
                         "runtime_providers": ["openai_responses"],
                         "notes": "Tier-2 baseline for Kimi-family backends.",
                     },
@@ -588,7 +588,7 @@ def _tier2_pack_specs() -> tuple[Tier1PackSpec, ...]:
                         ),
                     },
                     "compatibility": {
-                        "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+                        "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
                         "runtime_providers": ["openai_responses"],
                         "notes": "Tier-2 baseline for Mistral-family backends.",
                     },

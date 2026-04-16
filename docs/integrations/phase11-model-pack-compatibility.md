@@ -12,13 +12,13 @@ All built-in catalog packs are seeded per workspace on first model-pack API acce
 
 | Pack ID | Version | Tier | Family | Provider Keys | Runtime Provider |
 |---|---|---|---|---|---|
-| `llama` | `1.0.0` | `tier1` | `llama` | `openai_compatible`, `ollama`, `llamacpp` | `openai_responses` |
-| `qwen` | `1.0.0` | `tier1` | `qwen` | `openai_compatible`, `ollama`, `llamacpp` | `openai_responses` |
-| `gemma` | `1.0.0` | `tier1` | `gemma` | `openai_compatible`, `ollama`, `llamacpp` | `openai_responses` |
-| `gpt-oss` | `1.0.0` | `tier1` | `gpt-oss` | `openai_compatible`, `ollama`, `llamacpp` | `openai_responses` |
-| `deepseek` | `1.0.0` | `tier2` | `deepseek` | `openai_compatible`, `ollama`, `llamacpp` | `openai_responses` |
-| `kimi` | `1.0.0` | `tier2` | `kimi` | `openai_compatible`, `ollama`, `llamacpp` | `openai_responses` |
-| `mistral` | `1.0.0` | `tier2` | `mistral` | `openai_compatible`, `ollama`, `llamacpp` | `openai_responses` |
+| `llama` | `1.0.0` | `tier1` | `llama` | `openai_compatible`, `ollama`, `llamacpp`, `vllm` | `openai_responses` |
+| `qwen` | `1.0.0` | `tier1` | `qwen` | `openai_compatible`, `ollama`, `llamacpp`, `vllm` | `openai_responses` |
+| `gemma` | `1.0.0` | `tier1` | `gemma` | `openai_compatible`, `ollama`, `llamacpp`, `vllm` | `openai_responses` |
+| `gpt-oss` | `1.0.0` | `tier1` | `gpt-oss` | `openai_compatible`, `ollama`, `llamacpp`, `vllm` | `openai_responses` |
+| `deepseek` | `1.0.0` | `tier2` | `deepseek` | `openai_compatible`, `ollama`, `llamacpp`, `vllm` | `openai_responses` |
+| `kimi` | `1.0.0` | `tier2` | `kimi` | `openai_compatible`, `ollama`, `llamacpp`, `vllm` | `openai_responses` |
+| `mistral` | `1.0.0` | `tier2` | `mistral` | `openai_compatible`, `ollama`, `llamacpp`, `vllm` | `openai_responses` |
 
 ## Shipped Provider Paths
 
@@ -26,7 +26,8 @@ All built-in catalog packs are seeded per workspace on first model-pack API acce
 |---|---|---|---|
 | Local (Ollama) | `ollama` | `POST /v1/providers/ollama/register`, `POST /v1/providers/test`, `POST /v1/runtime/invoke` | Built-in catalog packs supported per pack `provider_keys`. |
 | Local (llama.cpp) | `llamacpp` | `POST /v1/providers/llamacpp/register`, `POST /v1/providers/test`, `POST /v1/runtime/invoke` | Built-in catalog packs supported per pack `provider_keys`. |
-| Self-hosted OpenAI-compatible (including vLLM path) | `openai_compatible` | `POST /v1/providers`, `POST /v1/providers/test`, `POST /v1/runtime/invoke` | Built-in catalog packs supported per pack `provider_keys`. |
+| Self-hosted vLLM | `vllm` | `POST /v1/providers/vllm/register`, `POST /v1/providers/test`, `POST /v1/runtime/invoke` | Built-in catalog packs supported per pack `provider_keys`. |
+| Self-hosted OpenAI-compatible | `openai_compatible` | `POST /v1/providers`, `POST /v1/providers/test`, `POST /v1/runtime/invoke` | Built-in catalog packs supported per pack `provider_keys`. |
 | Enterprise Azure | `azure` | `POST /v1/providers/azure/register`, `POST /v1/providers/test`, `POST /v1/runtime/invoke` | Uses the same pack seam; built-in catalog contracts are not Azure-keyed. Use custom packs when Azure-specific compatibility metadata is required. |
 | External-agent orchestration (AutoGen bridge) | runtime passthrough to configured provider | `scripts/run_phase11_autogen_runtime_bridge.py` + `POST /v1/runtime/invoke` | Same pack selection rules and metadata as direct runtime invoke. |
 

@@ -14,11 +14,9 @@ Alice is a pre-1.0 continuity platform for AI agents and agent-assisted workflow
 
 ## Current Repo Posture
 - Phase 14 is active.
-- `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is the active execution sprint.
-- `P14-S2` Ollama + llama.cpp + vLLM Adapters is planned.
-- `P14-S3` Model Packs is planned.
-- `P14-S4` Reference Integrations is planned.
-- `P14-S5` Design Partner Launch is planned.
+- `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is shipped.
+- `P14-S2` Ollama + llama.cpp + vLLM Adapters is the active execution sprint.
+- `P14-S3` through `P14-S5` are planned.
 
 ## Active Phase
 ### Phase 14: Provider Adapters + Design Partner Launch
@@ -34,35 +32,35 @@ Alice now has enough depth in continuity semantics. The next constraint is compa
 - usage proof in real environments
 
 ## Primary Users
-- Builders who want to plug Alice into their own agents or workflows.
-- Self-hosters running local or private model stacks through Ollama, llama.cpp, or vLLM.
-- Enterprise-curious teams evaluating Alice with Azure or OpenAI-compatible infrastructure.
-- Design partners using Alice in production-like environments and generating adoption proof.
+- builders who want to plug Alice into their own agents or workflows
+- self-hosters running local or private model stacks through Ollama, llama.cpp, or vLLM
+- enterprise-curious teams evaluating Alice with Azure or OpenAI-compatible infrastructure
+- design partners using Alice in production-like environments and generating adoption proof
 
 ## In Scope For Phase 14
-- Stable provider abstraction and workspace-scoped provider management.
-- First-class adapters for OpenAI-compatible, Ollama, llama.cpp, vLLM, and Azure-backed paths.
-- Declarative, versioned model packs with workspace binding and sensible defaults.
-- Reference integrations for Hermes, OpenClaw, generic Python agents, and generic TypeScript agents.
-- Design-partner onboarding, tracking, instrumentation, and structured feedback capture.
+- stable provider abstraction and workspace-scoped provider management
+- first-class adapters for OpenAI-compatible, Ollama, llama.cpp, vLLM, and Azure-backed paths
+- declarative, versioned model packs with workspace binding and sensible defaults
+- reference integrations for Hermes, OpenClaw, generic Python agents, and generic TypeScript agents
+- design-partner onboarding, tracking, instrumentation, and structured feedback capture
 
 ## Non-Goals
-- New retrieval research.
-- Graph-database migration.
-- New channels.
-- Marketplace work.
-- Enterprise governance/compliance expansion.
-- Major vertical-agent work.
-- Deep browser/action automation.
+- new retrieval research
+- graph-database migration
+- new channels
+- marketplace work
+- enterprise governance/compliance expansion
+- major vertical-agent work
+- deep browser/action automation
 
 ## Success Criteria
-- Alice runs cleanly with OpenAI-compatible providers, Ollama, llama.cpp, vLLM, and Azure-backed paths.
-- Users can bind a model pack and get sensible continuity defaults without hand tuning.
-- Hermes and OpenClaw have polished, documented, and tested Alice paths.
-- Generic Python and TypeScript examples exist and are reproducible.
-- At least 3 design partners are onboarded or in active pilot, with concrete usage evidence and at least 1 strong reference workflow.
+- Alice runs cleanly with OpenAI-compatible providers, Ollama, llama.cpp, vLLM, and Azure-backed paths
+- users can bind a model pack and get sensible continuity defaults without hand tuning
+- Hermes and OpenClaw have polished, documented, and tested Alice paths
+- generic Python and TypeScript examples exist and are reproducible
+- at least 3 design partners are onboarded or in active pilot, with concrete usage evidence and at least 1 strong reference workflow
 
 ## Immediate Product Posture
 - `v0.4.0` remains the current public release boundary.
-- Phase 14 is a platform-and-adoption phase on top of the shipped Phase 13 baseline.
-- No Phase 14 deliverable is shipped yet; `P14-S1` is the first execution sprint.
+- `P14-S1` established the provider contract and telemetry baseline.
+- `P14-S2` is deliberately focused on contract alignment, compatibility proof, and local quickstarts for existing local/self-hosted paths so the phase does not drift into redundant provider rework.

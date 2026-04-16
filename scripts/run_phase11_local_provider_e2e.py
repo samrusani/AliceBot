@@ -2,7 +2,7 @@
 """Run a local-provider e2e flow for P11-S2.
 
 Flow:
-1) Register local provider (Ollama or llama.cpp)
+1) Register local or self-hosted provider (Ollama, llama.cpp, or vLLM)
 2) Run provider test
 3) Run runtime invoke
 """
@@ -55,13 +55,15 @@ def _request_json(
 def _provider_defaults(provider: str) -> tuple[str, str]:
     if provider == "ollama":
         return ("http://127.0.0.1:11434", "/v1/providers/ollama/register")
-    return ("http://127.0.0.1:8080", "/v1/providers/llamacpp/register")
+    if provider == "llamacpp":
+        return ("http://127.0.0.1:8080", "/v1/providers/llamacpp/register")
+    return ("http://127.0.0.1:8001", "/v1/providers/vllm/register")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="run_phase11_local_provider_e2e.py",
-        description="Register and invoke a local provider through the P11-S2 runtime paths.",
+        description="Register and invoke a local or self-hosted provider through the runtime paths.",
     )
     parser.add_argument(
         "--api-base-url",
@@ -80,9 +82,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--provider",
-        choices=("ollama", "llamacpp"),
+        choices=("ollama", "llamacpp", "vllm"),
         required=True,
-        help="Local provider adapter to exercise.",
+        help="Provider adapter to exercise.",
     )
     parser.add_argument(
         "--display-name",
@@ -118,7 +120,7 @@ def main() -> int:
         "display_name": args.display_name,
         "base_url": provider_base_url,
         "default_model": args.model,
-        "metadata": {"source": "phase11_local_provider_e2e"},
+        "metadata": {"source": "phase14_local_self_hosted_e2e"},
     }
     register_response = _request_json(
         method="POST",
