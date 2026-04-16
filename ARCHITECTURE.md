@@ -2,11 +2,11 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-13 and Bridge `B1` through `B4`.
-- **Current repo execution posture:** `v0.4.0` is the latest published tag; Phase 13 is shipped; no post-Phase-13 execution sprint is active yet.
-- **Phase principle preserved:** Phase 13 was an adoption layer on top of Phase 12, not a new substrate phase.
+- **Current repo execution posture:** `v0.4.0` is the latest published tag; Phase 14 is active; `P14-S1` is the active execution sprint.
+- **Phase principle:** Phase 14 is a platform-and-adoption phase, not a new substrate-research phase.
 
 ## Current System Overview
-Alice is a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, MCP, and Hermes-integrated surfaces.
+Alice is a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, CLI, MCP, Hermes-integrated, and imported-workflow surfaces.
 
 ## Technical Stack
 - API/runtime: Python + FastAPI in [`apps/api/src/alicebot_api`](apps/api/src/alicebot_api)
@@ -19,38 +19,22 @@ Alice is a modular continuity platform with shared continuity semantics across l
 ## Shipped Module Boundaries
 
 ### Continuity Core
-- Capture, review, lifecycle, explainability, recall, resumption, and open-loop flows.
-- Primary modules:
-  - [`continuity_capture.py`](apps/api/src/alicebot_api/continuity_capture.py)
-  - [`continuity_review.py`](apps/api/src/alicebot_api/continuity_review.py)
-  - [`continuity_recall.py`](apps/api/src/alicebot_api/continuity_recall.py)
-  - [`continuity_resumption.py`](apps/api/src/alicebot_api/continuity_resumption.py)
-  - [`continuity_open_loops.py`](apps/api/src/alicebot_api/continuity_open_loops.py)
+- Capture, review, lifecycle, explainability, recall, resumption, open-loop workflows, and one-call continuity assembly.
 
 ### Retrieval And Evidence Foundations
-- Shipped baseline includes semantic retrieval, embeddings, entities, trusted-fact promotion, fixture-based retrieval evaluation, hybrid retrieval streams, reranking, and persisted retrieval traces.
-- Primary modules:
-  - [`semantic_retrieval.py`](apps/api/src/alicebot_api/semantic_retrieval.py)
-  - [`retrieval_evaluation.py`](apps/api/src/alicebot_api/retrieval_evaluation.py)
-  - [`entity.py`](apps/api/src/alicebot_api/entity.py)
-  - [`entity_edge.py`](apps/api/src/alicebot_api/entity_edge.py)
-  - [`trusted_fact_promotions.py`](apps/api/src/alicebot_api/trusted_fact_promotions.py)
+- Hybrid retrieval, embeddings, entity/entity-edge support, reranking, trust-aware evidence shaping, and persisted retrieval traces.
 
 ### Mutation, Trust, And Briefing Foundations
-- Shipped baseline includes explicit memory operations, contradiction cases, trust signals, public eval persistence, and task-adaptive briefing.
-- Primary modules:
-  - [`memory.py`](apps/api/src/alicebot_api/memory.py)
-  - [`task_briefing.py`](apps/api/src/alicebot_api/task_briefing.py)
-  - [`contracts.py`](apps/api/src/alicebot_api/contracts.py)
+- Explicit memory operations, contradiction cases, trust signals, public eval persistence, and task-adaptive briefing.
 
 ### Hosted/Product Layer
 - Workspace, identity, devices, preferences, telemetry, web/admin, and channel surfaces.
 
-### Provider Runtime
-- Workspace-scoped provider registration, capability snapshots, model packs, invocation, and secret handling.
+### Provider Runtime Foundation
+- Workspace-scoped provider records, capability snapshots, runtime invocation boundaries, model-pack primitives, and secret handling.
 
-### Hermes Bridge
-- Provider hook integration, prefetch, post-turn capture, review queue, explainability, and MCP fallback.
+### Integration Surfaces
+- CLI, MCP, Hermes bridge/provider flows, OpenClaw import/augmentation, and deployment profiles such as Alice Lite.
 
 ## Current Data Model Summary
 
@@ -66,12 +50,10 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - `entities`, `entity_edges`
 - `retrieval_runs`, `retrieval_candidates`
 - `eval_suites`, `eval_cases`, `eval_runs`, `eval_results`
-- task-artifact chunk embeddings for artifact-scoped retrieval
 
 ### Product / Runtime
 - `workspaces`, `workspace_members`, `auth_sessions`, `devices`
-- `model_providers`, `provider_capabilities`, `model_packs`, `workspace_model_pack_bindings`
-- `task_briefs`
+- current provider/runtime tables from the shipped baseline
 - channel, task, trace, approval, and execution tables
 
 ## Current Key Flows
@@ -82,117 +64,92 @@ Alice is a modular continuity platform with shared continuity semantics across l
 3. Review/correction can confirm, edit, supersede, or delete.
 4. Explainability preserves provenance and lifecycle state.
 
-### Recall And Resumption
+### Recall, Resumption, And Briefing
 1. Recall loads continuity candidates.
 2. Ranking considers semantic similarity, lexical/entity signals, trust, freshness, provenance, and supersession.
-3. Resumption composes ranked recall into decisions, open loops, recent changes, and next action.
+3. Resumption and one-call continuity compose ranked recall into decisions, open loops, recent changes, provenance, trust posture, and next action.
 
 ### Provider / Hermes Runtime
 1. Workspace binds provider and model-pack configuration.
 2. Runtime invokes through provider adapter boundaries.
 3. Hermes can prefetch before a turn and capture after a turn while Alice remains the system of record.
 
-## Phase 12 Baseline In Force
-- Hybrid retrieval and reranking are the recall baseline.
-- Explicit mutation operations are the memory-change baseline.
-- Contradiction cases and trust signals are the conflict/trust baseline.
-- The public eval harness is the quality-evidence baseline.
-- Task-adaptive briefing is the current compiled-context baseline.
+## Phase 13 Baseline In Force
+- One-call continuity is the primary continuity integration surface.
+- Alice Lite is the lighter local deployment profile.
+- Hygiene and thread-health visibility are part of the shipped baseline.
 
-## Phase 13 Shipped Delta
+## Phase 14 Shared Delta
 
-### P13-S1: One-Call Continuity
-- Status: shipped
-- Add the primary integration surface:
-  - API: `POST /v1/continuity/brief`
-  - CLI: `alice brief`
-  - MCP: `alice_brief`
-- Input should support:
-  - `query`
-  - optional `thread_id`
-  - optional `task_id`
-  - optional `project`
-  - optional `person`
-  - optional `since`
-  - optional `until`
-  - `brief_type`
-  - `max_relevant_facts`
-  - `max_recent_changes`
-  - `max_open_loops`
-  - `max_conflicts`
-  - `max_timeline_highlights`
-  - `include_non_promotable_facts`
-- Output should include:
-  - summary
-  - relevant facts
-  - recent changes
-  - open loops
-  - conflicts
-  - timeline highlights
-  - next suggested action
-  - provenance bundle
-  - trust posture
-- This surface must compose shipped Phase 12 layers rather than reimplement them.
+### Platform Concepts
+- **Provider:** a runtime connector Alice uses to talk to a specific model-serving interface.
+- **Model pack:** a versioned profile shaping prompt/context behavior, tool strategy, briefing strategy, token budgets, and model-specific quirks.
+- **Integration kit:** a runtime-specific starter path for Hermes, OpenClaw, Python agents, and TypeScript agents.
+- **Design partner workspace:** a tracked workspace with onboarding, support, instrumentation, and pilot outcome logging.
 
-### P13-S2: Alice Lite
-- Status: shipped
-- Add a lighter local deployment profile for solo users and builders.
-- Target outcomes:
-  - one-command local startup
-  - smaller-footprint profile
-  - sample workspace bootstrap
-  - faster first useful result
-- Alice Lite must remain a deployment/profile change, not a separate product or semantics fork.
-- SQLite or another embedded mode is not in scope unless semantics remain intact.
+### P14-S1 API Additions
+- Provider management:
+  - `POST /v1/providers`
+  - `GET /v1/providers`
+  - `GET /v1/providers/{provider_id}`
+  - `PATCH /v1/providers/{provider_id}`
+  - `POST /v1/providers/test`
+- Runtime invocation:
+  - `POST /v1/runtime/invoke`
 
-### P13-S3: Memory Hygiene + Conversation Health
-- Status: shipped
-- Add visible hygiene surfaces for:
-  - duplicates
-  - stale facts
-  - unresolved contradictions
-  - weakly trusted memory
-  - review queue pressure
-- Add conversation/thread health surfaces for:
-  - recent threads
-  - stale threads
-  - risky threads
-  - thread activity / health posture
-- This work is visibility and operational legibility first, not new substrate work.
+### P14-S1 Table Additions And Refinements
+- `model_providers`
+- `provider_capabilities`
+- `provider_invocation_telemetry`
+
+### Provider Adapter Contract
+- Required methods:
+  - `healthcheck()`
+  - `list_models()`
+  - `invoke_responses()`
+  - `invoke_embeddings()`
+  - `supports_tools()`
+  - `supports_reasoning()`
+  - `supports_vision()`
+  - `normalize_response()`
+  - `normalize_usage()`
+  - `normalize_tool_schema()`
+  - `discover_capabilities()`
+  - `invoke()`
+- Design rule:
+  - providers may affect capability support, latency, token budgets, and model-specific behavior
+  - providers must not fork continuity object semantics, contradiction handling, provenance contracts, or one-call continuity behavior
+
+### P14-S1 Notes
+- Workspace bootstrap can seed OpenAI-compatible providers from `WORKSPACE_PROVIDER_CONFIGS_JSON`.
+- Invocation telemetry persists normalized provider test and runtime invoke records.
+- Later Phase 14 API/table expansions stay in roadmap and spec docs until they are implemented.
+
+## Phase 14 Sprint Sequence
+- `P14-S1` Provider abstraction cleanup + OpenAI-compatible adapter
+- `P14-S2` Ollama + llama.cpp + vLLM adapters
+- `P14-S3` Model packs
+- `P14-S4` Reference integrations
+- `P14-S5` Design partner launch
 
 ## Security And Reliability Rules
-- Keep user/workspace isolation intact for continuity, provider, and channel data.
+- Keep user/workspace isolation intact for continuity, provider, runtime, and design-partner data.
 - Keep provider credentials and secret references out of logs and outward-facing errors.
 - Preserve approval-bounded execution for consequential side effects.
-- Keep capture, mutation, and Hermes sync paths idempotent.
+- Keep capture, mutation, and provider/Hermes sync paths idempotent.
 - Preserve append-only evidence where the system depends on auditability.
-- Do not let the one-call continuity surface bypass provenance, trust, or supersession rules already enforced by the baseline.
-- Do not let Alice Lite weaken continuity semantics in exchange for easier install.
-
-## Deployment Topology
-
-### Recommended
-- Alice API + Postgres as system of record
-- Alice MCP for explicit workflows
-- Provider runtime where model abstraction is needed
-- Hermes provider-plus-MCP for always-on continuity
-
-### Phase 13 Addition
-- Alice Lite should be a lighter deployment/profile around the same core runtime, not a separate architecture.
-
-### Fallback
-- MCP-only remains supported when provider automation is unavailable
+- Do not let provider-specific behavior fork continuity semantics.
+- Do not let model packs bypass provenance, trust, or contradiction rules already enforced by the baseline.
 
 ## Testing Strategy
-- unit/integration tests for continuity, runtime, and API behavior
-- fixture-based retrieval and eval suites
-- API/CLI/MCP parity tests for `P13-S1`
-- startup/smoke coverage for Alice Lite profile work in `P13-S2`
-- hygiene/thread-health tests for `P13-S3`
-- web tests for shipped user/admin surfaces
-- Hermes provider smoke, MCP smoke, and demo flows
+- unit/integration tests for continuity, provider runtime, and API behavior
+- provider smoke tests and provider-capability parity checks
+- model-pack smoke tests and compatibility-matrix validation
+- integration smoke tests for Hermes, OpenClaw, Python example, and TypeScript example paths
+- release gates remain green across Python, web, Alice Lite, Hermes smoke, and public eval harness
+- docs verification is part of sprint completion, not cleanup work
 
 ## Current Architectural Posture
-- `POST /v1/continuity/brief`, `alice brief`, and `alice_brief` are now the primary continuity integration entrypoints.
-- Alice Lite is now a shipped deployment profile around the same runtime semantics.
-- Hygiene and thread-health visibility are shipped operational surfaces, not a separate memory subsystem.
+- `v0.4.0` remains the active public release boundary.
+- Phase 14 extends the shipped provider/runtime foundation into a more stable integration platform.
+- The continuity substrate remains the same system of record; Phase 14 is about compatibility, packaging, reference integrations, and design-partner proof.

@@ -1766,6 +1766,7 @@ def _fallback_provider_capability_snapshot(
         adapter_key=adapter_key,
         runtime_provider=runtime_provider,
         supports_tool_calls=False,
+        supports_reasoning=False,
         supports_streaming=False,
         supports_store=False,
         supports_vision_input=False,
@@ -1788,21 +1789,116 @@ def _fallback_provider_capability_snapshot(
 
 def _invoke_runtime_provider_model(
     *,
+    store: ContinuityStore,
+    workspace_id: UUID,
+    invoked_by_user_account_id: UUID,
+    thread_id: UUID | None,
+    invocation_kind: str,
     adapter: ProviderAdapter,
     runtime_provider: RuntimeProviderConfig,
     settings: Settings,
     model_request: ModelInvocationRequest,
 ) -> ModelInvocationResponse:
+    started_at = time.monotonic()
     try:
-        return adapter.invoke(
+        model_response = adapter.invoke(
             config=runtime_provider,
             settings=settings,
             request=model_request,
         )
     except ValueError as exc:
-        raise ModelInvocationError(str(exc)) from exc
+        error_detail = str(exc)
+        store.record_provider_invocation_telemetry(
+            workspace_id=workspace_id,
+            provider_id=runtime_provider.provider_id,
+            thread_id=thread_id,
+            invoked_by_user_account_id=invoked_by_user_account_id,
+            invocation_kind=invocation_kind,
+            adapter_key=adapter.adapter_key,
+            runtime_provider=runtime_provider.model_provider,
+            requested_model=model_request.model,
+            response_model=None,
+            response_id=None,
+            status="failed",
+            latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
+            usage={"input_tokens": None, "output_tokens": None, "total_tokens": None},
+            error_detail=error_detail,
+        )
+        raise ModelInvocationError(error_detail) from exc
     except ModelInvocationError as exc:
-        raise ModelInvocationError(sanitize_provider_error_message(str(exc))) from exc
+        sanitized_error = sanitize_provider_error_message(str(exc))
+        store.record_provider_invocation_telemetry(
+            workspace_id=workspace_id,
+            provider_id=runtime_provider.provider_id,
+            thread_id=thread_id,
+            invoked_by_user_account_id=invoked_by_user_account_id,
+            invocation_kind=invocation_kind,
+            adapter_key=adapter.adapter_key,
+            runtime_provider=runtime_provider.model_provider,
+            requested_model=model_request.model,
+            response_model=None,
+            response_id=None,
+            status="failed",
+            latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
+            usage={"input_tokens": None, "output_tokens": None, "total_tokens": None},
+            error_detail=sanitized_error,
+        )
+        raise ModelInvocationError(sanitized_error) from exc
+
+    store.record_provider_invocation_telemetry(
+        workspace_id=workspace_id,
+        provider_id=runtime_provider.provider_id,
+        thread_id=thread_id,
+        invoked_by_user_account_id=invoked_by_user_account_id,
+        invocation_kind=invocation_kind,
+        adapter_key=adapter.adapter_key,
+        runtime_provider=runtime_provider.model_provider,
+        requested_model=model_request.model,
+        response_model=model_response.model,
+        response_id=model_response.response_id,
+        status="succeeded",
+        latency_ms=max(0, int((time.monotonic() - started_at) * 1000)),
+        usage=dict(model_response.usage),
+        error_detail=None,
+    )
+    return model_response
+
+
+def _seed_workspace_provider_configs(
+    *,
+    settings: Settings,
+    store: ContinuityStore,
+    workspace_id: UUID,
+    created_by_user_account_id: UUID,
+) -> None:
+    if len(settings.workspace_provider_configs) == 0:
+        return
+
+    existing_provider_keys = {
+        (provider["provider_key"], provider["display_name"])
+        for provider in store.list_model_providers_for_workspace(workspace_id=workspace_id)
+    }
+    for provider_config in settings.workspace_provider_configs:
+        provider_identity = (provider_config.provider_key, provider_config.display_name)
+        if provider_identity in existing_provider_keys:
+            continue
+        _register_workspace_provider(
+            settings=settings,
+            store=store,
+            workspace_id=workspace_id,
+            created_by_user_account_id=created_by_user_account_id,
+            provider_key=provider_config.provider_key,
+            display_name=provider_config.display_name,
+            base_url=provider_config.base_url,
+            api_key=provider_config.api_key,
+            auth_mode=provider_config.auth_mode,
+            default_model=provider_config.default_model,
+            model_list_path=provider_config.model_list_path,
+            healthcheck_path=provider_config.healthcheck_path,
+            invoke_path=provider_config.invoke_path,
+            metadata={} if provider_config.metadata is None else dict(provider_config.metadata),
+        )
+        existing_provider_keys.add(provider_identity)
 
 
 def _register_workspace_provider(
@@ -2038,6 +2134,166 @@ def _register_workspace_azure_provider(
         workspace_id=workspace_id,
         provider_id=provider["id"],
         discovered_by_user_account_id=created_by_user_account_id,
+        adapter_key=adapter.adapter_key,
+        discovery_status=discovery_status,
+        capability_snapshot=capability_snapshot,
+        discovery_error=discovery_error,
+    )
+    return provider, capability
+
+
+def _update_workspace_provider(
+    *,
+    settings: Settings,
+    store: ContinuityStore,
+    existing_provider: ModelProviderRow,
+    updated_by_user_account_id: UUID,
+    display_name: str | None,
+    base_url: str | None,
+    api_key: str | None,
+    ad_token: str | None,
+    auth_mode: str | None,
+    default_model: str | None,
+    model_list_path: str | None,
+    healthcheck_path: str | None,
+    invoke_path: str | None,
+    api_version: str | None,
+    metadata: dict[str, object] | None,
+) -> tuple[ModelProviderRow, ProviderCapabilityRow]:
+    provider_key = existing_provider["provider_key"]
+    normalized_display_name = (
+        existing_provider["display_name"] if display_name is None else display_name.strip()
+    )
+    normalized_base_url = existing_provider["base_url"] if base_url is None else base_url.strip()
+    normalized_default_model = (
+        existing_provider["default_model"] if default_model is None else default_model.strip()
+    )
+    normalized_model_list_path = (
+        existing_provider["model_list_path"]
+        if model_list_path is None
+        else _normalize_provider_path(field_name="model_list_path", value=model_list_path)
+    )
+    normalized_healthcheck_path = (
+        existing_provider["healthcheck_path"]
+        if healthcheck_path is None
+        else _normalize_provider_path(field_name="healthcheck_path", value=healthcheck_path)
+    )
+    normalized_invoke_path = (
+        existing_provider["invoke_path"]
+        if invoke_path is None
+        else _normalize_provider_path(field_name="invoke_path", value=invoke_path)
+    )
+    normalized_metadata = (
+        existing_provider["metadata"] if metadata is None else metadata
+    )
+
+    if normalized_display_name == "":
+        raise ValueError("display_name is required")
+    normalized_base_url = validate_provider_base_url(
+        normalized_base_url,
+        require_dns_resolution=False,
+    )
+    if normalized_default_model == "":
+        raise ValueError("default_model is required")
+
+    encoded_api_key = existing_provider["api_key"]
+    normalized_auth_mode = existing_provider["auth_mode"] if auth_mode is None else auth_mode.strip().lower()
+    normalized_api_version = existing_provider["azure_api_version"]
+    normalized_azure_secret_ref = existing_provider["azure_auth_secret_ref"]
+
+    if provider_key == AZURE_ADAPTER_KEY:
+        if normalized_auth_mode not in {AZURE_AUTH_MODE_API_KEY, AZURE_AUTH_MODE_AD_TOKEN}:
+            raise ValueError(f"unsupported auth_mode: {normalized_auth_mode}")
+        if api_version is not None:
+            normalized_api_version = _normalize_azure_api_version(api_version)
+        credential_update = api_key if normalized_auth_mode == AZURE_AUTH_MODE_API_KEY else ad_token
+        if credential_update is not None and credential_update.strip() != "":
+            secret_ref = build_provider_secret_ref(workspace_id=existing_provider["workspace_id"])
+            write_provider_api_key(
+                settings=settings,
+                secret_ref=secret_ref,
+                api_key=credential_update.strip(),
+            )
+            encoded_api_key = "auth_mode_azure_secret_ref"
+            normalized_azure_secret_ref = encode_provider_secret_ref(secret_ref=secret_ref)
+    else:
+        if normalized_auth_mode not in {"bearer", "none"}:
+            raise ValueError(f"unsupported auth_mode: {normalized_auth_mode}")
+        if normalized_auth_mode == "none":
+            if api_key is not None and api_key.strip() != "":
+                raise ValueError("api_key must be empty when auth_mode is none")
+            encoded_api_key = "auth_mode_none"
+        else:
+            if api_key is not None:
+                if api_key.strip() == "":
+                    raise ValueError("api_key is required when auth_mode is bearer")
+                secret_ref = build_provider_secret_ref(workspace_id=existing_provider["workspace_id"])
+                write_provider_api_key(
+                    settings=settings,
+                    secret_ref=secret_ref,
+                    api_key=api_key.strip(),
+                )
+                encoded_api_key = encode_provider_secret_ref(secret_ref=secret_ref)
+            elif existing_provider["auth_mode"] != "bearer":
+                raise ValueError("api_key is required when auth_mode is bearer")
+        normalized_api_version = ""
+        normalized_azure_secret_ref = ""
+
+    provider = store.update_model_provider(
+        provider_id=existing_provider["id"],
+        workspace_id=existing_provider["workspace_id"],
+        provider_key=provider_key,
+        model_provider=existing_provider["model_provider"],
+        display_name=normalized_display_name,
+        base_url=normalized_base_url,
+        api_key=encoded_api_key,
+        auth_mode=normalized_auth_mode,
+        default_model=normalized_default_model,
+        status=existing_provider["status"],
+        model_list_path=normalized_model_list_path,
+        healthcheck_path=normalized_healthcheck_path,
+        invoke_path=normalized_invoke_path,
+        azure_api_version=normalized_api_version,
+        azure_auth_secret_ref=normalized_azure_secret_ref,
+        metadata=normalized_metadata,
+    )
+
+    runtime_provider = resolve_runtime_provider_config_secrets(
+        config=RuntimeProviderConfig.from_row(provider),
+        settings=settings,
+    )
+    adapter = provider_adapter_registry.resolve(runtime_provider.provider_key)
+    discovery_status: str = "ready"
+    discovery_error: str | None = None
+    try:
+        capability_snapshot = adapter.discover_capabilities(
+            config=runtime_provider,
+            settings=settings,
+        )
+    except ModelInvocationError as exc:
+        sanitized_discovery_error = sanitize_provider_error_message(str(exc))
+        extra_snapshot_fields = None
+        if runtime_provider.provider_key == AZURE_ADAPTER_KEY:
+            extra_snapshot_fields = {
+                "azure_api_version": runtime_provider.azure_api_version.strip()
+                or DEFAULT_AZURE_API_VERSION,
+                "azure_auth_mode": runtime_provider.auth_mode,
+            }
+        capability_snapshot = _fallback_provider_capability_snapshot(
+            adapter_key=adapter.adapter_key,
+            runtime_provider=adapter.runtime_provider,
+            model_list_path=normalized_model_list_path,
+            healthcheck_path=normalized_healthcheck_path,
+            invoke_path=normalized_invoke_path,
+            extra_snapshot_fields=extra_snapshot_fields,
+        )
+        discovery_status = "failed"
+        discovery_error = sanitized_discovery_error
+
+    capability = store.upsert_provider_capability(
+        workspace_id=existing_provider["workspace_id"],
+        provider_id=provider["id"],
+        discovered_by_user_account_id=updated_by_user_account_id,
         adapter_key=adapter.adapter_key,
         discovery_status=discovery_status,
         capability_snapshot=capability_snapshot,
@@ -2563,6 +2819,22 @@ class TestProviderRequest(BaseModel):
         min_length=1,
         max_length=1000,
     )
+
+
+class UpdateProviderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    base_url: str | None = Field(default=None, min_length=1, max_length=500)
+    auth_mode: str | None = Field(default=None, min_length=1, max_length=40)
+    api_key: str | None = Field(default=None, max_length=8000)
+    ad_token: str | None = Field(default=None, max_length=16000)
+    api_version: str | None = Field(default=None, min_length=1, max_length=40)
+    default_model: str | None = Field(default=None, min_length=1, max_length=200)
+    model_list_path: str | None = Field(default=None, min_length=1, max_length=200)
+    healthcheck_path: str | None = Field(default=None, min_length=1, max_length=200)
+    invoke_path: str | None = Field(default=None, min_length=1, max_length=200)
+    metadata: dict[str, object] | None = None
 
 
 class CreateModelPackRequest(BaseModel):
@@ -7280,6 +7552,13 @@ def bootstrap_v1_workspace(
                     workspace_id=workspace["id"],
                     user_account_id=user_account_id,
                 )
+                store = ContinuityStore(conn)
+                _seed_workspace_provider_configs(
+                    settings=settings,
+                    store=store,
+                    workspace_id=workspace["id"],
+                    created_by_user_account_id=user_account_id,
+                )
                 preferences = ensure_user_preferences(conn, user_account_id=user_account_id)
                 status_payload = get_bootstrap_status(
                     conn,
@@ -7704,6 +7983,77 @@ def get_v1_provider(provider_id: UUID, request: Request) -> JSONResponse:
     )
 
 
+@app.patch("/v1/providers/{provider_id}")
+def update_v1_provider(
+    provider_id: UUID,
+    request: Request,
+    body: UpdateProviderRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                workspace = get_current_workspace(
+                    conn,
+                    user_account_id=resolution["user_account"]["id"],
+                    preferred_workspace_id=resolution["session"]["workspace_id"],
+                )
+                if workspace is None:
+                    return JSONResponse(status_code=404, content={"detail": "no workspace is currently selected"})
+
+                store = ContinuityStore(conn)
+                provider = store.get_model_provider_for_workspace_optional(
+                    provider_id=provider_id,
+                    workspace_id=workspace["id"],
+                )
+                if provider is None:
+                    return JSONResponse(status_code=404, content={"detail": f"provider {provider_id} was not found"})
+
+                provider, capability = _update_workspace_provider(
+                    settings=settings,
+                    store=store,
+                    existing_provider=provider,
+                    updated_by_user_account_id=resolution["user_account"]["id"],
+                    display_name=body.display_name,
+                    base_url=body.base_url,
+                    api_key=body.api_key,
+                    ad_token=body.ad_token,
+                    auth_mode=body.auth_mode,
+                    default_model=body.default_model,
+                    model_list_path=body.model_list_path,
+                    healthcheck_path=body.healthcheck_path,
+                    invoke_path=body.invoke_path,
+                    api_version=body.api_version,
+                    metadata=body.metadata,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except psycopg.errors.UniqueViolation:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "provider display_name must be unique within the workspace"},
+        )
+    except ProviderAdapterNotFoundError as exc:
+        return JSONResponse(status_code=422, content={"detail": str(exc)})
+    except ProviderSecretManagerError as exc:
+        return JSONResponse(status_code=500, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(
+        status_code=200,
+        content=jsonable_encoder(
+            {
+                "provider": _serialize_model_provider(provider),
+                "capabilities": _serialize_provider_capability(capability),
+            }
+        ),
+    )
+
+
 @app.post("/v1/providers/test")
 def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONResponse:
     settings = get_settings()
@@ -7788,10 +8138,16 @@ def test_v1_provider(request: Request, body: TestProviderRequest) -> JSONRespons
                 )
 
                 try:
-                    model_response = adapter.invoke(
-                        config=runtime_provider,
+                    model_response = _invoke_runtime_provider_model(
+                        store=store,
+                        workspace_id=workspace["id"],
+                        invoked_by_user_account_id=resolution["user_account"]["id"],
+                        thread_id=None,
+                        invocation_kind="provider_test",
+                        adapter=adapter,
+                        runtime_provider=runtime_provider,
                         settings=settings,
-                        request=model_request,
+                        model_request=model_request,
                     )
                 except ModelInvocationError as exc:
                     sanitized_invoke_error = sanitize_provider_error_message(str(exc))
@@ -8240,6 +8596,7 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
 
     try:
         with user_connection(settings.database_url, user_account_id) as conn:
+            set_current_user_account(conn, user_account_id)
             store = ContinuityStore(conn)
             result = generate_response(
                 store=store,
@@ -8250,6 +8607,11 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                 limits=runtime_limits,
                 runtime_override=(runtime_provider.model_provider, selected_model),
                 model_invoker=lambda model_request: _invoke_runtime_provider_model(
+                    store=store,
+                    workspace_id=workspace_id,
+                    invoked_by_user_account_id=user_account_id,
+                    thread_id=body.thread_id,
+                    invocation_kind="runtime_invoke",
                     adapter=adapter,
                     runtime_provider=runtime_provider,
                     settings=settings,

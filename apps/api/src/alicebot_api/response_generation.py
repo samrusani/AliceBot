@@ -60,6 +60,7 @@ class OpenAICompatibleTransportConfig:
     base_url: str
     api_key: str
     timeout_seconds: int
+    invoke_path: str = "/responses"
 
 
 class _OpenAIResponseContentItem(TypedDict, total=False):
@@ -246,8 +247,15 @@ def _extract_http_error_detail(exc: HTTPError) -> str | None:
     return None
 
 
-def _build_model_http_request(*, base_url: str, api_key: str, payload: JsonObject) -> Request:
-    endpoint = base_url.rstrip("/") + "/responses"
+def _build_model_http_request(
+    *,
+    base_url: str,
+    api_key: str,
+    invoke_path: str,
+    payload: JsonObject,
+) -> Request:
+    normalized_invoke_path = invoke_path if invoke_path.startswith("/") else f"/{invoke_path}"
+    endpoint = base_url.rstrip("/") + normalized_invoke_path
     return Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
@@ -319,6 +327,7 @@ def invoke_openai_compatible_model(
     http_request = _build_model_http_request(
         base_url=transport.base_url,
         api_key=transport.api_key,
+        invoke_path=transport.invoke_path,
         payload=payload,
     )
 

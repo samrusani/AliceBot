@@ -50,6 +50,8 @@ Completed baseline included in this pre-1.0 public release:
 Historical planning/control artifacts remain available in:
 [docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
 
+Phase 14 planning is active on top of this released baseline.
+
 ## Why Alice exists
 
 AI assistants still fail in the same places:

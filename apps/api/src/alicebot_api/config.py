@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
+import json
 import os
 from uuid import UUID
 
@@ -33,6 +34,7 @@ DEFAULT_MODEL_API_KEY = ""
 DEFAULT_MODEL_TIMEOUT_SECONDS = 30
 DEFAULT_TASK_WORKSPACE_ROOT = "/tmp/alicebot/task-workspaces"
 DEFAULT_PROVIDER_SECRET_MANAGER_URL = ""
+DEFAULT_WORKSPACE_PROVIDER_CONFIGS_JSON = "[]"
 DEFAULT_GMAIL_SECRET_MANAGER_URL = ""
 DEFAULT_CALENDAR_SECRET_MANAGER_URL = ""
 DEFAULT_AUTH_USER_ID = ""
@@ -86,6 +88,20 @@ DEFAULT_RETRIEVAL_TRACE_RETENTION_DAYS = 14
 DEFAULT_LEGACY_V0_ENABLED_OUTSIDE_DEV = False
 
 Environment = Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class WorkspaceProviderConfig:
+    provider_key: str
+    display_name: str
+    base_url: str
+    api_key: str
+    default_model: str
+    auth_mode: str = "bearer"
+    model_list_path: str = "/models"
+    healthcheck_path: str = "/models"
+    invoke_path: str = "/responses"
+    metadata: Mapping[str, object] | None = None
 
 
 def _get_env_value(env: Environment, key: str, default: str) -> str:
@@ -148,6 +164,7 @@ class Settings:
     model_timeout_seconds: int = DEFAULT_MODEL_TIMEOUT_SECONDS
     task_workspace_root: str = DEFAULT_TASK_WORKSPACE_ROOT
     provider_secret_manager_url: str = DEFAULT_PROVIDER_SECRET_MANAGER_URL
+    workspace_provider_configs: tuple[WorkspaceProviderConfig, ...] = ()
     gmail_secret_manager_url: str = DEFAULT_GMAIL_SECRET_MANAGER_URL
     calendar_secret_manager_url: str = DEFAULT_CALENDAR_SECRET_MANAGER_URL
     auth_user_id: str = DEFAULT_AUTH_USER_ID
@@ -241,6 +258,13 @@ class Settings:
                 current_env,
                 "PROVIDER_SECRET_MANAGER_URL",
                 cls.provider_secret_manager_url,
+            ),
+            workspace_provider_configs=_parse_workspace_provider_configs(
+                _get_env_value(
+                    current_env,
+                    "WORKSPACE_PROVIDER_CONFIGS_JSON",
+                    DEFAULT_WORKSPACE_PROVIDER_CONFIGS_JSON,
+                )
             ),
             gmail_secret_manager_url=_get_env_value(
                 current_env,
@@ -437,6 +461,55 @@ class Settings:
         return _validate_settings(settings)
 
 
+def _parse_workspace_provider_configs(raw_value: str) -> tuple[WorkspaceProviderConfig, ...]:
+    normalized_raw = raw_value.strip()
+    if normalized_raw == "":
+        return ()
+
+    try:
+        payload = json.loads(normalized_raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("WORKSPACE_PROVIDER_CONFIGS_JSON must be valid JSON") from exc
+
+    if not isinstance(payload, list):
+        raise ValueError("WORKSPACE_PROVIDER_CONFIGS_JSON must decode to a list")
+
+    configs: list[WorkspaceProviderConfig] = []
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}] must be an object"
+            )
+
+        provider_key = str(item.get("provider_key", "openai_compatible")).strip()
+        if provider_key != "openai_compatible":
+            raise ValueError(
+                f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}].provider_key must be openai_compatible"
+            )
+
+        metadata = item.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise ValueError(
+                f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}].metadata must be an object"
+            )
+
+        config = WorkspaceProviderConfig(
+            provider_key=provider_key,
+            display_name=str(item.get("display_name", "")).strip(),
+            base_url=str(item.get("base_url", "")).strip(),
+            api_key=str(item.get("api_key", "")).strip(),
+            default_model=str(item.get("default_model", "")).strip(),
+            auth_mode=str(item.get("auth_mode", "bearer")).strip().lower(),
+            model_list_path=str(item.get("model_list_path", "/models")).strip(),
+            healthcheck_path=str(item.get("healthcheck_path", "/models")).strip(),
+            invoke_path=str(item.get("invoke_path", "/responses")).strip(),
+            metadata=metadata,
+        )
+        configs.append(config)
+
+    return tuple(configs)
+
+
 def _validate_settings(settings: Settings) -> Settings:
     if settings.auth_user_id != "":
         try:
@@ -494,6 +567,31 @@ def _validate_settings(settings: Settings) -> Settings:
         raise ValueError("RETRIEVAL_TRACE_RETENTION_DAYS must be a positive integer")
     if settings.trust_proxy_headers and len(settings.trusted_proxy_ips) == 0:
         raise ValueError("TRUSTED_PROXY_IPS must include at least one IP when TRUST_PROXY_HEADERS is enabled")
+    for index, provider_config in enumerate(settings.workspace_provider_configs):
+        if provider_config.display_name == "":
+            raise ValueError(
+                f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}].display_name is required"
+            )
+        if provider_config.base_url == "":
+            raise ValueError(
+                f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}].base_url is required"
+            )
+        if provider_config.default_model == "":
+            raise ValueError(
+                f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}].default_model is required"
+            )
+        if provider_config.auth_mode not in {"bearer", "none"}:
+            raise ValueError(
+                f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}].auth_mode must be bearer or none"
+            )
+        if provider_config.auth_mode == "bearer" and provider_config.api_key == "":
+            raise ValueError(
+                f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}].api_key is required when auth_mode is bearer"
+            )
+        if provider_config.auth_mode == "none" and provider_config.api_key != "":
+            raise ValueError(
+                f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}].api_key must be empty when auth_mode is none"
+            )
 
     if settings.app_env not in {"development", "test"}:
         if "*" in settings.cors_allowed_origins:

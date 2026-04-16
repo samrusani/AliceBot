@@ -73,6 +73,7 @@ def test_settings_defaults(monkeypatch):
     assert settings.model_name == "gpt-5-mini"
     assert settings.model_timeout_seconds == 30
     assert settings.task_workspace_root == "/tmp/alicebot/task-workspaces"
+    assert settings.workspace_provider_configs == ()
     assert settings.gmail_secret_manager_url == ""
     assert settings.calendar_secret_manager_url == ""
     assert settings.auth_user_id == ""
@@ -171,6 +172,7 @@ def test_settings_honor_environment_overrides(monkeypatch):
     assert settings.model_name == "gpt-5"
     assert settings.model_timeout_seconds == 45
     assert settings.task_workspace_root == "/tmp/custom-workspaces"
+    assert settings.workspace_provider_configs == ()
     assert settings.gmail_secret_manager_url == "file:///tmp/custom-gmail-secrets"
     assert settings.calendar_secret_manager_url == "file:///tmp/custom-calendar-secrets"
     assert settings.auth_user_id == "00000000-0000-0000-0000-000000000001"
@@ -216,6 +218,12 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
             "MODEL_PROVIDER": "openai_responses",
             "MODEL_NAME": "gpt-5-mini",
             "TASK_WORKSPACE_ROOT": "/tmp/mapped-workspaces",
+            "WORKSPACE_PROVIDER_CONFIGS_JSON": (
+                '[{"display_name":"Configured OpenAI",'
+                '"base_url":"https://provider.example/v1",'
+                '"api_key":"provider-secret-key",'
+                '"default_model":"gpt-5-mini"}]'
+            ),
             "GMAIL_SECRET_MANAGER_URL": "file:///tmp/mapped-gmail-secrets",
             "CALENDAR_SECRET_MANAGER_URL": "file:///tmp/mapped-calendar-secrets",
             "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001",
@@ -259,6 +267,9 @@ def test_settings_can_be_loaded_from_an_explicit_environment_mapping() -> None:
     assert settings.model_provider == "openai_responses"
     assert settings.model_name == "gpt-5-mini"
     assert settings.task_workspace_root == "/tmp/mapped-workspaces"
+    assert len(settings.workspace_provider_configs) == 1
+    assert settings.workspace_provider_configs[0].display_name == "Configured OpenAI"
+    assert settings.workspace_provider_configs[0].provider_key == "openai_compatible"
     assert settings.gmail_secret_manager_url == "file:///tmp/mapped-gmail-secrets"
     assert settings.calendar_secret_manager_url == "file:///tmp/mapped-calendar-secrets"
     assert settings.auth_user_id == "00000000-0000-0000-0000-000000000001"
@@ -309,6 +320,25 @@ def test_settings_raise_clear_error_for_invalid_integer_values() -> None:
 def test_settings_reject_invalid_auth_user_id() -> None:
     with pytest.raises(ValueError, match="ALICEBOT_AUTH_USER_ID must be a valid UUID"):
         Settings.from_env({"ALICEBOT_AUTH_USER_ID": "not-a-uuid"})
+
+
+def test_settings_reject_invalid_workspace_provider_configs_json() -> None:
+    with pytest.raises(ValueError, match="WORKSPACE_PROVIDER_CONFIGS_JSON must be valid JSON"):
+        Settings.from_env({"WORKSPACE_PROVIDER_CONFIGS_JSON": "not-json"})
+
+    with pytest.raises(
+        ValueError,
+        match="WORKSPACE_PROVIDER_CONFIGS_JSON\\[0\\]\\.api_key is required when auth_mode is bearer",
+    ):
+        Settings.from_env(
+            {
+                "WORKSPACE_PROVIDER_CONFIGS_JSON": (
+                    '[{"display_name":"Configured OpenAI",'
+                    '"base_url":"https://provider.example/v1",'
+                    '"default_model":"gpt-5-mini"}]'
+                )
+            }
+        )
 
 
 def test_settings_reject_non_positive_rate_limit_values() -> None:

@@ -12,41 +12,66 @@
 
 These remain baseline truth and are not future milestones.
 
-## Current Planning Status
-- Phase 13 is shipped.
-- No post-Phase-13 execution sprint is active yet.
-- The next roadmap step is to define the next phase on top of the `v0.4.0` baseline.
+## Active Planning Status
+- Phase 14 is active.
+- `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is the active execution sprint.
+- `P14-S2` Ollama + llama.cpp + vLLM Adapters is planned.
+- `P14-S3` Model Packs is planned.
+- `P14-S4` Reference Integrations is planned.
+- `P14-S5` Design Partner Launch is planned.
 
-## Completed Phase 13 Sequence
+## Phase 14 Planned Milestones
 
-### P13-S1: One-Call Continuity
-- ship `POST /v1/continuity/brief`
-- ship matching CLI `alice brief`
-- ship matching MCP `alice_brief`
-- return one continuity bundle containing summary, recent changes, open loops, conflicts, next action, provenance, and trust posture
-- make this the default integration surface for external agents
+### P14-S1: Provider Abstraction Cleanup + OpenAI-Compatible Adapter
+- finalize the provider interface and provider registry
+- ship provider registration/update flows
+- ship capability discovery and provider test/healthcheck paths
+- ship OpenAI-compatible adapter normalization and invocation telemetry persistence
+- keep one-call continuity working through the provider abstraction
 
-Status: shipped
+Status: active
+Release target: internal provider-foundation release candidate
 
-### P13-S2: Alice Lite
-- add one-command local startup
-- add smaller-footprint deployment profile
-- tighten quickstart and first-result path
-- keep semantics aligned with the full Alice baseline
+### P14-S2: Ollama + llama.cpp + vLLM Adapters
+- ship adapters for the main local/self-hosted runtime classes
+- add local model quickstarts and example configs
+- add local compatibility smoke tests
 
-Status: shipped
+Status: planned
+Release target: `v0.5.0-rc1`
 
-### P13-S3: Memory Hygiene + Conversation Health
-- surface duplicates, stale facts, unresolved contradictions, and review queue pressure
-- surface recent threads, stale threads, risky threads, and thread health
-- improve operational visibility without adding new substrate work
+### P14-S3: Model Packs
+- ship versioned first-party model packs for the main OSS model families
+- add pack binding workflow
+- integrate pack defaults into runtime invocation and briefing
+- publish a compatibility matrix
 
-Status: shipped
+Status: planned
+Release target: `v0.5.0-rc2`
 
-## Next Roadmap Gate
-- Define the next phase explicitly before reactivating `.ai/active/SPRINT_PACKET.md` for new build work.
-- Preserve the shipped one-call continuity, Alice Lite, and hygiene/thread-health surfaces as baseline behavior.
+### P14-S4: Reference Integrations
+- polish Hermes and OpenClaw integration paths
+- ship generic Python and TypeScript example agents
+- add “which integration path should I use?” guidance
 
-## Beyond Phase 13
-- No post-Phase-13 feature plan is currently defined.
-- The next step after Phase 13 is to define the next phase, not to reopen Phase 13 work.
+Status: planned
+Release target: `v0.5.0`
+
+### P14-S5: Design Partner Launch
+- ship design-partner onboarding, tracking, instrumentation, and feedback workflows
+- onboard 3 to 5 design partners into active or structured pilot use
+- capture at least 1 candidate case study
+
+Status: planned
+Release target: `v0.5.1` or `v0.6.0-beta`
+
+## Sequencing Rules
+- Phase 14 is a platform-and-adoption phase.
+- Prioritize provider adapters, model packs, reference integrations, and design partner onboarding.
+- Do not allow scope drift into new substrate research, new channels, enterprise governance expansion, or major vertical-agent work unless required by a declared Phase 14 deliverable.
+- Preserve one-call continuity semantics across provider classes.
+- Treat docs as sprint deliverables, not cleanup work.
+
+## Beyond Phase 14
+- No post-Phase-14 feature plan is currently defined.
+- The next step after Phase 14 is to evaluate design-partner proof, release posture, and the next phase boundary.
