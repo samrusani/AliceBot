@@ -2,65 +2,63 @@
 
 ## sprint objective
 
-Align Ollama, llama.cpp / llama-server, and vLLM runtime paths to the stabilized provider contract, keep telemetry and continuity behavior consistent across those adapters, and document reproducible local/self-hosted quickstarts.
+Make common model families easy to use with sensible continuity defaults on top of the shipped provider/runtime baseline by shipping the `P14-S3` model-pack workflow.
 
 ## completed work
 
-- Added a first-class `vllm` provider adapter with healthcheck, model discovery, and chat-completions invocation aligned to the shared provider runtime contract.
-- Added dedicated vLLM response/model parsers so runtime errors and normalization stay provider-specific instead of inheriting llama.cpp labels.
-- Added `POST /v1/providers/vllm/register` with adapter-specific defaults for self-hosted vLLM deployments.
-- Extended workspace provider config parsing so bootstrap config can seed either `openai_compatible` or `vllm` providers with provider-specific defaults.
-- Fixed vLLM healthchecks to treat provider-native empty `200` responses as healthy instead of requiring JSON on `/health`.
-- Extended provider contract literals to include `vllm`.
-- Updated built-in model-pack compatibility hooks so built-in and custom packs can declare `vllm` in `provider_keys`.
-- Extended the local/self-hosted smoke helper script to exercise `ollama`, `llamacpp`, or `vllm`.
-- Added targeted unit coverage for the vLLM adapter and config/model-pack compatibility changes.
-- Added integration coverage for vLLM registration, capability discovery, provider test, runtime invoke, workspace-config seeding, and pack-contract acceptance.
-- Updated provider/runtime docs and quickstarts for the new vLLM adapter path, including the Phase 14 config doc note about dedicated `vllm` config entries.
+- Added provider-aware model-pack bindings by extending workspace bindings with an optional `provider_id`.
+- Kept workspace-default bindings in place so briefing defaults can still resolve without a provider id.
+- Updated model-pack resolution so runtime selection now follows request override, provider-specific binding, workspace default binding, then no pack.
+- Added runtime compatibility enforcement using declarative pack contract fields (`compatibility.provider_keys` and `compatibility.runtime_providers`).
+- Updated the bind API to accept optional `provider_id`, validate provider existence in the workspace, and reject incompatible provider-to-pack bindings with `409`.
+- Updated runtime invoke to reject incompatible pack/provider combinations with `409` instead of silently applying the wrong defaults.
+- Trimmed the built-in first-party catalog to the four `P14-S3` packs: `llama`, `qwen`, `gemma`, and `gpt-oss`.
+- Added a migration and migration unit coverage for provider-aware workspace model-pack bindings.
+- Updated targeted unit and integration coverage for provider-aware binding, first-party catalog expectations, and compatibility enforcement.
+- Added provider-surface pack smoke coverage across the shipped `ollama`, `llamacpp`, and `vllm` runtime paths.
+- Updated the model-pack contract and compatibility docs to match the shipped `P14-S3` behavior.
 
 ## incomplete work
 
-- No additional implementation items remain within this sprint scope.
-- Control Tower decisions from the sprint packet remain product decisions rather than implementation work:
-  - supported minimum runtime versions
-  - Azure polish timing
-  - any pre-Phase-14 local adapter deprecations
+- No implementation items remain within the sprint scope.
+- Deferred families such as DeepSeek, Mistral, and Kimi remain out of the first-party catalog for this sprint.
 
 ## files changed
 
-- `apps/api/src/alicebot_api/config.py`
+- `apps/api/alembic/versions/20260416_0064_phase14_provider_model_pack_bindings.py`
+- `.ai/active/SPRINT_PACKET.md`
+- `.ai/handoff/CURRENT_STATE.md`
+- `ARCHITECTURE.md`
+- `CURRENT_STATE.md`
+- `PRODUCT_BRIEF.md`
+- `ROADMAP.md`
 - `apps/api/src/alicebot_api/contracts.py`
-- `apps/api/src/alicebot_api/local_provider_helpers.py`
 - `apps/api/src/alicebot_api/main.py`
 - `apps/api/src/alicebot_api/model_packs.py`
-- `apps/api/src/alicebot_api/provider_runtime.py`
-- `docs/integrations/phase11-local-provider-adapters.md`
+- `apps/api/src/alicebot_api/store.py`
 - `docs/integrations/phase11-model-pack-compatibility.md`
 - `docs/integrations/phase11-model-packs-tier1.md`
-- `docs/integrations/phase11-setup-paths.md`
-- `docs/integrations/phase14-provider-configuration.md`
-- `scripts/run_phase11_local_provider_e2e.py`
+- `docs/phase14-model-pack-contract.md`
+- `docs/phase14-s3-control-tower-packet.md`
+- `docs/phase14-sprint-14-1-14-5-plan.md`
+- `scripts/check_control_doc_truth.py`
 - `tests/integration/test_phase11_model_packs_api.py`
-- `tests/integration/test_phase11_provider_runtime_api.py`
-- `tests/unit/test_config.py`
+- `tests/unit/test_20260416_0064_phase14_provider_model_pack_bindings.py`
 - `tests/unit/test_model_packs.py`
-- `tests/unit/test_provider_runtime.py`
 
 ## tests run
 
 - `python3 scripts/check_control_doc_truth.py`
 - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-- `./.venv/bin/python -m pytest tests/unit/test_provider_runtime.py tests/unit/test_model_packs.py tests/unit/test_config.py -q`
-- `./.venv/bin/python -m pytest tests/integration/test_phase11_provider_runtime_api.py -q`
+- `./.venv/bin/python -m pytest tests/unit/test_model_packs.py tests/unit/test_task_briefing.py tests/unit/test_20260416_0064_phase14_provider_model_pack_bindings.py -q`
 - `./.venv/bin/python -m pytest tests/integration/test_phase11_model_packs_api.py -q`
-- `./.venv/bin/python -m pytest tests/integration/test_phase11_provider_runtime_api.py tests/integration/test_phase11_model_packs_api.py -q`
-- `git diff --check`
+- `./.venv/bin/python -m pytest tests/integration/test_phase11_provider_runtime_api.py -q`
 
 ## blockers/issues
 
-- No implementation blockers encountered.
-- Real-runtime validation against live Ollama, llama.cpp, and vLLM processes was not run in this build; compatibility proof here is based on targeted unit and integration coverage plus the updated smoke helper.
+- No blocking implementation issues remain.
+- Pack smoke validation in this build is covered by focused integration smoke over the shipped provider/runtime surfaces (`ollama`, `llamacpp`, `vllm`) rather than by external provider processes.
 
 ## recommended next step
 
-Run the updated smoke flow against real local/self-hosted runtimes, then lock the supported runtime-version statement in the Phase 14 docs.
+Decide whether DeepSeek and Mistral stay deferred or become first-party packs in the next sprint, then extend the compatibility matrix only after that product decision is settled.

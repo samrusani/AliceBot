@@ -1,7 +1,7 @@
 # Sprint Packet
 
 ## Sprint Title
-P14-S2: Ollama + llama.cpp + vLLM Adapters
+P14-S3: Model Packs
 
 ## Activation Note
 - This packet is active.
@@ -9,8 +9,8 @@ P14-S2: Ollama + llama.cpp + vLLM Adapters
 - Phase 14 is active on top of the shipped Phase 13 baseline.
 - Phase 14 sequence is fixed for now:
   - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter: shipped
-  - `P14-S2` Ollama + llama.cpp + vLLM Adapters: active
-  - `P14-S3` Model Packs
+  - `P14-S2` Ollama + llama.cpp + vLLM Adapters: shipped
+  - `P14-S3` Model Packs: active
   - `P14-S4` Reference Integrations
   - `P14-S5` Design Partner Launch
 
@@ -18,10 +18,10 @@ P14-S2: Ollama + llama.cpp + vLLM Adapters
 feature
 
 ## Sprint Reason
-`P14-S1` established the provider contract and telemetry baseline. `P14-S2` now hardens the existing local and self-hosted runtime paths against that contract so later model-pack, integration, and design-partner work sits on compatibility proof instead of assumptions.
+`P14-S1` and `P14-S2` established the provider contract, telemetry baseline, and local/self-hosted compatibility layer. `P14-S3` now turns that provider surface into usable defaults so external builders do not need to hand-tune pack behavior per workspace.
 
 ## Git Instructions
-- Branch Name: `codex/phase14-s2-local-self-hosted-adapters`
+- Branch Name: `codex/phase14-s3-model-packs`
 - Base Branch: `main`
 - PR Strategy: one implementation branch, one PR
 - Merge Policy: squash merge after review `PASS` and explicit approval
@@ -34,23 +34,23 @@ feature
 - shipped Alice Lite profile
 - shipped hygiene/thread-health visibility
 - shipped `P14-S1` provider contract, capability snapshot, and invocation telemetry baseline
+- shipped `P14-S2` local/self-hosted compatibility layer, including the dedicated `vllm` provider path and aligned runtime/pack compatibility hooks
 - no semantic fork between API, CLI, MCP, hosted, provider-runtime, and Hermes paths
 
 ## Exact Goal
-Harden Alice's existing Ollama, llama.cpp, and vLLM paths onto the stabilized provider contract and prove local/self-hosted compatibility without changing continuity semantics.
+Make common model families easy to use with sensible continuity defaults on top of the shipped provider/runtime baseline.
 
 ## In Scope
-- Ollama adapter alignment to the stabilized provider interface
-- llama.cpp / llama-server adapter alignment to the stabilized provider interface
-- vLLM adapter alignment to the stabilized provider interface
-- provider-specific capability mapping cleanup
-- consistent telemetry and continuity behavior across the three runtime classes
-- local model quickstarts and example configs
-- local compatibility smoke tests
+- model-pack schema and storage hardening where needed
+- model-pack API and workspace pack-binding workflow
+- first-party packs for Llama, Qwen, Gemma, and `gpt-oss`
+- pack-aware invocation and briefing defaults
+- compatibility matrix docs
+- pack smoke tests
 
 ## Out Of Scope
-- new provider classes beyond what is required to keep the interface stable
-- model-pack UX/polish beyond compatibility hooks
+- provider-contract redesign
+- new provider classes beyond what is required to support declared pack families
 - reference integrations
 - design-partner workflows
 - retrieval research, graph migration, new channels, marketplace work, or enterprise governance expansion
@@ -60,37 +60,35 @@ Harden Alice's existing Ollama, llama.cpp, and vLLM paths onto the stabilized pr
 - `apps/api/alembic/versions/`
 - `tests/unit/`
 - `tests/integration/`
-- `docs/` provider/runtime docs
-- local/self-hosted runtime smoke helpers
+- `docs/` model-pack and compatibility docs
 - control docs if baseline status markers need updates
 
 ## Planned Deliverables
-- Ollama adapter contract alignment
-- llama.cpp / llama-server adapter contract alignment
-- vLLM adapter contract alignment
-- normalized capability mappings and telemetry behavior for local/self-hosted runtimes
-- local model quickstarts and example configs
-- local compatibility smoke tests
+- model-pack schema and API surface
+- workspace pack binding flow
+- first-party pack definitions for Llama, Qwen, Gemma, and `gpt-oss`
+- pack-aware runtime and briefing defaults
+- compatibility matrix docs
+- pack smoke tests
 
 ## Acceptance Criteria
-- Alice works with a local Ollama deployment through the stabilized provider contract
-- Alice works with a llama.cpp-compatible server through the stabilized provider contract
-- Alice works with a self-hosted vLLM deployment through the stabilized provider contract
-- capability mapping and telemetry behavior are consistent and inspectable across all three
-- one-call continuity semantics stay stable across all three local/self-hosted paths
-- local quickstarts are reproducible
+- a workspace can bind a provider to a pack
+- pack defaults affect briefing and runtime behavior correctly
+- first-party packs are versioned and documented
+- users get good defaults without manual tuning
+- pack behavior composes the shipped provider/runtime baseline instead of reopening provider work
 
 ## Required Verification
 - `python3 scripts/check_control_doc_truth.py`
 - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-- targeted unit/integration coverage for Ollama, llama.cpp, and vLLM adapter behavior
-- smoke validation for local/self-hosted runtime paths
-- doc/quickstart validation for local runtime setup paths
+- targeted unit/integration coverage for model-pack storage, binding, and runtime/briefing defaults
+- pack smoke validation against the shipped provider/runtime surface
+- compatibility-matrix and pack-doc validation
 
 ## Control Tower Decisions Needed
-- whether Azure polish is pulled into this sprint or explicitly deferred to later integration/documentation work
-- whether any pre-Phase-14 local adapter behavior must be deprecated now instead of carried forward
-- what minimum local runtime versions are declared as supported in the Phase 14 docs
+- whether DeepSeek or Mistral stay explicitly deferred after the first-party pack set ships
+- how strict the initial pack-to-provider compatibility matrix is at launch
+- which pack quirks are allowed as declarative defaults versus requiring runtime code changes
 
 ## Exit Condition
-This sprint is complete when Alice's existing Ollama, llama.cpp, and vLLM paths are aligned to the stabilized provider contract, backed by compatibility proof and local quickstarts, and still preserve one-call continuity semantics.
+This sprint is complete when workspaces can bind documented first-party packs to the shipped provider/runtime baseline, pack-aware defaults behave correctly, and the result reduces manual tuning without creating a second continuity model.

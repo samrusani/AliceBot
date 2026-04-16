@@ -179,6 +179,93 @@ class FakeHTTPResponse:
         return self.body
 
 
+def _install_local_provider_success(monkeypatch) -> list[dict[str, object]]:
+    captured_requests: list[dict[str, object]] = []
+
+    def fake_urlopen(request, timeout):
+        url = request.full_url
+        captured_requests.append(
+            {
+                "url": url,
+                "timeout": timeout,
+                "body": None if request.data is None else json.loads(request.data.decode("utf-8")),
+            }
+        )
+        if url == "http://ollama.example:11434/api/version":
+            return FakeHTTPResponse(json.dumps({"version": "0.5.1"}).encode("utf-8"))
+        if url == "http://ollama.example:11434/api/tags":
+            return FakeHTTPResponse(
+                json.dumps({"models": [{"name": "llama3.2:latest"}]}).encode("utf-8")
+            )
+        if url == "http://ollama.example:11434/api/chat":
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "message": {"role": "assistant", "content": "Ollama pack smoke response"},
+                        "done": True,
+                        "prompt_eval_count": 13,
+                        "eval_count": 4,
+                    }
+                ).encode("utf-8")
+            )
+        if url == "http://llamacpp.example:8080/health":
+            return FakeHTTPResponse(json.dumps({"status": "ok"}).encode("utf-8"))
+        if url == "http://llamacpp.example:8080/v1/models":
+            return FakeHTTPResponse(
+                json.dumps({"data": [{"id": "Meta-Llama-3.1-8B-Instruct"}]}).encode("utf-8")
+            )
+        if url == "http://llamacpp.example:8080/v1/chat/completions":
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "id": "chatcmpl-llamacpp-pack-smoke",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "llama.cpp pack smoke response"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 13,
+                            "completion_tokens": 4,
+                            "total_tokens": 17,
+                        },
+                    }
+                ).encode("utf-8")
+            )
+        if url == "http://vllm.example:8001/health":
+            return FakeHTTPResponse(json.dumps({"status": "ok"}).encode("utf-8"))
+        if url == "http://vllm.example:8001/v1/models":
+            return FakeHTTPResponse(
+                json.dumps({"data": [{"id": "mistral-small-instruct"}]}).encode("utf-8")
+            )
+        if url == "http://vllm.example:8001/v1/chat/completions":
+            return FakeHTTPResponse(
+                json.dumps(
+                    {
+                        "id": "chatcmpl-vllm-pack-smoke",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "vLLM pack smoke response"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 13,
+                            "completion_tokens": 4,
+                            "total_tokens": 17,
+                        },
+                    }
+                ).encode("utf-8")
+            )
+        raise AssertionError(f"unexpected local provider URL: {url}")
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_urlopen)
+    return captured_requests
+
+
 def _extract_context_payload(http_payload: dict[str, Any]) -> dict[str, Any]:
     input_items = http_payload["input"]
     context_item = next(
@@ -223,21 +310,18 @@ def test_phase11_model_pack_catalog_bind_and_runtime_shaping(migrated_database_u
         "qwen",
         "gemma",
         "gpt-oss",
-        "deepseek",
-        "kimi",
-        "mistral",
     }.issubset(listed_ids)
 
     detail_status, detail_payload = invoke_request(
         "GET",
-        "/v1/model-packs/deepseek",
+        "/v1/model-packs/gpt-oss",
         query_params={"version": "1.0.0"},
         headers=auth_header(session_token),
     )
     assert detail_status == 200
-    assert detail_payload["model_pack"]["pack_id"] == "deepseek"
+    assert detail_payload["model_pack"]["pack_id"] == "gpt-oss"
     assert detail_payload["model_pack"]["pack_version"] == "1.0.0"
-    assert detail_payload["model_pack"]["metadata"]["seed"] == "tier2"
+    assert detail_payload["model_pack"]["metadata"]["seed"] == "tier1"
     assert detail_payload["model_pack"]["briefing_strategy"] == "balanced"
     assert detail_payload["model_pack"]["briefing_max_tokens"] == 192
 
@@ -310,20 +394,27 @@ def test_phase11_model_pack_catalog_bind_and_runtime_shaping(migrated_database_u
     bind_status, bind_payload = invoke_request(
         "POST",
         "/v1/model-packs/gpt-oss/bind",
-        payload={"pack_version": "1.0.0", "metadata": {"reason": "workspace-default"}},
+        payload={
+            "provider_id": provider_id,
+            "pack_version": "1.0.0",
+            "metadata": {"reason": "provider-default"},
+        },
         headers=auth_header(session_token),
     )
     assert bind_status == 200
     assert bind_payload["binding"]["model_pack"]["pack_id"] == "gpt-oss"
+    assert bind_payload["binding"]["provider_id"] == provider_id
     assert bind_payload["binding"]["binding_source"] == "manual"
 
     binding_status, binding_payload = invoke_request(
         "GET",
         f"/v1/workspaces/{workspace_id}/model-pack-binding",
+        query_params={"provider_id": provider_id},
         headers=auth_header(session_token),
     )
     assert binding_status == 200
     assert binding_payload["binding"]["model_pack"]["pack_id"] == "gpt-oss"
+    assert binding_payload["binding"]["provider_id"] == provider_id
 
     thread_id = _seed_thread_for_user(
         admin_db_url=migrated_database_urls["admin"],
@@ -425,14 +516,61 @@ def test_phase11_model_pack_catalog_bind_and_runtime_shaping(migrated_database_u
     assert second_context["limits"]["max_entity_edges"] == 8
     assert "Keep outputs directly actionable and compact." in second_request["input"][1]["content"][0]["text"]
 
-    tier2_override_status, tier2_override_payload = invoke_request(
+    create_provider_specific_pack_status, create_provider_specific_pack_payload = invoke_request(
+        "POST",
+        "/v1/model-packs",
+        payload={
+            "pack_id": "ollama-only-pack",
+            "pack_version": "1.0.0",
+            "display_name": "Ollama Only Pack",
+            "family": "custom",
+            "description": "Pack constrained to Ollama providers.",
+            "briefing_strategy": "compact",
+            "briefing_max_tokens": 128,
+            "contract": {
+                "contract_version": "model_pack_contract_v1",
+                "context": {
+                    "max_sessions_cap": 2,
+                    "max_events_cap": 6,
+                    "max_memories_cap": 4,
+                    "max_entities_cap": 4,
+                    "max_entity_edges_cap": 8,
+                },
+                "tools": {"mode": "none"},
+                "response": {
+                    "system_instruction_append": "Keep answers tight.",
+                    "developer_instruction_append": "Prefer compact steps.",
+                },
+                "compatibility": {
+                    "provider_keys": ["ollama"],
+                    "runtime_providers": ["openai_responses"],
+                    "notes": "Intentionally provider-specific for compatibility testing.",
+                },
+            },
+            "metadata": {"owner": "tests"},
+        },
+        headers=auth_header(session_token),
+    )
+    assert create_provider_specific_pack_status == 201
+    assert create_provider_specific_pack_payload["model_pack"]["pack_id"] == "ollama-only-pack"
+
+    incompatible_bind_status, incompatible_bind_payload = invoke_request(
+        "POST",
+        "/v1/model-packs/ollama-only-pack/bind",
+        payload={"provider_id": provider_id, "pack_version": "1.0.0"},
+        headers=auth_header(session_token),
+    )
+    assert incompatible_bind_status == 409
+    assert "not compatible with provider key openai_compatible" in incompatible_bind_payload["detail"]
+
+    incompatible_override_status, incompatible_override_payload = invoke_request(
         "POST",
         "/v1/runtime/invoke",
         payload={
             "provider_id": provider_id,
             "thread_id": thread_id,
-            "message": "Summarize current status with tier-2 override.",
-            "pack_id": "deepseek",
+            "message": "Try an incompatible override.",
+            "pack_id": "ollama-only-pack",
             "pack_version": "1.0.0",
             "max_sessions": 10,
             "max_events": 40,
@@ -442,22 +580,145 @@ def test_phase11_model_pack_catalog_bind_and_runtime_shaping(migrated_database_u
         },
         headers=auth_header(session_token),
     )
-    assert tier2_override_status == 200
-    assert tier2_override_payload["metadata"]["model_pack"] == {
-        "pack_id": "deepseek",
-        "pack_version": "1.0.0",
-        "source": "request",
-    }
+    assert incompatible_override_status == 409
+    assert "not compatible with provider key openai_compatible" in incompatible_override_payload["detail"]
 
-    third_request = captured_model_requests[2]
-    third_context = _extract_context_payload(third_request)
-    assert third_context["limits"]["max_memories"] == 6
-    assert third_context["limits"]["max_entities"] == 6
-    assert third_context["limits"]["max_entity_edges"] == 12
-    assert (
-        "Keep recommendations concrete and avoid speculative branching."
-        in third_request["input"][1]["content"][0]["text"]
+
+def test_phase11_provider_query_binding_falls_back_to_workspace_default(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, workspace_id, _ = _bootstrap_workspace_session("model-pack-default@example.com")
+
+    create_provider_status, create_provider_payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "Default Fallback Provider",
+            "base_url": "https://provider.example/v1",
+            "api_key": "provider-secret-key",
+            "default_model": "gpt-5-mini",
+        },
+        headers=auth_header(session_token),
     )
+    assert create_provider_status == 201
+    provider_id = create_provider_payload["provider"]["id"]
+
+    bind_status, bind_payload = invoke_request(
+        "POST",
+        "/v1/model-packs/llama/bind",
+        payload={"pack_version": "1.0.0", "metadata": {"reason": "workspace-default"}},
+        headers=auth_header(session_token),
+    )
+    assert bind_status == 200
+    assert bind_payload["binding"]["model_pack"]["pack_id"] == "llama"
+    assert bind_payload["binding"]["provider_id"] is None
+
+    binding_status, binding_payload = invoke_request(
+        "GET",
+        f"/v1/workspaces/{workspace_id}/model-pack-binding",
+        query_params={"provider_id": provider_id},
+        headers=auth_header(session_token),
+    )
+    assert binding_status == 200
+    assert binding_payload["binding"]["model_pack"]["pack_id"] == "llama"
+    assert binding_payload["binding"]["provider_id"] is None
+
+
+def test_phase11_model_pack_smoke_covers_local_provider_paths(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    session_token, workspace_id, user_account_id = _bootstrap_workspace_session(
+        "model-pack-local-smoke@example.com"
+    )
+    captured_requests = _install_local_provider_success(monkeypatch)
+
+    providers: tuple[tuple[str, str, str, str, str], ...] = (
+        (
+            "/v1/providers/ollama/register",
+            "Ollama Pack Smoke",
+            "http://ollama.example:11434",
+            "llama3.2:latest",
+            "Ollama pack smoke response",
+        ),
+        (
+            "/v1/providers/llamacpp/register",
+            "llama.cpp Pack Smoke",
+            "http://llamacpp.example:8080",
+            "Meta-Llama-3.1-8B-Instruct",
+            "llama.cpp pack smoke response",
+        ),
+        (
+            "/v1/providers/vllm/register",
+            "vLLM Pack Smoke",
+            "http://vllm.example:8001",
+            "mistral-small-instruct",
+            "vLLM pack smoke response",
+        ),
+    )
+    provider_ids: list[str] = []
+    for path, display_name, base_url, default_model, _ in providers:
+        create_status, create_payload = invoke_request(
+            "POST",
+            path,
+            payload={
+                "display_name": display_name,
+                "base_url": base_url,
+                "default_model": default_model,
+            },
+            headers=auth_header(session_token),
+        )
+        assert create_status == 201
+        provider_ids.append(create_payload["provider"]["id"])
+
+    thread_id = _seed_thread_for_user(
+        admin_db_url=migrated_database_urls["admin"],
+        user_id=user_account_id,
+        email="model-pack-local-smoke@example.com",
+    )
+
+    for provider_id, (_, _, _, _, expected_text) in zip(provider_ids, providers, strict=True):
+        bind_status, bind_payload = invoke_request(
+            "POST",
+            "/v1/model-packs/llama/bind",
+            payload={
+                "provider_id": provider_id,
+                "pack_version": "1.0.0",
+                "metadata": {"reason": "provider-smoke"},
+            },
+            headers=auth_header(session_token),
+        )
+        assert bind_status == 200
+        assert bind_payload["binding"]["model_pack"]["pack_id"] == "llama"
+        assert bind_payload["binding"]["provider_id"] == provider_id
+
+        runtime_status, runtime_payload = invoke_request(
+            "POST",
+            "/v1/runtime/invoke",
+            payload={
+                "provider_id": provider_id,
+                "thread_id": thread_id,
+                "message": "Run the model-pack smoke.",
+            },
+            headers=auth_header(session_token),
+        )
+        assert runtime_status == 200
+        assert runtime_payload["assistant"]["provider_id"] == provider_id
+        assert runtime_payload["assistant"]["text"] == expected_text
+        assert runtime_payload["metadata"]["model_pack"] == {
+            "pack_id": "llama",
+            "pack_version": "1.0.0",
+            "source": "workspace_binding",
+        }
+
+    captured_urls = [record["url"] for record in captured_requests]
+    assert "http://ollama.example:11434/api/chat" in captured_urls
+    assert "http://llamacpp.example:8080/v1/chat/completions" in captured_urls
+    assert "http://vllm.example:8001/v1/chat/completions" in captured_urls
 
 
 def test_phase11_workspace_model_pack_binding_is_workspace_isolated(migrated_database_urls, monkeypatch) -> None:

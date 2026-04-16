@@ -7,9 +7,11 @@ import pytest
 
 from alicebot_api.model_packs import (
     MODEL_PACK_CONTRACT_VERSION_V1,
+    ModelPackCompatibilityError,
     ModelPackNotFoundError,
     ModelPackValidationError,
     apply_runtime_limit_caps,
+    assert_model_pack_runtime_compatibility,
     build_model_pack_runtime_shape,
     ensure_tier1_model_packs_for_workspace,
     is_reserved_tier1_pack_key,
@@ -73,6 +75,7 @@ class FakeModelPackStore:
         self.packs_by_key: dict[tuple[str, str], dict[str, object]] = {}
         self.packs_by_row_id: dict[object, dict[str, object]] = {}
         self.binding: dict[str, object] | None = None
+        self.provider_bindings: dict[object, dict[str, object]] = {}
 
     def get_model_pack_for_workspace_optional(
         self,
@@ -168,6 +171,10 @@ class FakeModelPackStore:
     def get_latest_workspace_model_pack_binding_optional(self, *, workspace_id):
         del workspace_id
         return self.binding
+
+    def get_resolved_workspace_model_pack_binding_optional(self, *, workspace_id, provider_id):
+        del workspace_id
+        return self.provider_bindings.get(provider_id) or self.binding
 
     def get_model_pack_for_workspace_by_row_id_optional(self, *, workspace_id, model_pack_id):
         del workspace_id
@@ -300,25 +307,17 @@ def test_ensure_tier1_model_packs_for_workspace_seeds_once() -> None:
         created_by_user_account_id=user_account_id,
     )
 
-    assert len(first_seed) == 7
-    assert len(second_seed) == 7
-    assert len(store.packs_by_key) == 7
+    assert len(first_seed) == 4
+    assert len(second_seed) == 4
+    assert len(store.packs_by_key) == 4
     assert {row["pack_id"] for row in first_seed} == {
         "llama",
         "qwen",
         "gemma",
         "gpt-oss",
-        "deepseek",
-        "kimi",
-        "mistral",
     }
-    assert {
-        row["pack_id"]: row["metadata"]
-        for row in first_seed
-        if row["pack_id"] in {"llama", "deepseek"}
-    } == {
-        "llama": {"seed": "tier1", "seed_version": "p11-s4"},
-        "deepseek": {"seed": "tier2", "seed_version": "p11-s6"},
+    assert {row["pack_id"]: row["metadata"] for row in first_seed if row["pack_id"] == "llama"} == {
+        "llama": {"seed": "tier1", "seed_version": "p11-s4"}
     }
 
 
@@ -329,22 +328,20 @@ def test_ensure_tier1_model_packs_handles_seed_race_with_existing_row() -> None:
         workspace_id=uuid4(),
         created_by_user_account_id=uuid4(),
     )
-    assert len(seeded) == 7
+    assert len(seeded) == 4
     assert {row["pack_id"] for row in seeded} == {
         "llama",
         "qwen",
         "gemma",
         "gpt-oss",
-        "deepseek",
-        "kimi",
-        "mistral",
     }
 
 
 def test_is_reserved_tier1_pack_key() -> None:
     assert is_reserved_tier1_pack_key(pack_id="llama", pack_version="1.0.0")
-    assert is_reserved_tier1_pack_key(pack_id="deepseek", pack_version="1.0.0")
+    assert is_reserved_tier1_pack_key(pack_id="gpt-oss", pack_version="1.0.0")
     assert not is_reserved_tier1_pack_key(pack_id="llama", pack_version="1.0.1")
+    assert not is_reserved_tier1_pack_key(pack_id="deepseek", pack_version="1.0.0")
     assert not is_reserved_tier1_pack_key(pack_id="custom-brief", pack_version="1.0.0")
 
 
@@ -393,6 +390,34 @@ def test_pack_selection_uses_workspace_binding_when_request_not_supplied() -> No
     assert selected.pack is bound_pack
 
 
+def test_pack_selection_prefers_provider_binding_then_workspace_default() -> None:
+    store = FakeModelPackStore()
+    workspace_id = uuid4()
+    provider_id = uuid4()
+    provider_pack = _pack_row(pack_id="qwen")
+    default_pack = _pack_row(pack_id="llama")
+    store.packs_by_key[("qwen", "1.0.0")] = provider_pack
+    store.packs_by_key[("llama", "1.0.0")] = default_pack
+    store.packs_by_row_id[provider_pack["id"]] = provider_pack
+    store.packs_by_row_id[default_pack["id"]] = default_pack
+    store.binding = {"provider_id": None, "model_pack_id": default_pack["id"]}
+    store.provider_bindings[provider_id] = {
+        "provider_id": provider_id,
+        "model_pack_id": provider_pack["id"],
+    }
+
+    selected = resolve_workspace_model_pack_selection(
+        store=store,  # type: ignore[arg-type]
+        workspace_id=workspace_id,
+        requested_pack_id=None,
+        requested_pack_version=None,
+        provider_id=provider_id,
+    )
+
+    assert selected.source == "workspace_binding"
+    assert selected.pack is provider_pack
+
+
 def test_pack_selection_raises_when_request_pack_is_missing() -> None:
     store = FakeModelPackStore()
 
@@ -402,4 +427,15 @@ def test_pack_selection_raises_when_request_pack_is_missing() -> None:
             workspace_id=uuid4(),
             requested_pack_id="gemma",
             requested_pack_version="1.0.0",
+        )
+
+
+def test_assert_model_pack_runtime_compatibility_rejects_mismatched_provider() -> None:
+    pack = _pack_row(pack_id="llama")
+
+    with pytest.raises(ModelPackCompatibilityError, match="provider key azure"):
+        assert_model_pack_runtime_compatibility(
+            pack=pack,  # type: ignore[arg-type]
+            provider_key="azure",
+            runtime_provider="openai_responses",
         )

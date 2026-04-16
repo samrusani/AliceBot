@@ -32,8 +32,9 @@ Each tier-1 pack uses `contract_version = model_pack_contract_v1` and keeps beha
 For `POST /v1/runtime/invoke`, model-pack selection precedence is:
 
 1. request override (`pack_id` + optional `pack_version`)
-2. current workspace binding
-3. no pack
+2. provider-specific workspace binding
+3. workspace default binding
+4. no pack
 
 This precedence affects runtime shaping only. It does not change provider adapter semantics.
 
@@ -54,10 +55,13 @@ curl -sS -X POST "http://127.0.0.1:8000/v1/model-packs/gpt-oss/bind" \
   -H "Authorization: Bearer $SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
+    "provider_id": "'$PROVIDER_ID'",
     "pack_version": "1.0.0",
-    "metadata": {"reason": "team-default"}
+    "metadata": {"reason": "provider-default"}
   }'
 ```
+
+Omit `provider_id` to set the workspace default pack used for briefing defaults.
 
 ## Invoke With Bound Pack
 
@@ -78,6 +82,13 @@ curl -sS -X POST "http://127.0.0.1:8000/v1/runtime/invoke" \
 ```
 
 The response metadata reports the resolved pack and source when a pack is applied.
+
+## Read The Current Binding
+
+```bash
+curl -sS -X GET "http://127.0.0.1:8000/v1/workspaces/$WORKSPACE_ID/model-pack-binding?provider_id=$PROVIDER_ID" \
+  -H "Authorization: Bearer $SESSION_TOKEN"
+```
 
 ## Create A Custom Pack
 

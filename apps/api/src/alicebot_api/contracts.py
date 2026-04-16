@@ -1837,6 +1837,7 @@ class ModelPackDetailResponse(TypedDict):
 class WorkspaceModelPackBindingRecord(TypedDict):
     id: str
     workspace_id: str
+    provider_id: str | None
     model_pack_id: str
     bound_by_user_account_id: str
     binding_source: ModelPackBindingSource

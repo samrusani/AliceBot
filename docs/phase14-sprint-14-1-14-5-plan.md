@@ -35,7 +35,7 @@ None
 Internal provider-foundation release candidate
 
 ### Status
-Active
+Shipped
 
 ## P14-S2: Ollama + llama.cpp + vLLM Adapters
 
@@ -57,7 +57,7 @@ Support the most important local and self-hosted inference paths without semanti
 `v0.5.0-rc1`
 
 ### Status
-Planned
+Shipped
 
 ## P14-S3: Model Packs
 
@@ -78,7 +78,7 @@ Make common model families easy to use with sensible continuity defaults.
 `v0.5.0-rc2`
 
 ### Status
-Planned
+Active
 
 ## P14-S4: Reference Integrations
 
