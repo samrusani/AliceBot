@@ -13,7 +13,7 @@ import psycopg
 import pytest
 
 import apps.api.src.alicebot_api.main as main_module
-from apps.api.src.alicebot_api.config import Settings
+from apps.api.src.alicebot_api.config import Settings, WorkspaceProviderConfig
 
 
 def invoke_request(
@@ -179,6 +179,67 @@ class FakeHTTPResponse:
 
     def read(self) -> bytes:
         return self.body
+
+
+def install_openai_compatible_success(
+    monkeypatch,
+    *,
+    models: list[str] | None = None,
+    response_text: str = "OpenAI runtime response",
+    response_id: str = "resp_openai_1",
+    usage: dict[str, int] | None = None,
+) -> list[dict[str, object]]:
+    captured_requests: list[dict[str, object]] = []
+    resolved_models = ["gpt-5-mini"] if models is None else models
+    resolved_usage = (
+        {"input_tokens": 12, "output_tokens": 5, "total_tokens": 17}
+        if usage is None
+        else usage
+    )
+
+    def fake_discovery_urlopen(request, timeout):
+        captured_requests.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": None if request.data is None else json.loads(request.data.decode("utf-8")),
+            }
+        )
+        if request.full_url.endswith("/models"):
+            return FakeHTTPResponse(
+                json.dumps({"data": [{"id": model_name} for model_name in resolved_models]}).encode("utf-8")
+            )
+        raise AssertionError(f"unexpected openai-compatible discovery URL: {request.full_url}")
+
+    def fake_invoke_urlopen(request, timeout):
+        captured_requests.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": None if request.data is None else json.loads(request.data.decode("utf-8")),
+            }
+        )
+        return FakeHTTPResponse(
+            json.dumps(
+                {
+                    "id": response_id,
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [{"type": "output_text", "text": response_text}],
+                        }
+                    ],
+                    "usage": resolved_usage,
+                }
+            ).encode("utf-8")
+        )
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_discovery_urlopen)
+    monkeypatch.setattr("alicebot_api.response_generation.urlopen", fake_invoke_urlopen)
+    return captured_requests
 
 
 def test_phase11_local_provider_registration_list_and_detail(migrated_database_urls, monkeypatch) -> None:
@@ -471,6 +532,7 @@ def test_phase13_hosted_provider_rows_respect_workspace_rls(
     monkeypatch,
 ) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
+    install_openai_compatible_success(monkeypatch)
     owner_session_token, owner_workspace_id, owner_user_account_id = _bootstrap_workspace_session(
         "provider-rls-owner@example.com"
     )
@@ -617,6 +679,10 @@ def test_phase13_hosted_rls_blocks_cross_workspace_channel_identity_forgery(
 
 def test_phase11_openai_compatible_registration_still_works(migrated_database_urls, monkeypatch) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
+    captured_requests = install_openai_compatible_success(
+        monkeypatch,
+        models=["gpt-4.1-mini", "gpt-5-mini"],
+    )
     session_token, workspace_id, _ = _bootstrap_workspace_session("provider-openai-reg@example.com")
 
     create_status, create_payload = invoke_request(
@@ -637,6 +703,8 @@ def test_phase11_openai_compatible_registration_still_works(migrated_database_ur
     assert create_payload["provider"]["auth_mode"] == "bearer"
     assert create_payload["capabilities"]["discovery_status"] == "ready"
     assert create_payload["capabilities"]["snapshot"]["runtime_provider"] == "openai_responses"
+    assert create_payload["capabilities"]["snapshot"]["models"] == ["gpt-4.1-mini", "gpt-5-mini"]
+    assert any(record["url"] == "https://provider.example/v1/models" for record in captured_requests)
 
     with psycopg.connect(migrated_database_urls["admin"]) as conn:
         with conn.cursor() as cur:
@@ -655,6 +723,245 @@ def test_phase11_openai_compatible_registration_still_works(migrated_database_ur
     assert stored_auth_mode == "bearer"
     assert stored_api_key != "provider-secret-key"
     assert stored_api_key.startswith("provider_secret_ref:")
+
+
+def test_phase14_workspace_bootstrap_config_seed_and_provider_update_refresh_capabilities(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    captured_requests: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            magic_link_ttl_seconds=600,
+            auth_session_ttl_seconds=3600,
+            device_link_ttl_seconds=600,
+            model_timeout_seconds=30,
+            workspace_provider_configs=(
+                WorkspaceProviderConfig(
+                    provider_key="openai_compatible",
+                    display_name="Configured OpenAI",
+                    base_url="https://provider.example/v1",
+                    api_key="provider-secret-key",
+                    default_model="gpt-5-mini",
+                ),
+            ),
+        ),
+    )
+
+    def fake_discovery_urlopen(request, timeout):
+        captured_requests.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": None if request.data is None else json.loads(request.data.decode("utf-8")),
+            }
+        )
+        if request.full_url == "https://provider.example/v1/models":
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "gpt-5-mini"}]}).encode("utf-8"))
+        if request.full_url == "https://updated-provider.example/v1/custom-models":
+            return FakeHTTPResponse(
+                json.dumps({"data": [{"id": "gpt-4.1-mini"}, {"id": "gpt-5-mini"}]}).encode("utf-8")
+            )
+        raise AssertionError(f"unexpected openai-compatible discovery URL: {request.full_url}")
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_discovery_urlopen)
+
+    session_token, _, _ = _bootstrap_workspace_session("provider-bootstrap-config@example.com")
+
+    list_status, list_payload = invoke_request(
+        "GET",
+        "/v1/providers",
+        headers=auth_header(session_token),
+    )
+    assert list_status == 200
+    assert list_payload["summary"]["total_count"] == 1
+    provider_id = list_payload["items"][0]["id"]
+    assert list_payload["items"][0]["display_name"] == "Configured OpenAI"
+
+    update_status, update_payload = invoke_request(
+        "PATCH",
+        f"/v1/providers/{provider_id}",
+        payload={
+            "display_name": "Updated OpenAI",
+            "base_url": "https://updated-provider.example/v1",
+            "default_model": "gpt-4.1-mini",
+            "model_list_path": "/custom-models",
+            "healthcheck_path": "/custom-models",
+            "invoke_path": "/custom-responses",
+            "metadata": {"managed_by": "config"},
+        },
+        headers=auth_header(session_token),
+    )
+    assert update_status == 200
+    assert update_payload["provider"]["display_name"] == "Updated OpenAI"
+    assert update_payload["provider"]["invoke_path"] == "/custom-responses"
+    assert update_payload["capabilities"]["snapshot"]["models"] == ["gpt-4.1-mini", "gpt-5-mini"]
+    assert update_payload["capabilities"]["snapshot"]["models_endpoint"] == "/custom-models"
+    assert any(record["url"] == "https://provider.example/v1/models" for record in captured_requests)
+    assert any(
+        record["url"] == "https://updated-provider.example/v1/custom-models"
+        for record in captured_requests
+    )
+
+
+def test_phase14_provider_invocation_telemetry_persists_for_test_and_runtime(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    install_openai_compatible_success(
+        monkeypatch,
+        models=["gpt-5-mini"],
+        response_text="Telemetry runtime response",
+        response_id="resp_telemetry_1",
+        usage={"input_tokens": 14, "output_tokens": 3, "total_tokens": 17},
+    )
+    session_token, workspace_id, user_account_id = _bootstrap_workspace_session(
+        "provider-telemetry@example.com"
+    )
+
+    create_status, create_payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "Telemetry OpenAI",
+            "base_url": "https://provider.example/v1",
+            "api_key": "provider-secret-key",
+            "default_model": "gpt-5-mini",
+        },
+        headers=auth_header(session_token),
+    )
+    assert create_status == 201
+    provider_id = create_payload["provider"]["id"]
+
+    thread_id = _seed_thread_for_user(
+        admin_db_url=migrated_database_urls["admin"],
+        user_id=user_account_id,
+        email="provider-telemetry@example.com",
+    )
+
+    provider_test_status, provider_test_payload = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={"provider_id": provider_id},
+        headers=auth_header(session_token),
+    )
+    assert provider_test_status == 200
+    assert provider_test_payload["result"]["response_id"] == "resp_telemetry_1"
+
+    runtime_status, runtime_payload = invoke_request(
+        "POST",
+        "/v1/runtime/invoke",
+        payload={
+            "provider_id": provider_id,
+            "thread_id": thread_id,
+            "message": "Persist provider invocation telemetry.",
+        },
+        headers=auth_header(session_token),
+    )
+    assert runtime_status == 200
+    assert runtime_payload["assistant"]["response_id"] == "resp_telemetry_1"
+
+    with psycopg.connect(migrated_database_urls["admin"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT invocation_kind,
+                       status,
+                       thread_id,
+                       response_id,
+                       usage->>'total_tokens' AS total_tokens,
+                       runtime_provider
+                FROM provider_invocation_telemetry
+                WHERE workspace_id = %s
+                  AND provider_id = %s
+                ORDER BY created_at ASC, id ASC
+                """,
+                (workspace_id, provider_id),
+            )
+            telemetry_rows = cur.fetchall()
+
+    assert len(telemetry_rows) == 2
+    assert telemetry_rows[0][0] == "provider_test"
+    assert telemetry_rows[0][1] == "succeeded"
+    assert telemetry_rows[0][2] is None
+    assert telemetry_rows[0][3] == "resp_telemetry_1"
+    assert telemetry_rows[0][4] == "17"
+    assert telemetry_rows[0][5] == "openai_responses"
+    assert telemetry_rows[1][0] == "runtime_invoke"
+    assert telemetry_rows[1][1] == "succeeded"
+    assert str(telemetry_rows[1][2]) == thread_id
+    assert telemetry_rows[1][3] == "resp_telemetry_1"
+    assert telemetry_rows[1][4] == "17"
+    assert telemetry_rows[1][5] == "openai_responses"
+
+
+def test_phase14_provider_invocation_telemetry_respects_workspace_rls(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    _configure_settings(migrated_database_urls, monkeypatch)
+    install_openai_compatible_success(monkeypatch)
+    owner_session_token, _, owner_user_account_id = _bootstrap_workspace_session(
+        "provider-telemetry-rls-owner@example.com"
+    )
+    _, _, other_user_account_id = _bootstrap_workspace_session(
+        "provider-telemetry-rls-other@example.com"
+    )
+
+    create_status, create_payload = invoke_request(
+        "POST",
+        "/v1/providers",
+        payload={
+            "provider_key": "openai_compatible",
+            "display_name": "Telemetry RLS Provider",
+            "base_url": "https://provider.example/v1",
+            "api_key": "provider-secret-key",
+            "default_model": "gpt-5-mini",
+        },
+        headers=auth_header(owner_session_token),
+    )
+    assert create_status == 201
+    provider_id = create_payload["provider"]["id"]
+
+    provider_test_status, _ = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={"provider_id": provider_id},
+        headers=auth_header(owner_session_token),
+    )
+    assert provider_test_status == 200
+
+    with psycopg.connect(migrated_database_urls["app"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT set_config('app.current_user_account_id', %s, true)",
+                (other_user_account_id,),
+            )
+            cur.execute(
+                "SELECT count(*) FROM provider_invocation_telemetry WHERE provider_id = %s",
+                (provider_id,),
+            )
+            other_visible_count = cur.fetchone()[0]
+
+            cur.execute(
+                "SELECT set_config('app.current_user_account_id', %s, true)",
+                (owner_user_account_id,),
+            )
+            cur.execute(
+                "SELECT count(*) FROM provider_invocation_telemetry WHERE provider_id = %s",
+                (provider_id,),
+            )
+            owner_visible_count = cur.fetchone()[0]
+
+    assert other_visible_count == 0
+    assert owner_visible_count == 1
 
 
 def test_phase11_local_provider_rejects_api_key_when_auth_mode_none(
@@ -962,6 +1269,7 @@ def test_phase11_provider_test_and_runtime_reject_disallowed_target_without_outb
     monkeypatch,
 ) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
+    install_openai_compatible_success(monkeypatch)
     session_token, workspace_id, user_account_id = _bootstrap_workspace_session(
         "provider-security-blocked-runtime@example.com"
     )
@@ -1125,6 +1433,7 @@ def test_phase11_provider_error_reflection_and_persistence_are_sanitized(
     monkeypatch,
 ) -> None:
     _configure_settings(migrated_database_urls, monkeypatch)
+    install_openai_compatible_success(monkeypatch)
     session_token, _, user_account_id = _bootstrap_workspace_session(
         "provider-security-sanitized-errors@example.com"
     )

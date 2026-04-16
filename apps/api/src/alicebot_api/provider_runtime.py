@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
-from typing import NotRequired, Protocol, TypedDict
+from typing import Any, NotRequired, Protocol, TypedDict
 from uuid import UUID
 
 from alicebot_api.azure_provider_helpers import (
@@ -62,6 +62,7 @@ class ProviderCapabilitySnapshot(TypedDict):
     supports_text_input: bool
     supports_text_output: bool
     supports_tool_calls: bool
+    supports_reasoning: bool
     supports_streaming: bool
     supports_store: bool
     supports_vision_input: bool
@@ -119,9 +120,66 @@ class RuntimeProviderConfig:
         )
 
 
+class ProviderHealthcheckResult(TypedDict):
+    status: str
+    endpoint: str
+
+
+class ProviderModelCatalogResult(TypedDict):
+    endpoint: str
+    models: list[str]
+
+
 class ProviderAdapter(Protocol):
     adapter_key: str
     runtime_provider: str
+
+    def healthcheck(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderHealthcheckResult: ...
+
+    def list_models(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderModelCatalogResult: ...
+
+    def invoke_responses(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+        request: ModelInvocationRequest,
+    ) -> ModelInvocationResponse: ...
+
+    def invoke_embeddings(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+        payload: dict[str, object],
+    ) -> dict[str, object]: ...
+
+    def supports_tools(self) -> bool: ...
+
+    def supports_reasoning(self) -> bool: ...
+
+    def supports_vision(self) -> bool: ...
+
+    def normalize_response(
+        self,
+        *,
+        request: ModelInvocationRequest,
+        payload: Any,
+    ) -> ModelInvocationResponse: ...
+
+    def normalize_usage(self, *, payload: Any) -> JsonObject: ...
+
+    def normalize_tool_schema(self, *, tool_schema: dict[str, object]) -> dict[str, object]: ...
 
     def discover_capabilities(
         self,
@@ -137,6 +195,98 @@ class ProviderAdapter(Protocol):
         settings: Settings,
         request: ModelInvocationRequest,
     ) -> ModelInvocationResponse: ...
+
+
+class BaseProviderAdapter:
+    adapter_key: str
+    runtime_provider: str
+
+    def supports_tools(self) -> bool:
+        return False
+
+    def supports_reasoning(self) -> bool:
+        return False
+
+    def supports_vision(self) -> bool:
+        return False
+
+    def normalize_response(
+        self,
+        *,
+        request: ModelInvocationRequest,
+        payload: Any,
+    ) -> ModelInvocationResponse:
+        if not isinstance(payload, ModelInvocationResponse):
+            raise ModelInvocationError("provider adapter returned invalid normalized response")
+        return payload
+
+    def normalize_usage(self, *, payload: Any) -> JsonObject:
+        if isinstance(payload, ModelInvocationResponse):
+            return dict(payload.usage)
+        if isinstance(payload, dict):
+            return payload
+        raise ModelInvocationError("provider adapter returned invalid usage payload")
+
+    def normalize_tool_schema(self, *, tool_schema: dict[str, object]) -> dict[str, object]:
+        return tool_schema
+
+    def invoke_embeddings(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        del config, settings, payload
+        raise ModelInvocationError(f"{self.adapter_key} does not support embeddings")
+
+    def discover_capabilities(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderCapabilitySnapshot:
+        health = self.healthcheck(config=config, settings=settings)
+        model_catalog = self.list_models(config=config, settings=settings)
+        snapshot = normalized_capability_snapshot(
+            adapter_key=self.adapter_key,
+            runtime_provider=self.runtime_provider,
+            supports_tool_calls=self.supports_tools(),
+            supports_reasoning=self.supports_reasoning(),
+            supports_streaming=False,
+            supports_store=False,
+            supports_vision_input=self.supports_vision(),
+            supports_audio_input=False,
+        )
+        snapshot.update(
+            {
+                "health_status": health["status"],
+                "health_endpoint": health["endpoint"],
+                "models_endpoint": model_catalog["endpoint"],
+                "invoke_endpoint": config.invoke_path,
+                "model_count": len(model_catalog["models"]),
+                "models": model_catalog["models"],
+            }
+        )
+        return snapshot
+
+    def invoke(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+        request: ModelInvocationRequest,
+    ) -> ModelInvocationResponse:
+        if request.provider != self.runtime_provider:
+            raise ModelInvocationError(f"unsupported model provider: {request.provider}")
+        return self.normalize_response(
+            request=request,
+            payload=self.invoke_responses(
+                config=config,
+                settings=settings,
+                request=request,
+            ),
+        )
 
 
 class ProviderAdapterRegistry:
@@ -167,6 +317,7 @@ def normalized_capability_snapshot(
     adapter_key: str,
     runtime_provider: str,
     supports_tool_calls: bool,
+    supports_reasoning: bool,
     supports_streaming: bool,
     supports_store: bool,
     supports_vision_input: bool,
@@ -179,6 +330,7 @@ def normalized_capability_snapshot(
         "supports_text_input": True,
         "supports_text_output": True,
         "supports_tool_calls": supports_tool_calls,
+        "supports_reasoning": supports_reasoning,
         "supports_streaming": supports_streaming,
         "supports_store": supports_store,
         "supports_vision_input": supports_vision_input,
@@ -186,29 +338,53 @@ def normalized_capability_snapshot(
     }
 
 
-class OpenAICompatibleAdapter:
+class OpenAICompatibleAdapter(BaseProviderAdapter):
     adapter_key = OPENAI_COMPATIBLE_ADAPTER_KEY
     runtime_provider = OPENAI_RESPONSES_PROVIDER
+    default_healthcheck_path = "/models"
+    default_model_list_path = "/models"
+    default_invoke_path = "/responses"
 
-    def discover_capabilities(
+    def healthcheck(
         self,
         *,
         config: RuntimeProviderConfig,
         settings: Settings,
-    ) -> ProviderCapabilitySnapshot:
-        validate_provider_base_url(config.base_url, require_dns_resolution=False)
-        del settings
-        return normalized_capability_snapshot(
-            adapter_key=self.adapter_key,
-            runtime_provider=self.runtime_provider,
-            supports_tool_calls=False,
-            supports_streaming=False,
-            supports_store=False,
-            supports_vision_input=False,
-            supports_audio_input=False,
+    ) -> ProviderHealthcheckResult:
+        validated_base_url = validate_provider_base_url(config.base_url)
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
+        request_json(
+            method="GET",
+            base_url=validated_base_url,
+            path=healthcheck_path,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
         )
+        return {"status": "ok", "endpoint": healthcheck_path}
 
-    def invoke(
+    def list_models(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderModelCatalogResult:
+        validated_base_url = validate_provider_base_url(config.base_url)
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        model_list_path = config.model_list_path or self.default_model_list_path
+        payload = request_json(
+            method="GET",
+            base_url=validated_base_url,
+            path=model_list_path,
+            timeout_seconds=settings.healthcheck_timeout_seconds,
+            headers=headers,
+        )
+        return {
+            "endpoint": model_list_path,
+            "models": parse_azure_models(payload),
+        }
+
+    def invoke_responses(
         self,
         *,
         config: RuntimeProviderConfig,
@@ -224,29 +400,29 @@ class OpenAICompatibleAdapter:
                 base_url=validated_base_url,
                 api_key=config.api_key,
                 timeout_seconds=settings.model_timeout_seconds,
+                invoke_path=config.invoke_path or self.default_invoke_path,
             ),
             request=request,
         )
 
 
-class AzureAdapter:
+class AzureAdapter(BaseProviderAdapter):
     adapter_key = AZURE_ADAPTER_KEY
     runtime_provider = OPENAI_RESPONSES_PROVIDER
     default_healthcheck_path = "/openai/models"
     default_model_list_path = "/openai/models"
     default_invoke_path = "/openai/responses"
 
-    def discover_capabilities(
+    def healthcheck(
         self,
         *,
         config: RuntimeProviderConfig,
         settings: Settings,
-    ) -> ProviderCapabilitySnapshot:
+    ) -> ProviderHealthcheckResult:
         validated_base_url = validate_provider_base_url(config.base_url)
         api_version = config.azure_api_version.strip() or DEFAULT_AZURE_API_VERSION
         headers = build_azure_auth_headers(auth_mode=config.auth_mode, credential=config.api_key)
         healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
-        model_list_path = config.model_list_path or self.default_model_list_path
         request_azure_json(
             method="GET",
             base_url=validated_base_url,
@@ -255,6 +431,18 @@ class AzureAdapter:
             timeout_seconds=settings.healthcheck_timeout_seconds,
             headers=headers,
         )
+        return {"status": "ok", "endpoint": healthcheck_path}
+
+    def list_models(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderModelCatalogResult:
+        validated_base_url = validate_provider_base_url(config.base_url)
+        api_version = config.azure_api_version.strip() or DEFAULT_AZURE_API_VERSION
+        headers = build_azure_auth_headers(auth_mode=config.auth_mode, credential=config.api_key)
+        model_list_path = config.model_list_path or self.default_model_list_path
         model_payload = request_azure_json(
             method="GET",
             base_url=validated_base_url,
@@ -263,31 +451,25 @@ class AzureAdapter:
             timeout_seconds=settings.healthcheck_timeout_seconds,
             headers=headers,
         )
-        models = parse_azure_models(model_payload)
-        snapshot = normalized_capability_snapshot(
-            adapter_key=self.adapter_key,
-            runtime_provider=self.runtime_provider,
-            supports_tool_calls=False,
-            supports_streaming=False,
-            supports_store=False,
-            supports_vision_input=False,
-            supports_audio_input=False,
-        )
+        return {"endpoint": model_list_path, "models": parse_azure_models(model_payload)}
+
+    def discover_capabilities(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderCapabilitySnapshot:
+        snapshot = super().discover_capabilities(config=config, settings=settings)
+        api_version = config.azure_api_version.strip() or DEFAULT_AZURE_API_VERSION
         snapshot.update(
             {
-                "health_status": "ok",
-                "health_endpoint": healthcheck_path,
-                "models_endpoint": model_list_path,
-                "invoke_endpoint": config.invoke_path or self.default_invoke_path,
-                "model_count": len(models),
-                "models": models,
                 "azure_api_version": api_version,
                 "azure_auth_mode": config.auth_mode,
             }
         )
         return snapshot
 
-    def invoke(
+    def invoke_responses(
         self,
         *,
         config: RuntimeProviderConfig,
@@ -308,23 +490,22 @@ class AzureAdapter:
         )
 
 
-class OllamaAdapter:
+class OllamaAdapter(BaseProviderAdapter):
     adapter_key = OLLAMA_ADAPTER_KEY
     runtime_provider = OPENAI_RESPONSES_PROVIDER
     default_healthcheck_path = "/api/version"
     default_model_list_path = "/api/tags"
     default_invoke_path = "/api/chat"
 
-    def discover_capabilities(
+    def healthcheck(
         self,
         *,
         config: RuntimeProviderConfig,
         settings: Settings,
-    ) -> ProviderCapabilitySnapshot:
+    ) -> ProviderHealthcheckResult:
         validated_base_url = validate_provider_base_url(config.base_url)
         headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
         healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
-        model_list_path = config.model_list_path or self.default_model_list_path
         request_json(
             method="GET",
             base_url=validated_base_url,
@@ -332,6 +513,17 @@ class OllamaAdapter:
             timeout_seconds=settings.healthcheck_timeout_seconds,
             headers=headers,
         )
+        return {"status": "ok", "endpoint": healthcheck_path}
+
+    def list_models(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderModelCatalogResult:
+        validated_base_url = validate_provider_base_url(config.base_url)
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        model_list_path = config.model_list_path or self.default_model_list_path
         model_payload = request_json(
             method="GET",
             base_url=validated_base_url,
@@ -339,29 +531,9 @@ class OllamaAdapter:
             timeout_seconds=settings.healthcheck_timeout_seconds,
             headers=headers,
         )
-        models = parse_ollama_models(model_payload)
-        snapshot = normalized_capability_snapshot(
-            adapter_key=self.adapter_key,
-            runtime_provider=self.runtime_provider,
-            supports_tool_calls=False,
-            supports_streaming=False,
-            supports_store=False,
-            supports_vision_input=False,
-            supports_audio_input=False,
-        )
-        snapshot.update(
-            {
-                "health_status": "ok",
-                "health_endpoint": healthcheck_path,
-                "models_endpoint": model_list_path,
-                "invoke_endpoint": config.invoke_path or self.default_invoke_path,
-                "model_count": len(models),
-                "models": models,
-            }
-        )
-        return snapshot
+        return {"endpoint": model_list_path, "models": parse_ollama_models(model_payload)}
 
-    def invoke(
+    def invoke_responses(
         self,
         *,
         config: RuntimeProviderConfig,
@@ -387,23 +559,22 @@ class OllamaAdapter:
         return parse_ollama_invoke_response(request=request, payload=payload)
 
 
-class LlamaCppAdapter:
+class LlamaCppAdapter(BaseProviderAdapter):
     adapter_key = LLAMACPP_ADAPTER_KEY
     runtime_provider = OPENAI_RESPONSES_PROVIDER
     default_healthcheck_path = "/health"
     default_model_list_path = "/v1/models"
     default_invoke_path = "/v1/chat/completions"
 
-    def discover_capabilities(
+    def healthcheck(
         self,
         *,
         config: RuntimeProviderConfig,
         settings: Settings,
-    ) -> ProviderCapabilitySnapshot:
+    ) -> ProviderHealthcheckResult:
         validated_base_url = validate_provider_base_url(config.base_url)
         headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
         healthcheck_path = config.healthcheck_path or self.default_healthcheck_path
-        model_list_path = config.model_list_path or self.default_model_list_path
         request_json(
             method="GET",
             base_url=validated_base_url,
@@ -411,6 +582,17 @@ class LlamaCppAdapter:
             timeout_seconds=settings.healthcheck_timeout_seconds,
             headers=headers,
         )
+        return {"status": "ok", "endpoint": healthcheck_path}
+
+    def list_models(
+        self,
+        *,
+        config: RuntimeProviderConfig,
+        settings: Settings,
+    ) -> ProviderModelCatalogResult:
+        validated_base_url = validate_provider_base_url(config.base_url)
+        headers = build_auth_headers(auth_mode=config.auth_mode, api_key=config.api_key)
+        model_list_path = config.model_list_path or self.default_model_list_path
         model_payload = request_json(
             method="GET",
             base_url=validated_base_url,
@@ -418,29 +600,9 @@ class LlamaCppAdapter:
             timeout_seconds=settings.healthcheck_timeout_seconds,
             headers=headers,
         )
-        models = parse_llamacpp_models(model_payload)
-        snapshot = normalized_capability_snapshot(
-            adapter_key=self.adapter_key,
-            runtime_provider=self.runtime_provider,
-            supports_tool_calls=False,
-            supports_streaming=False,
-            supports_store=False,
-            supports_vision_input=False,
-            supports_audio_input=False,
-        )
-        snapshot.update(
-            {
-                "health_status": "ok",
-                "health_endpoint": healthcheck_path,
-                "models_endpoint": model_list_path,
-                "invoke_endpoint": config.invoke_path or self.default_invoke_path,
-                "model_count": len(models),
-                "models": models,
-            }
-        )
-        return snapshot
+        return {"endpoint": model_list_path, "models": parse_llamacpp_models(model_payload)}
 
-    def invoke(
+    def invoke_responses(
         self,
         *,
         config: RuntimeProviderConfig,

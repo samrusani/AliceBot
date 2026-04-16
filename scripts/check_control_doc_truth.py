@@ -22,38 +22,38 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
             "## Release Boundary (`v0.4.0`)",
             "Phase 13 adoption surfaces:",
             "Historical planning/control artifacts remain available in:",
+            "Phase 14 planning is active on top of this released baseline.",
         ),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
             "`v0.4.0`: released",
-            "Phase 13 is shipped.",
-            "No post-Phase-13 execution sprint is active yet.",
+            "Phase 14 is active.",
+            "`P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Phase 13 Closeout + `v0.4.0` Release",
+            "P14-S1: Provider Abstraction Cleanup + OpenAI-Compatible Adapter",
             "`v0.4.0` is the current public release boundary.",
-            "release-closeout",
+            "codex/phase14-s1-provider-foundation-openai-compatible",
         ),
     ),
     ControlDocTruthRule(
         relative_path="RULES.md",
         required_markers=(
-            "Treat Phases 9-13 and Bridge `B1` through `B4` as shipped baseline truth.",
-            "Alice Lite is a deployment profile, not a separate product.",
+            "Phase 14 is a platform-and-adoption phase.",
+            "Continuity semantics must not fork by provider.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "Phase 12 is shipped.",
             "`v0.4.0` is the latest published tag.",
-            "Phase 13 is shipped.",
-            "No post-Phase-13 build sprint is active yet.",
+            "Phase 14 is active.",
+            "`P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is the active execution sprint.",
         ),
     ),
     ControlDocTruthRule(

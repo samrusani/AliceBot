@@ -142,13 +142,17 @@ def test_openai_compatible_adapter_invokes_registered_transport(monkeypatch) -> 
     captured: dict[str, object] = {}
     registry = make_provider_adapter_registry()
     adapter = registry.resolve(OPENAI_COMPATIBLE_ADAPTER_KEY)
-    runtime_provider = make_runtime_provider_config()
+    runtime_provider = make_runtime_provider_config(invoke_path="/responses-alt")
 
     def fake_urlopen(request, timeout):
         captured["url"] = request.full_url
         captured["timeout"] = timeout
         captured["headers"] = dict(request.header_items())
-        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["body"] = None if request.data is None else json.loads(request.data.decode("utf-8"))
+        if request.full_url.endswith("/models"):
+            return FakeHTTPResponse(
+                json.dumps({"data": [{"id": "gpt-4.1-mini"}, {"id": "gpt-5-mini"}]}).encode("utf-8")
+            )
         return FakeHTTPResponse(
             json.dumps(
                 {
@@ -169,8 +173,13 @@ def test_openai_compatible_adapter_invokes_registered_transport(monkeypatch) -> 
             ).encode("utf-8")
         )
 
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_urlopen)
     monkeypatch.setattr("alicebot_api.response_generation.urlopen", fake_urlopen)
 
+    capabilities = adapter.discover_capabilities(
+        config=runtime_provider,
+        settings=Settings(healthcheck_timeout_seconds=9),
+    )
     response = adapter.invoke(
         config=runtime_provider,
         settings=Settings(model_timeout_seconds=27),
@@ -181,7 +190,12 @@ def test_openai_compatible_adapter_invokes_registered_transport(monkeypatch) -> 
         ),
     )
 
-    assert captured["url"] == "https://provider.example/v1/responses"
+    assert capabilities["health_status"] == "ok"
+    assert capabilities["models"] == ["gpt-4.1-mini", "gpt-5-mini"]
+    assert capabilities["models_endpoint"] == "/models"
+    assert capabilities["invoke_endpoint"] == "/responses-alt"
+    assert capabilities["supports_reasoning"] is False
+    assert captured["url"] == "https://provider.example/v1/responses-alt"
     assert captured["timeout"] == 27
     assert captured["headers"]["Authorization"] == "Bearer provider-secret-key"
     assert response.provider == OPENAI_RESPONSES_PROVIDER

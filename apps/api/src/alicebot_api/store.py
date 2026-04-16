@@ -447,6 +447,25 @@ class ProviderCapabilityRow(TypedDict):
     updated_at: datetime
 
 
+class ProviderInvocationTelemetryRow(TypedDict):
+    id: UUID
+    workspace_id: UUID
+    provider_id: UUID
+    thread_id: UUID | None
+    invoked_by_user_account_id: UUID
+    invocation_kind: str
+    adapter_key: str
+    runtime_provider: str
+    requested_model: str
+    response_model: str | None
+    response_id: str | None
+    status: str
+    latency_ms: int
+    usage: JsonObject
+    error_detail: str | None
+    created_at: datetime
+
+
 class ModelPackRow(TypedDict):
     id: UUID
     workspace_id: UUID
@@ -2402,6 +2421,47 @@ LIST_MODEL_PROVIDERS_FOR_WORKSPACE_SQL = """
                 ORDER BY created_at ASC, id ASC
                 """
 
+UPDATE_MODEL_PROVIDER_SQL = """
+                UPDATE model_providers
+                SET provider_key = %s,
+                    model_provider = %s,
+                    display_name = %s,
+                    base_url = %s,
+                    api_key = %s,
+                    auth_mode = %s,
+                    default_model = %s,
+                    status = %s,
+                    model_list_path = %s,
+                    healthcheck_path = %s,
+                    invoke_path = %s,
+                    azure_api_version = %s,
+                    azure_auth_secret_ref = %s,
+                    metadata = %s,
+                    updated_at = clock_timestamp()
+                WHERE id = %s
+                  AND workspace_id = %s
+                RETURNING
+                  id,
+                  workspace_id,
+                  created_by_user_account_id,
+                  provider_key,
+                  model_provider,
+                  display_name,
+                  base_url,
+                  api_key,
+                  auth_mode,
+                  default_model,
+                  status,
+                  model_list_path,
+                  healthcheck_path,
+                  invoke_path,
+                  azure_api_version,
+                  azure_auth_secret_ref,
+                  metadata,
+                  created_at,
+                  updated_at
+                """
+
 UPSERT_PROVIDER_CAPABILITY_SQL = """
                 INSERT INTO provider_capabilities (
                   workspace_id,
@@ -2455,6 +2515,60 @@ GET_PROVIDER_CAPABILITY_FOR_PROVIDER_SQL = """
                 FROM provider_capabilities
                 WHERE provider_id = %s
                   AND workspace_id = %s
+                """
+
+INSERT_PROVIDER_INVOCATION_TELEMETRY_SQL = """
+                INSERT INTO provider_invocation_telemetry (
+                  workspace_id,
+                  provider_id,
+                  thread_id,
+                  invoked_by_user_account_id,
+                  invocation_kind,
+                  adapter_key,
+                  runtime_provider,
+                  requested_model,
+                  response_model,
+                  response_id,
+                  status,
+                  latency_ms,
+                  usage,
+                  error_detail,
+                  created_at
+                )
+                VALUES (
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  clock_timestamp()
+                )
+                RETURNING
+                  id,
+                  workspace_id,
+                  provider_id,
+                  thread_id,
+                  invoked_by_user_account_id,
+                  invocation_kind,
+                  adapter_key,
+                  runtime_provider,
+                  requested_model,
+                  response_model,
+                  response_id,
+                  status,
+                  latency_ms,
+                  usage,
+                  error_detail,
+                  created_at
                 """
 
 INSERT_MODEL_PACK_SQL = """
@@ -8209,6 +8323,49 @@ class ContinuityStore:
             (workspace_id,),
         )
 
+    def update_model_provider(
+        self,
+        *,
+        provider_id: UUID,
+        workspace_id: UUID,
+        provider_key: str,
+        model_provider: str,
+        display_name: str,
+        base_url: str,
+        api_key: str,
+        auth_mode: str,
+        default_model: str,
+        status: str,
+        model_list_path: str,
+        healthcheck_path: str,
+        invoke_path: str,
+        azure_api_version: str,
+        azure_auth_secret_ref: str,
+        metadata: JsonObject,
+    ) -> ModelProviderRow:
+        return self._fetch_one(
+            "update_model_provider",
+            UPDATE_MODEL_PROVIDER_SQL,
+            (
+                provider_key,
+                model_provider,
+                display_name,
+                base_url,
+                api_key,
+                auth_mode,
+                default_model,
+                status,
+                model_list_path,
+                healthcheck_path,
+                invoke_path,
+                azure_api_version,
+                azure_auth_secret_ref,
+                Jsonb(metadata),
+                provider_id,
+                workspace_id,
+            ),
+        )
+
     def upsert_provider_capability(
         self,
         *,
@@ -8243,6 +8400,45 @@ class ContinuityStore:
         return self._fetch_optional_one(
             GET_PROVIDER_CAPABILITY_FOR_PROVIDER_SQL,
             (provider_id, workspace_id),
+        )
+
+    def record_provider_invocation_telemetry(
+        self,
+        *,
+        workspace_id: UUID,
+        provider_id: UUID,
+        thread_id: UUID | None,
+        invoked_by_user_account_id: UUID,
+        invocation_kind: str,
+        adapter_key: str,
+        runtime_provider: str,
+        requested_model: str,
+        response_model: str | None,
+        response_id: str | None,
+        status: str,
+        latency_ms: int,
+        usage: JsonObject,
+        error_detail: str | None,
+    ) -> ProviderInvocationTelemetryRow:
+        return self._fetch_one(
+            "record_provider_invocation_telemetry",
+            INSERT_PROVIDER_INVOCATION_TELEMETRY_SQL,
+            (
+                workspace_id,
+                provider_id,
+                thread_id,
+                invoked_by_user_account_id,
+                invocation_kind,
+                adapter_key,
+                runtime_provider,
+                requested_model,
+                response_model,
+                response_id,
+                status,
+                latency_ms,
+                Jsonb(usage),
+                error_detail,
+            ),
         )
 
     def create_model_pack(
