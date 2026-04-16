@@ -63,3 +63,12 @@ def test_base_schema_keeps_thread_created_index_for_deterministic_review_queries
     module = load_migration_module()
 
     assert "CREATE INDEX threads_user_created_idx" in module._UPGRADE_SCHEMA_STATEMENT
+
+
+def test_row_level_security_statements_cover_enable_and_force_modes() -> None:
+    module = load_migration_module()
+
+    assert module._row_level_security_statements("users") == (
+        "ALTER TABLE users ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE users FORCE ROW LEVEL SECURITY",
+    )

@@ -11,6 +11,7 @@ branch_labels = None
 depends_on = None
 
 _RLS_TABLES = ("users", "threads", "sessions", "events")
+_RLS_ACTIONS = ("ENABLE", "FORCE")
 
 _UPGRADE_BOOTSTRAP_STATEMENTS = (
     "CREATE EXTENSION IF NOT EXISTS pgcrypto",
@@ -148,10 +149,13 @@ def _execute_statements(statements: tuple[str, ...]) -> None:
         op.execute(statement)
 
 
+def _row_level_security_statements(table_name: str) -> tuple[str, ...]:
+    return tuple(f"ALTER TABLE {table_name} {action} ROW LEVEL SECURITY" for action in _RLS_ACTIONS)
+
+
 def _enable_row_level_security() -> None:
     for table_name in _RLS_TABLES:
-        op.execute(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY")
-        op.execute(f"ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY")
+        _execute_statements(_row_level_security_statements(table_name))
 
 
 def upgrade() -> None:
