@@ -43,6 +43,10 @@ class ModelPackNotFoundError(LookupError):
     """Raised when a model pack cannot be found in the workspace scope."""
 
 
+class ModelPackCompatibilityError(ValueError):
+    """Raised when a model pack is incompatible with the selected provider/runtime."""
+
+
 PackSelectionSource = Literal["none", "request", "workspace_binding"]
 
 
@@ -484,124 +488,36 @@ def _tier1_pack_specs() -> tuple[Tier1PackSpec, ...]:
     )
 
 
-def _tier2_pack_specs() -> tuple[Tier1PackSpec, ...]:
-    return (
-        Tier1PackSpec(
-            pack_id="deepseek",
-            pack_version="1.0.0",
-            display_name="DeepSeek Tier 2",
-            family="deepseek",
-            description="Tier-2 declarative runtime shaping for DeepSeek-family instruct models.",
-            briefing_strategy="balanced",
-            briefing_max_tokens=192,
-            contract=normalize_model_pack_contract(
-                {
-                    "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
-                    "context": {
-                        "max_sessions_cap": 3,
-                        "max_events_cap": 8,
-                        "max_memories_cap": 6,
-                        "max_entities_cap": 6,
-                        "max_entity_edges_cap": 12,
-                    },
-                    "tools": {"mode": "none"},
-                    "response": {
-                        "system_instruction_append": (
-                            "Prefer precise, concise outputs and anchor claims to explicit context."
-                        ),
-                        "developer_instruction_append": (
-                            "Keep recommendations concrete and avoid speculative branching."
-                        ),
-                    },
-                    "compatibility": {
-                        "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
-                        "runtime_providers": ["openai_responses"],
-                        "notes": "Tier-2 baseline for DeepSeek-family backends.",
-                    },
-                }
-            ),
-            seed="tier2",
-            seed_version="p11-s6",
-        ),
-        Tier1PackSpec(
-            pack_id="kimi",
-            pack_version="1.0.0",
-            display_name="Kimi Tier 2",
-            family="kimi",
-            description="Tier-2 declarative runtime shaping for Kimi-family instruct models.",
-            briefing_strategy="detailed",
-            briefing_max_tokens=224,
-            contract=normalize_model_pack_contract(
-                {
-                    "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
-                    "context": {
-                        "max_sessions_cap": 3,
-                        "max_events_cap": 8,
-                        "max_memories_cap": 5,
-                        "max_entities_cap": 6,
-                        "max_entity_edges_cap": 10,
-                    },
-                    "tools": {"mode": "none"},
-                    "response": {
-                        "system_instruction_append": (
-                            "Use direct language and preserve important continuity facts."
-                        ),
-                        "developer_instruction_append": (
-                            "Favor short, execution-ready output with explicit next actions."
-                        ),
-                    },
-                    "compatibility": {
-                        "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
-                        "runtime_providers": ["openai_responses"],
-                        "notes": "Tier-2 baseline for Kimi-family backends.",
-                    },
-                }
-            ),
-            seed="tier2",
-            seed_version="p11-s6",
-        ),
-        Tier1PackSpec(
-            pack_id="mistral",
-            pack_version="1.0.0",
-            display_name="Mistral Tier 2",
-            family="mistral",
-            description="Tier-2 declarative runtime shaping for Mistral-family instruct models.",
-            briefing_strategy="balanced",
-            briefing_max_tokens=176,
-            contract=normalize_model_pack_contract(
-                {
-                    "contract_version": MODEL_PACK_CONTRACT_VERSION_V1,
-                    "context": {
-                        "max_sessions_cap": 3,
-                        "max_events_cap": 8,
-                        "max_memories_cap": 5,
-                        "max_entities_cap": 5,
-                        "max_entity_edges_cap": 10,
-                    },
-                    "tools": {"mode": "none"},
-                    "response": {
-                        "system_instruction_append": (
-                            "Keep responses structured and grounded in available evidence."
-                        ),
-                        "developer_instruction_append": (
-                            "Prefer concise summaries and call out uncertainty when applicable."
-                        ),
-                    },
-                    "compatibility": {
-                        "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
-                        "runtime_providers": ["openai_responses"],
-                        "notes": "Tier-2 baseline for Mistral-family backends.",
-                    },
-                }
-            ),
-            seed="tier2",
-            seed_version="p11-s6",
-        ),
-    )
-
-
 def _catalog_pack_specs() -> tuple[Tier1PackSpec, ...]:
-    return _tier1_pack_specs() + _tier2_pack_specs()
+    return _tier1_pack_specs()
+
+
+def _compatibility_lists(contract: Mapping[str, object]) -> tuple[list[str], list[str]]:
+    normalized_contract = normalize_model_pack_contract(contract)
+    compatibility = normalized_contract["compatibility"]
+    assert isinstance(compatibility, dict)
+    provider_keys = compatibility.get("provider_keys", [])
+    runtime_providers = compatibility.get("runtime_providers", [])
+    assert isinstance(provider_keys, list)
+    assert isinstance(runtime_providers, list)
+    return ([str(item) for item in provider_keys], [str(item) for item in runtime_providers])
+
+
+def assert_model_pack_runtime_compatibility(
+    *,
+    pack: ModelPackRow,
+    provider_key: str,
+    runtime_provider: str,
+) -> None:
+    compatible_provider_keys, compatible_runtime_providers = _compatibility_lists(pack["contract"])
+    if provider_key not in compatible_provider_keys:
+        raise ModelPackCompatibilityError(
+            f"model pack {pack['pack_id']} is not compatible with provider key {provider_key}"
+        )
+    if runtime_provider not in compatible_runtime_providers:
+        raise ModelPackCompatibilityError(
+            f"model pack {pack['pack_id']} is not compatible with runtime provider {runtime_provider}"
+        )
 
 
 def is_reserved_tier1_pack_key(*, pack_id: str, pack_version: str) -> bool:
@@ -658,6 +574,7 @@ def resolve_workspace_model_pack_selection(
     workspace_id: UUID,
     requested_pack_id: str | None,
     requested_pack_version: str | None,
+    provider_id: UUID | None = None,
 ) -> ResolvedModelPackSelection:
     if requested_pack_id is not None:
         normalized_pack_id = normalize_pack_id(requested_pack_id)
@@ -681,7 +598,14 @@ def resolve_workspace_model_pack_selection(
             )
         return ResolvedModelPackSelection(source="request", pack=selected_pack)
 
-    binding = store.get_latest_workspace_model_pack_binding_optional(workspace_id=workspace_id)
+    binding = None
+    if provider_id is not None:
+        binding = store.get_resolved_workspace_model_pack_binding_optional(
+            workspace_id=workspace_id,
+            provider_id=provider_id,
+        )
+    else:
+        binding = store.get_latest_workspace_model_pack_binding_optional(workspace_id=workspace_id)
     if binding is None:
         return ResolvedModelPackSelection(source="none", pack=None)
 

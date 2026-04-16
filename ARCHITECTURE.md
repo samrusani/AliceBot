@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-13 and Bridge `B1` through `B4`.
-- **Current execution posture:** `v0.4.0` is the latest published tag; Phase 14 is active; `P14-S1` is shipped; `P14-S2` is active.
+- **Current execution posture:** `v0.4.0` is the latest published tag; Phase 14 is active; `P14-S1` and `P14-S2` are shipped; `P14-S3` is active.
 - **Phase principle:** Phase 14 is a platform-and-adoption phase, not a new substrate-research phase.
 
 ## Current System Overview
@@ -91,21 +91,23 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - Shipped OpenAI-compatible adapter hardening.
 - Shipped provider invocation telemetry persistence and hosted RLS posture for the new telemetry table.
 
+### P14-S2: Ollama + llama.cpp + vLLM Adapters
+- Status: shipped
+- Hardened the local/self-hosted runtime paths onto the stabilized provider contract.
+- Added the dedicated `vllm` provider path with provider-native health semantics and registration/config support.
+- Extended provider/runtime and pack-compatibility coverage for the shipped local/self-hosted provider surface.
+- Kept the sprint scoped to compatibility proof instead of reopening provider-foundation work.
+
 ## Phase 14 Active Delta
 
-### P14-S2: Ollama + llama.cpp + vLLM Adapters
+### P14-S3: Model Packs
 - Status: active
-- Align the existing local and self-hosted runtime paths to the stabilized provider contract from `P14-S1`.
-- Normalize capability mappings and telemetry behavior across Ollama, llama.cpp / llama-server, and vLLM.
-- Add local model quickstarts, example configs, and local compatibility smoke tests.
-- This sprint is compatibility proof and contract alignment, not a second provider-foundation rewrite.
+- Add versioned first-party pack definitions and workspace pack bindings.
+- Push pack-aware defaults into runtime invocation and briefing behavior.
+- Publish the first real compatibility matrix on top of the shipped provider/runtime surface.
+- This sprint is defaults-and-packaging work, not another provider sprint.
 
 ## Planned Phase 14 Follow-On Deltas
-
-### P14-S3: Model Packs
-- Versioned first-party pack definitions
-- workspace pack bindings
-- pack-aware defaults for runtime invocation and briefing
 
 ### P14-S4: Reference Integrations
 - polished Hermes and OpenClaw integration paths
@@ -126,8 +128,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 ## Testing Strategy
 - unit/integration tests for continuity, provider runtime, and API behavior
 - provider smoke tests and provider-capability parity checks
-- model-pack smoke tests and compatibility-matrix validation
-- local/self-hosted compatibility smoke tests for `P14-S2`
+- model-pack smoke tests and compatibility-matrix validation for `P14-S3`
 - integration smoke tests for Hermes, OpenClaw, Python example, and TypeScript example paths
 - release gates remain green across Python, web, Alice Lite, Hermes smoke, and public eval harness
 - docs verification is part of sprint completion, not cleanup work

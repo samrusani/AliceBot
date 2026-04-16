@@ -15,8 +15,9 @@ Alice is a pre-1.0 continuity platform for AI agents and agent-assisted workflow
 ## Current Repo Posture
 - Phase 14 is active.
 - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is shipped.
-- `P14-S2` Ollama + llama.cpp + vLLM Adapters is the active execution sprint.
-- `P14-S3` through `P14-S5` are planned.
+- `P14-S2` Ollama + llama.cpp + vLLM Adapters is shipped.
+- `P14-S3` Model Packs is the active execution sprint.
+- `P14-S4` through `P14-S5` are planned.
 
 ## Active Phase
 ### Phase 14: Provider Adapters + Design Partner Launch
@@ -63,4 +64,5 @@ Alice now has enough depth in continuity semantics. The next constraint is compa
 ## Immediate Product Posture
 - `v0.4.0` remains the current public release boundary.
 - `P14-S1` established the provider contract and telemetry baseline.
-- `P14-S2` is deliberately focused on contract alignment, compatibility proof, and local quickstarts for existing local/self-hosted paths so the phase does not drift into redundant provider rework.
+- `P14-S2` closed the local/self-hosted compatibility sprint and added the dedicated `vllm` path to the shipped provider surface.
+- `P14-S3` is deliberately focused on model-pack schema, binding, defaults, and compatibility clarity so the phase does not drift back into provider work.

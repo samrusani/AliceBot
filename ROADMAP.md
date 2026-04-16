@@ -15,8 +15,8 @@ These remain baseline truth and are not future milestones.
 ## Active Planning Status
 - Phase 14 is active.
 - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is shipped.
-- `P14-S2` Ollama + llama.cpp + vLLM Adapters is the active execution sprint.
-- `P14-S3` Model Packs is planned.
+- `P14-S2` Ollama + llama.cpp + vLLM Adapters is shipped.
+- `P14-S3` Model Packs is the active execution sprint.
 - `P14-S4` Reference Integrations is planned.
 - `P14-S5` Design Partner Launch is planned.
 
@@ -37,7 +37,7 @@ Release target: internal provider-foundation release candidate
 - normalize capability mappings, telemetry behavior, and continuity semantics across Ollama, llama.cpp, and vLLM
 - add local model quickstarts, example configs, and local compatibility smoke tests
 
-Status: active
+Status: shipped
 Release target: `v0.5.0-rc1`
 
 ### P14-S3: Model Packs
@@ -46,7 +46,7 @@ Release target: `v0.5.0-rc1`
 - integrate pack defaults into runtime invocation and briefing
 - publish a compatibility matrix
 
-Status: planned
+Status: active
 Release target: `v0.5.0-rc2`
 
 ### P14-S4: Reference Integrations
@@ -71,7 +71,7 @@ Release target: `v0.5.1` or `v0.6.0-beta`
 - Do not allow scope drift into new substrate research, new channels, enterprise governance expansion, or major vertical-agent work unless required by a declared Phase 14 deliverable.
 - Preserve one-call continuity semantics across provider classes.
 - Treat docs as sprint deliverables, not cleanup work.
-- Keep `P14-S2` narrow: it should harden and prove the existing local/self-hosted paths, not pretend those runtimes are newly invented in Phase 14.
+- Keep `P14-S3` narrow: it should turn the shipped provider/runtime surface into usable defaults, not reopen provider compatibility work under a pack label.
 
 ## Beyond Phase 14
 - No post-Phase-14 feature plan is currently defined.

@@ -487,6 +487,7 @@ class ModelPackRow(TypedDict):
 class WorkspaceModelPackBindingRow(TypedDict):
     id: UUID
     workspace_id: UUID
+    provider_id: UUID | None
     model_pack_id: UUID
     bound_by_user_account_id: UUID
     binding_source: str
@@ -497,6 +498,7 @@ class WorkspaceModelPackBindingRow(TypedDict):
 class WorkspaceModelPackBindingDetailRow(TypedDict):
     id: UUID
     workspace_id: UUID
+    provider_id: UUID | None
     model_pack_id: UUID
     bound_by_user_account_id: UUID
     binding_source: str
@@ -2768,16 +2770,18 @@ LIST_MODEL_PACKS_FOR_WORKSPACE_SQL = """
 INSERT_WORKSPACE_MODEL_PACK_BINDING_SQL = """
                 INSERT INTO workspace_model_pack_bindings (
                   workspace_id,
+                  provider_id,
                   model_pack_id,
                   bound_by_user_account_id,
                   binding_source,
                   metadata,
                   created_at
                 )
-                VALUES (%s, %s, %s, %s, %s, clock_timestamp())
+                VALUES (%s, %s, %s, %s, %s, %s, clock_timestamp())
                 RETURNING
                   id,
                   workspace_id,
+                  provider_id,
                   model_pack_id,
                   bound_by_user_account_id,
                   binding_source,
@@ -2789,6 +2793,7 @@ GET_LATEST_WORKSPACE_MODEL_PACK_BINDING_SQL = """
                 SELECT
                   b.id,
                   b.workspace_id,
+                  b.provider_id,
                   b.model_pack_id,
                   b.bound_by_user_account_id,
                   b.binding_source,
@@ -2811,7 +2816,43 @@ GET_LATEST_WORKSPACE_MODEL_PACK_BINDING_SQL = """
                 INNER JOIN model_packs AS p
                   ON p.id = b.model_pack_id
                 WHERE b.workspace_id = %s
+                  AND b.provider_id IS NULL
                 ORDER BY b.created_at DESC, b.id DESC
+                LIMIT 1
+                """
+
+GET_RESOLVED_WORKSPACE_MODEL_PACK_BINDING_SQL = """
+                SELECT
+                  b.id,
+                  b.workspace_id,
+                  b.provider_id,
+                  b.model_pack_id,
+                  b.bound_by_user_account_id,
+                  b.binding_source,
+                  b.metadata,
+                  b.created_at,
+                  p.pack_id,
+                  p.pack_version,
+                  p.display_name AS pack_display_name,
+                  p.family AS pack_family,
+                  p.description AS pack_description,
+                  p.status AS pack_status,
+                  p.briefing_strategy AS pack_briefing_strategy,
+                  p.briefing_max_tokens AS pack_briefing_max_tokens,
+                  p.contract AS pack_contract,
+                  p.metadata AS pack_metadata,
+                  p.created_by_user_account_id AS pack_created_by_user_account_id,
+                  p.created_at AS pack_created_at,
+                  p.updated_at AS pack_updated_at
+                FROM workspace_model_pack_bindings AS b
+                INNER JOIN model_packs AS p
+                  ON p.id = b.model_pack_id
+                WHERE b.workspace_id = %s
+                  AND (b.provider_id = %s OR b.provider_id IS NULL)
+                ORDER BY
+                  CASE WHEN b.provider_id = %s THEN 0 ELSE 1 END,
+                  b.created_at DESC,
+                  b.id DESC
                 LIMIT 1
                 """
 
@@ -8548,6 +8589,7 @@ class ContinuityStore:
         self,
         *,
         workspace_id: UUID,
+        provider_id: UUID | None,
         model_pack_id: UUID,
         bound_by_user_account_id: UUID,
         binding_source: str,
@@ -8558,6 +8600,7 @@ class ContinuityStore:
             INSERT_WORKSPACE_MODEL_PACK_BINDING_SQL,
             (
                 workspace_id,
+                provider_id,
                 model_pack_id,
                 bound_by_user_account_id,
                 binding_source,
@@ -8573,6 +8616,17 @@ class ContinuityStore:
         return self._fetch_optional_one(
             GET_LATEST_WORKSPACE_MODEL_PACK_BINDING_SQL,
             (workspace_id,),
+        )
+
+    def get_resolved_workspace_model_pack_binding_optional(
+        self,
+        *,
+        workspace_id: UUID,
+        provider_id: UUID,
+    ) -> WorkspaceModelPackBindingDetailRow | None:
+        return self._fetch_optional_one(
+            GET_RESOLVED_WORKSPACE_MODEL_PACK_BINDING_SQL,
+            (workspace_id, provider_id, provider_id),
         )
 
     def workspace_visible_to_user_account(

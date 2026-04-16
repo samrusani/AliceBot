@@ -703,10 +703,12 @@ from alicebot_api.provider_runtime import (
 from alicebot_api.model_packs import (
     MODEL_PACK_BINDING_SOURCE_MANUAL,
     MODEL_PACK_STATUS_ACTIVE,
+    ModelPackCompatibilityError,
     ModelPackNotFoundError,
     ModelPackValidationError,
     append_instruction,
     apply_runtime_limit_caps,
+    assert_model_pack_runtime_compatibility,
     build_model_pack_runtime_shape,
     ensure_tier1_model_packs_for_workspace,
     is_reserved_tier1_pack_key,
@@ -1718,6 +1720,7 @@ def _serialize_workspace_model_pack_binding(
     return {
         "id": str(binding["id"]),
         "workspace_id": str(binding["workspace_id"]),
+        "provider_id": None if binding["provider_id"] is None else str(binding["provider_id"]),
         "model_pack_id": str(binding["model_pack_id"]),
         "bound_by_user_account_id": str(binding["bound_by_user_account_id"]),
         "binding_source": binding["binding_source"],
@@ -2869,6 +2872,7 @@ class CreateModelPackRequest(BaseModel):
 class BindModelPackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    provider_id: UUID | None = None
     pack_version: str | None = Field(default=None, min_length=1, max_length=40)
     metadata: dict[str, object] = Field(default_factory=dict)
 
@@ -8482,6 +8486,17 @@ def bind_v1_model_pack(pack_id: str, request: Request, body: BindModelPackReques
                     workspace_id=workspace["id"],
                     created_by_user_account_id=resolution["user_account"]["id"],
                 )
+                provider = None
+                if body.provider_id is not None:
+                    provider = store.get_model_provider_for_workspace_optional(
+                        provider_id=body.provider_id,
+                        workspace_id=workspace["id"],
+                    )
+                    if provider is None:
+                        return JSONResponse(
+                            status_code=404,
+                            content={"detail": f"provider {body.provider_id} was not found"},
+                        )
                 pack = store.get_model_pack_for_workspace_optional(
                     workspace_id=workspace["id"],
                     pack_id=normalized_pack_id,
@@ -8492,18 +8507,33 @@ def bind_v1_model_pack(pack_id: str, request: Request, body: BindModelPackReques
                         status_code=404,
                         content={"detail": f"model pack {normalized_pack_id} was not found"},
                     )
+                if provider is not None:
+                    assert_model_pack_runtime_compatibility(
+                        pack=pack,
+                        provider_key=provider["provider_key"],
+                        runtime_provider=provider["model_provider"],
+                    )
                 store.create_workspace_model_pack_binding(
                     workspace_id=workspace["id"],
+                    provider_id=None if provider is None else provider["id"],
                     model_pack_id=pack["id"],
                     bound_by_user_account_id=resolution["user_account"]["id"],
                     binding_source=MODEL_PACK_BINDING_SOURCE_MANUAL,
                     metadata=body.metadata,
                 )
-                binding = store.get_latest_workspace_model_pack_binding_optional(
-                    workspace_id=workspace["id"],
-                )
+                if provider is None:
+                    binding = store.get_latest_workspace_model_pack_binding_optional(
+                        workspace_id=workspace["id"],
+                    )
+                else:
+                    binding = store.get_resolved_workspace_model_pack_binding_optional(
+                        workspace_id=workspace["id"],
+                        provider_id=provider["id"],
+                    )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ModelPackCompatibilityError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except ModelPackValidationError as exc:
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
@@ -8516,7 +8546,11 @@ def bind_v1_model_pack(pack_id: str, request: Request, body: BindModelPackReques
 
 
 @app.get("/v1/workspaces/{workspace_id}/model-pack-binding")
-def get_v1_workspace_model_pack_binding(workspace_id: UUID, request: Request) -> JSONResponse:
+def get_v1_workspace_model_pack_binding(
+    workspace_id: UUID,
+    request: Request,
+    provider_id: Annotated[UUID | None, Query()] = None,
+) -> JSONResponse:
     settings = get_settings()
 
     try:
@@ -8533,9 +8567,21 @@ def get_v1_workspace_model_pack_binding(workspace_id: UUID, request: Request) ->
                     return JSONResponse(status_code=404, content={"detail": f"workspace {workspace_id} was not found"})
 
                 store = ContinuityStore(conn)
-                binding = store.get_latest_workspace_model_pack_binding_optional(
-                    workspace_id=workspace["id"],
-                )
+                if provider_id is None:
+                    binding = store.get_latest_workspace_model_pack_binding_optional(
+                        workspace_id=workspace["id"],
+                    )
+                else:
+                    provider = store.get_model_provider_for_workspace_optional(
+                        provider_id=provider_id,
+                        workspace_id=workspace["id"],
+                    )
+                    if provider is None:
+                        return JSONResponse(status_code=404, content={"detail": f"provider {provider_id} was not found"})
+                    binding = store.get_resolved_workspace_model_pack_binding_optional(
+                        workspace_id=workspace["id"],
+                        provider_id=provider_id,
+                    )
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
 
@@ -8599,11 +8645,14 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
                     workspace_id=workspace["id"],
                     requested_pack_id=body.pack_id,
                     requested_pack_version=body.pack_version,
+                    provider_id=runtime_provider.provider_id,
                 )
                 model_pack = selected_pack.pack
                 model_pack_source = selected_pack.source
     except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
         return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except ModelPackCompatibilityError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
     except ModelPackNotFoundError as exc:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
     except ModelPackValidationError as exc:
@@ -8630,37 +8679,45 @@ def invoke_v1_runtime(request: Request, body: RuntimeInvokeRequest) -> JSONRespo
     runtime_system_instruction = SYSTEM_INSTRUCTION
     runtime_developer_instruction = DEVELOPER_INSTRUCTION
 
-    if model_pack is not None:
-        runtime_shape = build_model_pack_runtime_shape(model_pack["contract"])
-        (
-            max_sessions,
-            max_events,
-            max_memories,
-            max_entities,
-            max_entity_edges,
-        ) = apply_runtime_limit_caps(
-            max_sessions=runtime_limits.max_sessions,
-            max_events=runtime_limits.max_events,
-            max_memories=runtime_limits.max_memories,
-            max_entities=runtime_limits.max_entities,
-            max_entity_edges=runtime_limits.max_entity_edges,
-            shape=runtime_shape,
-        )
-        runtime_limits = ContextCompilerLimits(
-            max_sessions=max_sessions,
-            max_events=max_events,
-            max_memories=max_memories,
-            max_entities=max_entities,
-            max_entity_edges=max_entity_edges,
-        )
-        runtime_system_instruction = append_instruction(
-            SYSTEM_INSTRUCTION,
-            runtime_shape.system_instruction_append,
-        )
-        runtime_developer_instruction = append_instruction(
-            DEVELOPER_INSTRUCTION,
-            runtime_shape.developer_instruction_append,
-        )
+    try:
+        if model_pack is not None:
+            assert_model_pack_runtime_compatibility(
+                pack=model_pack,
+                provider_key=runtime_provider.provider_key,
+                runtime_provider=runtime_provider.model_provider,
+            )
+            runtime_shape = build_model_pack_runtime_shape(model_pack["contract"])
+            (
+                max_sessions,
+                max_events,
+                max_memories,
+                max_entities,
+                max_entity_edges,
+            ) = apply_runtime_limit_caps(
+                max_sessions=runtime_limits.max_sessions,
+                max_events=runtime_limits.max_events,
+                max_memories=runtime_limits.max_memories,
+                max_entities=runtime_limits.max_entities,
+                max_entity_edges=runtime_limits.max_entity_edges,
+                shape=runtime_shape,
+            )
+            runtime_limits = ContextCompilerLimits(
+                max_sessions=max_sessions,
+                max_events=max_events,
+                max_memories=max_memories,
+                max_entities=max_entities,
+                max_entity_edges=max_entity_edges,
+            )
+            runtime_system_instruction = append_instruction(
+                SYSTEM_INSTRUCTION,
+                runtime_shape.system_instruction_append,
+            )
+            runtime_developer_instruction = append_instruction(
+                DEVELOPER_INSTRUCTION,
+                runtime_shape.developer_instruction_append,
+            )
+    except ModelPackCompatibilityError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     user_account_id = user_account["id"]
     if not isinstance(user_account_id, UUID):

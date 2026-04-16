@@ -1,46 +1,64 @@
 # Phase 14 Model Pack Contract
 
 ## Purpose
-Define the declarative pack profile Alice uses to make provider-backed models usable without manual tuning.
+Model packs provide declarative continuity defaults on top of the shipped provider/runtime baseline.
 
-## Rule
-Model packs are profiles, not forks.
+They shape briefing and runtime behavior without creating a second provider path or changing Alice continuity semantics.
 
-They may shape defaults for prompting, briefing, tools, token budgets, and quirks, but they must not create new continuity semantics.
+## Shipped First-Party Packs
+- `llama@1.0.0`
+- `qwen@1.0.0`
+- `gemma@1.0.0`
+- `gpt-oss@1.0.0`
 
-## Required Fields
+DeepSeek, Mistral, and other families remain deferred from the first-party catalog in `P14-S3`.
+
+## Persisted Model-Pack Fields
 - `pack_id`
-- `family`
+- `pack_version`
 - `display_name`
-- `provider_type`
-- `default_model_name`
-- `supports_tools`
-- `supports_reasoning`
-- `supports_vision`
+- `family`
+- `description`
+- `status`
 - `briefing_strategy`
-- `resume_brief_style`
-- `max_context_pack_tokens`
-- `max_brief_tokens`
-- `default_temperature`
-- `default_top_p`
-- `evidence_strategy`
-- `known_quirks`
+- `briefing_max_tokens`
+- `contract`
+- `metadata`
 
-## Initial First-Party Families
-- Llama
-- Qwen
-- Gemma
-- `gpt-oss`
+## Contract Shape
+`contract.contract_version` must equal `model_pack_contract_v1`.
 
-Optional later Phase 14 families if capacity remains:
-- DeepSeek
-- Mistral
+### `context`
+- `max_sessions_cap`
+- `max_events_cap`
+- `max_memories_cap`
+- `max_entities_cap`
+- `max_entity_edges_cap`
+
+### `tools`
+- `mode`
+
+`P14-S3` ships only `tools.mode = "none"`.
+
+### `response`
+- `system_instruction_append`
+- `developer_instruction_append`
+
+### `compatibility`
+- `provider_keys`
+- `runtime_providers`
+- `notes`
 
 ## Binding Rules
-- a workspace binds a provider to a model pack
-- packs must be versioned
-- pack bindings may allow model-name override without semantic drift
-- pack defaults must flow into runtime invocation and briefing behavior
+- a workspace may bind a default pack with no provider id
+- a workspace may bind a specific provider to a pack by `provider_id`
+- runtime selection precedence is:
+  1. explicit request override
+  2. provider-specific binding
+  3. workspace default binding
+  4. no pack
+- task-briefing defaults resolve from the workspace default binding when no explicit pack is requested
+- pack compatibility must remain declarative through `compatibility.provider_keys` and `compatibility.runtime_providers`
 
 ## Success Condition
-Users should be able to bind a supported provider to a first-party pack and get sensible continuity defaults without hand tuning or hidden behavior changes.
+Users can bind a supported provider or workspace default to a documented first-party pack and get sensible continuity defaults without manual tuning or hidden runtime behavior changes.
