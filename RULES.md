@@ -15,6 +15,7 @@
 - A provider may change capability support, latency, token budgets, and model-specific quirks.
 - A provider must not change the continuity object model, contradiction handling, provenance contracts, trust semantics, or one-call continuity behavior.
 - Provider capability discovery and invocation telemetry should be first-class, persisted, and inspectable.
+- Do not reopen provider-foundation work redundantly after `P14-S1`; follow-on provider sprints must be about contract alignment, compatibility proof, or a newly declared provider class.
 
 ## Model Pack Rules
 - Model packs are declarative, versioned profiles, not forks.
@@ -38,6 +39,7 @@
 - Provider docs, model-pack docs, integration docs, and onboarding docs must stay aligned to shipped behavior.
 - Keep credentials, tokens, and secret references out of logs, docs, and outward-facing errors.
 - Any new workspace-scoped hosted table must ship with row-level security enablement, workspace access policies, and a regression test for that access posture.
+- Keep local filesystem paths, workstation usernames, and machine-specific identifiers out of committed docs and reports.
 - Keep consequential side effects approval-bounded.
 - Commit public evidence only from exact commands and stable fixtures, never from inferred pass states.
 

@@ -4,43 +4,43 @@
 PASS
 
 ## criteria met
-- A provider can be registered through the API and through workspace config seeding.
-- Alice can invoke a compliant OpenAI-compatible endpoint through the provider abstraction.
-- Provider capabilities are stored and visible on registration and update flows.
-- Runtime invocation telemetry is persisted for both `provider_test` and `runtime_invoke`.
-- One-call continuity still works through the provider abstraction in the covered runtime integration tests.
-- The required live smoke flow was completed against a real local Alice API session and a temporary compliant stub provider.
-- I did not find local workstation paths, usernames, or similar local identifiers introduced in the reviewed sprint files and docs.
+- vLLM is now aligned to provider-native health semantics: empty successful `/health` responses are treated as healthy instead of failing JSON parsing.
+- Registration, capability discovery, provider test, runtime invoke, and model-pack compatibility all pass for the dedicated `vllm` adapter in the reviewed automated coverage.
+- Workspace config seeding is covered for `vllm`, including capability discovery on bootstrap.
+- Existing OpenAI-compatible behavior remains covered and passing, reducing regression risk on the prior provider seam.
+- Provider/runtime docs are aligned enough for the implemented surface, including the dedicated `vllm` config note.
+- I did not find local workstation paths, usernames, or similar local identifiers introduced in the reviewed changed files or docs.
 
 ## criteria missed
-- none
+- none blocking
 
 ## quality issues
-- none blocking
+- No blocking implementation issues remain in the reviewed sprint diff.
+- Residual risk remains because the build report still notes that live runtime smoke against actual Ollama, llama.cpp, and vLLM processes was not run in this workspace. Given the corrected protocol handling and the passing targeted integration coverage, I do not treat that as a blocker for this review.
 
 ## regression risks
-- Low residual risk in the changed area. The main earlier regression risk was the missing hosted RLS posture on `provider_invocation_telemetry`; that is now fixed and covered by tests.
+- Low to moderate residual risk around real-runtime version drift, especially for provider-specific endpoint behavior outside the covered request/response shapes.
+- The new `request_ok()` healthcheck helper should stay scoped to providers whose health endpoints are success-status based rather than JSON-contract based.
 
 ## docs issues
-- none blocking
-- `ARCHITECTURE.md` and the Phase 14 provider contract doc were narrowed back to implemented `P14-S1` truth in this pass.
+- No blocking docs issues remain.
+- It would still help to lock the minimum supported Ollama, llama.cpp, and vLLM versions in the Phase 14 docs when product decides them.
 
 ## should anything be added to RULES.md?
-- Already addressed in this pass: `RULES.md` now requires new workspace-scoped hosted tables to ship with RLS enablement, workspace access policies, and a regression test.
+- Not required for this sprint to pass.
+- Optional: add a rule that provider healthchecks must follow provider-native success semantics and not assume JSON unless the provider contract guarantees it.
 
 ## should anything update ARCHITECTURE.md?
-- Already addressed in this pass: `ARCHITECTURE.md` now describes only implemented `P14-S1` provider/runtime additions instead of future-sprint APIs and tables.
+- Not required for this sprint to pass.
+- Optional: if `vllm` remains a long-term first-class provider key distinct from `openai_compatible`, document that boundary explicitly in `ARCHITECTURE.md`.
 
 ## recommended next action
-1. Merge or hand off `P14-S1` as complete.
-2. Start `P14-S2` from the stabilized provider contract, telemetry baseline, and hosted RLS posture now in place.
+- Merge this sprint.
+- As follow-up hardening, run the updated smoke flow against real local/self-hosted runtimes and record the supported minimum runtime versions in the Phase 14 docs.
 
 ## verification reviewed
 - `python3 scripts/check_control_doc_truth.py` -> PASS
-- `./.venv/bin/pytest tests/unit/test_control_doc_truth.py -q` -> 5 passed
-- `./.venv/bin/pytest tests/unit/test_provider_runtime.py tests/unit/test_config.py tests/unit/test_20260415_0063_phase14_provider_invocation_telemetry.py -q` -> 21 passed
-- `./.venv/bin/pytest tests/integration/test_phase11_provider_runtime_api.py -q` -> 16 passed
-- `python3 -m py_compile scripts/run_phase14_openai_compatible_smoke.py` -> PASS
-- `python3 scripts/run_phase14_openai_compatible_smoke.py --help` -> PASS
-- `./.venv/bin/python scripts/run_phase14_openai_compatible_smoke.py --api-base-url http://127.0.0.1:8017 --session-token <redacted-session-token> --thread-id <generated-thread-id> --model gpt-5-mini` -> PASS
-- telemetry confirmation query -> rows for `provider_test` and `runtime_invoke` persisted
+- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q` -> 5 passed
+- `./.venv/bin/python -m pytest tests/unit/test_provider_runtime.py tests/unit/test_model_packs.py tests/unit/test_config.py -q` -> 29 passed
+- `./.venv/bin/python -m pytest tests/integration/test_phase11_provider_runtime_api.py tests/integration/test_phase11_model_packs_api.py -q` -> 19 passed
+- `git diff --check` -> PASS

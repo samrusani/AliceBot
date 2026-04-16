@@ -104,6 +104,22 @@ class WorkspaceProviderConfig:
     metadata: Mapping[str, object] | None = None
 
 
+_WORKSPACE_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
+    "openai_compatible": {
+        "auth_mode": "bearer",
+        "model_list_path": "/models",
+        "healthcheck_path": "/models",
+        "invoke_path": "/responses",
+    },
+    "vllm": {
+        "auth_mode": "none",
+        "model_list_path": "/v1/models",
+        "healthcheck_path": "/health",
+        "invoke_path": "/v1/chat/completions",
+    },
+}
+
+
 def _get_env_value(env: Environment, key: str, default: str) -> str:
     return env.get(key, default)
 
@@ -482,9 +498,11 @@ def _parse_workspace_provider_configs(raw_value: str) -> tuple[WorkspaceProvider
             )
 
         provider_key = str(item.get("provider_key", "openai_compatible")).strip()
-        if provider_key != "openai_compatible":
+        provider_defaults = _WORKSPACE_PROVIDER_DEFAULTS.get(provider_key)
+        if provider_defaults is None:
             raise ValueError(
-                f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}].provider_key must be openai_compatible"
+                f"WORKSPACE_PROVIDER_CONFIGS_JSON[{index}].provider_key must be one of "
+                f"{', '.join(sorted(_WORKSPACE_PROVIDER_DEFAULTS))}"
             )
 
         metadata = item.get("metadata", {})
@@ -499,10 +517,10 @@ def _parse_workspace_provider_configs(raw_value: str) -> tuple[WorkspaceProvider
             base_url=str(item.get("base_url", "")).strip(),
             api_key=str(item.get("api_key", "")).strip(),
             default_model=str(item.get("default_model", "")).strip(),
-            auth_mode=str(item.get("auth_mode", "bearer")).strip().lower(),
-            model_list_path=str(item.get("model_list_path", "/models")).strip(),
-            healthcheck_path=str(item.get("healthcheck_path", "/models")).strip(),
-            invoke_path=str(item.get("invoke_path", "/responses")).strip(),
+            auth_mode=str(item.get("auth_mode", provider_defaults["auth_mode"])).strip().lower(),
+            model_list_path=str(item.get("model_list_path", provider_defaults["model_list_path"])).strip(),
+            healthcheck_path=str(item.get("healthcheck_path", provider_defaults["healthcheck_path"])).strip(),
+            invoke_path=str(item.get("invoke_path", provider_defaults["invoke_path"])).strip(),
             metadata=metadata,
         )
         configs.append(config)

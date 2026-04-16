@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-13 and Bridge `B1` through `B4`.
-- **Current repo execution posture:** `v0.4.0` is the latest published tag; Phase 14 is active; `P14-S1` is the active execution sprint.
+- **Current execution posture:** `v0.4.0` is the latest published tag; Phase 14 is active; `P14-S1` is shipped; `P14-S2` is active.
 - **Phase principle:** Phase 14 is a platform-and-adoption phase, not a new substrate-research phase.
 
 ## Current System Overview
@@ -53,10 +53,12 @@ Alice is a modular continuity platform with shared continuity semantics across l
 
 ### Product / Runtime
 - `workspaces`, `workspace_members`, `auth_sessions`, `devices`
-- current provider/runtime tables from the shipped baseline
+- `model_providers`, `provider_capabilities`, `model_packs`, `workspace_model_pack_bindings`
+- `provider_invocation_telemetry`
+- `task_briefs`
 - channel, task, trace, approval, and execution tables
 
-## Current Key Flows
+## Key Flows In Force
 
 ### Capture And Review
 1. Raw content enters continuity capture.
@@ -69,68 +71,48 @@ Alice is a modular continuity platform with shared continuity semantics across l
 2. Ranking considers semantic similarity, lexical/entity signals, trust, freshness, provenance, and supersession.
 3. Resumption and one-call continuity compose ranked recall into decisions, open loops, recent changes, provenance, trust posture, and next action.
 
-### Provider / Hermes Runtime
-1. Workspace binds provider and model-pack configuration.
+### Provider Runtime
+1. Workspace binds provider and optional model-pack configuration.
 2. Runtime invokes through provider adapter boundaries.
-3. Hermes can prefetch before a turn and capture after a turn while Alice remains the system of record.
+3. Invocation telemetry and capability snapshots remain inspectable.
 
-## Phase 13 Baseline In Force
-- One-call continuity is the primary continuity integration surface.
-- Alice Lite is the lighter local deployment profile.
-- Hygiene and thread-health visibility are part of the shipped baseline.
+### Hermes Runtime
+1. Hermes can prefetch before a turn.
+2. Alice remains the continuity system of record.
+3. Hermes can capture and explain after a turn while MCP fallback remains viable.
 
-## Phase 14 Shared Delta
+## Phase 14 Delivered Delta
 
-### Platform Concepts
-- **Provider:** a runtime connector Alice uses to talk to a specific model-serving interface.
-- **Model pack:** a versioned profile shaping prompt/context behavior, tool strategy, briefing strategy, token budgets, and model-specific quirks.
-- **Integration kit:** a runtime-specific starter path for Hermes, OpenClaw, Python agents, and TypeScript agents.
-- **Design partner workspace:** a tracked workspace with onboarding, support, instrumentation, and pilot outcome logging.
+### P14-S1: Provider Abstraction Cleanup + OpenAI-Compatible Adapter
+- Status: shipped
+- Stabilized the provider adapter contract.
+- Shipped workspace-scoped provider registration and update flows.
+- Shipped capability discovery and capability snapshots.
+- Shipped OpenAI-compatible adapter hardening.
+- Shipped provider invocation telemetry persistence and hosted RLS posture for the new telemetry table.
 
-### P14-S1 API Additions
-- Provider management:
-  - `POST /v1/providers`
-  - `GET /v1/providers`
-  - `GET /v1/providers/{provider_id}`
-  - `PATCH /v1/providers/{provider_id}`
-  - `POST /v1/providers/test`
-- Runtime invocation:
-  - `POST /v1/runtime/invoke`
+## Phase 14 Active Delta
 
-### P14-S1 Table Additions And Refinements
-- `model_providers`
-- `provider_capabilities`
-- `provider_invocation_telemetry`
+### P14-S2: Ollama + llama.cpp + vLLM Adapters
+- Status: active
+- Align the existing local and self-hosted runtime paths to the stabilized provider contract from `P14-S1`.
+- Normalize capability mappings and telemetry behavior across Ollama, llama.cpp / llama-server, and vLLM.
+- Add local model quickstarts, example configs, and local compatibility smoke tests.
+- This sprint is compatibility proof and contract alignment, not a second provider-foundation rewrite.
 
-### Provider Adapter Contract
-- Required methods:
-  - `healthcheck()`
-  - `list_models()`
-  - `invoke_responses()`
-  - `invoke_embeddings()`
-  - `supports_tools()`
-  - `supports_reasoning()`
-  - `supports_vision()`
-  - `normalize_response()`
-  - `normalize_usage()`
-  - `normalize_tool_schema()`
-  - `discover_capabilities()`
-  - `invoke()`
-- Design rule:
-  - providers may affect capability support, latency, token budgets, and model-specific behavior
-  - providers must not fork continuity object semantics, contradiction handling, provenance contracts, or one-call continuity behavior
+## Planned Phase 14 Follow-On Deltas
 
-### P14-S1 Notes
-- Workspace bootstrap can seed OpenAI-compatible providers from `WORKSPACE_PROVIDER_CONFIGS_JSON`.
-- Invocation telemetry persists normalized provider test and runtime invoke records.
-- Later Phase 14 API/table expansions stay in roadmap and spec docs until they are implemented.
+### P14-S3: Model Packs
+- Versioned first-party pack definitions
+- workspace pack bindings
+- pack-aware defaults for runtime invocation and briefing
 
-## Phase 14 Sprint Sequence
-- `P14-S1` Provider abstraction cleanup + OpenAI-compatible adapter
-- `P14-S2` Ollama + llama.cpp + vLLM adapters
-- `P14-S3` Model packs
-- `P14-S4` Reference integrations
-- `P14-S5` Design partner launch
+### P14-S4: Reference Integrations
+- polished Hermes and OpenClaw integration paths
+- generic Python and TypeScript examples
+
+### P14-S5: Design Partner Launch
+- design-partner onboarding, support, instrumentation, and usage proof
 
 ## Security And Reliability Rules
 - Keep user/workspace isolation intact for continuity, provider, runtime, and design-partner data.
@@ -145,6 +127,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - unit/integration tests for continuity, provider runtime, and API behavior
 - provider smoke tests and provider-capability parity checks
 - model-pack smoke tests and compatibility-matrix validation
+- local/self-hosted compatibility smoke tests for `P14-S2`
 - integration smoke tests for Hermes, OpenClaw, Python example, and TypeScript example paths
 - release gates remain green across Python, web, Alice Lite, Hermes smoke, and public eval harness
 - docs verification is part of sprint completion, not cleanup work

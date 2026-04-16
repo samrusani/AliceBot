@@ -1,15 +1,16 @@
-# Phase 11 Local Provider Adapters (P11-S2)
+# Local + Self-Hosted Provider Adapters
 
-This guide covers the sprint-owned local provider paths:
+This guide covers the sprint-owned local and self-hosted provider paths:
 
 - `POST /v1/providers/ollama/register`
 - `POST /v1/providers/llamacpp/register`
+- `POST /v1/providers/vllm/register`
 - `POST /v1/providers/test`
 - `POST /v1/runtime/invoke`
 - `GET /v1/providers`
 - `GET /v1/providers/{provider_id}`
 
-Scope note: this page documents Ollama and llama.cpp only.
+Scope note: this page documents Ollama, llama.cpp / llama-server, and self-hosted vLLM.
 
 ## Prerequisites
 
@@ -19,6 +20,7 @@ Scope note: this page documents Ollama and llama.cpp only.
 4. Run at least one local model backend:
    - Ollama server (default `http://127.0.0.1:11434`)
    - llama.cpp server (default `http://127.0.0.1:8080`)
+   - vLLM server (recommended `http://127.0.0.1:8001`)
 
 ## Register Ollama
 
@@ -43,6 +45,19 @@ curl -sS -X POST "http://127.0.0.1:8000/v1/providers/llamacpp/register" \
     "display_name": "llama.cpp Local",
     "base_url": "http://127.0.0.1:8080",
     "default_model": "Meta-Llama-3.1-8B-Instruct"
+  }'
+```
+
+## Register vLLM
+
+```bash
+curl -sS -X POST "http://127.0.0.1:8000/v1/providers/vllm/register" \
+  -H "Authorization: Bearer $SESSION_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "display_name": "vLLM Self-Hosted",
+    "base_url": "http://127.0.0.1:8001",
+    "default_model": "mistral-small-instruct"
   }'
 ```
 
@@ -100,4 +115,14 @@ Or for llama.cpp:
   --thread-id "$THREAD_ID" \
   --provider llamacpp \
   --model Meta-Llama-3.1-8B-Instruct
+```
+
+Or for vLLM:
+
+```bash
+./scripts/run_phase11_local_provider_e2e.py \
+  --session-token "$SESSION_TOKEN" \
+  --thread-id "$THREAD_ID" \
+  --provider vllm \
+  --model mistral-small-instruct
 ```

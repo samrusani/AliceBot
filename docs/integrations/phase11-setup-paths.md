@@ -70,19 +70,17 @@ curl -sS -X POST "http://127.0.0.1:8000/v1/runtime/invoke" \
   }'
 ```
 
-## Self-Hosted Path: OpenAI-Compatible (vLLM-Compatible Surface)
+## Self-Hosted Path: vLLM
 
-Register with `provider_key = openai_compatible`, then use the same test/invoke seams.
+Register the dedicated `vllm` adapter, then use the same test/invoke seams.
 
 ```bash
-curl -sS -X POST "http://127.0.0.1:8000/v1/providers" \
+curl -sS -X POST "http://127.0.0.1:8000/v1/providers/vllm/register" \
   -H "Authorization: Bearer $SESSION_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "provider_key":"openai_compatible",
     "display_name":"Self-Hosted vLLM",
-    "base_url":"https://selfhosted.example/v1",
-    "api_key":"'"$PROVIDER_API_KEY"'",
+    "base_url":"http://127.0.0.1:8001",
     "default_model":"mistral-small-instruct"
   }'
 ```

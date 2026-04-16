@@ -341,6 +341,27 @@ def test_settings_reject_invalid_workspace_provider_configs_json() -> None:
         )
 
 
+def test_settings_accept_vllm_workspace_provider_config_defaults() -> None:
+    settings = Settings.from_env(
+        {
+            "WORKSPACE_PROVIDER_CONFIGS_JSON": (
+                '[{"provider_key":"vllm",'
+                '"display_name":"Configured vLLM",'
+                '"base_url":"http://127.0.0.1:8001",'
+                '"default_model":"mistral-small-instruct"}]'
+            )
+        }
+    )
+
+    assert len(settings.workspace_provider_configs) == 1
+    provider = settings.workspace_provider_configs[0]
+    assert provider.provider_key == "vllm"
+    assert provider.auth_mode == "none"
+    assert provider.model_list_path == "/v1/models"
+    assert provider.healthcheck_path == "/health"
+    assert provider.invoke_path == "/v1/chat/completions"
+
+
 def test_settings_reject_non_positive_rate_limit_values() -> None:
     with pytest.raises(
         ValueError,

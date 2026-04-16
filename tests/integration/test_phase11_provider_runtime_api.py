@@ -264,7 +264,11 @@ def test_phase11_local_provider_registration_list_and_detail(migrated_database_u
                 json.dumps({"models": [{"name": "llama3.2:latest"}, {"name": "qwen2.5:latest"}]}).encode("utf-8")
             )
         if url.endswith("/health"):
+            if "vllm.example" in url:
+                return FakeHTTPResponse(b"")
             return FakeHTTPResponse(json.dumps({"status": "ok"}).encode("utf-8"))
+        if url.endswith("/v1/models") and "vllm.example" in url:
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "mistral-small-instruct"}]}).encode("utf-8"))
         if url.endswith("/v1/models"):
             return FakeHTTPResponse(json.dumps({"data": [{"id": "Meta-Llama-3.1-8B-Instruct"}]}).encode("utf-8"))
         raise AssertionError(f"unexpected local provider URL: {url}")
@@ -320,15 +324,38 @@ def test_phase11_local_provider_registration_list_and_detail(migrated_database_u
     assert llamacpp_payload["capabilities"]["snapshot"]["health_status"] == "ok"
     assert llamacpp_payload["capabilities"]["snapshot"]["models"] == ["Meta-Llama-3.1-8B-Instruct"]
 
+    vllm_status, vllm_payload = invoke_request(
+        "POST",
+        "/v1/providers/vllm/register",
+        payload={
+            "display_name": "vLLM Self-Hosted",
+            "base_url": "http://vllm.example:8001",
+            "default_model": "mistral-small-instruct",
+            "metadata": {"kind": "self_hosted"},
+        },
+        headers=auth_header(session_token),
+    )
+    assert vllm_status == 201
+    vllm_provider_id = vllm_payload["provider"]["id"]
+    assert vllm_payload["provider"]["provider_key"] == "vllm"
+    assert vllm_payload["provider"]["model_provider"] == "openai_responses"
+    assert vllm_payload["provider"]["auth_mode"] == "none"
+    assert vllm_payload["provider"]["model_list_path"] == "/v1/models"
+    assert vllm_payload["provider"]["healthcheck_path"] == "/health"
+    assert vllm_payload["provider"]["invoke_path"] == "/v1/chat/completions"
+    assert vllm_payload["capabilities"]["discovery_status"] == "ready"
+    assert vllm_payload["capabilities"]["snapshot"]["health_status"] == "ok"
+    assert vllm_payload["capabilities"]["snapshot"]["models"] == ["mistral-small-instruct"]
+
     list_status, list_payload = invoke_request(
         "GET",
         "/v1/providers",
         headers=auth_header(session_token),
     )
     assert list_status == 200
-    assert list_payload["summary"]["total_count"] == 2
+    assert list_payload["summary"]["total_count"] == 3
     listed_provider_ids = [item["id"] for item in list_payload["items"]]
-    assert listed_provider_ids == [ollama_provider_id, llamacpp_provider_id]
+    assert listed_provider_ids == [ollama_provider_id, llamacpp_provider_id, vllm_provider_id]
 
     ollama_detail_status, ollama_detail_payload = invoke_request(
         "GET",
@@ -348,11 +375,22 @@ def test_phase11_local_provider_registration_list_and_detail(migrated_database_u
     assert llamacpp_detail_payload["provider"]["id"] == llamacpp_provider_id
     assert llamacpp_detail_payload["capabilities"]["provider_id"] == llamacpp_provider_id
 
+    vllm_detail_status, vllm_detail_payload = invoke_request(
+        "GET",
+        f"/v1/providers/{vllm_provider_id}",
+        headers=auth_header(session_token),
+    )
+    assert vllm_detail_status == 200
+    assert vllm_detail_payload["provider"]["id"] == vllm_provider_id
+    assert vllm_detail_payload["capabilities"]["provider_id"] == vllm_provider_id
+
     captured_urls = [record["url"] for record in captured_requests]
     assert "http://ollama.example:11434/api/version" in captured_urls
     assert "http://ollama.example:11434/api/tags" in captured_urls
     assert "http://llamacpp.example:8080/health" in captured_urls
     assert "http://llamacpp.example:8080/v1/models" in captured_urls
+    assert "http://vllm.example:8001/health" in captured_urls
+    assert "http://vllm.example:8001/v1/models" in captured_urls
 
 
 def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
@@ -393,10 +431,34 @@ def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
                 ).encode("utf-8")
             )
         if url.endswith("/health"):
+            if "vllm.example" in url:
+                return FakeHTTPResponse(b"")
             return FakeHTTPResponse(json.dumps({"status": "ok"}).encode("utf-8"))
+        if url.endswith("/v1/models") and "vllm.example" in url:
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "mistral-small-instruct"}]}).encode("utf-8"))
         if url.endswith("/v1/models"):
             return FakeHTTPResponse(json.dumps({"data": [{"id": "Meta-Llama-3.1-8B-Instruct"}]}).encode("utf-8"))
         if url.endswith("/v1/chat/completions"):
+            if "vllm.example" in url:
+                return FakeHTTPResponse(
+                    json.dumps(
+                        {
+                            "id": "chatcmpl-vllm-2",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "message": {"role": "assistant", "content": "vLLM runtime response"},
+                                    "finish_reason": "stop",
+                                }
+                            ],
+                            "usage": {
+                                "prompt_tokens": 13,
+                                "completion_tokens": 4,
+                                "total_tokens": 17,
+                            },
+                        }
+                    ).encode("utf-8")
+                )
             return FakeHTTPResponse(
                 json.dumps(
                     {
@@ -445,6 +507,19 @@ def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
     )
     assert create_llamacpp_status == 201
     llamacpp_provider_id = create_llamacpp_payload["provider"]["id"]
+
+    create_vllm_status, create_vllm_payload = invoke_request(
+        "POST",
+        "/v1/providers/vllm/register",
+        payload={
+            "display_name": "vLLM Runtime",
+            "base_url": "http://vllm.example:8001",
+            "default_model": "mistral-small-instruct",
+        },
+        headers=auth_header(session_token_a),
+    )
+    assert create_vllm_status == 201
+    vllm_provider_id = create_vllm_payload["provider"]["id"]
 
     detail_other_status, detail_other_payload = invoke_request(
         "GET",
@@ -522,9 +597,41 @@ def test_phase11_local_provider_test_runtime_invoke_and_workspace_isolation(
     assert llamacpp_runtime_payload["assistant"]["usage"]["total_tokens"] == 17
     assert UUID(llamacpp_runtime_payload["assistant"]["event_id"])
 
+    vllm_test_status, vllm_test_payload = invoke_request(
+        "POST",
+        "/v1/providers/test",
+        payload={
+            "provider_id": vllm_provider_id,
+            "prompt": "Validate self-hosted vllm path.",
+        },
+        headers=auth_header(session_token_a),
+    )
+    assert vllm_test_status == 200
+    assert vllm_test_payload["result"]["text"] == "vLLM runtime response"
+    assert vllm_test_payload["result"]["usage"]["total_tokens"] == 17
+
+    vllm_runtime_status, vllm_runtime_payload = invoke_request(
+        "POST",
+        "/v1/runtime/invoke",
+        payload={
+            "provider_id": vllm_provider_id,
+            "thread_id": thread_id,
+            "message": "How is vllm runtime?",
+        },
+        headers=auth_header(session_token_a),
+    )
+    assert vllm_runtime_status == 200
+    assert vllm_runtime_payload["assistant"]["provider_id"] == vllm_provider_id
+    assert vllm_runtime_payload["assistant"]["provider_key"] == "vllm"
+    assert vllm_runtime_payload["assistant"]["model_provider"] == "openai_responses"
+    assert vllm_runtime_payload["assistant"]["text"] == "vLLM runtime response"
+    assert vllm_runtime_payload["assistant"]["usage"]["total_tokens"] == 17
+    assert UUID(vllm_runtime_payload["assistant"]["event_id"])
+
     captured_urls = [record["url"] for record in captured_requests]
     assert "http://ollama.example:11434/api/chat" in captured_urls
     assert "http://llamacpp.example:8080/v1/chat/completions" in captured_urls
+    assert "http://vllm.example:8001/v1/chat/completions" in captured_urls
 
 
 def test_phase13_hosted_provider_rows_respect_workspace_rls(
@@ -807,6 +914,83 @@ def test_phase14_workspace_bootstrap_config_seed_and_provider_update_refresh_cap
         record["url"] == "https://updated-provider.example/v1/custom-models"
         for record in captured_requests
     )
+
+
+def test_phase14_workspace_bootstrap_config_seeds_vllm_provider(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    captured_requests: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(
+            database_url=migrated_database_urls["app"],
+            magic_link_ttl_seconds=600,
+            auth_session_ttl_seconds=3600,
+            device_link_ttl_seconds=600,
+            model_timeout_seconds=30,
+            workspace_provider_configs=(
+                WorkspaceProviderConfig(
+                    provider_key="vllm",
+                    display_name="Configured vLLM",
+                    base_url="http://vllm.example:8001",
+                    api_key="",
+                    auth_mode="none",
+                    default_model="mistral-small-instruct",
+                    model_list_path="/v1/models",
+                    healthcheck_path="/health",
+                    invoke_path="/v1/chat/completions",
+                ),
+            ),
+        ),
+    )
+
+    def fake_discovery_urlopen(request, timeout):
+        captured_requests.append(
+            {
+                "url": request.full_url,
+                "timeout": timeout,
+                "headers": dict(request.header_items()),
+                "body": None if request.data is None else json.loads(request.data.decode("utf-8")),
+            }
+        )
+        if request.full_url == "http://vllm.example:8001/health":
+            return FakeHTTPResponse(b"")
+        if request.full_url == "http://vllm.example:8001/v1/models":
+            return FakeHTTPResponse(json.dumps({"data": [{"id": "mistral-small-instruct"}]}).encode("utf-8"))
+        raise AssertionError(f"unexpected vllm discovery URL: {request.full_url}")
+
+    monkeypatch.setattr("alicebot_api.local_provider_helpers.urlopen", fake_discovery_urlopen)
+
+    session_token, _, _ = _bootstrap_workspace_session("provider-bootstrap-vllm@example.com")
+
+    list_status, list_payload = invoke_request(
+        "GET",
+        "/v1/providers",
+        headers=auth_header(session_token),
+    )
+    assert list_status == 200
+    assert list_payload["summary"]["total_count"] == 1
+    provider = list_payload["items"][0]
+    assert provider["display_name"] == "Configured vLLM"
+    assert provider["provider_key"] == "vllm"
+    assert provider["healthcheck_path"] == "/health"
+    assert provider["model_list_path"] == "/v1/models"
+    assert provider["invoke_path"] == "/v1/chat/completions"
+    assert any(record["url"] == "http://vllm.example:8001/health" for record in captured_requests)
+    assert any(record["url"] == "http://vllm.example:8001/v1/models" for record in captured_requests)
+
+    detail_status, detail_payload = invoke_request(
+        "GET",
+        f"/v1/providers/{provider['id']}",
+        headers=auth_header(session_token),
+    )
+    assert detail_status == 200
+    assert detail_payload["capabilities"]["discovery_status"] == "ready"
+    assert detail_payload["capabilities"]["snapshot"]["health_status"] == "ok"
+    assert detail_payload["capabilities"]["snapshot"]["models"] == ["mistral-small-instruct"]
 
 
 def test_phase14_provider_invocation_telemetry_persists_for_test_and_runtime(

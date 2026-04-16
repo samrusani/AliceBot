@@ -106,7 +106,7 @@ curl -sS -X POST "http://127.0.0.1:8000/v1/model-packs" \
         "developer_instruction_append": "Prioritize explicit next actions."
       },
       "compatibility": {
-        "provider_keys": ["openai_compatible", "ollama", "llamacpp"],
+        "provider_keys": ["openai_compatible", "ollama", "llamacpp", "vllm"],
         "runtime_providers": ["openai_responses"],
         "notes": "Custom workspace brief style."
       }
