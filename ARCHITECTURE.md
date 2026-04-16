@@ -2,7 +2,7 @@
 
 ## Scope Boundary
 - **Shipped baseline:** Phases 9-13 and Bridge `B1` through `B4`.
-- **Current execution posture:** `v0.4.0` is the latest published tag; Phase 14 is active; `P14-S1` and `P14-S2` are shipped; `P14-S3` is active.
+- **Current execution posture:** `v0.4.0` is the latest published tag; Phase 14 is active; `P14-S1` through `P14-S3` are shipped; `P14-S4` is active.
 - **Phase principle:** Phase 14 is a platform-and-adoption phase, not a new substrate-research phase.
 
 ## Current System Overview
@@ -98,20 +98,23 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - Extended provider/runtime and pack-compatibility coverage for the shipped local/self-hosted provider surface.
 - Kept the sprint scoped to compatibility proof instead of reopening provider-foundation work.
 
+### P14-S3: Model Packs
+- Status: shipped
+- Added provider-aware workspace model-pack bindings on top of the shipped provider surface.
+- Shipped the first-party `llama`, `qwen`, `gemma`, and `gpt-oss` pack catalog.
+- Added pack-aware runtime and briefing defaults plus declarative compatibility enforcement.
+- Kept the sprint scoped to pack packaging/defaults instead of reopening provider work.
+
 ## Phase 14 Active Delta
 
-### P14-S3: Model Packs
+### P14-S4: Reference Integrations
 - Status: active
-- Add versioned first-party pack definitions and workspace pack bindings.
-- Push pack-aware defaults into runtime invocation and briefing behavior.
-- Publish the first real compatibility matrix on top of the shipped provider/runtime surface.
-- This sprint is defaults-and-packaging work, not another provider sprint.
+- Package the shipped continuity, provider, and pack surface into polished external-builder paths.
+- Refresh Hermes and OpenClaw documentation around the shipped one-call continuity and provider/pack baseline.
+- Add generic Python and TypeScript reference agent examples plus reproducible demos.
+- This sprint is adoption packaging work, not another backend substrate sprint.
 
 ## Planned Phase 14 Follow-On Deltas
-
-### P14-S4: Reference Integrations
-- polished Hermes and OpenClaw integration paths
-- generic Python and TypeScript examples
 
 ### P14-S5: Design Partner Launch
 - design-partner onboarding, support, instrumentation, and usage proof
@@ -128,8 +131,8 @@ Alice is a modular continuity platform with shared continuity semantics across l
 ## Testing Strategy
 - unit/integration tests for continuity, provider runtime, and API behavior
 - provider smoke tests and provider-capability parity checks
-- model-pack smoke tests and compatibility-matrix validation for `P14-S3`
-- integration smoke tests for Hermes, OpenClaw, Python example, and TypeScript example paths
+- model-pack smoke tests and compatibility-matrix validation from `P14-S3`
+- integration smoke tests for Hermes, OpenClaw, Python example, and TypeScript example paths in `P14-S4`
 - release gates remain green across Python, web, Alice Lite, Hermes smoke, and public eval harness
 - docs verification is part of sprint completion, not cleanup work
 

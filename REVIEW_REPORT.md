@@ -4,33 +4,41 @@
 PASS
 
 ## criteria met
-- A workspace can bind a provider to a pack, and bindings now support both provider-specific and workspace-default resolution. Evidence: `apps/api/src/alicebot_api/main.py`, `apps/api/src/alicebot_api/model_packs.py`, `apps/api/src/alicebot_api/store.py`.
-- Pack defaults affect briefing and runtime behavior correctly. Runtime shaping, request override precedence, workspace binding precedence, and compatibility enforcement are covered by integration and unit tests. Evidence: `tests/integration/test_phase11_model_packs_api.py`, `tests/unit/test_task_briefing.py`, `tests/unit/test_model_packs.py`.
-- First-party packs are versioned and documented for the declared `P14-S3` set: `llama`, `qwen`, `gemma`, and `gpt-oss`. Evidence: `docs/phase14-model-pack-contract.md`, `docs/integrations/phase11-model-pack-compatibility.md`.
-- Users get sensible defaults without manual tuning. Briefing defaults still resolve from workspace-default bindings, while runtime selection uses explicit override -> provider binding -> workspace default -> none.
-- Pack behavior composes the shipped provider/runtime baseline rather than reopening provider work. Compatibility remains declarative through pack contract metadata.
-- Pack smoke validation is now present over the shipped provider/runtime surface. Evidence: local-provider smoke coverage across `ollama`, `llamacpp`, and `vllm` in `tests/integration/test_phase11_model_packs_api.py`.
+- Hermes integration documentation is refreshed and now clearly steers builders to the shipped `provider_plus_mcp` recommendation, fallback mode, and bridge demo.
+- OpenClaw integration documentation is refreshed around import-plus-augmentation, one-call continuity reuse, replay/dedupe behavior, and the existing demo path.
+- Runnable generic Python and TypeScript examples are present and pass focused integration coverage.
+- Reproducible demos exist for the three major adoption paths in this sprint:
+  - generic agent: `scripts/run_reference_agent_examples_demo.py`
+  - Hermes: `scripts/run_hermes_bridge_demo.py`
+  - OpenClaw: `scripts/use_alice_with_openclaw.sh`
+- The generic example demo now serves a checked-in canonical continuity-brief fixture instead of an ad hoc inline payload, and the fixture is validated against the live `ContinuityBriefRecord` top-level contract.
+- The docs now clarify that provider/model-pack controls are supporting configuration for the three major adoption paths, not a fourth standalone demo path.
+- The TypeScript example docs now state the `--experimental-strip-types` runtime expectation.
+- `BUILD_REPORT.md` now reflects the actual sprint file set more accurately.
+- I did not find leaked local machine identifiers, usernames, or local absolute paths in the touched sprint files.
 
 ## criteria missed
-- None.
+- none
 
 ## quality issues
-- None blocking after the fix set.
+- none blocking for this sprint
 
 ## regression risks
-- Low. The riskiest new seam was provider-query fallback to a workspace-default binding; that case now has direct integration coverage.
-- Low. Provider-surface pack smoke now exercises the shipped local/self-hosted adapter paths with pack binding in place.
+- low residual risk: the generic example demo is still fixture-backed rather than API-backed, but the added contract test materially lowers drift risk for this sprint’s documentation/examples scope.
 
 ## docs issues
-- No remaining docs issues for this sprint scope.
-- `BUILD_REPORT.md` now matches the verification evidence more closely.
-- No local filesystem paths, workstation usernames, or similar local identifiers were found in the reviewed changed files and documentation.
+- none blocking
 
 ## should anything be added to RULES.md?
-- No.
+- Yes. Add a rule that runnable documentation examples and demo helpers should use a shared canonical fixture or the real contract surface, not a one-off inline mock payload.
 
 ## should anything update ARCHITECTURE.md?
-- No further update is needed beyond the existing Phase 14 state changes already in this sprint.
+- No additional architecture change is needed beyond the existing Phase 14 status update already present in this sprint.
 
 ## recommended next action
-- Proceed with the normal merge/review flow for `P14-S3`.
+- Mark the sprint review as passed and proceed with the normal merge/approval flow.
+
+## verification performed
+- `python3 scripts/check_control_doc_truth.py`
+- `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py tests/unit/test_phase14_reference_integrations.py tests/unit/test_reference_agent_examples_contract.py -q`
+- `./.venv/bin/python -m pytest tests/integration/test_reference_agent_examples.py tests/unit/test_hermes_bridge_demo.py tests/integration/test_openclaw_import.py tests/integration/test_openclaw_one_command_demo.py tests/integration/test_openclaw_mcp_integration.py -q`

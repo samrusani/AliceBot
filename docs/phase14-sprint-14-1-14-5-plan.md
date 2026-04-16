@@ -78,7 +78,7 @@ Make common model families easy to use with sensible continuity defaults.
 `v0.5.0-rc2`
 
 ### Status
-Active
+Shipped
 
 ## P14-S4: Reference Integrations
 
@@ -100,7 +100,7 @@ Make Alice clearly adoptable by external agent builders.
 `v0.5.0`
 
 ### Status
-Planned
+Active
 
 ## P14-S5: Design Partner Launch
 
