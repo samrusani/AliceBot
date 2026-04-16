@@ -542,6 +542,18 @@ from alicebot_api.hosted_admin import (
     list_hosted_incidents_for_admin,
     list_hosted_workspaces_for_admin,
 )
+from alicebot_api.design_partners import (
+    DesignPartnerFeedbackValidationError,
+    DesignPartnerNotFoundError,
+    DesignPartnerWorkspaceConflictError,
+    create_design_partner,
+    get_design_partner_dashboard,
+    get_design_partner_detail,
+    link_design_partner_workspace,
+    list_design_partners,
+    record_design_partner_feedback,
+    update_design_partner,
+)
 from alicebot_api.telegram_channels import (
     TelegramIdentityNotFoundError,
     TelegramLinkPendingError,
@@ -2734,6 +2746,65 @@ class HostedRolloutFlagsPatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     updates: list[HostedRolloutFlagPatchItemRequest] = Field(min_length=1, max_length=100)
+
+
+class DesignPartnerCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    partner_key: str | None = Field(default=None, min_length=1, max_length=120)
+    lifecycle_stage: Literal["onboarding", "pilot", "active", "paused", "completed"] = "onboarding"
+    onboarding_status: Literal["pending", "in_progress", "completed", "blocked"] = "pending"
+    support_status: Literal["green", "watch", "needs_attention", "blocked"] = "green"
+    instrumentation_status: Literal["not_ready", "partial", "ready"] = "not_ready"
+    case_study_status: Literal["not_started", "candidate", "drafting", "approved", "published"] = (
+        "not_started"
+    )
+    target_outcome: str | None = Field(default=None, min_length=1, max_length=500)
+    launch_notes: str | None = Field(default=None, min_length=1, max_length=2000)
+    onboarding_checklist: dict[str, object] | None = None
+    support_checklist: dict[str, object] | None = None
+    success_metrics: dict[str, object] | None = None
+
+
+class DesignPartnerPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    lifecycle_stage: Literal["onboarding", "pilot", "active", "paused", "completed"] | None = None
+    onboarding_status: Literal["pending", "in_progress", "completed", "blocked"] | None = None
+    support_status: Literal["green", "watch", "needs_attention", "blocked"] | None = None
+    instrumentation_status: Literal["not_ready", "partial", "ready"] | None = None
+    case_study_status: Literal["not_started", "candidate", "drafting", "approved", "published"] | None = None
+    target_outcome: str | None = Field(default=None, min_length=1, max_length=500)
+    launch_notes: str | None = Field(default=None, min_length=1, max_length=2000)
+    onboarding_checklist: dict[str, object] | None = None
+    support_checklist: dict[str, object] | None = None
+    success_metrics: dict[str, object] | None = None
+
+
+class DesignPartnerWorkspaceLinkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: UUID
+    linkage_status: Literal["pilot", "active", "paused"] = "pilot"
+    environment_label: str = Field(default="pilot", min_length=1, max_length=80)
+    instrumentation_ready: bool = False
+    notes: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
+class DesignPartnerFeedbackCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: UUID | None = None
+    source_kind: Literal["partner_call", "email", "slack", "operator_note", "survey", "support_review"]
+    category: Literal["bug", "ux", "capability_gap", "onboarding", "support", "win"]
+    sentiment: Literal["positive", "neutral", "negative"]
+    urgency: Literal["low", "medium", "high"]
+    feedback_status: Literal["new", "triaged", "actioned", "closed"] = "new"
+    case_study_signal: bool = False
+    summary: str = Field(min_length=1, max_length=400)
+    detail: str | None = Field(default=None, min_length=1, max_length=2000)
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class RegisterProviderRequest(BaseModel):
@@ -9035,6 +9106,236 @@ def get_v1_admin_hosted_overview(
         return JSONResponse(status_code=403, content={"detail": str(exc)})
 
     return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v1/admin/hosted/design-partners/dashboard")
+def get_v1_admin_hosted_design_partner_dashboard(request: Request) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                payload = get_design_partner_dashboard(conn)
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.get("/v1/admin/hosted/design-partners")
+def get_v1_admin_hosted_design_partners(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                payload = list_design_partners(conn, limit=limit)
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v1/admin/hosted/design-partners")
+def post_v1_admin_hosted_design_partner(
+    request: Request,
+    body: DesignPartnerCreateRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                payload = create_design_partner(
+                    conn,
+                    created_by_user_account_id=user_account_id,
+                    name=body.name,
+                    partner_key=body.partner_key,
+                    lifecycle_stage=body.lifecycle_stage,
+                    onboarding_status=body.onboarding_status,
+                    support_status=body.support_status,
+                    instrumentation_status=body.instrumentation_status,
+                    case_study_status=body.case_study_status,
+                    target_outcome=body.target_outcome,
+                    launch_notes=body.launch_notes,
+                    onboarding_checklist=body.onboarding_checklist,
+                    support_checklist=body.support_checklist,
+                    success_metrics=body.success_metrics,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+    except psycopg.errors.UniqueViolation as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=201, content=jsonable_encoder(payload))
+
+
+@app.get("/v1/admin/hosted/design-partners/{design_partner_id}")
+def get_v1_admin_hosted_design_partner_detail(
+    design_partner_id: UUID,
+    request: Request,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                payload = get_design_partner_detail(conn, design_partner_id=design_partner_id)
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+    except DesignPartnerNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.patch("/v1/admin/hosted/design-partners/{design_partner_id}")
+def patch_v1_admin_hosted_design_partner(
+    design_partner_id: UUID,
+    request: Request,
+    body: DesignPartnerPatchRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                payload = update_design_partner(
+                    conn,
+                    design_partner_id=design_partner_id,
+                    lifecycle_stage=body.lifecycle_stage,
+                    onboarding_status=body.onboarding_status,
+                    support_status=body.support_status,
+                    instrumentation_status=body.instrumentation_status,
+                    case_study_status=body.case_study_status,
+                    target_outcome=body.target_outcome,
+                    launch_notes=body.launch_notes,
+                    onboarding_checklist=body.onboarding_checklist,
+                    support_checklist=body.support_checklist,
+                    success_metrics=body.success_metrics,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+    except DesignPartnerNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v1/admin/hosted/design-partners/{design_partner_id}/workspaces")
+def post_v1_admin_hosted_design_partner_workspace(
+    design_partner_id: UUID,
+    request: Request,
+    body: DesignPartnerWorkspaceLinkRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                payload = link_design_partner_workspace(
+                    conn,
+                    design_partner_id=design_partner_id,
+                    workspace_id=body.workspace_id,
+                    linked_by_user_account_id=user_account_id,
+                    linkage_status=body.linkage_status,
+                    environment_label=body.environment_label,
+                    instrumentation_ready=body.instrumentation_ready,
+                    notes=body.notes,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+    except DesignPartnerNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except DesignPartnerWorkspaceConflictError as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+    except psycopg.Error as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=201, content=jsonable_encoder(payload))
+
+
+@app.post("/v1/admin/hosted/design-partners/{design_partner_id}/feedback")
+def post_v1_admin_hosted_design_partner_feedback(
+    design_partner_id: UUID,
+    request: Request,
+    body: DesignPartnerFeedbackCreateRequest,
+) -> JSONResponse:
+    settings = get_settings()
+
+    try:
+        session_token = _extract_bearer_token(request)
+        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+            with conn.transaction():
+                resolution = resolve_auth_session(conn, session_token=session_token)
+                user_account_id = resolution["user_account"]["id"]
+                _ensure_hosted_admin_access(conn, user_account_id=user_account_id)
+                payload = record_design_partner_feedback(
+                    conn,
+                    design_partner_id=design_partner_id,
+                    captured_by_user_account_id=user_account_id,
+                    workspace_id=body.workspace_id,
+                    source_kind=body.source_kind,
+                    category=body.category,
+                    sentiment=body.sentiment,
+                    urgency=body.urgency,
+                    feedback_status=body.feedback_status,
+                    case_study_signal=body.case_study_signal,
+                    summary=body.summary,
+                    detail=body.detail,
+                    metadata=body.metadata,
+                )
+    except (AuthSessionInvalidError, AuthSessionExpiredError, AuthSessionRevokedDeviceError) as exc:
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
+    except PermissionError as exc:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+    except DesignPartnerNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+    except DesignPartnerFeedbackValidationError as exc:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+    return JSONResponse(status_code=201, content=jsonable_encoder(payload))
 
 
 @app.get("/v1/admin/hosted/workspaces")

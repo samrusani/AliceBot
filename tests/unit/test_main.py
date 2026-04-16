@@ -188,6 +188,11 @@ def test_healthcheck_route_is_registered() -> None:
     assert "/v1/channels/telegram/open-loop-prompts" in route_paths
     assert "/v1/channels/telegram/open-loop-prompts/{prompt_id}/deliver" in route_paths
     assert "/v1/channels/telegram/scheduler/jobs" in route_paths
+    assert "/v1/admin/hosted/design-partners" in route_paths
+    assert "/v1/admin/hosted/design-partners/dashboard" in route_paths
+    assert "/v1/admin/hosted/design-partners/{design_partner_id}" in route_paths
+    assert "/v1/admin/hosted/design-partners/{design_partner_id}/workspaces" in route_paths
+    assert "/v1/admin/hosted/design-partners/{design_partner_id}/feedback" in route_paths
 
 
 def test_redact_url_credentials_strips_embedded_secrets() -> None:

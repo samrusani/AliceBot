@@ -12,8 +12,8 @@
 - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is shipped.
 - `P14-S2` Ollama + llama.cpp + vLLM Adapters is shipped.
 - `P14-S3` Model Packs is shipped.
-- `P14-S4` Reference Integrations is the active execution sprint.
-- `P14-S5` is planned and scoped.
+- `P14-S4` Reference Integrations is shipped.
+- `P14-S5` Design Partner Launch is the active execution sprint.
 
 ## Current Baseline Truth
 - Alice has typed memory, provenance, trust classes, correction/supersession behavior, open loops, recall, resumption, and explainability.
@@ -25,6 +25,7 @@
 - Phase 14 shipped baseline now also includes the stabilized provider contract, workspace-scoped provider registration/update flows, provider capability snapshots, invocation telemetry persistence, and the OpenAI-compatible adapter hardening delivered in `P14-S1`.
 - Phase 14 shipped baseline now also includes the local/self-hosted compatibility layer from `P14-S2`, including the dedicated `vllm` provider path, aligned health semantics, and pack-compatibility/runtime coverage for the shipped local/self-hosted provider surface.
 - Phase 14 shipped baseline now also includes provider-aware model-pack bindings, the first-party `llama` / `qwen` / `gemma` / `gpt-oss` catalog, and pack-aware runtime/briefing defaults delivered in `P14-S3`.
+- Phase 14 shipped baseline now also includes polished Hermes/OpenClaw reference integrations, generic Python/TypeScript examples, and reproducible reference demos delivered in `P14-S4`.
 - `v0.4.0` is the current public pre-1.0 release boundary for that shipped baseline.
 
 ## Phase Transition Note
@@ -34,9 +35,10 @@
 - `P14-S1` is complete and establishes the provider contract, capability snapshot, and invocation telemetry baseline for the rest of the phase.
 - `P14-S2` is complete and closed the local/self-hosted compatibility sprint without reopening provider-foundation work.
 - `P14-S3` is complete and turned the shipped provider surface into usable pack defaults without reopening provider work.
-- `P14-S4` is intentionally not another provider or pack sprint; it is the reference-integrations sprint that turns the shipped surface into runnable adoption paths.
+- `P14-S4` is complete and turned the shipped surface into runnable adoption paths for external builders.
+- `P14-S5` is intentionally not another provider, pack, or integration sprint; it is the usage-proof sprint that turns the shipped Phase 14 platform into tracked pilot adoption.
 
 ## Immediate Control Tower Decisions Needed
-- Decide whether AutoGen remains deferred or becomes an optional extra reference integration.
-- Decide which integration path is the default recommendation for each external builder profile.
-- Select the first 3 to 5 design partners and their initial pilot scopes early enough for `P14-S5`.
+- Select the first 3 to 5 design partners and their initial pilot scopes.
+- Decide what minimum usage instrumentation is required before counting a partner as active.
+- Decide how strict the case-study readiness bar is for phase closeout.
