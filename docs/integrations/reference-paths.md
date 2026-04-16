@@ -1,6 +1,6 @@
 # Reference Integration Paths
 
-This page is the path-selection guide for external builders adopting Alice on top of the shipped `v0.4.0` continuity, provider, and model-pack baseline.
+This page is the path-selection guide for external builders adopting Alice on top of the shipped `v0.5.1` continuity, provider, model-pack, and reference-integration baseline.
 
 ## Default Recommendation
 

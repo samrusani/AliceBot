@@ -1,98 +1,82 @@
 # Sprint Packet
 
 ## Sprint Title
-Hotfix: unbounded local log growth can exhaust disk
+Phase 14 Closeout + `v0.5.1` Release
 
 ## Activation Note
-- This packet is active.
-- `v0.4.0` is the current public release boundary.
+- This packet remains active until the next phase packet is accepted.
+- `v0.5.1` is the current public release boundary.
 - Phase 14 is shipped.
-- This is a post-Phase-14 hotfix sprint on top of the shipped baseline.
+- `HF-001` Logging Safety And Disk Guardrails is shipped.
 - Shipped Phase 14 sequence:
-  - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter: shipped
-  - `P14-S2` Ollama + llama.cpp + vLLM Adapters: shipped
-  - `P14-S3` Model Packs: shipped
-  - `P14-S4` Reference Integrations: shipped
-  - `P14-S5` Design Partner Launch: shipped
+  - `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter
+  - `P14-S2` Ollama + llama.cpp + vLLM Adapters
+  - `P14-S3` Model Packs
+  - `P14-S4` Reference Integrations
+  - `P14-S5` Design Partner Launch
 
 ## Sprint Type
-bugfix
+release-closeout
 
 ## Sprint Reason
-The shipped local and Lite runtime paths can allow unbounded local log growth. This is an operational defect with disk-exhaustion risk, so it should be handled as a narrow hotfix sprint rather than rolled into a new feature phase.
+Phase 14 and the post-phase logging hotfix are complete. This packet keeps the active control slot aligned to the shipped `v0.5.1` baseline while the next phase is being defined.
 
 ## Git Instructions
-- Branch Name: `codex/hotfix-unbounded-local-log-growth`
+- Branch Name: `main`
 - Base Branch: `main`
-- PR Strategy: one implementation branch, one PR
-- Merge Policy: squash merge after review `PASS` and explicit approval
+- PR Strategy: none; this is a release-state packet
+- Merge Policy: replace this packet when the next phase packet is accepted
 
 ## Baseline To Preserve
 - shipped Phases 9-14 baseline
 - shipped Bridge `B1` through `B4`
-- published `v0.4.0` baseline
+- published `v0.5.1` baseline
 - shipped one-call continuity surface
 - shipped Alice Lite profile
 - shipped hygiene/thread-health visibility
-- shipped `P14-S1` provider contract, capability snapshot, and invocation telemetry baseline
-- shipped `P14-S2` local/self-hosted compatibility layer, including the dedicated `vllm` provider path and aligned runtime/pack compatibility hooks
-- shipped `P14-S3` provider-aware model-pack bindings, first-party pack catalog, and pack-aware runtime/briefing defaults
-- shipped `P14-S4` reference integrations, generic examples, and reproducible demo paths
-- shipped `P14-S5` design-partner launch/admin surface
+- shipped Phase 14 provider contract, local/self-hosted compatibility, model packs, reference integrations, and design-partner launch surface
+- shipped `HF-001` logging safety and disk guardrails
 - no semantic fork between API, CLI, MCP, hosted, provider-runtime, and Hermes paths
 
 ## Exact Goal
-Eliminate the disk-exhaustion risk from unbounded local logging while preserving the shipped Phase 14 runtime and deployment behavior.
+Preserve a clean release-aligned control state after the completed Phase 14 sequence and the shipped post-phase logging hotfix.
 
 ## In Scope
-- explicit logging configuration
-- stdout as the default logging sink
-- access logs disabled by default in Lite/local profile
-- bounded rotation when file logging mode is enabled
-- systemd/journald deployment guidance
-- smoke validation that no unbounded log file is created in `/tmp`
+- release-aligned control-doc truth
+- release-aligned version markers
+- phase closeout and release docs
+- preserving the shipped `v0.5.1` baseline until the next phase is accepted
 
 ## Out Of Scope
-- new product surface
-- unrelated refactors
-- provider, pack, integration, or design-partner feature expansion
-- changes that are not required to remove the logging-growth defect
+- new feature work
+- reopening completed Phase 14 implementation
+- speculative next-phase scope before explicit acceptance
 
 ## Proposed Files And Modules
-- `apps/api/src/alicebot_api/`
-- local/Lite startup scripts and runtime config
-- `tests/unit/`
-- `tests/integration/`
-- deployment and ops docs
-- control docs if baseline status markers need updates
+- control docs
+- release docs
+- public version markers
+- evidence reports
 
 ## Planned Deliverables
-- explicit logging config
-- stdout default instead of file logging
-- Lite/local access-log suppression by default
-- bounded file rotation when file mode is enabled
-- systemd/journald guidance
-- smoke test for `/tmp` log-file safety
+- Phase 14 closeout summary
+- `v0.5.1` release checklist, tag plan, and runbook
+- updated release-aligned canonical docs
+- updated version metadata and release tag
 
 ## Acceptance Criteria
-- the default local and Lite paths log to stdout rather than an unbounded local file
-- access logs are disabled by default in Lite/local profile
-- file logging, when enabled, is rotated and bounded
-- deployment docs recommend systemd/journald for managed environments
-- a smoke test confirms no unbounded log file is created in `/tmp`
-- the fix does not expand the product scope beyond the logging defect
+- canonical docs accurately describe the shipped Phase 14 plus `HF-001` baseline
+- version markers align to `v0.5.1`
+- `v0.5.1` is the active public release boundary
+- the packet is safe to leave in place until the next phase packet replaces it
 
 ## Required Verification
 - `python3 scripts/check_control_doc_truth.py`
 - `./.venv/bin/python -m pytest tests/unit/test_control_doc_truth.py -q`
-- targeted unit/integration coverage for logging configuration and Lite/local behavior
-- smoke validation for `/tmp` log-file safety
-- documentation validation for the recommended systemd/journald path
 
 ## Control Tower Decisions Needed
-- whether bounded file logging is retained as an opt-in mode or limited to managed deployments only
-- what the default rotation size/count should be if file mode remains supported
-- whether the hotfix should also update any release runbook or only runtime/deployment docs
+- define the next phase before opening another build sprint
+- keep future work non-redundant with the shipped Phase 14 + `HF-001` boundary
 
 ## Exit Condition
-This sprint is complete when the shipped local/Lite runtime can no longer create unbounded local log growth by default, bounded file logging exists when explicitly enabled, and the `/tmp` smoke test plus deployment docs prove the intended operational posture.
+This packet stays valid until the next phase packet is accepted and activated.

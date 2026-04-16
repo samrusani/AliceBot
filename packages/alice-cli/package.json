@@ -1,6 +1,6 @@
 {
   "name": "@aliceos/alice-cli",
-  "version": "0.4.0",
+  "version": "0.5.1",
   "description": "CLI package for AliceOS.",
   "type": "module",
   "bin": {
@@ -36,6 +36,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@aliceos/alice-core": "^0.4.0"
+    "@aliceos/alice-core": "^0.5.1"
   }
 }

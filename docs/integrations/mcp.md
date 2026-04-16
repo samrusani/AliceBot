@@ -1,7 +1,7 @@
 # MCP Integration
 
-The shipped MCP server for the `v0.4.0` release boundary exposes a deliberately scoped deterministic tool surface over Alice continuity seams.
-`v0.4.0` is the current pre-1.0 public release.
+The shipped MCP server for the `v0.5.1` release boundary exposes a deliberately scoped deterministic tool surface over Alice continuity seams.
+`v0.5.1` is the current pre-1.0 public release.
 
 ## Entrypoints
 

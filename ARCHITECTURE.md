@@ -1,9 +1,9 @@
 # Architecture
 
 ## Scope Boundary
-- **Shipped baseline:** Phases 9-13 and Bridge `B1` through `B4`.
-- **Current execution posture:** `v0.4.0` is the latest published tag; Phase 14 is shipped; `HF-001` is active.
-- **Hotfix principle:** `HF-001` is an operational defect-fix sprint, not a new feature phase.
+- **Shipped baseline:** Phases 9-14, `HF-001`, and Bridge `B1` through `B4`.
+- **Current execution posture:** `v0.5.1` is the latest published tag; Phase 14 and `HF-001` are shipped; no post-Phase-14 execution sprint is active yet.
+- **Release principle:** `v0.5.1` is the current pre-1.0 public release boundary for the shipped Phase 14 platform plus the logging-safety hardening.
 
 ## Current System Overview
 Alice is a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, CLI, MCP, Hermes-integrated, and imported-workflow surfaces.
@@ -34,7 +34,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - Workspace-scoped provider records, capability snapshots, runtime invocation boundaries, model-pack primitives, and secret handling.
 
 ### Integration Surfaces
-- CLI, MCP, Hermes bridge/provider flows, OpenClaw import/augmentation, and deployment profiles such as Alice Lite.
+- CLI, MCP, Hermes bridge/provider flows, OpenClaw import/augmentation, deployment profiles such as Alice Lite, and generic external-builder reference examples.
 
 ## Current Data Model Summary
 
@@ -55,6 +55,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - `workspaces`, `workspace_members`, `auth_sessions`, `devices`
 - `model_providers`, `provider_capabilities`, `model_packs`, `workspace_model_pack_bindings`
 - `provider_invocation_telemetry`
+- design-partner launch/admin tables from `P14-S5`
 - `task_briefs`
 - channel, task, trace, approval, and execution tables
 
@@ -76,15 +77,14 @@ Alice is a modular continuity platform with shared continuity semantics across l
 2. Runtime invokes through provider adapter boundaries.
 3. Invocation telemetry and capability snapshots remain inspectable.
 
-### Hermes Runtime
-1. Hermes can prefetch before a turn.
-2. Alice remains the continuity system of record.
-3. Hermes can capture and explain after a turn while MCP fallback remains viable.
+### External Builder Runtime
+1. External runtimes use one-call continuity, MCP, Hermes provider-plus-MCP, or OpenClaw import/augmentation paths.
+2. Provider and model-pack controls remain Alice-side supporting configuration.
+3. Generic examples and reproducible demos package the shipped surface rather than defining a second runtime contract.
 
-## Phase 14 Delivered Delta
+## Delivered Phase 14 Delta
 
 ### P14-S1: Provider Abstraction Cleanup + OpenAI-Compatible Adapter
-- Status: shipped
 - Stabilized the provider adapter contract.
 - Shipped workspace-scoped provider registration and update flows.
 - Shipped capability discovery and capability snapshots.
@@ -92,63 +92,52 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - Shipped provider invocation telemetry persistence and hosted RLS posture for the new telemetry table.
 
 ### P14-S2: Ollama + llama.cpp + vLLM Adapters
-- Status: shipped
 - Hardened the local/self-hosted runtime paths onto the stabilized provider contract.
 - Added the dedicated `vllm` provider path with provider-native health semantics and registration/config support.
-- Extended provider/runtime and pack-compatibility coverage for the shipped local/self-hosted provider surface.
-- Kept the sprint scoped to compatibility proof instead of reopening provider-foundation work.
+- Extended provider/runtime and pack-compatibility coverage for the local/self-hosted provider surface.
 
 ### P14-S3: Model Packs
-- Status: shipped
 - Added provider-aware workspace model-pack bindings on top of the shipped provider surface.
 - Shipped the first-party `llama`, `qwen`, `gemma`, and `gpt-oss` pack catalog.
 - Added pack-aware runtime and briefing defaults plus declarative compatibility enforcement.
-- Kept the sprint scoped to pack packaging/defaults instead of reopening provider work.
 
 ### P14-S4: Reference Integrations
-- Status: shipped
 - Packaged the shipped continuity, provider, and pack surface into polished external-builder paths.
 - Refreshed Hermes and OpenClaw documentation around the shipped one-call continuity and provider/pack baseline.
 - Added generic Python and TypeScript reference agent examples plus reproducible demos.
-- Kept the sprint scoped to adoption packaging instead of reopening backend substrate work.
 
 ### P14-S5: Design Partner Launch
-- Status: shipped
 - Turned the shipped Phase 14 platform into tracked pilot adoption and launch evidence.
 - Added design-partner objects, workspace linkage, onboarding/support flows, usage summaries, and structured feedback paths.
-- Carried case-study-candidate evidence into the shipped launch surface.
-
-## Active Hotfix Delta
 
 ### HF-001: Logging Safety And Disk Guardrails
-- Status: active
-- Add explicit logging configuration and move local/Lite defaults to stdout.
-- Disable access logs by default in Lite/local profile.
-- Add bounded rotation when file logging is explicitly enabled.
-- Document the recommended systemd/journald posture for managed environments.
-- Add a smoke guard that proves no unbounded log file is created in `/tmp`.
-- This sprint is an operational guardrail fix, not a new runtime or deployment feature.
+- Added explicit logging configuration and moved local/Lite defaults to stdout.
+- Disabled access logs by default in Lite/local profile.
+- Added bounded rotation when file logging is explicitly enabled.
+- Documented the recommended `systemd`/`journald` posture for managed environments.
+- Added smoke coverage proving no unbounded local log file is created in `/tmp`.
 
 ## Security And Reliability Rules
 - Keep user/workspace isolation intact for continuity, provider, runtime, and design-partner data.
 - Keep provider credentials and secret references out of logs and outward-facing errors.
 - Preserve approval-bounded execution for consequential side effects.
-- Keep capture, mutation, and provider/Hermes sync paths idempotent.
+- Keep capture, mutation, provider, and Hermes sync paths idempotent.
 - Preserve append-only evidence where the system depends on auditability.
 - Do not let provider-specific behavior fork continuity semantics.
 - Do not let model packs bypass provenance, trust, or contradiction rules already enforced by the baseline.
+- Keep local/Lite logging bounded and operationally safe by default.
 
 ## Testing Strategy
 - unit/integration tests for continuity, provider runtime, and API behavior
 - provider smoke tests and provider-capability parity checks
-- model-pack smoke tests and compatibility-matrix validation from `P14-S3`
-- integration smoke tests for Hermes, OpenClaw, Python example, and TypeScript example paths from `P14-S4`
-- design-partner onboarding, linkage, usage-summary, and feedback-flow validation in `P14-S5`
-- logging configuration and `/tmp` safety validation in `HF-001`
+- model-pack smoke tests and compatibility-matrix validation
+- integration smoke tests for Hermes, OpenClaw, Python example, and TypeScript example paths
+- design-partner onboarding, linkage, usage-summary, and feedback-flow validation
+- logging configuration and `/tmp` safety validation
 - release gates remain green across Python, web, Alice Lite, Hermes smoke, and public eval harness
 - docs verification is part of sprint completion, not cleanup work
 
 ## Current Architectural Posture
-- `v0.4.0` remains the active public release boundary.
-- Phase 14 extends the shipped provider/runtime foundation into a more stable integration platform.
-- The continuity substrate remains the same system of record; Phase 14 is about compatibility, packaging, reference integrations, and design-partner proof.
+- `v0.5.1` is the active public release boundary.
+- Alice is now a broader continuity platform with provider/runtime portability, model packs, runnable external-builder integrations, design-partner launch/admin support, and safe local logging defaults.
+- The continuity substrate remains the same system of record; the delivered work packages that substrate into practical adoption paths without changing the core continuity semantics.

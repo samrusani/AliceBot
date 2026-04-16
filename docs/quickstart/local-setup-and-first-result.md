@@ -1,6 +1,6 @@
 # Local Setup and First Useful Result
 
-This quickstart is the canonical Alice Lite path for the completed `v0.4.0` pre-1.0 public release.
+This quickstart is the canonical Alice Lite path for the completed `v0.5.1` pre-1.0 public release.
 Alice Lite is a lighter local/dev deployment profile, not a separate product.
 It keeps the shipped continuity semantics and the shipped one-call continuity surface intact.
 

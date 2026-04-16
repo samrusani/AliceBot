@@ -18,27 +18,27 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="README.md",
         required_markers=(
-            "`v0.4.0` is the current **pre-1.0 public release**.",
-            "## Release Boundary (`v0.4.0`)",
+            "`v0.5.1` is the current **pre-1.0 public release**.",
+            "## Release Boundary (`v0.5.1`)",
             "Phase 13 adoption surfaces:",
             "Historical planning/control artifacts remain available in:",
-            "Phase 14 planning is active on top of this released baseline.",
+            "Phase 14 platform surfaces:",
         ),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "`v0.4.0`: released",
+            "`v0.5.1`: released",
             "Phase 14 is shipped.",
-            "`HF-001` Logging Safety And Disk Guardrails is the active execution sprint.",
+            "No post-Phase-14 execution sprint is active yet.",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/active/SPRINT_PACKET.md",
         required_markers=(
-            "Hotfix: unbounded local log growth can exhaust disk",
-            "`v0.4.0` is the current public release boundary.",
-            "codex/hotfix-unbounded-local-log-growth",
+            "Phase 14 Closeout + `v0.5.1` Release",
+            "`v0.5.1` is the current public release boundary.",
+            "release-closeout",
         ),
     ),
     ControlDocTruthRule(
@@ -51,9 +51,9 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "`v0.4.0` is the latest published tag.",
+            "`v0.5.1` is the latest published tag.",
             "Phase 14 is shipped.",
-            "`HF-001` Logging Safety And Disk Guardrails is the active execution sprint.",
+            "No post-Phase-14 build sprint is active yet.",
         ),
     ),
     ControlDocTruthRule(

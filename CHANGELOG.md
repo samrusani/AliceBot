@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-04-16
+
+- Closed out Phase 14 after shipping all five planned sprints:
+  - `P14-S1` provider abstraction cleanup + OpenAI-compatible adapter
+  - `P14-S2` Ollama + llama.cpp + vLLM adapters
+  - `P14-S3` model packs
+  - `P14-S4` reference integrations
+  - `P14-S5` design partner launch
+- Shipped `HF-001` to eliminate unbounded local log growth by defaulting local/Lite logging to stdout, disabling local/Lite access logs by default, and adding bounded opt-in file logging.
+- Promoted the public release boundary from `v0.4.0` to `v0.5.1`.
+- Added Phase 14 closeout summary and closeout packet.
+- Added `v0.5.1` release checklist, tag plan, and public release runbook.
+- Aligned Python, API, web, CLI, core-package, and Hermes plugin version metadata to `0.5.1`.
+- Realigned canonical quickstart, MCP, and integration docs to the shipped Phase 14 + `HF-001` baseline.
+
 ## 2026-04-15
 
 - Closed out Phase 13 after shipping all three planned sprints:

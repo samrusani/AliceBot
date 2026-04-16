@@ -10,33 +10,22 @@ Alice is a pre-1.0 continuity platform for AI agents and agent-assisted workflow
 - Bridge `B1` through `B4` shipped Hermes lifecycle hooks, auto-capture, review flow, explainability, packaging docs, smoke validation, and demo path.
 - Phase 12 shipped hybrid retrieval and reranking, explicit memory mutation operations, contradiction/trust handling, the public eval harness, and task-adaptive briefing.
 - Phase 13 shipped one-call continuity, Alice Lite, and memory hygiene / conversation health visibility.
-- `v0.4.0` is the latest published pre-1.0 release tag.
+- Phase 14 shipped provider adapters, model packs, reference integrations, and design-partner launch/admin surfaces.
+- `HF-001` shipped logging safety and disk guardrails for local/Lite runtime behavior.
+- `v0.5.1` is the latest published pre-1.0 release tag.
 
 ## Current Repo Posture
 - Phase 14 is shipped.
-- `P14-S1` Provider Abstraction Cleanup + OpenAI-Compatible Adapter is shipped.
-- `P14-S2` Ollama + llama.cpp + vLLM Adapters is shipped.
-- `P14-S3` Model Packs is shipped.
-- `P14-S4` Reference Integrations is shipped.
-- `P14-S5` Design Partner Launch is shipped.
-- `HF-001` Logging Safety And Disk Guardrails is the active execution sprint.
+- `HF-001` is shipped.
+- No post-Phase-14 execution sprint is active yet.
 
 ## Latest Completed Phase
 ### Phase 14: Provider Adapters + Design Partner Launch
 Phase 14 turned Alice from a strong continuity system into a practical integration platform for local runtimes, self-hosted inference servers, enterprise-curious teams, and early design partners.
 
-## Active Hotfix
+## Latest Hardening Sprint
 ### HF-001: Logging Safety And Disk Guardrails
-Remove the operational defect where local or Lite logging can grow without bound and exhaust disk.
-
-## Why This Phase Now
-Alice now has enough depth in continuity semantics. The next constraint is compatibility, proof, and adoption:
-- model/runtime compatibility
-- first-class provider adapters
-- plug-and-play model packs
-- reference integrations
-- design partner onboarding
-- usage proof in real environments
+`HF-001` removed the local/Lite operational defect where logging could grow without bound and exhaust disk.
 
 ## Primary Users
 - builders who want to plug Alice into their own agents or workflows
@@ -44,34 +33,31 @@ Alice now has enough depth in continuity semantics. The next constraint is compa
 - enterprise-curious teams evaluating Alice with Azure or OpenAI-compatible infrastructure
 - design partners using Alice in production-like environments and generating adoption proof
 
-## In Scope For Phase 14
+## Shipped Scope Through `v0.5.1`
 - stable provider abstraction and workspace-scoped provider management
 - first-class adapters for OpenAI-compatible, Ollama, llama.cpp, vLLM, and Azure-backed paths
 - declarative, versioned model packs with workspace binding and sensible defaults
 - reference integrations for Hermes, OpenClaw, generic Python agents, and generic TypeScript agents
 - design-partner onboarding, tracking, instrumentation, and structured feedback capture
+- logging safety defaults for local/Lite runtime plus bounded opt-in file logging
 
 ## Non-Goals
-- new retrieval research
-- graph-database migration
+- `v1.0.0` compatibility or support guarantees
+- managed cloud/SLA commitments
 - new channels
 - marketplace work
 - enterprise governance/compliance expansion
 - major vertical-agent work
 - deep browser/action automation
 
-## Success Criteria
+## Success Criteria Reached In `v0.5.1`
 - Alice runs cleanly with OpenAI-compatible providers, Ollama, llama.cpp, vLLM, and Azure-backed paths
 - users can bind a model pack and get sensible continuity defaults without hand tuning
 - Hermes and OpenClaw have polished, documented, and tested Alice paths
 - generic Python and TypeScript examples exist and are reproducible
-- at least 3 design partners are onboarded or in active pilot, with concrete usage evidence and at least 1 strong reference workflow
+- design-partner onboarding, usage summaries, and structured feedback are part of the shipped admin surface
+- local/Lite logging defaults no longer create unbounded disk growth
 
 ## Immediate Product Posture
-- `v0.4.0` remains the current public release boundary.
-- `P14-S1` established the provider contract and telemetry baseline.
-- `P14-S2` closed the local/self-hosted compatibility sprint and added the dedicated `vllm` path to the shipped provider surface.
-- `P14-S3` shipped the first-party pack baseline and provider-aware pack binding behavior.
-- `P14-S4` shipped the reference integration baseline for Hermes, OpenClaw, and generic external-builder paths.
-- `P14-S5` completed the design-partner launch/admin surface and usage-proof layer.
-- `HF-001` is a narrow defect-only sprint for logging safety. It must not expand product scope.
+- `v0.5.1` is the current public release boundary.
+- The next product decision is the next phase definition on top of the shipped Phase 14 + `HF-001` baseline.
