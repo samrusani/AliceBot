@@ -10,6 +10,12 @@ if [ -f "${REPO_ROOT}/.env" ]; then
     APP_HOST
     APP_PORT
     APP_RELOAD
+    APP_LOG_MODE
+    APP_LOG_LEVEL
+    APP_LOG_PATH
+    APP_LOG_MAX_BYTES
+    APP_LOG_BACKUP_COUNT
+    APP_ACCESS_LOG
     DATABASE_URL
     DATABASE_ADMIN_URL
     REDIS_URL
@@ -52,14 +58,12 @@ fi
 
 cd "${REPO_ROOT}"
 
-UVICORN_ARGS=(
-  --app-dir "${REPO_ROOT}/apps/api/src"
-  --host "${APP_HOST:-127.0.0.1}"
-  --port "${APP_PORT:-8000}"
-)
-
-if [ "${APP_RELOAD:-true}" = "true" ]; then
-  UVICORN_ARGS+=(--reload)
+export APP_LOG_MODE="${APP_LOG_MODE:-stdout}"
+export APP_ACCESS_LOG="${APP_ACCESS_LOG:-false}"
+if [ -n "${PYTHONPATH:-}" ]; then
+  export PYTHONPATH="${REPO_ROOT}/apps/api/src:${PYTHONPATH}"
+else
+  export PYTHONPATH="${REPO_ROOT}/apps/api/src"
 fi
 
-exec "${PYTHON_BIN}" -m uvicorn alicebot_api.main:app "${UVICORN_ARGS[@]}"
+exec "${PYTHON_BIN}" -m alicebot_api.local_server

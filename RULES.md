@@ -37,6 +37,7 @@
 ## Docs And Operations Rules
 - Docs are sprint deliverables, not cleanup work.
 - Provider docs, model-pack docs, integration docs, and onboarding docs must stay aligned to shipped behavior.
+- Keep `.ai/active/SPRINT_PACKET.md` as the only canonical active sprint packet unless a duplicate artifact is explicitly required.
 - Runnable docs/examples and demo helpers should use a shared canonical fixture or the real contract surface, not an ad hoc inline mock payload.
 - Acceptance dashboards must derive readiness from persisted evidence that matches the acceptance criteria, not from proxy signals such as linkage alone.
 - Canonical launch-set and rollout docs may use anonymized partner identifiers, but placeholders/examples must be labeled as such and must not be used as sprint-completion evidence.
@@ -48,5 +49,6 @@
 
 ## Scope Rules
 - Do not widen Phase 14 into retrieval research, graph migration, new channels, marketplace work, enterprise governance expansion, major vertical-agent work, or deep browser/action automation unless explicitly re-scoped.
+- Post-phase hotfix sprints must remain defect-only: no new product surface, no unrelated refactors, and no disguised feature expansion.
 - Do not silently hardcode unresolved Control Tower decisions as permanent runtime behavior without recording the decision.
 - Surface underspecified decisions as Control Tower decisions instead of inventing scope.
