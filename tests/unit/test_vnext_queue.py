@@ -164,7 +164,8 @@ def test_export_artifact_markdown_writes_file_and_logs_event(tmp_path: Path) -> 
 
     output_path = service.export_artifact_markdown(artifact_id="artifact-1", output_dir=tmp_path)
 
-    assert output_path.name == "alice-queue-result-artifact-1.md"
+    assert output_path.name.startswith("artifact-")
+    assert output_path.suffix == ".md"
     assert output_path.read_text(encoding="utf-8") == "# Alice Queue Result\n\nDone."
     assert store.events[-1]["event_type"] == "artifact.exported"
     assert store.events[-1]["payload_json"]["output_path"] == str(output_path)

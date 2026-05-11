@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 from pathlib import Path
-import re
 from typing import Protocol
 
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_repositories import JsonObject
+
+DEFAULT_VNEXT_ARTIFACT_EXPORT_ROOT = Path("/tmp/alicebot-vnext-artifact-exports")
 
 
 class VNextQueueValidationError(ValueError):
@@ -85,11 +87,6 @@ def _artifact_status_for_policy(write_policy: str) -> str:
     if write_policy == "auto_generate_artifact":
         return "reviewed"
     return "draft"
-
-
-def _slug_for_title(title: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", title.casefold()).strip("-")
-    return slug or "artifact"
 
 
 def _artifact_markdown_for_task(task: JsonObject) -> str:
@@ -245,10 +242,11 @@ class VNextQueueService:
         if artifact is None:
             raise VNextQueueNotFoundError(f"artifact {artifact_id} was not found")
         content = str(artifact.get("content_markdown", ""))
-        title = str(artifact.get("title", artifact_id))
-        target_dir = Path(output_dir).expanduser().resolve()
+        requested_output_dir = str(output_dir)
+        target_dir = DEFAULT_VNEXT_ARTIFACT_EXPORT_ROOT.resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
-        output_path = target_dir / f"{_slug_for_title(title)}-{artifact_id}.md"
+        artifact_digest = hashlib.sha256(artifact_id.encode("utf-8")).hexdigest()[:24]
+        output_path = target_dir / f"artifact-{artifact_digest}.md"
         output_path.write_text(content, encoding="utf-8")
         append_event(
             self.store,
@@ -256,12 +254,13 @@ class VNextQueueService:
             actor_type="system",
             target_type="artifact",
             target_id=artifact_id,
-            payload={"output_path": str(output_path)},
+            payload={"output_path": str(output_path), "requested_output_dir": requested_output_dir},
         )
         return output_path
 
 
 __all__ = [
+    "DEFAULT_VNEXT_ARTIFACT_EXPORT_ROOT",
     "QueueProcessResult",
     "QueueTaskRequest",
     "VNextQueueNotFoundError",

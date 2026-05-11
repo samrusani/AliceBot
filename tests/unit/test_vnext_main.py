@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+from pathlib import Path
 from uuid import uuid4
 
 import apps.api.src.alicebot_api.main as main_module
@@ -726,12 +727,10 @@ def test_vnext_queue_and_artifact_endpoints(monkeypatch, tmp_path) -> None:
         main_module.VNextArtifactExportRequest(user_id=user_id, output_dir=str(tmp_path)),
     )
     export_payload = json.loads(export_response.body)
-    output_path = (
-        main_module._vnext_export_dir_from_request(str(tmp_path))  # type: ignore[attr-defined]
-        / f"draft-launch-note-{artifact_id}.md"
-    ).resolve()
+    output_path = Path(export_payload["output_path"])
     assert export_response.status_code == 200
-    assert export_payload["output_path"] == str(output_path)
+    assert output_path.name.startswith("artifact-")
+    assert output_path.suffix == ".md"
     assert output_path.read_text(encoding="utf-8").startswith("# Draft launch note")
 
 

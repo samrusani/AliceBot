@@ -7,7 +7,6 @@ import hashlib
 import ipaddress
 import json
 import logging
-from pathlib import Path
 import threading
 import time
 from typing import Annotated, Awaitable, Callable, Literal, TypedDict
@@ -1275,19 +1274,8 @@ class VNextArtifactExportRequest(BaseModel):
     output_dir: str = Field(min_length=1, max_length=1000)
 
 
-VNEXT_API_ARTIFACT_EXPORT_ROOT = Path("/tmp/alicebot-vnext-artifact-exports")
-
-
 def _vnext_public_error_response(*, status_code: int, detail: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"detail": detail})
-
-
-def _vnext_export_dir_from_request(output_dir: str) -> Path:
-    normalized = " ".join(output_dir.split()).strip().lower()
-    slug = "".join(character if character.isalnum() else "-" for character in normalized)
-    slug = "-".join(part for part in slug.split("-") if part)[:80] or "export"
-    digest = hashlib.sha256(output_dir.encode("utf-8")).hexdigest()[:12]
-    return VNEXT_API_ARTIFACT_EXPORT_ROOT / f"{slug}-{digest}"
 
 
 def _vnext_string_list(mapping: dict[str, object], key: str) -> tuple[str, ...]:
@@ -5859,7 +5847,7 @@ def export_vnext_artifact(artifact_id: UUID, request: VNextArtifactExportRequest
         with user_connection(settings.database_url, request.user_id) as conn:
             output_path = VNextQueueService(PostgresVNextStore(conn)).export_artifact_markdown(
                 artifact_id=str(artifact_id),
-                output_dir=_vnext_export_dir_from_request(request.output_dir),
+                output_dir=request.output_dir,
             )
     except VNextQueueNotFoundError:
         return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
