@@ -13,6 +13,10 @@ class VNextQueueValidationError(ValueError):
     """Raised when a vNext queue or artifact operation is invalid."""
 
 
+class VNextQueueNotFoundError(VNextQueueValidationError):
+    """Raised when a vNext queue artifact or task cannot be found."""
+
+
 class VNextQueueStore(Protocol):
     def append_event(self, event: JsonObject) -> JsonObject: ...
 
@@ -224,7 +228,7 @@ class VNextQueueService:
         if status is None:
             raise VNextQueueValidationError("artifact review action must be review, accept, reject, promote, or archive")
         if self.store.get_artifact(artifact_id) is None:
-            raise VNextQueueValidationError(f"artifact {artifact_id} was not found")
+            raise VNextQueueNotFoundError(f"artifact {artifact_id} was not found")
         artifact = self.store.update_artifact_status(artifact_id=artifact_id, status=status)
         append_event(
             self.store,
@@ -239,7 +243,7 @@ class VNextQueueService:
     def export_artifact_markdown(self, *, artifact_id: str, output_dir: str | Path) -> Path:
         artifact = self.store.get_artifact(artifact_id)
         if artifact is None:
-            raise VNextQueueValidationError(f"artifact {artifact_id} was not found")
+            raise VNextQueueNotFoundError(f"artifact {artifact_id} was not found")
         content = str(artifact.get("content_markdown", ""))
         title = str(artifact.get("title", artifact_id))
         target_dir = Path(output_dir).expanduser().resolve()
@@ -260,6 +264,7 @@ class VNextQueueService:
 __all__ = [
     "QueueProcessResult",
     "QueueTaskRequest",
+    "VNextQueueNotFoundError",
     "VNextQueueService",
     "VNextQueueStore",
     "VNextQueueValidationError",

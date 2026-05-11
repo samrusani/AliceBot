@@ -726,7 +726,10 @@ def test_vnext_queue_and_artifact_endpoints(monkeypatch, tmp_path) -> None:
         main_module.VNextArtifactExportRequest(user_id=user_id, output_dir=str(tmp_path)),
     )
     export_payload = json.loads(export_response.body)
-    output_path = tmp_path / f"draft-launch-note-{artifact_id}.md"
+    output_path = (
+        main_module._vnext_export_dir_from_request(str(tmp_path))  # type: ignore[attr-defined]
+        / f"draft-launch-note-{artifact_id}.md"
+    ).resolve()
     assert export_response.status_code == 200
     assert export_payload["output_path"] == str(output_path)
     assert output_path.read_text(encoding="utf-8").startswith("# Draft launch note")
