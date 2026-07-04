@@ -59,6 +59,12 @@ Claude Desktop / IDE config:
 Exact input schemas (types, enums, defaults) are in the `tools/list`
 response; they are the source of truth.
 
+To run the MCP server under a specific agent identity, set
+`ALICE_AGENT_API_KEY` in the server env to a key created with
+`alicebot agent keys create` (see
+[agent-integration.md](agent-integration.md)). Without it, the server runs
+as local operator tooling.
+
 ## The debug flag
 
 `alice_recall`, `alice_context_pack`, and `alice_resume` accept
@@ -91,8 +97,9 @@ ALICE_MCP_LEGACY_TOOLS=1
 
 With the flag set, `tools/list` includes the full long tail — for example
 `alice_vnext_ingest_agent_output` for structured agent-output ingestion,
-`alice_vnext_commit_memory` for explicit policy-checked memory writes, and
-the granular queue/graph/belief tools. Calling a legacy tool without the
+`alice_vnext_commit_memory` for explicit policy-checked memory writes,
+`alice_recall_debug` for the legacy continuity recall view, and the
+granular queue/graph/belief tools. Calling a legacy tool without the
 flag returns an error naming the flag. New integrations should stay on the
 nine core tools; the legacy surface is frozen and will not gain new
 capabilities.

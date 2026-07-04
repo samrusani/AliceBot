@@ -4,6 +4,8 @@ Use this guide when Alice is installed correctly but a tester says, "I do not se
 
 Alice is not automatic chat-history memory. The current public preview has several memory paths, and they have different trust and review behavior.
 
+Note: the default MCP surface is the nine core tools (see [mcp-tools.md](mcp-tools.md)); `alice_capture` is the core path for submitting reviewable memory. The `alice_vnext_*` MCP tools referenced below are on the legacy surface and require `ALICE_MCP_LEGACY_TOOLS=1` on the Alice MCP server.
+
 ## What To Expect
 
 | Path | Best for | Result |

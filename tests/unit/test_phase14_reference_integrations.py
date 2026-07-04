@@ -13,7 +13,7 @@ def test_reference_path_guide_links_major_integration_routes() -> None:
     assert "scripts/run_hermes_bridge_demo.py" in guide
     assert "scripts/use_alice_with_openclaw.sh" in guide
     assert "phase14-provider-configuration.md" in guide
-    assert "three major adoption paths in this sprint" in guide
+    assert "The three major adoption paths are Generic Agent, Hermes, and OpenClaw." in guide
 
 
 def test_hermes_reference_doc_centers_provider_plus_mcp_and_one_call_continuity() -> None:

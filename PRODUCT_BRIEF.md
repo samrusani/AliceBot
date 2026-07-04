@@ -13,9 +13,8 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
-- `v0.5.1` is the tagged pre-1.0 baseline.
-- The `product-overhaul` branch is landing: retrieval rebuild (full-text + pgvector fused with RRF), MCP consolidation to nine core tools, per-agent API keys, evals that execute the production pipeline, and single-path packaging.
-- Pre-1.0, single-user, self-hosted from a repo checkout. Python package will publish to PyPI as `alice-memory`.
+- `v0.6.0` is the tagged release: retrieval rebuild (full-text + pgvector fused with RRF), MCP consolidation to nine core tools, per-agent API keys, evals that execute the production pipeline, and single-path packaging — merged and verified (1,249 unit / 377 integration tests green).
+- Pre-1.0, single-user, self-hosted from a repo checkout. The PyPI name `alice-memory` is claimed with a placeholder; the packaged runtime ships next with the SQLite on-ramp.
 
 ## Non-Goals (Now)
 - Hosted service, SLA, or managed cloud.

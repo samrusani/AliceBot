@@ -131,10 +131,10 @@ For a first memory test, use [../alpha/first-memory.md](../alpha/first-memory.md
 Operational split:
 
 - provider: recall, prefetch, resumption brief, open-loop lookup, and optional structured `sync_turn` capture
-- MCP: explicit `alice_vnext_commit_memory` for user-directed "remember/save this" instructions
+- MCP: `alice_capture` (core) for explicit capture, or the legacy `alice_vnext_commit_memory` tool for user-directed "remember/save this" instructions (legacy tools require the MCP server to run with `ALICE_MCP_LEGACY_TOOLS=1`)
 - `/vnext`: review, confirmation, audit, undo, correction, and forget
 
-If a tester sees no memory after normal chat, first verify MCP access to `alice_vnext_commit_memory` and check `/vnext` Memory Review before treating it as a storage bug.
+If a tester sees no memory after normal chat, first verify MCP access to a capture/commit tool (core `alice_capture`, or `alice_vnext_commit_memory` with `ALICE_MCP_LEGACY_TOOLS=1`) and check `/vnext` Memory Review before treating it as a storage bug.
 
 ## Single-External-Provider Model
 
@@ -154,7 +154,7 @@ Use this split to avoid overlapping integrations:
 | Integration | Best for | Runtime shape |
 |---|---|---|
 | Alice memory provider | always-on continuity prefetch + memory tools inside Hermes memory stack | one external memory provider + built-in `MEMORY.md`/`USER.md` |
-| Alice MCP server | broad Alice tool surface in Hermes (`alice_recall`, `alice_resume`, `alice_review_queue`, `alice_review_apply`) | MCP server attached under `mcp_servers` |
+| Alice MCP server | Alice tool surface in Hermes: nine core tools (`alice_recall`, `alice_resume`, `alice_memory_review`, `alice_memory_correct`, ...) plus the legacy tools (`alice_review_queue`, `alice_review_apply`, ...) with `ALICE_MCP_LEGACY_TOOLS=1` | MCP server attached under `mcp_servers` |
 | Hermes Alice skill pack | policy and prompting guidance on when/how to call Alice tools | skill instructions layered on top of provider or MCP |
 
 Practical default:

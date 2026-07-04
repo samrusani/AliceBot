@@ -10,7 +10,7 @@ Good first vNext contributions:
 - docs corrections that match current commands
 - fixture-only connector payload examples
 - small UI review-state improvements under `/vnext`
-- eval cases that strengthen privacy, provenance, or prompt-injection coverage
+- eval cases that strengthen the `retrieval_quality` suite (see `eval/README.md`)
 
 Avoid in preview PRs unless a maintainer explicitly scopes it:
 
@@ -44,6 +44,8 @@ For eval changes, also run:
 ```bash
 ./.venv/bin/python -c 'from alicebot_api.cli import main; raise SystemExit(main(["eval", "run", "--suite", "all"]))'
 ```
+
+The `retrieval_quality` suite executes against a live database and needs `ALICEBOT_EVAL_DATABASE_URL`; without it the suite is reported as skipped rather than passed.
 
 ## Privacy Rules
 

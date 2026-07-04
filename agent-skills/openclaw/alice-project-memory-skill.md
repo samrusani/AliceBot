@@ -37,6 +37,6 @@ Explicit project memory commit:
 {"agent_id":"openclaw","agent_type":"coding_agent","permission_profile":"project_scoped_agent","project_scope":["Alice"],"intent":"explicit_remember","title":"Release gate decision","canonical_text":"Alice public alpha release gates require doctor, smokes, evals, and git diff checks before merge.","domain":"project","sensitivity":"private","confidence":0.94,"source_type":"direct_user_instruction"}
 ```
 
-Use `alice_vnext_undo_memory`, `alice_vnext_correct_memory`, or `alice_vnext_forget_memory` through Alice if a committed project memory needs reversal or repair. Never edit Postgres directly.
+Use `alice_vnext_undo_memory`, `alice_vnext_correct_memory`, or `alice_vnext_forget_memory` through Alice if a committed project memory needs reversal or repair. Never edit Postgres directly. The `alice_vnext_*` MCP tools are on the legacy surface and require `ALICE_MCP_LEGACY_TOOLS=1` on the Alice MCP server.
 
 See `docs/alpha/openclaw-skill.md` for full recipes.

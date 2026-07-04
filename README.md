@@ -45,7 +45,7 @@ make dev
 
 Open the review console at `http://localhost:3000/vnext`. The detailed walkthrough — demo data, smoke checks, first memory — is in [docs/alpha/quickstart.md](docs/alpha/quickstart.md).
 
-> **Install note:** Alice currently runs from a repo checkout. When the Python package is published to PyPI it will ship as `alice-memory` (the name `alice-core` belongs to an unrelated project).
+> **Install note:** Alice currently runs from a repo checkout. The PyPI name [`alice-memory`](https://pypi.org/project/alice-memory/) is claimed with a placeholder release; the packaged runtime (including a zero-infrastructure SQLite mode) will ship under it. The name `alice-core` on PyPI belongs to an unrelated project.
 
 ## Connect an agent
 

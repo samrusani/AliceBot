@@ -1,6 +1,6 @@
-# Phase 11 Model Packs Tier 1 (P11-S4)
+# Model Packs Tier 1
 
-This guide documents the declarative tier-1 model-pack layer introduced in `P11-S4`.
+This guide documents the declarative tier-1 model-pack layer.
 
 ## In-Scope APIs
 
@@ -44,7 +44,7 @@ Pack contracts can declaratively shape:
 
 - context compiler caps (`max_sessions`, `max_events`, `max_memories`, `max_entities`, `max_entity_edges`)
 - instruction overlays appended to system/developer instructions
-- tool mode contract (`none` in this sprint)
+- tool mode contract (currently `none`)
 
 Shaping is applied on the existing invoke seam (`/v1/runtime/invoke`) and does not create a parallel runtime path.
 

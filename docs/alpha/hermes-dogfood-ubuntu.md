@@ -8,7 +8,7 @@ This guide connects Hermes to Alice on the same headless Ubuntu host. Alice rema
 alice:
   api_url: http://127.0.0.1:8000
   mcp_command: ~/alicebot/.venv/bin/python -m alicebot_api.mcp_server
-  mcp_server_name: alice_core
+  mcp_server_name: alice
 ```
 
 Recommended Hermes identity:
@@ -46,16 +46,19 @@ and prefetch without committing post-turn capture candidates.
 
 ```yaml
 mcp_servers:
-  alice_core:
+  alice:
     command: /home/alice/alicebot/.venv/bin/python
     args: ["-m", "alicebot_api.mcp_server"]
     cwd: /home/alice/alicebot
     env:
       DATABASE_URL: postgresql://alicebot_app:<redacted>@127.0.0.1:5432/alicebot
       ALICEBOT_AUTH_USER_ID: "00000000-0000-0000-0000-000000000001"
+      ALICE_MCP_LEGACY_TOOLS: "1"
 ```
 
 Do not paste real database passwords into shared logs. Keep this config readable only by the Hermes/Alice operator.
+
+`ALICE_MCP_LEGACY_TOOLS=1` is only needed because the recipes below call the legacy `alice_vnext_*` tools. The default MCP surface is the nine core tools in [mcp-tools.md](mcp-tools.md); omit the flag if Hermes only uses those.
 
 ## API Request Shape
 
@@ -193,7 +196,6 @@ Review:
 
 ```bash
 ~/alicebot/.venv/bin/alicebot vnext agents policy-telemetry
-~/alicebot/.venv/bin/alicebot context-pack --query "Hermes dogfood" --domain project --sensitivity-allowed private
-~/alicebot/.venv/bin/alicebot vnext artifacts list
+~/alicebot/.venv/bin/alicebot context-pack "Hermes dogfood" --domain project --sensitivity-allowed private
 ~/alicebot/.venv/bin/alicebot vnext doctor --fix-safe --ci
 ```

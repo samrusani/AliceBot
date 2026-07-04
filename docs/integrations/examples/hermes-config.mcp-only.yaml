@@ -11,6 +11,9 @@ mcp_servers:
       DATABASE_URL: "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot"
       ALICEBOT_AUTH_USER_ID: "00000000-0000-0000-0000-000000000001"
       PYTHONPATH: "/path/to/alicebot/apps/api/src:/path/to/alicebot/workers"
+      # Needed only for legacy tools (alice_review_queue, alice_review_apply).
+      # The other tools below are on the default nine-tool core surface.
+      ALICE_MCP_LEGACY_TOOLS: "1"
     tools:
       include:
         - alice_recall

@@ -7,7 +7,7 @@ Target length: 3 to 5 minutes.
 Show the repo root and say:
 
 ```text
-Alice vNext is a local-first second brain for AI agents. It preserves raw evidence, proposes memories for review, generates daily and weekly brain artifacts, and exposes the same continuity through CLI, API, MCP, and the web workspace.
+Alice vNext is the local-first continuity layer for AI agents. It preserves raw evidence, proposes memories for review, generates daily and weekly artifacts, and exposes the same continuity through CLI, API, MCP, and the web workspace.
 ```
 
 ## 2. Install and Start
@@ -88,6 +88,8 @@ Show:
 ./.venv/bin/python -m pytest tests/unit -q
 pnpm --dir apps/web test
 ```
+
+Mention that the `retrieval_quality` eval executes against a live database (`ALICEBOT_EVAL_DATABASE_URL`) and is reported as skipped without one.
 
 Close with:
 

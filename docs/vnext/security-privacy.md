@@ -64,7 +64,7 @@ Disallowed public demo material:
 ## Security Review Checklist
 
 - Run unit tests, web tests, build, control-doc truth, and `git diff --check`.
-- Run vNext evals and confirm critical privacy leaks are zero.
+- Run `alicebot eval run --suite all`; the `retrieval_quality` suite executes the production retrieval pipeline against a live database (`ALICEBOT_EVAL_DATABASE_URL`) and is reported as skipped without one.
 - Inspect new fixtures for secrets and personal data.
 - Inspect new connector write paths for raw-evidence preservation and failure isolation.
 - Confirm no generated artifacts are auto-promoted to trusted memory.

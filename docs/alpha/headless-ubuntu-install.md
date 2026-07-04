@@ -10,9 +10,9 @@ Supported assumptions for this alpha:
 - local Postgres with `pgvector` on the same host, or an existing Postgres reached through `DATABASE_URL`
 - services bound to `127.0.0.1` by default
 
-This is the current headless install path for the Alice vNext public-preview line. The active preview release target is `v0.5.1-vnext-preview` on top of stable `v0.5.1`.
+This is the current headless install path for the Alice v0.6.0 line. Install from `--branch main`, or from the v0.6.0 release tag once it is published.
 
-Historical note: `v0.6.0-alpha-rc.2` remains an older internal Ubuntu dogfood packaging milestone. Keep it for audit trail and rollback evidence, but do not treat it as the current public preview boundary.
+Historical note: `v0.5.1-vnext-preview` and `v0.6.0-alpha-rc.2` are older milestones kept for audit trail and rollback evidence. Do not install them for new setups; they predate the v0.6.0 overhaul (hybrid retrieval, nine-tool MCP surface, per-agent API keys).
 
 ## Recommended Secure Access
 
@@ -38,7 +38,7 @@ less install-alice.sh
 bash install-alice.sh --branch main --install-dir ~/alicebot
 ```
 
-For an immutable preview install after the preview tag is published, replace `--branch main` with `--tag v0.5.1-vnext-preview`.
+For an immutable install after a release tag is published, replace `--branch main` with `--tag <release-tag>` (for example `--tag v0.6.0`).
 
 Use `--non-interactive` only after you have chosen a safe install directory and know whether the host should install local Postgres.
 
@@ -46,7 +46,7 @@ Use `--non-interactive` only after you have chosen a safe install directory and 
 
 ```bash
 bash install-alice.sh --branch main
-bash install-alice.sh --tag v0.5.1-vnext-preview
+bash install-alice.sh --tag <release-tag>
 bash install-alice.sh --install-dir ~/alicebot
 bash install-alice.sh --skip-postgres-install
 bash install-alice.sh --install-systemd
@@ -220,9 +220,8 @@ CLI-only fallback if you cannot open `/vnext`:
 
 ```bash
 ~/alicebot/.venv/bin/alicebot vnext demo load --reset
-~/alicebot/.venv/bin/alicebot context-pack --query "public preview launch checklist" --domain project --sensitivity-allowed private
-~/alicebot/.venv/bin/alicebot daily-brief --domain project --sensitivity-allowed private
-~/alicebot/.venv/bin/alicebot vnext artifacts list
+~/alicebot/.venv/bin/alicebot context-pack "public preview launch checklist" --domain project --sensitivity-allowed private
+~/alicebot/.venv/bin/alicebot daily-brief --generate --domain project --sensitivity-allowed private
 ~/alicebot/.venv/bin/alicebot vnext demo reset
 ```
 

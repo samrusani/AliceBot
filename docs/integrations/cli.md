@@ -1,6 +1,6 @@
 # CLI Integration
 
-The shipped CLI surface (`P9-S34`) runs against the same local runtime used by API and MCP.
+The shipped CLI surface runs against the same local runtime used by API and MCP.
 
 ## Entrypoints
 
@@ -32,6 +32,18 @@ alice brief --brief-type general --query local-first
 ```
 
 `brief` is the default external-agent continuity entrypoint. It assembles relevant facts, recent changes, open loops, conflicts, timeline highlights, provenance, trust posture, and a next suggested action in one call.
+
+## Agent API Keys
+
+Agent HTTP calls authenticate with per-agent API keys:
+
+```bash
+alicebot agent keys create --agent-id openclaw --profile project_scoped_agent --label "openclaw laptop"
+alicebot agent keys list
+alicebot agent keys revoke <key-prefix-or-id>
+```
+
+The raw key is printed exactly once at creation and stored hashed. Agents send it as `Authorization: Bearer $ALICE_AGENT_API_KEY`; MCP binds a key through the `ALICE_AGENT_API_KEY` environment variable. The key record overrides any payload-supplied agent identity, payloads may only downgrade the granted permission profile, and keyless agent calls work only while zero active keys exist.
 
 ## vNext Agentic Commands
 

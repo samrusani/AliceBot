@@ -1,6 +1,6 @@
-# Phase 14 Model Pack Compatibility Matrix (P14-S3)
+# Model Pack Compatibility Matrix
 
-This reference defines the shipped first-party pack compatibility posture for `P14-S3`.
+This reference defines the shipped first-party pack compatibility posture.
 
 ## Built-In Catalog Packs
 
@@ -32,10 +32,10 @@ Workspace default bindings intentionally stay provider-agnostic so briefing defa
 
 ## Deferred Families
 
-DeepSeek, Mistral, Kimi, and other non-first-party families are not shipped as built-in catalog entries in `P14-S3`. They require custom packs until a later sprint adds first-party definitions.
+DeepSeek, Mistral, Kimi, and other non-first-party families are not shipped as built-in catalog entries. They require custom packs until first-party definitions are added.
 
 ## Scope Notes
 
 - Provider behavior stays in adapters.
 - Pack behavior stays declarative in pack contracts and briefing defaults.
-- `P14-S3` does not reopen provider work or add new runtime providers.
+- The pack compatibility layer does not reopen provider work or add new runtime providers.

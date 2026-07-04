@@ -1,4 +1,4 @@
-# Phase 9 Command Walkthrough
+# Local Command Walkthrough
 
 This page provides one reproducible command walkthrough using only shipped local paths.
 

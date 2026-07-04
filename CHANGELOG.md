@@ -1,6 +1,6 @@
 # Changelog
 
-## 2026-07-04
+## v0.6.0 — 2026-07-04
 
 - Rebuilt memory retrieval as real hybrid search: Postgres full-text + pgvector (HNSW) fused with reciprocal-rank fusion, an OpenAI-compatible embedding provider seam (Ollama/LM Studio/OpenAI), write-time embedding with graceful FTS-only degradation, and contradiction sync moved out of the read path.
 - Consolidated the MCP surface to 9 core tools with parameter descriptions on every schema and compact outputs; the legacy long tail (65 tools) remains behind `ALICE_MCP_LEGACY_TOOLS=1`.

@@ -1,6 +1,6 @@
-# Phase 14 Provider Configuration (P14-S1)
+# Provider Configuration (OpenAI-Compatible)
 
-This guide covers the Phase 14 provider foundation paths:
+This guide covers the provider foundation paths:
 
 - `POST /v1/providers`
 - `PATCH /v1/providers/{provider_id}`
@@ -9,7 +9,7 @@ This guide covers the Phase 14 provider foundation paths:
 - workspace bootstrap seeding through `WORKSPACE_PROVIDER_CONFIGS_JSON`
 - `scripts/run_phase14_openai_compatible_smoke.py`
 
-Scope note: this page documents the OpenAI-compatible foundation path owned by `P14-S1`.
+Scope note: this page documents the OpenAI-compatible foundation path.
 
 ## API Registration
 
@@ -42,7 +42,7 @@ Capability discovery runs during registration and stores:
 
 Workspace bootstrap can seed OpenAI-compatible providers from config with `WORKSPACE_PROVIDER_CONFIGS_JSON`.
 
-Phase 14 local/self-hosted adapter work also allows dedicated `vllm` entries in the same config surface. Keep using this page for the OpenAI-compatible path, and use `docs/integrations/phase11-local-provider-adapters.md` for the dedicated vLLM adapter defaults and registration flow.
+The local/self-hosted adapter surface also allows dedicated `vllm` entries in the same config surface. Keep using this page for the OpenAI-compatible path, and use `docs/integrations/phase11-local-provider-adapters.md` for the dedicated vLLM adapter defaults and registration flow.
 
 Example:
 
@@ -126,7 +126,7 @@ One-call continuity still runs through the normal continuity compiler and respon
 
 ## Smoke Script
 
-Run the Phase 14 smoke flow against a real endpoint:
+Run the OpenAI-compatible smoke flow against a real endpoint:
 
 ```bash
 ./scripts/run_phase14_openai_compatible_smoke.py \

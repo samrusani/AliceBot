@@ -34,7 +34,7 @@ Good explicit commit:
 {"agent_id":"hermes","permission_profile":"trusted_local_agent","intent":"explicit_remember","title":"Preferred daily planning format","canonical_text":"The user prefers daily planning summaries with decisions, blockers, and next actions.","domain":"personal","sensitivity":"private","confidence":0.93,"source_type":"direct_user_instruction"}
 ```
 
-If Alice returns `confirmation_required`, show the proposed text and call `alice_vnext_confirm_memory` only after the user confirms. If Alice returns `review_required`, do not retry broadly; leave it for `/vnext` review.
+If Alice returns `confirmation_required`, show the proposed text and call `alice_vnext_confirm_memory` only after the user confirms. If Alice returns `review_required`, do not retry broadly; leave it for `/vnext` review. The `alice_vnext_*` MCP tools are on the legacy surface and require `ALICE_MCP_LEGACY_TOOLS=1` on the Alice MCP server.
 
 Bad memory proposal:
 

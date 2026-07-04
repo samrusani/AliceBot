@@ -1,6 +1,6 @@
-# Hermes Bridge Operator Guide (B4)
+# Hermes Bridge Operator Guide
 
-This is the canonical operator guide for the shipped bridge phase.
+This is the canonical operator guide for the shipped Hermes bridge.
 It is release-scoped for the `v0.5.1` pre-1.0 boundary and does not imply `v1.0.0` guarantees.
 
 Recommended deployment shape: **provider plus MCP**.
@@ -21,6 +21,8 @@ Use MCP-only as a fallback when provider install is temporarily blocked.
 
 - Recommended mode: `docs/integrations/examples/hermes-config.provider-plus-mcp.yaml`
 - Fallback mode: `docs/integrations/examples/hermes-config.mcp-only.yaml`
+
+Both examples set `ALICE_MCP_LEGACY_TOOLS=1` because they allowlist the legacy `alice_review_queue`/`alice_review_apply` tools; the default MCP surface is the nine core tools (see `docs/integrations/mcp.md`).
 
 ### Recommended snippet (provider + MCP)
 

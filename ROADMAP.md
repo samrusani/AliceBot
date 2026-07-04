@@ -1,24 +1,18 @@
 # Roadmap
 
 ## Baseline (Not Roadmap Work)
-- `v0.5.1`: released. Local-first memory core, provenance, trust classes, open loops, resumption briefs, CLI/API/MCP surfaces, review console.
+- `v0.6.0`: released. The product-viability overhaul — hybrid retrieval (FTS + pgvector + RRF), nine-tool MCP surface, per-agent API keys, honest live-store evals, repositioned docs, `alice-memory` PyPI name claimed.
+- `v0.5.1`: prior baseline. Local-first memory core, provenance, trust classes, open loops, resumption briefs, CLI/API/MCP surfaces, review console.
 
-## In Progress: Product Overhaul (this branch)
-Reposition Alice as the continuity layer for AI agents and ship as one release:
+## Next
+In rough priority order:
 
-- **Retrieval rebuild** — Postgres full-text + pgvector (HNSW) fused with reciprocal-rank fusion; configurable OpenAI-compatible embedding endpoint; explicit full-text degradation when unconfigured.
-- **MCP consolidation** — nine core tools; legacy tools behind `ALICE_MCP_LEGACY_TOOLS=1`.
-- **Agent auth** — per-agent API keys.
-- **Honest evals** — eval suites that execute the production pipeline.
-- **Packaging and docs** — one quickstart path, archived process docs, consistent "Alice" naming, PyPI packaging as `alice-memory`.
-
-## Next (After the Overhaul Ships)
-Candidates, in no committed order:
-
-- Publish `alice-memory` to PyPI and cut the first post-overhaul release.
-- Deeper reference integrations for popular agent frameworks.
-- Multi-agent memory scoping and richer per-agent policy.
-- Hosted offering exploration (requires RLS posture and auth work already in place).
+1. **Dogfood with real embeddings** — run the stack daily with an Ollama/LM Studio embedding endpoint; calibrate the paraphrase target of the `retrieval_quality` benchmark against a real model.
+2. **SQLite on-ramp** — `uvx alice-memory` to a working local MCP memory server without Docker or Postgres (plan: `docs/plans/sqlite-onramp.md`); ship it as the first real PyPI release.
+3. **Public benchmark** — run LongMemEval (or equivalent) on the calibrated hybrid pipeline and publish methodology and scores.
+4. **Reference integrations** — deeper examples for popular agent frameworks on the nine-tool surface.
+5. **Multi-agent memory scoping** — richer per-agent policy on top of the API-key identity layer.
+6. **Hosted offering exploration** — the RLS posture and auth work now make this plausible; still exploratory.
 
 ## Explicit Non-Goals For Now
 - Hosted service / SLA commitments.

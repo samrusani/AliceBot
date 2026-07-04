@@ -58,19 +58,19 @@ Do not propose memory for:
 ## Project Update Proposal
 
 ```json
-{"proposal_type":"project_update","canonical_text":"The public preview packaging sprint is ready for design-partner onboarding after alpha-check passes.","domain":"project","sensitivity":"private","confidence":0.8}
+{"proposal_type":"project_update","canonical_text":"The public preview packaging work is ready for onboarding after alpha-check passes.","domain":"project","sensitivity":"private","confidence":0.8}
 ```
 
 ## Belief Update Proposal
 
 ```json
-{"proposal_type":"belief_update","canonical_text":"The best next phase is Agent Skills v1 Hardening if alpha feedback confirms agent integration is the main adoption path.","domain":"project","sensitivity":"private","confidence":0.74}
+{"proposal_type":"belief_update","canonical_text":"Agent integration is the main adoption path if alpha feedback confirms agents rely on scoped context packs.","domain":"project","sensitivity":"private","confidence":0.74}
 ```
 
 ## Open-loop Proposal
 
 ```json
-{"proposal_type":"open_loop","canonical_text":"Confirm which design partner will run the first public preview install.","domain":"project","sensitivity":"private","confidence":0.76}
+{"proposal_type":"open_loop","canonical_text":"Confirm who will run the first public preview install.","domain":"project","sensitivity":"private","confidence":0.76}
 ```
 
 ## Contradiction Proposal

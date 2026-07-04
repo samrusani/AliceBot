@@ -1,4 +1,4 @@
-# Design Partner Onboarding Guide
+# Alpha Onboarding Guide
 
 This alpha is for technical users who can run a local stack and connect agents through MCP/API/CLI.
 

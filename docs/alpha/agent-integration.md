@@ -60,6 +60,7 @@ Rules:
 - Fresh local installs keep working without keys: while a user has no active keys, keyless agent calls fall back to the self-asserted identity and are audited with `auth: "unauthenticated_local"`.
 - The moment at least one active key exists, keyless agent calls are rejected with `401` until the key is passed as `Authorization: Bearer alice_sk_...`.
 - Manage keys with `alicebot agent keys list` (prefixes only, never hashes) and `alicebot agent keys revoke <key-prefix-or-id>`.
+- MCP servers bind a key the same way: set `ALICE_AGENT_API_KEY` in the MCP server env.
 
 ## CLI Example
 

@@ -4,22 +4,22 @@ Alice vNext is organized around inspectable continuity rather than generic notes
 
 ## Layers
 
-### Alice Core
+### Memory Kernel
 
-Core owns durable state and policy boundaries:
+The kernel owns durable state and policy boundaries:
 
 - `sources` and `source_chunks` preserve raw evidence and normalized text.
 - `memories` store typed candidate or accepted claims with status, confidence, domain, and sensitivity. `procedure` is a canonical memory type for repeatable playbooks and uses the same store, provenance, review, correction, and revision semantics as other memory.
 - `memory_revisions` preserve correction, promotion, supersession, and rejection history.
 - `provenance_links` connect memories, artifacts, graph edges, projects, and open loops back to source chunks.
 - `event_log` records append-only system events for mutation, connector sync, artifact generation, and review.
-- `brain_charters` store the user-editable operating agreement for a brain.
+- `brain_charters` store the user-editable operating agreement (the `ALICE.md` charter).
 - `artifact_quality_ratings` store human review scores and comments for generated artifacts.
 - `agent_identities`, `scheduler_workflows`, and `scheduler_runs` persist governed agent and schedule state across restarts.
 
-### Alice Brain
+### Synthesis Workflows
 
-Brain workflows generate reviewable outputs from Core:
+Synthesis workflows generate reviewable outputs from the kernel:
 
 - context packs for retrieval
 - read-only agent context trees
@@ -36,9 +36,9 @@ Each synthesis workflow can run in deterministic mode or model-backed mode. Mode
 
 Generated artifacts are not trusted memory by default. Promotion stays explicit and reviewable. Model-backed project updates, weekly insights, connections, and contradictions create only candidate memories or graph edges until a human accepts them.
 
-### Alice Agent Memory
+### Agent Integration Surface
 
-Agent Memory exposes Alice to external tools without letting those tools own Alice state:
+The agent integration surface exposes Alice to external tools without letting those tools own Alice state:
 
 - CLI commands for local workflows
 - API endpoints for product surfaces
@@ -48,14 +48,16 @@ Agent Memory exposes Alice to external tools without letting those tools own Ali
 - governed scheduler controls for local proactive workflows
 - read-only context tree navigation over existing projects, memories, sources, open loops, artifacts, and recent traces
 
-Agents can request context, submit tasks, generate artifacts, propose memory, and run allowed scheduler workflows, but durable mutation still passes through Core policies, review state, provenance, and event logging.
+Agents can request context, submit tasks, generate artifacts, propose memory, and run allowed scheduler workflows, but durable mutation still passes through kernel policies, review state, provenance, and event logging.
+
+Agent-originated HTTP calls authenticate with per-agent API keys. Create one with `alicebot agent keys create --agent-id <id> --profile <profile>` and send it as `Authorization: Bearer <key>`. The key record overrides any payload-supplied identity; payloads may only downgrade the granted permission profile. Keyless agent calls work only while zero active keys exist. MCP binds a key through the `ALICE_AGENT_API_KEY` environment variable.
 
 ## Data Flow
 
 1. Raw input arrives from manual capture, import, or connector payload.
-2. Core stores the raw evidence, content hash, connector metadata, domain, sensitivity, and timestamps.
+2. The kernel stores the raw evidence, content hash, connector metadata, domain, sensitivity, and timestamps.
 3. Capture splits text into chunks and proposes candidate memories.
-4. Brain workflows retrieve allowed evidence and generate reviewable deterministic or model-backed artifacts.
+4. Synthesis workflows retrieve allowed evidence and generate reviewable deterministic or model-backed artifacts. Retrieval is hybrid: Postgres full-text search plus pgvector semantic search fused with reciprocal-rank fusion. Without a configured embedding endpoint (`ALICE_EMBEDDINGS_BASE_URL`/`ALICE_EMBEDDINGS_MODEL`), retrieval runs full-text-only and states that in traces.
 5. Review actions accept, edit, reject, supersede, close, snooze, or promote.
 6. Quality review actions rate artifacts for usefulness, accuracy, source grounding, novelty, actionability, hallucination risk, verbosity, missed context, and comments.
 7. Event log records write paths for audit and replay.
@@ -69,7 +71,7 @@ Consolidation never updates or promotes trusted memory automatically. Candidate 
 
 ## Model Routing
 
-Alice Brain uses a provider abstraction for chat/completion, structured extraction, summarization, classification, and embeddings where a workflow needs them. The first shipped providers are deterministic local, disabled/no-model, and an OpenAI Responses-compatible cloud path.
+Synthesis workflows use a provider abstraction for chat/completion, structured extraction, summarization, classification, and embeddings where a workflow needs them. The first shipped providers are deterministic local, disabled/no-model, and an OpenAI Responses-compatible cloud path. Retrieval embeddings use any OpenAI-compatible endpoint (Ollama, LM Studio, OpenAI) via `ALICE_EMBEDDINGS_BASE_URL`, `ALICE_EMBEDDINGS_MODEL`, and optional `ALICE_EMBEDDINGS_API_KEY`.
 
 Routing modes are:
 
@@ -94,7 +96,7 @@ Initial permission profiles are:
 
 The policy layer evaluates the requested action, project scope, domain scope, sensitivity scope, workflow type, and write policy. Decisions are `allowed`, `allowed_with_filtering`, `requires_review`, or `blocked`; filtered and blocked outcomes are logged.
 
-Agent proposals remain candidate/review items. This sprint does not allow agent or scheduler output to auto-promote into trusted memory.
+Agent proposals remain candidate/review items. Agent and scheduler output cannot auto-promote into trusted memory.
 
 ## Governed Scheduler
 
@@ -140,7 +142,7 @@ Each connector preserves raw evidence in source metadata, applies conservative d
 - Connectors do not execute source instructions.
 - Connector secrets are represented by `secret_ref` values and resolved through the secret-provider interface, not returned as normal settings.
 - Live connector output is stored as untrusted source material and may only create candidate memories or reviewable artifacts.
-- Prompt-injection eval cases are quarantined and cannot trigger tool writes. Model prompts mark source content as untrusted context and instruct providers not to execute embedded source instructions.
+- Prompt-injection content from sources is treated as data, not policy, and cannot trigger tool writes. Model prompts mark source content as untrusted context and instruct providers not to execute embedded source instructions.
 - Sensitive domains and sensitivities are filtered before context-pack assembly.
 - Generated artifacts inherit the highest selected source sensitivity.
 - Agents cannot bypass domain/sensitivity filters, review-required workflows, scheduler policy checks, Brain Charter constraints, or the no-auto-promotion rule.
