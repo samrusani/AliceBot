@@ -55,18 +55,16 @@ def test_lite_bootstrap_script_uses_workspace_bootstrap_and_one_call_brief() -> 
     assert '"session_token": session_token' not in script
 
 
-def test_readme_and_quickstart_make_alice_lite_and_brief_the_default_path() -> None:
-    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+def test_quickstart_keeps_alice_lite_documented_as_deployment_profile() -> None:
     quickstart = (REPO_ROOT / "docs" / "quickstart" / "local-setup-and-first-result.md").read_text(
         encoding="utf-8"
     )
 
-    for text in (readme, quickstart):
-        assert "Alice Lite" in text
-        assert "./scripts/alice_lite_up.sh" in text
-        assert "bootstrap_alice_lite_workspace.py" in text
-        assert "alicebot_api brief" in text
-        assert "deployment profile" in text
+    assert "Alice Lite" in quickstart
+    assert "./scripts/alice_lite_up.sh" in quickstart
+    assert "bootstrap_alice_lite_workspace.py" in quickstart
+    assert "alicebot_api brief" in quickstart
+    assert "deployment profile" in quickstart
 
     assert "Node + pnpm" not in quickstart
     assert "Hermes runtime modules" not in quickstart

@@ -40,7 +40,7 @@ Alice vNext has three layers:
 10. Use [release checklist](../release/vnext-public-release-checklist.md) before publishing or tagging.
 11. Review [preview release notes](../release/v0.5.1-vnext-preview-release-notes.md), [preview install notes](../alpha/release-notes.md), and [tag plan](../release/v0.5.1-vnext-preview-tag-plan.md).
 12. Review the [dogfood daily checklist](../runbooks/vnext-dogfood-daily-checklist.md) before daily local preview use.
-13. Review the [agentic control plane CTO summary](../vnext-agentic-control-plane-cto-summary.md), [agentic memory commit CTO summary](../vnext-agentic-memory-commit-cto-summary.md), [local runtime CTO summary](../vnext-local-runtime-cto-summary.md), [model-backed intelligence CTO summary](../vnext-model-backed-intelligence-cto-summary.md), [live capture connectors CTO summary](../vnext-live-capture-connectors-cto-summary.md), [dogfood hardening CTO summary](../vnext-dogfood-hardening-cto-summary.md), [live-backed operator console CTO summary](../vnext-live-backed-operator-console-cto-summary.md), [legacy public-alpha packaging CTO summary](../vnext-public-alpha-packaging-cto-summary.md), and [historical headless Ubuntu packaging CTO summary](../vnext-headless-ubuntu-cto-summary.md) for sprint closeouts.
+13. Historical build-process summaries are archived under [docs/archive/process/](../archive/process/README.md).
 
 ## Launch Boundary
 

@@ -55,7 +55,7 @@
 - Prepared `R1` release-readiness package for `v0.2.0` as a pre-1.0 public release boundary.
 - Added `v0.2.0` release checklist, tag plan, and public release runbook.
 - Realigned launch-facing docs to shipped scope through Phase 11 and Bridge `B1` through `B4`.
-- Recorded release-gate evidence in `BUILD_REPORT.md` and `REVIEW_REPORT.md` for `R1`.
+- Recorded release-gate evidence in `docs/archive/process/BUILD_REPORT.md` and `docs/archive/process/REVIEW_REPORT.md` for `R1`.
 
 ## 2026-04-08
 

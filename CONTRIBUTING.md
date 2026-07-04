@@ -4,17 +4,14 @@ Thanks for contributing to Alice.
 
 ## Scope Discipline
 
-This repo enforces sprint-scoped delivery. Keep changes aligned to active sprint packet and avoid unrelated refactors.
+Keep each change narrowly scoped and avoid unrelated refactors. `RULES.md` defines the standing product and engineering rules.
 
 ## Local Setup
 
 ```bash
-cp .env.example .env
-python3 -m venv .venv
-./.venv/bin/python -m pip install -e '.[dev]'
-docker compose up -d
-./scripts/migrate.sh
-./scripts/load_sample_data.sh
+make setup
+make migrate
+make doctor
 ```
 
 ## Required Validation
@@ -38,7 +35,7 @@ Run integration and bridge checks when the change touches those surfaces:
 ./.venv/bin/python scripts/run_hermes_bridge_demo.py
 ```
 
-For vNext connector changes:
+For connector changes:
 
 ```bash
 ./.venv/bin/python -m pytest tests/unit/test_vnext_connectors.py -q
@@ -47,7 +44,7 @@ For vNext connector changes:
 
 ## Pull Request Expectations
 
-- Keep PR scope narrow and sprint-aligned.
+- Keep PR scope narrow.
 - Update docs when behavior or command paths change.
 - Include exact commands executed and pass/fail evidence.
 - Complete the protected-path `Upgrade Overview` when the PR touches paths listed in `PROTECTED_PATHS.md`.
@@ -62,4 +59,3 @@ Read before making non-trivial changes:
 - `RULES.md`
 - `PROTECTED_PATHS.md`
 - `docs/vnext/contributor-guide.md`
-- active sprint packet (internal/local-only; not published in this repo)

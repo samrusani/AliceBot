@@ -67,7 +67,7 @@ Qualification chain executed by command `#1` (ordered, deterministic):
   - `blockers` (must be empty for GO; explicit blocker entries for NO_GO)
   - `steps[]` entries with `step`, `status`, `command`, `exit_code`, `required_artifacts`, and `missing_artifacts`
 - Sign-off verifier command `python3 scripts/verify_phase4_mvp_signoff_record.py` must enforce sign-off schema, required references, and GO/NO_GO consistency.
-- links to current `BUILD_REPORT.md` and `REVIEW_REPORT.md`
+- links to current `docs/archive/process/BUILD_REPORT.md` and `docs/archive/process/REVIEW_REPORT.md`
 
 ## Explicit Deferred Scope
 
