@@ -30,6 +30,12 @@ Claude Desktop / IDE config:
 }
 ```
 
+> **No Postgres yet?** `alice-memory mcp --data-dir ~/.alice` serves the
+> same nine core tools against a local SQLite file — no `DATABASE_URL`
+> needed. Works from a repo checkout today (`pip install -e .`);
+> `uvx alice-memory` once the package is published. SQLite-mode boundaries
+> are listed in [known limitations](known-limitations.md).
+
 ## The nine core tools
 
 **Write and review**

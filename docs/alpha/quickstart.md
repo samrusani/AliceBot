@@ -2,6 +2,19 @@
 
 This is the canonical local setup walkthrough for Alice. Other quickstart pages point here.
 
+## Zero-Infrastructure Trial (SQLite)
+
+To try Alice before setting up the full stack, run the MCP server against a single local SQLite file — Python 3.12+ only, no Docker, Node, or Postgres. From a repo checkout:
+
+```bash
+pip install -e .
+alice-memory mcp --data-dir ~/.alice
+```
+
+(`uvx alice-memory mcp --data-dir ~/.alice` once the package is published.)
+
+This is the trial and single-agent path: the nine core MCP tools for one user, with review through `alice_memory_review` / `alice_memory_correct` instead of the web console. No review console, scheduler, or legacy surfaces — see [known limitations](known-limitations.md). The Postgres setup below remains the full experience.
+
 ## Requirements
 
 - Python 3.12+

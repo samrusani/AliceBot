@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -318,6 +319,115 @@ def test_seed_retrieval_corpus_writes_active_memories_via_store() -> None:
 # --------------------------------------------------------------------------
 # Writers
 # --------------------------------------------------------------------------
+
+
+def test_backend_label_reported_for_injected_runs() -> None:
+    corpus = {
+        "queries": [
+            {"query_key": "q-1", "query": "alpha", "expected_memory_key": "m-1", "subset": SUBSET_LEXICAL_OVERLAP},
+        ]
+    }
+
+    def retrieval(query: str, *, limit: int) -> dict[str, object]:
+        return {"ranked_memory_keys": ["m-1"], "vector_stage": "enabled"}
+
+    suite = run_retrieval_quality_eval(None, retrieval_fn=retrieval, corpus=corpus)
+
+    assert suite["metrics"]["backend"] == "injected"
+
+
+# --------------------------------------------------------------------------
+# Live sqlite backend: the full production pipeline runs with no services.
+# This is the CI-runnable live path -- seeding, FTS5 retrieval, RRF fusion,
+# and rollback all execute for real against sqlite:///:memory: or a file.
+# --------------------------------------------------------------------------
+
+
+def _assert_live_sqlite_suite_shape(report: dict[str, object]) -> dict[str, object]:
+    assert report["status"] == "pass"
+    assert report["summary"]["executed_suite_count"] == 1
+    assert report["summary"]["skipped_suite_count"] == 0
+    suite = report["suites"][0]
+    metrics = suite["metrics"]
+
+    assert suite["status"] == "pass"
+    assert metrics["backend"] == "sqlite"
+    # No embedding provider in unit tests: FTS5-only, degraded honestly.
+    assert metrics["retrieval_mode"] == "fts_only"
+    assert metrics["paraphrase_targets_enforced"] is False
+    assert "paraphrase_recall_at_5" not in metrics["target_checks"]
+
+    # FTS5 (porter + stopword-filtered MATCH) must recover every reworded
+    # lexical query; pure paraphrases share no vocabulary, so without an
+    # embedding provider their recall is honestly 0.0 -- not hidden.
+    assert metrics["subsets"][SUBSET_LEXICAL_OVERLAP]["recall_at_5"] == 1.0
+    assert metrics["target_checks"]["lexical_overlap_recall_at_5"] == "pass"
+    assert metrics["target_checks"]["lexical_overlap_mrr"] == "pass"
+    assert metrics["subsets"][SUBSET_PARAPHRASE]["recall_at_5"] == 0.0
+
+    seeding = metrics["seeding"]
+    assert seeding["seeded_memory_count"] == VNEXT_BENCHMARK_EXPECTED_COUNTS["memories"]
+    assert seeding["embedded_memory_count"] == 0
+    assert "vector stage inactive" in str(seeding["embedding_note"])
+    return metrics
+
+
+def test_live_suite_runs_against_sqlite_memory_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(VNEXT_EVAL_DATABASE_URL_ENV, "sqlite:///:memory:")
+
+    report = run_vnext_evals(suite="retrieval_quality")
+
+    metrics = _assert_live_sqlite_suite_shape(report)
+    assert metrics["query_count"] == VNEXT_BENCHMARK_EXPECTED_COUNTS["queries"]
+
+
+def test_live_sqlite_file_run_persists_no_rows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "eval.db"
+    monkeypatch.setenv(VNEXT_EVAL_DATABASE_URL_ENV, f"sqlite:///{db_path}")
+
+    report = run_vnext_evals(suite="retrieval_quality")
+
+    _assert_live_sqlite_suite_shape(report)
+    # The rollback must leave zero rows behind -- including the FTS5
+    # shadow tables written by the external-content sync triggers.
+    conn = sqlite3.connect(str(db_path))
+    try:
+        for table in ("users", "memories", "event_log"):
+            assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0, table
+        fts_hits = conn.execute(
+            "SELECT count(*) FROM memories_fts WHERE memories_fts MATCH 'launch'"
+        ).fetchone()[0]
+        assert fts_hits == 0
+    finally:
+        conn.close()
+
+
+def test_live_sqlite_file_run_is_repeatable_on_the_same_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Bootstrap is idempotent and each run rolls back, so re-running against
+    # the same file must not hit duplicate-key errors or skew metrics.
+    db_path = tmp_path / "eval.db"
+    monkeypatch.setenv(VNEXT_EVAL_DATABASE_URL_ENV, f"sqlite:///{db_path}")
+
+    first = run_vnext_evals(suite="retrieval_quality")
+    second = run_vnext_evals(suite="retrieval_quality")
+
+    _assert_live_sqlite_suite_shape(first)
+    _assert_live_sqlite_suite_shape(second)
+    assert first["report_digest"] == second["report_digest"]
+
+
+def test_unsupported_sqlite_url_reports_skipped_not_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    # sqlite3.connect("") would create a throwaway temp database; a malformed
+    # URL must skip with a reason instead of silently "passing" against it.
+    monkeypatch.setenv(VNEXT_EVAL_DATABASE_URL_ENV, "sqlite://missing-slash.db")
+
+    report = run_vnext_evals(suite="retrieval_quality")
+
+    assert report["status"] == "skipped"
+    assert report["summary"]["executed_suite_count"] == 0
+    assert "unsupported sqlite eval URL" in str(report["skipped_suites"][0]["reason"])
 
 
 def test_corpus_and_report_writers_round_trip(tmp_path: Path) -> None:

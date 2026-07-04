@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.14,<2.0",
   "fastapi>=0.115,<1.0",
+  "numpy>=1.26,<3.0",
   "psycopg[binary]>=3.2,<4.0",
   "redis>=5.0,<6.0",
   "sqlalchemy>=2.0,<3.0",
@@ -23,6 +24,7 @@ dev = [
 
 [project.scripts]
 alice = "alicebot_api.cli:main"
+alice-memory = "alicebot_api.onramp:main"
 alicebot = "alicebot_api.cli:main"
 alicebot-mcp = "alicebot_api.mcp_server:main"
 

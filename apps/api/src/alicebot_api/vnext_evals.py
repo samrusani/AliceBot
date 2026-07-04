@@ -7,17 +7,28 @@ reason. Nothing in this module fabricates a pass.
 
 Suites:
 
-- ``retrieval_quality``: seeds a deterministic paraphrase corpus through the
-  real ``PostgresVNextStore`` write path and runs every query through the
-  production hybrid retrieval pipeline (``VNextRetrievalService`` --
-  Postgres FTS + pgvector KNN fused with reciprocal-rank fusion). Reports
-  recall@1 / recall@5 / MRR, per-query latency (p50/p95), and whether the
-  vector stage was active or the run degraded to FTS-only. Requires a live
-  Postgres (``ALICEBOT_EVAL_DATABASE_URL`` or an injected store handle);
-  without one the suite is skipped, never passed.
+- ``retrieval_quality``: seeds a deterministic paraphrase corpus through a
+  real store write path and runs every query through the production hybrid
+  retrieval pipeline (``VNextRetrievalService`` -- FTS + vector KNN fused
+  with reciprocal-rank fusion). Reports recall@1 / recall@5 / MRR,
+  per-query latency (p50/p95), which backend ran, and whether the vector
+  stage was active or the run degraded to FTS-only. Requires a live store
+  (``ALICEBOT_EVAL_DATABASE_URL`` or an injected store handle); without
+  one the suite is skipped, never passed.
 
-All seeded rows are written inside a forced-rollback transaction, so a live
-run leaves no data behind.
+Two backends are supported through ``ALICEBOT_EVAL_DATABASE_URL``:
+
+- a Postgres URL runs ``PostgresVNextStore`` (Postgres FTS + pgvector);
+- ``sqlite:///<path>`` or ``sqlite:///:memory:`` runs ``SQLiteVNextStore``
+  (FTS5 + numpy cosine) -- the zero-infrastructure on-ramp backend. This
+  is also how CI executes the live suite without external services.
+
+Either way the report labels the backend in the suite metrics, so a
+side-by-side comparison is just two runs with different URLs.
+
+All seeded rows are written inside a rolled-back transaction (Postgres
+``force_rollback``; an explicit ``BEGIN``/``ROLLBACK`` for SQLite), so a
+live run leaves no data behind.
 """
 
 from __future__ import annotations
@@ -32,6 +43,7 @@ import math
 import os
 from pathlib import Path
 import re
+import sqlite3
 from time import perf_counter
 from typing import cast
 from uuid import UUID
@@ -40,6 +52,8 @@ import psycopg
 from psycopg.rows import dict_row
 
 from alicebot_api.db import set_current_user
+from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
+from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_embeddings import (
     MAX_EMBEDDINGS_BATCH_SIZE,
     VNextEmbeddingConfigurationError,
@@ -69,11 +83,14 @@ VNEXT_EVAL_MEMORY_KEY_PREFIX = "vnext-eval/retrieval/"
 
 VNEXT_EVAL_SUITE_ORDER = ("retrieval_quality",)
 
+VNEXT_EVAL_SQLITE_URL_PREFIX = "sqlite:///"
+
 RETRIEVAL_QUALITY_SUITE_KEY = "retrieval_quality"
 RETRIEVAL_QUALITY_RECALL_LIMIT = 10
 RETRIEVAL_QUALITY_SKIP_REASON = (
     "requires live store: pass a store handle or set "
-    f"{VNEXT_EVAL_DATABASE_URL_ENV} to a migrated Postgres URL"
+    f"{VNEXT_EVAL_DATABASE_URL_ENV} to a migrated Postgres URL "
+    "or a sqlite:///<path> URL (sqlite:///:memory: works)"
 )
 
 SUBSET_LEXICAL_OVERLAP = "lexical_overlap"
@@ -696,12 +713,24 @@ def _skipped_retrieval_suite(reason: str) -> JsonObject:
     }
 
 
+def _eval_backend_label(store: object | None, backend: str | None) -> str:
+    """Name the backend a suite ran against, for the report."""
+    if backend is not None:
+        return backend
+    if isinstance(store, SQLiteVNextStore):
+        return "sqlite"
+    if isinstance(store, PostgresVNextStore):
+        return "postgres"
+    return "injected"
+
+
 def run_retrieval_quality_eval(
     store: object | None,
     *,
     retrieval_fn: RetrievalFn | None = None,
     corpus: JsonObject | None = None,
     recall_limit: int = RETRIEVAL_QUALITY_RECALL_LIMIT,
+    backend: str | None = None,
 ) -> JsonObject:
     """Execute the retrieval-quality suite against the production pipeline.
 
@@ -709,6 +738,10 @@ def run_retrieval_quality_eval(
     path and every query runs through ``VNextRetrievalService``. A
     ``retrieval_fn`` may be injected for metric-math testing. With neither,
     the suite reports ``status: "skipped"`` -- never a fabricated pass.
+
+    ``backend`` labels the run in the metrics ("postgres" / "sqlite");
+    when omitted it is inferred from the store type, and injected
+    ``retrieval_fn`` runs are labelled "injected".
     """
     resolved_corpus = corpus if corpus is not None else generate_vnext_benchmark_corpus()
     queries = [
@@ -799,6 +832,7 @@ def run_retrieval_quality_eval(
         checks["paraphrase_recall_at_5"] = cast(float, paraphrase_metrics["recall_at_5"]) >= paraphrase_recall_target
 
     metrics: JsonObject = {
+        "backend": _eval_backend_label(store, backend),
         "query_count": len(cases),
         "recall_at_1": _mean([cast(float, metric["recall_at_1"]) for metric in all_metrics]),
         "recall_at_5": _mean([cast(float, metric["recall_at_5"]) for metric in all_metrics]),
@@ -830,10 +864,14 @@ def run_retrieval_quality_eval(
     }
 
 
+def _eval_user_id() -> UUID:
+    return UUID(os.environ.get(VNEXT_EVAL_USER_ID_ENV, "").strip() or VNEXT_EVAL_DEFAULT_USER_ID)
+
+
 @contextmanager
 def _ephemeral_eval_store(database_url: str) -> Iterator[PostgresVNextStore]:
     """Live store scoped to a forced-rollback transaction: no data persists."""
-    user_id = UUID(os.environ.get(VNEXT_EVAL_USER_ID_ENV, "").strip() or VNEXT_EVAL_DEFAULT_USER_ID)
+    user_id = _eval_user_id()
     with psycopg.connect(database_url, row_factory=dict_row) as conn:
         with conn.transaction(force_rollback=True):
             set_current_user(conn, user_id)
@@ -847,6 +885,35 @@ def _ephemeral_eval_store(database_url: str) -> Iterator[PostgresVNextStore]:
             yield PostgresVNextStore(conn)
 
 
+@contextmanager
+def _ephemeral_sqlite_eval_store(database_url: str) -> Iterator[SQLiteVNextStore]:
+    """Live SQLite store scoped to one rolled-back transaction.
+
+    Mirrors the Postgres ``force_rollback`` approach: the schema bootstrap
+    runs in autocommit (a file-backed run leaves empty tables behind, no
+    rows), then the eval user row, every seeded memory, and all event-log
+    writes happen inside a single explicit ``BEGIN`` that is rolled back
+    before the connection closes. The FTS5 index is maintained by triggers
+    inside that same transaction, so its shadow-table writes roll back with
+    it (covered by a unit test that reopens the file and probes MATCH).
+    """
+    user_id = str(_eval_user_id())
+    path = database_url.removeprefix(VNEXT_EVAL_SQLITE_URL_PREFIX)
+    conn = sqlite3.connect(path)
+    conn.isolation_level = None  # explicit transaction control below
+    conn.row_factory = sqlite3.Row
+    try:
+        bootstrap_sqlite_schema(conn)  # autocommit DDL, idempotent
+        conn.execute("BEGIN")
+        # Seeded memories require an acting user row; it rolls back with
+        # everything else.
+        ensure_sqlite_user(conn, user_id, f"vnext-eval+{user_id}@example.invalid", "vNext Eval")
+        yield SQLiteVNextStore(conn, user_id)
+    finally:
+        conn.rollback()
+        conn.close()
+
+
 def _run_retrieval_quality_suite(
     *,
     corpus: JsonObject,
@@ -858,9 +925,20 @@ def _run_retrieval_quality_suite(
     database_url = os.environ.get(VNEXT_EVAL_DATABASE_URL_ENV, "").strip()
     if database_url == "":
         return _skipped_retrieval_suite(RETRIEVAL_QUALITY_SKIP_REASON)
+    if database_url.startswith("sqlite:"):
+        if not database_url.startswith(VNEXT_EVAL_SQLITE_URL_PREFIX) or database_url == VNEXT_EVAL_SQLITE_URL_PREFIX:
+            return _skipped_retrieval_suite(
+                "unsupported sqlite eval URL (expected sqlite:///<path> or "
+                f"sqlite:///:memory:): {database_url}"
+            )
+        try:
+            with _ephemeral_sqlite_eval_store(database_url) as live_store:
+                return run_retrieval_quality_eval(live_store, corpus=corpus, backend="sqlite")
+        except sqlite3.Error as exc:
+            return _skipped_retrieval_suite(f"live store unavailable ({type(exc).__name__}): {exc}")
     try:
         with _ephemeral_eval_store(database_url) as live_store:
-            return run_retrieval_quality_eval(live_store, corpus=corpus)
+            return run_retrieval_quality_eval(live_store, corpus=corpus, backend="postgres")
     except psycopg.Error as exc:
         return _skipped_retrieval_suite(f"live store unavailable ({type(exc).__name__}): {exc}")
 
@@ -1009,6 +1087,7 @@ __all__ = [
     "VNEXT_EVAL_DATABASE_URL_ENV",
     "VNEXT_EVAL_MEMORY_KEY_PREFIX",
     "VNEXT_EVAL_REPORT_SCHEMA_VERSION",
+    "VNEXT_EVAL_SQLITE_URL_PREFIX",
     "VNEXT_EVAL_SUITE_ORDER",
     "eval_content_tokens",
     "eval_token_overlap",

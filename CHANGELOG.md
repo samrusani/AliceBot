@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added the zero-infrastructure SQLite on-ramp: `alice-memory mcp --data-dir ~/.alice` starts the MCP server against a local SQLite file with no Docker or Postgres — nine core tools, FTS5 full-text search (porter stemming), optional embedding-based vector search (numpy cosine), and review through `alice_memory_review`/`alice_memory_correct`. `alice-memory export` dumps memories, sources, open loops, and events as JSONL.
+- In SQLite mode, `alice_resume`, `alice_recent_decisions`, `alice_memory_review`, and `alice_memory_correct` are served by vNext-native implementations (the legacy continuity engine remains Postgres-only); legacy long-tail tools report an informative error instead of crashing.
+- The `retrieval_quality` eval suite accepts `sqlite:///` URLs in `ALICEBOT_EVAL_DATABASE_URL`, labels reports with the backend, and is now CI-runnable with zero services (verified: lexical recall@1 = 1.0 through the production pipeline at ~0.7 ms median per query).
+- `alicebot_api.__version__` now derives from installed package metadata instead of a hardcoded string (was stale at 0.5.1).
+
 ## v0.6.0 — 2026-07-04
 
 - Rebuilt memory retrieval as real hybrid search: Postgres full-text + pgvector (HNSW) fused with reciprocal-rank fusion, an OpenAI-compatible embedding provider seam (Ollama/LM Studio/OpenAI), write-time embedding with graceful FTS-only degradation, and contradiction sync moved out of the read path.
