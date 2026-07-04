@@ -43,11 +43,13 @@ Custom agents calling the HTTP API authenticate with per-agent API keys. Create 
 alicebot agent keys create --agent-id openclaw --profile project_scoped_agent --label "OpenClaw laptop"
 ```
 
-The raw key (`alice_sk_...`) is printed exactly once; only its sha256 hash is stored. Pass it on every agent HTTP call:
+The raw key (`alice_sk_...`) is printed exactly once; only its sha256 hash is stored. Export it and pass it on every agent HTTP call — never paste raw keys into scripts or docs:
 
 ```bash
+export ALICE_AGENT_API_KEY="<paste the key printed by 'agent keys create'>"
+
 curl -X POST http://127.0.0.1:8000/v0/vnext/memories/commit \
-  -H "Authorization: Bearer alice_sk_..." \
+  -H "Authorization: Bearer $ALICE_AGENT_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"user_id": "...", "title": "...", "text": "..."}'
 ```
