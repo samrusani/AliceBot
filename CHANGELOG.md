@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-07-04
+
+- Rebuilt memory retrieval as real hybrid search: Postgres full-text + pgvector (HNSW) fused with reciprocal-rank fusion, an OpenAI-compatible embedding provider seam (Ollama/LM Studio/OpenAI), write-time embedding with graceful FTS-only degradation, and contradiction sync moved out of the read path.
+- Consolidated the MCP surface to 9 core tools with parameter descriptions on every schema and compact outputs; the legacy long tail (65 tools) remains behind `ALICE_MCP_LEGACY_TOOLS=1`.
+- Added real agent authentication: per-agent API keys (`alice_sk_*`, hashed at rest, RLS-scoped) enforced across all vNext HTTP agent endpoints and optionally on MCP via `ALICE_AGENT_API_KEY`; payloads can no longer self-escalate `permission_profile`.
+- Replaced the closed-loop vNext eval suites with an honest `retrieval_quality` benchmark that seeds a live store and can genuinely fail; reports mark suites `skipped` without a database instead of fabricating passes.
+- Repositioned the project as "the continuity layer for AI agents": rewrote README/control docs, archived 43 internal process docs, and documented the `alice-memory` PyPI naming decision (`alice-core` is taken).
+- Fixed alembic URL resolution so programmatically-passed database URLs win over `DATABASE_ADMIN_URL`/`DATABASE_URL` env vars (integration-test fresh databases were previously never the ones migrated when env vars were set).
+
 ## 2026-05-11
 
 - Added the Alice vNext dogfood hardening slice: dedicated connector settings/state tables, encrypted local secret-provider fallback, connector cursor/checkpoint persistence, migration/doctor readiness checks, live `/vnext` connector configuration, browser clipper token enforcement, Telegram retry/cursor hardening, generated-output recapture prevention, and daily dogfood runbook.
