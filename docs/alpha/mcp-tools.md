@@ -1,24 +1,23 @@
-# MCP Tool Quickstart
+# MCP Tools
 
-Expose Alice MCP over stdio:
+Alice exposes nine core MCP tools by default. Every parameter carries a
+description, so MCP-capable agents can use the surface without reading this
+page — this page exists for humans wiring things up.
+
+## Start the server
 
 ```bash
-alicebot-mcp --help
 alicebot-mcp
-```
-
-Editable install equivalent:
-
-```bash
+# or, from an editable install:
 ./.venv/bin/python -m alicebot_api.mcp_server
 ```
 
-Claude Desktop style config:
+Claude Desktop / IDE config:
 
 ```json
 {
   "mcpServers": {
-    "alice-core": {
+    "alice": {
       "command": "/ABSOLUTE/PATH/TO/AliceBot/.venv/bin/python",
       "args": ["-m", "alicebot_api.mcp_server"],
       "cwd": "/ABSOLUTE/PATH/TO/AliceBot",
@@ -31,92 +30,98 @@ Claude Desktop style config:
 }
 ```
 
-## End-to-end OpenClaw Example
+## The nine core tools
 
-Request scoped context with `alice_vnext_context_pack`:
+**Write and review**
 
-```json
-{
-  "agent_id": "openclaw",
-  "agent_type": "coding_agent",
-  "agent_run_id": "openclaw-alpha-001",
-  "task_id": "public-alpha-docs",
-  "project_scope": ["Alice"],
-  "permission_profile": "project_scoped_agent",
-  "query": "Alice public preview packaging",
-  "scope": {
-    "domains": ["project"],
-    "projects": ["Alice"]
-  },
-  "options": {
-    "sensitivity_allowed": ["public", "internal", "private", "unknown"],
-    "max_items": 8
-  }
-}
+- `alice_capture` — submit new information as source-backed, reviewable
+  memory. Text is stored verbatim with provenance and becomes trusted
+  memory only after review.
+- `alice_memory_review` — inspect the review queue, or one item in detail.
+- `alice_memory_correct` — act on a memory: approve, edit-and-approve,
+  reject, or supersede with a replacement. Every change is audited.
+
+**Read**
+
+- `alice_recall` — search memory. Full-text plus semantic vector search,
+  merged with reciprocal-rank fusion. Falls back to full-text only (and
+  says so) when no embedding endpoint is configured.
+- `alice_context_pack` — a scoped context bundle for a task: relevant
+  memories, open loops, and sources with supporting evidence.
+- `alice_resume` — a pick-work-back-up brief: last decision, suggested next
+  action, open loops, recent changes; scopable to a project, person, or
+  thread.
+- `alice_recent_decisions` — recent decisions, newest first.
+- `alice_open_loops` — list open loops, or close/snooze/edit/reopen one.
+- `alice_explain` — where a memory came from and why it can be trusted:
+  sources, revisions, corroboration, contradiction signals.
+
+Exact input schemas (types, enums, defaults) are in the `tools/list`
+response; they are the source of truth.
+
+## The debug flag
+
+`alice_recall`, `alice_context_pack`, and `alice_resume` accept
+`"debug": true`. Responses are compact by default; the debug flag attaches
+the retrieval trace — which stages ran, candidate counts, and whether
+vector search was active or degraded to full-text (and why).
+
+## Embeddings
+
+Semantic search activates when an OpenAI-compatible embeddings endpoint is
+configured (Ollama, LM Studio, OpenAI):
+
+```bash
+ALICE_EMBEDDINGS_BASE_URL=http://localhost:11434/v1
+ALICE_EMBEDDINGS_MODEL=nomic-embed-text
+ALICE_EMBEDDINGS_API_KEY=   # only if the endpoint requires one
 ```
 
-Submit output with `alice_vnext_ingest_agent_output`:
+Without these, `alice_recall` and `alice_context_pack` still work on
+full-text search alone.
 
-```json
-{
-  "agent_id": "openclaw",
-  "agent_type": "coding_agent",
-  "agent_run_id": "openclaw-alpha-001",
-  "task_id": "public-alpha-docs",
-  "project_scope": ["Alice"],
-  "permission_profile": "project_scoped_agent",
-  "title": "Public alpha sprint summary",
-  "content": "Decision: Agent outputs are captured as reviewable evidence.",
-  "output_type": "sprint_summary",
-  "domain": "project",
-  "sensitivity": "private",
-  "propose_memory": true
-}
+## Legacy tool surface
+
+Earlier releases exposed 74 tools. They remain available behind an
+environment flag for integrations that depend on them:
+
+```bash
+ALICE_MCP_LEGACY_TOOLS=1
 ```
 
-Agentic memory commit:
+With the flag set, `tools/list` includes the full long tail — for example
+`alice_vnext_ingest_agent_output` for structured agent-output ingestion,
+`alice_vnext_commit_memory` for explicit policy-checked memory writes, and
+the granular queue/graph/belief tools. Calling a legacy tool without the
+flag returns an error naming the flag. New integrations should stay on the
+nine core tools; the legacy surface is frozen and will not gain new
+capabilities.
 
-Trusted agents can write explicit "remember/save/add this to memory" instructions through `alice_vnext_commit_memory`. Alice still decides the outcome:
+### Explicit memory commits (legacy surface)
 
-- `committed`: direct active memory with provenance, event log, and revision.
-- `confirmation_required`: sensitive, contradictory, or ambiguous memory waits for `alice_vnext_confirm_memory`.
-- `review_required`: external, generated, low-confidence, or review-only-agent memory stays in `/vnext`.
-- `rejected`: read-only, out-of-scope, unsafe, or policy-bypass attempts are blocked.
+Trusted agents can write explicit "remember this" instructions through
+`alice_vnext_commit_memory`. Alice decides the outcome, never the agent:
 
-Use canonical schema values for persisted labels. For quote saves, use `memory_type=semantic`; use `domain=learning` only when a quote collection needs an explicit domain. Avoid invented values like `memory_type=quote`, `domain=quotes`, or `sensitivity=sensitive`.
+- `committed` — direct active memory with provenance, event log, revision.
+- `confirmation_required` — sensitive or ambiguous memory waits for
+  `alice_vnext_confirm_memory`.
+- `review_required` — external, generated, or low-confidence memory waits
+  for human review in the console.
+- `rejected` — out-of-scope, unsafe, or policy-bypass attempts are blocked.
 
-```json
-{
-  "agent_id": "hermes",
-  "agent_type": "personal_assistant",
-  "permission_profile": "trusted_local_agent",
-  "intent": "explicit_remember",
-  "title": "Preferred daily planning format",
-  "canonical_text": "The user prefers daily planning summaries with decisions, blockers, and next actions.",
-  "domain": "personal",
-  "sensitivity": "private",
-  "confidence": 0.93,
-  "source_type": "direct_user_instruction"
-}
-```
+Use canonical schema values for persisted labels: `memory_type=semantic`
+for quote saves, `memory_type=procedure` for repeatable playbooks. Avoid
+invented values like `memory_type=quote` or `sensitivity=sensitive`.
 
-Memory repair and audit tools:
+Normal chat is not guaranteed to become trusted memory; agents should call
+an explicit commit for user-directed memory instructions. For first-run
+expectations and worked examples, see [first-memory.md](first-memory.md).
 
-- `alice_vnext_confirm_memory`
-- `alice_vnext_undo_memory`
-- `alice_vnext_correct_memory`
-- `alice_vnext_forget_memory`
-- `alice_vnext_recent_memory_commits`
-- `alice_vnext_memory_audit`
+## Trust boundary
 
-No-direct-database rule:
-
-- MCP tools can create reviewable sources, artifacts, open loops, and candidate memory proposals.
-- Trusted writes use Alice's memory commit policy engine, never direct Postgres mutation.
-- Human review, inline confirmation, audit, undo, correction, and forget flows happen in `/vnext`.
-
-Policy errors:
-
-- restricted domains can be filtered or blocked
-- blocked calls return policy reasons such as `all_requested_domains_restricted`
-- agents should narrow domains or ask the user for approval instead of retrying broadly
+- MCP tools create reviewable sources, artifacts, open loops, and memory
+  proposals; trusted writes go through the memory commit policy engine,
+  never direct database mutation.
+- Blocked calls return explicit policy reasons (for example
+  `all_requested_domains_restricted`); agents should narrow scope or ask
+  the user instead of retrying broadly.

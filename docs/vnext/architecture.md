@@ -9,7 +9,7 @@ Alice vNext is organized around inspectable continuity rather than generic notes
 Core owns durable state and policy boundaries:
 
 - `sources` and `source_chunks` preserve raw evidence and normalized text.
-- `memories` store typed candidate or accepted claims with status, confidence, domain, and sensitivity.
+- `memories` store typed candidate or accepted claims with status, confidence, domain, and sensitivity. `procedure` is a canonical memory type for repeatable playbooks and uses the same store, provenance, review, correction, and revision semantics as other memory.
 - `memory_revisions` preserve correction, promotion, supersession, and rejection history.
 - `provenance_links` connect memories, artifacts, graph edges, projects, and open loops back to source chunks.
 - `event_log` records append-only system events for mutation, connector sync, artifact generation, and review.
@@ -22,8 +22,10 @@ Core owns durable state and policy boundaries:
 Brain workflows generate reviewable outputs from Core:
 
 - context packs for retrieval
+- read-only agent context trees
 - daily briefs
 - weekly syntheses
+- memory consolidation artifacts
 - connection reports
 - contradiction reports
 - project update candidates
@@ -44,6 +46,7 @@ Agent Memory exposes Alice to external tools without letting those tools own Ali
 - connector payload ingestion for source evidence
 - scoped agent identities and permission profiles
 - governed scheduler controls for local proactive workflows
+- read-only context tree navigation over existing projects, memories, sources, open loops, artifacts, and recent traces
 
 Agents can request context, submit tasks, generate artifacts, propose memory, and run allowed scheduler workflows, but durable mutation still passes through Core policies, review state, provenance, and event logging.
 
@@ -57,6 +60,12 @@ Agents can request context, submit tasks, generate artifacts, propose memory, an
 6. Quality review actions rate artifacts for usefulness, accuracy, source grounding, novelty, actionability, hallucination risk, verbosity, missed context, and comments.
 7. Event log records write paths for audit and replay.
 8. Agent and scheduler actions add agent identity, policy decision, run ID, trace ID, target ID, and workflow metadata where applicable.
+
+## Memory Consolidation
+
+The `memory_consolidation` scheduler workflow scans accepted memories, reviewed sources, generated artifacts, recent events, corrections/contradictions reflected in memory state, and artifact quality ratings. It produces a reviewable `memory_consolidation` artifact and may create deduplicated candidate memories with source references.
+
+Consolidation never updates or promotes trusted memory automatically. Candidate memories must pass the normal `/vnext` review, correction, supersession, and audit paths before they affect recall.
 
 ## Model Routing
 
@@ -97,8 +106,9 @@ The local scheduler owns disabled-by-default workflow configuration for:
 - `contradiction_report`
 - `open_loop_review`
 - `project_update_scan`
+- `memory_consolidation`
 
-Daily Brief and Weekly Synthesis are the primary runnable workflows. Local due scans run enabled, unpaused workflows whose `next_run_at` has arrived, then advance the next run timestamp. Other workflow types have persistent configuration, policy-checked control paths, run history, and generated report artifacts. Scheduler runs record status, trace ID, triggering actor, policy decision, generation mode, agent identity when present, output artifact ID, and failure details.
+Daily Brief, Weekly Synthesis, and Memory Consolidation are full runnable workflows. Local due scans run enabled, unpaused workflows whose `next_run_at` has arrived, then advance the next run timestamp. Other workflow types have persistent configuration, policy-checked control paths, run history, and generated report artifacts. Scheduler runs record status, trace ID, triggering actor, policy decision, generation mode, agent identity when present, output artifact ID, and failure details.
 
 ## Connector Boundary
 

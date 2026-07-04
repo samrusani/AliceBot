@@ -22,17 +22,14 @@ def test_vnext_public_preview_docs_cover_release_polish_acceptance() -> None:
     checklist = _read("docs/release/vnext-public-release-checklist.md")
 
     for marker in (
-        "Alice Core",
-        "Alice Brain",
-        "Alice Agent Memory",
-        "docs/vnext/quickstart.md",
-        "docs/release/vnext-public-release-checklist.md",
+        "The continuity layer for AI agents.",
+        "docs/alpha/quickstart.md",
+        "ALICE_MCP_LEGACY_TOOLS",
+        "alice-memory",
     ):
         assert marker in readme
 
-    assert "first daily brief in under 20 minutes" in overview
-    assert "./scripts/dev_up.sh" in quickstart
-    assert "daily-brief" in quickstart
+    assert "docs/alpha/quickstart.md" in quickstart
     assert "Connector Boundary" in architecture
     assert "Prompt-injection content from sources is data, not policy." in security
     assert "Use synthetic fixtures only." in contributor
@@ -81,20 +78,21 @@ def test_public_alpha_packaging_docs_and_commands_are_discoverable() -> None:
     onboarding = _read("docs/alpha/design-partner-onboarding.md")
     troubleshooting = _read("docs/alpha/troubleshooting.md")
     release_notes = _read("docs/alpha/release-notes.md")
-    cto_summary = _read("docs/vnext-public-alpha-packaging-cto-summary.md")
+    cto_summary = _read("docs/archive/process/vnext-public-alpha-packaging-cto-summary.md")
     hermes_copy = _read("agent-skills/hermes/alice-memory-skill.md")
     openclaw_copy = _read("agent-skills/openclaw/alice-project-memory-skill.md")
     makefile = _read("Makefile")
     gitignore = _read(".gitignore")
 
     for marker in (
-        "Alice is a local-first memory and continuity layer for humans and agents.",
+        "The continuity layer for AI agents.",
         "make setup",
-        "alicebot vnext alpha check",
-        "alicebot vnext smoke agent-integration-pack",
+        "docs/alpha/quickstart.md",
         "docs/alpha/agent-integration.md",
     ):
         assert marker in readme
+
+    assert "alicebot vnext alpha check" in quickstart
 
     for path_marker in (
         "quickstart.md",
@@ -134,7 +132,7 @@ def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None
     install_doc = _read("docs/alpha/headless-ubuntu-install.md")
     hermes_doc = _read("docs/alpha/hermes-dogfood-ubuntu.md")
     release_notes = _read("docs/release/v0.6.0-alpha-rc.2-release-notes.md")
-    cto_summary = _read("docs/vnext-headless-ubuntu-cto-summary.md")
+    cto_summary = _read("docs/archive/process/vnext-headless-ubuntu-cto-summary.md")
     installer = _read("scripts/install-ubuntu.sh")
     uninstaller = _read("scripts/uninstall-ubuntu.sh")
     env_template = _read("packaging/ubuntu/alicebot.env.example")
@@ -144,7 +142,7 @@ def test_headless_ubuntu_packaging_is_discoverable_and_safe_by_default() -> None
     scheduler_service = _read("packaging/systemd/alice-scheduler.service")
     cli = _read("apps/api/src/alicebot_api/cli.py")
 
-    assert "docs/alpha/headless-ubuntu-install.md" in readme
+    assert "docs/alpha/quickstart.md" in readme
     assert "headless-ubuntu-install.md" in alpha_readme
     assert "ssh -L 3000:127.0.0.1:3000" in install_doc
     assert "Do not expose `/vnext`" in install_doc

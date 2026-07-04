@@ -1,6 +1,6 @@
-# Public Alpha Quickstart
+# Quickstart
 
-This path is for a fresh technical local setup. It does not require internal sprint notes.
+This is the canonical local setup walkthrough for Alice. Other quickstart pages point here.
 
 ## Requirements
 
@@ -10,7 +10,7 @@ This path is for a fresh technical local setup. It does not require internal spr
 - Docker Desktop or compatible Docker engine
 - Git
 
-## One-command Setup
+## Setup
 
 ```bash
 git clone https://github.com/samrusani/AliceBot.git
@@ -31,24 +31,13 @@ Expected success:
 
 ## Start Alice
 
-Run API and web together for day-to-day local use:
-
 ```bash
-make runtime
+make dev
 ```
 
-`make runtime` builds the web app and serves it with `next start`, which avoids the idle CPU cost of the Next.js development watcher.
+This runs the API on port 8000 and the web review console on port 3000.
 
-Or use separate terminals:
-
-```bash
-APP_RELOAD=false ./scripts/api_dev.sh
-pnpm --dir apps/web build
-pnpm --dir apps/web start --hostname 127.0.0.1 --port 3000
-alicebot vnext scheduler daemon start --foreground
-```
-
-Use `make dev` or `pnpm --dir apps/web dev` only when editing the web UI and you need hot reload.
+For day-to-day use without the development file watcher, `make runtime` builds the web app once and serves it with lower idle CPU. Use `make dev` when editing the web UI.
 
 Open:
 
@@ -56,7 +45,7 @@ Open:
 http://localhost:3000/vnext
 ```
 
-Local live `/vnext` uses explicit browser/API settings. Keep both frontend origins in the API CORS allowlist and keep the browser API URL pointed at localhost:
+Local live use needs explicit browser/API settings. Keep both frontend origins in the API CORS allowlist and keep the browser API URL pointed at localhost:
 
 ```dotenv
 CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000
@@ -64,7 +53,19 @@ NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000
 NEXT_PUBLIC_ALICEBOT_USER_ID=00000000-0000-0000-0000-000000000001
 ```
 
-Use the same user id as `ALICEBOT_AUTH_USER_ID`. If a manual alpha seed uses `local-alpha-user`, set `NEXT_PUBLIC_ALICEBOT_USER_ID=local-alpha-user` for that environment.
+Use the same user id as `ALICEBOT_AUTH_USER_ID`.
+
+## Configure Embeddings (Recommended)
+
+Semantic search uses any OpenAI-compatible embeddings endpoint (Ollama, LM Studio, OpenAI). Set in `.env`:
+
+```dotenv
+ALICE_EMBEDDINGS_BASE_URL=http://localhost:11434/v1
+ALICE_EMBEDDINGS_MODEL=nomic-embed-text
+ALICE_EMBEDDINGS_API_KEY=
+```
+
+Without an embedding endpoint, search runs full-text only and the retrieval trace says so explicitly.
 
 ## First Smoke
 
@@ -82,6 +83,28 @@ If `alicebot` is not on your shell path, use:
 ./.venv/bin/alicebot vnext alpha check
 ```
 
+## First Memory
+
+If Alice starts correctly but no memory appears after normal chat, follow the [first memory guide](first-memory.md).
+
+Short version:
+
+- use `alice_vnext_commit_memory` for explicit "remember/save this" requests from trusted agents
+- use `alice_vnext_ingest_agent_output` with `propose_memory=true` for reviewable agent-derived memory proposals
+- use `alicebot vnext sources capture-text "Fact: ..."` for source-backed candidate memory
+- do not expect arbitrary conversation to become trusted memory automatically
+
+## First Daily Brief
+
+Capture source evidence and generate a brief:
+
+```bash
+alicebot vnext sources capture-text "TODO: confirm launch checklist owner" --domain project --sensitivity private
+alicebot daily-brief --generate --domain project
+```
+
+The generated artifact appears in the review console under Generated, with provenance back to the captured source.
+
 ## Load Safe Demo Data
 
 ```bash
@@ -90,10 +113,10 @@ alicebot vnext demo load --reset
 
 Expected success:
 
-- synthetic sources appear in `/vnext` Inbox
+- synthetic sources appear in the Inbox
 - candidate memories appear in Memory Review
 - generated artifacts appear in Generated
-- Agent Activity shows OpenClaw demo activity and a restricted-domain policy block
+- Agent Activity shows demo agent activity and a restricted-domain policy block
 - Trace shows source-to-artifact provenance
 
 Reset the demo:
@@ -101,3 +124,37 @@ Reset the demo:
 ```bash
 alicebot vnext demo reset
 ```
+
+## Optional: Local Capture Connectors
+
+Local, review-only capture paths (no OAuth, no account syncing):
+
+```bash
+# scan a local Markdown/text folder
+alicebot vnext connectors local-folder add-path ~/Notes/Alice --extension .md --extension .txt
+alicebot vnext connectors local-folder sync
+
+# check connector health
+alicebot vnext connectors health
+```
+
+All connector output lands as reviewable source evidence, never as automatic trusted memory. See the [dogfooding guide](dogfooding-guide.md) for Telegram and browser-clip capture.
+
+## Verify Your Setup
+
+The core checks used before release:
+
+```bash
+./.venv/bin/python -m pytest tests/unit -q
+pnpm --dir apps/web test
+pnpm --dir apps/web lint
+pnpm --dir apps/web build
+python3 scripts/check_control_doc_truth.py
+git diff --check
+```
+
+## Next Steps
+
+- Connect an agent: [agent integration](agent-integration.md) and [MCP tools](mcp-tools.md)
+- Headless server install: [headless Ubuntu install](headless-ubuntu-install.md)
+- What is intentionally not included: [known limitations](known-limitations.md)

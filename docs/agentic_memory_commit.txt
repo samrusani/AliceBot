@@ -1,0 +1,820 @@
+
+Alice vNext Sprint Prompt: Agentic Memory Commit + Inline Review
+
+Sprint Objective
+
+Alice is agent-first. Users should not be forced to open /vnext every time they want something remembered.
+
+The current model is too conservative for day-to-day second-brain usage:
+
+agent/user says something important
+→ candidate memory
+→ /vnext manual review
+→ accepted memory
+
+That is safe, but too much friction.
+
+This sprint should introduce trusted agentic memory commit and inline review so that when the user explicitly says “remember this,” “save this,” or “add this to memory,” Hermes/OpenClaw/custom trusted agents can commit memory through Alice Core immediately, without requiring dashboard review.
+
+However, this must not become uncontrolled direct database mutation.
+
+The correct model is:
+
+Trusted agent requests memory commit
+→ Alice policy checks it
+→ Alice writes trusted memory if allowed
+→ Alice preserves provenance, audit trail, sensitivity, domain, and undo/correction path
+→ /vnext shows the memory in audit/history, but review is not required
+
+The dashboard remains the audit, correction, review, and troubleshooting cockpit, not the normal workflow for explicit user memory.
+
+⸻
+
+Product Goal
+
+Make Alice feel like a real second brain:
+
+User: “Remember this.”
+Hermes: saves it to Alice.
+Alice: remembers it immediately.
+User: continues working.
+
+No dashboard required.
+
+The system must support:
+
+remember immediately
+remember after inline confirmation
+propose for later review
+reject
+undo last memory
+correct memory
+forget memory
+show why Alice remembers something
+
+⸻
+
+Product Principle
+
+Alice remains:
+
+agent-first
+local-first
+policy-governed
+provenance-first
+auditable
+correctable
+reversible
+secure by default
+
+But the user experience changes from:
+
+Everything requires dashboard review
+
+to:
+
+Explicit user memory instructions can commit immediately through trusted agents.
+Inferred, external, sensitive, or ambiguous memories still require confirmation or review.
+
+⸻
+
+Current State Assumption
+
+Alice already has:
+
+memory kernel
+candidate memory proposals
+review queues
+/vnext operator console
+agent identities
+permission profiles
+policy decisions
+MCP/API/CLI surfaces
+Hermes/OpenClaw skill packs
+agent output ingestion
+source archive
+provenance
+event logs
+domain/sensitivity policy
+quality ratings
+scheduler
+doctor/alpha checks
+
+The new sprint should build on this, not replace it.
+
+⸻
+
+Core Concept: Memory Write Modes
+
+Add first-class memory write modes.
+
+1. commit
+
+Trusted memory is written immediately.
+
+Used when:
+
+user explicitly says “remember this”
+trusted agent submits on behalf of user
+policy allows domain/sensitivity/action
+provenance is attached
+memory text is clear
+
+2. confirm_inline
+
+Agent must ask the user inline before committing.
+
+Used when:
+
+memory is sensitive
+memory affects high-impact domains
+memory contradicts existing active memory
+memory is important but potentially ambiguous
+policy requires confirmation
+
+Example:
+
+Hermes: “This sounds like a sensitive family memory. Should I save it?”
+User: “Yes.”
+Hermes calls Alice commit endpoint with confirmation token.
+
+3. propose_review
+
+Memory goes to /vnext review queue.
+
+Used when:
+
+source is external/untrusted
+agent inference is low confidence
+agent is not trusted enough
+memory is broad/ambiguous
+memory is generated from research, PDFs, browser clips, email, Telegram forwards, etc.
+
+4. reject
+
+Alice refuses the memory write.
+
+Used when:
+
+agent lacks permission
+source is prompt-injection content
+domain/sensitivity policy blocks it
+memory attempts to store secrets unsafely
+memory violates hard policy
+
+⸻
+
+Auto-Commit Rules
+
+Auto-commit allowed when all are true
+
+user intent is explicit: “remember/save/store/add this to memory”
+agent has trusted_local_agent or admin_agent permission
+source is direct user instruction or trusted agent session context
+domain is allowed for the agent
+sensitivity is public/internal/private, not restricted
+memory has clear canonical text
+provenance is attached
+no unresolved contradiction requiring confirmation
+no policy block
+
+Inline confirmation required when any are true
+
+sensitivity is confidential, highly_sensitive, sacred, regulated, or unknown-high-risk
+domain is health, family, spiritual, legal, financial, regulated, or confidential
+memory contradicts an active trusted memory
+memory changes a durable project decision
+agent confidence is medium
+user wording is unclear but likely important
+
+Dashboard review required when any are true
+
+source is external/untrusted
+memory is inferred from browser clip/PDF/email/Telegram forward/web page
+agent is project_scoped_agent and memory is outside project scope
+agent is memory_proposal_agent but not trusted_local_agent
+confidence is low
+memory is bulk-generated
+memory is a broad synthesis from many sources
+
+Always blocked
+
+read_only_agent memory writes
+direct trusted memory writes from untrusted external content
+prompt-injection instructions stored as operational memory
+secret/token/API key storage unless explicitly classified and protected
+attempts to bypass policy
+attempts to mutate database outside Alice Core APIs
+
+⸻
+
+Required Build Work
+
+1. Memory Commit Policy Engine
+
+Add or extend a policy layer that decides memory write mode:
+
+commit
+confirm_inline
+propose_review
+reject
+
+Inputs:
+
+{
+  "agent_id": "hermes",
+  "agent_type": "personal_assistant",
+  "permission_profile": "trusted_local_agent",
+  "user_intent": "explicit_remember",
+  "memory_text": "...",
+  "domain": "personal",
+  "sensitivity": "private",
+  "source_type": "direct_user_instruction",
+  "confidence": 0.95,
+  "project_scope": [],
+  "provenance": [],
+  "contradictions": []
+}
+
+Output:
+
+{
+  "decision": "commit",
+  "reason": "Explicit user memory instruction from trusted local agent.",
+  "requires_confirmation": false,
+  "requires_dashboard_review": false,
+  "policy_trace_id": "..."
+}
+
+Acceptance criteria:
+
+Policy engine returns one of commit/confirm_inline/propose_review/reject.
+Policy decision is persisted in event log.
+Policy decision is visible through API/MCP/CLI.
+Policy is test-covered for trusted, scoped, read-only, sensitive, external, and contradiction cases.
+
+⸻
+
+2. Direct Trusted Memory Commit API
+
+Add official Alice Core API endpoints for trusted memory commits.
+
+Suggested endpoints:
+
+POST /v0/vnext/memories/commit
+POST /v0/vnext/memories/confirm
+POST /v0/vnext/memories/undo
+POST /v0/vnext/memories/correct
+POST /v0/vnext/memories/forget
+GET  /v0/vnext/memories/recent-commits
+GET  /v0/vnext/memories/{memory_id}/audit
+
+POST /memories/commit should accept:
+
+{
+  "agent": {
+    "agent_id": "hermes",
+    "agent_type": "personal_assistant",
+    "agent_run_id": "...",
+    "task_id": "...",
+    "permission_profile": "trusted_local_agent"
+  },
+  "user_id": "local-alpha-user",
+  "intent": "explicit_remember",
+  "title": "User preference: agentic memory workflow",
+  "canonical_text": "The user prefers Alice to be agent-first, with /vnext as an audit cockpit rather than a required review dashboard.",
+  "memory_type": "preference",
+  "domain": "professional",
+  "sensitivity": "private",
+  "confidence": 0.98,
+  "source_refs": [],
+  "conversation_excerpt": "User said: ...",
+  "rationale": "Explicit user instruction to remember this.",
+  "idempotency_key": "..."
+}
+
+Response examples:
+
+Committed:
+
+{
+  "status": "committed",
+  "memory_id": "...",
+  "revision_id": "...",
+  "event_id": "...",
+  "policy_decision": "commit"
+}
+
+Needs inline confirmation:
+
+{
+  "status": "confirmation_required",
+  "confirmation_id": "...",
+  "reason": "Sensitive domain requires user confirmation.",
+  "suggested_prompt": "This is a sensitive family memory. Should I save it?"
+}
+
+Dashboard review:
+
+{
+  "status": "review_required",
+  "proposal_id": "...",
+  "reason": "External source content cannot auto-commit."
+}
+
+Rejected:
+
+{
+  "status": "rejected",
+  "reason": "Agent permission profile cannot write memory."
+}
+
+Acceptance criteria:
+
+Trusted Hermes explicit memory commit creates active trusted memory.
+Commit creates memory revision.
+Commit creates provenance/event-log records.
+Commit does not require /vnext review.
+Sensitive memory returns confirmation_required.
+External/untrusted source returns review_required.
+Read-only agent returns rejected.
+
+⸻
+
+3. MCP Tools for Agentic Memory
+
+Add or extend MCP tools:
+
+alice_vnext_commit_memory
+alice_vnext_confirm_memory
+alice_vnext_undo_memory
+alice_vnext_correct_memory
+alice_vnext_forget_memory
+alice_vnext_recent_memory_commits
+alice_vnext_memory_audit
+
+MCP tool behavior:
+
+Hermes can call commit_memory for explicit user “remember this” instructions.
+OpenClaw can call commit_memory only within project-scoped permission rules.
+Read-only agents cannot call commit_memory.
+External source content should route to proposal/review.
+Sensitive memory should return confirmation_required.
+
+Acceptance criteria:
+
+Hermes can commit explicit user memory through MCP.
+OpenClaw project-scoped commit works only inside project scope.
+Policy blocks are returned clearly.
+Memory commit events show in Agent Activity.
+No direct DB mutation occurs.
+
+⸻
+
+4. CLI Support
+
+Add CLI commands:
+
+alicebot vnext memories commit
+alicebot vnext memories confirm
+alicebot vnext memories undo
+alicebot vnext memories correct
+alicebot vnext memories forget
+alicebot vnext memories recent
+alicebot vnext memories audit
+
+Example:
+
+alicebot vnext memories commit \
+  --agent-id hermes \
+  --agent-type personal_assistant \
+  --permission-profile trusted_local_agent \
+  --intent explicit_remember \
+  --type preference \
+  --domain professional \
+  --sensitivity private \
+  --text "The user prefers Alice to be agent-first and /vnext to be an audit cockpit."
+
+Acceptance criteria:
+
+CLI commit works.
+CLI recent shows committed memory.
+CLI undo reverts or supersedes last memory.
+CLI audit shows provenance/revision/event trail.
+CLI never prints secrets.
+
+⸻
+
+5. Inline Confirmation Flow
+
+Add a durable confirmation flow for sensitive/ambiguous memory.
+
+Flow:
+
+agent attempts commit
+Alice returns confirmation_required with confirmation_id
+agent asks user inline
+user says yes/no/edit
+agent calls confirm endpoint
+Alice commits, rejects, or updates memory
+event log records full flow
+
+Confirmation record should include:
+
+confirmation_id
+proposed_memory_text
+domain
+sensitivity
+policy reason
+agent_id
+created_at
+expires_at
+status: pending/confirmed/rejected/expired
+
+Acceptance criteria:
+
+Sensitive memory returns confirmation_required.
+Confirmation token can be accepted.
+Confirmation token can be rejected.
+Expired confirmation cannot be used.
+Confirmed memory commits with audit trail.
+Rejected confirmation does not create trusted memory.
+
+⸻
+
+6. Undo / Forget / Correct
+
+Frictionless memory requires frictionless correction.
+
+Add flows:
+
+Undo
+
+Undo last committed memory from this agent/session/user.
+
+Should not hard-delete by default. Prefer:
+
+status = superseded / archived / undone
+revision event created
+
+Forget
+
+User explicitly asks Alice to forget a memory.
+
+Behavior should be policy-governed:
+
+soft-delete/archive by default
+hard-delete only if supported and explicitly confirmed
+
+Correct
+
+User says “Actually, update that memory to X.”
+
+Creates revision:
+
+old text
+new text
+reason
+actor
+timestamp
+
+Acceptance criteria:
+
+Hermes can undo last committed memory.
+Hermes can correct a memory.
+Hermes can request forget.
+All actions are event logged.
+Context packs respect undone/forgotten/superseded state.
+Audit trail remains inspectable.
+
+⸻
+
+7. /vnext Audit Updates
+
+Do not make /vnext required for normal memory commit, but make it useful for audit.
+
+Add or update:
+
+Recent Trusted Commits
+Memory Audit Detail
+Inline Confirmation History
+Undo/Correction History
+Agent Commit Activity
+Policy Decisions
+
+Memory Review should distinguish:
+
+pending review proposals
+auto-committed trusted memories
+inline-confirmed memories
+undone/corrected/forgotten memories
+
+Acceptance criteria:
+
+Auto-committed memories appear in audit/recent commits.
+They do not appear as pending review items.
+User can inspect why memory was committed.
+User can undo/correct from /vnext if supported.
+Agent Activity shows commit/confirm/undo/correct events.
+
+⸻
+
+8. Update Hermes Skill Pack
+
+Update Hermes instructions.
+
+Hermes should now know:
+
+If the user explicitly says “remember this,” call alice_vnext_commit_memory.
+If Alice returns committed, tell the user briefly.
+If Alice returns confirmation_required, ask inline.
+If Alice returns review_required, explain it was routed to review.
+If Alice returns rejected, explain the policy reason.
+Never write directly to DB.
+Never bypass Alice policy.
+Use undo/correct/forget when the user asks.
+
+Add examples:
+
+User: “Remember that I prefer agent-first workflows.”
+Hermes: calls commit_memory.
+Hermes: “Saved to Alice.”
+User: “Remember this private health thing...”
+Alice: confirmation_required.
+Hermes: “This is sensitive. Should I save it?”
+User: “Yes.”
+Hermes: calls confirm_memory.
+User: “Forget what I just told you.”
+Hermes: calls undo/forget.
+
+Acceptance criteria:
+
+Hermes skill pack updated.
+Hermes examples include direct commit, confirmation, undo, correction, forget.
+Hermes does not route explicit user memory to dashboard review unless policy requires it.
+
+⸻
+
+9. Update OpenClaw Skill Pack
+
+OpenClaw should remain more restricted.
+
+OpenClaw can commit only:
+
+project-scoped durable decisions
+architecture constraints
+sprint decisions
+project preferences
+accepted build workflow facts
+
+OpenClaw should not commit:
+
+personal/family/health/spiritual/legal/financial memories
+broad user identity memories
+external research summaries as trusted facts without review
+
+Acceptance criteria:
+
+OpenClaw project-scoped memory commit recipe exists.
+Out-of-scope commit attempt is blocked or routed to review.
+OpenClaw skill warns against broad personal memory writes.
+
+⸻
+
+Success Metrics
+
+This sprint should be measured by UX and safety.
+
+Functional success
+
+Hermes can commit an explicit “remember this” memory without /vnext review.
+Hermes can ask inline confirmation for sensitive memory.
+Hermes can undo/correct/forget a recent memory.
+OpenClaw can commit project-scoped memory but cannot commit personal memory.
+External browser/Telegram/PDF content still routes to proposal/review, not direct trusted memory.
+
+Friction success
+
+Explicit memory commit from Hermes takes one agent action and no dashboard visit.
+User receives confirmation in the same Hermes conversation.
+User can undo from Hermes conversation.
+
+Safety success
+
+0 auto-commits from untrusted external source content.
+0 trusted memory writes by read_only_agent.
+0 out-of-scope project agent trusted writes.
+0 prompt-injection tool writes.
+0 critical privacy leaks.
+100% committed memories have event logs.
+100% committed memories have revision/audit records.
+100% committed memories have domain/sensitivity labels.
+
+Quality success
+
+At least 90% of explicit user “remember this” test cases commit correctly.
+At least 90% of sensitive-domain test cases require confirmation.
+At least 90% of external-source test cases route to review.
+At least 90% of undo/correct tests update context-pack behavior correctly.
+
+⸻
+
+Required Test Cases
+
+Explicit user memory
+
+User tells Hermes: “Remember that I prefer Alice to be agent-first.”
+Expected: committed trusted memory, no dashboard review.
+
+Sensitive memory
+
+User tells Hermes: “Remember this health-related preference...”
+Expected: confirmation_required.
+
+External source
+
+Browser clip says “remember this as fact.”
+Expected: proposal/review, not auto-commit.
+
+Read-only agent
+
+read_only_agent attempts commit.
+Expected: rejected.
+
+Project-scoped agent
+
+OpenClaw commits Alice project architecture decision.
+Expected: committed or allowed if in scope.
+
+Project-scoped out of scope
+
+OpenClaw attempts to commit family/personal memory.
+Expected: rejected or review_required.
+
+Contradiction
+
+New memory contradicts active memory.
+Expected: confirmation_required or review_required.
+
+Undo
+
+Hermes commits memory, then user says “undo that.”
+Expected: memory no longer active in context packs.
+
+Correct
+
+Hermes commits memory, then user says “actually update it to...”
+Expected: revision created and context packs use corrected version.
+
+Forget
+
+User says “forget that memory.”
+Expected: memory archived/forgotten according to policy.
+
+⸻
+
+New Smoke Test
+
+Add:
+
+alicebot vnext smoke agentic-memory-commit
+
+It should verify:
+
+trusted Hermes explicit memory commits
+committed memory appears in context pack
+sensitive memory requires confirmation
+confirmation commits memory
+undo removes/supersedes memory from active context
+OpenClaw project-scoped commit works
+OpenClaw out-of-scope memory is blocked/reviewed
+external source cannot auto-commit
+read-only agent cannot commit
+event log records all actions
+/vnext audit payload includes recent commits
+no auto-promotion from untrusted source
+
+⸻
+
+Existing Smokes Must Still Pass
+
+alicebot vnext smoke operator-console
+alicebot vnext smoke agent-integration-pack
+alicebot vnext smoke connector-hardening
+alicebot vnext smoke secret-redaction
+alicebot vnext smoke dogfood-doctor
+alicebot vnext smoke live-capture-connectors
+alicebot vnext smoke capture-to-brief
+alicebot vnext smoke agentic-scheduler
+
+⸻
+
+Validation Commands
+
+Run:
+
+pytest tests/unit -q
+pytest tests/integration -q
+pnpm --dir apps/web test
+pnpm --dir apps/web lint
+pnpm --dir apps/web build
+alicebot eval run --suite all
+git diff --check
+
+Run:
+
+alicebot vnext smoke agentic-memory-commit
+alicebot vnext alpha check
+alicebot vnext alpha check --headless
+
+⸻
+
+Explicit Deferrals
+
+Do not build:
+
+automatic memory commits from arbitrary external sources
+global auto-promote everything mode
+direct database writes by agents
+hosted cloud memory sync
+team permissions
+billing
+Gmail/Calendar OAuth
+voice transcription
+OCR
+major UI redesign
+
+This sprint is about trusted explicit memory commit, not broad automation.
+
+⸻
+
+Acceptance Criteria
+
+The sprint is complete only when:
+
+Memory write modes exist: commit, confirm_inline, propose_review, reject.
+Policy engine chooses write mode correctly.
+Trusted Hermes can commit explicit user memory without dashboard review.
+Sensitive memory triggers inline confirmation.
+External/untrusted content cannot directly commit trusted memory.
+Read-only agents cannot commit memory.
+Project-scoped agents can commit only within allowed scope.
+Memory commit API exists.
+Memory confirmation API exists.
+Undo/correct/forget APIs exist.
+MCP tools exist for commit/confirm/undo/correct/forget/recent/audit.
+CLI commands exist for commit/confirm/undo/correct/forget/recent/audit.
+Committed memories create revisions.
+Committed memories create event-log records.
+Committed memories include domain/sensitivity/provenance.
+Committed memories appear in context packs.
+Undone/forgotten/superseded memories do not appear as active context.
+vNext audit surfaces show recent committed memories and their policy decisions.
+Hermes skill pack is updated.
+OpenClaw skill pack is updated.
+Custom agent docs are updated.
+Agentic memory commit smoke passes.
+Existing vNext smokes pass.
+Eval suite passes with 0 critical privacy leaks and 0 prompt-injection tool writes.
+No secrets are exposed.
+No tracked production security weakening occurs.
+git diff --check passes.
+
+⸻
+
+Final Deliverable
+
+At the end of the sprint, provide a CTO summary with:
+
+what was built
+memory write modes
+policy behavior
+API/MCP/CLI changes
+Hermes behavior
+OpenClaw behavior
+inline confirmation behavior
+undo/correct/forget behavior
+/vnext audit changes
+tests and smoke results
+success metrics results
+known limitations
+recommended next phase
+PR number
+merge commit
+
+⸻
+
+Recommended Next Phase After This
+
+After this sprint, the likely next phase should be:
+
+Agent Skills v1 Hardening + Real Dogfood Memory Evaluation
+
+Specifically:
+
+use Hermes for real daily memory commits
+measure false commits
+measure missed memories
+measure undo/correction frequency
+improve memory granularity and preference extraction
+then publish v0.6.0-alpha.1 if dogfood passes

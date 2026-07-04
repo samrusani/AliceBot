@@ -10,11 +10,17 @@ MODULE_NAME = "apps.api.alembic.env"
 
 
 class FakeAlembicConfig:
-    def __init__(self, sqlalchemy_url: str, section: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        sqlalchemy_url: str,
+        section: dict[str, Any] | None = None,
+        attributes: dict[str, Any] | None = None,
+    ) -> None:
         self.config_file_name = "alembic.ini"
         self.config_ini_section = "alembic"
         self.sqlalchemy_url = sqlalchemy_url
         self.section = section or {}
+        self.attributes = attributes or {}
 
     def get_main_option(self, option: str) -> str:
         assert option == "sqlalchemy.url"
@@ -46,6 +52,7 @@ def load_env_module(
     app_url: str | None = None,
     config_url: str = "postgresql://config-user:secret@localhost:5432/configdb",
     config_section: dict[str, Any] | None = None,
+    config_attributes: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     records: dict[str, Any] = {
         "file_config_calls": [],
@@ -54,7 +61,7 @@ def load_env_module(
         "begin_calls": 0,
         "engine_calls": [],
     }
-    fake_config = FakeAlembicConfig(config_url, config_section)
+    fake_config = FakeAlembicConfig(config_url, config_section, config_attributes)
     connectable = RecordingConnectable()
 
     if admin_url is None:
@@ -106,6 +113,20 @@ def test_normalize_sqlalchemy_url_rewrites_postgresql_scheme(monkeypatch) -> Non
         "postgresql+psycopg://user:pw@localhost/db"
     )
     assert module.normalize_sqlalchemy_url("sqlite:///tmp/test.db") == "sqlite:///tmp/test.db"
+
+
+def test_get_url_prefers_explicit_config_attribute_over_env(monkeypatch) -> None:
+    module, _records = load_env_module(
+        monkeypatch,
+        offline_mode=True,
+        admin_url="postgresql://admin-user:secret@localhost:5432/admin_db",
+        app_url="postgresql://app-user:secret@localhost:5432/app_db",
+        config_attributes={
+            "explicit_database_url": "postgresql://explicit:secret@localhost:5432/per_test_db"
+        },
+    )
+
+    assert module.get_url() == "postgresql+psycopg://explicit:secret@localhost:5432/per_test_db"
 
 
 def test_get_url_prefers_admin_env_then_database_env_then_config(monkeypatch) -> None:

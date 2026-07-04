@@ -69,14 +69,14 @@ Publish Alice vNext as the `v0.5.1-vnext-preview` public pre-release with releas
 - `ROADMAP.md`
 - `PRODUCT_BRIEF.md`
 - `ARCHITECTURE.md`
-- `BUILD_REPORT.md`
-- `REVIEW_REPORT.md`
+- `docs/archive/process/BUILD_REPORT.md`
+- `docs/archive/process/REVIEW_REPORT.md`
 - `scripts/check_control_doc_truth.py`
 - `docs/vnext/README.md`
 - `docs/release/vnext-public-release-checklist.md`
 - `docs/release/v0.5.1-vnext-preview-release-notes.md`
 - `docs/release/v0.5.1-vnext-preview-tag-plan.md`
-- `docs/vnext-dogfood-hardening-cto-summary.md`
+- `docs/archive/process/vnext-dogfood-hardening-cto-summary.md`
 - `docs/runbooks/vnext-dogfood-daily-checklist.md`
 
 ## Acceptance Criteria

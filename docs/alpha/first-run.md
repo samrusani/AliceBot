@@ -21,6 +21,7 @@ Use this checklist after a fresh clone.
 | 15. Inspect trace | `/vnext` Trace | source, chunks, memories, artifacts, and events link together |
 | 16. Connect an agent | [agent-integration.md](agent-integration.md) | context pack, output ingestion, proposal flow, and explicit memory commit gates work |
 | 17. Check agentic memory commit | `alicebot vnext smoke agentic-memory-commit` | trusted commit, confirmation, review, undo, correction, forget, and audit gates pass |
+| 18. Prove first memory behavior | [first-memory.md](first-memory.md) | tester understands explicit commit, reviewable proposal, and structured capture paths |
 
 When doctor fails, go to [doctor.md](doctor.md) first. It lists the exact command that usually fixes the blocking issue.
 

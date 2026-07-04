@@ -21,14 +21,14 @@ Run these commands from repo root in order and retain outputs verbatim in the ev
 - command transcript for all required go/no-go commands
 - final statuses showing control-doc truth PASS, control-doc unit test PASS, Python suites PASS, web tests PASS, and Hermes smoke/demo PASS
 - links to current sprint reports at repo root:
-  - `BUILD_REPORT.md`
-  - `REVIEW_REPORT.md`
+  - `docs/archive/process/BUILD_REPORT.md`
+  - `docs/archive/process/REVIEW_REPORT.md`
 - release-target docs for `v0.3.2`:
   - `docs/release/v0.3.2-release-checklist.md`
   - `docs/release/v0.3.2-tag-plan.md`
   - `docs/runbooks/v0.3.2-public-release-runbook.md`
 - Phase 12 summary:
-  - `docs/phase12-closeout-summary.md`
+  - `docs/archive/process/phase12-closeout-summary.md`
 
 ## Explicit Deferred Scope Entering Next Phase
 

@@ -15,6 +15,7 @@ Start here:
 
 - [Quickstart](quickstart.md)
 - [First-run checklist](first-run.md)
+- [First memory guide](first-memory.md)
 - [Local runtime](local-runtime.md)
 - [Doctor](doctor.md)
 - [Demo mode](demo-mode.md)

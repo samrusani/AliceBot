@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 from typing import Protocol
 
+from alicebot_api.vnext_embeddings import attach_memory_embedding
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_repositories import JsonObject
 
@@ -551,6 +552,13 @@ class VNextCaptureService:
                         },
                     },
                     actor_type=self.actor_type,
+                )
+                attach_memory_embedding(
+                    self.store,
+                    memory,
+                    actor_type=self.actor_type,
+                    actor_id=self.actor_id,
+                    trace_id=self.trace_id,
                 )
                 self.store.create_provenance_link(
                     {

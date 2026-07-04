@@ -773,3 +773,154 @@ def test_jsonb_and_event_hash_normalize_postgres_scalar_values() -> None:
         "candidate_memory_id": str(project_id),
         "source_captured_at": "2026-05-10T12:30:00+00:00",
     }
+
+
+def test_fts_search_builds_websearch_tsquery_with_pushed_down_filters() -> None:
+    cursor = RecordingCursor(
+        fetchone_results=[],
+        fetchall_result=[{"id": "memory-1", "fts_score": 0.42}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    rows = store.search_memories_fts(
+        query="Alice provenance retrieval",
+        domains=["project"],
+        sensitivity_allowed=["public", "private"],
+        limit=25,
+    )
+
+    assert rows[0]["id"] == "memory-1"
+    query, params = cursor.executed[0]
+    assert "FROM memories" in query
+    assert "websearch_to_tsquery('english', %s)" in query
+    assert "search_tsv @@ websearch_to_tsquery('english', %s)" in query
+    assert "ts_rank(search_tsv, websearch_to_tsquery('english', %s)) AS fts_score" in query
+    assert "status IN ('active', 'accepted')" in query
+    assert "deleted_at IS NULL" in query
+    assert "domain = ANY" in query
+    assert "sensitivity = ANY" in query
+    assert "ORDER BY fts_score DESC" in query
+    assert params == (
+        "Alice provenance retrieval",
+        ["project"],
+        ["project"],
+        ["public", "private"],
+        ["public", "private"],
+        "Alice provenance retrieval",
+        25,
+    )
+
+
+def test_vector_search_orders_by_cosine_distance_and_skips_null_embeddings() -> None:
+    cursor = RecordingCursor(
+        fetchone_results=[],
+        fetchall_result=[{"id": "memory-1", "vector_distance": 0.12}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    rows = store.search_memories_vector(
+        query_vector=[0.25, -1.0],
+        domains=["project"],
+        sensitivity_allowed=["private"],
+        limit=12,
+    )
+
+    assert rows[0]["id"] == "memory-1"
+    query, params = cursor.executed[0]
+    assert "FROM memories" in query
+    assert "embedding_vector IS NOT NULL" in query
+    assert "status IN ('active', 'accepted')" in query
+    assert "ORDER BY embedding_vector <=> %s::vector" in query
+    assert "(embedding_vector <=> %s::vector) AS vector_distance" in query
+    assert params == (
+        "[0.25,-1.0]",
+        ["project"],
+        ["project"],
+        ["private"],
+        ["private"],
+        "[0.25,-1.0]",
+        12,
+    )
+
+
+def test_update_memory_embedding_and_missing_embedding_listing() -> None:
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[{"id": memory_id}],
+        fetchall_result=[{"id": memory_id}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    updated = store.update_memory_embedding(memory_id=memory_id, vector=[1.0, 0.5])
+    missing = store.list_memories_missing_embeddings(limit=64, after_id=memory_id)
+
+    assert updated == {"id": memory_id}
+    assert missing[0]["id"] == memory_id
+    update_query, update_params = cursor.executed[0]
+    assert "SET embedding_vector = %s::vector" in update_query
+    assert update_params == ("[1.0,0.5]", memory_id)
+    missing_query, missing_params = cursor.executed[1]
+    assert "embedding_vector IS NULL" in missing_query
+    assert "%s::uuid IS NULL OR id > %s::uuid" in missing_query
+    assert "ORDER BY id ASC" in missing_query
+    assert missing_params == (memory_id, memory_id, 64)
+
+
+def test_targeted_memory_lookups_use_indexed_columns() -> None:
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": "memory-digest"},
+            {"id": "memory-confirmation"},
+            {"id": "memory-latest"},
+        ],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    by_digest = store.get_memory_by_commit_digest("digest-1")
+    by_confirmation = store.get_memory_by_confirmation_id("confirm-1")
+    latest = store.latest_agentic_commit_memory(agent_id="hermes")
+
+    assert by_digest == {"id": "memory-digest"}
+    assert by_confirmation == {"id": "memory-confirmation"}
+    assert latest == {"id": "memory-latest"}
+    digest_query, digest_params = cursor.executed[0]
+    assert "WHERE commit_digest = %s" in digest_query
+    assert "LIMIT 1" in digest_query
+    assert digest_params == ("digest-1",)
+    confirmation_query, confirmation_params = cursor.executed[1]
+    assert "WHERE confirmation_id = %s" in confirmation_query
+    assert "LIMIT 1" in confirmation_query
+    assert confirmation_params == ("confirm-1",)
+    latest_query, latest_params = cursor.executed[2]
+    assert "metadata_json #>> '{agentic_memory,kind}' = 'agentic_memory_commit'" in latest_query
+    assert "status = 'active'" in latest_query
+    assert "metadata_json #>> '{agentic_memory,agent_identity,agent_id}' = %s" in latest_query
+    assert "ORDER BY updated_at DESC, created_at DESC, id DESC" in latest_query
+    assert latest_params == ("hermes", "hermes", "hermes")
+
+
+def test_create_memory_persists_commit_digest_and_confirmation_id_columns() -> None:
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": memory_id, "memory_key": "agentic_memory.semantic.digest-1"},
+            _event_row(memory_id),
+        ],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.create_memory(
+        {
+            "memory_key": "agentic_memory.semantic.digest-1",
+            "value": {"text": "Fact"},
+            "canonical_text": "Fact",
+            "commit_digest": "digest-1",
+            "confirmation_id": "confirm-1",
+        }
+    )
+
+    insert_query, insert_params = cursor.executed[0]
+    assert "commit_digest" in insert_query
+    assert "confirmation_id" in insert_query
+    assert insert_params is not None
+    assert insert_params[-2:] == ("digest-1", "confirm-1")

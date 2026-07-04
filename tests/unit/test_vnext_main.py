@@ -25,6 +25,7 @@ class FakeVNextStore:
         self.beliefs: dict[str, dict[str, object]] = {}
         self.projects: dict[str, dict[str, object]] = {}
         self.agent_identities: dict[str, dict[str, object]] = {}
+        self.agent_api_keys: list[dict[str, object]] = []
         self.revisions: list[dict[str, object]] = []
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
@@ -356,6 +357,43 @@ class FakeVNextStore:
     def upsert_agent_identity(self, identity: dict[str, object], **_kwargs) -> dict[str, object]:
         self.agent_identities[str(identity["agent_id"])] = identity
         return identity
+
+    def create_agent_api_key(self, key: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {
+            **key,
+            "id": str(uuid4()),
+            "created_at": "now",
+            "revoked_at": None,
+            "last_used_at": None,
+        }
+        self.agent_api_keys.append(row)
+        return row
+
+    def get_agent_api_key_by_hash(self, key_hash: str) -> dict[str, object] | None:
+        for row in self.agent_api_keys:
+            if row.get("key_hash") == key_hash:
+                return row
+        return None
+
+    def list_agent_api_keys(self, *, limit: int = 50) -> list[dict[str, object]]:
+        return self.agent_api_keys[:limit]
+
+    def revoke_agent_api_key(self, *, key_id: str, **_kwargs) -> dict[str, object] | None:
+        for row in self.agent_api_keys:
+            if row["id"] == key_id and row.get("revoked_at") is None:
+                row["revoked_at"] = "now"
+                return row
+        return None
+
+    def touch_agent_api_key(self, *, key_id: str) -> dict[str, object]:
+        for row in self.agent_api_keys:
+            if row["id"] == key_id:
+                row["last_used_at"] = "now"
+                return row
+        raise AssertionError(key_id)
+
+    def count_active_agent_api_keys(self) -> int:
+        return len([row for row in self.agent_api_keys if row.get("revoked_at") is None])
 
     def list_scheduler_runs(self, **_kwargs) -> list[dict[str, object]]:
         return []
@@ -1005,6 +1043,140 @@ def test_live_capture_connector_api_endpoints(monkeypatch) -> None:
     health_payload = json.loads(health_response.body)
     assert health_payload["count"] >= 4
     assert any(item["connector_name"] == "telegram" for item in health_payload["items"])
+
+
+def test_vnext_agent_endpoint_with_bearer_key_uses_key_identity(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store, user_id=user_id, agent_id="openclaw", permission_profile="project_scoped_agent"
+    )
+
+    response = main_module.create_vnext_source(
+        main_module.VNextSourceCaptureRequest(
+            user_id=user_id,
+            raw_text="Fact: keyed agents authenticate with per-agent API keys.",
+            domain="project",
+            sensitivity="private",
+            agent_id="openclaw",
+            agent_run_id="run-keyed-1",
+        ),
+        authorization=f"Bearer {raw_key}",
+    )
+
+    assert response.status_code == 201
+    recorded_identity = store.agent_identities["openclaw"]
+    assert recorded_identity["permission_profile"] == "project_scoped_agent"
+    policy_events = [event for event in store.events if event.get("event_type") == "policy.decision"]
+    assert policy_events
+    identity_record = policy_events[0]["payload_json"]["agent_identity"]
+    assert identity_record["auth"] == "agent_api_key"
+    assert identity_record["permission_profile"] == "project_scoped_agent"
+    assert store.agent_api_keys[0]["last_used_at"] == "now"
+
+
+def test_vnext_agent_endpoint_rejects_keyless_agent_call_when_keys_exist(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    create_agent_key(
+        store, user_id=user_id, agent_id="openclaw", permission_profile="project_scoped_agent"
+    )
+
+    response = main_module.create_vnext_source(
+        main_module.VNextSourceCaptureRequest(
+            user_id=user_id,
+            raw_text="Fact: keyless agent calls are rejected once keys exist.",
+            domain="project",
+            sensitivity="private",
+            agent_id="openclaw",
+        )
+    )
+
+    assert response.status_code == 401
+    detail = json.loads(response.body)["detail"]
+    assert "Authorization: Bearer alice_sk_" in detail
+    assert store.sources == {}
+
+
+def test_vnext_agent_endpoint_rejects_payload_profile_escalation(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store, user_id=user_id, agent_id="openclaw", permission_profile="project_scoped_agent"
+    )
+
+    response = main_module.create_vnext_source(
+        main_module.VNextSourceCaptureRequest(
+            user_id=user_id,
+            raw_text="Fact: escalation attempts are rejected.",
+            domain="project",
+            sensitivity="private",
+            agent_id="openclaw",
+            permission_profile="admin_agent",
+        ),
+        authorization=f"Bearer {raw_key}",
+    )
+
+    assert response.status_code == 403
+    assert store.sources == {}
+    assert any(event.get("event_type") == "agent.key_escalation_rejected" for event in store.events)
+    assert raw_key not in json.dumps([event for event in store.events], default=str)
+
+
+def test_vnext_agent_endpoint_rejects_agent_id_mismatch(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store, user_id=user_id, agent_id="openclaw", permission_profile="project_scoped_agent"
+    )
+
+    response = main_module.create_vnext_source(
+        main_module.VNextSourceCaptureRequest(
+            user_id=user_id,
+            raw_text="Fact: keys are bound to a single agent id.",
+            domain="project",
+            sensitivity="private",
+            agent_id="hermes",
+        ),
+        authorization=f"Bearer {raw_key}",
+    )
+
+    assert response.status_code == 403
+    assert store.sources == {}
+
+
+def test_vnext_agent_endpoint_without_keys_marks_unauthenticated_local(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+
+    response = main_module.create_vnext_source(
+        main_module.VNextSourceCaptureRequest(
+            user_id=user_id,
+            raw_text="Fact: fresh installs keep working without keys.",
+            domain="project",
+            sensitivity="private",
+            agent_id="openclaw",
+        )
+    )
+
+    assert response.status_code == 201
+    policy_events = [event for event in store.events if event.get("event_type") == "policy.decision"]
+    assert policy_events
+    identity_record = policy_events[0]["payload_json"]["agent_identity"]
+    assert identity_record["auth"] == "unauthenticated_local"
 
 
 def test_agent_output_ingest_api_creates_review_only_records(monkeypatch) -> None:

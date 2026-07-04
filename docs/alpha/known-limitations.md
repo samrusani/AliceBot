@@ -19,6 +19,7 @@ This alpha is intentionally limited.
 - model providers require user configuration
 - secrets fallback is alpha-grade unless OS or managed secret provider is configured
 - no automatic trusted-memory promotion
+- passive memory capture is structured and English-biased; general conversation is not guaranteed to become memory
 - `/vnext` is the operator console, not the main agent interface
 - team accounts, billing, cloud sync, mobile app, and hosted deployment are out of scope
 

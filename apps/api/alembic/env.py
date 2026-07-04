@@ -20,7 +20,8 @@ def normalize_sqlalchemy_url(database_url: str) -> str:
 
 def get_url() -> str:
     database_url = (
-        os.getenv("DATABASE_ADMIN_URL")
+        config.attributes.get("explicit_database_url")
+        or os.getenv("DATABASE_ADMIN_URL")
         or os.getenv("DATABASE_URL")
         or config.get_main_option("sqlalchemy.url")
     )

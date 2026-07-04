@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from alicebot_api.vnext_agent_control import AgentIdentity, PolicyDecision
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService
 from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnectionService
+from alicebot_api.vnext_consolidation import MemoryConsolidationRequest, VNextConsolidationService
 from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_model_intelligence import (
@@ -29,6 +30,7 @@ WORKFLOW_TYPES = (
     "contradiction_report",
     "open_loop_review",
     "project_update_scan",
+    "memory_consolidation",
 )
 PRIMARY_WORKFLOWS = ("daily_brief", "weekly_synthesis")
 DAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
@@ -65,6 +67,10 @@ class VNextSchedulerStore(Protocol):
 
     def create_artifact(self, artifact: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
+    def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
+
+    def list_memories(self, **kwargs) -> list[JsonObject]: ...
+
     def search_sources(self, **kwargs) -> list[JsonObject]: ...
 
     def search_memories(self, **kwargs) -> list[JsonObject]: ...
@@ -72,6 +78,8 @@ class VNextSchedulerStore(Protocol):
     def list_open_loops(self, **kwargs) -> list[JsonObject]: ...
 
     def list_artifacts(self, **kwargs) -> list[JsonObject]: ...
+
+    def list_artifact_quality_ratings(self, **kwargs) -> list[JsonObject]: ...
 
     def list_projects(self, **kwargs) -> list[JsonObject]: ...
 
@@ -116,6 +124,33 @@ def _day_index(value: object) -> int:
         if normalized in DAY_NAMES:
             return DAY_NAMES.index(normalized)
     raise VNextSchedulerValidationError("day_of_week must be a weekday name or integer 0-6")
+
+
+def _option_int(options: JsonObject, key: str, default: int) -> int:
+    value = options.get(key, default)
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
+def _option_bool(options: JsonObject, key: str, default: bool) -> bool:
+    value = options.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return default
 
 
 def validate_schedule(workflow_type: str, schedule_json: JsonObject) -> JsonObject:
@@ -535,6 +570,27 @@ class VNextSchedulerService:
             return self._generate_open_loop_review_artifact(request, metadata=metadata)
         if request.workflow_type == "project_update_scan":
             return self._generate_project_update_scan_artifact(request, metadata=metadata)
+        if request.workflow_type == "memory_consolidation":
+            return VNextConsolidationService(self.store).generate_memory_consolidation(
+                MemoryConsolidationRequest(
+                    domains=request.domains,
+                    sensitivity_allowed=request.sensitivity_allowed,
+                    generated_for=request.generated_for,
+                    source_limit=_option_int(request.options, "source_limit", 12),
+                    memory_limit=_option_int(request.options, "memory_limit", 12),
+                    artifact_limit=_option_int(request.options, "artifact_limit", 8),
+                    event_limit=_option_int(request.options, "event_limit", 30),
+                    rating_limit=_option_int(request.options, "rating_limit", 20),
+                    create_candidate_memories=_option_bool(request.options, "create_candidate_memories", True),
+                    generated_by="scheduler",
+                    trace_id=trace_id,
+                    run_id=scheduler_run_id,
+                    agent_identity=request.agent_identity.to_record() if request.agent_identity else None,
+                    policy_decision=request.policy_decision.to_record() if request.policy_decision else None,
+                    metadata_json=metadata,
+                    **self._generation_kwargs(request),
+                )
+            )
         artifact_type = "system_report"
         return self.store.create_artifact(
             {

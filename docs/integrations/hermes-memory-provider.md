@@ -122,6 +122,20 @@ Optional live prefetch test:
   --alice-user-id "00000000-0000-0000-0000-000000000001"
 ```
 
+## First Memory Expectations
+
+The provider gives Hermes always-on Alice continuity context and optional post-turn capture. It does not turn every Hermes conversation into trusted memory.
+
+For a first memory test, use [../alpha/first-memory.md](../alpha/first-memory.md).
+
+Operational split:
+
+- provider: recall, prefetch, resumption brief, open-loop lookup, and optional structured `sync_turn` capture
+- MCP: explicit `alice_vnext_commit_memory` for user-directed "remember/save this" instructions
+- `/vnext`: review, confirmation, audit, undo, correction, and forget
+
+If a tester sees no memory after normal chat, first verify MCP access to `alice_vnext_commit_memory` and check `/vnext` Memory Review before treating it as a storage bug.
+
 ## Single-External-Provider Model
 
 Hermes MemoryManager allows:

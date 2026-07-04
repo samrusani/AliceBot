@@ -22,8 +22,8 @@ Capture the following in one reviewable bundle:
 - final statuses showing `Control-doc truth check: PASS`, unit test PASS, and validation matrix PASS
 - timestamped operator note that canonical docs are aligned through Phase 2 Sprint 14
 - links to current sprint reports at repo root:
-  - `BUILD_REPORT.md`
-  - `REVIEW_REPORT.md`
+  - `docs/archive/process/BUILD_REPORT.md`
+  - `docs/archive/process/REVIEW_REPORT.md`
 
 ## Explicit Deferred Scope Entering Next Phase
 

@@ -29,6 +29,9 @@ def build_runtime_env(*, database_url: str, user_id: UUID) -> dict[str, str]:
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
     env["ALICEBOT_AUTH_USER_ID"] = str(user_id)
+    # These suites exercise the legacy long-tail tools as well as the core
+    # nine, so enable the legacy MCP surface for the spawned server.
+    env["ALICE_MCP_LEGACY_TOOLS"] = "1"
     pythonpath_entries = [str(REPO_ROOT / "apps" / "api" / "src"), str(REPO_ROOT / "workers")]
     existing_pythonpath = env.get("PYTHONPATH")
     if existing_pythonpath:
@@ -127,7 +130,7 @@ def _call_tool(client: MCPClient, *, name: str, arguments: dict[str, object]) ->
     assert "error" not in response
     result = response["result"]
     assert result["isError"] is False
-    return result["structuredContent"]
+    return json.loads(result["content"][0]["text"])
 
 
 def test_openclaw_imported_data_is_usable_from_shipped_mcp_recall_and_resume_tools(
@@ -147,9 +150,11 @@ def test_openclaw_imported_data_is_usable_from_shipped_mcp_recall_and_resume_too
 
     client = start_mcp_client(database_url=migrated_database_urls["app"], user_id=user_id)
     try:
+        # Imported OpenClaw data lands in the legacy continuity store, which is
+        # served by the flag-gated debug recall view rather than core recall.
         recall_payload = _call_tool(
             client,
-            name="alice_recall",
+            name="alice_recall_debug",
             arguments={
                 "thread_id": str(THREAD_ID),
                 "project": "Alice Public Core",

@@ -1276,6 +1276,7 @@ def _ordered_recall_candidates(
     *,
     request: ContinuityRecallQueryInput,
     ranking_strategy: Literal["legacy_v1", "hybrid_v2"] = "hybrid_v2",
+    sync_contradictions: bool = False,
 ) -> tuple[list[RankedRecallCandidate], list[RetrievalTraceCandidate], list[str], EntityRetrievalContext]:
     thread_filter = _normalize_uuid_string(request.thread_id)
     task_filter = _normalize_uuid_string(request.task_id)
@@ -1313,10 +1314,11 @@ def _ordered_recall_candidates(
         return [], [], query_terms, entity_context
 
     candidate_rows = [row for row, _scope_matches, _scope_matched in visible_candidates]
-    sync_contradiction_state_for_objects(
-        store,
-        continuity_object_ids=[row["id"] for row in candidate_rows],
-    )
+    if sync_contradictions:
+        sync_contradiction_state_for_objects(
+            store,
+            continuity_object_ids=[row["id"] for row in candidate_rows],
+        )
     contradiction_metrics = contradiction_metrics_by_object(
         store,
         continuity_object_ids=[row["id"] for row in candidate_rows],
@@ -1811,6 +1813,7 @@ def query_continuity_recall(
     apply_limit: bool = True,
     ranking_strategy: Literal["legacy_v1", "hybrid_v2"] = "hybrid_v2",
     source_surface: str = "continuity_recall",
+    sync_contradictions: bool = False,
 ) -> ContinuityRecallResponse:
     del user_id
 
@@ -1835,6 +1838,7 @@ def query_continuity_recall(
         store,
         request=normalized_request,
         ranking_strategy=ranking_strategy,
+        sync_contradictions=sync_contradictions,
     )
 
     if apply_limit:

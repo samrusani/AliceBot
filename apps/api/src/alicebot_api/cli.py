@@ -192,12 +192,17 @@ from alicebot_api.trusted_fact_promotions import (
     list_trusted_fact_playbooks,
 )
 from alicebot_api.vnext_agent_control import (
+    PERMISSION_PROFILES,
     AgentIdentity,
     agent_metadata,
     append_policy_events,
     ensure_policy_allowed,
     evaluate_agent_policy,
     summarize_agent_policy_telemetry,
+)
+from alicebot_api.vnext_agent_keys import (
+    AgentKeyValidationError,
+    create_agent_key,
 )
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
@@ -212,6 +217,7 @@ from alicebot_api.vnext_connectors import (
     list_connector_definitions,
     load_connector_items_from_file,
 )
+from alicebot_api.vnext_context_tree import ContextTreeRequest, VNextContextTreeService
 from alicebot_api.vnext_contradictions import (
     ContradictionFinderRequest,
     VNextContradictionService,
@@ -242,6 +248,16 @@ from alicebot_api.vnext_scheduler_runtime import (
     run_foreground_daemon,
     start_background_daemon,
     stop_daemon,
+)
+from alicebot_api.vnext_embeddings import (
+    EMBEDDINGS_API_KEY_ENV,
+    EMBEDDINGS_BASE_URL_ENV,
+    EMBEDDINGS_MODEL_ENV,
+    MAX_EMBEDDINGS_BATCH_SIZE,
+    VNextEmbeddingConfigurationError,
+    VNextEmbeddingProviderError,
+    get_embedding_provider,
+    memory_embedding_text,
 )
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
@@ -1390,6 +1406,22 @@ def _run_context_pack(ctx: CLIContext, args: argparse.Namespace) -> str:
     return _json_dumps(payload)
 
 
+def _run_vnext_context_tree(ctx: CLIContext, args: argparse.Namespace) -> str:
+    query = " ".join(args.query).strip()
+    with _vnext_store_context(ctx) as store:
+        payload = VNextContextTreeService(store).build_tree(
+            ContextTreeRequest(
+                query=query,
+                domains=tuple(args.domain),
+                sensitivity_allowed=_vnext_sensitivity_allowed(args),
+                limit=args.limit,
+                include_events=not args.no_events,
+                generated_by="cli",
+            )
+        )
+    return _json_dumps(payload)
+
+
 def _brain_artifact_request_from_args(args: argparse.Namespace) -> BrainArtifactRequest:
     return BrainArtifactRequest(
         domains=tuple(args.domain),
@@ -1610,6 +1642,69 @@ def _run_vnext_memory_audit(ctx: CLIContext, args: argparse.Namespace) -> str:
     return _json_dumps(payload)
 
 
+def _run_vnext_memories_backfill_embeddings(ctx: CLIContext, args: argparse.Namespace) -> str:
+    provider = get_embedding_provider()
+    if provider is None:
+        raise ValueError(
+            "embedding provider is not configured; set "
+            f"{EMBEDDINGS_BASE_URL_ENV} and {EMBEDDINGS_MODEL_ENV} "
+            f"(and {EMBEDDINGS_API_KEY_ENV} when the endpoint requires a key) "
+            "to enable embedding backfill"
+        )
+    batch_size = args.batch_size
+    if batch_size < 1 or batch_size > MAX_EMBEDDINGS_BATCH_SIZE:
+        raise ValueError(f"--batch-size must be between 1 and {MAX_EMBEDDINGS_BATCH_SIZE}")
+    embedded = 0
+    skipped = 0
+    failed = 0
+    batches = 0
+    with _vnext_store_context(ctx) as store:
+        after_id: str | None = None
+        while True:
+            rows = store.list_memories_missing_embeddings(limit=batch_size, after_id=after_id)
+            if not rows:
+                break
+            batches += 1
+            after_id = str(rows[-1]["id"])
+            pending = [(row, memory_embedding_text(row)) for row in rows]
+            embeddable = [(row, text) for row, text in pending if text != ""]
+            skipped += len(pending) - len(embeddable)
+            if not embeddable:
+                continue
+            try:
+                vectors = provider.embed_batch([text for _row, text in embeddable])
+            except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
+                failed += len(embeddable)
+                print(f"warning: embedding batch failed: {exc}", file=sys.stderr)
+                continue
+            for (row, _text), vector in zip(embeddable, vectors):
+                store.update_memory_embedding(memory_id=str(row["id"]), vector=vector)
+                embedded += 1
+    return _json_dumps(
+        {
+            "provider": provider.provider,
+            "model": provider.model,
+            "batches": batches,
+            "embedded": embedded,
+            "skipped": skipped,
+            "failed": failed,
+        }
+    )
+
+
+def _run_maintenance_sync_contradictions(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _store_context(ctx) as store:
+        payload = sync_contradictions(
+            store,
+            user_id=ctx.user_id,
+            request=ContradictionSyncInput(
+                continuity_object_id=args.continuity_object_id,
+                limit=args.limit,
+            ),
+        )
+    return format_contradiction_sync_output(payload)
+
+
 def _run_vnext_agent_policy_telemetry(ctx: CLIContext, args: argparse.Namespace) -> str:
     with _vnext_store_context(ctx) as store:
         events = store.list_agent_events(agent_id=args.agent_id, limit=args.limit)
@@ -1624,6 +1719,72 @@ def _run_vnext_agent_policy_telemetry(ctx: CLIContext, args: argparse.Namespace)
             )
         }
     )
+
+
+def _agent_key_public_record(record: dict[str, object]) -> JsonObject:
+    return {
+        "id": str(record.get("id")),
+        "key_prefix": record.get("key_prefix"),
+        "agent_id": record.get("agent_id"),
+        "permission_profile": record.get("permission_profile"),
+        "label": record.get("label"),
+        "created_at": record.get("created_at"),
+        "last_used_at": record.get("last_used_at"),
+        "revoked_at": record.get("revoked_at"),
+        "revoked": record.get("revoked_at") is not None,
+    }
+
+
+def _run_agent_keys_create(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        record, raw_key = create_agent_key(
+            store,
+            user_id=ctx.user_id,
+            agent_id=args.agent_id,
+            permission_profile=args.profile,
+            label=args.label,
+        )
+    return _json_dumps(
+        {
+            "status": "created",
+            "key": _agent_key_public_record(record),
+            "raw_key": raw_key,
+            "warning": (
+                "Store this key now. It is shown exactly once; only its sha256 hash is persisted. "
+                "Pass it to agent HTTP calls as 'Authorization: Bearer <raw_key>'."
+            ),
+        }
+    )
+
+
+def _run_agent_keys_list(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        records = store.list_agent_api_keys(limit=args.limit)
+    items = [_agent_key_public_record(record) for record in records]
+    return _json_dumps({"items": items, "count": len(items), "order": ["created_at_desc", "id_desc"]})
+
+
+def _run_agent_keys_revoke(ctx: CLIContext, args: argparse.Namespace) -> str:
+    selector = args.key.strip()
+    if not selector:
+        raise AgentKeyValidationError("a key prefix or key id is required")
+    with _vnext_store_context(ctx) as store:
+        records = store.list_agent_api_keys(limit=200)
+        matches = [
+            record
+            for record in records
+            if str(record.get("id")) == selector or str(record.get("key_prefix") or "") == selector
+        ]
+        if not matches:
+            raise AgentKeyValidationError(f"no agent API key matches '{selector}'")
+        if len(matches) > 1:
+            raise AgentKeyValidationError(
+                f"key prefix '{selector}' matches multiple keys; revoke by key id instead"
+            )
+        revoked = store.revoke_agent_api_key(key_id=str(matches[0]["id"]))
+        if revoked is None:
+            raise AgentKeyValidationError(f"agent API key '{selector}' is already revoked")
+    return _json_dumps({"status": "revoked", "key": _agent_key_public_record(revoked)})
 
 
 def _run_vnext_scheduler_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
@@ -2778,7 +2939,7 @@ def _run_vnext_smoke_headless_ubuntu(_ctx: CLIContext, _args: argparse.Namespace
         "install": repo_root / "docs" / "alpha" / "headless-ubuntu-install.md",
         "hermes": repo_root / "docs" / "alpha" / "hermes-dogfood-ubuntu.md",
         "release_notes": repo_root / "docs" / "release" / "v0.6.0-alpha-rc.2-release-notes.md",
-        "cto": repo_root / "docs" / "vnext-headless-ubuntu-cto-summary.md",
+        "cto": repo_root / "docs" / "archive" / "process" / "vnext-headless-ubuntu-cto-summary.md",
         "env": repo_root / "packaging" / "ubuntu" / "alicebot.env.example",
     }
     service_contents = {
@@ -3187,7 +3348,10 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
         "eval_suite": {
             "status": "summarized",
             "command": "alicebot eval run --suite all",
-            "expected": "170/170 cases with 0 critical privacy leaks and 0 prompt-injection tool writes",
+            "expected": (
+                "retrieval_quality passes against a live store "
+                "(ALICEBOT_EVAL_DATABASE_URL); without one it reports skipped, never a fabricated pass"
+            ),
         },
         "recommended_next_commands": [
             "alicebot eval run --suite all",
@@ -4343,6 +4507,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     context_pack_parser.set_defaults(handler=_run_context_pack)
 
+    context_tree_parser = subparsers.add_parser("context-tree", help="Compile a read-only Alice vNext context tree.")
+    context_tree_parser.add_argument("query", nargs="*", help="Optional query to shape tree selection.")
+    context_tree_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    context_tree_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=None,
+        help="Allowed sensitivity. Repeatable.",
+    )
+    context_tree_parser.add_argument("--limit", type=int, default=12, help="Maximum items per tree group.")
+    context_tree_parser.add_argument("--no-events", action="store_true", help="Exclude recent event nodes.")
+    context_tree_parser.set_defaults(handler=_run_vnext_context_tree)
+
     daily_brief_parser = subparsers.add_parser("daily-brief", help="Generate a vNext daily brief artifact.")
     daily_brief_parser.add_argument("--generate", action="store_true", help="Generate the daily brief now.")
     daily_brief_parser.add_argument("--generated-for", default=None, help="ISO date for the brief.")
@@ -4428,6 +4605,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_model_generation_arguments(connections_generate_parser)
     connections_generate_parser.set_defaults(handler=_run_connections_generate)
+
+    agent_parser = subparsers.add_parser("agent", help="Manage agent authentication.")
+    agent_subparsers = agent_parser.add_subparsers(dest="agent_command", required=True)
+    agent_keys_parser = agent_subparsers.add_parser("keys", help="Manage per-agent API keys.")
+    agent_keys_subparsers = agent_keys_parser.add_subparsers(dest="agent_keys_command", required=True)
+    agent_keys_create_parser = agent_keys_subparsers.add_parser(
+        "create",
+        help="Create a per-agent API key. The raw key is printed exactly once.",
+    )
+    agent_keys_create_parser.add_argument("--agent-id", required=True, help="Agent id the key authenticates.")
+    agent_keys_create_parser.add_argument(
+        "--profile",
+        required=True,
+        choices=PERMISSION_PROFILES,
+        help="Permission profile granted to the key.",
+    )
+    agent_keys_create_parser.add_argument("--label", default=None, help="Optional human-readable key label.")
+    agent_keys_create_parser.set_defaults(handler=_run_agent_keys_create)
+    agent_keys_list_parser = agent_keys_subparsers.add_parser(
+        "list",
+        help="List agent API keys. Shows prefixes only, never hashes or raw keys.",
+    )
+    agent_keys_list_parser.add_argument("--limit", type=int, default=50, help="Maximum keys to return.")
+    agent_keys_list_parser.set_defaults(handler=_run_agent_keys_list)
+    agent_keys_revoke_parser = agent_keys_subparsers.add_parser("revoke", help="Revoke an agent API key.")
+    agent_keys_revoke_parser.add_argument("key", help="Key prefix or key id to revoke.")
+    agent_keys_revoke_parser.set_defaults(handler=_run_agent_keys_revoke)
 
     vnext_parser = subparsers.add_parser("vnext", help="Alice vNext workflows.")
     vnext_subparsers = vnext_parser.add_subparsers(dest="vnext_command", required=True)
@@ -4962,6 +5166,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_vnext_agent_arguments(vnext_memory_audit_parser)
     vnext_memory_audit_parser.add_argument("memory_id", help="Memory id.")
     vnext_memory_audit_parser.set_defaults(handler=_run_vnext_memory_audit)
+
+    vnext_memory_backfill_parser = vnext_memories_subparsers.add_parser(
+        "backfill-embeddings",
+        help="Embed memories that do not yet have an embedding vector.",
+    )
+    vnext_memory_backfill_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+        help=f"Memories to embed per request (1-{MAX_EMBEDDINGS_BATCH_SIZE}).",
+    )
+    vnext_memory_backfill_parser.set_defaults(handler=_run_vnext_memories_backfill_embeddings)
 
     vnext_agents_parser = vnext_subparsers.add_parser("agents", help="Submit and inspect vNext agent proposals.")
     vnext_agents_subparsers = vnext_agents_parser.add_subparsers(dest="vnext_agents_command", required=True)
@@ -5613,6 +5829,26 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="Show local continuity runtime status.")
     status_parser.set_defaults(handler=_run_status)
 
+    maintenance_parser = subparsers.add_parser("maintenance", help="Run explicit continuity maintenance jobs.")
+    maintenance_subparsers = maintenance_parser.add_subparsers(dest="maintenance_command", required=True)
+    maintenance_sync_contradictions_parser = maintenance_subparsers.add_parser(
+        "sync-contradictions",
+        help="Synchronize contradiction state across live continuity objects.",
+    )
+    maintenance_sync_contradictions_parser.add_argument(
+        "--continuity-object-id",
+        type=_parse_uuid,
+        default=None,
+        help="Optional continuity object UUID to scope the sync.",
+    )
+    maintenance_sync_contradictions_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_CONTINUITY_REVIEW_LIMIT,
+        help=f"Max contradiction rows to print (1-{MAX_CONTINUITY_REVIEW_LIMIT}).",
+    )
+    maintenance_sync_contradictions_parser.set_defaults(handler=_run_maintenance_sync_contradictions)
+
     vnext_eval_parser = subparsers.add_parser("eval", help="Run Alice vNext synthetic evals.")
     vnext_eval_subparsers = vnext_eval_parser.add_subparsers(dest="eval_command", required=True)
 
@@ -5634,7 +5870,10 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_eval_run_parser.add_argument(
         "--suite",
         default="all",
-        help="Suite key to run: all, recall, temporal, contradictions, privacy, provenance, open_loops, or prompt_injection.",
+        help=(
+            "Suite key to run: all or retrieval_quality. Live-store suites "
+            "require ALICEBOT_EVAL_DATABASE_URL and report skipped without it."
+        ),
     )
     vnext_eval_run_parser.add_argument(
         "--corpus-path",
@@ -5655,7 +5894,10 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_eval_report_parser.add_argument(
         "--suite",
         default="all",
-        help="Suite key to report: all, recall, temporal, contradictions, privacy, provenance, open_loops, or prompt_injection.",
+        help=(
+            "Suite key to report: all or retrieval_quality. Live-store suites "
+            "require ALICEBOT_EVAL_DATABASE_URL and report skipped without it."
+        ),
     )
     vnext_eval_report_parser.add_argument(
         "--corpus-path",
@@ -5737,6 +5979,13 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             option_name="--max-tokens",
             minimum=500,
             maximum=50_000,
+        )
+    elif args.command == "context-tree":
+        _validate_limit(
+            args.limit,
+            option_name="--limit",
+            minimum=1,
+            maximum=50,
         )
     elif args.command == "contradictions" and args.contradictions_command in {"detect", "list"}:
         _validate_limit(

@@ -20,6 +20,7 @@ MemoryType = Literal[
     "decision",
     "commitment",
     "routine",
+    "procedure",
     "constraint",
     "working_style",
 ]

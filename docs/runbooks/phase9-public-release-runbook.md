@@ -54,8 +54,8 @@ Ensure all commands and claims are executable and evidence-backed.
 
 ## Step 5: Record Sprint Reports
 
-- update `BUILD_REPORT.md` with command evidence and outcomes
-- update `REVIEW_REPORT.md` with sprint review state
+- update `docs/archive/process/BUILD_REPORT.md` with command evidence and outcomes
+- update `docs/archive/process/REVIEW_REPORT.md` with sprint review state
 
 ## Step 6: Execute Release Checklist
 
@@ -71,4 +71,4 @@ After checklist pass + reviewer `PASS` + explicit maintainer approval, follow:
 
 - If a required command fails, stop tag prep.
 - Fix only launch/doc/release-readiness issues inside `P9-S38` scope.
-- Re-run failed gates and update `BUILD_REPORT.md` before retry.
+- Re-run failed gates and update `docs/archive/process/BUILD_REPORT.md` before retry.

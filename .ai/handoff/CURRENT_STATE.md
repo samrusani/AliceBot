@@ -1,58 +1,21 @@
 # Current State
 
-## Status Snapshot
-- Phase 9 is shipped.
-- Phase 10 is shipped.
-- Phase 11 is shipped.
-- Bridge `B1` through `B4` are shipped.
-- Phase 12 is shipped.
-- Phase 13 is shipped.
-- Phase 14 is shipped.
-- `HF-001` Logging Safety And Disk Guardrails is shipped.
-- `v0.5.1` remains the latest stable public release tag.
-- `v0.5.1-vnext-preview` is the vNext public-preview tag target.
-- `M-001` Archive Maintenance CI Repair is implemented in this working tree.
-- Alice vNext public preview release gate is active.
-- Alice vNext dogfood hardening is implemented in this working tree.
+Canonical handoff copy. A synced summary lives at the repo root [CURRENT_STATE.md](../../CURRENT_STATE.md).
 
-## Current Baseline Truth
-- Alice has typed memory, provenance, trust classes, correction/supersession behavior, open loops, recall, resumption, and explainability.
-- Alice exposes CLI, MCP, hosted/product, provider-runtime, and Hermes bridge surfaces.
-- The shipped baseline includes hybrid retrieval and reranking with traces, explicit memory mutation operations, contradiction/trust handling, the public eval harness, and task-adaptive briefing.
-- The shipped baseline includes one-call continuity across API, CLI, and MCP.
-- The shipped baseline includes the Alice Lite startup/profile path.
-- The shipped baseline includes memory hygiene and thread/conversation health visibility.
-- The shipped baseline includes the Phase 14 provider contract, workspace-scoped provider registration/update flows, provider capability snapshots, invocation telemetry persistence, and the OpenAI-compatible adapter hardening from `P14-S1`.
-- The shipped baseline includes the Phase 14 local/self-hosted compatibility layer from `P14-S2`, including the dedicated `vllm` provider path, aligned health semantics, and pack-compatibility/runtime coverage for the local/self-hosted provider surface.
-- The shipped baseline includes provider-aware model-pack bindings, the first-party `llama` / `qwen` / `gemma` / `gpt-oss` catalog, and pack-aware runtime/briefing defaults from `P14-S3`.
-- The shipped baseline includes polished Hermes/OpenClaw reference integrations, generic Python/TypeScript examples, and reproducible reference demos from `P14-S4`.
-- The shipped baseline includes the design-partner launch/admin surface from `P14-S5`.
-- The shipped baseline includes logging safety and disk guardrails from `HF-001`, including stdout-by-default local logging, disabled local/Lite access logs by default, and bounded file logging when explicitly enabled.
-- `v0.5.1` is the current public pre-1.0 release boundary for that shipped baseline.
-- The working tree includes the `M-001` archive-maintenance repair: absent archive indexes skip checksum verification, maintenance-user bootstrap commits before benchmark imports, and duplicate workflow alert issues are deduped by commenting on an existing open issue.
-- The vNext preview includes Sprint 1 foundation work: vNext schema migration, shared JSON schemas, repository protocols, Postgres vNext store facade, event-log helper, and Brain Charter model.
-- The vNext preview includes Sprint 2 capture: vNext manual text/file/Markdown/ChatGPT source capture, content-hash dedupe, chunking, candidate-memory creation, provenance links, failure logging, `alicebot vnext sources ...` CLI commands, and minimal source API endpoints for text capture/get/delete.
-- The vNext preview includes Sprint 3 retrieval/context packs: deterministic query classification, keyword memory/source/open-loop retrieval, domain/sensitivity filtering, provenance-backed context packs, trace metadata, `alicebot context-pack`, `/v0/vnext/context-packs`, and `alice_vnext_context_pack` MCP access.
-- The vNext preview includes Sprint 4 queue/artifacts: vNext task enqueue/process-next behavior, deterministic generated artifacts, artifact review/export actions, `alicebot vnext queue ...` and `alicebot vnext artifacts ...` CLI commands, and queue/artifact API endpoints.
-- The vNext preview includes Sprint 5 brain workflows: deterministic daily brief and weekly synthesis artifacts, source/reference sections, inherited sensitivity, candidate open loops/memories, `alicebot daily-brief`, `alicebot weekly-synthesis`, vNext artifact-generation API endpoints, and MCP tools for daily/weekly generation.
-- The vNext preview includes Sprint 6 connection/graph workflows: deterministic connection reports, candidate graph edge creation with confidence/explanations, edge review status, graph neighborhood lookup, `alicebot connections generate`, `alicebot vnext graph ...`, vNext graph API endpoints, and MCP tools for connection/graph operations.
-- The vNext preview includes Sprint 7 contradiction/belief workflows: deterministic contradiction reports, candidate contradiction graph edges, direct-conflict versus nuance classification, explicit belief challenge/supersession review actions, belief state history lookup, `alicebot vnext contradictions ...`, `alicebot vnext beliefs ...`, vNext belief/contradiction API endpoints, and MCP tools for contradiction/belief operations.
-- The vNext preview includes Sprint 8 project/open-loop workflows: deterministic project update candidate artifacts, candidate project-state memories, accept/edit/reject review actions, open-loop extraction with source/date/owner metadata, close/snooze/edit/reopen open-loop actions, project dashboard data, `alicebot vnext projects ...`, `alicebot vnext open-loops ...`, vNext project/open-loop API endpoints, and MCP tools for project/open-loop operations.
-- The vNext preview includes Sprint 9 UI: `/vnext` in the existing Next.js web shell with fixture-backed Home, Inbox, Ask Alice, Daily Brief, Weekly Synthesis, Queue, Generated, Memory Review, Projects, People, Beliefs, Open Loops, Timeline, Graph, and Settings/Privacy surfaces; stateful review actions; Ask Alice provenance; generated artifacts; and visible domain/sensitivity labels.
-- The vNext preview includes Sprint 10 eval/hardening: deterministic synthetic benchmark corpus generation, recall/temporal/contradiction/privacy/provenance/open-loop/prompt-injection eval suites, baseline targets, `alicebot eval seed/run/report`, an `alice` console-script alias, report writing, zero critical privacy leaks, and prompt-injection sources quarantined without tool writes.
-- The vNext preview includes Sprint 11 connector expansion: deterministic Telegram, browser clipper, PDF/DOCX/CSV/screenshot, and voice-transcript payload ingestion through the vNext capture path, raw evidence preservation, default domain/sensitivity labels, event-log sync cursors, failure isolation, `alicebot vnext connectors ...` CLI commands, connector API endpoints, and fixture-backed connector settings UI.
-- The vNext preview includes Sprint 12 public release polish: README vNext preview positioning, docs for quickstart/Docker/local install/architecture/security/privacy/contribution, example `ALICE.md`, synthetic demo dataset, demo video script, and vNext public release checklist with no-secrets and verification gates.
-- The vNext preview includes the live capture connectors sprint: allowlisted Telegram sync, local folder/Obsidian scan and watch, browser clipper capture endpoint/bookmarklet guidance, Hermes/OpenClaw-style agent output ingestion through CLI/API/MCP, connector health telemetry, dogfooding dashboard metrics, capture-to-brief smoke validation, and review-only trust preservation for all live connector output.
-- The vNext preview includes dogfood hardening: dedicated connector settings/state tables, environment/encrypted-local secret-provider references, restart-safe cursor/checkpoint storage, migration/doctor readiness checks, live `/vnext` connector configuration, browser clipper token enforcement, Telegram retry/cursor hardening, generated-output recapture prevention, and daily dogfood runbook.
+## Snapshot
+- `v0.5.1` is the latest tagged pre-1.0 baseline: local-first memory core, provenance, trust classes, correction/supersession, open loops, resumption briefs, CLI/API/MCP surfaces, and the local review console.
+- The `product-overhaul` branch is in progress. It repositions Alice as the continuity layer for AI agents (agent developers are the customer) and lands as one release.
 
-## Phase Transition Note
-- Phase 14 is complete as a feature phase.
-- `HF-001` is complete as a defect-only hardening sprint.
-- `v0.5.1` closes the shipped Phase 14 platform plus the post-phase logging safety hardening.
-- `M-001` is implemented in this working tree and should be validated in GitHub Actions after PR push/merge.
-- Alice vNext Sprint 1 through Sprint 12, the live capture connectors sprint, and dogfood hardening are implemented and in the public-preview release gate.
+## Product-Overhaul Workstreams
+- **Retrieval rebuild** — search is Postgres full-text plus pgvector (HNSW) fused with reciprocal-rank fusion; embeddings come from a configurable OpenAI-compatible endpoint (`ALICE_EMBEDDINGS_BASE_URL` / `ALICE_EMBEDDINGS_MODEL` / `ALICE_EMBEDDINGS_API_KEY`); unconfigured search degrades to full-text with an explicit trace note.
+- **MCP consolidation** — nine core tools; the legacy tool surface stays behind `ALICE_MCP_LEGACY_TOOLS=1`.
+- **Agent auth** — per-agent API keys for HTTP API access.
+- **Honest evals** — eval suites execute the production retrieval/commit pipeline; no simulated passes.
+- **Packaging** — one quickstart path (`make setup && make migrate && make doctor && make dev`); process docs archived under `docs/archive/process/`; Python package will publish to PyPI as `alice-memory`.
 
-## Post-Preview Decisions
-- After the preview gate closes, choose the next product slice: broader live-backed `/vnext` workflows, managed connector OAuth, production scheduling, or model-backed evaluation.
-- Decide whether the older implementation-planning notes for early vNext sprints should be compacted or archived now that the release gate is the active execution posture.
-- Avoid reopening completed Phase 14 or `HF-001` scope unless a concrete defect or release-readiness issue is identified.
+## Boundaries That Hold
+- Review-governed writes: agent memory commits resolve to commit, confirm, review, or reject through policy; no direct database writes by agents.
+- Local-first, single-user; no hosted service; no OAuth connectors; no automatic capture from arbitrary conversation.
+
+## Not Current State
+- Nothing on PyPI/npm yet; no hosted offering; no SLA.

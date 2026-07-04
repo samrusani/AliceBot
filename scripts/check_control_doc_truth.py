@@ -18,48 +18,56 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="README.md",
         required_markers=(
-            "`v0.5.1` is the current **pre-1.0 public release**.",
-            "`v0.5.1-vnext-preview`",
-            "## Release Boundary (`v0.5.1`)",
-            "Phase 13 adoption surfaces:",
-            "Historical planning/control artifacts remain available in:",
-            "Phase 14 platform surfaces:",
+            "**The continuity layer for AI agents.**",
+            "make doctor",
+            "ALICE_MCP_LEGACY_TOOLS=1",
+            "## Status",
         ),
     ),
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "`v0.5.1`: released",
-            "Phase 14 is shipped.",
-            "Alice vNext public preview release gate is active for `v0.5.1-vnext-preview`.",
-        ),
-    ),
-    ControlDocTruthRule(
-        relative_path=".ai/active/SPRINT_PACKET.md",
-        required_markers=(
-            "Alice vNext Public Preview Release Gate",
-            "`v0.5.1-vnext-preview` is the vNext public-preview tag target.",
-            "release-gate",
+            "`v0.5.1`: released.",
+            "## In Progress: Product Overhaul",
+            "## Explicit Non-Goals For Now",
         ),
     ),
     ControlDocTruthRule(
         relative_path="RULES.md",
         required_markers=(
-            "While `v0.5.1-vnext-preview` is the active release gate",
+            "## No Fake Intelligence",
+            "The vNext store is the canonical memory system.",
             "Continuity semantics must not fork by provider.",
+        ),
+    ),
+    ControlDocTruthRule(
+        relative_path="CURRENT_STATE.md",
+        required_markers=(
+            "`v0.5.1` is the latest tagged pre-1.0 baseline",
+            "## Product-Overhaul Workstreams",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "`v0.5.1` remains the latest stable public release tag.",
-            "Phase 14 is shipped.",
-            "Alice vNext public preview release gate is active.",
+            "`v0.5.1` is the latest tagged pre-1.0 baseline",
+            "## Product-Overhaul Workstreams",
+        ),
+    ),
+    ControlDocTruthRule(
+        relative_path="PRODUCT_BRIEF.md",
+        required_markers=(
+            "Alice is the continuity layer for AI agents",
+            "## Non-Goals (Now)",
         ),
     ),
     ControlDocTruthRule(
         relative_path="docs/archive/planning/2026-04-08-context-compaction/README.md",
         required_markers=("This folder preserves superseded planning and control material removed from the live docs during Context Compaction 01.",),
+    ),
+    ControlDocTruthRule(
+        relative_path="docs/archive/process/README.md",
+        required_markers=("historical build-process artifacts",),
     ),
 )
 
@@ -74,6 +82,11 @@ DISALLOWED_MARKERS: tuple[str, ...] = (
     "No active build sprint is open.",
     "Phase 10 planning docs are not defined yet.",
     "Keep this file as an idle-state pointer, not as a fake active sprint.",
+    "CTO summary",
+    "control tower",
+    "design partner",
+    "second brain",
+    "HF-001",
 )
 
 

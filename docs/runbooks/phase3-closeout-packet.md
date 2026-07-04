@@ -23,8 +23,8 @@ Capture the following in one reviewable bundle:
 - final statuses showing `Control-doc truth check: PASS`, unit test PASS, `Phase 3 validation matrix` PASS, and `Phase 2 validation matrix` PASS
 - timestamped operator note that canonical docs are aligned through Phase 3 Sprint 9
 - links to current sprint reports at repo root:
-  - `BUILD_REPORT.md`
-  - `REVIEW_REPORT.md`
+  - `docs/archive/process/BUILD_REPORT.md`
+  - `docs/archive/process/REVIEW_REPORT.md`
 
 ## Explicit Deferred Scope Entering Next Phase
 

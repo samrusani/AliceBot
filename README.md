@@ -1,8 +1,3 @@
-<!--
-SEO keywords: alice ai memory, ai agent memory, continuity layer, mcp memory server,
-durable memory for agents, agent resumption, open loop tracking, local-first ai runtime
--->
-
 # Alice
 
 **The continuity layer for AI agents.**
@@ -10,44 +5,29 @@ durable memory for agents, agent resumption, open loop tracking, local-first ai 
 ![Local-first](https://img.shields.io/badge/local--first-core-0A7B61)
 ![MCP](https://img.shields.io/badge/MCP-supported-1f6feb)
 ![Python](https://img.shields.io/badge/python-3.12%2B-3776AB)
-![Docker](https://img.shields.io/badge/docker-required-2496ED)
 ![License](https://img.shields.io/badge/license-MIT-2ea043)
 
-Alice helps agents **remember what matters, resume interrupted work, explain why something is true, and improve when corrected**.
+Alice is a local-first memory service that lets AI agents resume interrupted work, track open loops, recall decisions with provenance, and improve when corrected — instead of re-reading transcripts or trusting opaque summaries.
 
-`v0.5.1` is the current **pre-1.0 public release**.
+Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes land as policy-checked commits or reviewable proposals, and a local review console is where memory gets approved, corrected, or forgotten. That review boundary is a feature, not a limitation — it is what makes the memory trustworthy enough to act on.
 
-This working tree also contains the Alice vNext public-preview seed described in
-[docs/vnext/README.md](docs/vnext/README.md). The vNext preview uses the pre-release tag
-`v0.5.1-vnext-preview`; `v0.5.1` remains the current stable pre-1.0 public release.
+## How Alice compares
 
-Most assistants are still good only in the moment. They can answer the current prompt, but they struggle to preserve decisions, track open loops, recover context across sessions, and stay aligned after memory corrections.
+Most agent memory tools — mem0, Zep, Letta, and similar — focus on extracting facts from conversations and retrieving them later. That solves recall, and they do it well. Alice focuses on continuity: it stores typed continuity objects (decisions, open loops, resumption briefs) alongside plain memories; every answer carries explainable provenance back to source evidence; and writes are review-governed, so an agent cannot silently promote a bad extraction into durable truth. If you mainly need conversational fact recall, those tools are solid choices. If your agents need to resume work, honor past decisions, and explain why they believe something, that is what Alice is built for.
 
-Alice fixes that.
+## What Alice stores
 
-It provides a **local-first memory and continuity engine** for capture, recall, resumption, open-loop tracking, and correction-aware, trust-aware memory, so you do not have to rebuild context from scratch every time work resumes.
+- **Memories** — typed, revisioned facts with trust classification and provenance links to source evidence.
+- **Decisions** — what was decided, when, and what superseded it.
+- **Open loops** — blockers, waiting-fors, and follow-ups that agents can query, create, and close.
+- **Resumption briefs** — "here is where work stopped, and what should happen next" for a project or thread.
+- **Provenance and audit** — every memory can explain which sources, reviews, and corrections produced it.
 
-**Bring your own models, keep one continuity layer.**
+Corrections are first-class: when a memory is corrected or superseded, future recall reflects the correction and the explanation chain shows why.
 
-**Works across local, self-hosted, enterprise, and external-agent workflows via CLI, MCP, provider runtime, OpenClaw import, and Hermes integration.**
+## Quickstart
 
-## Alice vNext Preview
-
-Alice vNext is the next release candidate for the true second-brain product. It is organized into three layers:
-
-- **Alice Core**: local-first storage, provenance, policy, event logging, revisions, graph objects, sources, and connector evidence.
-- **Alice Brain**: user-facing second-brain workflows such as daily briefs, weekly syntheses, context packs, contradiction reports, project updates, open loops, and reviewable artifacts.
-- **Alice Agent Memory**: CLI, API, and MCP surfaces that let agents capture, retrieve, resume, explain, generate context, propose or explicitly commit memory through policy, and trigger governed workflows without owning the memory store.
-
-The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, model-backed source-grounded synthesis, human artifact quality ratings, deterministic-vs-model comparison controls, synthetic evals, live local capture connectors for Telegram, local folders/Obsidian notes, browser clips, and Hermes/OpenClaw-style agent outputs, dedicated connector settings/state storage, encrypted local secret references, deterministic document connector payload ingestion, trusted agent memory commit with inline confirmation/review/reject policy, agent identity/policy auditing, a governed local scheduler with due scans, a local scheduler daemon, policy telemetry, dogfooding readiness telemetry, doctor/readiness checks, capture-to-brief traceability, and a live/fixture-backed `/vnext` operator workspace with source review, memory review, trusted commit audit, artifact review, project, open-loop, scheduler, connector, and doctor controls.
-
-## Public Preview Quickstart
-
-Alice is a local-first memory and continuity layer for humans and agents. It lets agents like Hermes, OpenClaw, or your own custom agents request scoped context, submit outputs, explicitly commit user-directed memories through Alice policy, propose reviewable memories, create open loops, and generate reviewable artifacts without giving them direct database access to trusted memory. The `/vnext` workspace is the operator console for review, audit, configuration, undo/correction/forget, and troubleshooting.
-
-Alice is not a notes app, an Obsidian clone, a chatbot with memory, hosted SaaS, or automatic memory autopilot. The current release candidate is a technical local public preview for design partners and agent builders.
-
-Fast path:
+Requirements: Python 3.12+, Node 20+, pnpm, Docker, Git.
 
 ```bash
 git clone https://github.com/samrusani/AliceBot.git
@@ -58,423 +38,90 @@ make doctor
 make dev
 ```
 
-`make setup` creates `.env`, `.env.lite`, and `apps/web/.env.local` when they are missing. Local live `/vnext` uses `CORS_ALLOWED_ORIGINS=http://127.0.0.1:3000,http://localhost:3000` and `NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000`.
+- `make setup` creates `.env` files from checked-in examples and installs Python and web dependencies.
+- `make migrate` starts local services (Postgres via Docker) and runs database migrations.
+- `make doctor` runs readiness checks and applies safe fixes.
+- `make dev` runs the API on port 8000 and the web review console on port 3000.
 
-Then open:
+Open the review console at `http://localhost:3000/vnext`. The detailed walkthrough — demo data, smoke checks, first memory — is in [docs/alpha/quickstart.md](docs/alpha/quickstart.md).
 
-```text
-http://localhost:3000/vnext
+> **Install note:** Alice currently runs from a repo checkout. When the Python package is published to PyPI it will ship as `alice-memory` (the name `alice-core` belongs to an unrelated project).
+
+## Connect an agent
+
+### MCP
+
+Point any MCP-capable agent or IDE at the Alice server:
+
+```json
+{
+  "mcpServers": {
+    "alice": {
+      "command": "/ABSOLUTE/PATH/TO/AliceBot/.venv/bin/python",
+      "args": ["-m", "alicebot_api.mcp_server"],
+      "cwd": "/ABSOLUTE/PATH/TO/AliceBot",
+      "env": {
+        "DATABASE_URL": "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot",
+        "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001"
+      }
+    }
+  }
+}
 ```
 
-Load safe synthetic demo data and run the preview-readiness gate:
+The core MCP surface is nine tools:
+
+- `alice_capture` — submit new information as source-backed, reviewable memory
+- `alice_recall` — search memory (full-text plus vector, fused ranking)
+- `alice_resume` — resumption brief for a project or thread
+- `alice_context_pack` — scoped context bundle for a task
+- `alice_open_loops` — list and manage open loops
+- `alice_recent_decisions` — recent decision log
+- `alice_memory_review` — inspect items pending review
+- `alice_memory_correct` — propose a correction to an existing memory
+- `alice_explain` — provenance and trust explanation for a memory
+
+The legacy long-tail tool surface stays available behind `ALICE_MCP_LEGACY_TOOLS=1` for existing integrations.
+
+Custom agents calling the HTTP API authenticate with per-agent API keys. See [docs/alpha/agent-integration.md](docs/alpha/agent-integration.md).
+
+### Embeddings
+
+Semantic search works with any OpenAI-compatible embeddings endpoint — Ollama, LM Studio, or OpenAI:
 
 ```bash
-alicebot vnext demo load --reset
-alicebot vnext smoke local-cors
-alicebot vnext smoke agent-integration-pack
-alicebot vnext smoke agentic-memory-commit
-alicebot vnext alpha check
+ALICE_EMBEDDINGS_BASE_URL=http://localhost:11434/v1
+ALICE_EMBEDDINGS_MODEL=nomic-embed-text
+ALICE_EMBEDDINGS_API_KEY=            # only if the endpoint requires one
 ```
 
-Agent integration starts with [docs/alpha/agent-integration.md](docs/alpha/agent-integration.md), [docs/alpha/mcp-tools.md](docs/alpha/mcp-tools.md), [docs/alpha/hermes-skill.md](docs/alpha/hermes-skill.md), and [docs/alpha/openclaw-skill.md](docs/alpha/openclaw-skill.md). Security, privacy, and limitations are documented in [docs/alpha/security-and-privacy.md](docs/alpha/security-and-privacy.md) and [docs/alpha/known-limitations.md](docs/alpha/known-limitations.md).
+Search fuses Postgres full-text results with pgvector (HNSW) similarity using reciprocal-rank fusion. If no embedding endpoint is configured, search degrades to full-text only and says so explicitly in the retrieval trace.
 
-Headless Ubuntu/Hermes preview dogfood starts with [docs/alpha/headless-ubuntu-install.md](docs/alpha/headless-ubuntu-install.md) and [docs/alpha/hermes-dogfood-ubuntu.md](docs/alpha/hermes-dogfood-ubuntu.md). The secure default is localhost binding plus SSH tunneling:
+## Status
 
-```bash
-ssh -L 3000:127.0.0.1:3000 -L 8000:127.0.0.1:8000 user@server
-```
+Alice is pre-1.0. What that means in practice:
 
-Start with:
-
-- [Public preview docs](docs/alpha/README.md)
-- [Public preview quickstart](docs/alpha/quickstart.md)
-- [First-run checklist](docs/alpha/first-run.md)
-- [Headless Ubuntu install](docs/alpha/headless-ubuntu-install.md)
-- [Hermes dogfood on Ubuntu](docs/alpha/hermes-dogfood-ubuntu.md)
-- [Agent integration pack](docs/alpha/agent-integration.md)
-- [vNext overview](docs/vnext/README.md)
-- [vNext quickstart](docs/vnext/quickstart.md)
-- [vNext architecture](docs/vnext/architecture.md)
-- [vNext local runtime](docs/vnext/local-runtime.md)
-- [vNext security and privacy](docs/vnext/security-privacy.md)
-- [Example ALICE.md](docs/vnext/ALICE.example.md)
-- [vNext demo video script](docs/vnext/demo-video-script.md)
-- [vNext release checklist](docs/release/vnext-public-release-checklist.md)
-- [vNext preview release notes](docs/release/v0.5.1-vnext-preview-release-notes.md)
-- [vNext preview tag plan](docs/release/v0.5.1-vnext-preview-tag-plan.md)
-- [Agentic control plane CTO summary](docs/vnext-agentic-control-plane-cto-summary.md)
-- [Local runtime CTO summary](docs/vnext-local-runtime-cto-summary.md)
-- [Model-backed intelligence CTO summary](docs/vnext-model-backed-intelligence-cto-summary.md)
-- [Live capture connectors CTO summary](docs/vnext-live-capture-connectors-cto-summary.md)
-- [Dogfood hardening CTO summary](docs/vnext-dogfood-hardening-cto-summary.md)
-- [Live-backed operator console CTO summary](docs/vnext-live-backed-operator-console-cto-summary.md)
-- [Legacy public-alpha packaging CTO summary](docs/vnext-public-alpha-packaging-cto-summary.md)
-- [Headless Ubuntu packaging CTO summary](docs/vnext-headless-ubuntu-cto-summary.md)
-- [Agentic memory commit CTO summary](docs/vnext-agentic-memory-commit-cto-summary.md)
-- [Dogfood daily checklist](docs/runbooks/vnext-dogfood-daily-checklist.md)
-
-## Release Boundary (`v0.5.1`)
-
-Completed baseline included in this pre-1.0 public release:
-
-- Phase 9 continuity core and deterministic local CLI/MCP/importer seams
-- Phase 10 hosted/product layer
-- Phase 11 provider runtime, adapters, and model packs
-- Bridge `B1` through `B4` provider contract, auto-capture flow, review/explainability flow, and bridge docs/smoke validation
-- Phase 12 retrieval quality stack:
-  - hybrid retrieval and reranking
-  - explicit memory mutation operations
-  - contradiction detection and trust calibration
-  - public eval harness and baseline reports
-  - task-adaptive briefing
-- Phase 13 adoption surfaces:
-  - one-call continuity across API, CLI, and MCP
-  - Alice Lite one-command local profile
-  - memory hygiene visibility
-  - conversation/thread health visibility
-- Phase 14 platform surfaces:
-  - provider/runtime portability across OpenAI-compatible, Ollama, llama.cpp, vLLM, and Azure-backed paths
-  - first-party `llama`, `qwen`, `gemma`, and `gpt-oss` model packs with provider-aware bindings
-  - Hermes and OpenClaw reference integrations plus generic Python/TypeScript examples
-  - design-partner launch/admin surface and launch evidence artifacts
-- `HF-001` logging safety hardening:
-  - stdout-by-default local/Lite logging
-  - access logs disabled by default in local/Lite profile
-  - bounded opt-in file logging with rotation
-
-Historical planning/control artifacts remain available in:
-[docs/archive/planning/2026-04-08-context-compaction/README.md](docs/archive/planning/2026-04-08-context-compaction/README.md)
-
-## Why Alice exists
-
-AI assistants still fail in the same places:
-
-- important decisions disappear into old chats
-- interrupted work is hard to resume
-- blockers and waiting-fors get lost
-- memory corrections do not reliably improve future behavior
-- "memory" often means vague summaries with unclear provenance
-
-Alice is built to solve those problems directly.
-
-## What Alice gives you
-
-Use Alice if you want your agents or workflows to:
-
-- remember decisions, commitments, and context across sessions
-- resume work without rereading long threads
-- track waiting-fors, blockers, and unresolved follow-ups
-- improve deterministically when memory is corrected
-- stay portable across CLI, MCP, and imported workflow data
-
-## Why Alice is different
-
-### Built for continuity, not just storage
-
-Alice does not treat memory as a pile of chat history or loose summaries.
-It stores **typed continuity objects, revisions, provenance, and open loops** so context can be reused operationally.
-
-### Built for resumption, not just retrieval
-
-Most memory tools help you find something.
-Alice is designed to answer the higher-value questions:
-
-- What did we decide?
-- What changed?
-- What am I waiting on?
-- What should happen next?
-
-### Correction-aware by design
-
-Alice supports explicit **review, correction, and supersession** so future answers improve in a traceable way instead of drifting based on hidden summarization.
-
-### Trust-aware by default
-
-Alice does not treat every memory as equally reliable.
-Memories carry **trust classification** and **promotion eligibility**, so agents can search broadly without promoting weak, single-source AI-extracted facts into durable truth by default.
-
-### Explainable, not opaque
-
-Recall, resumption, open-loop review, and explain output all expose a shared explanation model with:
-
-- source facts
-- trust posture
-- evidence segments
-- supersession notes
-- timestamps
-
-That makes it easier to audit why an answer appeared, how it was derived, and how corrections changed the explanation chain over time.
-
-### Local-first and agent-agnostic
-
-Alice Core runs locally and exposes the same continuity semantics through the CLI and MCP, so you can use it with your own workflows instead of being locked into a closed assistant product.
-
-### Swap providers, not behavior
-
-Alice is now model-flexible.
-You can switch or standardize model backends across local, self-hosted, enterprise, and external-agent environments without rewriting Alice's continuity, memory, approval, or provenance behavior.
-
-## Use Alice with your existing agents
-
-Alice is designed to be a **continuity layer**, not a closed assistant silo.
-
-It already supports:
-
-- **MCP-based integrations**
-- **OpenClaw import and augmentation**
-- **Hermes provider-plus-MCP bridge for always-on continuity**
-- **Hermes external memory provider with lifecycle automation and auto-capture**
-- **Provider runtime abstraction for workspace-scoped model/provider integration**
-- **Local, self-hosted, enterprise, and external-agent deployment paths**
-- imported workflow data from Markdown and ChatGPT exports
-
-That means you can use Alice as shared continuity infrastructure across providers and frameworks instead of rebuilding memory behavior per runtime.
-
-## What ships today
-
-The current open-source surface includes:
-
-- Alice Core
-- deterministic CLI workflows
-- MCP server
-- trust-aware memory classification and promotion controls
-- shared explainability across recall, resume, open-loop review, and explain surfaces
-- scheduled archive maintenance, ops status reporting, and failure alerting
-- Hermes bridge with provider lifecycle hooks, always-on continuity prefetch, turn auto-capture, policy-based commit modes (`manual` / `assist` / `auto`), and reviewable explainable candidate memory flows
-- provider runtime abstraction with workspace-scoped provider registration, capability snapshots, OpenAI-compatible base adapter, local Ollama/llama.cpp, self-hosted vLLM, enterprise Azure, model packs, and external-agent integration paths
-- provider-aware model-pack bindings and first-party `llama` / `qwen` / `gemma` / `gpt-oss` pack defaults
-- hybrid retrieval with persisted retrieval traces and debug visibility
-- explicit memory mutation operations with auditability and idempotent replay behavior
-- contradiction detection, contradiction-aware ranking penalties, and trust-signal inspection
-- public eval harness with fixture catalog and checked-in baseline report support
-- task-adaptive briefing for user recall, resume, worker subtask, and agent handoff
-- one-call continuity through `POST /v1/continuity/brief`, `alice brief`, and `alice_brief`
-- Alice Lite one-command local startup profile
-- memory hygiene and thread-health dashboards across API, CLI, and web
-- importers for OpenClaw, Markdown, and ChatGPT exports
-- OpenClaw adapter and demo path
-- generic Python and TypeScript reference agent examples and reproducible demos
-- design-partner launch/admin surface and anonymized launch evidence
-- stdout-by-default local/Lite logging with bounded opt-in file logging
-- evaluation harness and integration docs
-
-## Quickstart
-
-Alice Lite is the lighter local/dev deployment profile. It uses the same continuity semantics and the same one-call continuity surface as the full baseline. It is a deployment profile, not a separate product.
-
-Clone the repo and install the local runtime:
-
-```bash
-git clone https://github.com/samrusani/AliceBot.git
-cd AliceBot
-make setup
-```
-
-Start Alice Lite with one command:
-
-```bash
-./scripts/alice_lite_up.sh
-```
-
-### First useful result in 5 minutes
-
-In another terminal, bootstrap the sample workspace flow and request the default one-call continuity result:
-
-```bash
-./.venv/bin/python scripts/bootstrap_alice_lite_workspace.py
-```
-
-Or stay on the direct local CLI path and use the shipped one-call continuity entrypoint:
-
-```bash
-./.venv/bin/python -m alicebot_api brief --brief-type general --query "local-first startup path"
-```
-
-Inspect runtime status:
-
-```bash
-./.venv/bin/python -m alicebot_api status
-```
-
-Capture something new:
-
-```bash
-./.venv/bin/python -m alicebot_api capture "Remember that the Q3 board pack is due on Thursday."
-```
-
-Inspect why something is in memory:
-
-```bash
-./.venv/bin/python -m alicebot_api explain <continuity_object_id>
-```
-
-Run the Lite smoke check:
-
-```bash
-./.venv/bin/python scripts/run_alice_lite_smoke.py
-```
-
-For the full local/dev stack with Redis and MinIO, keep using `./scripts/dev_up.sh` plus the existing `./scripts/load_sample_data.sh` and `APP_RELOAD=false ./scripts/api_dev.sh` flow. `dev_up.sh` validates `.env`, derives compose Postgres credentials from the active env, and then runs migrations.
-
-See the full local setup walkthrough in [docs/quickstart/local-setup-and-first-result.md](docs/quickstart/local-setup-and-first-result.md).
-
-## MCP surface
-
-Alice exposes a narrow MCP surface for continuity workflows:
-
-- `alice_capture`
-- `alice_recall`
-- `alice_resume`
-- `alice_open_loops`
-- `alice_recent_decisions`
-- `alice_recent_changes`
-- `alice_memory_review`
-- `alice_memory_correct`
-- `alice_context_pack`
-
-This makes it straightforward to plug Alice into MCP-capable assistants and development environments without changing the underlying continuity model.
-
-See:
-
-- [docs/integrations/hermes-bridge-operator-guide.md](docs/integrations/hermes-bridge-operator-guide.md)
-- [docs/integrations/hermes-provider-plus-mcp-why.md](docs/integrations/hermes-provider-plus-mcp-why.md)
-- [docs/integrations/mcp.md](docs/integrations/mcp.md)
-- [docs/integrations/hermes.md](docs/integrations/hermes.md)
-- [docs/integrations/hermes-memory-provider.md](docs/integrations/hermes-memory-provider.md)
-- [docs/integrations/hermes-skill-pack.md](docs/integrations/hermes-skill-pack.md)
-- [docs/integrations/phase11-local-provider-adapters.md](docs/integrations/phase11-local-provider-adapters.md)
-- [docs/integrations/phase11-azure-autogen.md](docs/integrations/phase11-azure-autogen.md)
-
-Recommended Hermes architecture is provider plus MCP, with MCP-only as a fallback.
-
-One-command Hermes bridge demo:
-
-```bash
-./.venv/bin/python scripts/run_hermes_bridge_demo.py
-```
-
-Hermes runtime smoke tests:
-
-```bash
-./.venv/bin/python scripts/run_hermes_memory_provider_smoke.py
-./.venv/bin/python scripts/run_hermes_mcp_smoke.py
-```
-
-If you use Hermes, run provider plus MCP as the recommended mode, add the skill pack for policy guidance, and keep MCP-only available as fallback.
-
-## OpenClaw and imported workflows
-
-Alice includes importer paths for existing memory and conversation data so you can upgrade an existing workflow instead of starting from zero.
-
-With the current integration surface, you can:
-
-- import OpenClaw memory into Alice
-- normalize imported data into Alice continuity objects
-- run recall and resumption against imported work
-- add Alice MCP workflows on top of an existing setup
-
-OpenClaw demo:
-
-```bash
-./scripts/use_alice_with_openclaw.sh
-```
-
-See:
-
-- [docs/integrations/importers.md](docs/integrations/importers.md)
-- [docs/integrations/openclaw.md](docs/integrations/openclaw.md)
-
-## Why not just use ChatGPT memory?
-
-ChatGPT memory is convenient.
-Alice is structured, explainable, correctable, and portable across agent stacks, with explicit provenance, trust, resumption, and open-loop workflows.
-
-## Example outcomes
-
-### Founder and operator continuity
-
-- keep strategic decisions from disappearing into old chats
-- resume fundraising, hiring, or product threads quickly
-- stay on top of commitments and follow-ups
-
-### Consulting and client work
-
-- preserve client-specific decisions and context
-- restart project work without reconstructing the last week
-- maintain open loops without building a manual CRM ritual
-
-### Agent memory upgrades
-
-- add durable continuity to an existing agent stack
-- improve recall and resumption without rebuilding your runtime
-- keep correction and provenance explicit
-
-## Architecture at a glance
-
-Alice is built around a shared continuity core with:
-
-- structured memory revisions
-- provenance- and trust-aware recall
-- shared explanation chains across recall-derived workflows
-- deterministic archive maintenance with ops-visible health summaries
-- deterministic resumption briefs
-- open-loop objects
-- CLI and MCP surfaces on the same semantics
-
-That means the system behaves consistently across local workflows, MCP-connected agents, and imported data sources.
-
-## Scope Notes
-
-Included in the `v0.5.1` release:
-
-- local-first continuity core
-- CLI and MCP surfaces
-- importer paths (OpenClaw, Markdown, ChatGPT exports)
-- provider runtime and model-pack support from Phase 11
-- Hermes provider-plus-MCP bridge path with MCP-only fallback
-- Phase 12 retrieval, mutation, contradiction/trust, public eval, and task-adaptive briefing surfaces
-- Phase 13 one-call continuity, Alice Lite, and hygiene/thread-health visibility surfaces
-- Phase 14 provider/runtime portability, first-party model packs, reference integrations, and design-partner launch/admin surfaces
-- `HF-001` logging safety and disk-guardrail defaults
-
-Deferred beyond `v0.5.1`:
-
-- `v1.0.0` compatibility/support guarantees
-- managed cloud/SLA commitments
-- new integrations/channels beyond already shipped baseline
+- **Local-first, single-user.** One operator, one machine (or one headless server reached over SSH).
+- **Review-governed writes.** Agents propose or commit through policy; outcomes are commit, confirm, review, or reject. The review console is the trust boundary for durable memory.
+- **No hosted service.** There is no cloud offering yet; you run Alice yourself.
+- **No OAuth connectors.** Capture paths are local files, explicit API/CLI/MCP calls, and agent output ingestion — not automatic syncing of external accounts.
+- **No automatic capture from arbitrary conversation.** Durable memory comes from explicit commits, reviewable proposals, or captured sources, never from silent transcript mining.
 
 ## Docs
 
-- [vNext Preview](docs/vnext/README.md)
-- [Public Alpha](docs/alpha/README.md)
-- [Public Alpha Quickstart](docs/alpha/quickstart.md)
-- [Public Alpha Agent Integration](docs/alpha/agent-integration.md)
-- [Headless Ubuntu Install](docs/alpha/headless-ubuntu-install.md)
-- [Hermes Dogfood On Ubuntu](docs/alpha/hermes-dogfood-ubuntu.md)
-- [Public Alpha Known Limitations](docs/alpha/known-limitations.md)
-- [vNext Quickstart](docs/vnext/quickstart.md)
-- [vNext Architecture](docs/vnext/architecture.md)
-- [vNext Local Runtime](docs/vnext/local-runtime.md)
-- [vNext Security and Privacy](docs/vnext/security-privacy.md)
-- [Agentic Control Plane CTO Summary](docs/vnext-agentic-control-plane-cto-summary.md)
-- [Local Runtime CTO Summary](docs/vnext-local-runtime-cto-summary.md)
-- [Model-Backed Intelligence CTO Summary](docs/vnext-model-backed-intelligence-cto-summary.md)
-- [Live-Backed Operator Console CTO Summary](docs/vnext-live-backed-operator-console-cto-summary.md)
-- [Quickstart](docs/quickstart/local-setup-and-first-result.md)
+- [Quickstart walkthrough](docs/alpha/quickstart.md)
+- [Agent integration](docs/alpha/agent-integration.md)
+- [MCP tools](docs/alpha/mcp-tools.md)
+- [Custom agent guide](docs/alpha/custom-agent-guide.md)
+- [Known limitations](docs/alpha/known-limitations.md)
+- [Security and privacy](docs/alpha/security-and-privacy.md)
 - [Architecture](ARCHITECTURE.md)
-- [MCP](docs/integrations/mcp.md)
-- [Hermes Guide](docs/integrations/hermes.md)
-- [Hermes Memory Provider](docs/integrations/hermes-memory-provider.md)
-- [Hermes Skill Pack](docs/integrations/hermes-skill-pack.md)
-- [Importers](docs/integrations/importers.md)
-- [OpenClaw Guide](docs/integrations/openclaw.md)
-- [Examples](docs/examples/phase9-command-walkthrough.md)
+- [Roadmap](ROADMAP.md)
+- [Changelog](CHANGELOG.md)
 
 ## Contributing
 
-Issues, adapters, importers, eval contributions, and integration examples are welcome.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues, integrations, importers, and eval contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Security
 
@@ -482,4 +129,4 @@ If you discover a security issue, follow the process in [SECURITY.md](SECURITY.m
 
 ## License
 
-See [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

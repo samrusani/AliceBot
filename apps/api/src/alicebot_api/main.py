@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Annotated, Awaitable, Callable, Literal, TypedDict
 from uuid import UUID, uuid4
-from fastapi import FastAPI, Query, Request, Response
+from fastapi import FastAPI, Header, Query, Request, Response
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from fastapi.responses import JSONResponse
@@ -472,6 +472,11 @@ from alicebot_api.vnext_agent_control import (
     evaluate_agent_policy,
     summarize_agent_policy_telemetry,
 )
+from alicebot_api.vnext_agent_keys import (
+    AgentKeyAuthenticationError,
+    agent_key_from_authorization,
+    resolve_agent_identity,
+)
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
 from alicebot_api.vnext_connections import (
@@ -484,6 +489,7 @@ from alicebot_api.vnext_connectors import (
     VNextConnectorValidationError,
     list_connector_definitions,
 )
+from alicebot_api.vnext_context_tree import ContextTreeRequest, VNextContextTreeService, VNextContextTreeValidationError
 from alicebot_api.vnext_contradictions import (
     ContradictionFinderRequest,
     VNextContradictionService,
@@ -1792,6 +1798,28 @@ def _vnext_agent_identity(request: VNextAgentRequest) -> AgentIdentity | None:
     if payload.get("agent_identity") is None and isinstance(payload.get("agent"), dict):
         payload["agent_identity"] = payload["agent"]
     return AgentIdentity.from_payload(payload)
+
+
+def _vnext_authenticated_agent_identity(
+    store: PostgresVNextStore,
+    request: VNextAgentRequest,
+    *,
+    user_id: UUID,
+    authorization: str | None,
+) -> AgentIdentity | None:
+    payload = request.model_dump(mode="json")
+    if payload.get("agent_identity") is None and isinstance(payload.get("agent"), dict):
+        payload["agent_identity"] = payload["agent"]
+    return resolve_agent_identity(
+        store,
+        user_id=user_id,
+        raw_key=agent_key_from_authorization(authorization),
+        payload=payload,
+    )
+
+
+def _vnext_agent_auth_error_response(exc: AgentKeyAuthenticationError) -> JSONResponse:
+    return _vnext_public_error_response(status_code=exc.status_code, detail=str(exc))
 
 
 def _vnext_permission_response(decision: PolicyDecision) -> JSONResponse:
@@ -6298,7 +6326,10 @@ def get_vnext_workspace(user_id: UUID) -> JSONResponse:
 
 
 @app.post("/v0/vnext/sources")
-def create_vnext_source(request: VNextSourceCaptureRequest) -> JSONResponse:
+def create_vnext_source(
+    request: VNextSourceCaptureRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -6308,6 +6339,9 @@ def create_vnext_source(request: VNextSourceCaptureRequest) -> JSONResponse:
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -6337,6 +6371,8 @@ def create_vnext_source(request: VNextSourceCaptureRequest) -> JSONResponse:
                 append_policy_events(store, identity=identity, decision=decision, target_type="source", target_id=str(payload.get("source_id")))
     except VNextCaptureValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext source capture request is invalid")
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -6549,12 +6585,18 @@ def capture_vnext_browser_clip(request: VNextBrowserClipperCaptureRequest) -> JS
 
 
 @app.post("/v0/vnext/agents/ingest-output")
-def ingest_vnext_agent_output(request: VNextAgentOutputIngestRequest) -> JSONResponse:
+def ingest_vnext_agent_output(
+    request: VNextAgentOutputIngestRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             _vnext_agent_record(store, identity)
             decision = _vnext_policy_checked(
                 store=store,
@@ -6571,6 +6613,8 @@ def ingest_vnext_agent_output(request: VNextAgentOutputIngestRequest) -> JSONRes
                 request.model_dump(mode="json"),
                 policy_decision=decision.to_record(),
             ).to_record()
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
     except (AgentIdentityValidationError, VNextConnectorValidationError):
@@ -6606,13 +6650,17 @@ def run_vnext_doctor(request: VNextDoctorRunRequest) -> JSONResponse:
 def record_vnext_artifact_insight_feedback(
     artifact_id: UUID,
     request: VNextArtifactInsightFeedbackRequest,
+    authorization: str | None = Header(default=None),
 ) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
-        actor_type, actor_id = _vnext_agent_actor(identity)
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
+            actor_type, actor_id = _vnext_agent_actor(identity)
             _vnext_agent_record(store, identity)
             payload = VNextDogfoodingService(store).record_insight_feedback(
                 artifact_id=str(artifact_id),
@@ -6622,6 +6670,8 @@ def record_vnext_artifact_insight_feedback(
                 actor_type=actor_type,
                 actor_id=actor_id,
             )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except ValueError:
         return _vnext_public_error_response(status_code=400, detail="vNext artifact insight feedback request is invalid")
     return JSONResponse(status_code=201, content=jsonable_encoder(payload))
@@ -6788,7 +6838,10 @@ def delete_vnext_source(source_id: UUID, user_id: UUID) -> JSONResponse:
 
 
 @app.post("/v0/vnext/context-packs")
-def create_vnext_context_pack(request: VNextContextPackRequest) -> JSONResponse:
+def create_vnext_context_pack(
+    request: VNextContextPackRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     scope = request.scope
     options = request.options
@@ -6819,6 +6872,9 @@ def create_vnext_context_pack(request: VNextContextPackRequest) -> JSONResponse:
         )
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -6852,6 +6908,8 @@ def create_vnext_context_pack(request: VNextContextPackRequest) -> JSONResponse:
             )
     except VNextRetrievalValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext context-pack request is invalid")
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -6859,6 +6917,34 @@ def create_vnext_context_pack(request: VNextContextPackRequest) -> JSONResponse:
         status_code=201,
         content=jsonable_encoder(payload),
     )
+
+
+@app.get("/v0/vnext/context-tree")
+def get_vnext_context_tree(
+    user_id: UUID,
+    query: str = "",
+    domains: Annotated[list[str] | None, Query()] = None,
+    sensitivity_allowed: Annotated[list[str] | None, Query()] = None,
+    limit: int = 12,
+    include_events: bool = True,
+) -> JSONResponse:
+    settings = get_settings()
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = VNextContextTreeService(PostgresVNextStore(conn)).build_tree(
+                ContextTreeRequest(
+                    query=query,
+                    domains=tuple(domains or ()),
+                    sensitivity_allowed=tuple(sensitivity_allowed or ("public", "internal", "private", "unknown")),
+                    limit=limit,
+                    include_events=include_events,
+                    generated_by="user",
+                )
+            )
+    except VNextContextTreeValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
 @app.post("/v0/vnext/memories/{memory_id}/review")
@@ -6987,18 +7073,24 @@ def _vnext_memory_type_for_proposal(proposal_type: str) -> str:
 
 
 @app.post("/v0/vnext/memory-proposals")
-def create_vnext_memory_proposal(request: VNextMemoryProposalRequest) -> JSONResponse:
+def create_vnext_memory_proposal(
+    request: VNextMemoryProposalRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
-        identity = _vnext_agent_identity(request)
+        _vnext_agent_identity(request)
     except AgentIdentityValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
-    if identity is None:
-        return _vnext_public_error_response(status_code=400, detail="agent identity is required for memory proposals")
 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
+            if identity is None:
+                return _vnext_public_error_response(status_code=400, detail="agent identity is required for memory proposals")
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -7077,6 +7169,8 @@ def create_vnext_memory_proposal(request: VNextMemoryProposalRequest) -> JSONRes
                 run_id=identity.agent_run_id,
                 payload={"review_required": True, "proposal_type": request.proposal_type},
             )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -7087,7 +7181,10 @@ def create_vnext_memory_proposal(request: VNextMemoryProposalRequest) -> JSONRes
 
 
 @app.post("/v0/vnext/memories/commit")
-def commit_vnext_memory(request: VNextMemoryCommitRequest) -> JSONResponse:
+def commit_vnext_memory(
+    request: VNextMemoryCommitRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7101,7 +7198,12 @@ def commit_vnext_memory(request: VNextMemoryCommitRequest) -> JSONResponse:
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             payload = VNextMemoryCommitService(store).commit(identity=identity, request=commit_request)
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
@@ -7110,7 +7212,10 @@ def commit_vnext_memory(request: VNextMemoryCommitRequest) -> JSONResponse:
 
 
 @app.post("/v0/vnext/memories/confirm")
-def confirm_vnext_memory(request: VNextMemoryConfirmRequest) -> JSONResponse:
+def confirm_vnext_memory(
+    request: VNextMemoryConfirmRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7120,6 +7225,9 @@ def confirm_vnext_memory(request: VNextMemoryConfirmRequest) -> JSONResponse:
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -7135,6 +7243,8 @@ def confirm_vnext_memory(request: VNextMemoryConfirmRequest) -> JSONResponse:
                 canonical_text=request.canonical_text,
                 rationale=request.rationale,
             )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
@@ -7142,7 +7252,10 @@ def confirm_vnext_memory(request: VNextMemoryConfirmRequest) -> JSONResponse:
 
 
 @app.post("/v0/vnext/memories/undo")
-def undo_vnext_memory(request: VNextMemoryUndoRequest) -> JSONResponse:
+def undo_vnext_memory(
+    request: VNextMemoryUndoRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7152,6 +7265,9 @@ def undo_vnext_memory(request: VNextMemoryUndoRequest) -> JSONResponse:
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -7165,6 +7281,8 @@ def undo_vnext_memory(request: VNextMemoryUndoRequest) -> JSONResponse:
                 memory_id=str(request.memory_id) if request.memory_id is not None else None,
                 reason=request.reason,
             )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
@@ -7172,7 +7290,10 @@ def undo_vnext_memory(request: VNextMemoryUndoRequest) -> JSONResponse:
 
 
 @app.post("/v0/vnext/memories/correct")
-def correct_vnext_memory(request: VNextMemoryCorrectRequest) -> JSONResponse:
+def correct_vnext_memory(
+    request: VNextMemoryCorrectRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7182,6 +7303,9 @@ def correct_vnext_memory(request: VNextMemoryCorrectRequest) -> JSONResponse:
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -7196,6 +7320,8 @@ def correct_vnext_memory(request: VNextMemoryCorrectRequest) -> JSONResponse:
                 canonical_text=request.canonical_text,
                 reason=request.reason,
             )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
@@ -7203,7 +7329,10 @@ def correct_vnext_memory(request: VNextMemoryCorrectRequest) -> JSONResponse:
 
 
 @app.post("/v0/vnext/memories/forget")
-def forget_vnext_memory(request: VNextMemoryForgetRequest) -> JSONResponse:
+def forget_vnext_memory(
+    request: VNextMemoryForgetRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7213,6 +7342,9 @@ def forget_vnext_memory(request: VNextMemoryForgetRequest) -> JSONResponse:
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -7226,6 +7358,8 @@ def forget_vnext_memory(request: VNextMemoryForgetRequest) -> JSONResponse:
                 memory_id=str(request.memory_id),
                 reason=request.reason,
             )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except VNextMemoryCommitValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
 
@@ -7254,7 +7388,10 @@ def get_vnext_memory_audit(memory_id: UUID, user_id: UUID) -> JSONResponse:
 
 
 @app.post("/v0/vnext/artifacts/generate/daily-brief")
-def generate_vnext_daily_brief(request: VNextBrainArtifactGenerateRequest) -> JSONResponse:
+def generate_vnext_daily_brief(
+    request: VNextBrainArtifactGenerateRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7264,6 +7401,9 @@ def generate_vnext_daily_brief(request: VNextBrainArtifactGenerateRequest) -> JS
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             requested_domains = _vnext_string_list(request.scope, "domains")
             requested_sensitivity = _vnext_string_list(request.options, "sensitivity_allowed") or (
                 "public",
@@ -7286,6 +7426,8 @@ def generate_vnext_daily_brief(request: VNextBrainArtifactGenerateRequest) -> JS
             )
     except VNextBrainValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext daily brief request is invalid")
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -7296,7 +7438,10 @@ def generate_vnext_daily_brief(request: VNextBrainArtifactGenerateRequest) -> JS
 
 
 @app.post("/v0/vnext/artifacts/generate/weekly-synthesis")
-def generate_vnext_weekly_synthesis(request: VNextBrainArtifactGenerateRequest) -> JSONResponse:
+def generate_vnext_weekly_synthesis(
+    request: VNextBrainArtifactGenerateRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7306,6 +7451,9 @@ def generate_vnext_weekly_synthesis(request: VNextBrainArtifactGenerateRequest) 
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             requested_domains = _vnext_string_list(request.scope, "domains")
             requested_sensitivity = _vnext_string_list(request.options, "sensitivity_allowed") or (
                 "public",
@@ -7328,6 +7476,8 @@ def generate_vnext_weekly_synthesis(request: VNextBrainArtifactGenerateRequest) 
             )
     except VNextBrainValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext weekly synthesis request is invalid")
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -7338,7 +7488,10 @@ def generate_vnext_weekly_synthesis(request: VNextBrainArtifactGenerateRequest) 
 
 
 @app.post("/v0/vnext/artifacts/generate/connections")
-def generate_vnext_connection_report(request: VNextConnectionReportGenerateRequest) -> JSONResponse:
+def generate_vnext_connection_report(
+    request: VNextConnectionReportGenerateRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7348,6 +7501,9 @@ def generate_vnext_connection_report(request: VNextConnectionReportGenerateReque
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             requested_domains = _vnext_string_list(request.scope, "domains")
             requested_sensitivity = _vnext_string_list(request.options, "sensitivity_allowed") or (
                 "public",
@@ -7371,6 +7527,8 @@ def generate_vnext_connection_report(request: VNextConnectionReportGenerateReque
             )
     except VNextConnectionValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext connection report request is invalid")
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -7381,7 +7539,10 @@ def generate_vnext_connection_report(request: VNextConnectionReportGenerateReque
 
 
 @app.post("/v0/vnext/artifacts/generate/contradictions")
-def generate_vnext_contradiction_report(request: VNextContradictionReportGenerateRequest) -> JSONResponse:
+def generate_vnext_contradiction_report(
+    request: VNextContradictionReportGenerateRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7391,6 +7552,9 @@ def generate_vnext_contradiction_report(request: VNextContradictionReportGenerat
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             requested_domains = _vnext_string_list(request.scope, "domains")
             requested_sensitivity = _vnext_string_list(request.options, "sensitivity_allowed") or (
                 "public",
@@ -7414,6 +7578,8 @@ def generate_vnext_contradiction_report(request: VNextContradictionReportGenerat
             )
     except VNextContradictionValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext contradiction report request is invalid")
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -7424,7 +7590,10 @@ def generate_vnext_contradiction_report(request: VNextContradictionReportGenerat
 
 
 @app.post("/v0/vnext/queue/tasks")
-def create_vnext_queue_task(request: VNextQueueTaskCreateRequest) -> JSONResponse:
+def create_vnext_queue_task(
+    request: VNextQueueTaskCreateRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7434,6 +7603,9 @@ def create_vnext_queue_task(request: VNextQueueTaskCreateRequest) -> JSONRespons
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -7467,6 +7639,8 @@ def create_vnext_queue_task(request: VNextQueueTaskCreateRequest) -> JSONRespons
             )
     except VNextQueueValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext queue task request is invalid")
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -7519,7 +7693,11 @@ def get_vnext_artifact(artifact_id: UUID, user_id: UUID) -> JSONResponse:
 
 
 @app.post("/v0/vnext/artifacts/{artifact_id}/review")
-def review_vnext_artifact(artifact_id: UUID, request: VNextArtifactReviewRequest) -> JSONResponse:
+def review_vnext_artifact(
+    artifact_id: UUID,
+    request: VNextArtifactReviewRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7529,6 +7707,9 @@ def review_vnext_artifact(artifact_id: UUID, request: VNextArtifactReviewRequest
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -7546,6 +7727,8 @@ def review_vnext_artifact(artifact_id: UUID, request: VNextArtifactReviewRequest
         return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
     except VNextQueueValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext artifact review request is invalid")
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -7556,7 +7739,11 @@ def review_vnext_artifact(artifact_id: UUID, request: VNextArtifactReviewRequest
 
 
 @app.post("/v0/vnext/artifacts/{artifact_id}/quality-ratings")
-def rate_vnext_artifact_quality(artifact_id: UUID, request: VNextArtifactQualityRatingRequest) -> JSONResponse:
+def rate_vnext_artifact_quality(
+    artifact_id: UUID,
+    request: VNextArtifactQualityRatingRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     verbosity = request.verbosity.strip().casefold()
     if verbosity not in {"too_shallow", "right_sized", "too_verbose", "unknown"}:
@@ -7569,6 +7756,9 @@ def rate_vnext_artifact_quality(artifact_id: UUID, request: VNextArtifactQuality
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             existing = store.get_artifact(str(artifact_id))
             if existing is None:
                 return _vnext_public_error_response(status_code=404, detail="vNext artifact was not found")
@@ -7607,6 +7797,8 @@ def rate_vnext_artifact_quality(artifact_id: UUID, request: VNextArtifactQuality
                 },
                 actor_type=actor_type,
             )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -7738,7 +7930,10 @@ def get_vnext_belief_state(belief_id: str, user_id: UUID) -> JSONResponse:
 
 
 @app.post("/v0/vnext/projects/update-candidates")
-def generate_vnext_project_update_candidate(request: VNextProjectAutomationRequest) -> JSONResponse:
+def generate_vnext_project_update_candidate(
+    request: VNextProjectAutomationRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7748,6 +7943,9 @@ def generate_vnext_project_update_candidate(request: VNextProjectAutomationReque
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             requested_domains = _vnext_string_list(request.scope, "domains")
             requested_sensitivity = _vnext_string_list(request.options, "sensitivity_allowed") or (
                 "public",
@@ -7770,6 +7968,8 @@ def generate_vnext_project_update_candidate(request: VNextProjectAutomationReque
             )
     except VNextProjectValidationError:
         return _vnext_public_error_response(status_code=400, detail="vNext project update request is invalid")
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -7807,7 +8007,10 @@ def get_vnext_project_dashboard(project_id: str, user_id: UUID) -> JSONResponse:
 
 
 @app.post("/v0/vnext/open-loops")
-def create_vnext_open_loop(request: VNextOpenLoopCreateRequest) -> JSONResponse:
+def create_vnext_open_loop(
+    request: VNextOpenLoopCreateRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7817,6 +8020,9 @@ def create_vnext_open_loop(request: VNextOpenLoopCreateRequest) -> JSONResponse:
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -7858,6 +8064,8 @@ def create_vnext_open_loop(request: VNextOpenLoopCreateRequest) -> JSONResponse:
                     run_id=identity.agent_run_id,
                     payload={"agent_identity": identity.to_record(), "policy_decision": decision.to_record()},
                 )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except AgentPolicyBlockedError as exc:
         return _vnext_permission_response(exc.decision)
 
@@ -7952,7 +8160,11 @@ def get_vnext_agent_policy_telemetry(user_id: UUID, agent_id: str | None = None,
 
 
 @app.patch("/v0/vnext/scheduler/workflows/{workflow_type}")
-def patch_vnext_scheduler_workflow(workflow_type: str, request: VNextSchedulerWorkflowPatchRequest) -> JSONResponse:
+def patch_vnext_scheduler_workflow(
+    workflow_type: str,
+    request: VNextSchedulerWorkflowPatchRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -7964,6 +8176,9 @@ def patch_vnext_scheduler_workflow(workflow_type: str, request: VNextSchedulerWo
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -7985,6 +8200,8 @@ def patch_vnext_scheduler_workflow(workflow_type: str, request: VNextSchedulerWo
                 else None,
                 actor_type=actor_type,
             )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except VNextSchedulerValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
     except AgentPolicyBlockedError as exc:
@@ -7994,7 +8211,11 @@ def patch_vnext_scheduler_workflow(workflow_type: str, request: VNextSchedulerWo
 
 
 @app.post("/v0/vnext/scheduler/workflows/{workflow_type}/run-now")
-def run_vnext_scheduler_workflow_now(workflow_type: str, request: VNextSchedulerRunNowRequest) -> JSONResponse:
+def run_vnext_scheduler_workflow_now(
+    workflow_type: str,
+    request: VNextSchedulerRunNowRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -8013,6 +8234,9 @@ def run_vnext_scheduler_workflow_now(workflow_type: str, request: VNextScheduler
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -8037,6 +8261,8 @@ def run_vnext_scheduler_workflow_now(workflow_type: str, request: VNextScheduler
                     options=options,
                 )
             )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except VNextSchedulerValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
     except AgentPolicyBlockedError as exc:
@@ -8046,7 +8272,10 @@ def run_vnext_scheduler_workflow_now(workflow_type: str, request: VNextScheduler
 
 
 @app.post("/v0/vnext/scheduler/run-due")
-def run_vnext_scheduler_due(request: VNextSchedulerRunDueRequest) -> JSONResponse:
+def run_vnext_scheduler_due(
+    request: VNextSchedulerRunDueRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
     settings = get_settings()
     try:
         identity = _vnext_agent_identity(request)
@@ -8056,6 +8285,9 @@ def run_vnext_scheduler_due(request: VNextSchedulerRunDueRequest) -> JSONRespons
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -8071,6 +8303,8 @@ def run_vnext_scheduler_due(request: VNextSchedulerRunDueRequest) -> JSONRespons
                 agent_identity=identity,
                 policy_decision=decision,
             )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except VNextSchedulerValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
     except AgentPolicyBlockedError as exc:
@@ -8080,13 +8314,19 @@ def run_vnext_scheduler_due(request: VNextSchedulerRunDueRequest) -> JSONRespons
 
 
 @app.post("/v0/vnext/scheduler/pause")
-def pause_vnext_scheduler(request: VNextSchedulerControlRequest) -> JSONResponse:
-    return _vnext_scheduler_global_control(request, action="scheduler.pause", pause=True)
+def pause_vnext_scheduler(
+    request: VNextSchedulerControlRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    return _vnext_scheduler_global_control(request, action="scheduler.pause", pause=True, authorization=authorization)
 
 
 @app.post("/v0/vnext/scheduler/resume")
-def resume_vnext_scheduler(request: VNextSchedulerControlRequest) -> JSONResponse:
-    return _vnext_scheduler_global_control(request, action="scheduler.resume", pause=False)
+def resume_vnext_scheduler(
+    request: VNextSchedulerControlRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    return _vnext_scheduler_global_control(request, action="scheduler.resume", pause=False, authorization=authorization)
 
 
 def _vnext_scheduler_global_control(
@@ -8094,6 +8334,7 @@ def _vnext_scheduler_global_control(
     *,
     action: str,
     pause: bool,
+    authorization: str | None = None,
 ) -> JSONResponse:
     settings = get_settings()
     try:
@@ -8104,6 +8345,9 @@ def _vnext_scheduler_global_control(
     try:
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
             decision = _vnext_policy_checked(
                 store=store,
                 identity=identity,
@@ -8115,6 +8359,8 @@ def _vnext_scheduler_global_control(
             actor_type, _actor_id = _vnext_agent_actor(identity, fallback="user")
             service = VNextSchedulerService(store)
             payload = service.pause_all(actor_type=actor_type) if pause else service.resume_all(actor_type=actor_type)
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
     except VNextSchedulerValidationError as exc:
         return _vnext_public_error_response(status_code=400, detail=str(exc))
     except AgentPolicyBlockedError as exc:

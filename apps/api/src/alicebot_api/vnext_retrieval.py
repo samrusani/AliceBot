@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import re
-from typing import Protocol
+from typing import Mapping, Protocol, Sequence
 from uuid import uuid4
 
+from alicebot_api.vnext_embeddings import (
+    EmbeddingProvider,
+    VNextEmbeddingConfigurationError,
+    VNextEmbeddingProviderError,
+    get_embedding_provider,
+)
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_repositories import JsonObject
 
@@ -14,6 +20,10 @@ DEFAULT_SOURCE_LIMIT = 8
 DEFAULT_OPEN_LOOP_LIMIT = 8
 DEFAULT_SENSITIVITY_ALLOWED = ("public", "internal", "private", "unknown")
 STRATEGIC_QUERY_TYPES = {"strategic_synthesis", "contradiction_check", "project_status", "agent_context"}
+RRF_K = 60
+VECTOR_STAGE_ENABLED = "enabled"
+VECTOR_STAGE_DISABLED_NO_PROVIDER = "disabled: no embedding provider configured"
+VECTOR_STAGE_DISABLED_NO_STORE_SUPPORT = "disabled: store does not support vector search"
 
 
 class VNextRetrievalValidationError(ValueError):
@@ -21,6 +31,13 @@ class VNextRetrievalValidationError(ValueError):
 
 
 class VNextRetrievalStore(Protocol):
+    """Minimum store surface for context-pack retrieval.
+
+    Stores may additionally expose ``search_memories_fts`` and
+    ``search_memories_vector`` (see ``PostgresVNextStore``); the service
+    detects them at runtime and degrades to ``search_memories`` otherwise.
+    """
+
     def append_event(self, event: JsonObject) -> JsonObject: ...
 
     def search_memories(
@@ -80,7 +97,8 @@ class RetrievalCandidate:
     item: JsonObject
     target_type: str
     rank: int
-    lexical_score: int
+    rrf_score: float
+    stage_ranks: dict[str, int]
     selected: bool
     exclusion_reason: str | None = None
 
@@ -89,26 +107,10 @@ class RetrievalCandidate:
             "target_type": self.target_type,
             "target_id": str(self.item.get("id")),
             "rank": self.rank,
+            "rrf_score": round(self.rrf_score, 6),
+            "stage_ranks": dict(self.stage_ranks),
             "selected": self.selected,
             "exclusion_reason": self.exclusion_reason,
-            "stage_scores": {
-                "keyword": {
-                    "raw": self.lexical_score,
-                    "reason": "case-insensitive token overlap against title/body/source text",
-                },
-                "vector": {
-                    "raw": 0,
-                    "reason": "vector search scaffold not enabled in this local vNext slice",
-                },
-                "graph": {
-                    "raw": 0,
-                    "reason": "graph traversal scaffold records linked edges when available",
-                },
-                "temporal": {
-                    "raw": 0,
-                    "reason": "temporal filter scaffold records requested time_window",
-                },
-            },
         }
 
 
@@ -186,31 +188,6 @@ def _infer_domains(lowered_query: str) -> list[str]:
     return domains
 
 
-def _record_text(item: JsonObject) -> str:
-    parts: list[str] = []
-    for key in ("title", "canonical_text", "summary", "text", "source_type", "content_hash"):
-        value = item.get(key)
-        if isinstance(value, str):
-            parts.append(value)
-    metadata = item.get("metadata_json")
-    if isinstance(metadata, dict):
-        for key in ("raw_text", "relative_path", "filename"):
-            value = metadata.get(key)
-            if isinstance(value, str):
-                parts.append(value)
-    value_payload = item.get("value")
-    if isinstance(value_payload, dict):
-        for value in value_payload.values():
-            if isinstance(value, str):
-                parts.append(value)
-    return " ".join(parts).casefold()
-
-
-def _lexical_score(item: JsonObject, terms: list[str]) -> int:
-    text = _record_text(item)
-    return sum(1 for term in terms if term in text)
-
-
 def _allowed(item: JsonObject, *, domains: list[str], sensitivity_allowed: list[str]) -> str | None:
     item_domain = item.get("domain")
     item_sensitivity = item.get("sensitivity")
@@ -221,50 +198,62 @@ def _allowed(item: JsonObject, *, domains: list[str], sensitivity_allowed: list[
     return None
 
 
-def _rank_candidates(
-    items: list[JsonObject],
+def reciprocal_rank_fusion(
+    ranked_lists: Mapping[str, Sequence[JsonObject]],
+    *,
+    k: int = RRF_K,
+) -> list[tuple[JsonObject, float, dict[str, int]]]:
+    """Fuse per-stage ranked result lists with Reciprocal Rank Fusion.
+
+    Each item scores ``sum(1 / (k + rank))`` over the stages it appears in.
+    Returns ``(item, rrf_score, stage_ranks)`` tuples ordered by descending
+    score with a deterministic id tie-break.
+    """
+    if k < 1:
+        raise VNextRetrievalValidationError("reciprocal rank fusion k must be at least 1")
+    items: dict[str, JsonObject] = {}
+    scores: dict[str, float] = {}
+    stage_ranks: dict[str, dict[str, int]] = {}
+    for stage, rows in ranked_lists.items():
+        for rank, row in enumerate(rows, start=1):
+            item_id = str(row.get("id"))
+            if item_id not in items:
+                items[item_id] = row
+            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank)
+            stage_ranks.setdefault(item_id, {})[stage] = rank
+    ordered_ids = sorted(items, key=lambda item_id: (-scores[item_id], item_id))
+    return [(items[item_id], scores[item_id], stage_ranks[item_id]) for item_id in ordered_ids]
+
+
+def _fused_candidates(
+    ranked_lists: Mapping[str, Sequence[JsonObject]],
     *,
     target_type: str,
-    terms: list[str],
     domains: list[str],
     sensitivity_allowed: list[str],
     limit: int,
 ) -> list[RetrievalCandidate]:
     candidates: list[RetrievalCandidate] = []
-    for item in items:
-        lexical_score = _lexical_score(item, terms)
+    selected_count = 0
+    for rank, (item, rrf_score, stage_ranks) in enumerate(reciprocal_rank_fusion(ranked_lists), start=1):
         exclusion_reason = _allowed(item, domains=domains, sensitivity_allowed=sensitivity_allowed)
-        if lexical_score == 0 and terms:
-            exclusion_reason = exclusion_reason or "keyword_miss"
+        selected = exclusion_reason is None and selected_count < limit
+        if selected:
+            selected_count += 1
+        elif exclusion_reason is None:
+            exclusion_reason = "trimmed_by_limit"
         candidates.append(
             RetrievalCandidate(
                 item=item,
                 target_type=target_type,
-                rank=0,
-                lexical_score=lexical_score,
-                selected=False,
+                rank=rank,
+                rrf_score=rrf_score,
+                stage_ranks=stage_ranks,
+                selected=selected,
                 exclusion_reason=exclusion_reason,
             )
         )
-
-    candidates.sort(key=lambda candidate: (-candidate.lexical_score, str(candidate.item.get("id"))))
-    ranked: list[RetrievalCandidate] = []
-    selected_count = 0
-    for index, candidate in enumerate(candidates, start=1):
-        selected = candidate.exclusion_reason is None and selected_count < limit
-        if selected:
-            selected_count += 1
-        ranked.append(
-            RetrievalCandidate(
-                item=candidate.item,
-                target_type=candidate.target_type,
-                rank=index,
-                lexical_score=candidate.lexical_score,
-                selected=selected,
-                exclusion_reason=candidate.exclusion_reason if not selected else None,
-            )
-        )
-    return ranked
+    return candidates
 
 
 def _compact_item(item: JsonObject) -> JsonObject:
@@ -272,8 +261,64 @@ def _compact_item(item: JsonObject) -> JsonObject:
 
 
 class VNextRetrievalService:
-    def __init__(self, store: VNextRetrievalStore) -> None:
+    def __init__(
+        self,
+        store: VNextRetrievalStore,
+        *,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
         self.store = store
+        self.embedding_provider = embedding_provider if embedding_provider is not None else get_embedding_provider()
+
+    def _memory_fts_rows(
+        self,
+        *,
+        query: str,
+        domains: list[str],
+        sensitivity_allowed: list[str],
+        limit: int,
+    ) -> tuple[list[JsonObject], str]:
+        search_memories_fts = getattr(self.store, "search_memories_fts", None)
+        if callable(search_memories_fts):
+            rows = search_memories_fts(
+                query=query,
+                domains=domains or None,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=limit,
+            )
+            return list(rows), "postgres_fts"
+        rows = self.store.search_memories(
+            query=query,
+            domains=domains or None,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=limit,
+        )
+        return list(rows), "store_lexical"
+
+    def _memory_vector_rows(
+        self,
+        *,
+        query: str,
+        domains: list[str],
+        sensitivity_allowed: list[str],
+        limit: int,
+    ) -> tuple[list[JsonObject], str]:
+        if self.embedding_provider is None:
+            return [], VECTOR_STAGE_DISABLED_NO_PROVIDER
+        search_memories_vector = getattr(self.store, "search_memories_vector", None)
+        if not callable(search_memories_vector):
+            return [], VECTOR_STAGE_DISABLED_NO_STORE_SUPPORT
+        try:
+            query_vector = self.embedding_provider.embed_text(query)
+            rows = search_memories_vector(
+                query_vector=query_vector,
+                domains=domains or None,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=limit,
+            )
+        except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
+            return [], f"disabled: query embedding failed ({exc})"
+        return list(rows), VECTOR_STAGE_ENABLED
 
     def compile_context_pack(self, request: VNextRetrievalRequest) -> JsonObject:
         interpretation = classify_query(request)
@@ -282,13 +327,24 @@ class VNextRetrievalService:
         sensitivity_allowed = list(interpretation["sensitivity_allowed"])  # type: ignore[arg-type]
         trace_id = request.trace_id or str(uuid4())
         context_pack_id = str(uuid4())
+        memory_candidate_limit = max(request.max_items * 2, request.max_items)
 
-        memory_rows = self.store.search_memories(
+        fts_rows, fts_source = self._memory_fts_rows(
             query=request.query,
-            domains=domains or None,
+            domains=domains,
             sensitivity_allowed=sensitivity_allowed,
-            limit=max(request.max_items * 2, request.max_items),
+            limit=memory_candidate_limit,
         )
+        vector_rows, vector_stage = self._memory_vector_rows(
+            query=str(interpretation["query"]),
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=memory_candidate_limit,
+        )
+        memory_lists: dict[str, Sequence[JsonObject]] = {"fts": fts_rows}
+        if vector_stage == VECTOR_STAGE_ENABLED:
+            memory_lists["vector"] = vector_rows
+
         source_rows = self.store.search_sources(
             query=request.query,
             domains=domains or None,
@@ -302,26 +358,23 @@ class VNextRetrievalService:
             limit=DEFAULT_OPEN_LOOP_LIMIT,
         )
 
-        memory_candidates = _rank_candidates(
-            memory_rows,
+        memory_candidates = _fused_candidates(
+            memory_lists,
             target_type="memory",
-            terms=terms,
             domains=domains,
             sensitivity_allowed=sensitivity_allowed,
             limit=request.max_items,
         )
-        source_candidates = _rank_candidates(
-            source_rows,
+        source_candidates = _fused_candidates(
+            {"lexical": source_rows},
             target_type="source",
-            terms=terms,
             domains=domains,
             sensitivity_allowed=sensitivity_allowed,
             limit=DEFAULT_SOURCE_LIMIT,
         )
-        open_loop_candidates = _rank_candidates(
-            open_loop_rows,
+        open_loop_candidates = _fused_candidates(
+            {"listing": open_loop_rows},
             target_type="open_loop",
-            terms=terms,
             domains=domains,
             sensitivity_allowed=sensitivity_allowed,
             limit=DEFAULT_OPEN_LOOP_LIMIT,
@@ -336,22 +389,33 @@ class VNextRetrievalService:
             source_candidates=source_candidates,
             open_loop_candidates=open_loop_candidates,
         )
-        trace_candidates = [
-            *(candidate.to_trace_record() for candidate in memory_candidates),
-            *(candidate.to_trace_record() for candidate in source_candidates),
-            *(candidate.to_trace_record() for candidate in open_loop_candidates),
-        ]
+        all_candidates = [*memory_candidates, *source_candidates, *open_loop_candidates]
+        excluded_counts: dict[str, int] = {}
+        for candidate in all_candidates:
+            if candidate.exclusion_reason is None:
+                continue
+            excluded_counts[candidate.exclusion_reason] = excluded_counts.get(candidate.exclusion_reason, 0) + 1
+        selected_trace = [candidate.to_trace_record() for candidate in all_candidates if candidate.selected]
         trace = {
             "trace_id": trace_id,
-            "candidate_count": len(trace_candidates),
-            "selected_count": sum(1 for candidate in trace_candidates if candidate["selected"]),
+            "candidate_count": len(all_candidates),
+            "selected_count": len(selected_trace),
             "query_terms": terms,
             "filters": {
                 "domains": domains,
                 "sensitivity_allowed": sensitivity_allowed,
                 "time_window": request.time_window,
             },
-            "candidates": trace_candidates,
+            "fusion": {"algorithm": "reciprocal_rank_fusion", "k": RRF_K},
+            "vector_stage": vector_stage,
+            "stages": {
+                "fts": {"source": fts_source, "candidate_count": len(fts_rows)},
+                "vector": {"status": vector_stage, "candidate_count": len(vector_rows)},
+                "sources": {"source": "store_lexical", "candidate_count": len(source_rows)},
+                "open_loops": {"candidate_count": len(open_loop_rows)},
+            },
+            "selected": selected_trace,
+            "excluded_counts": excluded_counts,
         }
         pack: JsonObject = {
             "context_pack_id": context_pack_id,
@@ -387,6 +451,7 @@ class VNextRetrievalService:
                 "query_type": interpretation["query_type"],
                 "candidate_count": trace["candidate_count"],
                 "selected_count": trace["selected_count"],
+                "vector_stage": vector_stage,
                 "warnings": warnings,
                 "agent_identity": request.agent_identity,
                 "policy_decision": request.policy_decision,
@@ -460,6 +525,10 @@ class VNextRetrievalService:
 __all__ = [
     "DEFAULT_CONTEXT_PACK_LIMIT",
     "DEFAULT_SENSITIVITY_ALLOWED",
+    "RRF_K",
+    "VECTOR_STAGE_DISABLED_NO_PROVIDER",
+    "VECTOR_STAGE_DISABLED_NO_STORE_SUPPORT",
+    "VECTOR_STAGE_ENABLED",
     "VNextRetrievalRequest",
     "VNextRetrievalService",
     "VNextRetrievalStore",
@@ -467,4 +536,5 @@ __all__ = [
     "classify_query",
     "normalize_query",
     "query_terms",
+    "reciprocal_rank_fusion",
 ]

@@ -1,7 +1,20 @@
 from __future__ import annotations
 
+import pytest
+
 from alicebot_api.vnext_agent_control import AgentIdentity
-from alicebot_api.vnext_memory_commit import MemoryCommitRequest, evaluate_memory_commit_policy
+from alicebot_api.vnext_memory_commit import (
+    MemoryCommitRequest,
+    VNextMemoryCommitService,
+    evaluate_memory_commit_policy,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_embedding_env(monkeypatch) -> None:
+    monkeypatch.delenv("ALICE_EMBEDDINGS_BASE_URL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_MODEL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_API_KEY", raising=False)
 
 
 def _identity(permission_profile: str, *, project_scope: tuple[str, ...] = ()) -> AgentIdentity:
@@ -99,3 +112,131 @@ def test_contradiction_requires_inline_confirmation() -> None:
 
     assert decision.write_mode == "confirm_inline"
     assert "contradiction_requires_confirmation" in decision.reasons
+
+
+class TargetedLookupStore:
+    """Fake vNext store that fails loudly if the commit path falls back to full-table scans."""
+
+    def __init__(self) -> None:
+        self.memories: dict[str, dict[str, object]] = {}
+        self.events: list[dict[str, object]] = []
+        self.revisions: list[dict[str, object]] = []
+        self.agent_identities: dict[str, dict[str, object]] = {}
+        self.lookup_calls: list[tuple[str, object]] = []
+
+    def append_event(self, event: dict[str, object]) -> dict[str, object]:
+        self.events.append(event)
+        return event
+
+    def upsert_agent_identity(self, identity: dict[str, object], **_kwargs) -> dict[str, object]:
+        self.agent_identities[str(identity["agent_id"])] = identity
+        return identity
+
+    def create_memory(self, memory: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
+        self.memories[str(row["id"])] = row
+        return row
+
+    def update_memory(self, *, memory_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
+        memory = self.memories[memory_id]
+        memory.update(patch)
+        return memory
+
+    def get_memory(self, memory_id: str) -> dict[str, object] | None:
+        return self.memories.get(memory_id)
+
+    def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
+        raise AssertionError("commit path must use targeted lookups, not full-table scans")
+
+    def get_memory_by_commit_digest(self, commit_digest: str) -> dict[str, object] | None:
+        self.lookup_calls.append(("commit_digest", commit_digest))
+        for memory in self.memories.values():
+            if memory.get("commit_digest") == commit_digest:
+                return memory
+        return None
+
+    def get_memory_by_confirmation_id(self, confirmation_id: str) -> dict[str, object] | None:
+        self.lookup_calls.append(("confirmation_id", confirmation_id))
+        for memory in self.memories.values():
+            if memory.get("confirmation_id") == confirmation_id:
+                return memory
+        return None
+
+    def latest_agentic_commit_memory(self, *, agent_id: str | None = None) -> dict[str, object] | None:
+        self.lookup_calls.append(("latest_agentic_commit", agent_id))
+        for memory in reversed(list(self.memories.values())):
+            if memory.get("status") != "active":
+                continue
+            metadata = memory.get("metadata_json")
+            agentic = metadata.get("agentic_memory", {}) if isinstance(metadata, dict) else {}
+            if agentic.get("kind") != "agentic_memory_commit":
+                continue
+            identity = agentic.get("agent_identity")
+            if agent_id is None or (isinstance(identity, dict) and identity.get("agent_id") == agent_id):
+                return memory
+        return None
+
+    def append_revision(self, revision: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
+        self.revisions.append(row)
+        return row
+
+    def create_provenance_link(self, link: dict[str, object], **_kwargs) -> dict[str, object]:
+        return {**link, "id": "provenance-1"}
+
+
+def test_commit_idempotent_replay_uses_commit_digest_lookup() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    request = _request(
+        domain="professional",
+        sensitivity="internal",
+        idempotency_key="retry-digest-1",
+    )
+
+    first = service.commit(identity=identity, request=request)
+    second = service.commit(identity=identity, request=request)
+
+    assert first["status"] == "committed"
+    assert store.memories[str(first["memory"]["id"])]["commit_digest"] == "retry-digest-1"
+    assert second["idempotent_replay"] is True
+    assert second["memory"]["id"] == first["memory"]["id"]
+    assert ("commit_digest", "retry-digest-1") in store.lookup_calls
+
+
+def test_confirm_uses_confirmation_id_lookup_and_persisted_column() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    pending = service.commit(
+        identity=identity,
+        request=_request(domain="professional", sensitivity="internal", confidence=0.7),
+    )
+    confirmation_id = pending["confirmation_id"]
+    assert pending["status"] == "confirmation_required"
+    assert store.memories[str(pending["memory"]["id"])]["confirmation_id"] == confirmation_id
+
+    confirmed = service.confirm(identity=identity, confirmation_id=confirmation_id)
+
+    assert confirmed["status"] == "committed"
+    assert confirmed["memory"]["status"] == "active"
+    assert ("confirmation_id", confirmation_id) in store.lookup_calls
+
+
+def test_undo_without_memory_id_uses_latest_agentic_commit_lookup() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    committed = service.commit(
+        identity=identity,
+        request=_request(domain="professional", sensitivity="internal"),
+    )
+    undone = service.undo(identity=identity)
+
+    assert undone["status"] == "undone"
+    assert undone["memory"]["id"] == committed["memory"]["id"]
+    assert undone["memory"]["status"] == "superseded"
+    assert ("latest_agentic_commit", identity.agent_id) in store.lookup_calls

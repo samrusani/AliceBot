@@ -11,92 +11,111 @@ from psycopg.errors import CheckViolation
 
 import alicebot_api.mcp_server as mcp_server
 import alicebot_api.mcp_tools as mcp_tools_module
+import alicebot_api.vnext_retrieval as vnext_retrieval_module
 from alicebot_api.mcp_tools import MCPRuntimeContext, MCPToolError, MCPToolNotFoundError, call_mcp_tool, list_mcp_tools
+from alicebot_api.vnext_embeddings import (
+    EMBEDDINGS_API_KEY_ENV,
+    EMBEDDINGS_BASE_URL_ENV,
+    EMBEDDINGS_MODEL_ENV,
+)
+from alicebot_api.vnext_retrieval import VECTOR_STAGE_DISABLED_NO_PROVIDER, VECTOR_STAGE_ENABLED
 
 
-def test_mcp_tool_surface_is_adr_aligned_and_deterministic() -> None:
+CORE_TOOL_NAMES = [
+    "alice_capture",
+    "alice_recall",
+    "alice_resume",
+    "alice_context_pack",
+    "alice_open_loops",
+    "alice_recent_decisions",
+    "alice_memory_review",
+    "alice_memory_correct",
+    "alice_explain",
+]
+
+_DESCRIPTION_JARGON = ("continuity object", "bridge policy", "posture", "vnext", "deterministic")
+
+
+@pytest.fixture
+def core_surface(monkeypatch) -> None:
+    monkeypatch.delenv(mcp_tools_module.MCP_LEGACY_TOOLS_ENV, raising=False)
+
+
+@pytest.fixture
+def legacy_tools_enabled(monkeypatch) -> None:
+    monkeypatch.setenv(mcp_tools_module.MCP_LEGACY_TOOLS_ENV, "1")
+
+
+@pytest.fixture
+def no_embedding_provider(monkeypatch) -> None:
+    for env_name in (EMBEDDINGS_BASE_URL_ENV, EMBEDDINGS_MODEL_ENV, EMBEDDINGS_API_KEY_ENV):
+        monkeypatch.delenv(env_name, raising=False)
+
+
+def test_default_mcp_tool_surface_is_exactly_the_nine_core_tools(core_surface) -> None:
     tools = list_mcp_tools()
-    names = [tool["name"] for tool in tools]
-    assert names == [
-        "alice_capture",
-        "alice_capture_candidates",
-        "alice_commit_captures",
-        "alice_memory_mutations_generate",
-        "alice_memory_mutations_list_candidates",
-        "alice_memory_mutations_commit",
-        "alice_memory_mutations_list_operations",
-        "alice_recall",
-        "alice_recall_debug",
-        "alice_state_at",
-        "alice_resume",
-        "alice_resume_debug",
-        "alice_brief",
-        "alice_task_brief",
-        "alice_task_brief_show",
-        "alice_task_brief_compare",
-        "alice_retrieval_trace",
-        "alice_prefetch_context",
-        "alice_open_loops",
-        "alice_recent_decisions",
-        "alice_recent_changes",
-        "alice_timeline",
-        "alice_review_queue",
-        "alice_review_apply",
-        "alice_contradictions_detect",
-        "alice_contradictions_list",
-        "alice_contradictions_resolve",
-        "alice_trust_signals",
-        "alice_memory_review",
-        "alice_memory_correct",
-        "alice_explain",
-        "alice_artifact_inspect",
-        "alice_context_pack",
-        "alice_vnext_context_pack",
-        "alice_generate_daily_brief",
-        "alice_generate_weekly_synthesis",
-        "alice_generate_connections",
-        "alice_graph_edge_review",
-        "alice_graph_neighborhood",
-        "alice_generate_contradictions",
-        "alice_belief_review",
-        "alice_belief_state",
-        "alice_project_update_candidate",
-        "alice_project_update_review",
-        "alice_project_dashboard",
-        "alice_open_loop_extract",
-        "alice_open_loop_review",
-        "alice_vnext_capture",
-        "alice_vnext_ingest_agent_output",
-        "alice_vnext_queue_task",
-        "alice_vnext_generate_artifact",
-        "alice_vnext_project_dashboard",
-        "alice_vnext_open_loops",
-        "alice_vnext_recent_decisions",
-        "alice_vnext_recent_changes",
-        "alice_vnext_find_connections",
-        "alice_vnext_find_contradictions",
-        "alice_vnext_propose_memory",
-        "alice_vnext_commit_memory",
-        "alice_vnext_confirm_memory",
-        "alice_vnext_undo_memory",
-        "alice_vnext_correct_memory",
-        "alice_vnext_forget_memory",
-        "alice_vnext_recent_memory_commits",
-        "alice_vnext_memory_audit",
-        "alice_vnext_review_items",
-        "alice_vnext_artifact_get",
-        "alice_vnext_artifact_review",
-        "alice_vnext_scheduler_status",
-        "alice_vnext_scheduler_run_now",
-        "alice_vnext_scheduler_run_due",
-        "alice_vnext_scheduler_pause",
-        "alice_vnext_scheduler_resume",
-    ]
+    assert [tool["name"] for tool in tools] == CORE_TOOL_NAMES
 
     for tool in tools:
         assert isinstance(tool["inputSchema"], dict)
         assert tool["inputSchema"].get("type") == "object"
         assert tool["inputSchema"].get("additionalProperties") is False
+
+
+def test_core_tool_descriptions_are_plain_language(core_surface) -> None:
+    for tool in list_mcp_tools():
+        description = tool["description"]
+        assert isinstance(description, str) and description.strip() != ""
+        lowered = description.casefold()
+        for marker in _DESCRIPTION_JARGON:
+            assert marker not in lowered, f"{tool['name']} description contains jargon: {marker}"
+
+
+def test_every_core_tool_property_has_a_description(core_surface) -> None:
+    for tool in list_mcp_tools():
+        properties = tool["inputSchema"]["properties"]
+        assert isinstance(properties, dict) and properties
+        for property_name, property_schema in properties.items():
+            assert isinstance(property_schema, dict), f"{tool['name']}.{property_name}"
+            description = property_schema.get("description")
+            assert isinstance(description, str) and description.strip() != "", (
+                f"{tool['name']}.{property_name} is missing a description"
+            )
+
+
+def test_legacy_flag_exposes_the_long_tail_after_the_core_tools(legacy_tools_enabled) -> None:
+    tools = list_mcp_tools()
+    names = [tool["name"] for tool in tools]
+
+    assert names[: len(CORE_TOOL_NAMES)] == CORE_TOOL_NAMES
+    assert len(names) == len(set(names)) == 74
+    for legacy_name in (
+        "alice_brief",
+        "alice_recall_debug",
+        "alice_resume_debug",
+        "alice_review_queue",
+        "alice_review_apply",
+        "alice_vnext_context_pack",
+        "alice_vnext_commit_memory",
+        "alice_vnext_ingest_agent_output",
+        "alice_vnext_scheduler_resume",
+    ):
+        assert legacy_name in names
+
+
+def test_every_tool_definition_has_a_handler_and_vice_versa() -> None:
+    defined = set(mcp_tools_module._CORE_TOOL_NAMES) | set(mcp_tools_module._LEGACY_TOOL_NAMES)
+    assert defined == set(mcp_tools_module._TOOL_HANDLERS)
+    assert not (set(mcp_tools_module._CORE_TOOL_NAMES) & set(mcp_tools_module._LEGACY_TOOL_NAMES))
+
+
+def test_calling_a_legacy_tool_without_the_flag_mentions_the_flag(core_surface) -> None:
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+    with pytest.raises(MCPToolNotFoundError, match="ALICE_MCP_LEGACY_TOOLS"):
+        call_mcp_tool(context, name="alice_brief", arguments={})
 
 
 def test_call_mcp_tool_rejects_unknown_tool() -> None:
@@ -141,6 +160,8 @@ class FakeVNextMCPStore:
         self.artifacts: dict[str, dict[str, object]] = {}
         self.open_loops: list[dict[str, object]] = []
         self.edges: dict[str, dict[str, object]] = {}
+        self.workflows: dict[str, dict[str, object]] = {}
+        self.runs: dict[str, dict[str, object]] = {}
         self.agent_identities: dict[str, dict[str, object]] = {}
         self.projects: dict[str, dict[str, object]] = {
             "project-1": {
@@ -377,13 +398,76 @@ class FakeVNextMCPStore:
         )
         return belief
 
-    def list_events(self, *, target_type: str | None = None, target_id: str | None = None) -> list[dict[str, object]]:
-        return [
+    def list_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        rows = [
             event
             for event in self.events
             if (target_type is None or event.get("target_type") == target_type)
             and (target_id is None or event.get("target_id") == target_id)
         ]
+        return rows[:limit] if limit is not None else rows
+
+    def upsert_scheduler_workflow(self, workflow: dict[str, object], **_kwargs) -> dict[str, object]:
+        workflow_type = str(workflow["workflow_type"])
+        row = {
+            **workflow,
+            "id": f"workflow-{workflow_type}",
+            "last_run_id": None,
+            "last_run_at": None,
+            "last_result": None,
+            "last_error": None,
+        }
+        self.workflows[workflow_type] = row
+        return row
+
+    def update_scheduler_workflow(self, *, workflow_type: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
+        workflow = self.workflows[workflow_type]
+        workflow.update(patch)
+        return workflow
+
+    def get_scheduler_workflow(self, workflow_type: str) -> dict[str, object] | None:
+        return self.workflows.get(workflow_type)
+
+    def list_scheduler_workflows(self) -> list[dict[str, object]]:
+        return list(self.workflows.values())
+
+    def create_scheduler_run(self, run: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {**run, "id": f"run-{len(self.runs) + 1}", "finished_at": None}
+        self.runs[str(row["id"])] = row
+        return row
+
+    def update_scheduler_run(self, *, run_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
+        run = self.runs[run_id]
+        run.update(patch)
+        if run.get("status") in {"succeeded", "failed"}:
+            run["finished_at"] = "2026-05-10T00:01:00Z"
+        return run
+
+    def list_scheduler_runs(self, *, workflow_type: str | None = None, limit: int = 20) -> list[dict[str, object]]:
+        return [
+            row
+            for row in self.runs.values()
+            if workflow_type is None or row.get("workflow_type") == workflow_type
+        ][:limit]
+
+    def try_scheduler_workflow_lock(self, _workflow_type: str) -> bool:
+        return True
+
+    def list_artifact_quality_ratings(self, **kwargs) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "rating-1",
+                "artifact_id": "artifact-1",
+                "usefulness": 4,
+                "source_grounding": 5,
+            }
+        ][: kwargs.get("limit", 20)]
 
     def list_provenance_links(self, **_kwargs) -> list[dict[str, object]]:
         return []
@@ -393,7 +477,7 @@ class FakeVNextMCPStore:
         return row
 
 
-def test_alice_vnext_context_pack_mcp_tool(monkeypatch) -> None:
+def test_alice_vnext_context_pack_mcp_tool(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -418,7 +502,35 @@ def test_alice_vnext_context_pack_mcp_tool(monkeypatch) -> None:
     assert store.events[-1]["event_type"] == "retrieval.context_pack_compiled"
 
 
-def test_alice_vnext_context_pack_mcp_tool_normalizes_row_scalars(monkeypatch) -> None:
+def test_alice_vnext_context_tree_mcp_tool_returns_read_only_groups(monkeypatch, legacy_tools_enabled) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_vnext_context_tree",
+        arguments={"query": "Alice vNext", "domains": ["project"], "limit": 4},
+    )
+
+    root_ids = [root["id"] for root in payload["roots"]]
+    assert payload["schema_version"] == "vnext_context_tree_v0"
+    assert payload["read_only"] is True
+    assert "root:projects" in root_ids
+    assert "root:memories" in root_ids
+    assert payload["summary"]["projects"] == 1
+    assert store.events[-1]["event_type"] == "context_tree.generated"
+
+
+def test_alice_vnext_context_pack_mcp_tool_normalizes_row_scalars(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
     memory_id = uuid4()
     source_id = uuid4()
@@ -477,7 +589,7 @@ def test_alice_vnext_context_pack_mcp_tool_normalizes_row_scalars(monkeypatch) -
     assert payload["sources"][0]["id"] == str(source_id)
 
 
-def test_alice_vnext_agentic_memory_commit_mcp_tools(monkeypatch) -> None:
+def test_alice_vnext_agentic_memory_commit_mcp_tools(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -524,7 +636,7 @@ def test_alice_vnext_agentic_memory_commit_mcp_tools(monkeypatch) -> None:
     assert audit_payload["revisions"][0]["action"] == "agentic_memory_commit"
 
 
-def test_alice_vnext_agentic_memory_commit_normalizes_quote_aliases(monkeypatch) -> None:
+def test_alice_vnext_agentic_memory_commit_normalizes_quote_aliases(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -559,7 +671,40 @@ def test_alice_vnext_agentic_memory_commit_normalizes_quote_aliases(monkeypatch)
     assert payload["memory"]["sensitivity"] == "private"
 
 
-def test_alice_vnext_agentic_memory_commit_rejects_invalid_enum_before_store(monkeypatch) -> None:
+def test_alice_vnext_agentic_memory_commit_accepts_procedure_type(monkeypatch, legacy_tools_enabled) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_vnext_commit_memory",
+        arguments={
+            "agent_id": "hermes",
+            "agent_type": "personal_assistant",
+            "permission_profile": "trusted_local_agent",
+            "title": "Release evidence procedure",
+            "canonical_text": "Procedure: collect evidence, run gates, review artifact, then record follow-up loops.",
+            "memory_type": "procedure",
+            "domain": "project",
+            "sensitivity": "private",
+            "confidence": 0.94,
+        },
+    )
+
+    assert payload["status"] == "committed"
+    assert payload["memory"]["memory_type"] == "procedure"
+
+
+def test_alice_vnext_agentic_memory_commit_rejects_invalid_enum_before_store(monkeypatch, legacy_tools_enabled) -> None:
     def fail_if_store_opened(_context):
         raise AssertionError("store should not be opened for invalid enum input")
 
@@ -586,7 +731,7 @@ def test_alice_vnext_agentic_memory_commit_rejects_invalid_enum_before_store(mon
         )
 
 
-def test_alice_vnext_agentic_memory_confirm_mcp_tool(monkeypatch) -> None:
+def test_alice_vnext_agentic_memory_confirm_mcp_tool(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -629,7 +774,7 @@ def test_alice_vnext_agentic_memory_confirm_mcp_tool(monkeypatch) -> None:
     assert confirmed_payload["memory"]["status"] == "active"
 
 
-def test_alice_generate_daily_and_weekly_brief_mcp_tools(monkeypatch) -> None:
+def test_alice_generate_daily_and_weekly_brief_mcp_tools(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -660,7 +805,7 @@ def test_alice_generate_daily_and_weekly_brief_mcp_tools(monkeypatch) -> None:
     assert store.events[-1]["event_type"] == "artifact.generated"
 
 
-def test_alice_vnext_generate_artifact_supports_model_backed_agent_options(monkeypatch) -> None:
+def test_alice_vnext_generate_artifact_supports_model_backed_agent_options(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -699,7 +844,41 @@ def test_alice_vnext_generate_artifact_supports_model_backed_agent_options(monke
     assert "source:source-1" in payload["metadata_json"]["source_refs"]
 
 
-def test_alice_vnext_ingest_agent_output_creates_review_only_records(monkeypatch) -> None:
+def test_alice_vnext_generate_artifact_supports_memory_consolidation(monkeypatch, legacy_tools_enabled) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_vnext_generate_artifact",
+        arguments={
+            "workflow_type": "memory_consolidation",
+            "generated_for": "2026-05-10",
+            "domains": ["project"],
+            "sensitivity_allowed": ["public", "internal", "private"],
+            "agent_id": "hermes",
+            "permission_profile": "trusted_local_agent",
+        },
+    )
+
+    artifact = payload["artifact"]
+    assert payload["run"]["status"] == "succeeded"
+    assert artifact["artifact_type"] == "memory_consolidation"
+    assert artifact["status"] == "needs_review"
+    assert artifact["metadata_json"]["workflow_type"] == "memory_consolidation"
+    assert store.memories[-1]["status"] == "candidate"
+
+
+def test_alice_vnext_ingest_agent_output_creates_review_only_records(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -738,7 +917,7 @@ def test_alice_vnext_ingest_agent_output_creates_review_only_records(monkeypatch
     assert any(event["event_type"] == "agent.output_ingested" for event in store.events)
 
 
-def test_alice_generate_connections_and_graph_mcp_tools(monkeypatch) -> None:
+def test_alice_generate_connections_and_graph_mcp_tools(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -774,7 +953,7 @@ def test_alice_generate_connections_and_graph_mcp_tools(monkeypatch) -> None:
     assert neighborhood_payload["from_edges"][0]["id"] == "edge-1"
 
 
-def test_alice_generate_contradictions_and_belief_mcp_tools(monkeypatch) -> None:
+def test_alice_generate_contradictions_and_belief_mcp_tools(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -811,7 +990,7 @@ def test_alice_generate_contradictions_and_belief_mcp_tools(monkeypatch) -> None
     assert "challenged" in state_payload["previous_statuses"]
 
 
-def test_alice_project_and_open_loop_mcp_tools(monkeypatch) -> None:
+def test_alice_project_and_open_loop_mcp_tools(monkeypatch, legacy_tools_enabled) -> None:
     store = FakeVNextMCPStore()
 
     @contextmanager
@@ -862,6 +1041,262 @@ def test_alice_project_and_open_loop_mcp_tools(monkeypatch) -> None:
     assert store.projects["project-1"]["current_state"] == "Project automation reviewed."
     assert review_loop_payload["due_at"] == "2026-05-12T09:00:00Z"
     assert dashboard_payload["counts"]["open_loops"] == 1
+
+
+def _mcp_context() -> MCPRuntimeContext:
+    return MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+
+def _patch_vnext_store(monkeypatch, store: FakeVNextMCPStore) -> None:
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+
+
+class FakeEmbeddingProvider:
+    provider = "fake"
+    model = "fake-embed"
+
+    def __init__(self) -> None:
+        self.embedded: list[str] = []
+
+    def embed_text(self, text: str) -> list[float]:
+        self.embedded.append(text)
+        return [0.1, 0.2, 0.3]
+
+    def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        return [self.embed_text(text) for text in texts]
+
+
+def _recall_memory_row(memory_id: str, text: str) -> dict[str, object]:
+    return {
+        "id": memory_id,
+        "memory_type": "semantic",
+        "canonical_text": text,
+        "status": "active",
+        "confidence": 0.9,
+        "domain": "project",
+        "sensitivity": "private",
+    }
+
+
+class HybridRetrievalStore(FakeVNextMCPStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fts_calls: list[dict[str, object]] = []
+        self.vector_calls: list[dict[str, object]] = []
+
+    def search_memories_fts(self, **kwargs) -> list[dict[str, object]]:
+        self.fts_calls.append(kwargs)
+        return [
+            _recall_memory_row("memory-a", "Alice ships hybrid retrieval."),
+            _recall_memory_row("memory-b", "Recall fuses FTS and vector stages."),
+        ]
+
+    def search_memories_vector(self, **kwargs) -> list[dict[str, object]]:
+        self.vector_calls.append(kwargs)
+        return [
+            _recall_memory_row("memory-b", "Recall fuses FTS and vector stages."),
+            _recall_memory_row("memory-c", "Vector-only neighbor about retrieval."),
+        ]
+
+
+def test_alice_recall_fuses_fts_and_vector_stages(monkeypatch, core_surface) -> None:
+    store = HybridRetrievalStore()
+    _patch_vnext_store(monkeypatch, store)
+    provider = FakeEmbeddingProvider()
+    monkeypatch.setattr(vnext_retrieval_module, "get_embedding_provider", lambda: provider)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_recall",
+        arguments={"query": "hybrid retrieval", "limit": 5, "debug": True},
+    )
+
+    # memory-b appears in both stages, so reciprocal-rank fusion ranks it first.
+    assert [result["id"] for result in payload["results"]] == ["memory-b", "memory-a", "memory-c"]
+    assert payload["count"] == 3
+    assert provider.embedded == ["hybrid retrieval"]
+    assert store.fts_calls and store.vector_calls
+    assert "query_vector" in store.vector_calls[0]
+    assert payload["retrieval"]["vector_stage"] == VECTOR_STAGE_ENABLED
+    assert payload["retrieval"]["stages"]["fts"]["source"] == "postgres_fts"
+    assert payload["retrieval"]["stages"]["vector"]["status"] == VECTOR_STAGE_ENABLED
+    assert payload["retrieval"]["fusion"]["algorithm"] == "reciprocal_rank_fusion"
+
+
+def test_alice_recall_degrades_to_lexical_without_embedding_provider(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_recall",
+        arguments={"query": "provenance", "debug": True},
+    )
+
+    assert payload["results"][0]["id"] == "memory-1"
+    assert payload["retrieval"]["vector_stage"] == VECTOR_STAGE_DISABLED_NO_PROVIDER
+    assert payload["retrieval"]["stages"]["vector"]["candidate_count"] == 0
+    assert payload["retrieval"]["stages"]["fts"]["source"] == "store_lexical"
+
+
+def test_alice_recall_results_are_compact_and_trace_is_debug_only(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_recall",
+        arguments={"query": "provenance"},
+    )
+
+    assert "retrieval" not in payload
+    assert set(payload) == {"query", "results", "count"}
+    result = payload["results"][0]
+    assert set(result) == {
+        "id",
+        "type",
+        "text",
+        "score",
+        "domain",
+        "status",
+        "confidence",
+        "provenance_count",
+    }
+    assert result["text"] == "Alice vNext MCP context packs preserve provenance."
+    assert result["provenance_count"] == 0
+    assert result["score"] > 0
+
+
+def test_alice_context_pack_is_compact_and_gates_trace_behind_debug(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+
+    compact = call_mcp_tool(
+        _mcp_context(),
+        name="alice_context_pack",
+        arguments={"query": "Alice provenance", "domains": ["project"]},
+    )
+
+    assert compact["memories"][0]["id"] == "memory-1"
+    assert compact["sources"][0]["id"] == "source-1"
+    for stripped_key in ("trace", "query_interpretation", "agent_identity", "policy_decision"):
+        assert stripped_key not in compact
+    # Per-item boilerplate such as raw metadata is stripped from compact rows.
+    assert "metadata_json" not in compact["sources"][0]
+    assert isinstance(compact["trace_id"], str)
+
+    debug = call_mcp_tool(
+        _mcp_context(),
+        name="alice_context_pack",
+        arguments={"query": "Alice provenance", "domains": ["project"], "debug": True},
+    )
+    assert debug["trace"]["trace_id"] == debug["trace_id"]
+    assert debug["query_interpretation"]["query_type"]
+
+
+def test_alice_capture_stores_reviewable_source_evidence(monkeypatch, core_surface, no_embedding_provider) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_capture",
+        arguments={
+            "raw_text": "Decision: The default MCP surface is nine tools.",
+            "title": "MCP surface decision",
+            "domain": "project",
+            "sensitivity": "private",
+        },
+    )
+
+    assert payload["status"] == "imported"
+    assert payload["source_id"] == "source-1"
+    assert payload["chunk_count"] >= 1
+    assert store.sources[0]["title"] == "MCP surface decision"
+    assert any(event["event_type"] == "source.captured" for event in store.events)
+
+
+def test_alice_open_loops_lists_and_manages_loops(monkeypatch, core_surface) -> None:
+    store = FakeVNextMCPStore()
+    store.create_open_loop({"title": "Follow up with tester", "status": "open", "domain": "project"})
+    _patch_vnext_store(monkeypatch, store)
+
+    listed = call_mcp_tool(_mcp_context(), name="alice_open_loops", arguments={})
+    assert listed["count"] == 1
+    assert listed["items"][0]["id"] == "loop-1"
+
+    closed = call_mcp_tool(
+        _mcp_context(),
+        name="alice_open_loops",
+        arguments={"action": "close", "loop_id": "loop-1", "resolution_note": "Tester replied."},
+    )
+    assert closed["action"] == "close"
+    assert closed["open_loop"]["status"] == "resolved"
+    assert closed["open_loop"]["resolution_note"] == "Tester replied."
+
+    with pytest.raises(MCPToolError, match="action must be one of"):
+        call_mcp_tool(_mcp_context(), name="alice_open_loops", arguments={"action": "archive"})
+    with pytest.raises(MCPToolError, match="loop_id"):
+        call_mcp_tool(_mcp_context(), name="alice_open_loops", arguments={"action": "close"})
+
+
+def test_alice_explain_routes_memory_id_to_memory_audit(monkeypatch, core_surface) -> None:
+    store = FakeVNextMCPStore()
+    store.create_memory(
+        {
+            "memory_type": "semantic",
+            "canonical_text": "Hybrid retrieval is the default recall path.",
+            "status": "active",
+        }
+    )
+    memory_id = store.memories[0]["id"]
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(_mcp_context(), name="alice_explain", arguments={"memory_id": memory_id})
+
+    assert payload["memory"]["id"] == memory_id
+    for section in ("revisions", "events", "provenance_links"):
+        assert section in payload
+
+    with pytest.raises(MCPToolError, match="exactly one"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_explain",
+            arguments={"memory_id": memory_id, "entity_id": str(uuid4())},
+        )
+
+
+def test_alice_resume_debug_flag_is_passed_through(monkeypatch, core_surface) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_compile(store, *, user_id, request):
+        captured["debug"] = request.debug
+        return {"brief": {}}
+
+    @contextmanager
+    def fake_store_context(_context):
+        yield object()
+
+    monkeypatch.setattr(mcp_tools_module, "compile_continuity_resumption_brief", fake_compile)
+    monkeypatch.setattr(mcp_tools_module, "_store_context", fake_store_context)
+
+    call_mcp_tool(_mcp_context(), name="alice_resume", arguments={"debug": True})
+    assert captured["debug"] is True
+    call_mcp_tool(_mcp_context(), name="alice_resume", arguments={})
+    assert captured["debug"] is False
 
 
 def test_mcp_server_initialize_and_tools_list(monkeypatch) -> None:
@@ -920,7 +1355,10 @@ def test_mcp_server_tools_call_success_and_error_paths(monkeypatch) -> None:
     )
     assert success_response is not None
     assert success_response["result"]["isError"] is False
-    assert success_response["result"]["structuredContent"] == {"ok": True}
+    # The payload is serialized exactly once: JSON text in content, no
+    # duplicate structuredContent copy.
+    assert json.loads(success_response["result"]["content"][0]["text"]) == {"ok": True}
+    assert "structuredContent" not in success_response["result"]
 
     def raise_tool_error(*_args, **_kwargs):
         raise MCPToolError("invalid input")
@@ -953,3 +1391,98 @@ def test_mcp_server_tools_call_success_and_error_paths(monkeypatch) -> None:
     assert unexpected_response is not None
     assert unexpected_response["result"]["isError"] is True
     assert "Tool execution failed unexpectedly" in unexpected_response["result"]["content"][0]["text"]
+
+
+class FakeAgentKeyStore:
+    """Minimal AgentKeyStore fake for MCP identity resolution tests."""
+
+    def __init__(self, record: dict[str, object] | None) -> None:
+        self.record = record
+        self.events: list[dict[str, object]] = []
+
+    def append_event(self, event: dict[str, object]) -> dict[str, object]:
+        self.events.append(event)
+        return event
+
+    def get_agent_api_key_by_hash(self, key_hash: str) -> dict[str, object] | None:
+        if self.record is not None and self.record.get("key_hash") == key_hash:
+            return dict(self.record)
+        return None
+
+    def touch_agent_api_key(self, *, key_id: str) -> dict[str, object]:
+        assert self.record is not None and str(self.record["id"]) == key_id
+        return dict(self.record)
+
+    def count_active_agent_api_keys(self) -> int:
+        return 1 if self.record is not None else 0
+
+
+def _key_bound_context_and_store(monkeypatch, *, profile: str = "trusted_local_agent"):
+    from contextlib import contextmanager
+
+    from alicebot_api import vnext_agent_keys
+
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+    raw_key = "alice_sk_test-mcp-key"
+    store = FakeAgentKeyStore(
+        {
+            "id": "22222222-2222-4222-8222-222222222222",
+            "user_id": str(context.user_id),
+            "agent_id": "hermes",
+            "permission_profile": profile,
+            "key_hash": vnext_agent_keys.hash_agent_key(raw_key),
+            "key_prefix": raw_key[:12],
+            "revoked_at": None,
+        }
+    )
+
+    @contextmanager
+    def fake_store_context(_context):
+        yield store
+
+    monkeypatch.setenv(mcp_tools_module.AGENT_API_KEY_ENV, raw_key)
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_store_context)
+    return context, store
+
+
+def test_agent_identity_without_key_env_is_self_asserted_local(monkeypatch) -> None:
+    monkeypatch.delenv(mcp_tools_module.AGENT_API_KEY_ENV, raising=False)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+    identity = mcp_tools_module._agent_identity_from_arguments(
+        context, {"agent_id": "hermes", "permission_profile": "trusted_local_agent"}
+    )
+    assert identity is not None
+    assert identity.agent_id == "hermes"
+    assert identity.auth == "unauthenticated_local"
+
+
+def test_agent_identity_with_key_env_binds_to_key_record(monkeypatch) -> None:
+    context, _store = _key_bound_context_and_store(monkeypatch)
+    identity = mcp_tools_module._agent_identity_from_arguments(context, {})
+    assert identity is not None
+    assert identity.agent_id == "hermes"
+    assert identity.permission_profile == "trusted_local_agent"
+    assert identity.auth == "agent_api_key"
+
+
+def test_agent_identity_with_key_env_rejects_profile_escalation(monkeypatch) -> None:
+    context, store = _key_bound_context_and_store(monkeypatch, profile="project_scoped_agent")
+    with pytest.raises(MCPToolError, match="which is higher"):
+        mcp_tools_module._agent_identity_from_arguments(
+            context, {"agent_id": "hermes", "permission_profile": "admin_agent"}
+        )
+    assert any("escalation" in str(event) for event in store.events)
+
+
+def test_agent_identity_with_key_env_rejects_agent_id_mismatch(monkeypatch) -> None:
+    context, _store = _key_bound_context_and_store(monkeypatch)
+    with pytest.raises(MCPToolError, match="issued to agent 'hermes'"):
+        mcp_tools_module._agent_identity_from_arguments(
+            context, {"agent_id": "openclaw", "permission_profile": "trusted_local_agent"}
+        )

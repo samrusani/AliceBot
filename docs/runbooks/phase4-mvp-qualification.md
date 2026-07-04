@@ -40,4 +40,4 @@ The qualification command executes this ordered chain:
 - Non-blocking improvements are deferred.
 - If qualification returns `NO_GO`, capture blocker details in:
   - `artifacts/release/phase4_mvp_signoff_record.json`
-  - `BUILD_REPORT.md`
+  - `docs/archive/process/BUILD_REPORT.md`

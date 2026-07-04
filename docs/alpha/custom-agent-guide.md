@@ -5,12 +5,13 @@ Any third-party agent should follow the same Alice pattern.
 1. Identify yourself.
 2. Request scoped context, not raw memory.
 3. Use Alice context packs before acting.
-4. Submit important outputs back to Alice.
-5. Commit explicit memory only through Alice's memory commit API/MCP/CLI path.
-6. Propose memory for inferred, external-source-derived, generated, ambiguous, or lower-confidence facts.
-7. Create open loops when work remains.
-8. Respect domain and sensitivity policy.
-9. Use `/vnext` for review, audit, undo, correction, forget, and troubleshooting.
+4. Use the read-only context tree for orientation when the agent needs to navigate projects, memories, sources, artifacts, open loops, and traces before requesting a narrower context pack.
+5. Submit important outputs back to Alice.
+6. Commit explicit memory only through Alice's memory commit API/MCP/CLI path.
+7. Propose memory for inferred, external-source-derived, generated, ambiguous, or lower-confidence facts.
+8. Create open loops when work remains.
+9. Respect domain and sensitivity policy.
+10. Use `/vnext` for review, audit, undo, correction, forget, and troubleshooting.
 
 ## API Example
 
@@ -38,11 +39,13 @@ Any third-party agent should follow the same Alice pattern.
 
 ## MCP Example
 
-Use `alice_vnext_context_pack` with the same identity fields, then submit output with `alice_vnext_ingest_agent_output`.
+Use `alice_vnext_context_tree` when the agent needs read-only navigation, then use `alice_vnext_context_pack` with the same identity fields before acting. Submit important output with `alice_vnext_ingest_agent_output`.
 
 For explicit "remember this" instructions, use `alice_vnext_commit_memory`:
 
-Use canonical schema values for persisted labels. For quote saves, use `memory_type=semantic`; use `domain=learning` only when a quote collection needs an explicit domain. Avoid invented values like `memory_type=quote`, `domain=quotes`, or `sensitivity=sensitive`.
+Use canonical schema values for persisted labels. For quote saves, use `memory_type=semantic`; use `memory_type=procedure` for repeatable playbooks with steps, applicability, failure modes, and provenance; use `domain=learning` only when a quote collection needs an explicit domain. Avoid invented values like `memory_type=quote`, `domain=quotes`, or `sensitivity=sensitive`.
+
+Do not rely on passive chat transcript capture as the primary memory path. For first-run behavior, supported structured phrases, and troubleshooting, see [first-memory.md](first-memory.md).
 
 ```json
 {

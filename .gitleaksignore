@@ -1,0 +1,4 @@
+# Documentation example key placeholder ("Bearer alice_sk_...") in a curl
+# snippet — a literal ellipsis, not a real credential. The file now uses an
+# env-var reference; this entry covers the historical blob in the PR range.
+e08cc1e0945522df94adf765f6183bf39020939d:docs/alpha/agent-integration.md:curl-auth-header:49

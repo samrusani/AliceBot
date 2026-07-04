@@ -52,6 +52,9 @@ def build_runtime_env(*, database_url: str, user_id: UUID) -> dict[str, str]:
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
     env["ALICEBOT_AUTH_USER_ID"] = str(user_id)
+    # These suites exercise the legacy long-tail tools as well as the core
+    # nine, so enable the legacy MCP surface for the spawned server.
+    env["ALICE_MCP_LEGACY_TOOLS"] = "1"
     pythonpath_entries = [str(REPO_ROOT / "apps" / "api" / "src"), str(REPO_ROOT / "workers")]
     existing_pythonpath = env.get("PYTHONPATH")
     if existing_pythonpath:
@@ -160,7 +163,7 @@ def _call_tool(client: MCPClient, *, name: str, arguments: dict[str, object]) ->
     assert "error" not in response
     result = response["result"]
     assert result["isError"] is False
-    return result["structuredContent"]
+    return json.loads(result["content"][0]["text"])
 
 
 def test_mcp_recall_and_resume_match_core_and_cli_behavior(migrated_database_urls) -> None:
@@ -272,7 +275,9 @@ def test_mcp_recall_and_resume_match_core_and_cli_behavior(migrated_database_url
     finally:
         client.close()
 
-    assert mcp_recall == core_recall
+    # Core alice_recall searches vNext memories now (none seeded in this test);
+    # legacy continuity parity is asserted through alice_recall_debug below.
+    assert mcp_recall == {"query": "release", "results": [], "count": 0}
     assert mcp_resume == core_resume
     assert mcp_recall_debug["items"] == core_recall["items"]
     assert mcp_recall_debug["debug"]["candidate_count"] >= 1
