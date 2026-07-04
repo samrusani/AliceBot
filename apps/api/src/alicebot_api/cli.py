@@ -5871,7 +5871,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--suite",
         default="all",
         help=(
-            "Suite key to run: all or retrieval_quality. Live-store suites "
+            "Suite key to run: all, retrieval_quality, correction_suppression, "
+            "decision_recovery, or provenance_explanation. Live-store suites "
             "require ALICEBOT_EVAL_DATABASE_URL and report skipped without it."
         ),
     )
@@ -5895,7 +5896,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--suite",
         default="all",
         help=(
-            "Suite key to report: all or retrieval_quality. Live-store suites "
+            "Suite key to report: all, retrieval_quality, correction_suppression, "
+            "decision_recovery, or provenance_explanation. Live-store suites "
             "require ALICEBOT_EVAL_DATABASE_URL and report skipped without it."
         ),
     )

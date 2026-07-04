@@ -223,7 +223,7 @@ class MCPRuntimeContext:
 
 
 _SQLITE_POSTGRES_ONLY_MESSAGE = (
-    "this tool requires the Postgres backend; the SQLite on-ramp serves the nine core tools"
+    "this tool requires the Postgres backend; the SQLite on-ramp serves the core tools only"
 )
 
 
@@ -390,6 +390,36 @@ def _parse_string_list(arguments: Mapping[str, object], key: str) -> tuple[str, 
         if normalized:
             output.append(normalized)
     return tuple(output)
+
+
+def _parse_memory_types(arguments: Mapping[str, object], *, key: str = "memory_types") -> tuple[str, ...]:
+    """Parse an optional typed-memory filter, validating against the canonical enum."""
+    values = _parse_string_list(arguments, key)
+    invalid = sorted({value for value in values if value not in VNEXT_MEMORY_TYPES})
+    if invalid:
+        raise MCPToolError(
+            f"{key} contains unsupported values: {', '.join(invalid)}; "
+            f"allowed values are: {', '.join(VNEXT_MEMORY_TYPES)}"
+        )
+    return values
+
+
+def _retrieval_filter_kwargs(arguments: Mapping[str, object]) -> dict[str, object]:
+    """Optional typed/scoped retrieval filters, passed through only when set.
+
+    ``memory_types`` and ``projects`` are forwarded as keyword arguments so
+    the retrieval service signature stays the source of truth; when a filter
+    is not requested the argument is omitted entirely and the service
+    defaults (``()``) apply.
+    """
+    kwargs: dict[str, object] = {}
+    memory_types = _parse_memory_types(arguments)
+    if memory_types:
+        kwargs["memory_types"] = memory_types
+    projects = _parse_string_list(arguments, "projects")
+    if projects:
+        kwargs["projects"] = projects
+    return kwargs
 
 
 AGENT_API_KEY_ENV = "ALICE_AGENT_API_KEY"
@@ -960,6 +990,7 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
     sensitivity_allowed = list(
         _parse_string_list(arguments, "sensitivity_allowed") or _DEFAULT_SENSITIVITY_ALLOWED
     )
+    retrieval_filters = _retrieval_filter_kwargs(arguments)
     candidate_limit = max(limit * 2, limit)
 
     with _vnext_store_context(context) as store:
@@ -971,12 +1002,14 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
             domains=domains,
             sensitivity_allowed=sensitivity_allowed,
             limit=candidate_limit,
+            **retrieval_filters,
         )
         vector_rows, vector_stage = service._memory_vector_rows(
             query=query,
             domains=domains,
             sensitivity_allowed=sensitivity_allowed,
             limit=candidate_limit,
+            **retrieval_filters,
         )
         ranked_lists: dict[str, list[JsonObject]] = {"fts": fts_rows}
         if vector_stage == VECTOR_STAGE_ENABLED:
@@ -1004,6 +1037,10 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
                 "vector": {"status": vector_stage, "candidate_count": len(vector_rows)},
             },
         }
+        if retrieval_filters:
+            payload["retrieval"]["filters"] = {
+                key: list(value) for key, value in retrieval_filters.items()  # type: ignore[arg-type]
+            }
     return payload
 
 
@@ -2251,6 +2288,9 @@ _COMPACT_MEMORY_FIELDS = (
     "domain",
     "sensitivity",
     "last_seen_at",
+    # Attached by the compiler when last_confirmed_at is older than the
+    # staleness threshold; agents should weigh flagged memories accordingly.
+    "staleness",
 )
 _COMPACT_OPEN_LOOP_FIELDS = (
     "id",
@@ -2295,10 +2335,42 @@ def _handle_alice_context_pack(context: MCPRuntimeContext, arguments: Mapping[st
         "warnings": pack.get("warnings", []),
         "trace_id": pack.get("trace_id"),
     }
+    token_report = _context_pack_token_report(pack)
+    if token_report:
+        payload["token_report"] = token_report
+    # Sections that cannot be reconstructed from the memory rows themselves;
+    # typed groupings (procedures/decisions/beliefs) are omitted here because
+    # every compact memory row already carries memory_type.
+    contradictions = pack.get("contradicting_evidence")
+    if isinstance(contradictions, list) and contradictions:
+        payload["contradicting_evidence"] = contradictions
+    recent_changes = pack.get("recent_changes")
+    if isinstance(recent_changes, list) and recent_changes:
+        payload["recent_changes"] = recent_changes
     if debug:
         payload["query_interpretation"] = dict(interpretation)
         payload["trace"] = pack.get("trace")
+        for section in ("procedures", "decisions", "relevant_beliefs", "current_known_state"):
+            payload[section] = pack.get(section, [])
     return payload
+
+
+_TOKEN_REPORT_FIELDS = ("token_budget", "token_estimate", "truncated", "dropped_item_count")
+
+
+def _context_pack_token_report(pack: Mapping[str, object]) -> JsonObject:
+    """Extract the compiler's token-budget report from a context pack.
+
+    Accepts either a nested ``token_report`` object or the report fields at
+    the top level of the pack, and returns ``{}`` when the compiler did not
+    report a budget.
+    """
+    nested = pack.get("token_report")
+    if not isinstance(nested, Mapping):
+        nested = pack.get("budget")
+    if isinstance(nested, Mapping):
+        return {key: nested[key] for key in _TOKEN_REPORT_FIELDS if key in nested}
+    return {key: pack[key] for key in _TOKEN_REPORT_FIELDS if key in pack}
 
 
 def _vnext_context_pack_payload(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -2338,6 +2410,12 @@ def _vnext_context_pack_payload(context: MCPRuntimeContext, arguments: Mapping[s
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
+            request_kwargs: dict[str, object] = {}
+            memory_types = _parse_memory_types(arguments)
+            if memory_types:
+                # Forwarded only when requested so the retrieval request
+                # dataclass stays the source of truth for the default ().
+                request_kwargs["memory_types"] = memory_types
             payload = VNextRetrievalService(store).compile_context_pack(
                 VNextRetrievalRequest(
                     query=_parse_required_text(arguments, "query"),
@@ -2356,6 +2434,7 @@ def _vnext_context_pack_payload(context: MCPRuntimeContext, arguments: Mapping[s
                     policy_decision=decision.to_record(),
                     trace_id=_parse_optional_text(arguments, "trace_id") or decision.trace_id,
                     run_id=identity.agent_run_id if identity is not None else None,
+                    **request_kwargs,  # type: ignore[arg-type]
                 )
             )
     if blocked_decision is not None:
@@ -3087,6 +3166,38 @@ def _handle_alice_vnext_forget_memory(context: MCPRuntimeContext, arguments: Map
     return payload
 
 
+_MEMORY_MANAGE_ACTIONS = ("confirm", "undo", "forget")
+
+
+def _handle_alice_memory_manage(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    """Core-surface lifecycle verbs for memories written via alice_memory_commit.
+
+    Dispatches to the same policy-checked commit-service handlers as the
+    legacy alice_vnext_confirm_memory / alice_vnext_undo_memory /
+    alice_vnext_forget_memory tools; no logic is duplicated here.
+    """
+    action = (_parse_optional_text(arguments, "action") or "").casefold()
+    if action not in _MEMORY_MANAGE_ACTIONS:
+        allowed = ", ".join(_MEMORY_MANAGE_ACTIONS)
+        raise MCPToolError(f"action must be one of: {allowed}")
+
+    delegate_arguments = {key: value for key, value in arguments.items() if key != "action"}
+    if action == "confirm":
+        # The underlying confirm verb distinguishes plain confirmation from
+        # confirm-with-correction; surface both through one action by keying
+        # off canonical_text so the revision history records 'corrected'.
+        delegate_arguments["action"] = (
+            "edit" if _parse_optional_text(arguments, "canonical_text") is not None else "confirm"
+        )
+        reason = _parse_optional_text(arguments, "reason")
+        if reason is not None and "rationale" not in delegate_arguments:
+            delegate_arguments["rationale"] = reason
+        return _handle_alice_vnext_confirm_memory(context, delegate_arguments)
+    if action == "undo":
+        return _handle_alice_vnext_undo_memory(context, delegate_arguments)
+    return _handle_alice_vnext_forget_memory(context, delegate_arguments)
+
+
 def _handle_alice_vnext_recent_memory_commits(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
@@ -3345,13 +3456,18 @@ _DOMAINS_FILTER_SCHEMA: dict[str, object] = {
     "items": {"type": "string"},
     "description": "Restrict to these life or work areas, such as 'project', 'professional', or 'personal'.",
 }
+_MEMORY_TYPES_FILTER_SCHEMA: dict[str, object] = {
+    "type": "array",
+    "items": {"type": "string", "enum": list(VNEXT_MEMORY_TYPES)},
+    "description": "Restrict to these memory types, such as 'decision', 'preference', or 'procedure'. Empty means all types.",
+}
 _SENSITIVITY_ALLOWED_SCHEMA: dict[str, object] = {
     "type": "array",
     "items": {"type": "string"},
     "description": "Sensitivity levels the caller may see. Defaults to public, internal, private, and unknown.",
 }
 
-# The default MCP surface. Exactly these nine tools are listed and callable
+# The default MCP surface. Exactly these eleven tools are listed and callable
 # unless ALICE_MCP_LEGACY_TOOLS=1 also enables the legacy long tail below.
 _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
@@ -3387,6 +3503,71 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_memory_commit",
+        "description": (
+            "Write one explicit memory on the user's instruction ('remember this'). The write "
+            "is policy-checked, never blind: the outcome is 'committed', 'confirmation_required' "
+            "(finish with alice_memory_manage action 'confirm'), 'review_required' (waits for "
+            "human review), or 'rejected'. Every outcome is recorded with provenance, a "
+            "revision, and an audit event. For source documents and raw notes use "
+            "alice_capture instead."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["title", "canonical_text"],
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Short human-readable title for the memory.",
+                },
+                "canonical_text": {
+                    "type": "string",
+                    "description": "The memory content, phrased as a standalone statement.",
+                },
+                "memory_type": {
+                    "type": "string",
+                    "enum": list(VNEXT_MEMORY_TYPES),
+                    "description": "What kind of memory this is, such as 'preference', 'decision', or 'procedure'. Defaults to 'semantic'.",
+                },
+                "domain": {
+                    "type": "string",
+                    "enum": list(VNEXT_DOMAINS),
+                    "description": "Life or work area this belongs to. Sensitive domains such as 'health' require inline confirmation. Defaults to 'unknown'.",
+                },
+                "sensitivity": {
+                    "type": "string",
+                    "enum": list(VNEXT_SENSITIVITY_LEVELS),
+                    "description": "How sensitive the content is. Levels above 'private' require inline confirmation. Defaults to 'unknown'.",
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": "How certain the caller is, 0 to 1. Below 0.5 routes to review; below 0.85 requires confirmation. Defaults to 0.9.",
+                },
+                "source_type": {
+                    "type": "string",
+                    "description": "Where the content came from. Defaults to 'direct_user_instruction'; external sources such as 'email' or 'web_page' route to review.",
+                },
+                "source_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Ids or URLs of supporting sources, stored as provenance links.",
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "Why this memory is being committed. Stored in the audit trail.",
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "Unique key that makes retries safe; a replay returns the original result.",
+                },
+                **_AGENT_IDENTITY_SCHEMA_PROPERTIES,
+            },
+        },
+    },
+    {
         "name": "alice_recall",
         "description": (
             "Search Alice's memory. Runs full-text and semantic vector search over stored "
@@ -3404,6 +3585,12 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "description": "What to search for, in natural language or keywords.",
                 },
                 "domains": _DOMAINS_FILTER_SCHEMA,
+                "memory_types": _MEMORY_TYPES_FILTER_SCHEMA,
+                "projects": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Restrict results to memories scoped to these project names.",
+                },
                 "sensitivity_allowed": _SENSITIVITY_ALLOWED_SCHEMA,
                 "limit": {
                     "type": "integer",
@@ -3501,6 +3688,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "description": "The task or question the context should support.",
                 },
                 "domains": _DOMAINS_FILTER_SCHEMA,
+                "memory_types": _MEMORY_TYPES_FILTER_SCHEMA,
                 "projects": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -3534,7 +3722,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "type": "integer",
                     "minimum": 500,
                     "maximum": 50000,
-                    "description": "Soft budget for overall pack size, in tokens. Defaults to 8000.",
+                    "description": "Token budget for the pack. Lowest-ranked items are dropped to fit; the result is reported in token_report. Defaults to 8000.",
                 },
                 "debug": {
                     "type": "boolean",
@@ -3748,6 +3936,43 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "type": "number",
                     "description": "For supersede-existing: confidence of the replacement memory, between 0 and 1.",
                 },
+            },
+        },
+    },
+    {
+        "name": "alice_memory_manage",
+        "description": (
+            "Manage a memory written through alice_memory_commit: confirm a pending "
+            "confirmation, undo a commit, or forget a memory. Undo and forget hide the memory "
+            "from recall but keep its revisions and audit events."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["action"],
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": list(_MEMORY_MANAGE_ACTIONS),
+                    "description": "What to do: 'confirm' completes a pending confirmation by confirmation_id, 'undo' reverses a commit, 'forget' retires a memory from recall.",
+                },
+                "confirmation_id": {
+                    "type": "string",
+                    "description": "For confirm: the confirmation id returned by alice_memory_commit.",
+                },
+                "memory_id": {
+                    "type": "string",
+                    "description": "The memory to act on. Required for forget; for undo it defaults to the calling agent's most recent commit.",
+                },
+                "canonical_text": {
+                    "type": "string",
+                    "description": "For confirm: corrected text to store instead of the proposed text.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why this change is being made. Stored in the audit trail.",
+                },
+                **_AGENT_IDENTITY_SCHEMA_PROPERTIES,
             },
         },
     },
@@ -4776,6 +5001,10 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
 
 _TOOL_HANDLERS = {
     "alice_capture": _handle_alice_vnext_capture,
+    # Core front door for explicit agent writes; same handler as the legacy
+    # alice_vnext_commit_memory alias below.
+    "alice_memory_commit": _handle_alice_vnext_commit_memory,
+    "alice_memory_manage": _handle_alice_memory_manage,
     "alice_capture_candidates": _handle_alice_capture_candidates,
     "alice_commit_captures": _handle_alice_commit_captures,
     "alice_memory_mutations_generate": _handle_alice_memory_mutations_generate,

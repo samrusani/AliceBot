@@ -1176,7 +1176,9 @@ def test_vnext_eval_cli_seed_run_and_report(tmp_path: Path, monkeypatch) -> None
     assert Path(seed_payload["written_corpus_path"]) == corpus_path.resolve()
     assert run_payload["report"]["status"] == "skipped"
     assert run_payload["report"]["summary"]["executed_suite_count"] == 0
-    assert [entry["suite_key"] for entry in run_payload["report"]["skipped_suites"]] == ["retrieval_quality"]
+    from alicebot_api.vnext_evals import VNEXT_EVAL_SUITE_ORDER
+
+    assert [entry["suite_key"] for entry in run_payload["report"]["skipped_suites"]] == list(VNEXT_EVAL_SUITE_ORDER)
     assert Path(report_payload["written_report_path"]) == report_path.resolve()
     assert report_payload["report"]["suite"] == "retrieval_quality"
     assert json.loads(report_path.read_text(encoding="utf-8")) == report_payload["report"]

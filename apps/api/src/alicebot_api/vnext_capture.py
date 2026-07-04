@@ -196,7 +196,17 @@ _PREFIX_RULES: tuple[tuple[str, str, float, str], ...] = (
     ("commitment:", "open_loop", 0.76, "prefixed_commitment"),
     ("todo:", "open_loop", 0.74, "prefixed_open_loop"),
     ("next action:", "open_loop", 0.74, "prefixed_open_loop"),
+    ("procedure:", "procedure", 0.80, "prefixed_procedure"),
+    ("playbook:", "procedure", 0.80, "prefixed_procedure"),
+    ("happened:", "episode", 0.74, "prefixed_episode"),
+    ("log:", "episode", 0.72, "prefixed_episode"),
 )
+
+# "How to ..." lines are playbook headings, not colon prefixes, so the whole
+# line is kept as the candidate text. Lines ending in "?" stay with the
+# existing question rule: "How to fix the printer?" is a question the user
+# asked, not procedure content.
+_HOW_TO_PREFIX = "how to "
 
 
 def _strip_markdown_prefix(line: str) -> str:
@@ -226,6 +236,16 @@ def _candidate_from_line(line: str, *, source_chunk_id: str, source_chunk_index:
                 confidence=confidence,
                 extraction_rule=rule,
             )
+
+    if lowered.startswith(_HOW_TO_PREFIX) and len(normalized) > len(_HOW_TO_PREFIX) and not normalized.endswith("?"):
+        return CaptureCandidate(
+            text=normalized,
+            memory_type="procedure",
+            source_chunk_id=source_chunk_id,
+            source_chunk_index=source_chunk_index,
+            confidence=0.68,
+            extraction_rule="how_to_procedure",
+        )
 
     if normalized.endswith("?"):
         return CaptureCandidate(

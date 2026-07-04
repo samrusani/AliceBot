@@ -21,6 +21,24 @@ from alicebot_api.vnext_store import PostgresVNextStore, VNextRow
 
 MEMORY_COMMIT_WRITE_MODES = ("commit", "confirm_inline", "propose_review", "reject")
 MEMORY_COMMIT_STATUSES = ("committed", "confirmation_required", "review_required", "rejected")
+# vNext memory row status vocabulary. Mirrors sqlite_schema.MEMORY_STATUSES
+# (owned by the schema workstream) plus "stale": the write-side marker the
+# staleness sweep applies to expired or long-unconfirmed working-state
+# memories. Postgres carries no CHECK on memories.status (migration
+# 20260510_0067 built the status list but never attached a constraint), so
+# "stale" needs no Postgres constraint change; the SQLite CHECK is extended
+# separately in sqlite_schema.py.
+MEMORY_STATUSES = (
+    "candidate",
+    "active",
+    "accepted",
+    "rejected",
+    "superseded",
+    "archived",
+    "needs_review",
+    "private_only",
+    "stale",
+)
 VNEXT_DOMAINS = (
     "professional",
     "personal",
@@ -500,6 +518,15 @@ class VNextMemoryCommitService:
         agentic = _agentic_metadata(memory)
         confirmation = dict(agentic.get("confirmation") if isinstance(agentic.get("confirmation"), Mapping) else {})
         if confirmation.get("status") != "pending":
+            replay = self._replay_confirmation(
+                identity=identity,
+                memory=memory,
+                confirmation=confirmation,
+                confirmation_id=confirmation_id,
+                action=normalized_action,
+            )
+            if replay is not None:
+                return replay
             raise VNextMemoryCommitValidationError("confirmation is not pending")
 
         expires_at_raw = confirmation.get("expires_at")
@@ -573,7 +600,11 @@ class VNextMemoryCommitService:
                 "reason": rationale or f"Inline memory confirmation {normalized_action}.",
                 "actor_type": actor_type,
                 "actor_id": actor_id,
-                "metadata_json": {"confirmation_id": confirmation_id, "action": normalized_action},
+                "metadata_json": {
+                    "confirmation_id": confirmation_id,
+                    "action": normalized_action,
+                    "last_confirmed_at_refreshed": next_status == "active",
+                },
             },
             actor_type=actor_type,
         )
@@ -593,6 +624,97 @@ class VNextMemoryCommitService:
             "confirmation_id": confirmation_id,
             "memory": updated,
         }
+
+    def _replay_confirmation(
+        self,
+        *,
+        identity: AgentIdentity | None,
+        memory: VNextRow,
+        confirmation: Mapping[str, object],
+        confirmation_id: str,
+        action: str,
+    ) -> JsonObject | None:
+        """Handle repeated confirmation calls idempotently.
+
+        Re-confirming an already-confirmed memory does not create a second
+        memory or flip lifecycle state; it refreshes ``last_confirmed_at``
+        (the staleness sweep's freshness signal) and notes the refresh with a
+        revision. Re-rejecting an already-rejected/expired confirmation is a
+        no-op replay. Mismatched actions still raise in the caller.
+        """
+        status = confirmation.get("status")
+        if status == "confirmed" and action == "confirm":
+            refreshed = self._refresh_last_confirmed(
+                identity=identity,
+                memory=memory,
+                action="agentic_memory_reconfirm",
+                reason="Repeated inline confirmation replayed; last_confirmed_at refreshed.",
+                metadata={"confirmation_id": confirmation_id, "idempotent_replay": True},
+            )
+            return {
+                "status": "committed",
+                "write_mode": "confirm_inline",
+                "confirmation_id": confirmation_id,
+                "memory": refreshed,
+                "idempotent_replay": True,
+            }
+        if status in {"rejected", "expired"} and action == "reject":
+            return {
+                "status": "rejected",
+                "write_mode": "confirm_inline",
+                "confirmation_id": confirmation_id,
+                "memory": memory,
+                "idempotent_replay": True,
+            }
+        return None
+
+    def _refresh_last_confirmed(
+        self,
+        *,
+        identity: AgentIdentity | None,
+        memory: VNextRow,
+        action: str,
+        reason: str,
+        metadata: JsonObject | None = None,
+    ) -> VNextRow:
+        """Set ``last_confirmed_at`` to now on an accepted memory.
+
+        Every confirm/accept path must bump ``last_confirmed_at`` because the
+        staleness sweep reads it as the freshness signal for working-state
+        memory types. The write is idempotent (repeating it only moves the
+        timestamp forward) and is always noted with a revision.
+        """
+        actor_type = "agent" if identity is not None else "user"
+        actor_id = identity.agent_id if identity is not None else None
+        now = _utc_iso()
+        updated = self.store.update_memory(
+            memory_id=str(memory["id"]),
+            patch={"last_confirmed_at": now, "last_reviewed_at": now},
+            actor_type=actor_type,
+        )
+        self.store.append_revision(
+            {
+                "memory_id": str(updated["id"]),
+                "memory_key": str(updated["memory_key"]),
+                "previous_value": memory.get("value"),
+                "new_value": updated.get("value"),
+                "source_event_ids": updated.get("source_event_ids"),
+                "revision_type": "edited",
+                "action": action,
+                "text_before": str(memory.get("canonical_text") or ""),
+                "text_after": str(updated.get("canonical_text") or ""),
+                "reason": reason,
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "metadata_json": {
+                    **(metadata or {}),
+                    "last_confirmed_at_refreshed": True,
+                    "last_confirmed_at": now,
+                },
+            },
+            actor_type=actor_type,
+        )
+        return updated
 
     def undo(
         self,
@@ -629,7 +751,8 @@ class VNextMemoryCommitService:
         next_text = _normalized_text(canonical_text, field_name="canonical_text")
         metadata = _memory_metadata(memory)
         agentic = _agentic_metadata(memory)
-        correction = {"corrected_at": _utc_iso(), "reason": reason, "previous_text": memory.get("canonical_text")}
+        now = _utc_iso()
+        correction = {"corrected_at": now, "reason": reason, "previous_text": memory.get("canonical_text")}
         history = list(agentic.get("corrections") if isinstance(agentic.get("corrections"), list) else [])
         history.append(correction)
         agentic["corrections"] = history
@@ -644,6 +767,10 @@ class VNextMemoryCommitService:
                 "summary": next_text[:280],
                 "value": {**(memory.get("value") if isinstance(memory.get("value"), dict) else {}), "text": next_text},
                 "metadata_json": {**metadata, "agentic_memory": agentic},
+                # A correction is an explicit accept of the new text, so it
+                # refreshes the staleness sweep's freshness signal.
+                "last_confirmed_at": now,
+                "last_reviewed_at": now,
             },
             actor_type=actor_type,
         )
@@ -662,7 +789,7 @@ class VNextMemoryCommitService:
                 "reason": reason or "Agentic memory correction.",
                 "actor_type": actor_type,
                 "actor_id": actor_id,
-                "metadata_json": {"lifecycle_status": "corrected"},
+                "metadata_json": {"lifecycle_status": "corrected", "last_confirmed_at_refreshed": True},
             },
             actor_type=actor_type,
         )
@@ -1242,6 +1369,7 @@ def memory_commit_request_from_payload(payload: Mapping[str, object], *, user_id
 __all__ = [
     "MEMORY_COMMIT_STATUSES",
     "MEMORY_COMMIT_WRITE_MODES",
+    "MEMORY_STATUSES",
     "MemoryCommitPolicyDecision",
     "MemoryCommitRequest",
     "VNextMemoryCommitService",

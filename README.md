@@ -49,7 +49,7 @@ Open the review console at `http://localhost:3000/vnext`. The detailed walkthrou
 
 ### Try it without Docker
 
-For a zero-infrastructure trial, Alice can run the nine core MCP tools against a single local SQLite file — no Docker, Node, or Postgres. From a checkout:
+For a zero-infrastructure trial, Alice can run the eleven core MCP tools against a single local SQLite file — no Docker, Node, or Postgres. From a checkout:
 
 ```bash
 pip install -e . && alice-memory mcp --data-dir ~/.alice
@@ -68,7 +68,7 @@ Once the package is published, `uvx alice-memory mcp --data-dir ~/.alice` replac
 }
 ```
 
-SQLite mode is the trial and single-agent path: it serves the nine core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. For the full experience — review console, scheduler, legacy surfaces — use the Postgres setup above. Boundaries are listed in [known limitations](docs/alpha/known-limitations.md).
+SQLite mode is the trial and single-agent path: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. For the full experience — review console, scheduler, legacy surfaces — use the Postgres setup above. Boundaries are listed in [known limitations](docs/alpha/known-limitations.md).
 
 ## Connect an agent
 
@@ -92,19 +92,21 @@ Point any MCP-capable agent or IDE at the Alice server:
 }
 ```
 
-The core MCP surface is nine tools:
+The core MCP surface is eleven tools:
 
 - `alice_capture` — submit new information as source-backed, reviewable memory
-- `alice_recall` — search memory (full-text plus vector, fused ranking)
+- `alice_memory_commit` — write an explicit "remember this" memory through policy: committed, confirmation-required, review-required, or rejected
+- `alice_recall` — search memory (full-text plus vector, fused ranking; filterable by memory type and project)
 - `alice_resume` — resumption brief for a project or thread
-- `alice_context_pack` — scoped context bundle for a task
+- `alice_context_pack` — scoped context bundle for a task, with an enforced token budget
 - `alice_open_loops` — list and manage open loops
 - `alice_recent_decisions` — recent decision log
 - `alice_memory_review` — inspect items pending review
 - `alice_memory_correct` — propose a correction to an existing memory
+- `alice_memory_manage` — confirm, undo, or forget a committed memory, audit trail intact
 - `alice_explain` — provenance and trust explanation for a memory
 
-The legacy long-tail tool surface stays available behind `ALICE_MCP_LEGACY_TOOLS=1` for existing integrations.
+The write verbs follow one contract — outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](docs/memory-operations-protocol.md). The legacy long-tail tool surface stays available behind `ALICE_MCP_LEGACY_TOOLS=1` for existing integrations.
 
 Custom agents calling the HTTP API authenticate with per-agent API keys. See [docs/alpha/agent-integration.md](docs/alpha/agent-integration.md).
 

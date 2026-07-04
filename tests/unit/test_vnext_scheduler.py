@@ -5,10 +5,14 @@ from datetime import UTC, datetime
 import pytest
 
 from alicebot_api.vnext_scheduler import (
+    DEFAULT_STALENESS_WINDOW_DAYS,
+    STALENESS_REVIEW_MEMORY_TYPES,
+    WORKFLOW_TYPES,
     SchedulerRunRequest,
     VNextSchedulerService,
     VNextSchedulerValidationError,
     compute_next_run_at,
+    default_schedule,
     validate_schedule,
 )
 
@@ -44,6 +48,7 @@ class InMemorySchedulerStore:
         ]
         self.open_loops: list[dict[str, object]] = []
         self.projects: list[dict[str, object]] = []
+        self.revisions: list[dict[str, object]] = []
         self.locked_workflows: set[str] = set()
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
@@ -159,6 +164,19 @@ class InMemorySchedulerStore:
         row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
         self.memories.append(row)
         self.append_event({"event_type": "memory.created", "actor_type": actor_type, "target_id": row["id"]})
+        return row
+
+    def update_memory(self, *, memory_id: str, patch: dict[str, object], actor_type: str = "system") -> dict[str, object]:
+        for memory in self.memories:
+            if memory["id"] == memory_id:
+                memory.update(patch)
+                self.append_event({"event_type": "memory.updated", "actor_type": actor_type, "target_id": memory_id})
+                return memory
+        raise KeyError(memory_id)
+
+    def append_revision(self, revision: dict[str, object], *, actor_type: str = "system") -> dict[str, object]:
+        row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
+        self.revisions.append(row)
         return row
 
     def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
@@ -470,3 +488,208 @@ def test_scheduler_failure_marks_run_failed_without_raising() -> None:
     assert result["run"]["error_message"] == "artifact store unavailable"
     assert store.workflows["project_update_scan"]["last_result"] == "failed"
     assert store.workflows["project_update_scan"]["last_error"] == "artifact store unavailable"
+
+
+def test_staleness_sweep_is_a_registered_workflow_with_daily_default_schedule() -> None:
+    assert "staleness_sweep" in WORKFLOW_TYPES
+    assert DEFAULT_STALENESS_WINDOW_DAYS == 180
+    assert STALENESS_REVIEW_MEMORY_TYPES == ("open_loop", "commitment", "project_state")
+
+    schedule = default_schedule("staleness_sweep")
+    assert schedule["kind"] == "daily"
+    assert len(schedule["days_of_week"]) == 7
+
+    normalized = validate_schedule("staleness_sweep", {"kind": "daily", "time_of_day": "04:15"})
+    assert normalized["kind"] == "daily"
+    assert normalized["time_of_day"] == "04:15"
+
+    next_run = compute_next_run_at(
+        workflow_type="staleness_sweep",
+        enabled=True,
+        paused=False,
+        schedule_json=default_schedule("staleness_sweep"),
+        timezone="UTC",
+        now=datetime(2026, 7, 4, 1, 0, tzinfo=UTC),
+    )
+    assert next_run == "2026-07-04T03:30:00+00:00"
+
+
+def _staleness_store() -> InMemorySchedulerStore:
+    store = InMemorySchedulerStore()
+    store.memories = [
+        {
+            "id": "memory-expired",
+            "memory_type": "semantic",
+            "memory_key": "vnext.capture.semantic.expired",
+            "canonical_text": "Conference badge pickup closes June 1.",
+            "status": "active",
+            "valid_to": "2026-06-01T00:00:00Z",
+            "last_confirmed_at": "2026-06-30T00:00:00Z",
+            "domain": "project",
+            "sensitivity": "private",
+            "metadata_json": {"existing": True},
+        },
+        {
+            "id": "memory-old-open-loop",
+            "memory_type": "open_loop",
+            "memory_key": "vnext.capture.open_loop.old",
+            "canonical_text": "Follow up with the design partner.",
+            "status": "active",
+            "valid_to": None,
+            "last_confirmed_at": "2025-11-01T00:00:00Z",
+            "domain": "project",
+            "sensitivity": "private",
+        },
+        {
+            "id": "memory-old-preference",
+            "memory_type": "preference",
+            "memory_key": "vnext.capture.preference.durable",
+            "canonical_text": "Sam prefers dark roast coffee.",
+            "status": "active",
+            "valid_to": None,
+            "last_confirmed_at": "2024-01-01T00:00:00Z",
+            "domain": "personal",
+            "sensitivity": "private",
+        },
+        {
+            "id": "memory-fresh-project-state",
+            "memory_type": "project_state",
+            "memory_key": "vnext.capture.project_state.fresh",
+            "canonical_text": "Retrieval rebuild shipped last sprint.",
+            "status": "active",
+            "valid_to": None,
+            "last_confirmed_at": "2026-06-20T00:00:00Z",
+            "domain": "project",
+            "sensitivity": "private",
+        },
+        {
+            "id": "memory-expired-candidate",
+            "memory_type": "semantic",
+            "memory_key": "vnext.capture.semantic.candidate",
+            "canonical_text": "Candidate rows stay in the review queue.",
+            "status": "candidate",
+            "valid_to": "2026-01-01T00:00:00Z",
+            "last_confirmed_at": None,
+            "domain": "project",
+            "sensitivity": "private",
+        },
+    ]
+    return store
+
+
+def test_staleness_sweep_marks_expired_and_unconfirmed_working_state_memories() -> None:
+    store = _staleness_store()
+    service = VNextSchedulerService(store)
+
+    result = service.run_now(
+        SchedulerRunRequest(
+            workflow_type="staleness_sweep",
+            generated_for="2026-07-04",
+            options={"reference_time": "2026-07-04T03:30:00Z"},
+        )
+    )
+
+    by_id = {str(memory["id"]): memory for memory in store.memories}
+    assert result["run"]["status"] == "succeeded"
+    assert by_id["memory-expired"]["status"] == "stale"
+    assert by_id["memory-old-open-loop"]["status"] == "stale"
+    # Durable types are exempt from the confirmation-age rule.
+    assert by_id["memory-old-preference"]["status"] == "active"
+    # Recently confirmed working state stays active.
+    assert by_id["memory-fresh-project-state"]["status"] == "active"
+    # Only active rows are swept; candidates stay in the review queue.
+    assert by_id["memory-expired-candidate"]["status"] == "candidate"
+    # Review-first: nothing is deleted.
+    assert len(store.memories) == 5
+    assert by_id["memory-expired"]["metadata_json"]["existing"] is True
+    assert by_id["memory-expired"]["metadata_json"]["staleness"]["reason"] == "valid_to_expired"
+    assert by_id["memory-old-open-loop"]["metadata_json"]["staleness"]["reason"] == "confirmation_window_elapsed"
+
+    artifact = result["artifact"]
+    assert artifact["artifact_type"] == "system_report"
+    assert artifact["status"] == "needs_review"
+    assert artifact["metadata_json"]["stale_marked_memory_ids"] == ["memory-expired", "memory-old-open-loop"]
+    assert artifact["metadata_json"]["staleness_window_days"] == 180
+    assert artifact["metadata_json"]["input_counts"] == {
+        "scanned": 4,
+        "expired_marked": 1,
+        "unconfirmed_marked": 1,
+    }
+    assert artifact["metadata_json"]["review_policy"] == "marks_stale_never_deletes"
+
+    stale_events = [event for event in store.events if event.get("event_type") == "memory.stale_marked"]
+    assert len(stale_events) == 2
+    assert {event["target_id"] for event in stale_events} == {"memory-expired", "memory-old-open-loop"}
+
+    sweep_revisions = [revision for revision in store.revisions if revision.get("action") == "staleness_sweep_mark"]
+    assert len(sweep_revisions) == 2
+    for revision in sweep_revisions:
+        # REVISION_TYPES has no 'stale_marked'; the sweep notes the intent.
+        assert revision["revision_type"] == "edited"
+        assert revision["metadata_json"]["requested_revision_type"] == "stale_marked"
+        assert revision["reason"].startswith("stale_marked:")
+
+
+def test_staleness_sweep_is_idempotent_across_runs() -> None:
+    store = _staleness_store()
+    service = VNextSchedulerService(store)
+    options = {"reference_time": "2026-07-04T03:30:00Z"}
+
+    first = service.run_now(SchedulerRunRequest(workflow_type="staleness_sweep", options=options))
+    second = service.run_now(SchedulerRunRequest(workflow_type="staleness_sweep", options=options))
+
+    assert first["run"]["status"] == "succeeded"
+    assert second["run"]["status"] == "succeeded"
+    assert second["artifact"]["metadata_json"]["stale_marked_memory_ids"] == []
+    assert second["artifact"]["metadata_json"]["input_counts"]["expired_marked"] == 0
+    assert second["artifact"]["metadata_json"]["input_counts"]["unconfirmed_marked"] == 0
+    stale_events = [event for event in store.events if event.get("event_type") == "memory.stale_marked"]
+    assert len(stale_events) == 2
+    assert len([revision for revision in store.revisions if revision.get("action") == "staleness_sweep_mark"]) == 2
+
+
+def test_staleness_sweep_window_is_configurable_via_options() -> None:
+    store = _staleness_store()
+    service = VNextSchedulerService(store)
+
+    result = service.run_now(
+        SchedulerRunRequest(
+            workflow_type="staleness_sweep",
+            options={"reference_time": "2026-07-04T03:30:00Z", "staleness_window_days": 10},
+        )
+    )
+
+    by_id = {str(memory["id"]): memory for memory in store.memories}
+    # With a 10-day window even the recently confirmed project state ages out.
+    assert by_id["memory-fresh-project-state"]["status"] == "stale"
+    # Durable preference remains exempt regardless of the window.
+    assert by_id["memory-old-preference"]["status"] == "active"
+    assert result["artifact"]["metadata_json"]["staleness_window_days"] == 10
+
+
+def test_staleness_sweep_skips_memories_without_freshness_signal() -> None:
+    store = InMemorySchedulerStore()
+    store.memories = [
+        {
+            "id": "memory-no-signal",
+            "memory_type": "open_loop",
+            "memory_key": "vnext.capture.open_loop.nosignal",
+            "canonical_text": "Loop without any timestamps.",
+            "status": "active",
+            "valid_to": None,
+            "last_confirmed_at": None,
+            "domain": "project",
+            "sensitivity": "private",
+        }
+    ]
+    service = VNextSchedulerService(store)
+
+    result = service.run_now(
+        SchedulerRunRequest(
+            workflow_type="staleness_sweep",
+            options={"reference_time": "2026-07-04T03:30:00Z"},
+        )
+    )
+
+    assert store.memories[0]["status"] == "active"
+    assert result["artifact"]["metadata_json"]["stale_marked_memory_ids"] == []

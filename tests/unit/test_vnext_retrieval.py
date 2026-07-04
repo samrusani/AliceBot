@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import re
 
 import pytest
 
 from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
 from alicebot_api.vnext_retrieval import (
+    CONTRADICTIONS_STAGE_ENABLED,
+    CONTRADICTIONS_STAGE_NO_STORE_SUPPORT,
+    EXCLUSION_REASON_TOKEN_BUDGET,
     RRF_K,
+    STALENESS_NOTE_AFTER_DAYS,
     VECTOR_STAGE_DISABLED_NO_PROVIDER,
     VECTOR_STAGE_ENABLED,
     VNextRetrievalRequest,
     VNextRetrievalService,
     classify_query,
+    estimate_item_tokens,
     query_terms,
     reciprocal_rank_fusion,
 )
@@ -54,16 +60,20 @@ class InMemoryVNextRetrievalStore:
         open_loops: list[dict[str, object]] | None = None,
         provenance_links: list[dict[str, object]] | None = None,
         vector_memories: list[dict[str, object]] | None = None,
+        beliefs: list[dict[str, object]] | None = None,
+        seeded_events: list[dict[str, object]] | None = None,
     ) -> None:
         self.memories = memories
         self.sources = sources
         self.open_loops = open_loops or []
         self.provenance_links = provenance_links or []
         self.vector_memories = vector_memories
-        self.events: list[dict[str, object]] = []
+        self.beliefs = beliefs
+        self.events: list[dict[str, object]] = list(seeded_events or [])
         self.memory_search_domains: object = _UNSET
         self.source_search_domains: object = _UNSET
         self.open_loop_domains: object = _UNSET
+        self.memory_search_kwargs: list[dict[str, object]] = []
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
@@ -73,6 +83,24 @@ class InMemoryVNextRetrievalStore:
         parts = [row.get(key) for key in ("title", "canonical_text", "summary")]
         return " ".join(part for part in parts if isinstance(part, str)).casefold()
 
+    def _apply_filters(
+        self,
+        rows: list[dict[str, object]],
+        *,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+    ) -> list[dict[str, object]]:
+        if memory_types:
+            rows = [row for row in rows if row.get("memory_type") in memory_types]
+        if projects:
+            rows = [
+                row
+                for row in rows
+                if isinstance(row.get("metadata_json"), dict)
+                and row["metadata_json"].get("project_id") in projects
+            ]
+        return rows
+
     def search_memories(
         self,
         *,
@@ -80,10 +108,14 @@ class InMemoryVNextRetrievalStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        include_expired: bool = False,
     ) -> list[dict[str, object]]:
-        del query, sensitivity_allowed
+        del query, sensitivity_allowed, include_expired
         self.memory_search_domains = domains
-        return self.memories[:limit]
+        rows = self._apply_filters(self.memories, memory_types=memory_types, projects=projects)
+        return rows[:limit]
 
     def search_memories_fts(
         self,
@@ -92,11 +124,16 @@ class InMemoryVNextRetrievalStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 50,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        include_expired: bool = False,
     ) -> list[dict[str, object]]:
-        del sensitivity_allowed
+        del sensitivity_allowed, include_expired
         self.memory_search_domains = domains
+        self.memory_search_kwargs.append({"memory_types": memory_types, "projects": projects})
         terms = [term.casefold() for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]+", query)]
         rows = [row for row in self.memories if any(term in self._memory_text(row) for term in terms)]
+        rows = self._apply_filters(rows, memory_types=memory_types, projects=projects)
         return rows[:limit]
 
     def search_memories_vector(
@@ -106,11 +143,42 @@ class InMemoryVNextRetrievalStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 50,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        include_expired: bool = False,
     ) -> list[dict[str, object]]:
-        del query_vector, domains, sensitivity_allowed
+        del query_vector, domains, sensitivity_allowed, include_expired
         if self.vector_memories is None:
             return []
-        return self.vector_memories[:limit]
+        rows = self._apply_filters(self.vector_memories, memory_types=memory_types, projects=projects)
+        return rows[:limit]
+
+    def list_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        rows = [
+            event
+            for event in reversed(self.events)
+            if (target_type is None or event.get("target_type") == target_type)
+            and (target_id is None or event.get("target_id") == target_id)
+        ]
+        return rows[:limit] if limit is not None else rows
+
+    def list_beliefs(
+        self,
+        *,
+        status: str | None = "active",
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 8,
+    ) -> list[dict[str, object]]:
+        del domains, sensitivity_allowed
+        rows = [row for row in (self.beliefs or []) if status is None or row.get("status") == status]
+        return rows[:limit]
 
     def search_sources(
         self,
@@ -260,7 +328,20 @@ def test_context_pack_includes_memories_sources_open_loops_provenance_and_trace(
     assert pack["sources"][0]["id"] == "source-1"
     assert pack["open_loops"][0]["id"] == "loop-1"
     assert pack["decisions"][0]["id"] == "memory-1"
+    assert pack["procedures"] == []
     assert pack["contradicting_evidence"] == []
+    assert pack["recent_changes"] == []
+    # historical_timeline was removed from the pack schema.
+    assert "historical_timeline" not in pack
+    # current_known_state is a compact reference list, not duplicate rows.
+    assert pack["current_known_state"] == [
+        {"id": "memory-1", "title": "Alice vNext uses provenance first retrieval.", "memory_type": "decision"}
+    ]
+    # No token budget requested: estimate is still reported, nothing dropped.
+    assert pack["budget"]["token_budget"] is None
+    assert pack["budget"]["token_estimate"] > 0
+    assert pack["budget"]["truncated"] is False
+    assert pack["budget"]["dropped_item_count"] == 0
     assert pack["supporting_evidence"] == [
         {
             "target_type": "memory",
@@ -414,3 +495,320 @@ def test_context_pack_records_missing_information_when_no_candidates_match() -> 
     assert pack["relevant_memories"] == []
     assert {"kind": "memory", "reason": "No matching memory was selected."} in pack["missing_information"]
     assert "no_relevant_memories_selected" in pack["warnings"]
+
+
+# -- token budget -----------------------------------------------------------------
+
+
+def test_context_pack_enforces_max_tokens_with_greedy_packing_and_traces_drops() -> None:
+    memories = [
+        _memory_row(f"memory-{index}", f"Alice retrieval budget item number {index} with padding text.")
+        for index in range(1, 5)
+    ]
+    store = InMemoryVNextRetrievalStore(memories=memories, sources=[])
+    service = VNextRetrievalService(store)
+
+    # Budget that fits exactly the first two memories and nothing more.
+    first_two_cost = sum(
+        estimate_item_tokens({key: value for key, value in row.items() if key != "deleted_at"})
+        for row in memories[:2]
+    )
+    pack = service.compile_context_pack(
+        VNextRetrievalRequest(query="Alice retrieval budget", max_items=8, max_tokens=first_two_cost)
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-1", "memory-2"]
+    assert pack["budget"]["token_budget"] == first_two_cost
+    assert pack["budget"]["token_estimate"] <= first_two_cost
+    assert pack["budget"]["truncated"] is True
+    assert pack["budget"]["dropped_item_count"] == 2
+    assert pack["trace"]["budget"] == pack["budget"]
+    assert pack["trace"]["excluded_counts"][EXCLUSION_REASON_TOKEN_BUDGET] == 2
+    assert pack["trace"]["selected_count"] == 2
+    assert [record["target_id"] for record in pack["trace"]["selected"]] == ["memory-1", "memory-2"]
+    assert pack["current_known_state"] == [
+        {"id": "memory-1", "title": memories[0]["canonical_text"], "memory_type": "semantic"},
+        {"id": "memory-2", "title": memories[1]["canonical_text"], "memory_type": "semantic"},
+    ]
+
+
+def test_context_pack_budget_packs_sections_in_priority_order() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Alice budget priority memory row.")],
+        sources=[
+            {
+                "id": "source-1",
+                "source_type": "manual_text",
+                "title": "Alice budget priority source",
+                "content_hash": "sha256:abc",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        ],
+        open_loops=[
+            {
+                "id": "loop-1",
+                "title": "Alice budget priority loop",
+                "status": "open",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        ],
+    )
+    memory_cost = estimate_item_tokens(_memory_row("memory-1", "Alice budget priority memory row."))
+    loop_cost = estimate_item_tokens(
+        {
+            "id": "loop-1",
+            "title": "Alice budget priority loop",
+            "status": "open",
+            "domain": "project",
+            "sensitivity": "private",
+        }
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice budget priority", max_tokens=memory_cost + loop_cost)
+    )
+
+    # Memories pack first, open loops second; the source no longer fits.
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-1"]
+    assert [loop["id"] for loop in pack["open_loops"]] == ["loop-1"]
+    assert pack["sources"] == []
+    assert pack["budget"]["truncated"] is True
+    assert pack["budget"]["dropped_item_count"] == 1
+    source_trace = [record for record in pack["trace"]["selected"] if record["target_type"] == "source"]
+    assert source_trace == []
+    assert pack["trace"]["excluded_counts"][EXCLUSION_REASON_TOKEN_BUDGET] == 1
+
+
+def test_context_pack_rejects_non_positive_max_tokens() -> None:
+    store = InMemoryVNextRetrievalStore(memories=[], sources=[])
+    with pytest.raises(ValueError, match="max_tokens"):
+        VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(query="Alice", max_tokens=0)
+        )
+
+
+# -- memory_types and projects filters ---------------------------------------------
+
+
+def test_context_pack_threads_memory_types_and_projects_to_recall_stages() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row("memory-decision", "Alice filter threading decision.", memory_type="decision"),
+            _memory_row("memory-preference", "Alice filter threading preference.", memory_type="preference"),
+        ],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="Alice filter threading",
+            memory_types=("decision",),
+            projects=("alicebot",),
+        )
+    )
+
+    assert store.memory_search_kwargs[-1] == {"memory_types": ("decision",), "projects": ("alicebot",)}
+    assert pack["trace"]["filters"]["memory_types"] == ["decision"]
+    assert pack["trace"]["filters"]["projects"] == ["alicebot"]
+    assert pack["query_interpretation"]["memory_types"] == ["decision"]
+
+
+def test_context_pack_omits_filter_kwargs_when_unset_for_minimal_stores() -> None:
+    class MinimalStore(InMemoryVNextRetrievalStore):
+        def search_memories_fts(self, *, query, domains=None, sensitivity_allowed=None, limit=50):  # type: ignore[override]
+            # Legacy signature without memory_types/projects/include_expired.
+            return super().search_memories_fts(
+                query=query, domains=domains, sensitivity_allowed=sensitivity_allowed, limit=limit
+            )
+
+    store = MinimalStore(memories=[_memory_row("memory-1", "Alice minimal store check.")], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice minimal store")
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-1"]
+
+
+def test_context_pack_filters_memories_by_project_metadata() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row(
+                "memory-alicebot",
+                "Alice project scoped row.",
+                metadata_json={"project_id": "alicebot"},
+            ),
+            _memory_row(
+                "memory-hermes",
+                "Alice project scoped row for hermes.",
+                metadata_json={"project_id": "hermes"},
+            ),
+        ],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice project scoped", projects=("alicebot",))
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-alicebot"]
+
+
+# -- staleness notes ---------------------------------------------------------------
+
+
+def test_context_pack_adds_staleness_note_for_long_unconfirmed_memories() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row(
+                "memory-stale",
+                "Alice staleness check old fact.",
+                last_confirmed_at="2020-01-01T00:00:00Z",
+            ),
+            _memory_row(
+                "memory-fresh",
+                "Alice staleness check fresh fact.",
+                last_confirmed_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            ),
+            _memory_row("memory-unconfirmed", "Alice staleness check unconfirmed fact."),
+        ],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice staleness check")
+    )
+
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    staleness = by_id["memory-stale"]["staleness"]
+    assert staleness["threshold_days"] == STALENESS_NOTE_AFTER_DAYS
+    assert staleness["days_since_last_confirmed"] > STALENESS_NOTE_AFTER_DAYS
+    assert "last confirmed" in staleness["note"]
+    assert "staleness" not in by_id["memory-fresh"]
+    assert "staleness" not in by_id["memory-unconfirmed"]
+
+
+# -- contradicting evidence and recent changes --------------------------------------
+
+
+def test_context_pack_populates_contradicting_evidence_from_active_beliefs() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row(
+                "memory-1",
+                "The deployment pipeline is not ready for production launch.",
+            )
+        ],
+        sources=[],
+        beliefs=[
+            {
+                "id": "belief-1",
+                "memory_id": "memory-belief",
+                "claim": "The deployment pipeline is ready for production launch.",
+                "status": "active",
+                "memory_type": "belief",
+            }
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="deployment pipeline production launch")
+    )
+
+    assert len(pack["contradicting_evidence"]) == 1
+    record = pack["contradicting_evidence"][0]
+    assert record["source_item"] == "memory:memory-1"
+    assert record["belief_id"] == "belief-1"
+    assert record["contradiction_type"] == "belief_conflict"
+    assert record["recommended_action"]
+    assert pack["trace"]["stages"]["contradictions"] == {
+        "status": CONTRADICTIONS_STAGE_ENABLED,
+        "candidate_count": 1,
+    }
+    # The read path must not write contradiction edges or extra events.
+    assert [event["event_type"] for event in store.events] == ["retrieval.context_pack_compiled"]
+
+
+def test_context_pack_degrades_contradictions_when_store_lacks_beliefs() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Alice degrade check row.")],
+        sources=[],
+    )
+    # Shadow the class attribute so getattr(...) is not callable, mirroring
+    # stores (like the SQLite on-ramp) that have no belief surface at all.
+    store.list_beliefs = None  # type: ignore[method-assign]
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice degrade check")
+    )
+
+    assert pack["contradicting_evidence"] == []
+    assert pack["trace"]["stages"]["contradictions"]["status"] == CONTRADICTIONS_STAGE_NO_STORE_SUPPORT
+
+
+def test_context_pack_populates_recent_changes_from_memory_events() -> None:
+    seeded_events = [
+        {
+            "id": f"event-{index}",
+            "event_type": event_type,
+            "actor_type": "system",
+            "target_type": target_type,
+            "target_id": f"memory-{index}",
+            "occurred_at": f"2026-06-0{index + 1}T00:00:00Z",
+        }
+        for index, (event_type, target_type) in enumerate(
+            [
+                ("memory.created", "memory"),
+                ("memory.updated", "memory"),
+                ("provenance_link.created", "memory"),  # memory-targeted but not memory.*
+                ("source.created", "source"),
+                ("memory.created", "memory"),
+                ("memory.updated", "memory"),
+                ("memory.created", "memory"),
+                ("memory.updated", "memory"),
+                ("memory.created", "memory"),
+            ]
+        )
+    ]
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Alice recent changes row.")],
+        sources=[],
+        seeded_events=seeded_events,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice recent changes")
+    )
+
+    recent = pack["recent_changes"]
+    assert len(recent) == 5  # DEFAULT_RECENT_CHANGES_LIMIT
+    assert all(change["event_type"].startswith("memory.") for change in recent)
+    # Most recent events first (stub returns newest-first).
+    assert recent[0]["event_id"] == "event-8"
+    assert set(recent[0]) == {"event_id", "event_type", "target_id", "occurred_at", "actor_type"}
+    assert pack["trace"]["stages"]["recent_changes"] == {"candidate_count": 5}
+
+
+# -- type-aware sections -------------------------------------------------------------
+
+
+def test_context_pack_groups_procedures_and_routines_into_procedures_section() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row("memory-procedure", "Alice grouping deploy procedure.", memory_type="procedure"),
+            _memory_row("memory-routine", "Alice grouping morning routine.", memory_type="routine"),
+            _memory_row("memory-belief", "Alice grouping strong belief.", memory_type="belief"),
+            _memory_row("memory-decision", "Alice grouping final decision.", memory_type="decision"),
+        ],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice grouping")
+    )
+
+    assert {item["id"] for item in pack["procedures"]} == {"memory-procedure", "memory-routine"}
+    assert [item["id"] for item in pack["relevant_beliefs"]] == ["memory-belief"]
+    assert [item["id"] for item in pack["decisions"]] == ["memory-decision"]

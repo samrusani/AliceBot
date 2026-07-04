@@ -25,7 +25,7 @@ This alpha is intentionally limited.
 
 SQLite mode (`alice-memory mcp`) is the trial/single-agent path and carries extra boundaries:
 
-- nine core MCP tools only; the legacy continuity surfaces are Postgres-only
+- core MCP tools only (11 as of this release); the legacy continuity surfaces are Postgres-only
 - no web console review — review runs through `alice_memory_review` / `alice_memory_correct`
 - no scheduler
 - one user per local database file

@@ -9,7 +9,7 @@ Alice vNext is organized around inspectable continuity rather than generic notes
 The kernel owns durable state and policy boundaries:
 
 - `sources` and `source_chunks` preserve raw evidence and normalized text.
-- `memories` store typed candidate or accepted claims with status, confidence, domain, and sensitivity. `procedure` is a canonical memory type for repeatable playbooks and uses the same store, provenance, review, correction, and revision semantics as other memory.
+- `memories` store typed candidate or accepted claims with status, confidence, domain, and sensitivity. `procedure` is a typed memory class for repeatable playbooks: capture extracts `Procedure:`/`Playbook:`/`How to` lines as `procedure` candidates, retrieval filters by `memory_type`, and context packs carry a procedures section. Procedures use the same store, provenance, review, correction, and revision semantics as other memory; there is no procedure-specific ranking or auto-classification beyond these typed rules.
 - `memory_revisions` preserve correction, promotion, supersession, and rejection history.
 - `provenance_links` connect memories, artifacts, graph edges, projects, and open loops back to source chunks.
 - `event_log` records append-only system events for mutation, connector sync, artifact generation, and review.
@@ -60,14 +60,24 @@ Agent-originated HTTP calls authenticate with per-agent API keys. Create one wit
 4. Synthesis workflows retrieve allowed evidence and generate reviewable deterministic or model-backed artifacts. Retrieval is hybrid: Postgres full-text search plus pgvector semantic search fused with reciprocal-rank fusion. Without a configured embedding endpoint (`ALICE_EMBEDDINGS_BASE_URL`/`ALICE_EMBEDDINGS_MODEL`), retrieval runs full-text-only and states that in traces.
 5. Review actions accept, edit, reject, supersede, close, snooze, or promote.
 6. Quality review actions rate artifacts for usefulness, accuracy, source grounding, novelty, actionability, hallucination risk, verbosity, missed context, and comments.
-7. Event log records write paths for audit and replay.
+7. Event log records write paths for audit. The vNext event log is an append-only audit trail, not a temporal query surface: vNext does not yet answer as-of or history questions over memory state.
 8. Agent and scheduler actions add agent identity, policy decision, run ID, trace ID, target ID, and workflow metadata where applicable.
 
 ## Memory Consolidation
 
-The `memory_consolidation` scheduler workflow scans accepted memories, reviewed sources, generated artifacts, recent events, corrections/contradictions reflected in memory state, and artifact quality ratings. It produces a reviewable `memory_consolidation` artifact and may create deduplicated candidate memories with source references.
+The `memory_consolidation` scheduler workflow scans accepted memories, reviewed sources, generated artifacts, recent events, corrections/contradictions reflected in memory state, and artifact quality ratings. It produces a reviewable `memory_consolidation` artifact and may create candidate memories with source references. Consolidation does not yet deduplicate or merge overlapping memories: it only avoids re-creating its own prior candidate for the same inputs, and merge/dedup proposals remain planned work.
 
 Consolidation never updates or promotes trusted memory automatically. Candidate memories must pass the normal `/vnext` review, correction, supersession, and audit paths before they affect recall.
+
+## Memory Staleness
+
+The `staleness_sweep` scheduler workflow (daily by default, disabled until explicitly enabled like every workflow) marks memories `stale`; it never deletes, archives, or supersedes them:
+
+- Any active memory whose `valid_to` has passed is marked stale, regardless of type: a row that declares its own end of validity is stale once that time arrives.
+- Active working-state memories (`open_loop`, `commitment`, `project_state`) whose `last_confirmed_at` is older than a configurable window (180 days by default) are marked stale. Durable types — preferences, semantic facts, procedures, identity and relationship facts — are exempt because stability priors differ by type: silence does not make a preference or a playbook less true, while working state describes a world that moves on without confirmation.
+- Every mark writes a memory revision and a `memory.stale_marked` event. Stale memories stay fully auditable and can be re-confirmed or archived through the normal review paths.
+
+Confirm, accept, and correction paths refresh `last_confirmed_at`, so actively reviewed memories do not age out.
 
 ## Model Routing
 
@@ -109,8 +119,9 @@ The local scheduler owns disabled-by-default workflow configuration for:
 - `open_loop_review`
 - `project_update_scan`
 - `memory_consolidation`
+- `staleness_sweep`
 
-Daily Brief, Weekly Synthesis, and Memory Consolidation are full runnable workflows. Local due scans run enabled, unpaused workflows whose `next_run_at` has arrived, then advance the next run timestamp. Other workflow types have persistent configuration, policy-checked control paths, run history, and generated report artifacts. Scheduler runs record status, trace ID, triggering actor, policy decision, generation mode, agent identity when present, output artifact ID, and failure details.
+Daily Brief, Weekly Synthesis, Memory Consolidation, and the Staleness Sweep are full runnable workflows. Local due scans run enabled, unpaused workflows whose `next_run_at` has arrived, then advance the next run timestamp. Other workflow types have persistent configuration, policy-checked control paths, run history, and generated report artifacts. Scheduler runs record status, trace ID, triggering actor, policy decision, generation mode, agent identity when present, output artifact ID, and failure details.
 
 ## Connector Boundary
 

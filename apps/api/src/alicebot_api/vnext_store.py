@@ -16,6 +16,18 @@ JsonList = list[object]
 VNextRow = dict[str, object]
 _SEARCH_STOPWORDS = {"about", "what", "when", "where", "which", "with", "from", "this", "that", "should", "could"}
 
+# Statuses the memory read path returns. Everything else -- including
+# 'stale' (demoted by maintenance), 'superseded', and 'rejected' -- is
+# excluded-by-default from retrieval. Mirrors
+# sqlite_store._MEMORY_SEARCHABLE_STATUSES_SQL; keep the two in sync.
+_MEMORY_SEARCHABLE_STATUSES_SQL = "('active', 'accepted')"
+
+# Seam for the Wave-2 memories.project_id column: project filtering reads
+# the project id from metadata_json today. When the real column lands,
+# swapping this expression for "project_id::text" updates every memory
+# search in one line.
+_MEMORY_PROJECT_ID_SQL = "metadata_json ->> 'project_id'"
+
 
 def _vector_literal(vector: list[float]) -> str:
     if not vector:
@@ -1227,17 +1239,25 @@ class PostgresVNextStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        include_expired: bool = False,
     ) -> list[VNextRow]:
         patterns = _search_patterns(query)
         exact_pattern = patterns[0]
+        memory_type_list = list(memory_types) or None
+        project_list = list(projects) or None
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS}
                 FROM memories
                 WHERE deleted_at IS NULL
-                  AND status IN ('active', 'accepted')
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR memory_type = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR {_MEMORY_PROJECT_ID_SQL} = ANY(%s::text[]))
+                  AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
                   AND (
                     memory_key ILIKE ANY(%s::text[])
                     OR title ILIKE ANY(%s::text[])
@@ -1263,6 +1283,11 @@ class PostgresVNextStore:
                 domains,
                 sensitivity_allowed,
                 sensitivity_allowed,
+                memory_type_list,
+                memory_type_list,
+                project_list,
+                project_list,
+                include_expired,
                 patterns,
                 patterns,
                 patterns,
@@ -1283,16 +1308,24 @@ class PostgresVNextStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 50,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        include_expired: bool = False,
     ) -> list[VNextRow]:
+        memory_type_list = list(memory_types) or None
+        project_list = list(projects) or None
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS},
                   ts_rank(search_tsv, websearch_to_tsquery('english', %s)) AS fts_score
                 FROM memories
                 WHERE deleted_at IS NULL
-                  AND status IN ('active', 'accepted')
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR memory_type = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR {_MEMORY_PROJECT_ID_SQL} = ANY(%s::text[]))
+                  AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
                   AND search_tsv @@ websearch_to_tsquery('english', %s)
                 ORDER BY fts_score DESC, updated_at DESC, created_at DESC, id DESC
                 LIMIT %s
@@ -1303,6 +1336,11 @@ class PostgresVNextStore:
                 domains,
                 sensitivity_allowed,
                 sensitivity_allowed,
+                memory_type_list,
+                memory_type_list,
+                project_list,
+                project_list,
+                include_expired,
                 query,
                 limit,
             ),
@@ -1315,8 +1353,13 @@ class PostgresVNextStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 50,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        include_expired: bool = False,
     ) -> list[VNextRow]:
         vector_param = _vector_literal(query_vector)
+        memory_type_list = list(memory_types) or None
+        project_list = list(projects) or None
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS},
@@ -1324,9 +1367,12 @@ class PostgresVNextStore:
                 FROM memories
                 WHERE deleted_at IS NULL
                   AND embedding_vector IS NOT NULL
-                  AND status IN ('active', 'accepted')
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}
                   AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR memory_type = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR {_MEMORY_PROJECT_ID_SQL} = ANY(%s::text[]))
+                  AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
                 ORDER BY embedding_vector <=> %s::vector
                 LIMIT %s
                 """,
@@ -1336,6 +1382,11 @@ class PostgresVNextStore:
                 domains,
                 sensitivity_allowed,
                 sensitivity_allowed,
+                memory_type_list,
+                memory_type_list,
+                project_list,
+                project_list,
+                include_expired,
                 vector_param,
                 limit,
             ),

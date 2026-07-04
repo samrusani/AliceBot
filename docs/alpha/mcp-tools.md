@@ -1,8 +1,10 @@
 # MCP Tools
 
-Alice exposes nine core MCP tools by default. Every parameter carries a
+Alice exposes eleven core MCP tools by default. Every parameter carries a
 description, so MCP-capable agents can use the surface without reading this
-page — this page exists for humans wiring things up.
+page — this page exists for humans wiring things up. For the full verb
+contract — outcomes, audit guarantees, and honest boundaries — see the
+[Memory Operations Protocol](../memory-operations-protocol.md).
 
 ## Start the server
 
@@ -31,29 +33,42 @@ Claude Desktop / IDE config:
 ```
 
 > **No Postgres yet?** `alice-memory mcp --data-dir ~/.alice` serves the
-> same nine core tools against a local SQLite file — no `DATABASE_URL`
+> same eleven core tools against a local SQLite file — no `DATABASE_URL`
 > needed. Works from a repo checkout today (`pip install -e .`);
 > `uvx alice-memory` once the package is published. SQLite-mode boundaries
 > are listed in [known limitations](known-limitations.md).
 
-## The nine core tools
+## The eleven core tools
 
 **Write and review**
 
 - `alice_capture` — submit new information as source-backed, reviewable
   memory. Text is stored verbatim with provenance and becomes trusted
   memory only after review.
+- `alice_memory_commit` — write one explicit memory on the user's
+  instruction ("remember this"). Policy-checked, never blind: the outcome
+  is `committed`, `confirmation_required`, `review_required`, or
+  `rejected`, always with provenance, a revision, and an audit event.
 - `alice_memory_review` — inspect the review queue, or one item in detail.
 - `alice_memory_correct` — act on a memory: approve, edit-and-approve,
   reject, or supersede with a replacement. Every change is audited.
+- `alice_memory_manage` — lifecycle verbs for committed memories: `confirm`
+  a pending confirmation, `undo` a commit, or `forget` a memory. Undo and
+  forget hide the memory from recall but keep its revisions and events.
 
 **Read**
 
 - `alice_recall` — search memory. Full-text plus semantic vector search,
   merged with reciprocal-rank fusion. Falls back to full-text only (and
-  says so) when no embedding endpoint is configured.
+  says so) when no embedding endpoint is configured. Accepts optional
+  `memory_types` (typed filter, e.g. only `decision` or `procedure`
+  memories) and `projects` (project-scope filter) arrays.
 - `alice_context_pack` — a scoped context bundle for a task: relevant
-  memories, open loops, and sources with supporting evidence.
+  memories, open loops, and sources with supporting evidence. Accepts the
+  same `memory_types` filter, and `max_tokens` is enforced: lowest-ranked
+  items are dropped to fit the budget and the response carries a
+  `token_report` (`token_budget`, `token_estimate`, `truncated`,
+  `dropped_item_count`).
 - `alice_resume` — a pick-work-back-up brief: last decision, suggested next
   action, open loops, recent changes; scopable to a project, person, or
   thread.
@@ -92,10 +107,33 @@ ALICE_EMBEDDINGS_API_KEY=   # only if the endpoint requires one
 Without these, `alice_recall` and `alice_context_pack` still work on
 full-text search alone.
 
+## Explicit memory commits
+
+Trusted agents write explicit "remember this" instructions through
+`alice_memory_commit`. Alice decides the outcome, never the agent:
+
+- `committed` — direct active memory with provenance, event log, revision.
+- `confirmation_required` — sensitive or ambiguous memory waits for
+  `alice_memory_manage` with `action: "confirm"`.
+- `review_required` — external, generated, or low-confidence memory waits
+  for human review in the console.
+- `rejected` — out-of-scope, unsafe, or policy-bypass attempts are blocked.
+
+Use canonical schema values for persisted labels: `memory_type=semantic`
+for quote saves, `memory_type=procedure` for repeatable playbooks. Avoid
+invented values like `memory_type=quote` or `sensitivity=sensitive` (the
+schema enums in `tools/list` are the source of truth).
+
+Normal chat is not guaranteed to become trusted memory; agents should call
+an explicit commit for user-directed memory instructions. For first-run
+expectations and worked examples, see [first-memory.md](first-memory.md);
+for the full verb contract see the
+[Memory Operations Protocol](../memory-operations-protocol.md).
+
 ## Legacy tool surface
 
-Earlier releases exposed 74 tools. They remain available behind an
-environment flag for integrations that depend on them:
+Earlier releases exposed a 74-tool surface. The long tail remains available
+behind an environment flag for integrations that depend on it:
 
 ```bash
 ALICE_MCP_LEGACY_TOOLS=1
@@ -103,32 +141,14 @@ ALICE_MCP_LEGACY_TOOLS=1
 
 With the flag set, `tools/list` includes the full long tail — for example
 `alice_vnext_ingest_agent_output` for structured agent-output ingestion,
-`alice_vnext_commit_memory` for explicit policy-checked memory writes,
 `alice_recall_debug` for the legacy continuity recall view, and the
-granular queue/graph/belief tools. Calling a legacy tool without the
-flag returns an error naming the flag. New integrations should stay on the
-nine core tools; the legacy surface is frozen and will not gain new
-capabilities.
-
-### Explicit memory commits (legacy surface)
-
-Trusted agents can write explicit "remember this" instructions through
-`alice_vnext_commit_memory`. Alice decides the outcome, never the agent:
-
-- `committed` — direct active memory with provenance, event log, revision.
-- `confirmation_required` — sensitive or ambiguous memory waits for
-  `alice_vnext_confirm_memory`.
-- `review_required` — external, generated, or low-confidence memory waits
-  for human review in the console.
-- `rejected` — out-of-scope, unsafe, or policy-bypass attempts are blocked.
-
-Use canonical schema values for persisted labels: `memory_type=semantic`
-for quote saves, `memory_type=procedure` for repeatable playbooks. Avoid
-invented values like `memory_type=quote` or `sensitivity=sensitive`.
-
-Normal chat is not guaranteed to become trusted memory; agents should call
-an explicit commit for user-directed memory instructions. For first-run
-expectations and worked examples, see [first-memory.md](first-memory.md).
+granular queue/graph/belief tools. `alice_vnext_commit_memory`,
+`alice_vnext_confirm_memory`, `alice_vnext_undo_memory`, and
+`alice_vnext_forget_memory` remain as aliases of the same handlers that now
+power `alice_memory_commit` and `alice_memory_manage` on the core surface.
+Calling a legacy tool without the flag returns an error naming the flag.
+New integrations should stay on the eleven core tools; the legacy surface
+is frozen and will not gain new capabilities.
 
 ## Trust boundary
 

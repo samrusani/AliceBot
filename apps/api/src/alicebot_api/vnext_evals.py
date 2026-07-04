@@ -16,6 +16,25 @@ Suites:
   (``ALICEBOT_EVAL_DATABASE_URL`` or an injected store handle); without
   one the suite is skipped, never passed.
 
+- ``correction_suppression``: seeds memories, then runs real correction
+  flows through ``VNextMemoryCommitService`` (supersede A with B via the
+  undo path; reject C via the inline-confirmation review path) and asserts
+  through the production retrieval pipeline that superseded and rejected
+  memories stop surfacing, that the replacement ranks, and that the audit
+  trail on the superseded memory records the supersession.
+
+- ``decision_recovery``: seeds ``memory_type='decision'`` rows among
+  mixed-type distractors and measures recall@5 / MRR for decision-intent
+  query phrasings through the production pipeline. When the retrieval
+  request grows a ``memory_types`` filter parameter, a filtered variant is
+  measured and reported alongside the unfiltered numbers.
+
+- ``provenance_explanation``: commits memories through
+  ``VNextMemoryCommitService`` with real source rows and provenance refs,
+  corrects a subset, then audits every one (``VNextMemoryCommitService.audit``)
+  asserting reasoned revisions, resolvable provenance links, the commit
+  event in the trail, and corrections reflected in the audit.
+
 Two backends are supported through ``ALICEBOT_EVAL_DATABASE_URL``:
 
 - a Postgres URL runs ``PostgresVNextStore`` (Postgres FTS + pgvector);
@@ -33,9 +52,10 @@ live run leaves no data behind.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import fields as dataclass_fields
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -54,12 +74,17 @@ from psycopg.rows import dict_row
 from alicebot_api.db import set_current_user
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
+from alicebot_api.vnext_agent_control import AgentIdentity
 from alicebot_api.vnext_embeddings import (
     MAX_EMBEDDINGS_BATCH_SIZE,
     VNextEmbeddingConfigurationError,
     VNextEmbeddingProviderError,
     get_embedding_provider,
     memory_embedding_text,
+)
+from alicebot_api.vnext_memory_commit import (
+    MemoryCommitRequest,
+    VNextMemoryCommitService,
 )
 from alicebot_api.vnext_retrieval import (
     VECTOR_STAGE_ENABLED,
@@ -81,17 +106,27 @@ VNEXT_EVAL_USER_ID_ENV = "ALICEBOT_AUTH_USER_ID"
 VNEXT_EVAL_DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
 VNEXT_EVAL_MEMORY_KEY_PREFIX = "vnext-eval/retrieval/"
 
-VNEXT_EVAL_SUITE_ORDER = ("retrieval_quality",)
+RETRIEVAL_QUALITY_SUITE_KEY = "retrieval_quality"
+CORRECTION_SUPPRESSION_SUITE_KEY = "correction_suppression"
+DECISION_RECOVERY_SUITE_KEY = "decision_recovery"
+PROVENANCE_EXPLANATION_SUITE_KEY = "provenance_explanation"
+
+VNEXT_EVAL_SUITE_ORDER = (
+    RETRIEVAL_QUALITY_SUITE_KEY,
+    CORRECTION_SUPPRESSION_SUITE_KEY,
+    DECISION_RECOVERY_SUITE_KEY,
+    PROVENANCE_EXPLANATION_SUITE_KEY,
+)
 
 VNEXT_EVAL_SQLITE_URL_PREFIX = "sqlite:///"
 
-RETRIEVAL_QUALITY_SUITE_KEY = "retrieval_quality"
 RETRIEVAL_QUALITY_RECALL_LIMIT = 10
-RETRIEVAL_QUALITY_SKIP_REASON = (
+VNEXT_EVAL_LIVE_STORE_SKIP_REASON = (
     "requires live store: pass a store handle or set "
     f"{VNEXT_EVAL_DATABASE_URL_ENV} to a migrated Postgres URL "
     "or a sqlite:///<path> URL (sqlite:///:memory: works)"
 )
+RETRIEVAL_QUALITY_SKIP_REASON = VNEXT_EVAL_LIVE_STORE_SKIP_REASON
 
 SUBSET_LEXICAL_OVERLAP = "lexical_overlap"
 SUBSET_PARAPHRASE = "paraphrase"
@@ -105,9 +140,45 @@ RETRIEVAL_QUALITY_TARGETS: JsonObject = {
     },
 }
 
+CORRECTION_SUPPRESSION_TARGETS: JsonObject = {
+    "pre_correction_visibility": {"minimum": 1.0},
+    "suppression_rate": {"minimum": 1.0},
+    "replacement_recall_at_5": {"minimum": 0.80},
+    "audit_completeness": {"minimum": 1.0},
+}
+
+DECISION_RECOVERY_TARGETS: JsonObject = {
+    "decision_recall_at_5": {"minimum": 0.80},
+    "filtered_decision_recall_at_5": {
+        "minimum": 0.80,
+        "enforced_only_when_memory_types_filter_available": True,
+    },
+}
+
+PROVENANCE_EXPLANATION_TARGETS: JsonObject = {
+    "explain_completeness_rate": {"minimum": 1.0},
+    "orphan_provenance_count": {"maximum": 0},
+}
+
 VNEXT_ACCEPTANCE_TARGETS: JsonObject = {
     RETRIEVAL_QUALITY_SUITE_KEY: deepcopy(RETRIEVAL_QUALITY_TARGETS),
+    CORRECTION_SUPPRESSION_SUITE_KEY: deepcopy(CORRECTION_SUPPRESSION_TARGETS),
+    DECISION_RECOVERY_SUITE_KEY: deepcopy(DECISION_RECOVERY_TARGETS),
+    PROVENANCE_EXPLANATION_SUITE_KEY: deepcopy(PROVENANCE_EXPLANATION_TARGETS),
 }
+
+# Fixed validity window for directly-seeded rows. A sibling workstream is
+# adding staleness demotion (status "stale" / expired ``valid_to`` filtering)
+# to the search SQL; seeded corpora pin explicit, far-future validity and an
+# explicit "active" status so that change cannot silently demote eval rows.
+VNEXT_EVAL_FIXED_VALID_FROM = "2026-01-01T00:00:00Z"
+VNEXT_EVAL_FIXED_VALID_TO = "2099-12-31T23:59:59Z"
+
+VNEXT_EVAL_AGENT_ID = "vnext-eval-harness"
+
+# Field the sibling retrieval workstream may add to VNextRetrievalRequest.
+# Detected at runtime, never assumed.
+MEMORY_TYPES_FILTER_FIELD = "memory_types"
 
 
 # --------------------------------------------------------------------------
@@ -914,6 +985,39 @@ def _ephemeral_sqlite_eval_store(database_url: str) -> Iterator[SQLiteVNextStore
         conn.close()
 
 
+def _run_suite_against_live_store(
+    *,
+    run_with_store: Callable[..., JsonObject],
+    skipped: Callable[[str], JsonObject],
+) -> JsonObject:
+    """Resolve ``ALICEBOT_EVAL_DATABASE_URL`` into a rolled-back live store.
+
+    ``run_with_store(store, backend=...)`` executes the suite; every
+    non-executable path funnels into ``skipped(reason)`` -- never a
+    fabricated pass. Each call opens (and rolls back) its own transaction,
+    so suites stay isolated from one another.
+    """
+    database_url = os.environ.get(VNEXT_EVAL_DATABASE_URL_ENV, "").strip()
+    if database_url == "":
+        return skipped(VNEXT_EVAL_LIVE_STORE_SKIP_REASON)
+    if database_url.startswith("sqlite:"):
+        if not database_url.startswith(VNEXT_EVAL_SQLITE_URL_PREFIX) or database_url == VNEXT_EVAL_SQLITE_URL_PREFIX:
+            return skipped(
+                "unsupported sqlite eval URL (expected sqlite:///<path> or "
+                f"sqlite:///:memory:): {database_url}"
+            )
+        try:
+            with _ephemeral_sqlite_eval_store(database_url) as live_store:
+                return run_with_store(live_store, backend="sqlite")
+        except sqlite3.Error as exc:
+            return skipped(f"live store unavailable ({type(exc).__name__}): {exc}")
+    try:
+        with _ephemeral_eval_store(database_url) as live_store:
+            return run_with_store(live_store, backend="postgres")
+    except psycopg.Error as exc:
+        return skipped(f"live store unavailable ({type(exc).__name__}): {exc}")
+
+
 def _run_retrieval_quality_suite(
     *,
     corpus: JsonObject,
@@ -922,25 +1026,1139 @@ def _run_retrieval_quality_suite(
 ) -> JsonObject:
     if store is not None or retrieval_fn is not None:
         return run_retrieval_quality_eval(store, retrieval_fn=retrieval_fn, corpus=corpus)
-    database_url = os.environ.get(VNEXT_EVAL_DATABASE_URL_ENV, "").strip()
-    if database_url == "":
-        return _skipped_retrieval_suite(RETRIEVAL_QUALITY_SKIP_REASON)
-    if database_url.startswith("sqlite:"):
-        if not database_url.startswith(VNEXT_EVAL_SQLITE_URL_PREFIX) or database_url == VNEXT_EVAL_SQLITE_URL_PREFIX:
-            return _skipped_retrieval_suite(
-                "unsupported sqlite eval URL (expected sqlite:///<path> or "
-                f"sqlite:///:memory:): {database_url}"
+
+    def _run(live_store: object, *, backend: str | None = None) -> JsonObject:
+        return run_retrieval_quality_eval(live_store, corpus=corpus, backend=backend)
+
+    return _run_suite_against_live_store(run_with_store=_run, skipped=_skipped_retrieval_suite)
+
+
+# --------------------------------------------------------------------------
+# Shared memory-quality suite machinery
+#
+# The three suites below drive the REAL commit/review service
+# (``VNextMemoryCommitService``) and the REAL retrieval pipeline. Sibling
+# workstreams are actively changing the retrieval/store/commit modules, so
+# everything here is written defensively:
+#
+# - store surfaces are duck-type checked up front (missing surface => an
+#   explicit skip reason, and the live unit tests assert "pass", so a
+#   silently skipping suite still fails CI);
+# - per-case execution catches exceptions and records them as failing
+#   cases with evidence instead of aborting the whole report;
+# - directly-seeded rows pin explicit status/validity values so the
+#   sibling's staleness-demotion change cannot demote fresh eval rows;
+# - the ``memory_types`` retrieval filter is feature-detected at runtime.
+# --------------------------------------------------------------------------
+
+
+def _skipped_suite(suite_key: str, title: str, targets: JsonObject, reason: str) -> JsonObject:
+    return {
+        "suite_key": suite_key,
+        "title": title,
+        "status": "skipped",
+        "reason": reason,
+        "targets": deepcopy(targets),
+        "metrics": {"case_count": 0},
+        "cases": [],
+    }
+
+
+def _target_checks(metrics: JsonObject, targets: JsonObject, *, skip_keys: set[str] | None = None) -> dict[str, bool]:
+    """Evaluate ``minimum`` / ``maximum`` targets against computed metrics."""
+    checks: dict[str, bool] = {}
+    for key, spec in targets.items():
+        if skip_keys is not None and key in skip_keys:
+            continue
+        if not isinstance(spec, Mapping):
+            continue
+        value = metrics.get(key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            checks[key] = False
+            continue
+        passed = True
+        minimum = spec.get("minimum")
+        if isinstance(minimum, (int, float)) and value < minimum:
+            passed = False
+        maximum = spec.get("maximum")
+        if isinstance(maximum, (int, float)) and value > maximum:
+            passed = False
+        checks[key] = passed
+    return checks
+
+
+def _missing_store_surface(store: object, required: Sequence[str]) -> list[str]:
+    return [name for name in required if not callable(getattr(store, name, None))]
+
+
+def _eval_agent_identity() -> AgentIdentity:
+    return AgentIdentity(
+        agent_id=VNEXT_EVAL_AGENT_ID,
+        agent_type="workflow_agent",
+        permission_profile="trusted_local_agent",
+        auth="unauthenticated_local",
+    )
+
+
+def _eval_commit_service(store: object) -> VNextMemoryCommitService:
+    # The service is duck-typed over the store surface; both
+    # PostgresVNextStore and SQLiteVNextStore satisfy it.
+    return VNextMemoryCommitService(cast(PostgresVNextStore, store))
+
+
+def _commit_active_memory(
+    service: VNextMemoryCommitService,
+    *,
+    title: str,
+    text: str,
+    memory_type: str = "semantic",
+    confidence: float = 0.95,
+    idempotency_key: str | None = None,
+    source_refs: tuple[object, ...] = (),
+    rationale: str | None = None,
+) -> JsonObject:
+    """Commit through the real service; returns the raw service response."""
+    request = MemoryCommitRequest(
+        user_id=str(_eval_user_id()),
+        title=title,
+        canonical_text=text,
+        memory_type=memory_type,
+        domain="professional",
+        sensitivity="internal",
+        confidence=confidence,
+        intent="explicit_remember",
+        source_type="direct_user_instruction",
+        source_refs=source_refs,
+        rationale=rationale,
+        idempotency_key=idempotency_key,
+    )
+    return service.commit(identity=_eval_agent_identity(), request=request)
+
+
+def _seed_direct_memory(
+    store: object,
+    *,
+    memory_key: str,
+    title: str,
+    text: str,
+    memory_type: str = "semantic",
+) -> JsonObject:
+    """Seed one row through the real ``create_memory`` write path.
+
+    Pins explicit non-expired validity and an explicit active status so the
+    sibling staleness-demotion change cannot flake the suites.
+    """
+    create_memory = cast(Callable[..., JsonObject], getattr(store, "create_memory"))
+    return create_memory(
+        {
+            "memory_key": memory_key,
+            "value": {"text": text},
+            "status": "active",
+            "confirmation_status": "confirmed",
+            "memory_type": memory_type,
+            "title": title,
+            "canonical_text": text,
+            "domain": "professional",
+            "sensitivity": "internal",
+            "valid_from": VNEXT_EVAL_FIXED_VALID_FROM,
+            "valid_to": VNEXT_EVAL_FIXED_VALID_TO,
+        }
+    )
+
+
+def retrieval_request_supports_memory_types() -> bool:
+    """True when the sibling's ``memory_types`` filter parameter has landed."""
+    return any(field.name == MEMORY_TYPES_FILTER_FIELD for field in dataclass_fields(VNextRetrievalRequest))
+
+
+def filtered_retrieval_fn(store: object, memory_types: tuple[str, ...]) -> RetrievalFn | None:
+    """Retrieval closure with the ``memory_types`` filter applied, when available."""
+    if not retrieval_request_supports_memory_types():
+        return None
+    service = VNextRetrievalService(cast(VNextRetrievalStore, store))
+
+    def _retrieve(query: str, *, limit: int) -> JsonObject:
+        request_kwargs: dict[str, object] = {
+            "query": query,
+            "max_items": limit,
+            "include_sources": False,
+            "include_contradictions": False,
+            "actor_type": "system",
+            MEMORY_TYPES_FILTER_FIELD: memory_types,
+        }
+        pack = service.compile_context_pack(VNextRetrievalRequest(**request_kwargs))  # type: ignore[arg-type]
+        relevant = cast(list[JsonObject], pack.get("relevant_memories", []))
+        trace = cast(JsonObject, pack.get("trace", {}))
+        return {
+            "ranked_memory_keys": [str(item["memory_key"]) for item in relevant if item.get("memory_key")],
+            "vector_stage": trace.get("vector_stage", "unknown"),
+        }
+
+    return _retrieve
+
+
+# --------------------------------------------------------------------------
+# Correction-suppression suite
+#
+# Deterministic triplets on topics disjoint from the retrieval-quality
+# corpus. Per case: commit A (stale fact), verify it surfaces, commit B
+# (replacement), supersede A referencing B, commit C at medium confidence
+# (inline-confirmation review path) and reject it, then assert through the
+# production pipeline that A and C are gone, B ranks, and A's audit trail
+# records the supersession.
+# --------------------------------------------------------------------------
+
+CORRECTION_SUPPRESSION_TITLE = "Correction suppression (commit service + production retrieval)"
+CORRECTION_MEMORY_KEY_PREFIX = "vnext-eval/correction/"
+
+_CORRECTION_CASES: tuple[dict[str, str], ...] = (
+    {
+        "case_key": "correction-001",
+        "topic": "meridian-launch-window",
+        "original_title": "Meridian launch window",
+        "original_text": "The Meridian launch window is set for March 14 at 9am.",
+        "replacement_title": "Meridian launch window (corrected)",
+        "replacement_text": "The Meridian launch window moved to April 2 at 9am after the slip.",
+        "rejected_title": "Meridian launch window rumor",
+        "rejected_text": "The Meridian launch window may slip to June pending vendor review.",
+        "query": "when is the Meridian launch window",
+        "old_probe": "Meridian launch window March 14",
+        "reject_probe": "Meridian launch window vendor review",
+    },
+    {
+        "case_key": "correction-002",
+        "topic": "nimbus-oncall-owner",
+        "original_title": "Nimbus on-call owner",
+        "original_text": "Priya Nair owns the Nimbus on-call rotation for the winter cycle.",
+        "replacement_title": "Nimbus on-call owner (corrected)",
+        "replacement_text": "Devon Blake owns the Nimbus on-call rotation after the winter handoff.",
+        "rejected_title": "Nimbus on-call rumor",
+        "rejected_text": "Marcus Webb may take the Nimbus on-call rotation next quarter.",
+        "query": "who owns the Nimbus on-call rotation",
+        "old_probe": "Priya Nair Nimbus on-call rotation",
+        "reject_probe": "Nimbus on-call rotation next quarter",
+    },
+    {
+        "case_key": "correction-003",
+        "topic": "oriole-budget",
+        "original_title": "Oriole platform budget",
+        "original_text": "The Oriole platform budget is approved at 120k for this fiscal year.",
+        "replacement_title": "Oriole platform budget (corrected)",
+        "replacement_text": "The Oriole platform budget was revised to 95k for this fiscal year.",
+        "rejected_title": "Oriole budget speculation",
+        "rejected_text": "The Oriole platform budget could rise to 150k if headcount doubles.",
+        "query": "what is the Oriole platform budget for the fiscal year",
+        "old_probe": "Oriole platform budget 120k",
+        "reject_probe": "Oriole platform budget 150k headcount",
+    },
+    {
+        "case_key": "correction-004",
+        "topic": "quill-standup-time",
+        "original_title": "Quill design standup",
+        "original_text": "The Quill design standup happens on Tuesdays at 10am.",
+        "replacement_title": "Quill design standup (corrected)",
+        "replacement_text": "The Quill design standup moved to Thursdays at 2pm.",
+        "rejected_title": "Quill standup speculation",
+        "rejected_text": "The Quill design standup might merge with the platform sync.",
+        "query": "when is the Quill design standup",
+        "old_probe": "Quill design standup Tuesdays",
+        "reject_probe": "Quill design standup platform sync",
+    },
+    {
+        "case_key": "correction-005",
+        "topic": "sable-vendor-contract",
+        "original_title": "Sable data vendor contract",
+        "original_text": "The Sable data vendor contract renews with Northwind in September.",
+        "replacement_title": "Sable data vendor contract (corrected)",
+        "replacement_text": "The Sable data vendor contract switches to Contoso in September.",
+        "rejected_title": "Sable vendor speculation",
+        "rejected_text": "The Sable data vendor contract may add a second regional supplier.",
+        "query": "who is the Sable data vendor contract with in September",
+        "old_probe": "Sable data vendor Northwind",
+        "reject_probe": "Sable data vendor regional supplier",
+    },
+    {
+        "case_key": "correction-006",
+        "topic": "tundra-release-cadence",
+        "original_title": "Tundra release cadence",
+        "original_text": "The Tundra release train ships every two weeks.",
+        "replacement_title": "Tundra release cadence (corrected)",
+        "replacement_text": "The Tundra release train ships weekly after the automation upgrade.",
+        "rejected_title": "Tundra release speculation",
+        "rejected_text": "The Tundra release train might pause during the audit freeze.",
+        "query": "when does the Tundra release train ship",
+        "old_probe": "Tundra release train two weeks",
+        "reject_probe": "Tundra release train audit freeze",
+    },
+)
+
+_CORRECTION_DISTRACTORS: tuple[tuple[str, str], ...] = (
+    ("Meridian retro notes", "Meridian sprint retro notes are archived in the shared drive."),
+    ("Nimbus staging refresh", "The Nimbus staging environment refreshes nightly at 2am."),
+    ("Oriole feedback triage", "Oriole customer feedback is triaged on Wednesdays."),
+    ("Quill docs move", "The Quill component library docs moved to the new wiki."),
+    ("Sable metrics recap", "Sable quarterly metrics were presented at the all-hands."),
+    ("Tundra dependency audit", "The Tundra dependency audit flagged two licensing questions."),
+    ("Willow onboarding step", "The Willow onboarding checklist gained a security step."),
+    ("Halcyon demo password", "The Halcyon demo environment password rotates monthly."),
+)
+
+_CORRECTION_REQUIRED_STORE_SURFACE = (
+    "create_memory",
+    "update_memory",
+    "get_memory",
+    "append_revision",
+    "list_revisions",
+    "list_events",
+    "list_provenance_links",
+    "append_event",
+    "list_memories",
+    "search_memories",
+    "search_sources",
+    "list_open_loops",
+    "upsert_agent_identity",
+)
+
+
+def generate_correction_suppression_corpus() -> JsonObject:
+    cases = [dict(case) for case in _CORRECTION_CASES]
+    distractors = [
+        {
+            "memory_key": f"{CORRECTION_MEMORY_KEY_PREFIX}distractor-{index:03d}",
+            "title": title,
+            "canonical_text": text,
+        }
+        for index, (title, text) in enumerate(_CORRECTION_DISTRACTORS, start=1)
+    ]
+    corpus: JsonObject = {
+        "schema_version": VNEXT_EVAL_CORPUS_SCHEMA_VERSION,
+        "kind": CORRECTION_SUPPRESSION_SUITE_KEY,
+        "counts": {"cases": len(cases), "distractors": len(distractors)},
+        "cases": cases,
+        "distractors": distractors,
+    }
+    corpus["corpus_digest"] = _hash_payload({"cases": cases, "distractors": distractors})
+    return corpus
+
+
+def _error_case(case_key: str, exc: Exception) -> JsonObject:
+    return {
+        "case_key": case_key,
+        "status": "fail",
+        "metrics": {
+            "pre_correction_visible": 0.0,
+            "suppressed": 0.0,
+            "replacement_recall_at_5": 0.0,
+            "replacement_reciprocal_rank": 0.0,
+            "audit_complete": 0.0,
+        },
+        "evidence": {"error_type": type(exc).__name__, "error_message": str(exc)},
+    }
+
+
+def _run_correction_case(
+    case: JsonObject,
+    *,
+    service: VNextMemoryCommitService,
+    retrieve: RetrievalFn,
+) -> JsonObject:
+    case_key = str(case["case_key"])
+    query = str(case["query"])
+    identity = _eval_agent_identity()
+
+    result_a = _commit_active_memory(
+        service,
+        title=str(case["original_title"]),
+        text=str(case["original_text"]),
+        idempotency_key=f"vnext-eval/correction/{case_key}/original",
+    )
+    memory_a = cast(JsonObject, result_a.get("memory") or {})
+    a_key = str(memory_a.get("memory_key") or "")
+    a_id = str(memory_a.get("id") or "")
+    commit_notes: list[str] = []
+    if result_a.get("status") != "committed" or not a_id:
+        commit_notes.append(f"original commit did not land active: {result_a.get('status')}")
+
+    pre_ranked = [str(key) for key in cast(list[object], retrieve(query, limit=RETRIEVAL_QUALITY_RECALL_LIMIT)["ranked_memory_keys"])]
+    pre_visible = recall_at_k(pre_ranked, a_key, 5) if a_key else 0.0
+
+    result_b = _commit_active_memory(
+        service,
+        title=str(case["replacement_title"]),
+        text=str(case["replacement_text"]),
+        idempotency_key=f"vnext-eval/correction/{case_key}/replacement",
+        rationale=f"Replaces stale memory {a_key}.",
+    )
+    memory_b = cast(JsonObject, result_b.get("memory") or {})
+    b_key = str(memory_b.get("memory_key") or "")
+    if result_b.get("status") != "committed" or not b_key:
+        commit_notes.append(f"replacement commit did not land active: {result_b.get('status')}")
+
+    supersede_reason = f"superseded_by:{b_key}"
+    if a_id:
+        service.undo(identity=identity, memory_id=a_id, reason=supersede_reason)
+
+    result_c = _commit_active_memory(
+        service,
+        title=str(case["rejected_title"]),
+        text=str(case["rejected_text"]),
+        confidence=0.70,  # medium confidence => inline-confirmation review path
+        idempotency_key=f"vnext-eval/correction/{case_key}/rejected",
+    )
+    memory_c = cast(JsonObject, result_c.get("memory") or {})
+    c_key = str(memory_c.get("memory_key") or "")
+    c_id = str(memory_c.get("id") or "")
+    confirmation_id = result_c.get("confirmation_id")
+    rejected_via_review = False
+    if result_c.get("status") == "confirmation_required" and isinstance(confirmation_id, str):
+        rejection = service.confirm(
+            identity=identity,
+            confirmation_id=confirmation_id,
+            action="reject",
+            rationale="Unverified speculation rejected during eval review.",
+        )
+        rejected_via_review = rejection.get("status") == "rejected"
+    if not rejected_via_review:
+        commit_notes.append(f"review rejection path unavailable: status={result_c.get('status')}")
+
+    # -- production retrieval probes ------------------------------------
+    post_ranked = [str(key) for key in cast(list[object], retrieve(query, limit=RETRIEVAL_QUALITY_RECALL_LIMIT)["ranked_memory_keys"])]
+    old_probe_ranked = [
+        str(key)
+        for key in cast(list[object], retrieve(str(case["old_probe"]), limit=RETRIEVAL_QUALITY_RECALL_LIMIT)["ranked_memory_keys"])
+    ]
+    reject_probe_ranked = [
+        str(key)
+        for key in cast(
+            list[object], retrieve(str(case["reject_probe"]), limit=RETRIEVAL_QUALITY_RECALL_LIMIT)["ranked_memory_keys"]
+        )
+    ]
+    a_absent = bool(a_key) and a_key not in post_ranked and a_key not in old_probe_ranked
+    c_absent = bool(c_key) and c_key not in post_ranked and c_key not in reject_probe_ranked
+    suppressed = 1.0 if (a_absent and c_absent) else 0.0
+    replacement_recall = recall_at_k(post_ranked, b_key, 5) if b_key else 0.0
+    replacement_rr = reciprocal_rank(post_ranked, b_key) if b_key else 0.0
+
+    # -- audit trail ------------------------------------------------------
+    audit_ok_a = False
+    superseded_reason_seen: str | None = None
+    if a_id:
+        audit_a = service.audit(memory_id=a_id)
+        revisions_a = cast(list[JsonObject], audit_a.get("revisions", []))
+        superseded_revisions = [
+            revision
+            for revision in revisions_a
+            if str(revision.get("revision_type")) == "superseded" and str(revision.get("reason") or "").strip()
+        ]
+        if superseded_revisions:
+            superseded_reason_seen = str(superseded_revisions[-1].get("reason"))
+        event_types_a = {str(event.get("event_type")) for event in cast(list[JsonObject], audit_a.get("events", []))}
+        audit_ok_a = (
+            bool(superseded_revisions)
+            and any(b_key and b_key in str(revision.get("reason")) for revision in superseded_revisions)
+            and "agent.memory_undone" in event_types_a
+            and str(cast(JsonObject, audit_a.get("memory") or {}).get("status")) == "superseded"
+        )
+    audit_ok_c = False
+    if c_id:
+        audit_c = service.audit(memory_id=c_id)
+        revisions_c = cast(list[JsonObject], audit_c.get("revisions", []))
+        event_types_c = {str(event.get("event_type")) for event in cast(list[JsonObject], audit_c.get("events", []))}
+        audit_ok_c = (
+            any(
+                str(revision.get("revision_type")) == "rejected" and str(revision.get("reason") or "").strip()
+                for revision in revisions_c
             )
+            and "agent.memory_confirmation_rejected" in event_types_c
+            and str(cast(JsonObject, audit_c.get("memory") or {}).get("status")) == "rejected"
+        )
+    audit_complete = 1.0 if (audit_ok_a and audit_ok_c) else 0.0
+
+    passed = pre_visible == 1.0 and suppressed == 1.0 and replacement_recall == 1.0 and audit_complete == 1.0
+    return {
+        "case_key": case_key,
+        "status": "pass" if passed else "fail",
+        "metrics": {
+            "pre_correction_visible": pre_visible,
+            "suppressed": suppressed,
+            "replacement_recall_at_5": replacement_recall,
+            "replacement_reciprocal_rank": replacement_rr,
+            "audit_complete": audit_complete,
+        },
+        "evidence": {
+            "query": query,
+            "original_memory_key": a_key,
+            "replacement_memory_key": b_key,
+            "rejected_memory_key": c_key,
+            "pre_correction_top_keys": pre_ranked[:5],
+            "post_correction_top_keys": post_ranked[:5],
+            "old_probe_top_keys": old_probe_ranked[:5],
+            "reject_probe_top_keys": reject_probe_ranked[:5],
+            "superseded_revision_reason": superseded_reason_seen,
+            "commit_flow_notes": commit_notes,
+        },
+    }
+
+
+def run_correction_suppression_eval(
+    store: object | None,
+    *,
+    corpus: JsonObject | None = None,
+    backend: str | None = None,
+) -> JsonObject:
+    """Execute the correction-suppression suite against a live store."""
+    if store is None:
+        return _skipped_suite(
+            CORRECTION_SUPPRESSION_SUITE_KEY,
+            CORRECTION_SUPPRESSION_TITLE,
+            CORRECTION_SUPPRESSION_TARGETS,
+            VNEXT_EVAL_LIVE_STORE_SKIP_REASON,
+        )
+    missing = _missing_store_surface(store, _CORRECTION_REQUIRED_STORE_SURFACE)
+    if missing:
+        return _skipped_suite(
+            CORRECTION_SUPPRESSION_SUITE_KEY,
+            CORRECTION_SUPPRESSION_TITLE,
+            CORRECTION_SUPPRESSION_TARGETS,
+            f"store does not expose required surface: {', '.join(missing)}",
+        )
+    resolved_corpus = corpus if corpus is not None else generate_correction_suppression_corpus()
+    service = _eval_commit_service(store)
+    retrieve = production_retrieval_fn(store)
+
+    for distractor in cast(list[JsonObject], resolved_corpus.get("distractors", [])):
+        _seed_direct_memory(
+            store,
+            memory_key=str(distractor["memory_key"]),
+            title=str(distractor["title"]),
+            text=str(distractor["canonical_text"]),
+        )
+
+    cases: list[JsonObject] = []
+    for case in cast(list[JsonObject], resolved_corpus.get("cases", [])):
         try:
-            with _ephemeral_sqlite_eval_store(database_url) as live_store:
-                return run_retrieval_quality_eval(live_store, corpus=corpus, backend="sqlite")
-        except sqlite3.Error as exc:
-            return _skipped_retrieval_suite(f"live store unavailable ({type(exc).__name__}): {exc}")
-    try:
-        with _ephemeral_eval_store(database_url) as live_store:
-            return run_retrieval_quality_eval(live_store, corpus=corpus, backend="postgres")
-    except psycopg.Error as exc:
-        return _skipped_retrieval_suite(f"live store unavailable ({type(exc).__name__}): {exc}")
+            cases.append(_run_correction_case(case, service=service, retrieve=retrieve))
+        except Exception as exc:  # defensive: sibling churn must not abort the report
+            cases.append(_error_case(str(case.get("case_key", "unknown")), exc))
+
+    case_metrics = [cast(JsonObject, case["metrics"]) for case in cases]
+    metrics: JsonObject = {
+        "backend": _eval_backend_label(store, backend),
+        "case_count": len(cases),
+        "distractor_count": len(cast(list[object], resolved_corpus.get("distractors", []))),
+        "pre_correction_visibility": _mean([cast(float, metric["pre_correction_visible"]) for metric in case_metrics]),
+        "suppression_rate": _mean([cast(float, metric["suppressed"]) for metric in case_metrics]),
+        "replacement_recall_at_5": _mean([cast(float, metric["replacement_recall_at_5"]) for metric in case_metrics]),
+        "replacement_mrr": _mean([cast(float, metric["replacement_reciprocal_rank"]) for metric in case_metrics]),
+        "audit_completeness": _mean([cast(float, metric["audit_complete"]) for metric in case_metrics]),
+        "corpus_digest": resolved_corpus.get("corpus_digest"),
+    }
+    checks = _target_checks(metrics, CORRECTION_SUPPRESSION_TARGETS)
+    metrics["target_checks"] = {key: ("pass" if passed else "fail") for key, passed in sorted(checks.items())}
+    return {
+        "suite_key": CORRECTION_SUPPRESSION_SUITE_KEY,
+        "title": CORRECTION_SUPPRESSION_TITLE,
+        "status": "pass" if cases and all(checks.values()) else "fail",
+        "targets": deepcopy(CORRECTION_SUPPRESSION_TARGETS),
+        "metrics": metrics,
+        "cases": cases,
+    }
+
+
+# --------------------------------------------------------------------------
+# Decision-recovery suite
+# --------------------------------------------------------------------------
+
+DECISION_RECOVERY_TITLE = "Decision recovery (decision memories among mixed-type distractors)"
+DECISION_MEMORY_KEY_PREFIX = "vnext-eval/decision/"
+
+_DECISION_CASES: tuple[tuple[str, str, str], ...] = (
+    (
+        "Meridian ledger storage decision",
+        "We decided Meridian will use Postgres over DynamoDB for ledger storage.",
+        "what did we decide about Meridian ledger storage",
+    ),
+    (
+        "Nimbus hiring decision",
+        "We decided to freeze Nimbus hiring until the second quarter.",
+        "what did we decide about Nimbus hiring",
+    ),
+    (
+        "Oriole feature flag decision",
+        "We decided Oriole ships behind a feature flag for enterprise tenants.",
+        "what did we decide about the Oriole feature flag",
+    ),
+    (
+        "Quill legacy tablet decision",
+        "We decided the Quill mobile app drops support for the legacy tablet build.",
+        "what did we decide about Quill legacy tablet support",
+    ),
+    (
+        "Sable branching decision",
+        "We decided Sable adopts trunk based development with nightly release branches.",
+        "what did we decide about Sable trunk based development",
+    ),
+    (
+        "Tundra pricing decision",
+        "We decided the Tundra pricing tier caps at nine seats for starter plans.",
+        "what did we decide about the Tundra pricing tier caps",
+    ),
+    (
+        "Verdant on-premise decision",
+        "We decided Verdant keeps the on-premise offering for regulated customers.",
+        "what did we decide about the Verdant on-premise offering",
+    ),
+    (
+        "Willow import pipeline decision",
+        "We decided Willow sunsets the legacy import pipeline at the end of March.",
+        "what did we decide about the Willow import pipeline",
+    ),
+    (
+        "Halcyon analytics decision",
+        "We decided Halcyon moves its analytics workload to the batch cluster.",
+        "what did we decide about the Halcyon analytics workload",
+    ),
+    (
+        "Ironwood infrastructure decision",
+        "We decided Ironwood standardizes on Terraform for infrastructure changes.",
+        "what did we decide about Ironwood Terraform infrastructure",
+    ),
+)
+
+# Confusable distractors intentionally share topic vocabulary -- three also
+# contain the "decided" stem -- so ranking regressions have somewhere to go.
+_DECISION_CONFUSABLES: tuple[tuple[str, str, str], ...] = (
+    ("episode", "Meridian ledger retro", "The Meridian team revisited what was decided about ledger storage during the spring retro."),
+    ("semantic", "Meridian ledger costs", "Meridian ledger storage costs rose eleven percent after the migration."),
+    ("episode", "Sable branching debate", "The Sable guild debated what was decided about trunk based development at the summit."),
+    ("semantic", "Sable release note", "Sable nightly release branches were flaky during the infrastructure freeze."),
+    ("episode", "Halcyon analytics review", "The Halcyon leads reviewed what was decided about the analytics workload in the QBR."),
+    ("project_state", "Halcyon batch status", "The Halcyon batch cluster migration is sixty percent complete."),
+    ("semantic", "Nimbus hiring note", "Nimbus hiring managers keep a shared interview loop template."),
+    ("preference", "Oriole flag preference", "The Oriole team prefers gradual feature flag rollouts over big launches."),
+    ("semantic", "Quill tablet metrics", "The Quill legacy tablet build still serves four percent of sessions."),
+    ("commitment", "Tundra pricing follow-up", "Finance committed to revisit Tundra pricing tier caps after the pilot."),
+    ("project_state", "Verdant deployment state", "The Verdant on-premise installer passed certification last week."),
+    ("routine", "Willow import checks", "Willow import pipeline health checks run every morning at 6am."),
+)
+
+_DECISION_DISTRACTOR_TEMPLATES: tuple[tuple[str, str], ...] = (
+    ("semantic", "{project} weekly metrics are archived to the shared drive."),
+    ("routine", "The {project} staging cluster refreshes nightly at 3am."),
+    ("procedure", "{project} support tickets are triaged every morning."),
+    ("semantic", "The {project} runbook moved to the new wiki space."),
+    ("procedure", "{project} invoices route through finance for signoff."),
+    ("project_state", "The {project} beta cohort grew by forty accounts."),
+)
+_DECISION_DISTRACTOR_PROJECTS = ("Meridian", "Sable", "Halcyon")
+
+_DECISION_REQUIRED_STORE_SURFACE = (
+    "create_memory",
+    "append_event",
+    "search_memories",
+    "search_sources",
+    "list_open_loops",
+    "list_provenance_links",
+)
+
+
+def generate_decision_recovery_corpus() -> JsonObject:
+    decisions: list[JsonObject] = []
+    queries: list[JsonObject] = []
+    for index, (title, text, query) in enumerate(_DECISION_CASES, start=1):
+        memory_key = f"{DECISION_MEMORY_KEY_PREFIX}decision-{index:03d}"
+        decisions.append(
+            {
+                "memory_key": memory_key,
+                "memory_type": "decision",
+                "title": title,
+                "canonical_text": text,
+            }
+        )
+        queries.append(
+            {
+                "query_key": f"decision-query-{index:03d}",
+                "query": query,
+                "expected_memory_key": memory_key,
+            }
+        )
+
+    distractors: list[JsonObject] = []
+    for index, (memory_type, title, text) in enumerate(_DECISION_CONFUSABLES, start=1):
+        distractors.append(
+            {
+                "memory_key": f"{DECISION_MEMORY_KEY_PREFIX}confusable-{index:03d}",
+                "memory_type": memory_type,
+                "title": title,
+                "canonical_text": text,
+            }
+        )
+    counter = 0
+    for template_index, (memory_type, template) in enumerate(_DECISION_DISTRACTOR_TEMPLATES):
+        for project in _DECISION_DISTRACTOR_PROJECTS:
+            counter += 1
+            distractors.append(
+                {
+                    "memory_key": f"{DECISION_MEMORY_KEY_PREFIX}distractor-{counter:03d}",
+                    "memory_type": memory_type,
+                    "title": f"{project} operational note {counter:03d}",
+                    "canonical_text": template.format(project=project),
+                }
+            )
+
+    corpus: JsonObject = {
+        "schema_version": VNEXT_EVAL_CORPUS_SCHEMA_VERSION,
+        "kind": DECISION_RECOVERY_SUITE_KEY,
+        "counts": {
+            "decisions": len(decisions),
+            "distractors": len(distractors),
+            "queries": len(queries),
+        },
+        "decisions": decisions,
+        "distractors": distractors,
+        "queries": queries,
+    }
+    corpus["corpus_digest"] = _hash_payload({"decisions": decisions, "distractors": distractors, "queries": queries})
+    return corpus
+
+
+def run_decision_recovery_eval(
+    store: object | None,
+    *,
+    corpus: JsonObject | None = None,
+    backend: str | None = None,
+) -> JsonObject:
+    """Execute the decision-recovery suite against a live store."""
+    if store is None:
+        return _skipped_suite(
+            DECISION_RECOVERY_SUITE_KEY,
+            DECISION_RECOVERY_TITLE,
+            DECISION_RECOVERY_TARGETS,
+            VNEXT_EVAL_LIVE_STORE_SKIP_REASON,
+        )
+    missing = _missing_store_surface(store, _DECISION_REQUIRED_STORE_SURFACE)
+    if missing:
+        return _skipped_suite(
+            DECISION_RECOVERY_SUITE_KEY,
+            DECISION_RECOVERY_TITLE,
+            DECISION_RECOVERY_TARGETS,
+            f"store does not expose required surface: {', '.join(missing)}",
+        )
+    resolved_corpus = corpus if corpus is not None else generate_decision_recovery_corpus()
+
+    for row in (
+        *cast(list[JsonObject], resolved_corpus.get("decisions", [])),
+        *cast(list[JsonObject], resolved_corpus.get("distractors", [])),
+    ):
+        _seed_direct_memory(
+            store,
+            memory_key=str(row["memory_key"]),
+            title=str(row["title"]),
+            text=str(row["canonical_text"]),
+            memory_type=str(row.get("memory_type", "semantic")),
+        )
+
+    retrieve = production_retrieval_fn(store)
+    filtered_retrieve: RetrievalFn | None = None
+    filter_note = (
+        "memory_types filter parameter not present on VNextRetrievalRequest; "
+        "TODO: add the filtered variant when the sibling retrieval workstream lands it"
+    )
+    if retrieval_request_supports_memory_types():
+        try:
+            filtered_retrieve = filtered_retrieval_fn(store, ("decision",))
+            filter_note = "filtered via VNextRetrievalRequest.memory_types=('decision',)"
+        except TypeError as exc:  # sibling landed an incompatible signature
+            filtered_retrieve = None
+            filter_note = f"memory_types filter detected but incompatible: {exc}"
+
+    cases: list[JsonObject] = []
+    for query in cast(list[JsonObject], resolved_corpus.get("queries", [])):
+        query_text = str(query["query"])
+        expected_key = str(query["expected_memory_key"])
+        ranked = [
+            str(key)
+            for key in cast(list[object], retrieve(query_text, limit=RETRIEVAL_QUALITY_RECALL_LIMIT)["ranked_memory_keys"])
+        ]
+        case_metrics: JsonObject = {
+            "recall_at_1": recall_at_k(ranked, expected_key, 1),
+            "recall_at_5": recall_at_k(ranked, expected_key, 5),
+            "reciprocal_rank": reciprocal_rank(ranked, expected_key),
+        }
+        evidence: JsonObject = {
+            "query": query_text,
+            "expected_memory_key": expected_key,
+            "top_memory_keys": ranked[:5],
+        }
+        if filtered_retrieve is not None:
+            filtered_ranked = [
+                str(key)
+                for key in cast(
+                    list[object], filtered_retrieve(query_text, limit=RETRIEVAL_QUALITY_RECALL_LIMIT)["ranked_memory_keys"]
+                )
+            ]
+            case_metrics["filtered_recall_at_5"] = recall_at_k(filtered_ranked, expected_key, 5)
+            case_metrics["filtered_reciprocal_rank"] = reciprocal_rank(filtered_ranked, expected_key)
+            evidence["filtered_top_memory_keys"] = filtered_ranked[:5]
+        cases.append(
+            {
+                "case_key": str(query["query_key"]),
+                "status": "pass" if case_metrics["recall_at_5"] == 1.0 else "fail",
+                "metrics": case_metrics,
+                "evidence": evidence,
+            }
+        )
+
+    case_metrics_list = [cast(JsonObject, case["metrics"]) for case in cases]
+    metrics: JsonObject = {
+        "backend": _eval_backend_label(store, backend),
+        "query_count": len(cases),
+        "decision_count": len(cast(list[object], resolved_corpus.get("decisions", []))),
+        "distractor_count": len(cast(list[object], resolved_corpus.get("distractors", []))),
+        "decision_recall_at_1": _mean([cast(float, metric["recall_at_1"]) for metric in case_metrics_list]),
+        "decision_recall_at_5": _mean([cast(float, metric["recall_at_5"]) for metric in case_metrics_list]),
+        "decision_mrr": _mean([cast(float, metric["reciprocal_rank"]) for metric in case_metrics_list]),
+        "memory_types_filter": {
+            "available": filtered_retrieve is not None,
+            "note": filter_note,
+        },
+        "corpus_digest": resolved_corpus.get("corpus_digest"),
+    }
+    skip_target_keys: set[str] = set()
+    if filtered_retrieve is not None:
+        metrics["filtered_decision_recall_at_5"] = _mean(
+            [cast(float, metric.get("filtered_recall_at_5", 0.0)) for metric in case_metrics_list]
+        )
+        metrics["filtered_decision_mrr"] = _mean(
+            [cast(float, metric.get("filtered_reciprocal_rank", 0.0)) for metric in case_metrics_list]
+        )
+    else:
+        # Filter unavailable: the filtered target is reported but not enforced.
+        skip_target_keys.add("filtered_decision_recall_at_5")
+    checks = _target_checks(metrics, DECISION_RECOVERY_TARGETS, skip_keys=skip_target_keys)
+    metrics["target_checks"] = {key: ("pass" if passed else "fail") for key, passed in sorted(checks.items())}
+    return {
+        "suite_key": DECISION_RECOVERY_SUITE_KEY,
+        "title": DECISION_RECOVERY_TITLE,
+        "status": "pass" if cases and all(checks.values()) else "fail",
+        "targets": deepcopy(DECISION_RECOVERY_TARGETS),
+        "metrics": metrics,
+        "cases": cases,
+    }
+
+
+# --------------------------------------------------------------------------
+# Provenance-explanation suite
+# --------------------------------------------------------------------------
+
+PROVENANCE_EXPLANATION_TITLE = "Provenance explanation (commit service audit path)"
+PROVENANCE_MEMORY_KEY_PREFIX = "vnext-eval/provenance/"
+
+_PROVENANCE_SOURCES: tuple[dict[str, str], ...] = (
+    {
+        "source_key": "prov-source-001",
+        "source_type": "document",
+        "title": "Verdant planning notes",
+        "content_hash": "sha256:vnext-eval-provenance-0001",
+    },
+    {
+        "source_key": "prov-source-002",
+        "source_type": "email",
+        "title": "Willow vendor thread",
+        "content_hash": "sha256:vnext-eval-provenance-0002",
+    },
+)
+
+_PROVENANCE_MEMORIES: tuple[dict[str, object], ...] = (
+    {
+        "case_key": "provenance-001",
+        "title": "Verdant pilot pricing",
+        "text": "Verdant pilot pricing is locked at 40 dollars per seat.",
+        "memory_type": "decision",
+        "source_key": "prov-source-001",
+        "excerpt": "pricing locked at 40 dollars per seat for the pilot",
+        "corrected_text": "Verdant pilot pricing is locked at 35 dollars per seat after the discount review.",
+        "correction_reason": "Pilot discount approved by finance.",
+    },
+    {
+        "case_key": "provenance-002",
+        "title": "Willow CDN renewal",
+        "text": "Willow renews the CDN contract with Fastly in November.",
+        "memory_type": "semantic",
+        "source_key": "prov-source-002",
+        "excerpt": "the CDN renewal thread settled on November",
+        "corrected_text": "Willow renews the CDN contract with Cloudflare in November.",
+        "correction_reason": "Vendor switched after the outage postmortem.",
+    },
+    {
+        "case_key": "provenance-003",
+        "title": "Halcyon migration runbook",
+        "text": "The Halcyon migration runbook requires a dry run before each cutover.",
+        "memory_type": "procedure",
+        "source_key": "prov-source-001",
+        "excerpt": "dry run required before each cutover",
+    },
+    {
+        "case_key": "provenance-004",
+        "title": "Ironwood incident reviews",
+        "text": "Ironwood incident reviews happen within three business days.",
+        "memory_type": "routine",
+        "source_key": "prov-source-002",
+        "excerpt": "reviews within three business days",
+    },
+    {
+        "case_key": "provenance-005",
+        "title": "Quill accessibility audit",
+        "text": "The Quill accessibility audit closes at the end of the quarter.",
+        "memory_type": "commitment",
+        "source_key": "prov-source-001",
+        "excerpt": "audit closes at the end of the quarter",
+    },
+    {
+        "case_key": "provenance-006",
+        "title": "Sable dashboard refresh",
+        "text": "Sable analytics dashboards refresh hourly during business hours.",
+        "memory_type": "semantic",
+        "source_key": "prov-source-002",
+        "excerpt": "dashboards refresh hourly",
+    },
+)
+
+_PROVENANCE_REQUIRED_STORE_SURFACE = (
+    "create_memory",
+    "update_memory",
+    "get_memory",
+    "create_source",
+    "get_source",
+    "create_provenance_link",
+    "list_provenance_links",
+    "append_revision",
+    "list_revisions",
+    "list_events",
+    "append_event",
+    "list_memories",
+    "upsert_agent_identity",
+)
+
+
+def generate_provenance_explanation_corpus() -> JsonObject:
+    sources = [dict(source) for source in _PROVENANCE_SOURCES]
+    memories = [dict(memory) for memory in _PROVENANCE_MEMORIES]
+    corpus: JsonObject = {
+        "schema_version": VNEXT_EVAL_CORPUS_SCHEMA_VERSION,
+        "kind": PROVENANCE_EXPLANATION_SUITE_KEY,
+        "counts": {
+            "sources": len(sources),
+            "memories": len(memories),
+            "corrected_memories": sum(1 for memory in memories if memory.get("corrected_text")),
+        },
+        "sources": sources,
+        "memories": memories,
+    }
+    corpus["corpus_digest"] = _hash_payload({"sources": sources, "memories": memories})
+    return corpus
+
+
+def _audit_provenance_case(
+    case: JsonObject,
+    *,
+    store: object,
+    service: VNextMemoryCommitService,
+    source_ids: Mapping[str, str],
+) -> tuple[JsonObject, int, int]:
+    """Commit + optionally correct one memory, then audit it.
+
+    Returns ``(case_record, resolved_link_count, orphan_link_count)``.
+    """
+    case_key = str(case["case_key"])
+    source_id = source_ids.get(str(case.get("source_key")), "")
+    corrected_text = case.get("corrected_text")
+
+    result = _commit_active_memory(
+        service,
+        title=str(case["title"]),
+        text=str(case["text"]),
+        memory_type=str(case.get("memory_type", "semantic")),
+        idempotency_key=f"vnext-eval/provenance/{case_key}",
+        source_refs=(f"source:{source_id}",) if source_id else (),
+    )
+    memory = cast(JsonObject, result.get("memory") or {})
+    memory_id = str(memory.get("id") or "")
+    committed = result.get("status") == "committed" and bool(memory_id)
+
+    correction_applied = False
+    if committed and isinstance(corrected_text, str) and corrected_text:
+        service.correct(
+            identity=_eval_agent_identity(),
+            memory_id=memory_id,
+            canonical_text=corrected_text,
+            reason=str(case.get("correction_reason") or "Eval correction."),
+        )
+        correction_applied = True
+
+    checks: dict[str, bool] = {"committed": committed}
+    resolved_links = 0
+    orphan_links = 0
+    evidence: JsonObject = {"memory_id": memory_id, "commit_status": result.get("status")}
+    if committed:
+        audit = service.audit(memory_id=memory_id)
+        revisions = cast(list[JsonObject], audit.get("revisions", []))
+        events = cast(list[JsonObject], audit.get("events", []))
+        links = cast(list[JsonObject], audit.get("provenance_links", []))
+        event_types = {str(event.get("event_type")) for event in events}
+        get_source = cast(Callable[[str], object], getattr(store, "get_source"))
+        for link in links:
+            link_source_id = str(link.get("source_id") or "")
+            if link_source_id and get_source(link_source_id) is not None:
+                resolved_links += 1
+            else:
+                orphan_links += 1
+
+        checks["has_reasoned_revision"] = any(str(revision.get("reason") or "").strip() for revision in revisions)
+        checks["has_commit_event"] = "agent.memory_committed" in event_types
+        checks["provenance_resolves"] = len(links) >= 1 and orphan_links == 0
+        if correction_applied:
+            corrected_revisions = [
+                revision
+                for revision in revisions
+                if str(revision.get("revision_type")) == "corrected"
+                and str(revision.get("text_after") or "") == str(corrected_text)
+            ]
+            metadata = cast(JsonObject, cast(JsonObject, audit.get("memory") or {}).get("metadata_json") or {})
+            agentic = cast(JsonObject, metadata.get("agentic_memory") or {})
+            corrections_meta = agentic.get("corrections")
+            checks["correction_reflected"] = (
+                bool(corrected_revisions)
+                and "agent.memory_corrected" in event_types
+                and isinstance(corrections_meta, list)
+                and len(corrections_meta) >= 1
+            )
+        evidence.update(
+            {
+                "revision_types": [str(revision.get("revision_type")) for revision in revisions],
+                "revision_reasons": [str(revision.get("reason") or "") for revision in revisions],
+                "event_types": sorted(event_types),
+                "provenance_link_count": len(links),
+                "resolved_link_count": resolved_links,
+                "orphan_link_count": orphan_links,
+            }
+        )
+    explain_complete = all(checks.values())
+    return (
+        {
+            "case_key": case_key,
+            "status": "pass" if explain_complete else "fail",
+            "metrics": {"explain_complete": 1.0 if explain_complete else 0.0},
+            "checks": {key: ("pass" if passed else "fail") for key, passed in sorted(checks.items())},
+            "evidence": evidence,
+        },
+        resolved_links,
+        orphan_links,
+    )
+
+
+def run_provenance_explanation_eval(
+    store: object | None,
+    *,
+    corpus: JsonObject | None = None,
+    backend: str | None = None,
+) -> JsonObject:
+    """Execute the provenance-explanation suite against a live store."""
+    if store is None:
+        return _skipped_suite(
+            PROVENANCE_EXPLANATION_SUITE_KEY,
+            PROVENANCE_EXPLANATION_TITLE,
+            PROVENANCE_EXPLANATION_TARGETS,
+            VNEXT_EVAL_LIVE_STORE_SKIP_REASON,
+        )
+    missing = _missing_store_surface(store, _PROVENANCE_REQUIRED_STORE_SURFACE)
+    if missing:
+        return _skipped_suite(
+            PROVENANCE_EXPLANATION_SUITE_KEY,
+            PROVENANCE_EXPLANATION_TITLE,
+            PROVENANCE_EXPLANATION_TARGETS,
+            f"store does not expose required surface: {', '.join(missing)}",
+        )
+    resolved_corpus = corpus if corpus is not None else generate_provenance_explanation_corpus()
+    service = _eval_commit_service(store)
+
+    create_source = cast(Callable[..., JsonObject], getattr(store, "create_source"))
+    source_ids: dict[str, str] = {}
+    for source in cast(list[JsonObject], resolved_corpus.get("sources", [])):
+        row = create_source(
+            {
+                "source_type": source["source_type"],
+                "title": source["title"],
+                "content_hash": source["content_hash"],
+                "domain": "professional",
+                "sensitivity": "internal",
+            }
+        )
+        source_ids[str(source["source_key"])] = str(row["id"])
+
+    cases: list[JsonObject] = []
+    total_resolved = 0
+    total_orphans = 0
+    for case in cast(list[JsonObject], resolved_corpus.get("memories", [])):
+        try:
+            case_record, resolved_links, orphan_links = _audit_provenance_case(
+                case, store=store, service=service, source_ids=source_ids
+            )
+        except Exception as exc:  # defensive: sibling churn must not abort the report
+            case_record = {
+                "case_key": str(case.get("case_key", "unknown")),
+                "status": "fail",
+                "metrics": {"explain_complete": 0.0},
+                "checks": {},
+                "evidence": {"error_type": type(exc).__name__, "error_message": str(exc)},
+            }
+            resolved_links = 0
+            orphan_links = 0
+        cases.append(case_record)
+        total_resolved += resolved_links
+        total_orphans += orphan_links
+
+    metrics: JsonObject = {
+        "backend": _eval_backend_label(store, backend),
+        "audited_memory_count": len(cases),
+        "corrected_memory_count": sum(
+            1 for case in cast(list[JsonObject], resolved_corpus.get("memories", [])) if case.get("corrected_text")
+        ),
+        "explain_completeness_rate": _mean(
+            [cast(float, cast(JsonObject, case["metrics"])["explain_complete"]) for case in cases]
+        ),
+        "provenance_link_count": total_resolved + total_orphans,
+        "orphan_provenance_count": total_orphans,
+        "corpus_digest": resolved_corpus.get("corpus_digest"),
+    }
+    checks = _target_checks(metrics, PROVENANCE_EXPLANATION_TARGETS)
+    metrics["target_checks"] = {key: ("pass" if passed else "fail") for key, passed in sorted(checks.items())}
+    return {
+        "suite_key": PROVENANCE_EXPLANATION_SUITE_KEY,
+        "title": PROVENANCE_EXPLANATION_TITLE,
+        "status": "pass" if cases and all(checks.values()) else "fail",
+        "targets": deepcopy(PROVENANCE_EXPLANATION_TARGETS),
+        "metrics": metrics,
+        "cases": cases,
+    }
+
+
+_MEMORY_QUALITY_SUITE_RUNNERS: dict[str, Callable[..., JsonObject]] = {
+    CORRECTION_SUPPRESSION_SUITE_KEY: run_correction_suppression_eval,
+    DECISION_RECOVERY_SUITE_KEY: run_decision_recovery_eval,
+    PROVENANCE_EXPLANATION_SUITE_KEY: run_provenance_explanation_eval,
+}
+
+
+def _run_memory_quality_suite(suite_key: str, *, store: object | None) -> JsonObject:
+    runner = _MEMORY_QUALITY_SUITE_RUNNERS[suite_key]
+    if store is not None:
+        return runner(store)
+
+    def _run(live_store: object, *, backend: str | None = None) -> JsonObject:
+        return runner(live_store, backend=backend)
+
+    return _run_suite_against_live_store(run_with_store=_run, skipped=lambda reason: runner(None) | {"reason": reason})
 
 
 # --------------------------------------------------------------------------
@@ -1004,6 +2222,8 @@ def run_vnext_evals(
     for suite_key in suite_keys:
         if suite_key == RETRIEVAL_QUALITY_SUITE_KEY:
             suites.append(_run_retrieval_quality_suite(corpus=corpus, store=store, retrieval_fn=retrieval_fn))
+        elif suite_key in _MEMORY_QUALITY_SUITE_RUNNERS:
+            suites.append(_run_memory_quality_suite(suite_key, store=store))
 
     executed_suites = [suite_report for suite_report in suites if suite_report["status"] != "skipped"]
     skipped_suites = [suite_report for suite_report in suites if suite_report["status"] == "skipped"]
@@ -1076,6 +2296,16 @@ def write_vnext_eval_report(
 
 
 __all__ = [
+    "CORRECTION_MEMORY_KEY_PREFIX",
+    "CORRECTION_SUPPRESSION_SUITE_KEY",
+    "CORRECTION_SUPPRESSION_TARGETS",
+    "DECISION_MEMORY_KEY_PREFIX",
+    "DECISION_RECOVERY_SUITE_KEY",
+    "DECISION_RECOVERY_TARGETS",
+    "MEMORY_TYPES_FILTER_FIELD",
+    "PROVENANCE_EXPLANATION_SUITE_KEY",
+    "PROVENANCE_EXPLANATION_TARGETS",
+    "PROVENANCE_MEMORY_KEY_PREFIX",
     "RETRIEVAL_QUALITY_RECALL_LIMIT",
     "RETRIEVAL_QUALITY_SUITE_KEY",
     "RETRIEVAL_QUALITY_TARGETS",
@@ -1085,18 +2315,29 @@ __all__ = [
     "VNEXT_BENCHMARK_EXPECTED_COUNTS",
     "VNEXT_EVAL_CORPUS_SCHEMA_VERSION",
     "VNEXT_EVAL_DATABASE_URL_ENV",
+    "VNEXT_EVAL_FIXED_VALID_FROM",
+    "VNEXT_EVAL_FIXED_VALID_TO",
+    "VNEXT_EVAL_LIVE_STORE_SKIP_REASON",
     "VNEXT_EVAL_MEMORY_KEY_PREFIX",
     "VNEXT_EVAL_REPORT_SCHEMA_VERSION",
     "VNEXT_EVAL_SQLITE_URL_PREFIX",
     "VNEXT_EVAL_SUITE_ORDER",
     "eval_content_tokens",
     "eval_token_overlap",
+    "filtered_retrieval_fn",
+    "generate_correction_suppression_corpus",
+    "generate_decision_recovery_corpus",
+    "generate_provenance_explanation_corpus",
     "generate_vnext_benchmark_corpus",
     "latency_percentile",
     "load_vnext_benchmark_corpus",
     "production_retrieval_fn",
     "recall_at_k",
     "reciprocal_rank",
+    "retrieval_request_supports_memory_types",
+    "run_correction_suppression_eval",
+    "run_decision_recovery_eval",
+    "run_provenance_explanation_eval",
     "run_retrieval_quality_eval",
     "run_vnext_evals",
     "seed_retrieval_corpus",

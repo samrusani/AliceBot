@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Context packs enforce `max_tokens` with greedy budget packing and report `{token_budget, token_estimate, truncated, dropped_item_count}`; the `projects` retrieval filter is honored; contradictions and recent changes are populated from real services; the dead `historical_timeline` section is removed and pack rows are no longer duplicated across sections.
+- Typed retrieval: `memory_types` filtering through both store backends and the `alice_recall`/`alice_context_pack` tools; a procedures section joins beliefs/decisions in packs; `Procedure:`/`Playbook:`/`How to` and `Happened:`/`Log:` capture rules produce procedure and episode memories.
+- Staleness v1: expired facts (`valid_to < now`) are excluded from search by default; `stale` is a first-class memory status; confirmations refresh `last_confirmed_at` (idempotent replays); a daily `staleness_sweep` scheduler workflow marks expired and unconfirmed volatile memories for review — marks only, never deletes (migration `20260704_0075`).
+- The agentic write protocol joins the core MCP surface: `alice_memory_commit` (policy-checked explicit writes) and `alice_memory_manage` (confirm/undo/forget) — 11 core tools, every parameter described; the Memory Operations Protocol is documented in `docs/memory-operations-protocol.md` with honest boundaries (forget is soft-delete pending redaction; merge/expire planned).
+- Three memory-quality eval suites join `retrieval_quality`: `correction_suppression` (superseded/rejected memories must vanish from recall with complete audit trails), `decision_recovery`, and `provenance_explanation` — all run live on both backends, all can genuinely fail.
+- LongMemEval harness under `eval/longmemeval/`: dataset fetcher (cleaned 2025-09 release), per-question isolated Alice stores running the real capture/retrieval pipeline, official generation/judge prompts ported verbatim, checkpoint/resume runner. Scored runs need a model endpoint (`ALICE_LME_*` env vars).
+
 ## v0.7.0 — 2026-07-04
 
 - Added the zero-infrastructure SQLite on-ramp: `alice-memory mcp --data-dir ~/.alice` starts the MCP server against a local SQLite file with no Docker or Postgres — nine core tools, FTS5 full-text search (porter stemming), optional embedding-based vector search (numpy cosine), and review through `alice_memory_review`/`alice_memory_correct`. `alice-memory export` dumps memories, sources, open loops, and events as JSONL.

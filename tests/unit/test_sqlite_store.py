@@ -614,6 +614,121 @@ def test_search_memories_fts_applies_domain_and_sensitivity_filters() -> None:
     conn.close()
 
 
+# -- memory_type / project / staleness read filters ------------------------------------
+
+
+def test_search_memories_filters_by_memory_type_across_all_three_methods() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    decision = _create_memory(store, memory_type="decision", canonical_text="shared retrieval keyword decision")
+    procedure = _create_memory(store, memory_type="procedure", canonical_text="shared retrieval keyword procedure")
+    _create_memory(store, memory_type="preference", canonical_text="shared retrieval keyword preference")
+    store.update_memory_embedding(memory_id=decision["id"], vector=[1.0, 0.0])
+    store.update_memory_embedding(memory_id=procedure["id"], vector=[0.0, 1.0])
+
+    like_rows = store.search_memories(query="shared retrieval", memory_types=("decision", "procedure"))
+    assert {row["id"] for row in like_rows} == {decision["id"], procedure["id"]}
+
+    fts_rows = store.search_memories_fts(query="retrieval", memory_types=("decision",))
+    assert [row["id"] for row in fts_rows] == [decision["id"]]
+
+    vector_rows = store.search_memories_vector(query_vector=[1.0, 0.0], memory_types=("procedure",))
+    assert [row["id"] for row in vector_rows] == [procedure["id"]]
+
+    # Empty tuple means no filter.
+    assert len(store.search_memories(query="shared retrieval", memory_types=())) == 3
+    conn.close()
+
+
+def test_search_memories_filters_by_project_id_in_metadata_json() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    alicebot = _create_memory(
+        store,
+        canonical_text="project keyword alicebot",
+        metadata_json={"project_id": "alicebot"},
+    )
+    hermes = _create_memory(
+        store,
+        canonical_text="project keyword hermes",
+        metadata_json={"project_id": "hermes"},
+    )
+    unscoped = _create_memory(store, canonical_text="project keyword unscoped")
+    store.update_memory_embedding(memory_id=alicebot["id"], vector=[1.0, 0.0])
+    store.update_memory_embedding(memory_id=hermes["id"], vector=[0.0, 1.0])
+
+    rows = store.search_memories(query="project keyword", projects=("alicebot",))
+    assert [row["id"] for row in rows] == [alicebot["id"]]
+
+    rows = store.search_memories(query="project keyword", projects=("alicebot", "hermes"))
+    assert {row["id"] for row in rows} == {alicebot["id"], hermes["id"]}
+
+    fts_rows = store.search_memories_fts(query="keyword", projects=("hermes",))
+    assert [row["id"] for row in fts_rows] == [hermes["id"]]
+
+    vector_rows = store.search_memories_vector(query_vector=[1.0, 0.0], projects=("alicebot",))
+    assert [row["id"] for row in vector_rows] == [alicebot["id"]]
+
+    # No projects filter returns everything, including unscoped memories.
+    rows = store.search_memories(query="project keyword")
+    assert {row["id"] for row in rows} == {alicebot["id"], hermes["id"], unscoped["id"]}
+    conn.close()
+
+
+def test_search_memories_excludes_expired_valid_to_unless_include_expired() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    current = _create_memory(store, canonical_text="expiry keyword current")
+    future = _create_memory(
+        store,
+        canonical_text="expiry keyword future",
+        valid_from="2020-01-01T00:00:00Z",
+        valid_to="2999-01-01T00:00:00Z",
+    )
+    expired = _create_memory(
+        store,
+        canonical_text="expiry keyword expired",
+        valid_from="2020-01-01T00:00:00Z",
+        valid_to="2021-01-01T00:00:00Z",
+    )
+    store.update_memory_embedding(memory_id=current["id"], vector=[1.0, 0.0])
+    store.update_memory_embedding(memory_id=expired["id"], vector=[0.0, 1.0])
+
+    rows = store.search_memories(query="expiry keyword")
+    assert {row["id"] for row in rows} == {current["id"], future["id"]}
+
+    rows = store.search_memories(query="expiry keyword", include_expired=True)
+    assert {row["id"] for row in rows} == {current["id"], future["id"], expired["id"]}
+
+    fts_rows = store.search_memories_fts(query="expiry")
+    assert {row["id"] for row in fts_rows} == {current["id"], future["id"]}
+    fts_rows = store.search_memories_fts(query="expiry", include_expired=True)
+    assert {row["id"] for row in fts_rows} == {current["id"], future["id"], expired["id"]}
+
+    vector_rows = store.search_memories_vector(query_vector=[1.0, 0.0])
+    assert [row["id"] for row in vector_rows] == [current["id"]]
+    vector_rows = store.search_memories_vector(query_vector=[1.0, 0.0], include_expired=True)
+    assert {row["id"] for row in vector_rows} == {current["id"], expired["id"]}
+    conn.close()
+
+
+def test_stale_status_is_valid_in_schema_but_excluded_from_search() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    active = _create_memory(store, canonical_text="staleness keyword active")
+    stale = _create_memory(store, canonical_text="staleness keyword stale", status="stale")
+    store.update_memory_embedding(memory_id=active["id"], vector=[1.0, 0.0])
+    store.update_memory_embedding(memory_id=stale["id"], vector=[1.0, 0.0])
+
+    # 'stale' passes the CHECK constraint (Wave-1 sibling writes it) ...
+    assert stale["status"] == "stale"
+    # ... but the read path treats it like superseded/rejected.
+    assert [row["id"] for row in store.search_memories(query="staleness keyword")] == [active["id"]]
+    assert [row["id"] for row in store.search_memories_fts(query="staleness")] == [active["id"]]
+    assert [row["id"] for row in store.search_memories_vector(query_vector=[1.0, 0.0])] == [active["id"]]
+    conn.close()
+
+
 # -- vector search ---------------------------------------------------------------------
 
 

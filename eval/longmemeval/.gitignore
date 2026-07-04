@@ -1,0 +1,7 @@
+# Benchmark data is fetched locally and never committed (277 MB / 2.7 GB files).
+data/
+# Per-question scratch SQLite stores created during a run.
+work/
+# Checkpoints and reports produced by runs.
+results/
+__pycache__/
