@@ -180,8 +180,18 @@ def test_capture_review_approve_recall_explain_flow(sqlite_context) -> None:
     assert recall["retrieval"]["stages"]["fts"]["candidate_count"] >= 1
 
     audit = call_mcp_tool(sqlite_context, name="alice_explain", arguments={"memory_id": memory_id})
-    assert set(audit) == {"memory", "revisions", "events", "provenance_links"}
+    assert set(audit) == {"memory", "supersession_chain", "revisions", "events", "provenance_links"}
     assert audit["memory"]["id"] == memory_id
+    # No supersession happened, so the chain is just the memory itself.
+    assert audit["supersession_chain"] == [
+        {
+            "id": memory_id,
+            "title": audit["memory"]["title"],
+            "status": "active",
+            "created_at": audit["memory"]["created_at"],
+            "relation": "self",
+        }
+    ]
     assert [revision["revision_type"] for revision in audit["revisions"]] == ["promoted"]
     assert any(event["event_type"] == "memory.reviewed" for event in audit["events"])
     assert audit["provenance_links"][0]["evidence_role"] == "quoted_from"
@@ -301,6 +311,65 @@ def test_memory_commit_recall_undo_and_forget_flow(sqlite_context) -> None:
     ]
     assert forget_audit["revisions"][-1]["text_before"] == "The forgettable retro window is Thursdays."
     assert any(event["event_type"] == "agent.memory_forgotten" for event in forget_audit["events"])
+
+
+def test_memory_manage_undo_with_replacement_links_the_supersession_chain(sqlite_context) -> None:
+    original = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_commit",
+        arguments={
+            **TRUSTED_AGENT,
+            "title": "Standup at 10am",
+            "canonical_text": "The daily standup is at 10am.",
+            "memory_type": "project_fact",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    replacement = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_commit",
+        arguments={
+            **TRUSTED_AGENT,
+            "title": "Standup at 9am",
+            "canonical_text": "The daily standup moved to 9am.",
+            "memory_type": "project_fact",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    old_id = str(original["memory"]["id"])
+    new_id = str(replacement["memory"]["id"])
+
+    undone = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_manage",
+        arguments={
+            **TRUSTED_AGENT,
+            "action": "undo",
+            "memory_id": old_id,
+            "reason": "Standup moved to 9am",
+            "superseded_by": new_id,
+        },
+    )
+    assert undone["status"] == "undone"
+    assert undone["memory"]["status"] == "superseded"
+    assert undone["memory"]["superseded_by"] == new_id
+
+    # "What did I believe before?" is answerable from the explain surface.
+    audit = call_mcp_tool(sqlite_context, name="alice_explain", arguments={"memory_id": new_id})
+    assert [(entry["id"], entry["relation"]) for entry in audit["supersession_chain"]] == [
+        (old_id, "predecessor"),
+        (new_id, "self"),
+    ]
+    assert audit["supersession_chain"][0]["title"] == "Standup at 10am"
+    assert audit["supersession_chain"][0]["status"] == "superseded"
+
+    # Only the replacement is recallable; the superseded row is history.
+    recall = call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "daily standup"})
+    assert [row["id"] for row in recall["results"]] == [new_id]
 
 
 def test_memory_commit_confirmation_flow(sqlite_context) -> None:
@@ -440,6 +509,157 @@ def test_memory_commit_resolves_agent_identity_from_api_key(sqlite_context, monk
                 "canonical_text": "This should not be written.",
             },
         )
+
+
+def test_memory_commit_persists_scope_columns_and_recall_filters_by_agent(sqlite_context) -> None:
+    hermes_commit = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_commit",
+        arguments={
+            **TRUSTED_AGENT,
+            "agent_run_id": "run-onramp-1",
+            "project_scope": ["alicebot"],
+            "title": "Hermes scoped fact",
+            "canonical_text": "The multi scope retrieval keyword lives in alicebot.",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    assert hermes_commit["status"] == "committed"
+    hermes_memory_id = str(hermes_commit["memory"]["id"])
+
+    scribe_commit = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_commit",
+        arguments={
+            "agent_id": "scribe",
+            "permission_profile": "trusted_local_agent",
+            "agent_run_id": "run-onramp-2",
+            "title": "Scribe fact",
+            "canonical_text": "The multi scope retrieval keyword also has a scribe note.",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    assert scribe_commit["status"] == "committed"
+    scribe_memory_id = str(scribe_commit["memory"]["id"])
+
+    # The scope columns are real columns on the row, not metadata.
+    with sqlite_user_connection(_db_path(sqlite_context), USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        hermes_row = store.get_memory(hermes_memory_id)
+        scribe_row = store.get_memory(scribe_memory_id)
+    assert hermes_row is not None and scribe_row is not None
+    assert hermes_row["project_id"] == "alicebot"
+    assert hermes_row["created_by_agent_id"] == "hermes"
+    assert hermes_row["run_id"] == "run-onramp-1"
+    assert scribe_row["project_id"] is None
+    assert scribe_row["created_by_agent_id"] == "scribe"
+    assert scribe_row["run_id"] == "run-onramp-2"
+
+    # created_by_agents partitions recall by writer.
+    hermes_only = call_mcp_tool(
+        sqlite_context,
+        name="alice_recall",
+        arguments={"query": "multi scope retrieval keyword", "created_by_agents": ["hermes"]},
+    )
+    assert [row["id"] for row in hermes_only["results"]] == [hermes_memory_id]
+    scribe_only = call_mcp_tool(
+        sqlite_context,
+        name="alice_recall",
+        arguments={"query": "multi scope retrieval keyword", "created_by_agents": ["scribe"]},
+    )
+    assert [row["id"] for row in scribe_only["results"]] == [scribe_memory_id]
+    unfiltered = call_mcp_tool(
+        sqlite_context,
+        name="alice_recall",
+        arguments={"query": "multi scope retrieval keyword"},
+    )
+    assert {row["id"] for row in unfiltered["results"]} == {hermes_memory_id, scribe_memory_id}
+
+    # The project filter reads the real column now.
+    project_scoped = call_mcp_tool(
+        sqlite_context,
+        name="alice_recall",
+        arguments={"query": "multi scope retrieval keyword", "projects": ["alicebot"]},
+    )
+    assert [row["id"] for row in project_scoped["results"]] == [hermes_memory_id]
+
+
+def test_project_scope_bound_key_is_enforced_in_sqlite_mode(sqlite_context, monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    with sqlite_user_connection(_db_path(sqlite_context), USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        record, raw_key = create_agent_key(
+            store,
+            user_id=USER_ID,
+            agent_id="openclaw",
+            permission_profile="project_scoped_agent",
+            project_scope="alicebot",
+        )
+    assert record["project_scope"] == "alicebot"
+    monkeypatch.setenv(mcp_tools_module.AGENT_API_KEY_ENV, raw_key)
+
+    # No payload scope claim: the binding is inherited and the commit lands
+    # with the bound project as the row's project_id.
+    committed = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_commit",
+        arguments={
+            "title": "Bound project fact",
+            "canonical_text": "Project binding governs sqlite commits too.",
+            "memory_type": "project_fact",
+            "domain": "project",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    assert committed["status"] == "committed"
+    identity = committed["memory"]["metadata_json"]["agentic_memory"]["agent_identity"]
+    assert identity["project_scope"] == ["alicebot"]
+    assert identity["project_scope_locked"] is True
+    with sqlite_user_connection(_db_path(sqlite_context), USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        row = store.get_memory(str(committed["memory"]["id"]))
+    assert row is not None
+    assert row["project_id"] == "alicebot"
+    assert row["created_by_agent_id"] == "openclaw"
+
+    # Claiming a wider identity scope than the binding is rejected outright.
+    with pytest.raises(MCPToolError, match="bound to project scope 'alicebot'"):
+        call_mcp_tool(
+            sqlite_context,
+            name="alice_memory_commit",
+            arguments={
+                "project_scope": ["alicebot", "other-project"],
+                "title": "Widened scope attempt",
+                "canonical_text": "This must not be written.",
+                "domain": "project",
+            },
+        )
+
+    # A request that targets another project without widening the identity
+    # claim is blocked by policy (project_scope_binding_violation).
+    rejected = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_commit",
+        arguments={
+            "agent_identity": {"agent_id": "openclaw"},
+            "project_scope": ["other-project"],
+            "title": "Out-of-scope project write",
+            "canonical_text": "This must be rejected by policy.",
+            "memory_type": "project_fact",
+            "domain": "project",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    assert rejected["status"] == "rejected"
+    assert "agent_policy_blocked" in rejected["reasons"]
+    assert "project_scope_binding_violation" in rejected["policy_decision"]["policy_decision"]["reasons"]
 
 
 def test_recent_decisions_filters_query_project_and_window(sqlite_context) -> None:
@@ -647,16 +867,37 @@ def test_memory_correct_reject_edit_and_supersede(sqlite_context) -> None:
     assert replacement["canonical_text"] == "The final decision wording"
     assert replacement["metadata_json"]["supersedes"] == edit_id
     assert superseded["memory"]["metadata_json"]["superseded_by"] == replacement["id"]
+    # The pointers are real columns too, not just metadata.
+    assert superseded["memory"]["superseded_by"] == replacement["id"]
+    assert replacement["supersedes"] == edit_id
 
+    # alice_explain shows the supersession chain with both rows, oldest
+    # first, from either end of the chain.
     old_audit = call_mcp_tool(sqlite_context, name="alice_explain", arguments={"memory_id": edit_id})
     assert [revision["revision_type"] for revision in old_audit["revisions"]] == [
         "edited",
         "superseded",
     ]
+    assert [(entry["id"], entry["relation"]) for entry in old_audit["supersession_chain"]] == [
+        (edit_id, "self"),
+        (str(replacement["id"]), "successor"),
+    ]
+    assert [entry["title"] for entry in old_audit["supersession_chain"]] == [
+        "Corrected decision",
+        "Decision: final wording",
+    ]
+    assert [entry["status"] for entry in old_audit["supersession_chain"]] == [
+        "superseded",
+        "active",
+    ]
     new_audit = call_mcp_tool(
         sqlite_context, name="alice_explain", arguments={"memory_id": str(replacement["id"])}
     )
     assert [revision["revision_type"] for revision in new_audit["revisions"]] == ["created"]
+    assert [(entry["id"], entry["relation"]) for entry in new_audit["supersession_chain"]] == [
+        (edit_id, "predecessor"),
+        (str(replacement["id"]), "self"),
+    ]
 
 
 def test_memory_correct_validation_errors(sqlite_context) -> None:

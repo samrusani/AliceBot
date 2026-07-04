@@ -91,6 +91,11 @@ class AgentIdentity:
     project_scope: tuple[str, ...] = ()
     permission_profile: str = "read_only_agent"
     auth: str = "unauthenticated_local"
+    # True only when the authenticated key record carries a project_scope
+    # binding. Never payload-settable: resolve_agent_identity sets it, and
+    # from_payload always leaves it False. When locked, policy evaluation
+    # blocks write actions whose project scope leaves the bound scope.
+    project_scope_locked: bool = False
 
     @property
     def actor_type(self) -> str:
@@ -137,6 +142,7 @@ class AgentIdentity:
             "project_scope": list(self.project_scope),
             "permission_profile": self.permission_profile,
             "auth": self.auth,
+            "project_scope_locked": self.project_scope_locked,
         }
 
 
@@ -278,6 +284,16 @@ def evaluate_agent_policy(
     if profile == "read_only_agent" and action in WRITE_ACTIONS:
         reasons.append("read_only_agent_cannot_write")
         decision = "blocked"
+
+    # Key-bound project scope: a key issued with project_scope hard-binds
+    # write actions to that scope. Only enforced when a binding exists
+    # (project_scope_locked); unbound keys keep the previous behavior.
+    if identity.project_scope_locked and action in WRITE_ACTIONS:
+        bound_scope = set(identity.project_scope)
+        out_of_scope = tuple(value for value in project_scope if value not in bound_scope)
+        if out_of_scope:
+            reasons.append("project_scope_binding_violation")
+            decision = "blocked"
 
     if action == "memory.propose":
         if profile not in {"project_scoped_agent", "trusted_local_agent", "memory_proposal_agent", "admin_agent"}:

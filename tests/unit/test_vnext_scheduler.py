@@ -386,7 +386,11 @@ def test_remaining_scheduler_workflows_create_reviewable_artifacts(workflow_type
     assert metadata["review_status"] == "needs_review"
 
 
-def test_memory_consolidation_creates_deduped_candidate_without_auto_promotion() -> None:
+def test_memory_consolidation_without_embeddings_is_review_only_and_creates_no_placeholder() -> None:
+    # The consolidation rebuild replaced the fixed-text placeholder candidate:
+    # without an embedding provider (or a vector-search-capable store) the run
+    # emits a review-only report with an explicit skip reason and writes no
+    # candidate memories at all.
     store = InMemorySchedulerStore()
     service = VNextSchedulerService(store)
 
@@ -411,12 +415,16 @@ def test_memory_consolidation_creates_deduped_candidate_without_auto_promotion()
     active = [memory for memory in store.memories if memory.get("status") == "active"]
     assert first["artifact"]["artifact_type"] == "memory_consolidation"
     assert first["artifact"]["status"] == "needs_review"
-    assert first["artifact"]["metadata_json"]["candidate_memory_ids"] == [candidates[0]["id"]]
-    assert second["artifact"]["metadata_json"]["candidate_memory_ids"] == [candidates[0]["id"]]
-    assert len(candidates) == 1
+    assert candidates == []
+    assert first["artifact"]["metadata_json"]["candidate_memory_ids"] == []
+    assert first["artifact"]["metadata_json"]["consolidation"]["skipped"]
+    assert second["artifact"]["metadata_json"]["consolidation"]["skipped"]
+    assert (
+        second["artifact"]["metadata_json"]["consolidation_digest"]
+        == first["artifact"]["metadata_json"]["consolidation_digest"]
+    )
     assert [memory["id"] for memory in active] == ["memory-1"]
-    assert candidates[0]["memory_type"] == "semantic"
-    assert candidates[0]["metadata_json"]["review_required"] is True
+    assert "## Skipped / Bounds" in first["artifact"]["content_markdown"]
     assert "memory.consolidation.generated" in [event["event_type"] for event in store.events]
 
 

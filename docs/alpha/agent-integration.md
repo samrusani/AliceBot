@@ -66,6 +66,42 @@ Rules:
 - Manage keys with `alicebot agent keys list` (prefixes only, never hashes) and `alicebot agent keys revoke <key-prefix-or-id>`.
 - MCP servers bind a key the same way: set `ALICE_AGENT_API_KEY` in the MCP server env.
 
+## Scopes
+
+Memories carry four scopes. `user_id` is the hard tenancy boundary (RLS);
+the rest are first-class columns filled by the agentic write path and
+filterable on the read path:
+
+- **`project_id`** — set on commit when the effective project scope is
+  singular (from the request's `project_scope`, falling back to the
+  identity's). `alice_recall` and `alice_context_pack` filter on it via
+  `projects`; the read path also falls back to legacy
+  `metadata_json.project_id` during the transition.
+- **`created_by_agent_id`** — the *authenticated* agent that wrote the
+  memory. Filter with the optional `created_by_agents` array on
+  `alice_recall` / `alice_context_pack` (e.g. `["openclaw"]`).
+- **`run_id`** — the writing agent's `agent_run_id`. Deliberately
+  metadata-plus-filter only: there is no session entity or foreign key
+  behind it, so runs cost nothing to mint and old runs need no cleanup.
+  Store-level searches accept an optional `run_id` filter.
+
+Project binding closes the trust gap between a key and the payload's
+self-asserted `project_scope`:
+
+```bash
+alicebot agent keys create --agent-id openclaw --profile project_scoped_agent \
+  --project-scope Alice
+```
+
+When a key carries `--project-scope`, the resolved identity's project scope
+comes from the key record. A payload may narrow the scope to a subset but
+never widen it — widening is rejected with `403` and audited as
+`agent.key_escalation_rejected` (reason `project_scope_escalation`), the
+same pattern as permission-profile escalation. Write actions that carry a
+`project_id` outside the bound scope are blocked by policy with reason
+`project_scope_binding_violation`. Keys issued without `--project-scope`
+keep the previous behavior: the payload's `project_scope` is honored as-is.
+
 ## Explicit Memory Commits
 
 When the user says "remember this", commit it through `alice_memory_commit`

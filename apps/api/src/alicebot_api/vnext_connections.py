@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 import re
 from typing import Protocol
 
@@ -189,6 +190,21 @@ def _title(row: JsonObject) -> str:
     return " ".join(str(text).split())
 
 
+def _observed_at(source: JsonObject) -> tuple[object, str]:
+    """Event time for an edge derived from ``source``.
+
+    Prefers the source's own event time (``source_created_at``), falls back
+    to ingestion time (``captured_at``), and finally to now. Returns the
+    timestamp plus which field supplied it, so the fallback is recorded in
+    the edge metadata.
+    """
+    for key in ("source_created_at", "captured_at"):
+        value = source.get(key)
+        if value is not None and value != "":
+            return value, key
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z"), "now"
+
+
 def _provenance(source: JsonObject, memory: JsonObject) -> tuple[str, ...]:
     output: list[str] = []
     metadata = source.get("metadata_json")
@@ -340,6 +356,10 @@ class VNextConnectionService:
             status = "accepted" if (
                 request.auto_accept_threshold is not None and candidate.confidence >= request.auto_accept_threshold
             ) else "candidate"
+            # Event time: when the connected observation happened (the
+            # source's own timestamp), not when this edge was written.
+            # valid_from starts the validity interval at the same instant.
+            observed_at, observed_at_source = _observed_at(candidate.source)
             edge = self.store.create_edge(
                 {
                     "from_type": "source",
@@ -350,10 +370,13 @@ class VNextConnectionService:
                     "confidence": candidate.confidence,
                     "explanation": candidate.explanation,
                     "created_by": "vnext_connection_finder",
+                    "observed_at": observed_at,
+                    "valid_from": observed_at,
                     "metadata_json": {
                         "status": status,
                         "connection": candidate.to_record(),
                         "candidate": status == "candidate",
+                        "observed_at_source": observed_at_source,
                         "generated_by": request.generated_by,
                         "scheduler_run_id": request.run_id if request.generated_by == "scheduler" else None,
                         "trace_id": request.trace_id,

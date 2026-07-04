@@ -675,6 +675,201 @@ def test_search_memories_filters_by_project_id_in_metadata_json() -> None:
     conn.close()
 
 
+def test_search_memories_project_filter_prefers_the_real_column_over_metadata() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    column_scoped = _create_memory(
+        store,
+        canonical_text="scope column keyword one",
+        project_id="alicebot",
+    )
+    metadata_scoped = _create_memory(
+        store,
+        canonical_text="scope column keyword two",
+        metadata_json={"project_id": "alicebot"},
+    )
+    # Column wins over stale metadata when both are present.
+    column_wins = _create_memory(
+        store,
+        canonical_text="scope column keyword three",
+        project_id="hermes",
+        metadata_json={"project_id": "alicebot"},
+    )
+
+    rows = store.search_memories(query="scope column keyword", projects=("alicebot",))
+    assert {row["id"] for row in rows} == {column_scoped["id"], metadata_scoped["id"]}
+
+    rows = store.search_memories(query="scope column keyword", projects=("hermes",))
+    assert [row["id"] for row in rows] == [column_wins["id"]]
+    conn.close()
+
+
+def test_create_memory_persists_scope_columns_and_rows_return_them() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    scoped = _create_memory(
+        store,
+        canonical_text="scoped fact",
+        project_id="alicebot",
+        created_by_agent_id="openclaw",
+        run_id="run-2026-07-04-001",
+    )
+    unscoped = _create_memory(store, canonical_text="unscoped fact")
+
+    fetched = store.get_memory(scoped["id"])
+    assert fetched is not None
+    assert fetched["project_id"] == "alicebot"
+    assert fetched["created_by_agent_id"] == "openclaw"
+    assert fetched["run_id"] == "run-2026-07-04-001"
+    plain = store.get_memory(unscoped["id"])
+    assert plain is not None
+    assert plain["project_id"] is None
+    assert plain["created_by_agent_id"] is None
+    assert plain["run_id"] is None
+    conn.close()
+
+
+def test_search_memories_filters_by_created_by_agent_and_run_across_all_three_methods() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    openclaw_run_1 = _create_memory(
+        store,
+        canonical_text="agent scope keyword alpha",
+        created_by_agent_id="openclaw",
+        run_id="run-1",
+    )
+    openclaw_run_2 = _create_memory(
+        store,
+        canonical_text="agent scope keyword beta",
+        created_by_agent_id="openclaw",
+        run_id="run-2",
+    )
+    hermes = _create_memory(
+        store,
+        canonical_text="agent scope keyword gamma",
+        created_by_agent_id="hermes",
+        run_id="run-3",
+    )
+    user_written = _create_memory(store, canonical_text="agent scope keyword delta")
+    store.update_memory_embedding(memory_id=openclaw_run_1["id"], vector=[1.0, 0.0])
+    store.update_memory_embedding(memory_id=hermes["id"], vector=[0.0, 1.0])
+
+    rows = store.search_memories(query="agent scope keyword", created_by_agent_ids=("openclaw",))
+    assert {row["id"] for row in rows} == {openclaw_run_1["id"], openclaw_run_2["id"]}
+
+    rows = store.search_memories(
+        query="agent scope keyword", created_by_agent_ids=("openclaw", "hermes")
+    )
+    assert {row["id"] for row in rows} == {openclaw_run_1["id"], openclaw_run_2["id"], hermes["id"]}
+
+    rows = store.search_memories(query="agent scope keyword", run_id="run-2")
+    assert [row["id"] for row in rows] == [openclaw_run_2["id"]]
+
+    fts_rows = store.search_memories_fts(query="keyword", created_by_agent_ids=("hermes",))
+    assert [row["id"] for row in fts_rows] == [hermes["id"]]
+    fts_rows = store.search_memories_fts(query="keyword", run_id="run-1")
+    assert [row["id"] for row in fts_rows] == [openclaw_run_1["id"]]
+
+    vector_rows = store.search_memories_vector(
+        query_vector=[1.0, 0.0], created_by_agent_ids=("openclaw",)
+    )
+    assert [row["id"] for row in vector_rows] == [openclaw_run_1["id"]]
+    vector_rows = store.search_memories_vector(query_vector=[1.0, 0.0], run_id="run-3")
+    assert [row["id"] for row in vector_rows] == [hermes["id"]]
+
+    # No filter returns every writer's memories, including the user's own.
+    rows = store.search_memories(query="agent scope keyword")
+    assert {row["id"] for row in rows} == {
+        openclaw_run_1["id"],
+        openclaw_run_2["id"],
+        hermes["id"],
+        user_written["id"],
+    }
+    conn.close()
+
+
+def test_create_agent_api_key_round_trips_project_scope_binding() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+
+    bound = store.create_agent_api_key(
+        {
+            "agent_id": "openclaw",
+            "permission_profile": "project_scoped_agent",
+            "project_scope": "alicebot",
+            "key_hash": "c" * 64,
+            "key_prefix": "alice_sk_ghi",
+        }
+    )
+    unbound = store.create_agent_api_key(
+        {
+            "agent_id": "hermes",
+            "permission_profile": "trusted_local_agent",
+            "key_hash": "d" * 64,
+            "key_prefix": "alice_sk_jkl",
+        }
+    )
+
+    assert bound["project_scope"] == "alicebot"
+    assert unbound["project_scope"] is None
+    fetched = store.get_agent_api_key_by_hash("c" * 64)
+    assert fetched is not None
+    assert fetched["project_scope"] == "alicebot"
+    listed = {row["id"]: row for row in store.list_agent_api_keys()}
+    assert listed[bound["id"]]["project_scope"] == "alicebot"
+    assert listed[unbound["id"]]["project_scope"] is None
+    conn.close()
+
+
+def test_bootstrap_upgrades_a_pre_existing_db_file_with_scope_columns(tmp_path: Path) -> None:
+    """Existing sqlite files (created before the scope columns shipped) are
+    upgraded in place by the PRAGMA-guarded ALTER TABLE in bootstrap."""
+    db_path = tmp_path / "alice.db"
+    conn = sqlite3.connect(str(db_path))
+    bootstrap_sqlite_schema(conn)
+    # Rewind the file to the pre-scope-column schema: drop the new index and
+    # columns so the file looks like it was created by the old bootstrap.
+    conn.execute("DROP INDEX IF EXISTS memories_user_project_idx")
+    for table, column in (
+        ("memories", "project_id"),
+        ("memories", "created_by_agent_id"),
+        ("memories", "run_id"),
+        ("agent_api_keys", "project_scope"),
+    ):
+        conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+    conn.commit()
+    old_memory_columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
+    assert "project_id" not in old_memory_columns
+    conn.close()
+
+    conn = sqlite3.connect(str(db_path))
+    bootstrap_sqlite_schema(conn)
+    memory_columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
+    assert {"project_id", "created_by_agent_id", "run_id"} <= memory_columns
+    key_columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_api_keys)")}
+    assert "project_scope" in key_columns
+    index_names = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+    }
+    assert "memories_user_project_idx" in index_names
+
+    # The upgraded file is fully usable, including the new filters.
+    store = _make_store(conn)
+    scoped = _create_memory(
+        store,
+        canonical_text="upgraded db keyword",
+        project_id="alicebot",
+        created_by_agent_id="openclaw",
+        run_id="run-1",
+    )
+    rows = store.search_memories(query="upgraded db keyword", projects=("alicebot",))
+    assert [row["id"] for row in rows] == [scoped["id"]]
+    rows = store.search_memories(query="upgraded db keyword", created_by_agent_ids=("openclaw",))
+    assert [row["id"] for row in rows] == [scoped["id"]]
+    conn.close()
+
+
 def test_search_memories_excludes_expired_valid_to_unless_include_expired() -> None:
     conn = _open_connection()
     store = _make_store(conn)
@@ -985,4 +1180,240 @@ def test_append_event_and_list_events_roundtrip() -> None:
 
     with pytest.raises(sqlite3.IntegrityError):  # empty event_type violates length CHECK
         store.append_event({"event_type": "", "actor_type": "system"})
+    conn.close()
+
+
+# -- temporal slice: graph edges, as-of reads, supersession pointers -----------
+
+
+def _create_edge(store: SQLiteVNextStore, **overrides: object) -> dict[str, object]:
+    edge: dict[str, object] = {
+        "from_type": "source",
+        "from_id": "source-1",
+        "to_type": "memory",
+        "to_id": "memory-1",
+        "edge_type": "supports",
+        "confidence": 0.7,
+        "created_by": "system",
+    }
+    edge.update(overrides)
+    return store.create_graph_edge(edge)
+
+
+def test_create_graph_edge_defaults_event_time_to_now_and_notes_the_fallback() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+
+    edge = _create_edge(store)
+
+    assert isinstance(edge["observed_at"], str) and edge["observed_at"].endswith("Z")
+    # valid_from starts the validity interval at event time, so it is no
+    # longer a dead column.
+    assert edge["valid_from"] == edge["observed_at"]
+    assert edge["valid_to"] is None
+    # No source context was available, so write time stands in and the
+    # fallback is recorded on the edge.
+    assert edge["metadata_json"]["observed_at_source"] == "now"
+    events = store.list_events(target_type="graph_edge", target_id=str(edge["id"]))
+    assert [event["event_type"] for event in events] == ["graph_edge.created"]
+    conn.close()
+
+
+def test_create_graph_edge_keeps_provided_event_time_and_metadata() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+
+    edge = _create_edge(
+        store,
+        observed_at="2026-01-05T08:00:00Z",
+        metadata_json={"observed_at_source": "source_created_at", "status": "candidate"},
+    )
+
+    assert edge["observed_at"] == "2026-01-05T08:00:00Z"
+    assert edge["valid_from"] == "2026-01-05T08:00:00Z"
+    assert edge["metadata_json"]["observed_at_source"] == "source_created_at"
+    assert edge["metadata_json"]["status"] == "candidate"
+
+    # An explicit valid_from wins over the observed_at default.
+    explicit = _create_edge(
+        store,
+        observed_at="2026-01-05T08:00:00Z",
+        valid_from="2026-01-06T08:00:00Z",
+        edge_type="similar_to",
+    )
+    assert explicit["valid_from"] == "2026-01-06T08:00:00Z"
+    conn.close()
+
+
+def test_create_graph_edge_rejects_invalid_edge_type() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        _create_edge(store, edge_type="not-an-edge-type")
+    conn.close()
+
+
+def test_list_edges_filters_by_endpoint_and_excludes_closed_edges() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    open_edge = _create_edge(store, from_id="source-1", to_id="memory-1")
+    other_edge = _create_edge(store, from_id="source-2", to_id="memory-2", edge_type="mentions")
+    _closed = _create_edge(
+        store,
+        from_id="source-1",
+        to_id="memory-3",
+        edge_type="contradicts",
+        observed_at="2026-01-01T00:00:00Z",
+        valid_to="2026-02-01T00:00:00Z",
+    )
+
+    assert {row["id"] for row in store.list_edges()} == {open_edge["id"], other_edge["id"]}
+    assert [row["id"] for row in store.list_edges(from_id="source-1")] == [open_edge["id"]]
+    assert [row["id"] for row in store.list_edges(to_id="memory-2")] == [other_edge["id"]]
+    conn.close()
+
+
+def test_list_edges_as_of_returns_the_graph_as_it_was_at_that_instant() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    early = _create_edge(store, observed_at="2026-01-01T00:00:00Z")
+    closed = _create_edge(
+        store,
+        edge_type="contradicts",
+        observed_at="2026-01-01T00:00:00Z",
+        valid_to="2026-02-01T00:00:00Z",
+    )
+    late = _create_edge(store, edge_type="similar_to", observed_at="2026-03-01T00:00:00Z")
+
+    # Mid-January: both January edges were in effect; March's did not exist yet.
+    assert {row["id"] for row in store.list_edges_as_of("2026-01-15T00:00:00Z")} == {
+        early["id"],
+        closed["id"],
+    }
+    # The interval is half-open: an edge closed exactly at 'at' is out.
+    assert {row["id"] for row in store.list_edges_as_of("2026-02-01T00:00:00Z")} == {early["id"]}
+    # After March both open edges are in effect, and limit caps the result.
+    assert {row["id"] for row in store.list_edges_as_of("2026-03-02T00:00:00Z")} == {
+        early["id"],
+        late["id"],
+    }
+    assert len(store.list_edges_as_of("2026-03-02T00:00:00Z", limit=1)) == 1
+    # Before any edge existed the graph was empty.
+    assert store.list_edges_as_of("2025-12-31T00:00:00Z") == []
+    conn.close()
+
+
+def test_edge_reads_are_scoped_to_the_bound_user() -> None:
+    conn = _open_connection()
+    alice = _make_store(conn)
+    mallory = _make_store(conn)
+
+    edge = _create_edge(alice, observed_at="2026-01-01T00:00:00Z")
+
+    assert [row["id"] for row in alice.list_edges()] == [edge["id"]]
+    assert [row["id"] for row in alice.list_edges_as_of("2026-01-02T00:00:00Z")] == [edge["id"]]
+    assert mallory.list_edges() == []
+    assert mallory.list_edges_as_of("2026-01-02T00:00:00Z") == []
+    conn.close()
+
+
+def test_memory_supersession_pointer_columns_roundtrip() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    old = _create_memory(store, canonical_text="superseded fact original")
+    replacement = _create_memory(
+        store,
+        canonical_text="superseded fact replacement",
+        supersedes=old["id"],
+    )
+
+    updated = store.update_memory(
+        memory_id=str(old["id"]),
+        patch={"status": "superseded", "superseded_by": replacement["id"]},
+    )
+
+    assert replacement["supersedes"] == old["id"]
+    assert replacement["superseded_by"] is None
+    assert updated["superseded_by"] == replacement["id"]
+    assert store.get_memory(str(old["id"]))["superseded_by"] == replacement["id"]
+    assert store.get_memory(str(replacement["id"]))["supersedes"] == old["id"]
+    conn.close()
+
+
+def test_bootstrap_upgrades_a_pre_existing_db_file_with_the_temporal_slice(tmp_path: Path) -> None:
+    """Files created before the temporal slice shipped gain the supersession
+    pointer columns (backfilled from the metadata_json copies, mirroring
+    Postgres migration 20260704_0077) and the graph_edges substrate."""
+    db_path = tmp_path / "alice.db"
+    conn = sqlite3.connect(str(db_path))
+    bootstrap_sqlite_schema(conn)
+    user_id = str(uuid4())
+    ensure_sqlite_user(conn, user_id, f"{user_id}@example.com", "Test User")
+    store = SQLiteVNextStore(conn, user_id)
+    # Rows whose supersession was recorded in metadata only (the pre-column
+    # convention of the supersede-existing review flow).
+    old = _create_memory(
+        store,
+        canonical_text="pre-column original",
+        status="superseded",
+        metadata_json={"superseded_by": "11111111-1111-4111-8111-111111111111"},
+    )
+    replacement = _create_memory(
+        store,
+        canonical_text="pre-column replacement",
+        metadata_json={"supersedes": str(old["id"])},
+    )
+    conn.commit()
+
+    # Rewind the file to the pre-temporal-slice schema.
+    conn.execute("DROP INDEX IF EXISTS memories_user_superseded_by_idx")
+    conn.execute("DROP INDEX IF EXISTS graph_edges_user_edge_idx")
+    conn.execute("DROP TABLE graph_edges")
+    conn.execute("ALTER TABLE memories DROP COLUMN superseded_by")
+    conn.execute("ALTER TABLE memories DROP COLUMN supersedes")
+    conn.commit()
+    assert "superseded_by" not in {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
+    conn.close()
+
+    conn = sqlite3.connect(str(db_path))
+    bootstrap_sqlite_schema(conn)
+
+    memory_columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
+    assert {"superseded_by", "supersedes"} <= memory_columns
+    table_names = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }
+    assert "graph_edges" in table_names
+    index_names = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+    }
+    assert {"memories_user_superseded_by_idx", "graph_edges_user_edge_idx"} <= index_names
+
+    # The metadata-only pointers were backfilled into the real columns.
+    upgraded = SQLiteVNextStore(conn, user_id)
+    assert (
+        upgraded.get_memory(str(old["id"]))["superseded_by"]
+        == "11111111-1111-4111-8111-111111111111"
+    )
+    assert upgraded.get_memory(str(replacement["id"]))["supersedes"] == old["id"]
+
+    # A second bootstrap does not re-run the backfill or fail.
+    bootstrap_sqlite_schema(conn)
+    assert upgraded.get_memory(str(replacement["id"]))["supersedes"] == old["id"]
+
+    # The upgraded file has the full graph substrate.
+    edge = upgraded.create_graph_edge(
+        {
+            "from_type": "memory",
+            "from_id": str(replacement["id"]),
+            "to_type": "memory",
+            "to_id": str(old["id"]),
+            "edge_type": "supersedes",
+            "created_by": "system",
+        }
+    )
+    assert [row["id"] for row in upgraded.list_edges()] == [edge["id"]]
     conn.close()

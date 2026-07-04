@@ -188,15 +188,19 @@ def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> 
     assert "domain = ANY" in memory_query
     assert "sensitivity = ANY" in memory_query
     assert "memory_type = ANY" in memory_query
-    assert "metadata_json ->> 'project_id'" in memory_query
+    assert "COALESCE(project_id, metadata_json ->> 'project_id')" in memory_query
+    assert "created_by_agent_id = ANY" in memory_query
+    assert "run_id = %s" in memory_query
     assert "valid_to IS NULL OR valid_to >= clock_timestamp()" in memory_query
     assert "ILIKE ANY" in memory_query
     assert memory_params is not None
     # Unset filters arrive as NULLs, expiry defaults to excluded (False).
     assert memory_params[4] is None  # memory_types
     assert memory_params[6] is None  # projects
-    assert memory_params[8] is False  # include_expired
-    assert memory_params[9] == ["%Alice provenance%", "%alice%", "%provenance%"]
+    assert memory_params[8] is None  # created_by_agent_ids
+    assert memory_params[10] is None  # run_id
+    assert memory_params[12] is False  # include_expired
+    assert memory_params[13] == ["%Alice provenance%", "%alice%", "%provenance%"]
     assert memory_params[-1] == 4
     assert "FROM sources" in source_query
     assert "ILIKE ANY" in source_query
@@ -807,7 +811,9 @@ def test_fts_search_builds_websearch_tsquery_with_pushed_down_filters() -> None:
     assert "domain = ANY" in query
     assert "sensitivity = ANY" in query
     assert "memory_type = ANY" in query
-    assert "metadata_json ->> 'project_id'" in query
+    assert "COALESCE(project_id, metadata_json ->> 'project_id')" in query
+    assert "created_by_agent_id = ANY" in query
+    assert "run_id = %s" in query
     assert "valid_to IS NULL OR valid_to >= clock_timestamp()" in query
     assert "ORDER BY fts_score DESC" in query
     assert params == (
@@ -820,13 +826,17 @@ def test_fts_search_builds_websearch_tsquery_with_pushed_down_filters() -> None:
         None,
         None,  # projects unset
         None,
+        None,  # created_by_agent_ids unset
+        None,
+        None,  # run_id unset
+        None,
         False,  # include_expired defaults to excluded
         "Alice provenance retrieval",
         25,
     )
 
 
-def test_fts_search_pushes_down_memory_type_project_and_expiry_filters() -> None:
+def test_fts_search_pushes_down_memory_type_project_agent_run_and_expiry_filters() -> None:
     cursor = RecordingCursor(
         fetchone_results=[],
         fetchall_result=[{"id": "memory-1", "fts_score": 0.42}],
@@ -840,6 +850,8 @@ def test_fts_search_pushes_down_memory_type_project_and_expiry_filters() -> None
         limit=25,
         memory_types=("decision", "procedure"),
         projects=("alicebot",),
+        created_by_agent_ids=("openclaw", "hermes"),
+        run_id="run-2026-07-04-001",
         include_expired=True,
     )
 
@@ -854,6 +866,10 @@ def test_fts_search_pushes_down_memory_type_project_and_expiry_filters() -> None
         ["decision", "procedure"],
         ["alicebot"],
         ["alicebot"],
+        ["openclaw", "hermes"],
+        ["openclaw", "hermes"],
+        "run-2026-07-04-001",
+        "run-2026-07-04-001",
         True,
         "Alice provenance retrieval",
         25,
@@ -880,7 +896,9 @@ def test_vector_search_orders_by_cosine_distance_and_skips_null_embeddings() -> 
     assert "embedding_vector IS NOT NULL" in query
     assert "status IN ('active', 'accepted')" in query
     assert "memory_type = ANY" in query
-    assert "metadata_json ->> 'project_id'" in query
+    assert "COALESCE(project_id, metadata_json ->> 'project_id')" in query
+    assert "created_by_agent_id = ANY" in query
+    assert "run_id = %s" in query
     assert "valid_to IS NULL OR valid_to >= clock_timestamp()" in query
     assert "ORDER BY embedding_vector <=> %s::vector" in query
     assert "(embedding_vector <=> %s::vector) AS vector_distance" in query
@@ -893,6 +911,10 @@ def test_vector_search_orders_by_cosine_distance_and_skips_null_embeddings() -> 
         None,  # memory_types unset
         None,
         None,  # projects unset
+        None,
+        None,  # created_by_agent_ids unset
+        None,
+        None,  # run_id unset
         None,
         False,  # include_expired defaults to excluded
         "[0.25,-1.0]",
@@ -980,4 +1002,217 @@ def test_create_memory_persists_commit_digest_and_confirmation_id_columns() -> N
     assert "commit_digest" in insert_query
     assert "confirmation_id" in insert_query
     assert insert_params is not None
-    assert insert_params[-2:] == ("digest-1", "confirm-1")
+    # Tail: commit_digest, confirmation_id, then the (unset) scope and
+    # supersession-pointer columns.
+    assert insert_params[-7:] == ("digest-1", "confirm-1", None, None, None, None, None)
+
+
+def test_create_memory_persists_first_class_scope_columns() -> None:
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": memory_id, "memory_key": "agentic_memory.project_fact.scope-1"},
+            _event_row(memory_id),
+        ],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.create_memory(
+        {
+            "memory_key": "agentic_memory.project_fact.scope-1",
+            "value": {"text": "Scoped fact"},
+            "canonical_text": "Scoped fact",
+            "project_id": "alicebot",
+            "created_by_agent_id": "openclaw",
+            "run_id": "run-2026-07-04-001",
+        }
+    )
+
+    insert_query, insert_params = cursor.executed[0]
+    assert "project_id" in insert_query
+    assert "created_by_agent_id" in insert_query
+    assert "run_id" in insert_query
+    assert insert_params is not None
+    # Tail: the scope columns, then the (unset) supersession pointers.
+    assert insert_params[-5:] == ("alicebot", "openclaw", "run-2026-07-04-001", None, None)
+
+
+def test_create_agent_api_key_persists_project_scope_binding() -> None:
+    key_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {
+                "id": key_id,
+                "agent_id": "openclaw",
+                "permission_profile": "project_scoped_agent",
+                "project_scope": "alicebot",
+                "key_prefix": "alice_sk_abc",
+                "label": None,
+            },
+            _event_row(key_id),
+        ],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    row = store.create_agent_api_key(
+        {
+            "agent_id": "openclaw",
+            "permission_profile": "project_scoped_agent",
+            "project_scope": "alicebot",
+            "key_hash": "a" * 64,
+            "key_prefix": "alice_sk_abc",
+        }
+    )
+
+    assert row["project_scope"] == "alicebot"
+    insert_query, insert_params = cursor.executed[0]
+    assert "INSERT INTO agent_api_keys" in insert_query
+    assert "project_scope" in insert_query
+    assert insert_params is not None
+    assert insert_params[3] == "alicebot"
+    # Unbound keys keep a NULL project_scope.
+    cursor.executed.clear()
+    cursor.fetchone_results = [
+        {"id": key_id, "agent_id": "hermes", "permission_profile": "trusted_local_agent", "project_scope": None, "key_prefix": "alice_sk_def", "label": None},
+        _event_row(key_id),
+    ]
+    unbound = store.create_agent_api_key(
+        {
+            "agent_id": "hermes",
+            "permission_profile": "trusted_local_agent",
+            "key_hash": "b" * 64,
+            "key_prefix": "alice_sk_def",
+        }
+    )
+    assert unbound["project_scope"] is None
+    assert cursor.executed[0][1][3] is None
+
+
+# -- temporal slice: edge event time, as-of reads, supersession pointers -------
+
+
+def test_create_edge_populates_observed_at_and_defaults_valid_from_to_event_time() -> None:
+    edge_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": edge_id, "edge_type": "supports"},
+            _event_row(edge_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.create_edge(
+        {
+            "id": edge_id,
+            "from_type": "source",
+            "from_id": "source-1",
+            "to_type": "memory",
+            "to_id": "memory-1",
+            "edge_type": "supports",
+            "created_by": "system",
+            "observed_at": "2026-07-01T00:00:00Z",
+        }
+    )
+
+    insert_query, insert_params = cursor.executed[0]
+    assert "observed_at" in insert_query
+    # observed_at defaults to write time; valid_from defaults to observed_at
+    # (then write time), so the validity interval starts at event time.
+    assert "COALESCE(%s::timestamptz, now())" in insert_query
+    assert "COALESCE(%s::timestamptz, %s::timestamptz, now())" in insert_query
+    assert insert_params is not None
+    assert insert_params[9] == "2026-07-01T00:00:00Z"  # observed_at
+    assert insert_params[10] is None  # valid_from not passed explicitly...
+    assert insert_params[11] == "2026-07-01T00:00:00Z"  # ...so it falls back to observed_at
+    metadata_param = insert_params[-1]
+    assert isinstance(metadata_param, Jsonb)
+    # Real event time was provided: no write-time fallback note.
+    assert "observed_at_source" not in metadata_param.obj
+
+
+def test_create_edge_without_event_time_notes_the_write_time_fallback_in_metadata() -> None:
+    edge_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": edge_id, "edge_type": "belongs_to_project"},
+            _event_row(edge_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.create_edge(
+        {
+            "id": edge_id,
+            "from_type": "memory",
+            "from_id": "memory-1",
+            "to_type": "project",
+            "to_id": "alice-vnext",
+            "edge_type": "belongs_to_project",
+            "created_by": "user",
+            "metadata_json": {"review_action": "assign_project"},
+        }
+    )
+
+    _insert_query, insert_params = cursor.executed[0]
+    assert insert_params is not None
+    metadata_param = insert_params[-1]
+    assert isinstance(metadata_param, Jsonb)
+    assert metadata_param.obj["observed_at_source"] == "now"
+    # Caller metadata is preserved alongside the note.
+    assert metadata_param.obj["review_action"] == "assign_project"
+
+
+def test_list_edges_as_of_filters_on_the_validity_interval_with_limit() -> None:
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.list_edges_as_of("2026-07-01T00:00:00Z", limit=5)
+
+    query, params = cursor.executed[0]
+    assert "FROM graph_edges" in query
+    # Half-open interval: valid_from <= at < valid_to; NULL valid_from
+    # (pre-slice edges with unrecorded event time) never matches.
+    assert "valid_from IS NOT NULL" in query
+    assert "valid_from <= %s::timestamptz" in query
+    assert "valid_to IS NULL OR valid_to > %s::timestamptz" in query
+    assert "LIMIT %s" in query
+    assert params == ("2026-07-01T00:00:00Z", "2026-07-01T00:00:00Z", 5)
+
+
+def test_memory_writes_accept_supersession_pointer_columns() -> None:
+    memory_id = str(uuid4())
+    successor_id = str(uuid4())
+    predecessor_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": memory_id},
+            _event_row(memory_id),
+            {"id": memory_id},
+            _event_row(memory_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.create_memory(
+        {
+            "memory_key": "agentic_memory.semantic.replacement-1",
+            "value": {"text": "Replacement fact"},
+            "canonical_text": "Replacement fact",
+            "supersedes": predecessor_id,
+        }
+    )
+    store.update_memory(
+        memory_id=memory_id,
+        patch={"status": "superseded", "superseded_by": successor_id},
+    )
+
+    insert_query, insert_params = cursor.executed[0]
+    assert "supersedes" in insert_query
+    assert insert_params is not None
+    assert insert_params[-2:] == (None, predecessor_id)  # (superseded_by, supersedes)
+
+    update_query, update_params = cursor.executed[2]
+    assert "superseded_by = COALESCE(%s::uuid, superseded_by)" in update_query
+    assert "supersedes = COALESCE(%s::uuid, supersedes)" in update_query
+    assert update_params is not None
+    assert successor_id in update_params

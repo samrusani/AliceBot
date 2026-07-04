@@ -877,7 +877,12 @@ def test_alice_vnext_generate_artifact_supports_memory_consolidation(monkeypatch
     assert artifact["artifact_type"] == "memory_consolidation"
     assert artifact["status"] == "needs_review"
     assert artifact["metadata_json"]["workflow_type"] == "memory_consolidation"
-    assert store.memories[-1]["status"] == "candidate"
+    # Without an embedding provider the consolidation run performs no
+    # clustering: it emits a review-only report with explicit skip reasons
+    # and creates no placeholder candidates.
+    assert artifact["metadata_json"]["candidate_memory_ids"] == []
+    assert artifact["metadata_json"]["consolidation"]["skipped"]
+    assert all(memory["status"] != "candidate" for memory in store.memories)
 
 
 def test_alice_vnext_ingest_agent_output_creates_review_only_records(monkeypatch, legacy_tools_enabled) -> None:
@@ -1239,6 +1244,53 @@ def test_alice_recall_passes_memory_types_and_projects_to_retrieval_stages(monke
     call_mcp_tool(_mcp_context(), name="alice_recall", arguments={"query": "hybrid retrieval"})
     assert store.fts_calls[-1].get("memory_types") in (None, ())
     assert store.fts_calls[-1].get("projects") in (None, ())
+    assert store.fts_calls[-1].get("created_by_agent_ids") in (None, ())
+
+
+def test_alice_recall_passes_created_by_agents_to_retrieval_stages(monkeypatch, core_surface) -> None:
+    store = HybridRetrievalStore()
+    _patch_vnext_store(monkeypatch, store)
+    provider = FakeEmbeddingProvider()
+    monkeypatch.setattr(vnext_retrieval_module, "get_embedding_provider", lambda: provider)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_recall",
+        arguments={
+            "query": "hybrid retrieval",
+            "created_by_agents": ["openclaw", "hermes"],
+            "debug": True,
+        },
+    )
+
+    for stage_calls in (store.fts_calls, store.vector_calls):
+        assert stage_calls, "retrieval stage was not invoked"
+        assert tuple(stage_calls[0]["created_by_agent_ids"]) == ("openclaw", "hermes")
+    assert payload["retrieval"]["filters"] == {"created_by_agent_ids": ["openclaw", "hermes"]}
+
+
+def test_alice_context_pack_passes_created_by_agents_to_the_compiler(monkeypatch, core_surface) -> None:
+    store = HybridRetrievalStore()
+    _patch_vnext_store(monkeypatch, store)
+    provider = FakeEmbeddingProvider()
+    monkeypatch.setattr(vnext_retrieval_module, "get_embedding_provider", lambda: provider)
+
+    call_mcp_tool(
+        _mcp_context(),
+        name="alice_context_pack",
+        arguments={"query": "Alice retrieval status", "created_by_agents": ["openclaw"]},
+    )
+
+    assert store.fts_calls, "context pack did not reach the FTS stage"
+    assert tuple(store.fts_calls[0]["created_by_agent_ids"]) == ("openclaw",)
+
+    # Omitted filter is not forwarded, so store defaults apply.
+    call_mcp_tool(
+        _mcp_context(),
+        name="alice_context_pack",
+        arguments={"query": "Alice retrieval status"},
+    )
+    assert store.fts_calls[-1].get("created_by_agent_ids") in (None, ())
 
 
 def test_alice_recall_rejects_invalid_memory_types_before_store(monkeypatch, core_surface) -> None:
@@ -1522,6 +1574,74 @@ def test_alice_memory_manage_undo_and_forget_keep_the_audit_trail(
     assert any(event["event_type"] == "agent.memory_forgotten" for event in store.events)
 
 
+def test_alice_memory_manage_undo_links_the_replacing_memory(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+
+    original = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={
+            **_trusted_identity_arguments(),
+            "title": "Stale fact",
+            "canonical_text": "The standup is at 10am.",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    replacement = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={
+            **_trusted_identity_arguments(),
+            "title": "Fresh fact",
+            "canonical_text": "The standup moved to 9am.",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    old_id = str(original["memory"]["id"])
+    new_id = str(replacement["memory"]["id"])
+
+    undone = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_manage",
+        arguments={
+            **_trusted_identity_arguments(),
+            "action": "undo",
+            "memory_id": old_id,
+            "reason": "standup moved",
+            "superseded_by": new_id,
+        },
+    )
+    assert undone["status"] == "undone"
+    assert undone["memory"]["status"] == "superseded"
+
+    # Both rows carry real pointer columns plus the metadata copies.
+    old_row = store.get_memory(old_id)
+    new_row = store.get_memory(new_id)
+    assert old_row["superseded_by"] == new_id
+    assert new_row["supersedes"] == old_id
+    assert old_row["metadata_json"]["superseded_by"] == new_id
+    assert new_row["metadata_json"]["supersedes"] == old_id
+
+    # alice_explain surfaces the linked history from either side.
+    explained = call_mcp_tool(_mcp_context(), name="alice_explain", arguments={"memory_id": old_id})
+    assert [(entry["id"], entry["relation"]) for entry in explained["supersession_chain"]] == [
+        (old_id, "self"),
+        (new_id, "successor"),
+    ]
+    from_new = call_mcp_tool(_mcp_context(), name="alice_explain", arguments={"memory_id": new_id})
+    assert [(entry["id"], entry["relation"]) for entry in from_new["supersession_chain"]] == [
+        (old_id, "predecessor"),
+        (new_id, "self"),
+    ]
+
+
 def test_alice_memory_manage_rejects_unknown_actions(monkeypatch, core_surface) -> None:
     def fail_if_store_opened(_context):
         raise AssertionError("store should not be opened for an invalid action")
@@ -1550,6 +1670,10 @@ def test_new_core_tool_schemas_reuse_canonical_enums(core_surface) -> None:
     for tool_name in ("alice_recall", "alice_context_pack"):
         memory_types_schema = tools[tool_name]["inputSchema"]["properties"]["memory_types"]
         assert memory_types_schema["items"]["enum"] == list(VNEXT_MEMORY_TYPES)
+        created_by_schema = tools[tool_name]["inputSchema"]["properties"]["created_by_agents"]
+        assert created_by_schema["type"] == "array"
+        assert created_by_schema["items"] == {"type": "string"}
+        assert "agent ids" in created_by_schema["description"]
     assert "projects" in tools["alice_recall"]["inputSchema"]["properties"]
 
 
@@ -1614,8 +1738,12 @@ def test_alice_explain_routes_memory_id_to_memory_audit(monkeypatch, core_surfac
     payload = call_mcp_tool(_mcp_context(), name="alice_explain", arguments={"memory_id": memory_id})
 
     assert payload["memory"]["id"] == memory_id
-    for section in ("revisions", "events", "provenance_links"):
+    for section in ("supersession_chain", "revisions", "events", "provenance_links"):
         assert section in payload
+    # No supersession happened, so the chain is just the memory itself.
+    assert [(entry["id"], entry["relation"]) for entry in payload["supersession_chain"]] == [
+        (memory_id, "self")
+    ]
 
     with pytest.raises(MCPToolError, match="exactly one"):
         call_mcp_tool(

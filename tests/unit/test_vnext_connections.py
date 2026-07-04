@@ -226,3 +226,43 @@ def test_connection_request_validation() -> None:
 
     with pytest.raises(VNextConnectionValidationError, match="edge review action"):
         service.review_edge(edge_id="edge-1", action="ship")
+
+
+def test_connection_edges_carry_event_time_from_the_source() -> None:
+    store = _seed_store()
+    store.sources[0]["source_created_at"] = "2026-06-01T09:30:00Z"
+    store.sources[0]["captured_at"] = "2026-07-01T00:00:00Z"
+
+    VNextConnectionService(store).generate_connection_report(
+        ConnectionFinderRequest(domains=("project",), max_connections=2)
+    )
+
+    edge = store.edges["edge-1"]
+    # observed_at is the source's own event time, not ingestion time, and
+    # valid_from starts the validity interval at the same instant.
+    assert edge["observed_at"] == "2026-06-01T09:30:00Z"
+    assert edge["valid_from"] == "2026-06-01T09:30:00Z"
+    assert edge["metadata_json"]["observed_at_source"] == "source_created_at"
+
+
+def test_connection_edges_fall_back_to_captured_at_then_now_for_event_time() -> None:
+    captured_only = _seed_store()
+    captured_only.sources[0]["captured_at"] = "2026-07-01T00:00:00Z"
+    VNextConnectionService(captured_only).generate_connection_report(
+        ConnectionFinderRequest(domains=("project",), max_connections=1)
+    )
+    edge = captured_only.edges["edge-1"]
+    assert edge["observed_at"] == "2026-07-01T00:00:00Z"
+    assert edge["valid_from"] == "2026-07-01T00:00:00Z"
+    assert edge["metadata_json"]["observed_at_source"] == "captured_at"
+
+    # A source with no timestamps at all: write time stands in, and the
+    # fallback is noted on the edge so as-of readers can tell them apart.
+    bare = _seed_store()
+    VNextConnectionService(bare).generate_connection_report(
+        ConnectionFinderRequest(domains=("project",), max_connections=1)
+    )
+    edge = bare.edges["edge-1"]
+    assert isinstance(edge["observed_at"], str) and edge["observed_at"].endswith("Z")
+    assert edge["valid_from"] == edge["observed_at"]
+    assert edge["metadata_json"]["observed_at_source"] == "now"

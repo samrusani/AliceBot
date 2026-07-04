@@ -688,6 +688,55 @@ def test_agent_keys_cli_create_list_revoke_flow(monkeypatch) -> None:
     assert relist_payload["items"][0]["revoked"] is True
 
 
+def test_agent_keys_cli_create_supports_project_scope_binding(monkeypatch) -> None:
+    store = FakeVNextCliStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield store
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    ctx = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    parser = cli_module.build_parser()
+
+    bound_args = parser.parse_args(
+        [
+            "agent",
+            "keys",
+            "create",
+            "--agent-id",
+            "openclaw",
+            "--profile",
+            "project_scoped_agent",
+            "--project-scope",
+            "alicebot",
+        ]
+    )
+    bound_payload = json.loads(bound_args.handler(ctx, bound_args))
+
+    assert bound_payload["status"] == "created"
+    assert bound_payload["key"]["project_scope"] == "alicebot"
+    assert store.agent_api_keys[0]["project_scope"] == "alicebot"
+
+    # Without the flag, keys stay unbound (NULL project_scope).
+    unbound_args = parser.parse_args(
+        ["agent", "keys", "create", "--agent-id", "hermes", "--profile", "trusted_local_agent"]
+    )
+    unbound_payload = json.loads(unbound_args.handler(ctx, unbound_args))
+    assert unbound_payload["key"]["project_scope"] is None
+    assert store.agent_api_keys[1]["project_scope"] is None
+
+    # The binding is visible (prefixes only) in list output.
+    list_args = parser.parse_args(["agent", "keys", "list"])
+    list_payload = json.loads(list_args.handler(ctx, list_args))
+    scopes = {item["agent_id"]: item["project_scope"] for item in list_payload["items"]}
+    assert scopes == {"openclaw": "alicebot", "hermes": None}
+
+
 def test_agent_keys_cli_revoke_rejects_unknown_and_already_revoked_keys(monkeypatch, capsys) -> None:
     store = FakeVNextCliStore()
 
