@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.7.0 — 2026-07-04
 
 - Added the zero-infrastructure SQLite on-ramp: `alice-memory mcp --data-dir ~/.alice` starts the MCP server against a local SQLite file with no Docker or Postgres — nine core tools, FTS5 full-text search (porter stemming), optional embedding-based vector search (numpy cosine), and review through `alice_memory_review`/`alice_memory_correct`. `alice-memory export` dumps memories, sources, open loops, and events as JSONL.
 - In SQLite mode, `alice_resume`, `alice_recent_decisions`, `alice_memory_review`, and `alice_memory_correct` are served by vNext-native implementations (the legacy continuity engine remains Postgres-only); legacy long-tail tools report an informative error instead of crashing.
