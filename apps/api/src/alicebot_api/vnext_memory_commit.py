@@ -12,6 +12,7 @@ from alicebot_api.vnext_agent_control import (
     append_policy_events,
     evaluate_agent_policy,
 )
+from alicebot_api.vnext_embeddings import attach_memory_embedding
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
@@ -556,6 +557,8 @@ class VNextMemoryCommitService:
                 }
             )
         updated = self.store.update_memory(memory_id=str(memory["id"]), patch=patch, actor_type=actor_type)
+        if next_status == "active":
+            attach_memory_embedding(self.store, updated, actor_type=actor_type, actor_id=actor_id)
         self.store.append_revision(
             {
                 "memory_id": str(updated["id"]),
@@ -644,6 +647,7 @@ class VNextMemoryCommitService:
             },
             actor_type=actor_type,
         )
+        attach_memory_embedding(self.store, updated, actor_type=actor_type, actor_id=actor_id)
         self.store.append_revision(
             {
                 "memory_id": str(updated["id"]),
@@ -743,6 +747,9 @@ class VNextMemoryCommitService:
     def _idempotent_memory(self, idempotency_key: str | None) -> VNextRow | None:
         if idempotency_key is None:
             return None
+        get_memory_by_commit_digest = getattr(self.store, "get_memory_by_commit_digest", None)
+        if callable(get_memory_by_commit_digest):
+            return get_memory_by_commit_digest(idempotency_key)
         for memory in self.store.list_memories(status=None):
             if _agentic_metadata(memory).get("idempotency_key") == idempotency_key:
                 return memory
@@ -825,8 +832,16 @@ class VNextMemoryCommitService:
                 "sensitivity": request.sensitivity,
                 "last_confirmed_at": now,
                 "metadata_json": metadata,
+                "commit_digest": request.idempotency_key,
             },
             actor_type=actor_type,
+        )
+        attach_memory_embedding(
+            self.store,
+            memory,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            trace_id=request.trace_id or decision.policy_decision.trace_id,
         )
         self._append_revision(
             memory=memory,
@@ -908,8 +923,17 @@ class VNextMemoryCommitService:
                 "domain": request.domain,
                 "sensitivity": request.sensitivity,
                 "metadata_json": metadata,
+                "commit_digest": request.idempotency_key,
+                "confirmation_id": confirmation_id,
             },
             actor_type=actor_type,
+        )
+        attach_memory_embedding(
+            self.store,
+            memory,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            trace_id=request.trace_id or decision.policy_decision.trace_id,
         )
         self._append_revision(
             memory=memory,
@@ -979,8 +1003,16 @@ class VNextMemoryCommitService:
                 "domain": request.domain,
                 "sensitivity": request.sensitivity,
                 "metadata_json": metadata,
+                "commit_digest": request.idempotency_key,
             },
             actor_type=actor_type,
+        )
+        attach_memory_embedding(
+            self.store,
+            memory,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            trace_id=request.trace_id or decision.policy_decision.trace_id,
         )
         self._append_revision(
             memory=memory,
@@ -1087,6 +1119,9 @@ class VNextMemoryCommitService:
             )
 
     def _memory_by_confirmation_id(self, confirmation_id: str) -> VNextRow | None:
+        get_memory_by_confirmation_id = getattr(self.store, "get_memory_by_confirmation_id", None)
+        if callable(get_memory_by_confirmation_id):
+            return get_memory_by_confirmation_id(confirmation_id)
         for memory in self.store.list_memories(status=None):
             confirmation = _agentic_metadata(memory).get("confirmation")
             if isinstance(confirmation, Mapping) and confirmation.get("confirmation_id") == confirmation_id:
@@ -1094,6 +1129,9 @@ class VNextMemoryCommitService:
         return None
 
     def _latest_agentic_commit(self, identity: AgentIdentity | None) -> VNextRow | None:
+        latest_agentic_commit_memory = getattr(self.store, "latest_agentic_commit_memory", None)
+        if callable(latest_agentic_commit_memory):
+            return latest_agentic_commit_memory(agent_id=identity.agent_id if identity is not None else None)
         for memory in self.store.list_memories(status="active"):
             agentic = _agentic_metadata(memory)
             if agentic.get("kind") != "agentic_memory_commit":

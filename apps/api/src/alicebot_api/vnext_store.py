@@ -17,6 +17,12 @@ VNextRow = dict[str, object]
 _SEARCH_STOPWORDS = {"about", "what", "when", "where", "which", "with", "from", "this", "that", "should", "could"}
 
 
+def _vector_literal(vector: list[float]) -> str:
+    if not vector:
+        raise ContinuityStoreInvariantError("embedding vectors must not be empty")
+    return "[" + ",".join(repr(float(value)) for value in vector) + "]"
+
+
 def _search_patterns(query: str) -> list[str]:
     normalized = " ".join(str(query).split()).strip()
     if len(normalized) >= 2 and (
@@ -154,6 +160,8 @@ MEMORY_COLUMNS = """
                   last_seen_at,
                   last_reviewed_at,
                   metadata_json,
+                  commit_digest,
+                  confirmation_id,
                   created_at,
                   updated_at,
                   deleted_at
@@ -1083,6 +1091,8 @@ class PostgresVNextStore:
                   last_seen_at,
                   last_reviewed_at,
                   metadata_json,
+                  commit_digest,
+                  confirmation_id,
                   created_at,
                   updated_at
                 )
@@ -1114,6 +1124,8 @@ class PostgresVNextStore:
                   %s,
                   COALESCE(%s::timestamptz, clock_timestamp()),
                   COALESCE(%s::timestamptz, clock_timestamp()),
+                  %s,
+                  %s,
                   %s,
                   %s,
                   clock_timestamp(),
@@ -1150,6 +1162,8 @@ class PostgresVNextStore:
                 memory.get("last_seen_at"),
                 memory.get("last_reviewed_at"),
                 _json_object(memory.get("metadata_json")),
+                memory.get("commit_digest"),
+                memory.get("confirmation_id"),
             ),
         )
         self._append_mutation_event(
@@ -1247,6 +1261,142 @@ class PostgresVNextStore:
                 patterns,
                 limit,
             ),
+        )
+
+    def search_memories_fts(
+        self,
+        *,
+        query: str,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS},
+                  ts_rank(search_tsv, websearch_to_tsquery('english', %s)) AS fts_score
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND status IN ('active', 'accepted')
+                  AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
+                  AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
+                  AND search_tsv @@ websearch_to_tsquery('english', %s)
+                ORDER BY fts_score DESC, updated_at DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (
+                query,
+                domains,
+                domains,
+                sensitivity_allowed,
+                sensitivity_allowed,
+                query,
+                limit,
+            ),
+        )
+
+    def search_memories_vector(
+        self,
+        *,
+        query_vector: list[float],
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 50,
+    ) -> list[VNextRow]:
+        vector_param = _vector_literal(query_vector)
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS},
+                  (embedding_vector <=> %s::vector) AS vector_distance
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND embedding_vector IS NOT NULL
+                  AND status IN ('active', 'accepted')
+                  AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
+                  AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
+                ORDER BY embedding_vector <=> %s::vector
+                LIMIT %s
+                """,
+            (
+                vector_param,
+                domains,
+                domains,
+                sensitivity_allowed,
+                sensitivity_allowed,
+                vector_param,
+                limit,
+            ),
+        )
+
+    def update_memory_embedding(self, *, memory_id: str, vector: list[float]) -> VNextRow | None:
+        return self._fetch_optional_one(
+            """
+                UPDATE memories
+                SET embedding_vector = %s::vector
+                WHERE id = %s::uuid
+                  AND deleted_at IS NULL
+                RETURNING id
+                """,
+            (_vector_literal(vector), memory_id),
+        )
+
+    def list_memories_missing_embeddings(self, *, limit: int = 100, after_id: str | None = None) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND embedding_vector IS NULL
+                  AND (%s::uuid IS NULL OR id > %s::uuid)
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+            (after_id, after_id, limit),
+        )
+
+    def get_memory_by_commit_digest(self, commit_digest: str) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE commit_digest = %s
+                  AND deleted_at IS NULL
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (commit_digest,),
+        )
+
+    def get_memory_by_confirmation_id(self, confirmation_id: str) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE confirmation_id = %s
+                  AND deleted_at IS NULL
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (confirmation_id,),
+        )
+
+    def latest_agentic_commit_memory(self, *, agent_id: str | None = None) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND status = 'active'
+                  AND metadata_json #>> '{{agentic_memory,kind}}' = 'agentic_memory_commit'
+                  AND (
+                    %s::text IS NULL
+                    OR metadata_json #>> '{{agentic_memory,agent_id}}' = %s
+                    OR metadata_json #>> '{{agentic_memory,agent_identity,agent_id}}' = %s
+                  )
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (agent_id, agent_id, agent_id),
         )
 
     def update_memory(self, *, memory_id: str, patch: JsonObject, actor_type: str = "system") -> VNextRow:

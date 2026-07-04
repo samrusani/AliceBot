@@ -61,6 +61,8 @@ def test_parser_routes_required_commands() -> None:
         (["vnext", "memories", "forget", "memory-1"], "_run_vnext_memory_forget"),
         (["vnext", "memories", "recent"], "_run_vnext_memory_recent"),
         (["vnext", "memories", "audit", "memory-1"], "_run_vnext_memory_audit"),
+        (["vnext", "memories", "backfill-embeddings"], "_run_vnext_memories_backfill_embeddings"),
+        (["maintenance", "sync-contradictions"], "_run_maintenance_sync_contradictions"),
         (["vnext", "scheduler", "status"], "_run_vnext_scheduler_status"),
         (["vnext", "scheduler", "run-now", "daily_brief"], "_run_vnext_scheduler_run_now"),
         (["vnext", "scheduler", "run-due"], "_run_vnext_scheduler_run_due"),
@@ -1498,3 +1500,74 @@ def test_recall_formatting_renders_provenance_source_label_when_present() -> Non
 
     rendered = cli_module.format_recall_output(payload)
     assert "source=OpenClaw (openclaw_import)" in rendered
+
+
+def test_backfill_embeddings_cli_exits_nonzero_when_provider_unconfigured(monkeypatch, capsys) -> None:
+    monkeypatch.delenv("ALICE_EMBEDDINGS_BASE_URL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_MODEL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_API_KEY", raising=False)
+
+    exit_code = cli_module.main(["vnext", "memories", "backfill-embeddings"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "ALICE_EMBEDDINGS_BASE_URL" in captured.err
+    assert "ALICE_EMBEDDINGS_MODEL" in captured.err
+    assert "ALICE_EMBEDDINGS_API_KEY" in captured.err
+
+
+def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch) -> None:
+    class BackfillStore(FakeVNextCliStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embedding_updates: list[tuple[str, list[float]]] = []
+            self.missing = [
+                {"id": "00000000-0000-4000-8000-000000000001", "title": "One", "canonical_text": "First fact."},
+                {"id": "00000000-0000-4000-8000-000000000002", "title": "Two", "canonical_text": "Second fact."},
+                {"id": "00000000-0000-4000-8000-000000000003", "title": "", "canonical_text": "  "},
+            ]
+
+        def list_memories_missing_embeddings(self, *, limit: int = 100, after_id: str | None = None):
+            rows = [row for row in self.missing if after_id is None or str(row["id"]) > after_id]
+            return rows[:limit]
+
+        def update_memory_embedding(self, *, memory_id: str, vector: list[float]):
+            self.embedding_updates.append((memory_id, vector))
+            return {"id": memory_id}
+
+    class StubProvider:
+        provider = "stub"
+        model = "stub-embedding"
+
+        def embed_batch(self, texts):
+            return [[0.5] * 4 for _text in texts]
+
+        def embed_text(self, text):
+            return self.embed_batch([text])[0]
+
+    store = BackfillStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield store
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    monkeypatch.setattr(cli_module, "get_embedding_provider", lambda: StubProvider())
+    ctx = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    args = cli_module.build_parser().parse_args(["vnext", "memories", "backfill-embeddings", "--batch-size", "2"])
+
+    output = args.handler(ctx, args)
+
+    payload = json.loads(output)
+    assert payload["embedded"] == 2
+    assert payload["skipped"] == 1
+    assert payload["failed"] == 0
+    assert payload["batches"] == 2
+    assert [memory_id for memory_id, _vector in store.embedding_updates] == [
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000002",
+    ]
