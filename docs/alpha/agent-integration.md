@@ -14,6 +14,10 @@ Universal pattern:
 8. Respect domain and sensitivity policy.
 9. Use `/vnext` for review, audit, undo, correction, forget, and troubleshooting.
 
+The full verb contract — remember, recall, correct, confirm, undo, forget,
+audit — with outcomes and audit guarantees per verb is documented in the
+[Memory Operations Protocol](../memory-operations-protocol.md).
+
 ## Agent Identity Fields
 
 ```json
@@ -61,6 +65,37 @@ Rules:
 - The moment at least one active key exists, keyless agent calls are rejected with `401` until the key is passed as `Authorization: Bearer alice_sk_...`.
 - Manage keys with `alicebot agent keys list` (prefixes only, never hashes) and `alicebot agent keys revoke <key-prefix-or-id>`.
 - MCP servers bind a key the same way: set `ALICE_AGENT_API_KEY` in the MCP server env.
+
+## Explicit Memory Commits
+
+When the user says "remember this", commit it through `alice_memory_commit`
+on the core MCP surface (or `POST /v0/vnext/memories/commit` over HTTP,
+`alicebot vnext memories commit` on the CLI). The commit is policy-checked
+and returns one of four outcomes — `committed`, `confirmation_required`
+(finish with `alice_memory_manage` action `confirm`), `review_required`, or
+`rejected` — never a silent write. Follow-up lifecycle verbs (`confirm`,
+`undo`, `forget`) live on `alice_memory_manage`.
+
+Identity requirements:
+
+- Commits without an agent identity are rejected with
+  `agent_identity_required`. Pass the identity fields above, or bind a key.
+- Only `trusted_local_agent` and `admin_agent` profiles can commit outside
+  the `project` domain; `project_scoped_agent` commits are limited to
+  project-domain memories within their project scope;
+  `memory_proposal_agent` and `read_only_agent` callers are routed to
+  review or rejected.
+- On HTTP, once any agent API key exists for the user, keyless commits are
+  rejected with `401`; callers must send `Authorization: Bearer
+  alice_sk_...`.
+- On MCP, set `ALICE_AGENT_API_KEY` in the server environment to bind the
+  server to a key; without it the MCP server runs as local operator
+  tooling and payload identity is honored (audited as
+  `unauthenticated_local`).
+- When a key is in play, the key record — not the payload — determines
+  `agent_id` and `permission_profile`; claiming a different agent or a
+  higher profile is rejected and logged. Key enforcement works in SQLite
+  on-ramp mode too.
 
 ## CLI Example
 

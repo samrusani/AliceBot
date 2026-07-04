@@ -1,6 +1,6 @@
 """``alice-memory``: the zero-infrastructure SQLite on-ramp for Alice.
 
-Runs the stdio MCP server (the nine core tools) against a local SQLite
+Runs the stdio MCP server (the core tool surface) against a local SQLite
 file instead of Postgres. No services, no migrations: the schema is
 bootstrapped into ``~/.alice/memory.db`` (or ``--data-dir``/``--db``) on
 startup and the default local user row is created.
@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="alice-memory",
         description=(
-            "Alice's local-first memory on SQLite: serve the nine core MCP tools over "
+            "Alice's local-first memory on SQLite: serve the core MCP tools over "
             "stdio with zero infrastructure. Running with no subcommand starts 'mcp'."
         ),
     )

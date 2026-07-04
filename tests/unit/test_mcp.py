@@ -23,6 +23,7 @@ from alicebot_api.vnext_retrieval import VECTOR_STAGE_DISABLED_NO_PROVIDER, VECT
 
 CORE_TOOL_NAMES = [
     "alice_capture",
+    "alice_memory_commit",
     "alice_recall",
     "alice_resume",
     "alice_context_pack",
@@ -30,6 +31,7 @@ CORE_TOOL_NAMES = [
     "alice_recent_decisions",
     "alice_memory_review",
     "alice_memory_correct",
+    "alice_memory_manage",
     "alice_explain",
 ]
 
@@ -52,7 +54,7 @@ def no_embedding_provider(monkeypatch) -> None:
         monkeypatch.delenv(env_name, raising=False)
 
 
-def test_default_mcp_tool_surface_is_exactly_the_nine_core_tools(core_surface) -> None:
+def test_default_mcp_tool_surface_is_exactly_the_eleven_core_tools(core_surface) -> None:
     tools = list_mcp_tools()
     assert [tool["name"] for tool in tools] == CORE_TOOL_NAMES
 
@@ -88,7 +90,7 @@ def test_legacy_flag_exposes_the_long_tail_after_the_core_tools(legacy_tools_ena
     names = [tool["name"] for tool in tools]
 
     assert names[: len(CORE_TOOL_NAMES)] == CORE_TOOL_NAMES
-    assert len(names) == len(set(names)) == 74
+    assert len(names) == len(set(names)) == 76
     for legacy_name in (
         "alice_brief",
         "alice_recall_debug",
@@ -1205,6 +1207,350 @@ def test_alice_context_pack_is_compact_and_gates_trace_behind_debug(
     )
     assert debug["trace"]["trace_id"] == debug["trace_id"]
     assert debug["query_interpretation"]["query_type"]
+
+
+def test_alice_recall_passes_memory_types_and_projects_to_retrieval_stages(monkeypatch, core_surface) -> None:
+    store = HybridRetrievalStore()
+    _patch_vnext_store(monkeypatch, store)
+    provider = FakeEmbeddingProvider()
+    monkeypatch.setattr(vnext_retrieval_module, "get_embedding_provider", lambda: provider)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_recall",
+        arguments={
+            "query": "hybrid retrieval",
+            "memory_types": ["decision", "procedure"],
+            "projects": ["Alice"],
+            "debug": True,
+        },
+    )
+
+    for stage_calls in (store.fts_calls, store.vector_calls):
+        assert stage_calls, "retrieval stage was not invoked"
+        assert tuple(stage_calls[0]["memory_types"]) == ("decision", "procedure")
+        assert tuple(stage_calls[0]["projects"]) == ("Alice",)
+    assert payload["retrieval"]["filters"] == {
+        "memory_types": ["decision", "procedure"],
+        "projects": ["Alice"],
+    }
+
+    # Without the filters, the optional kwargs are omitted so store defaults apply.
+    call_mcp_tool(_mcp_context(), name="alice_recall", arguments={"query": "hybrid retrieval"})
+    assert store.fts_calls[-1].get("memory_types") in (None, ())
+    assert store.fts_calls[-1].get("projects") in (None, ())
+
+
+def test_alice_recall_rejects_invalid_memory_types_before_store(monkeypatch, core_surface) -> None:
+    def fail_if_store_opened(_context):
+        raise AssertionError("store should not be opened for invalid memory_types input")
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fail_if_store_opened)
+
+    with pytest.raises(MCPToolError, match="memory_types contains unsupported values"):
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_recall",
+            arguments={"query": "anything", "memory_types": ["totally_invalid_type"]},
+        )
+
+
+def test_alice_context_pack_passes_memory_types_to_the_compiler(monkeypatch, core_surface) -> None:
+    store = HybridRetrievalStore()
+    _patch_vnext_store(monkeypatch, store)
+    provider = FakeEmbeddingProvider()
+    monkeypatch.setattr(vnext_retrieval_module, "get_embedding_provider", lambda: provider)
+
+    call_mcp_tool(
+        _mcp_context(),
+        name="alice_context_pack",
+        arguments={"query": "Alice retrieval status", "memory_types": ["decision"]},
+    )
+
+    assert store.fts_calls, "context pack did not reach the FTS stage"
+    assert tuple(store.fts_calls[0]["memory_types"]) == ("decision",)
+
+
+def test_alice_context_pack_surfaces_the_token_report(monkeypatch, core_surface) -> None:
+    report = {
+        "token_budget": 900,
+        "token_estimate": 842,
+        "truncated": True,
+        "dropped_item_count": 3,
+    }
+
+    def fake_pack_payload(_context, _arguments):
+        return {
+            "context_pack_id": "pack-1",
+            "query_interpretation": {"query": "budget", "query_type": "strategic_synthesis"},
+            "relevant_memories": [],
+            "open_loops": [],
+            "sources": [],
+            "trace_id": "trace-1",
+            "token_report": dict(report),
+        }
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_context_pack_payload", fake_pack_payload)
+    nested = call_mcp_tool(
+        _mcp_context(), name="alice_context_pack", arguments={"query": "budget", "max_tokens": 900}
+    )
+    assert nested["token_report"] == report
+
+    def fake_pack_payload_flat(_context, _arguments):
+        return {
+            "context_pack_id": "pack-2",
+            "query_interpretation": {"query": "budget", "query_type": "strategic_synthesis"},
+            "relevant_memories": [],
+            "open_loops": [],
+            "sources": [],
+            "trace_id": "trace-2",
+            **report,
+        }
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_context_pack_payload", fake_pack_payload_flat)
+    flat = call_mcp_tool(_mcp_context(), name="alice_context_pack", arguments={"query": "budget"})
+    assert flat["token_report"] == report
+
+
+def _trusted_identity_arguments() -> dict[str, object]:
+    return {
+        "agent_id": "hermes",
+        "agent_type": "personal_assistant",
+        "permission_profile": "trusted_local_agent",
+    }
+
+
+def test_alice_memory_commit_is_a_core_tool_and_commits(monkeypatch, core_surface, no_embedding_provider) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={
+            **_trusted_identity_arguments(),
+            "title": "Core memory commit",
+            "canonical_text": "Explicit agent writes go through alice_memory_commit.",
+            "memory_type": "decision",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+
+    assert payload["status"] == "committed"
+    assert payload["write_mode"] == "commit"
+    memory_id = payload["memory"]["id"]
+    assert payload["memory"]["memory_type"] == "decision"
+
+    audit = call_mcp_tool(_mcp_context(), name="alice_explain", arguments={"memory_id": memory_id})
+    assert audit["memory"]["id"] == memory_id
+    assert audit["revisions"][0]["action"] == "agentic_memory_commit"
+    assert any(event["event_type"] == "agent.memory_committed" for event in store.events)
+
+
+def test_alice_memory_commit_outcome_vocabulary(monkeypatch, core_surface, no_embedding_provider) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+
+    rejected = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={"title": "No identity", "canonical_text": "Commits require an agent identity."},
+    )
+    assert rejected["status"] == "rejected"
+    assert rejected["write_mode"] == "reject"
+    assert "agent_identity_required" in rejected["reasons"]
+
+    review = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={
+            **_trusted_identity_arguments(),
+            "title": "Low confidence",
+            "canonical_text": "Uncertain facts go to human review.",
+            "confidence": 0.3,
+        },
+    )
+    assert review["status"] == "review_required"
+    assert review["write_mode"] == "propose_review"
+    assert review["memory"]["status"] == "candidate"
+
+    confirmation = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={
+            **_trusted_identity_arguments(),
+            "title": "Sensitive memory",
+            "canonical_text": "Health facts need inline confirmation.",
+            "domain": "health",
+            "sensitivity": "confidential",
+            "confidence": 0.95,
+        },
+    )
+    assert confirmation["status"] == "confirmation_required"
+    assert confirmation["write_mode"] == "confirm_inline"
+    assert confirmation["confirmation_id"]
+
+
+def test_alice_memory_manage_confirms_a_pending_commit(monkeypatch, core_surface, no_embedding_provider) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+
+    confirmation = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={
+            **_trusted_identity_arguments(),
+            "title": "Pending confirmation",
+            "canonical_text": "Sensitive content awaits confirmation.",
+            "domain": "health",
+            "sensitivity": "confidential",
+            "confidence": 0.95,
+        },
+    )
+    assert confirmation["status"] == "confirmation_required"
+
+    confirmed = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_manage",
+        arguments={
+            **_trusted_identity_arguments(),
+            "action": "confirm",
+            "confirmation_id": confirmation["confirmation_id"],
+        },
+    )
+    assert confirmed["status"] == "committed"
+    assert confirmed["memory"]["status"] == "active"
+
+
+def test_alice_memory_manage_confirm_with_text_records_a_correction(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+
+    confirmation = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={
+            **_trusted_identity_arguments(),
+            "title": "Pending confirmation",
+            "canonical_text": "Original proposed text.",
+            "domain": "health",
+            "sensitivity": "confidential",
+            "confidence": 0.95,
+        },
+    )
+
+    confirmed = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_manage",
+        arguments={
+            **_trusted_identity_arguments(),
+            "action": "confirm",
+            "confirmation_id": confirmation["confirmation_id"],
+            "canonical_text": "Corrected text confirmed by the user.",
+            "reason": "User rephrased the fact",
+        },
+    )
+    assert confirmed["status"] == "committed"
+    assert confirmed["memory"]["canonical_text"] == "Corrected text confirmed by the user."
+    assert store.revisions[-1]["revision_type"] == "corrected"
+    assert store.revisions[-1]["reason"] == "User rephrased the fact"
+
+
+def test_alice_memory_manage_undo_and_forget_keep_the_audit_trail(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = FakeVNextMCPStore()
+    _patch_vnext_store(monkeypatch, store)
+
+    first = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={
+            **_trusted_identity_arguments(),
+            "title": "Undo target",
+            "canonical_text": "This commit will be undone.",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+
+    # Undo without memory_id targets the calling agent's most recent commit.
+    undone = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_manage",
+        arguments={**_trusted_identity_arguments(), "action": "undo", "reason": "wrong fact"},
+    )
+    assert undone["status"] == "undone"
+    assert undone["memory"]["id"] == first["memory"]["id"]
+    assert undone["memory"]["status"] == "superseded"
+
+    second = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={
+            **_trusted_identity_arguments(),
+            "title": "Forget target",
+            "canonical_text": "This commit will be forgotten.",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    forgotten = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_manage",
+        arguments={
+            **_trusted_identity_arguments(),
+            "action": "forget",
+            "memory_id": second["memory"]["id"],
+            "reason": "user asked to forget",
+        },
+    )
+    assert forgotten["status"] == "forgotten"
+    assert forgotten["memory"]["status"] == "superseded"
+
+    # Forget is a soft retirement: revisions and events survive for audit.
+    audit = call_mcp_tool(
+        _mcp_context(), name="alice_explain", arguments={"memory_id": second["memory"]["id"]}
+    )
+    assert [revision["revision_type"] for revision in audit["revisions"]] == ["created", "archived"]
+    assert any(event["event_type"] == "agent.memory_forgotten" for event in store.events)
+
+
+def test_alice_memory_manage_rejects_unknown_actions(monkeypatch, core_surface) -> None:
+    def fail_if_store_opened(_context):
+        raise AssertionError("store should not be opened for an invalid action")
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fail_if_store_opened)
+
+    with pytest.raises(MCPToolError, match="action must be one of: confirm, undo, forget"):
+        call_mcp_tool(_mcp_context(), name="alice_memory_manage", arguments={"action": "erase"})
+    with pytest.raises(MCPToolError, match="action must be one of"):
+        call_mcp_tool(_mcp_context(), name="alice_memory_manage", arguments={})
+
+
+def test_new_core_tool_schemas_reuse_canonical_enums(core_surface) -> None:
+    from alicebot_api.vnext_memory_commit import VNEXT_MEMORY_TYPES
+
+    tools = {tool["name"]: tool for tool in list_mcp_tools()}
+
+    commit_schema = tools["alice_memory_commit"]["inputSchema"]
+    assert commit_schema["required"] == ["title", "canonical_text"]
+    assert commit_schema["properties"]["memory_type"]["enum"] == list(VNEXT_MEMORY_TYPES)
+
+    manage_schema = tools["alice_memory_manage"]["inputSchema"]
+    assert manage_schema["required"] == ["action"]
+    assert manage_schema["properties"]["action"]["enum"] == ["confirm", "undo", "forget"]
+
+    for tool_name in ("alice_recall", "alice_context_pack"):
+        memory_types_schema = tools[tool_name]["inputSchema"]["properties"]["memory_types"]
+        assert memory_types_schema["items"]["enum"] == list(VNEXT_MEMORY_TYPES)
+    assert "projects" in tools["alice_recall"]["inputSchema"]["properties"]
 
 
 def test_alice_capture_stores_reviewable_source_evidence(monkeypatch, core_surface, no_embedding_provider) -> None:
