@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import cast
+from urllib.parse import unquote, urlparse
 from uuid import UUID, uuid4
 
 from psycopg.errors import CheckViolation
@@ -103,6 +106,7 @@ from alicebot_api.contracts import (
 )
 from alicebot_api.config import get_settings
 from alicebot_api.db import user_connection
+from alicebot_api.sqlite_store import SQLiteVNextStore, sqlite_user_connection
 from alicebot_api.store import ContinuityStore, JsonObject
 from alicebot_api.temporal_state import (
     TemporalStateValidationError,
@@ -218,14 +222,50 @@ class MCPRuntimeContext:
     user_id: UUID
 
 
+_SQLITE_POSTGRES_ONLY_MESSAGE = (
+    "this tool requires the Postgres backend; the SQLite on-ramp serves the nine core tools"
+)
+
+
+def _is_sqlite_backend(context: MCPRuntimeContext) -> bool:
+    return context.database_url.startswith("sqlite:")
+
+
+def _sqlite_path_from_url(database_url: str) -> str:
+    """Extract the database file path from a ``sqlite:///`` URL.
+
+    Accepts both the three-slash (``sqlite:///Users/x/memory.db``) and the
+    SQLAlchemy-style four-slash (``sqlite:////Users/x/memory.db``) absolute
+    forms; both resolve to ``/Users/x/memory.db``.
+    """
+    parsed = urlparse(database_url)
+    if parsed.scheme != "sqlite":
+        raise MCPToolError(f"expected a sqlite:/// database URL, got '{database_url}'")
+    if parsed.netloc not in {"", "localhost"}:
+        raise MCPToolError("sqlite database URLs must reference a local file path")
+    path = unquote(parsed.path)
+    while path.startswith("//"):
+        path = path[1:]
+    if path in {"", "/"}:
+        raise MCPToolError("sqlite database URL must include a database file path")
+    return path
+
+
 @contextmanager
 def _store_context(context: MCPRuntimeContext):
+    if _is_sqlite_backend(context):
+        raise MCPToolError(_SQLITE_POSTGRES_ONLY_MESSAGE)
     with user_connection(context.database_url, context.user_id) as conn:
         yield ContinuityStore(conn)
 
 
 @contextmanager
 def _vnext_store_context(context: MCPRuntimeContext):
+    if _is_sqlite_backend(context):
+        sqlite_path = _sqlite_path_from_url(context.database_url)
+        with sqlite_user_connection(sqlite_path, context.user_id) as conn:
+            yield SQLiteVNextStore(conn, context.user_id)
+        return
     with user_connection(context.database_url, context.user_id) as conn:
         yield PostgresVNextStore(conn)
 
@@ -1010,6 +1050,9 @@ def _handle_alice_state_at(context: MCPRuntimeContext, arguments: Mapping[str, o
 
 
 def _handle_alice_resume(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    if _is_sqlite_backend(context):
+        return _sqlite_resume(context, arguments)
+
     max_recent_changes = _parse_int(
         arguments,
         key="max_recent_changes",
@@ -1237,6 +1280,564 @@ def _handle_alice_open_loops(context: MCPRuntimeContext, arguments: Mapping[str,
     return {"action": action, "open_loop": loop}
 
 
+# --- SQLite on-ramp implementations -----------------------------------------
+#
+# The SQLite backend has no legacy continuity tables, so the four core tools
+# that are legacy-backed on Postgres (alice_recent_decisions, alice_resume,
+# alice_memory_review, alice_memory_correct) get vNext-native implementations
+# built only on the SQLiteVNextStore surface. Postgres behavior is unchanged.
+
+_SQLITE_REVIEWABLE_STATUSES = frozenset({"active", "candidate"})
+_SQLITE_NEXT_ACTION_MEMORY_TYPES = frozenset({"open_loop", "commitment"})
+_SQLITE_OPEN_LOOP_ACTIVE_STATUSES = frozenset({"open", "waiting"})
+
+
+def _utc_now_iso_text() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _row_datetime(row: Mapping[str, object], key: str) -> datetime | None:
+    value = row.get(key)
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if not isinstance(value, str) or value == "":
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _row_in_window(
+    row: Mapping[str, object],
+    *,
+    key: str,
+    since: datetime | None,
+    until: datetime | None,
+) -> bool:
+    if since is None and until is None:
+        return True
+    moment = _row_datetime(row, key)
+    if moment is None:
+        return False
+    if since is not None:
+        bounded_since = since if since.tzinfo is not None else since.replace(tzinfo=UTC)
+        if moment < bounded_since:
+            return False
+    if until is not None:
+        bounded_until = until if until.tzinfo is not None else until.replace(tzinfo=UTC)
+        if moment > bounded_until:
+            return False
+    return True
+
+
+def _memory_matches_query(row: Mapping[str, object], query: str | None) -> bool:
+    if query is None:
+        return True
+    needle = query.casefold()
+    for key in ("title", "canonical_text", "summary"):
+        value = row.get(key)
+        if isinstance(value, str) and needle in value.casefold():
+            return True
+    return False
+
+
+def _memory_matches_project(row: Mapping[str, object], project: str | None) -> bool:
+    if project is None:
+        return True
+    needle = project.casefold()
+    metadata = row.get("metadata_json")
+    if isinstance(metadata, Mapping):
+        project_id = metadata.get("project_id")
+        if isinstance(project_id, str) and project_id.casefold() == needle:
+            return True
+    domain = row.get("domain")
+    return isinstance(domain, str) and domain.casefold() == needle
+
+
+def _created_at_sort_key(row: Mapping[str, object]) -> tuple[str, str]:
+    return str(row.get("created_at") or ""), str(row.get("id") or "")
+
+
+def _compact_vnext_memory(row: Mapping[str, object], *, provenance_count: int) -> JsonObject:
+    return {
+        "id": str(row.get("id")),
+        "title": row.get("title"),
+        "canonical_text": row.get("canonical_text"),
+        "created_at": row.get("created_at"),
+        "domain": row.get("domain"),
+        "status": row.get("status"),
+        "memory_type": row.get("memory_type"),
+        "confidence": row.get("confidence"),
+        "provenance_count": provenance_count,
+    }
+
+
+def _compact_vnext_open_loop(row: Mapping[str, object]) -> JsonObject:
+    return {
+        "kind": "open_loop",
+        "id": str(row.get("id")),
+        "title": row.get("title"),
+        "status": row.get("status"),
+        "priority": row.get("priority"),
+        "due_at": row.get("due_at"),
+        "opened_at": row.get("opened_at"),
+        "domain": row.get("domain"),
+        "project_id": row.get("project_id"),
+    }
+
+
+def _compact_vnext_event(row: Mapping[str, object]) -> JsonObject:
+    return {
+        "id": str(row.get("id")),
+        "event_type": row.get("event_type"),
+        "actor_type": row.get("actor_type"),
+        "target_type": row.get("target_type"),
+        "target_id": row.get("target_id"),
+        "occurred_at": row.get("occurred_at"),
+    }
+
+
+def _provenance_count(store: SQLiteVNextStore, memory_id: object) -> int:
+    return len(store.list_provenance_links(target_type="memory", target_id=str(memory_id)))
+
+
+def _sqlite_recent_decisions(
+    context: MCPRuntimeContext,
+    *,
+    arguments: Mapping[str, object],
+    limit: int,
+) -> JsonObject:
+    query = _parse_optional_text(arguments, "query")
+    project = _parse_optional_text(arguments, "project")
+    since = _parse_optional_datetime(arguments, "since")
+    until = _parse_optional_datetime(arguments, "until")
+    filters_ignored = [
+        key for key in ("thread_id", "task_id", "person") if arguments.get(key) not in (None, "")
+    ]
+
+    with _vnext_store_context(context) as store:
+        matched = [
+            row
+            for row in store.list_memories()
+            if row.get("memory_type") == "decision"
+            and str(row.get("status")) in _SQLITE_REVIEWABLE_STATUSES
+            and _memory_matches_query(row, query)
+            and _memory_matches_project(row, project)
+            and _row_in_window(row, key="created_at", since=since, until=until)
+        ]
+        matched.sort(key=_created_at_sort_key, reverse=True)
+        decisions = [
+            _compact_vnext_memory(row, provenance_count=_provenance_count(store, row.get("id")))
+            for row in matched[:limit]
+        ]
+
+    payload: JsonObject = {
+        "decisions": decisions,
+        "count": len(decisions),
+        "mode": "vnext",
+    }
+    if filters_ignored:
+        payload["filters_ignored"] = filters_ignored
+    return payload
+
+
+def _sqlite_resume(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    max_recent_changes = _parse_int(
+        arguments,
+        key="max_recent_changes",
+        default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+        minimum=0,
+        maximum=MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+    )
+    max_open_loops = _parse_int(
+        arguments,
+        key="max_open_loops",
+        default=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+        minimum=0,
+        maximum=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+    )
+    query = _parse_optional_text(arguments, "query")
+    project = _parse_optional_text(arguments, "project")
+    since = _parse_optional_datetime(arguments, "since")
+    until = _parse_optional_datetime(arguments, "until")
+    filters_ignored = [
+        key
+        for key in ("thread_id", "task_id", "person", "include_non_promotable_facts", "debug")
+        if arguments.get(key) not in (None, "", False)
+    ]
+
+    def _memory_matches(row: Mapping[str, object]) -> bool:
+        return (
+            str(row.get("status")) in _SQLITE_REVIEWABLE_STATUSES
+            and _memory_matches_query(row, query)
+            and _memory_matches_project(row, project)
+            and _row_in_window(row, key="created_at", since=since, until=until)
+        )
+
+    with _vnext_store_context(context) as store:
+        memories = [row for row in store.list_memories() if _memory_matches(row)]
+
+        decisions = sorted(
+            (row for row in memories if row.get("memory_type") == "decision"),
+            key=_created_at_sort_key,
+            reverse=True,
+        )
+        last_decision: JsonObject | None = None
+        if decisions:
+            last_decision = {
+                "kind": "memory",
+                **_compact_vnext_memory(
+                    decisions[0], provenance_count=_provenance_count(store, decisions[0].get("id"))
+                ),
+            }
+
+        loop_candidate_limit = max(max_open_loops, 1) * 5
+        loop_rows = [
+            row
+            for row in store.list_open_loops(status=None, limit=loop_candidate_limit)
+            if str(row.get("status")) in _SQLITE_OPEN_LOOP_ACTIVE_STATUSES
+            and _row_in_window(row, key="opened_at", since=since, until=until)
+        ]
+        open_loops = [_compact_vnext_open_loop(row) for row in loop_rows[:max_open_loops]]
+
+        next_action: JsonObject | None = open_loops[0] if open_loops else None
+        if next_action is None:
+            todo_memories = sorted(
+                (
+                    row
+                    for row in memories
+                    if row.get("memory_type") in _SQLITE_NEXT_ACTION_MEMORY_TYPES
+                ),
+                key=_created_at_sort_key,
+                reverse=True,
+            )
+            if todo_memories:
+                next_action = {
+                    "kind": "memory",
+                    **_compact_vnext_memory(
+                        todo_memories[0],
+                        provenance_count=_provenance_count(store, todo_memories[0].get("id")),
+                    ),
+                }
+
+        recent_changes: list[JsonObject] = []
+        if max_recent_changes > 0:
+            recent_changes = [
+                _compact_vnext_event(row) for row in store.list_events(limit=max_recent_changes)
+            ]
+
+    return {
+        "brief": {
+            "last_decision": last_decision,
+            "next_action": next_action,
+            "open_loops": open_loops,
+            "recent_changes": recent_changes,
+            "generated_at": _utc_now_iso_text(),
+            "mode": "vnext",
+            "filters_ignored": filters_ignored,
+        }
+    }
+
+
+def _sqlite_memory_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    review_item_id = _parse_review_item_id(arguments, required=False)
+    if review_item_id is not None:
+        memory_id = str(review_item_id)
+        with _vnext_store_context(context) as store:
+            memory = store.get_memory(memory_id)
+            if memory is None:
+                raise MCPToolError(f"memory {memory_id} was not found")
+            return {
+                "mode": "vnext_detail",
+                "review": {
+                    "memory": memory,
+                    "revisions": store.list_revisions(memory_id),
+                    "provenance_links": store.list_provenance_links(
+                        target_type="memory", target_id=memory_id
+                    ),
+                },
+            }
+
+    raw_status = arguments.get("status", "correction_ready")
+    if not isinstance(raw_status, str):
+        raise MCPToolError("status must be a string")
+    normalized_status = raw_status.strip()
+    normalized_status = _REVIEW_STATUS_ALIASES.get(normalized_status, normalized_status)
+    if normalized_status not in _REVIEW_STATUS_CHOICES:
+        allowed = ", ".join(_REVIEW_STATUS_CHOICES)
+        raise MCPToolError(f"status must be one of: {allowed}")
+    limit = _parse_int(
+        arguments,
+        key="limit",
+        default=DEFAULT_CONTINUITY_REVIEW_LIMIT,
+        minimum=1,
+        maximum=MAX_CONTINUITY_REVIEW_LIMIT,
+    )
+
+    if normalized_status in {"pending_review", "correction_ready"}:
+        vnext_status: str | None = "candidate"
+    elif normalized_status == "active":
+        vnext_status = "active"
+    elif normalized_status == "all":
+        vnext_status = None
+    else:
+        return {
+            "items": [],
+            "count": 0,
+            "mode": "vnext_candidates",
+            "note": (
+                f"status '{normalized_status}' has no SQLite on-ramp equivalent; "
+                "use pending_review, correction_ready, active, or all"
+            ),
+        }
+
+    with _vnext_store_context(context) as store:
+        rows = store.list_memories(status=vnext_status)[:limit]
+        items = [
+            _compact_vnext_memory(row, provenance_count=_provenance_count(store, row.get("id")))
+            for row in rows
+        ]
+    return {"items": items, "count": len(items), "mode": "vnext_candidates"}
+
+
+def _canonical_text_from_body(body: Mapping[str, object]) -> str:
+    text = body.get("text")
+    if isinstance(text, str) and text.strip() != "":
+        return text.strip()
+    return _canonical_json_dumps(body)
+
+
+def _canonical_json_dumps(value: object) -> str:
+    return json.dumps(json_safe(value), sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _sqlite_review_revision(
+    store: SQLiteVNextStore,
+    *,
+    previous: Mapping[str, object],
+    updated: Mapping[str, object],
+    revision_type: str,
+    action_label: str,
+    reason: str | None,
+    metadata: JsonObject | None = None,
+) -> None:
+    store.append_revision(
+        {
+            "memory_id": str(updated["id"]),
+            "memory_key": str(updated["memory_key"]),
+            "previous_value": previous.get("value"),
+            "new_value": updated.get("value"),
+            "source_event_ids": updated.get("source_event_ids"),
+            "revision_type": revision_type,
+            "action": f"memory_correct_{action_label}",
+            "text_before": previous.get("canonical_text"),
+            "text_after": str(updated.get("canonical_text") or ""),
+            "reason": reason or f"alice_memory_correct action: {action_label}",
+            "actor_type": "user",
+            "metadata_json": {"action": action_label, **(metadata or {})},
+        },
+        actor_type="user",
+    )
+
+
+def _sqlite_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    requested_action = _parse_required_text(arguments, "action")
+    resolved_action = _resolve_review_apply_action(requested_action, allow_legacy=True)
+    if resolved_action not in {"confirm", "edit", "delete", "supersede"}:
+        raise MCPToolError(
+            f"action '{requested_action}' is not supported on the SQLite on-ramp; "
+            "use approve, edit-and-approve, reject, or supersede-existing"
+        )
+    memory_id = str(cast(UUID, _parse_review_item_id(arguments, required=True)))
+    reason = _parse_optional_text(arguments, "reason")
+    now_iso = _utc_now_iso_text()
+
+    replacement_object: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        memory = store.get_memory(memory_id)
+        if memory is None:
+            raise MCPToolError(f"memory {memory_id} was not found")
+        event_payload: JsonObject = {
+            "requested_action": requested_action,
+            "resolved_action": resolved_action,
+            "reason": reason,
+        }
+
+        if resolved_action == "confirm":
+            updated = store.update_memory(
+                memory_id=memory_id,
+                patch={"status": "active", "last_reviewed_at": now_iso},
+                actor_type="user",
+            )
+            _sqlite_review_revision(
+                store,
+                previous=memory,
+                updated=updated,
+                revision_type="promoted",
+                action_label="approve",
+                reason=reason,
+            )
+        elif resolved_action == "delete":
+            updated = store.update_memory(
+                memory_id=memory_id,
+                patch={"status": "rejected", "last_reviewed_at": now_iso},
+                actor_type="user",
+            )
+            _sqlite_review_revision(
+                store,
+                previous=memory,
+                updated=updated,
+                revision_type="rejected",
+                action_label="reject",
+                reason=reason,
+            )
+        elif resolved_action == "edit":
+            title = _parse_optional_text(arguments, "title")
+            body = _parse_optional_json_object(arguments, "body")
+            confidence = _parse_optional_float(arguments, "confidence")
+            if title is None and body is None and confidence is None:
+                raise MCPToolError(
+                    "edit-and-approve requires at least one of title, body, or confidence"
+                )
+            patch: JsonObject = {"status": "active", "last_reviewed_at": now_iso}
+            if title is not None:
+                patch["title"] = title
+            if body is not None:
+                patch["value"] = body
+                patch["canonical_text"] = _canonical_text_from_body(body)
+            if confidence is not None:
+                patch["confidence"] = confidence
+            updated = store.update_memory(memory_id=memory_id, patch=patch, actor_type="user")
+            _sqlite_review_revision(
+                store,
+                previous=memory,
+                updated=updated,
+                revision_type="edited",
+                action_label="edit-and-approve",
+                reason=reason,
+            )
+        else:  # supersede
+            replacement_title = _parse_optional_text(arguments, "replacement_title")
+            replacement_body = _parse_optional_json_object(arguments, "replacement_body")
+            replacement_provenance = _parse_optional_json_object(arguments, "replacement_provenance")
+            replacement_confidence = _parse_optional_float(arguments, "replacement_confidence")
+            if replacement_title is None and replacement_body is None:
+                raise MCPToolError(
+                    "supersede-existing requires replacement_title or replacement_body"
+                )
+            canonical_text = (
+                _canonical_text_from_body(replacement_body)
+                if replacement_body is not None
+                else cast(str, replacement_title)
+            )
+            replacement_metadata: JsonObject = {
+                "supersedes": memory_id,
+                "correction_reason": reason,
+            }
+            if replacement_provenance is not None:
+                replacement_metadata["replacement_provenance"] = replacement_provenance
+            replacement_object = store.create_memory(
+                {
+                    "memory_key": f"vnext.correction.supersede.{uuid4().hex[:16]}",
+                    "value": replacement_body
+                    if replacement_body is not None
+                    else {"text": canonical_text},
+                    "status": "active",
+                    "memory_type": memory.get("memory_type") or "semantic",
+                    "confidence": replacement_confidence,
+                    "title": replacement_title or canonical_text[:120],
+                    "canonical_text": canonical_text,
+                    "summary": canonical_text[:280],
+                    "domain": memory.get("domain") or "unknown",
+                    "sensitivity": memory.get("sensitivity") or "unknown",
+                    "last_reviewed_at": now_iso,
+                    "metadata_json": replacement_metadata,
+                },
+                actor_type="user",
+            )
+            replacement_id = str(replacement_object["id"])
+            if replacement_provenance is not None:
+                provenance_source_id = replacement_provenance.get("source_id")
+                if (
+                    isinstance(provenance_source_id, str)
+                    and store.get_source(provenance_source_id) is not None
+                ):
+                    store.create_provenance_link(
+                        {
+                            "target_type": "memory",
+                            "target_id": replacement_id,
+                            "source_id": provenance_source_id,
+                            "quote": canonical_text,
+                            "evidence_role": "supports",
+                            "confidence": replacement_confidence
+                            if replacement_confidence is not None
+                            else 0.5,
+                        },
+                        actor_type="user",
+                    )
+            existing_metadata = (
+                dict(cast(Mapping[str, object], memory.get("metadata_json")))
+                if isinstance(memory.get("metadata_json"), Mapping)
+                else {}
+            )
+            updated = store.update_memory(
+                memory_id=memory_id,
+                patch={
+                    "status": "superseded",
+                    "last_reviewed_at": now_iso,
+                    "metadata_json": {**existing_metadata, "superseded_by": replacement_id},
+                },
+                actor_type="user",
+            )
+            _sqlite_review_revision(
+                store,
+                previous=memory,
+                updated=updated,
+                revision_type="superseded",
+                action_label="supersede-existing",
+                reason=reason,
+                metadata={"superseded_by": replacement_id},
+            )
+            store.append_revision(
+                {
+                    "memory_id": replacement_id,
+                    "memory_key": str(replacement_object["memory_key"]),
+                    "new_value": replacement_object.get("value"),
+                    "source_event_ids": replacement_object.get("source_event_ids"),
+                    "revision_type": "created",
+                    "action": "memory_correct_supersede-existing",
+                    "text_after": canonical_text,
+                    "reason": reason or "alice_memory_correct action: supersede-existing",
+                    "actor_type": "user",
+                    "metadata_json": {"action": "supersede-existing", "supersedes": memory_id},
+                },
+                actor_type="user",
+            )
+            event_payload["replacement_memory_id"] = replacement_id
+
+        append_event(
+            store,
+            event_type="memory.reviewed",
+            actor_type="user",
+            target_type="memory",
+            target_id=memory_id,
+            payload=event_payload,
+        )
+
+    return {
+        "review_action": {
+            "requested_action": requested_action,
+            "resolved_action": resolved_action,
+            "memory_id": memory_id,
+        },
+        "memory": updated,
+        "replacement_object": replacement_object,
+        "mode": "vnext",
+    }
+
+
 def _recent_decisions_payload(
     context: MCPRuntimeContext,
     *,
@@ -1287,6 +1888,8 @@ def _handle_alice_recent_decisions(context: MCPRuntimeContext, arguments: Mappin
         or ("public", "internal", "private", "unknown"),
         project_scope=_parse_string_list(arguments, "project_scope"),
     )
+    if _is_sqlite_backend(context):
+        return _sqlite_recent_decisions(context, arguments=arguments, limit=limit)
     return _recent_decisions_payload(context, arguments=arguments, limit=limit)
 
 
@@ -1411,6 +2014,8 @@ def _handle_alice_review_queue(context: MCPRuntimeContext, arguments: Mapping[st
 
 
 def _handle_alice_memory_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    if _is_sqlite_backend(context):
+        return _sqlite_memory_review(context, arguments)
     return _review_queue_payload(
         context,
         arguments,
@@ -1472,6 +2077,8 @@ def _handle_alice_review_apply(context: MCPRuntimeContext, arguments: Mapping[st
 
 
 def _handle_alice_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    if _is_sqlite_backend(context):
+        return _sqlite_memory_correct(context, arguments)
     return _review_apply_payload(
         context,
         arguments,
@@ -1585,6 +2192,11 @@ def _handle_alice_explain(context: MCPRuntimeContext, arguments: Mapping[str, ob
         raise MCPToolError("alice_explain accepts exactly one of memory_id, continuity_object_id, or entity_id")
     if memory_id is not None:
         return _handle_alice_vnext_memory_audit(context, arguments)
+    if _is_sqlite_backend(context):
+        raise MCPToolError(
+            "alice_explain with entity_id or continuity_object_id is available on the Postgres "
+            "backend; pass memory_id on the SQLite on-ramp"
+        )
     if entity_id is not None:
         with _store_context(context) as store:
             return get_temporal_explain(
@@ -4293,7 +4905,7 @@ def call_mcp_tool(
         TemporalStateValidationError,
     ) as exc:
         raise MCPToolError(str(exc)) from exc
-    except CheckViolation as exc:
+    except (CheckViolation, sqlite3.IntegrityError) as exc:
         raise MCPToolError(
             "vNext request violates a persisted schema constraint; use schema-backed enum values "
             "for memory_type, domain, sensitivity, status, and action fields."
