@@ -27,6 +27,8 @@ PERMISSION_PROFILES = (
 
 POLICY_DECISIONS = ("allowed", "allowed_with_filtering", "requires_review", "blocked")
 
+AGENT_AUTH_METHODS = ("agent_api_key", "unauthenticated_local")
+
 RESTRICTED_DOMAINS = frozenset({"family", "health", "spiritual", "legal", "financial"})
 RESTRICTED_SENSITIVITY = frozenset({"confidential", "highly_sensitive", "sacred", "regulated"})
 ALL_SENSITIVITY = ("public", "internal", "private", "confidential", "highly_sensitive", "sacred", "regulated", "unknown")
@@ -88,6 +90,7 @@ class AgentIdentity:
     task_id: str | None = None
     project_scope: tuple[str, ...] = ()
     permission_profile: str = "read_only_agent"
+    auth: str = "unauthenticated_local"
 
     @property
     def actor_type(self) -> str:
@@ -133,6 +136,7 @@ class AgentIdentity:
             "task_id": self.task_id,
             "project_scope": list(self.project_scope),
             "permission_profile": self.permission_profile,
+            "auth": self.auth,
         }
 
 
@@ -572,6 +576,7 @@ def agent_metadata(identity: AgentIdentity | None, decision: PolicyDecision | No
 
 
 __all__ = [
+    "AGENT_AUTH_METHODS",
     "AGENT_TYPES",
     "PERMISSION_PROFILES",
     "POLICY_DECISIONS",

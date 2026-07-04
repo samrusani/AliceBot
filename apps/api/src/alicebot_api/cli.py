@@ -192,12 +192,17 @@ from alicebot_api.trusted_fact_promotions import (
     list_trusted_fact_playbooks,
 )
 from alicebot_api.vnext_agent_control import (
+    PERMISSION_PROFILES,
     AgentIdentity,
     agent_metadata,
     append_policy_events,
     ensure_policy_allowed,
     evaluate_agent_policy,
     summarize_agent_policy_telemetry,
+)
+from alicebot_api.vnext_agent_keys import (
+    AgentKeyValidationError,
+    create_agent_key,
 )
 from alicebot_api.vnext_capture import VNextCaptureService, VNextCaptureValidationError
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService, VNextBrainValidationError
@@ -1714,6 +1719,72 @@ def _run_vnext_agent_policy_telemetry(ctx: CLIContext, args: argparse.Namespace)
             )
         }
     )
+
+
+def _agent_key_public_record(record: dict[str, object]) -> JsonObject:
+    return {
+        "id": str(record.get("id")),
+        "key_prefix": record.get("key_prefix"),
+        "agent_id": record.get("agent_id"),
+        "permission_profile": record.get("permission_profile"),
+        "label": record.get("label"),
+        "created_at": record.get("created_at"),
+        "last_used_at": record.get("last_used_at"),
+        "revoked_at": record.get("revoked_at"),
+        "revoked": record.get("revoked_at") is not None,
+    }
+
+
+def _run_agent_keys_create(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        record, raw_key = create_agent_key(
+            store,
+            user_id=ctx.user_id,
+            agent_id=args.agent_id,
+            permission_profile=args.profile,
+            label=args.label,
+        )
+    return _json_dumps(
+        {
+            "status": "created",
+            "key": _agent_key_public_record(record),
+            "raw_key": raw_key,
+            "warning": (
+                "Store this key now. It is shown exactly once; only its sha256 hash is persisted. "
+                "Pass it to agent HTTP calls as 'Authorization: Bearer <raw_key>'."
+            ),
+        }
+    )
+
+
+def _run_agent_keys_list(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        records = store.list_agent_api_keys(limit=args.limit)
+    items = [_agent_key_public_record(record) for record in records]
+    return _json_dumps({"items": items, "count": len(items), "order": ["created_at_desc", "id_desc"]})
+
+
+def _run_agent_keys_revoke(ctx: CLIContext, args: argparse.Namespace) -> str:
+    selector = args.key.strip()
+    if not selector:
+        raise AgentKeyValidationError("a key prefix or key id is required")
+    with _vnext_store_context(ctx) as store:
+        records = store.list_agent_api_keys(limit=200)
+        matches = [
+            record
+            for record in records
+            if str(record.get("id")) == selector or str(record.get("key_prefix") or "") == selector
+        ]
+        if not matches:
+            raise AgentKeyValidationError(f"no agent API key matches '{selector}'")
+        if len(matches) > 1:
+            raise AgentKeyValidationError(
+                f"key prefix '{selector}' matches multiple keys; revoke by key id instead"
+            )
+        revoked = store.revoke_agent_api_key(key_id=str(matches[0]["id"]))
+        if revoked is None:
+            raise AgentKeyValidationError(f"agent API key '{selector}' is already revoked")
+    return _json_dumps({"status": "revoked", "key": _agent_key_public_record(revoked)})
 
 
 def _run_vnext_scheduler_status(ctx: CLIContext, _args: argparse.Namespace) -> str:
@@ -3277,7 +3348,10 @@ def _run_vnext_alpha_check(ctx: CLIContext, args: argparse.Namespace) -> str:
         "eval_suite": {
             "status": "summarized",
             "command": "alicebot eval run --suite all",
-            "expected": "170/170 cases with 0 critical privacy leaks and 0 prompt-injection tool writes",
+            "expected": (
+                "retrieval_quality passes against a live store "
+                "(ALICEBOT_EVAL_DATABASE_URL); without one it reports skipped, never a fabricated pass"
+            ),
         },
         "recommended_next_commands": [
             "alicebot eval run --suite all",
@@ -4532,6 +4606,33 @@ def build_parser() -> argparse.ArgumentParser:
     _add_model_generation_arguments(connections_generate_parser)
     connections_generate_parser.set_defaults(handler=_run_connections_generate)
 
+    agent_parser = subparsers.add_parser("agent", help="Manage agent authentication.")
+    agent_subparsers = agent_parser.add_subparsers(dest="agent_command", required=True)
+    agent_keys_parser = agent_subparsers.add_parser("keys", help="Manage per-agent API keys.")
+    agent_keys_subparsers = agent_keys_parser.add_subparsers(dest="agent_keys_command", required=True)
+    agent_keys_create_parser = agent_keys_subparsers.add_parser(
+        "create",
+        help="Create a per-agent API key. The raw key is printed exactly once.",
+    )
+    agent_keys_create_parser.add_argument("--agent-id", required=True, help="Agent id the key authenticates.")
+    agent_keys_create_parser.add_argument(
+        "--profile",
+        required=True,
+        choices=PERMISSION_PROFILES,
+        help="Permission profile granted to the key.",
+    )
+    agent_keys_create_parser.add_argument("--label", default=None, help="Optional human-readable key label.")
+    agent_keys_create_parser.set_defaults(handler=_run_agent_keys_create)
+    agent_keys_list_parser = agent_keys_subparsers.add_parser(
+        "list",
+        help="List agent API keys. Shows prefixes only, never hashes or raw keys.",
+    )
+    agent_keys_list_parser.add_argument("--limit", type=int, default=50, help="Maximum keys to return.")
+    agent_keys_list_parser.set_defaults(handler=_run_agent_keys_list)
+    agent_keys_revoke_parser = agent_keys_subparsers.add_parser("revoke", help="Revoke an agent API key.")
+    agent_keys_revoke_parser.add_argument("key", help="Key prefix or key id to revoke.")
+    agent_keys_revoke_parser.set_defaults(handler=_run_agent_keys_revoke)
+
     vnext_parser = subparsers.add_parser("vnext", help="Alice vNext workflows.")
     vnext_subparsers = vnext_parser.add_subparsers(dest="vnext_command", required=True)
 
@@ -5770,9 +5871,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--suite",
         default="all",
         help=(
-            "Suite key to run: all, recall, temporal, contradictions, privacy, provenance, "
-            "open_loops, prompt_injection, multi_session_actionability, evolving_state, "
-            "procedural_reuse, consolidation_quality, or context_efficiency."
+            "Suite key to run: all or retrieval_quality. Live-store suites "
+            "require ALICEBOT_EVAL_DATABASE_URL and report skipped without it."
         ),
     )
     vnext_eval_run_parser.add_argument(
@@ -5795,9 +5895,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--suite",
         default="all",
         help=(
-            "Suite key to report: all, recall, temporal, contradictions, privacy, provenance, "
-            "open_loops, prompt_injection, multi_session_actionability, evolving_state, "
-            "procedural_reuse, consolidation_quality, or context_efficiency."
+            "Suite key to report: all or retrieval_quality. Live-store suites "
+            "require ALICEBOT_EVAL_DATABASE_URL and report skipped without it."
         ),
     )
     vnext_eval_report_parser.add_argument(

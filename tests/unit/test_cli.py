@@ -52,6 +52,12 @@ def test_parser_routes_required_commands() -> None:
             "_run_vnext_agent_propose_memory",
         ),
         (
+            ["agent", "keys", "create", "--agent-id", "hermes", "--profile", "trusted_local_agent"],
+            "_run_agent_keys_create",
+        ),
+        (["agent", "keys", "list"], "_run_agent_keys_list"),
+        (["agent", "keys", "revoke", "alice_sk_abc1"], "_run_agent_keys_revoke"),
+        (
             ["vnext", "memories", "commit", "--agent-id", "hermes", "--title", "T", "--text", "Fact"],
             "_run_vnext_memory_commit",
         ),
@@ -153,6 +159,7 @@ class FakeVNextCliStore:
         self.projects: dict[str, dict[str, object]] = {}
         self.revisions: list[dict[str, object]] = []
         self.agent_identities: dict[str, dict[str, object]] = {}
+        self.agent_api_keys: list[dict[str, object]] = []
         self.scheduler_workflows: dict[str, dict[str, object]] = {}
         self.scheduler_runs: list[dict[str, object]] = []
 
@@ -168,6 +175,43 @@ class FakeVNextCliStore:
         }
         self.agent_identities[str(identity["agent_id"])] = row
         return row
+
+    def create_agent_api_key(self, key: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {
+            **key,
+            "id": str(uuid4()),
+            "created_at": "now",
+            "revoked_at": None,
+            "last_used_at": None,
+        }
+        self.agent_api_keys.append(row)
+        return row
+
+    def get_agent_api_key_by_hash(self, key_hash: str) -> dict[str, object] | None:
+        for row in self.agent_api_keys:
+            if row.get("key_hash") == key_hash:
+                return row
+        return None
+
+    def list_agent_api_keys(self, *, limit: int = 50) -> list[dict[str, object]]:
+        return self.agent_api_keys[:limit]
+
+    def revoke_agent_api_key(self, *, key_id: str, **_kwargs) -> dict[str, object] | None:
+        for row in self.agent_api_keys:
+            if row["id"] == key_id and row.get("revoked_at") is None:
+                row["revoked_at"] = "now"
+                return row
+        return None
+
+    def touch_agent_api_key(self, *, key_id: str) -> dict[str, object]:
+        for row in self.agent_api_keys:
+            if row["id"] == key_id:
+                row["last_used_at"] = "now"
+                return row
+        raise AssertionError(key_id)
+
+    def count_active_agent_api_keys(self) -> int:
+        return len([row for row in self.agent_api_keys if row.get("revoked_at") is None])
 
     def get_source_by_content_hash(self, content_hash: str) -> dict[str, object] | None:
         return self.source_by_hash.get(content_hash)
@@ -581,6 +625,99 @@ def test_vnext_capture_text_cli_uses_vnext_capture_service(monkeypatch) -> None:
     assert store.sources[0]["domain"] == "project"
     assert store.sources[0]["metadata_json"]["raw_text"] == "Fact: Alice vNext captures sources with provenance."
     assert store.memories[0]["memory_type"] == "semantic"
+
+
+def test_agent_keys_cli_create_list_revoke_flow(monkeypatch) -> None:
+    store = FakeVNextCliStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield store
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    ctx = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    parser = cli_module.build_parser()
+
+    create_args = parser.parse_args(
+        [
+            "agent",
+            "keys",
+            "create",
+            "--agent-id",
+            "hermes",
+            "--profile",
+            "trusted_local_agent",
+            "--label",
+            "Hermes local",
+        ]
+    )
+    create_payload = json.loads(create_args.handler(ctx, create_args))
+
+    assert create_payload["status"] == "created"
+    raw_key = create_payload["raw_key"]
+    assert raw_key.startswith("alice_sk_")
+    assert "shown exactly once" in create_payload["warning"]
+    assert create_payload["key"]["agent_id"] == "hermes"
+    assert create_payload["key"]["permission_profile"] == "trusted_local_agent"
+    assert create_payload["key"]["key_prefix"] == raw_key[:12]
+    assert "key_hash" not in create_payload["key"]
+    assert store.agent_api_keys[0]["key_hash"] != raw_key
+
+    list_args = parser.parse_args(["agent", "keys", "list"])
+    list_payload = json.loads(list_args.handler(ctx, list_args))
+
+    assert list_payload["count"] == 1
+    listed = list_payload["items"][0]
+    assert listed["key_prefix"] == raw_key[:12]
+    assert listed["revoked"] is False
+    assert "key_hash" not in listed
+    assert raw_key not in json.dumps(list_payload)
+
+    revoke_args = parser.parse_args(["agent", "keys", "revoke", raw_key[:12]])
+    revoke_payload = json.loads(revoke_args.handler(ctx, revoke_args))
+
+    assert revoke_payload["status"] == "revoked"
+    assert revoke_payload["key"]["revoked"] is True
+    assert store.agent_api_keys[0]["revoked_at"] is not None
+
+    relist_payload = json.loads(list_args.handler(ctx, list_args))
+    assert relist_payload["items"][0]["revoked"] is True
+
+
+def test_agent_keys_cli_revoke_rejects_unknown_and_already_revoked_keys(monkeypatch, capsys) -> None:
+    store = FakeVNextCliStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield store
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+
+    exit_code = cli_module.main(["agent", "keys", "revoke", "alice_sk_none"])
+    assert exit_code == 1
+    assert "no agent API key matches" in capsys.readouterr().err
+
+    ctx = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    parser = cli_module.build_parser()
+    create_args = parser.parse_args(
+        ["agent", "keys", "create", "--agent-id", "hermes", "--profile", "read_only_agent"]
+    )
+    create_payload = json.loads(create_args.handler(ctx, create_args))
+    prefix = create_payload["key"]["key_prefix"]
+    revoke_args = parser.parse_args(["agent", "keys", "revoke", prefix])
+    revoke_args.handler(ctx, revoke_args)
+
+    exit_code = cli_module.main(["agent", "keys", "revoke", prefix])
+    assert exit_code == 1
+    assert "already revoked" in capsys.readouterr().err
 
 
 def test_vnext_connector_cli_lists_and_ingests_payload_file(monkeypatch, tmp_path: Path) -> None:
@@ -1005,7 +1142,10 @@ def test_vnext_queue_cli_add_process_review_and_export(monkeypatch, tmp_path: Pa
     assert Path(exported["output_path"]).exists()
 
 
-def test_vnext_eval_cli_seed_run_and_report(tmp_path: Path) -> None:
+def test_vnext_eval_cli_seed_run_and_report(tmp_path: Path, monkeypatch) -> None:
+    # Without a live eval store the retrieval-quality suite must report
+    # skipped -- never a fabricated pass.
+    monkeypatch.delenv("ALICEBOT_EVAL_DATABASE_URL", raising=False)
     ctx = cli_module.CLIContext(
         settings=Settings(database_url="postgresql://db"),
         database_url="postgresql://db",
@@ -1024,7 +1164,7 @@ def test_vnext_eval_cli_seed_run_and_report(tmp_path: Path) -> None:
             "eval",
             "report",
             "--suite",
-            "privacy",
+            "retrieval_quality",
             "--corpus-path",
             str(corpus_path),
             "--report-path",
@@ -1034,10 +1174,11 @@ def test_vnext_eval_cli_seed_run_and_report(tmp_path: Path) -> None:
     report_payload = json.loads(report_args.handler(ctx, report_args))
 
     assert Path(seed_payload["written_corpus_path"]) == corpus_path.resolve()
-    assert run_payload["report"]["status"] == "pass"
-    assert run_payload["report"]["baseline_metrics"]["critical_privacy_leak_count"] == 0
+    assert run_payload["report"]["status"] == "skipped"
+    assert run_payload["report"]["summary"]["executed_suite_count"] == 0
+    assert [entry["suite_key"] for entry in run_payload["report"]["skipped_suites"]] == ["retrieval_quality"]
     assert Path(report_payload["written_report_path"]) == report_path.resolve()
-    assert report_payload["report"]["suite"] == "privacy"
+    assert report_payload["report"]["suite"] == "retrieval_quality"
     assert json.loads(report_path.read_text(encoding="utf-8")) == report_payload["report"]
 
 

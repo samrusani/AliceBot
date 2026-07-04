@@ -375,6 +375,19 @@ AGENT_IDENTITY_COLUMNS = """
                   updated_at
                 """
 
+AGENT_API_KEY_COLUMNS = """
+                  id,
+                  user_id,
+                  agent_id,
+                  permission_profile,
+                  key_hash,
+                  key_prefix,
+                  label,
+                  created_at,
+                  revoked_at,
+                  last_used_at
+                """
+
 SCHEDULER_WORKFLOW_COLUMNS = """
                   id,
                   user_id,
@@ -2925,6 +2938,125 @@ class PostgresVNextStore:
                 """,
             (agent_id, agent_id, limit),
         )
+
+    def create_agent_api_key(self, key: JsonObject, *, actor_type: str = "user") -> VNextRow:
+        row = self._fetch_one(
+            "create_agent_api_key",
+            f"""
+                INSERT INTO agent_api_keys (
+                  id,
+                  user_id,
+                  agent_id,
+                  permission_profile,
+                  key_hash,
+                  key_prefix,
+                  label
+                )
+                VALUES (
+                  COALESCE(%s::uuid, gen_random_uuid()),
+                  app.current_user_id(),
+                  %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s
+                )
+                RETURNING {AGENT_API_KEY_COLUMNS}
+                """,
+            (
+                key.get("id"),
+                key["agent_id"],
+                key["permission_profile"],
+                key["key_hash"],
+                key["key_prefix"],
+                key.get("label"),
+            ),
+        )
+        self._append_mutation_event(
+            event_type="agent.key_created",
+            actor_type=actor_type,
+            target_type="agent_api_key",
+            target_id=row["id"],
+            payload={
+                "operation": "create",
+                "agent_id": str(row["agent_id"]),
+                "permission_profile": str(row["permission_profile"]),
+                "key_prefix": str(row["key_prefix"]),
+                "label": row.get("label"),
+            },
+        )
+        return row
+
+    def get_agent_api_key_by_hash(self, key_hash: str) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {AGENT_API_KEY_COLUMNS}
+                FROM agent_api_keys
+                WHERE key_hash = %s
+                """,
+            (key_hash,),
+        )
+
+    def list_agent_api_keys(self, *, limit: int = 50) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {AGENT_API_KEY_COLUMNS}
+                FROM agent_api_keys
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (limit,),
+        )
+
+    def revoke_agent_api_key(self, *, key_id: str, actor_type: str = "user") -> VNextRow | None:
+        row = self._fetch_optional_one(
+            f"""
+                UPDATE agent_api_keys
+                SET revoked_at = clock_timestamp()
+                WHERE id = %s::uuid
+                  AND revoked_at IS NULL
+                RETURNING {AGENT_API_KEY_COLUMNS}
+                """,
+            (key_id,),
+        )
+        if row is None:
+            return None
+        self._append_mutation_event(
+            event_type="agent.key_revoked",
+            actor_type=actor_type,
+            target_type="agent_api_key",
+            target_id=row["id"],
+            payload={
+                "operation": "revoke",
+                "agent_id": str(row["agent_id"]),
+                "permission_profile": str(row["permission_profile"]),
+                "key_prefix": str(row["key_prefix"]),
+            },
+        )
+        return row
+
+    def touch_agent_api_key(self, *, key_id: str) -> VNextRow:
+        return self._fetch_one(
+            "touch_agent_api_key",
+            f"""
+                UPDATE agent_api_keys
+                SET last_used_at = clock_timestamp()
+                WHERE id = %s::uuid
+                RETURNING {AGENT_API_KEY_COLUMNS}
+                """,
+            (key_id,),
+        )
+
+    def count_active_agent_api_keys(self) -> int:
+        row = self._fetch_one(
+            "count_active_agent_api_keys",
+            """
+                SELECT count(*) AS active_count
+                FROM agent_api_keys
+                WHERE revoked_at IS NULL
+                """,
+        )
+        return int(cast(int, row["active_count"]))
 
     def upsert_scheduler_workflow(self, workflow: JsonObject, *, actor_type: str = "system") -> VNextRow:
         row = self._fetch_one(

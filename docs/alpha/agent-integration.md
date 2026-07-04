@@ -35,6 +35,30 @@ Permission profiles:
 - `memory_proposal_agent`: proposal-focused agent
 - `admin_agent`: scheduler and administrative actions
 
+## Authentication
+
+Custom agents calling the HTTP API authenticate with per-agent API keys. Create one per agent:
+
+```bash
+alicebot agent keys create --agent-id openclaw --profile project_scoped_agent --label "OpenClaw laptop"
+```
+
+The raw key (`alice_sk_...`) is printed exactly once; only its sha256 hash is stored. Pass it on every agent HTTP call:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v0/vnext/memories/commit \
+  -H "Authorization: Bearer alice_sk_..." \
+  -H "Content-Type: application/json" \
+  -d '{"user_id": "...", "title": "...", "text": "..."}'
+```
+
+Rules:
+
+- With a valid key, `agent_id` and `permission_profile` come from the key record, not the payload. A payload may claim a lower profile (downgrade), but claiming a different `agent_id` or a higher profile is rejected with `403` and logged as `agent.key_escalation_rejected`.
+- Fresh local installs keep working without keys: while a user has no active keys, keyless agent calls fall back to the self-asserted identity and are audited with `auth: "unauthenticated_local"`.
+- The moment at least one active key exists, keyless agent calls are rejected with `401` until the key is passed as `Authorization: Bearer alice_sk_...`.
+- Manage keys with `alicebot agent keys list` (prefixes only, never hashes) and `alicebot agent keys revoke <key-prefix-or-id>`.
+
 ## CLI Example
 
 ```bash
