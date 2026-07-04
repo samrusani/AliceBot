@@ -227,6 +227,9 @@ class MCPServer:
                     },
                 )
 
+            # Protocol 2024-11-05 clients read tool results from content[].text,
+            # so the payload is serialized exactly once. structuredContent is a
+            # later-protocol field and would double the bytes on the wire.
             return _response_success(
                 request_id,
                 result={
@@ -236,7 +239,6 @@ class MCPServer:
                             "text": json.dumps(structured, separators=(",", ":"), sort_keys=True),
                         }
                     ],
-                    "structuredContent": structured,
                     "isError": False,
                 },
             )
@@ -281,7 +283,10 @@ class MCPServer:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="alicebot-mcp",
-        description="Deterministic local MCP server for Alice continuity workflows.",
+        description=(
+            "Local MCP server exposing Alice's memory tools over stdio. "
+            "Set ALICE_MCP_LEGACY_TOOLS=1 to expose the legacy long-tail tools."
+        ),
     )
     parser.add_argument(
         "--database-url",

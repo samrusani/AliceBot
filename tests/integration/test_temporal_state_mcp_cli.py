@@ -24,6 +24,9 @@ def build_runtime_env(*, database_url: str, user_id: UUID) -> dict[str, str]:
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
     env["ALICEBOT_AUTH_USER_ID"] = str(user_id)
+    # These suites exercise the legacy long-tail tools as well as the core
+    # nine, so enable the legacy MCP surface for the spawned server.
+    env["ALICE_MCP_LEGACY_TOOLS"] = "1"
     pythonpath_entries = [str(REPO_ROOT / "apps" / "api" / "src"), str(REPO_ROOT / "workers")]
     existing_pythonpath = env.get("PYTHONPATH")
     if existing_pythonpath:
@@ -129,7 +132,7 @@ def _call_tool(client: MCPClient, *, name: str, arguments: dict[str, object]) ->
     response = client.request("tools/call", params={"name": name, "arguments": arguments})
     assert "error" not in response
     assert response["result"]["isError"] is False
-    return response["result"]["structuredContent"]
+    return json.loads(response["result"]["content"][0]["text"])
 
 
 def _set_temporal_timestamps(

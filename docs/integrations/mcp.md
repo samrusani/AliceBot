@@ -1,7 +1,7 @@
 # MCP Integration
 
-The shipped MCP server for the `v0.5.1` release boundary exposes a deliberately scoped deterministic tool surface over Alice continuity seams.
-`v0.5.1` is the current pre-1.0 public release.
+Alice's MCP server exposes nine core tools by default, with the legacy
+long-tail surface available behind an environment flag.
 
 ## Entrypoints
 
@@ -16,77 +16,57 @@ alicebot-mcp
 
 ## Runtime Scope
 
-MCP uses the same local runtime scope as CLI:
+MCP uses the same local runtime scope as the CLI:
 
 - `DATABASE_URL`
 - `ALICEBOT_AUTH_USER_ID`
 
-## Shipped Tool Surface
+Optional:
 
-- `alice_brief`
-- `alice_capture`
-- `alice_capture_candidates`
-- `alice_commit_captures`
-- `alice_recall`
-- `alice_state_at`
-- `alice_resume`
-- `alice_prefetch_context`
-- `alice_open_loops`
-- `alice_recent_decisions`
-- `alice_recent_changes`
-- `alice_timeline`
-- `alice_review_queue`
-- `alice_review_apply`
-- `alice_memory_review` (legacy alias)
-- `alice_memory_correct` (legacy alias)
-- `alice_explain`
-- `alice_context_pack`
-- `alice_vnext_context_pack`
-- `alice_vnext_context_tree`
-- `alice_vnext_capture`
-- `alice_vnext_queue_task`
-- `alice_vnext_generate_artifact`
-- `alice_vnext_project_dashboard`
-- `alice_vnext_open_loops`
-- `alice_vnext_recent_decisions`
-- `alice_vnext_recent_changes`
-- `alice_vnext_find_connections`
-- `alice_vnext_find_contradictions`
-- `alice_vnext_propose_memory`
-- `alice_vnext_review_items`
-- `alice_vnext_artifact_get`
-- `alice_vnext_artifact_review`
-- `alice_vnext_scheduler_status`
-- `alice_vnext_scheduler_run_now`
-- `alice_vnext_scheduler_run_due`
-- `alice_vnext_scheduler_pause`
-- `alice_vnext_scheduler_resume`
-- `alice_vnext_ingest_agent_output`
+- `ALICE_EMBEDDINGS_BASE_URL`, `ALICE_EMBEDDINGS_MODEL`,
+  `ALICE_EMBEDDINGS_API_KEY` — enable semantic vector search in
+  `alice_recall` and `alice_context_pack` (full-text-only without them)
+- `ALICE_MCP_LEGACY_TOOLS=1` — expose the legacy long-tail tool surface
 
-`alice_brief` is the default external-agent continuity lookup. It returns one continuity bundle with relevant facts, recent changes, open loops, conflicts, timeline highlights, provenance, trust posture, and a next suggested action.
-`alice_explain` now accepts either `continuity_object_id` for evidence-chain inspection or `entity_id` plus optional `at` for temporal explain output.
-`alice_prefetch_context` provides an automation-oriented pre-turn context assembly surface using the same continuity resumption semantics shipped for `alice_resume`.
-`alice_capture_candidates` and `alice_commit_captures` provide the B2 bridge auto-capture pipeline over user/assistant turns with `manual`/`assist`/`auto` commit policy support.
-`alice_review_queue` and `alice_review_apply` provide B3 review operations (`approve`, `edit-and-approve`, `reject`, `supersede-existing`) with deterministic recall/resume effects after approved actions.
+## Default Tool Surface
 
-The `alice_vnext_*` tools carry the agentic control-plane contract. Agent callers can include `agent_id`, `agent_type`, `agent_run_id`, `task_id`, `project_scope`, `permission_profile`, domain filters, and sensitivity filters. Policy decisions are logged, restricted requests are filtered or blocked, memory writes stay proposal/review-only, and scheduler actions create governed run records with trace IDs.
+- `alice_capture` — submit information as source-backed reviewable memory
+- `alice_recall` — hybrid full-text + vector search with fused ranking
+- `alice_resume` — resumption brief for a project, person, or thread
+- `alice_context_pack` — scoped context bundle for a task
+- `alice_open_loops` — list or manage open loops
+- `alice_recent_decisions` — recent decision log
+- `alice_memory_review` — review queue inspection
+- `alice_memory_correct` — approve, edit, reject, or supersede a memory
+- `alice_explain` — provenance and trust explanation
 
-`alice_vnext_context_tree` returns a read-only navigation tree over existing vNext projects, memories, sources, open loops, artifacts, and recent events. It is for agent orientation and context selection, not mutation.
+Full schemas with per-parameter descriptions come from `tools/list`.
+Details and examples: [docs/alpha/mcp-tools.md](../alpha/mcp-tools.md).
 
-`alice_vnext_generate_artifact` supports `memory_consolidation` in addition to daily/weekly and report workflows. Memory consolidation creates a reviewable artifact and optional candidate memories only; it does not auto-promote trusted memory.
+## Legacy Tool Surface
 
-Model-backed artifact tools also accept `generation_mode`, `model_route_mode`, `model_provider`, `model`, `model_temperature`, and `allow_cloud_private`. Supported generation modes are `deterministic` and `model_backed`; supported route modes are `local_only`, `cloud_allowed`, `cloud_requires_approval`, and `model_disabled`. Agent-triggered model-backed generation is policy checked before a workflow runs, and private/highly sensitive scopes remain local-only or disabled unless explicitly configured.
+With `ALICE_MCP_LEGACY_TOOLS=1`, the full earlier surface (74 tools) is
+listed and callable — briefs, timeline, state-at-time, capture pipelines,
+queue/graph/belief/scheduler controls, provider runtime tools, and the
+`alice_vnext_*` agentic control-plane contract, including
+`alice_vnext_ingest_agent_output` (agent-output capture as untrusted source
+evidence) and `alice_vnext_commit_memory` (explicit policy-checked memory
+writes with commit / confirmation / review / reject outcomes).
 
-`alice_vnext_ingest_agent_output` is the live capture seam for Hermes/OpenClaw-style agent outputs. It stores the agent output as source evidence, creates a review-only generated artifact, optionally creates a candidate memory proposal, links provenance back to the captured source, and logs the agent identity and policy decision. It does not accept or promote trusted memory automatically.
+The legacy surface is frozen: existing integrations keep working, new
+capabilities land on the core nine.
 
-For first-run memory expectations and a deterministic way to prove memory is working, see [../alpha/first-memory.md](../alpha/first-memory.md). Normal chat is not guaranteed to become trusted memory; explicit memory instructions should use `alice_vnext_commit_memory`.
+For first-run memory expectations and a deterministic way to prove memory
+is working, see [../alpha/first-memory.md](../alpha/first-memory.md).
+Normal chat is not guaranteed to become trusted memory; explicit memory
+instructions should use an explicit commit or capture call.
 
 ## Example: Claude Desktop MCP Config
 
 ```json
 {
   "mcpServers": {
-    "alice-core": {
+    "alice": {
       "command": "/ABSOLUTE/PATH/TO/AliceBot/.venv/bin/python",
       "args": ["-m", "alicebot_api.mcp_server"],
       "cwd": "/ABSOLUTE/PATH/TO/AliceBot",
@@ -121,12 +101,12 @@ One-command bridge demo:
 
 ## Contract Guardrails
 
-- tool set is intentionally narrow and stable
-- tool output is deterministic for parity testing
-- MCP does not widen core product semantics beyond the shipped Phase 13 baseline and Bridge `B1` through `B4`
-- `alice_brief` is the preferred first call for external runtimes that need continuity in one request
-- vNext agent tools preserve the no-auto-promotion rule and require review for agent-proposed memory
-- vNext agent-output ingestion treats agent text as untrusted source evidence and only creates reviewable artifacts/proposals
+- the default tool set is intentionally small and stable
+- responses are compact by default; diagnostic traces are opt-in via the
+  `debug` parameter on read tools
+- agent-proposed memory requires review; nothing an agent submits becomes
+  trusted memory without passing the commit policy engine
+- agent-output ingestion treats agent text as untrusted source evidence
 
 See tests:
 
@@ -134,4 +114,3 @@ See tests:
 - `tests/integration/test_mcp_server.py`
 - `tests/integration/test_temporal_state_mcp_cli.py`
 - `tests/integration/test_openclaw_mcp_integration.py`
-- `docs/integrations/one-call-continuity.md`

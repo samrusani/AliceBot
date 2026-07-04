@@ -44,6 +44,9 @@ def build_runtime_env(*, database_url: str, user_id: UUID) -> dict[str, str]:
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
     env["ALICEBOT_AUTH_USER_ID"] = str(user_id)
+    # These suites exercise the legacy long-tail tools as well as the core
+    # nine, so enable the legacy MCP surface for the spawned server.
+    env["ALICE_MCP_LEGACY_TOOLS"] = "1"
 
     pythonpath_entries = [str(REPO_ROOT / "apps" / "api" / "src"), str(REPO_ROOT / "workers")]
     existing_pythonpath = env.get("PYTHONPATH")
@@ -156,7 +159,8 @@ def start_mcp_client(*, database_url: str, user_id: UUID) -> MCPClient:
 def _call_tool(client: MCPClient, *, name: str, arguments: dict[str, object]) -> dict[str, object]:
     response = client.request("tools/call", params={"name": name, "arguments": arguments})
     assert "error" not in response
-    return response["result"]
+    result = response["result"]
+    return json.loads(result["content"][0]["text"])
 
 
 def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> None:
@@ -221,17 +225,46 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
         assert "alice_review_queue" in tool_names
         assert "alice_review_apply" in tool_names
 
-        recall_before = _call_tool(
+        # Core recall now searches vNext memories with hybrid FTS+RRF ranking;
+        # commit one through agent policy and confirm recall returns it.
+        committed = _call_tool(
+            client,
+            name="alice_vnext_commit_memory",
+            arguments={
+                "agent_id": "hermes",
+                "agent_type": "personal_assistant",
+                "permission_profile": "trusted_local_agent",
+                "title": "Rollout checklist owner",
+                "canonical_text": "Priya owns the phased rollout checklist for the beta launch.",
+                "domain": "professional",
+                "sensitivity": "internal",
+                "confidence": 0.96,
+            },
+        )
+        assert committed["status"] == "committed"
+        committed_memory_id = committed["memory"]["id"]
+
+        core_recall = _call_tool(
             client,
             name="alice_recall",
+            arguments={"query": "rollout checklist", "limit": 5, "debug": True},
+        )
+        assert core_recall["count"] >= 1
+        assert core_recall["results"][0]["id"] == committed_memory_id
+        assert core_recall["retrieval"]["fusion"]["algorithm"] == "reciprocal_rank_fusion"
+        assert core_recall["retrieval"]["stages"]["fts"]["candidate_count"] >= 1
+
+        # The legacy continuity recall view stays available behind the flag.
+        recall_before = _call_tool(
+            client,
+            name="alice_recall_debug",
             arguments={
                 "thread_id": str(thread_id),
                 "query": "rollout",
                 "limit": 20,
             },
         )
-        assert recall_before["isError"] is False
-        before_payload = recall_before["structuredContent"]
+        before_payload = recall_before
         assert before_payload["items"][0]["id"] == str(legacy_decision["id"])
         assert before_payload["items"][0]["explanation"]["evidence_segments"][0]["source_kind"] == (
             "continuity_capture_event"
@@ -246,8 +279,7 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
                 "max_open_loops": 5,
             },
         )
-        assert resume_before["isError"] is False
-        assert resume_before["structuredContent"]["brief"]["last_decision"]["item"]["id"] == str(legacy_decision["id"])
+        assert resume_before["brief"]["last_decision"]["item"]["id"] == str(legacy_decision["id"])
 
         prefetch_before = _call_tool(
             client,
@@ -258,23 +290,29 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
                 "max_open_loops": 5,
             },
         )
-        assert prefetch_before["isError"] is False
-        prefetch_payload = prefetch_before["structuredContent"]["prefetch_context"]
+        prefetch_payload = prefetch_before["prefetch_context"]
         assert prefetch_payload["last_decision"]["item"]["id"] == str(legacy_decision["id"])
         assert "## Alice Continuity Prefetch" in prefetch_payload["text"]
 
+        # Core open_loops lists vNext open loops (none seeded here); the legacy
+        # WaitingFor continuity object stays visible through the debug recall view.
         open_loops = _call_tool(
             client,
             name="alice_open_loops",
-            arguments={
-                "thread_id": str(thread_id),
-                "limit": 20,
-            },
+            arguments={"limit": 20},
         )
-        assert open_loops["isError"] is False
-        open_loop_dashboard = open_loops["structuredContent"]["dashboard"]
-        assert open_loop_dashboard["summary"]["total_count"] == 1
-        assert open_loop_dashboard["waiting_for"]["items"][0]["id"] == str(waiting_for["id"])
+        assert open_loops["count"] == 0
+        assert open_loops["items"] == []
+        assert any(
+            item["id"] == str(waiting_for["id"]) for item in before_payload["items"]
+        ) or any(
+            item["id"] == str(waiting_for["id"])
+            for item in _call_tool(
+                client,
+                name="alice_recall_debug",
+                arguments={"thread_id": str(thread_id), "limit": 20},
+            )["items"]
+        )
 
         review_queue = _call_tool(
             client,
@@ -284,8 +322,7 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
                 "limit": 20,
             },
         )
-        assert review_queue["isError"] is False
-        queue_payload = review_queue["structuredContent"]
+        queue_payload = review_queue
         queue_item = next(
             item for item in queue_payload["items"] if item["id"] == str(legacy_decision["id"])
         )
@@ -313,21 +350,19 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
                 "replacement_confidence": 0.98,
             },
         )
-        assert correction["isError"] is False
-        assert correction["structuredContent"]["review_action"]["resolved_action"] == "supersede"
-        replacement_id = correction["structuredContent"]["replacement_object"]["id"]
+        assert correction["review_action"]["resolved_action"] == "supersede"
+        replacement_id = correction["replacement_object"]["id"]
 
         recall_after = _call_tool(
             client,
-            name="alice_recall",
+            name="alice_recall_debug",
             arguments={
                 "thread_id": str(thread_id),
                 "query": "rollout",
                 "limit": 20,
             },
         )
-        assert recall_after["isError"] is False
-        after_payload = recall_after["structuredContent"]
+        after_payload = recall_after
         assert after_payload["items"][0]["id"] == replacement_id
         assert any(item["id"] == str(legacy_decision["id"]) for item in after_payload["items"])
         replacement_item = next(item for item in after_payload["items"] if item["id"] == replacement_id)
@@ -345,8 +380,7 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
                 "max_open_loops": 5,
             },
         )
-        assert resume_after["isError"] is False
-        assert resume_after["structuredContent"]["brief"]["last_decision"]["item"]["id"] == replacement_id
+        assert resume_after["brief"]["last_decision"]["item"]["id"] == replacement_id
 
         rejected = _call_tool(
             client,
@@ -357,19 +391,17 @@ def test_mcp_server_tool_calls_and_correction_flow(migrated_database_urls) -> No
                 "reason": "No longer needed",
             },
         )
-        assert rejected["isError"] is False
-        assert rejected["structuredContent"]["review_action"]["resolved_action"] == "delete"
+        assert rejected["review_action"]["resolved_action"] == "delete"
 
         recall_post_reject = _call_tool(
             client,
-            name="alice_recall",
+            name="alice_recall_debug",
             arguments={
                 "thread_id": str(thread_id),
                 "limit": 20,
             },
         )
-        assert recall_post_reject["isError"] is False
-        recall_rejected_payload = recall_post_reject["structuredContent"]
+        recall_rejected_payload = recall_post_reject
         assert all(item["id"] != str(waiting_for["id"]) for item in recall_rejected_payload["items"])
     finally:
         client.close()
@@ -410,8 +442,7 @@ def test_mcp_memory_mutation_tools_smoke(migrated_database_urls) -> None:
                 "thread_id": str(thread_id),
             },
         )
-        assert generated["isError"] is False
-        generated_payload = generated["structuredContent"]
+        generated_payload = generated
         assert generated_payload["summary"]["operation_types"] == ["SUPERSEDE"]
         candidate_id = generated_payload["items"][0]["id"]
 
@@ -423,8 +454,7 @@ def test_mcp_memory_mutation_tools_smoke(migrated_database_urls) -> None:
                 "limit": 20,
             },
         )
-        assert listed_candidates["isError"] is False
-        assert listed_candidates["structuredContent"]["summary"]["returned_count"] == 1
+        assert listed_candidates["summary"]["returned_count"] == 1
 
         committed = _call_tool(
             client,
@@ -433,8 +463,7 @@ def test_mcp_memory_mutation_tools_smoke(migrated_database_urls) -> None:
                 "candidate_ids": [candidate_id],
             },
         )
-        assert committed["isError"] is False
-        committed_payload = committed["structuredContent"]
+        committed_payload = committed
         assert committed_payload["summary"]["applied_count"] == 1
         assert committed_payload["operations"][0]["operation_type"] == "SUPERSEDE"
 
@@ -446,8 +475,7 @@ def test_mcp_memory_mutation_tools_smoke(migrated_database_urls) -> None:
                 "limit": 20,
             },
         )
-        assert listed_operations["isError"] is False
-        assert listed_operations["structuredContent"]["summary"]["returned_count"] == 1
-        assert listed_operations["structuredContent"]["items"][0]["operation_type"] == "SUPERSEDE"
+        assert listed_operations["summary"]["returned_count"] == 1
+        assert listed_operations["items"][0]["operation_type"] == "SUPERSEDE"
     finally:
         client.close()

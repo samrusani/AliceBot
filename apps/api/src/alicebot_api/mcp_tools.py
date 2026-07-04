@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -12,7 +13,6 @@ from psycopg.errors import CheckViolation
 from alicebot_api.continuity_capture import (
     ContinuityCaptureValidationError,
     capture_continuity_candidates,
-    capture_continuity_input,
     commit_continuity_captures,
 )
 from alicebot_api.continuity_brief import (
@@ -31,10 +31,6 @@ from alicebot_api.continuity_contradictions import (
     list_contradiction_cases,
     resolve_contradiction_case,
     sync_contradictions,
-)
-from alicebot_api.continuity_open_loops import (
-    ContinuityOpenLoopValidationError,
-    compile_continuity_open_loop_dashboard,
 )
 from alicebot_api.continuity_recall import (
     ContinuityRecallValidationError,
@@ -63,7 +59,6 @@ from alicebot_api.memory_mutations import (
 )
 from alicebot_api.contracts import (
     CONTINUITY_CAPTURE_COMMIT_MODES,
-    CONTINUITY_CAPTURE_EXPLICIT_SIGNALS,
     CONTINUITY_CORRECTION_ACTIONS,
     CONTINUITY_BRIEF_TYPE_ORDER,
     CONTRADICTION_RESOLUTION_ACTIONS,
@@ -72,7 +67,6 @@ from alicebot_api.contracts import (
     DEFAULT_CONTINUITY_BRIEF_CONFLICT_LIMIT,
     DEFAULT_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
     DEFAULT_CONTINUITY_BRIEF_TIMELINE_LIMIT,
-    DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RECALL_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
@@ -82,7 +76,6 @@ from alicebot_api.contracts import (
     MAX_CONTINUITY_BRIEF_CONFLICT_LIMIT,
     MAX_CONTINUITY_BRIEF_RELEVANT_FACT_LIMIT,
     MAX_CONTINUITY_BRIEF_TIMELINE_LIMIT,
-    MAX_CONTINUITY_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RECALL_LIMIT,
     MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
     MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
@@ -91,13 +84,11 @@ from alicebot_api.contracts import (
     MAX_TEMPORAL_TIMELINE_LIMIT,
     ContinuityCaptureCandidatesInput,
     ContinuityCaptureCommitInput,
-    ContinuityCaptureCreateInput,
     ContinuityBriefRequestInput,
     ContradictionCaseListQueryInput,
     ContradictionResolveInput,
     ContradictionSyncInput,
     ContinuityCorrectionInput,
-    ContinuityOpenLoopDashboardQueryInput,
     ContinuityRecallQueryInput,
     ContinuityResumptionBriefRequestInput,
     ContinuityReviewQueueQueryInput,
@@ -134,6 +125,10 @@ from alicebot_api.vnext_agent_control import (
     append_policy_events,
     evaluate_agent_policy,
 )
+from alicebot_api.vnext_agent_keys import (
+    AgentKeyAuthenticationError,
+    resolve_agent_identity,
+)
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService
 from alicebot_api.vnext_capture import VNextCaptureService
 from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnectionService
@@ -148,9 +143,15 @@ from alicebot_api.vnext_memory_commit import (
     VNEXT_SENSITIVITY_LEVELS,
     memory_commit_request_from_payload,
 )
-from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService
+from alicebot_api.vnext_projects import OPEN_LOOP_ACTIONS, ProjectAutomationRequest, VNextProjectService
 from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService
-from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService
+from alicebot_api.vnext_retrieval import (
+    RRF_K,
+    VECTOR_STAGE_ENABLED,
+    VNextRetrievalRequest,
+    VNextRetrievalService,
+    reciprocal_rank_fusion,
+)
 from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerService
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_store import PostgresVNextStore
@@ -184,7 +185,12 @@ _REVIEW_APPLY_TO_CORRECTION_ACTION = {
     "reject": "delete",
     "supersede-existing": "supersede",
 }
-_CONTEXT_PACK_ASSEMBLY_VERSION_V0 = "alice_context_pack_v0"
+MCP_LEGACY_TOOLS_ENV = "ALICE_MCP_LEGACY_TOOLS"
+_LEGACY_ENABLED_VALUES = {"1", "true", "yes", "on"}
+_DEFAULT_SENSITIVITY_ALLOWED = ("public", "internal", "private", "unknown")
+_RECALL_DEFAULT_LIMIT = 8
+_RECALL_MAX_LIMIT = 50
+_OPEN_LOOP_TOOL_ACTIONS = ("list", *sorted(OPEN_LOOP_ACTIONS))
 _PREFETCH_CONTEXT_ASSEMBLY_VERSION_V0 = "alice_prefetch_context_v0"
 _MODEL_GENERATION_MODES = ("deterministic", "model_backed")
 _MODEL_ROUTE_MODES = ("local_only", "cloud_allowed", "cloud_requires_approval", "model_disabled")
@@ -346,10 +352,36 @@ def _parse_string_list(arguments: Mapping[str, object], key: str) -> tuple[str, 
     return tuple(output)
 
 
-def _agent_identity_from_arguments(arguments: Mapping[str, object]) -> AgentIdentity | None:
+AGENT_API_KEY_ENV = "ALICE_AGENT_API_KEY"
+
+
+def _agent_identity_from_arguments(
+    context: MCPRuntimeContext, arguments: Mapping[str, object]
+) -> AgentIdentity | None:
+    """Resolve the calling agent's identity for one MCP tool call.
+
+    Without ``ALICE_AGENT_API_KEY`` the MCP server is local operator tooling
+    (it already holds direct database credentials), so payload identity is
+    honored and carries the default ``unauthenticated_local`` auth marker.
+    With the key set, identity is resolved and enforced against the issued
+    key record exactly like the HTTP surface.
+    """
+
+    raw_key = (os.environ.get(AGENT_API_KEY_ENV) or "").strip() or None
+    if raw_key is None:
+        try:
+            return AgentIdentity.from_payload(arguments)
+        except AgentIdentityValidationError as exc:
+            raise MCPToolError(str(exc)) from exc
     try:
-        return AgentIdentity.from_payload(arguments)
-    except AgentIdentityValidationError as exc:
+        with _vnext_store_context(context) as store:
+            return resolve_agent_identity(
+                store,
+                user_id=context.user_id,
+                raw_key=raw_key,
+                payload=arguments,
+            )
+    except (AgentKeyAuthenticationError, AgentIdentityValidationError) as exc:
         raise MCPToolError(str(exc)) from exc
 
 
@@ -403,7 +435,7 @@ def _mcp_agent_policy_preflight(
     workflow_type: str | None = None,
     write_policy: str | None = None,
 ) -> PolicyDecision:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     decision: PolicyDecision | None = None
     with _vnext_store_context(context) as store:
@@ -722,22 +754,6 @@ def _render_prefetch_context_text(
     return "\n".join(lines)
 
 
-def _handle_alice_capture(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    explicit_signal = arguments.get("explicit_signal")
-    if explicit_signal is not None and not isinstance(explicit_signal, str):
-        raise MCPToolError("explicit_signal must be a string when provided")
-
-    with _store_context(context) as store:
-        return capture_continuity_input(
-            store,
-            user_id=context.user_id,
-            request=ContinuityCaptureCreateInput(
-                raw_content=_parse_required_text(arguments, "raw_content"),
-                explicit_signal=explicit_signal,
-            ),
-        )
-
-
 def _handle_alice_capture_candidates(
     context: MCPRuntimeContext,
     arguments: Mapping[str, object],
@@ -877,21 +893,78 @@ def _handle_alice_memory_mutations_list_operations(
         )
 
 
+def _compact_recall_result(item: Mapping[str, object], *, score: float, provenance_count: int) -> JsonObject:
+    return {
+        "id": str(item.get("id")),
+        "type": item.get("memory_type"),
+        "text": item.get("canonical_text") or item.get("summary") or item.get("title"),
+        "score": round(score, 6),
+        "domain": item.get("domain"),
+        "status": item.get("status"),
+        "confidence": item.get("confidence"),
+        "provenance_count": provenance_count,
+    }
+
+
 def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    query = _parse_required_text(arguments, "query")
     limit = _parse_int(
         arguments,
         key="limit",
-        default=DEFAULT_CONTINUITY_RECALL_LIMIT,
+        default=_RECALL_DEFAULT_LIMIT,
         minimum=1,
-        maximum=MAX_CONTINUITY_RECALL_LIMIT,
+        maximum=_RECALL_MAX_LIMIT,
     )
+    debug = _parse_bool(arguments, key="debug", default=False)
+    domains = list(_parse_string_list(arguments, "domains"))
+    sensitivity_allowed = list(
+        _parse_string_list(arguments, "sensitivity_allowed") or _DEFAULT_SENSITIVITY_ALLOWED
+    )
+    candidate_limit = max(limit * 2, limit)
 
-    with _store_context(context) as store:
-        return query_continuity_recall(
-            store,
-            user_id=context.user_id,
-            request=_build_recall_query(arguments, limit=limit),
+    with _vnext_store_context(context) as store:
+        # Reuse the hybrid retrieval stages (Postgres FTS + pgvector) that back
+        # vNext context packs so recall and context packs rank identically.
+        service = VNextRetrievalService(store)
+        fts_rows, fts_source = service._memory_fts_rows(
+            query=query,
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=candidate_limit,
         )
+        vector_rows, vector_stage = service._memory_vector_rows(
+            query=query,
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=candidate_limit,
+        )
+        ranked_lists: dict[str, list[JsonObject]] = {"fts": fts_rows}
+        if vector_stage == VECTOR_STAGE_ENABLED:
+            ranked_lists["vector"] = vector_rows
+        results: list[JsonObject] = []
+        for item, score, _stage_ranks in reciprocal_rank_fusion(ranked_lists):
+            if len(results) >= limit:
+                break
+            provenance_count = len(
+                store.list_provenance_links(target_type="memory", target_id=str(item.get("id")))
+            )
+            results.append(_compact_recall_result(item, score=score, provenance_count=provenance_count))
+
+    payload: JsonObject = {
+        "query": query,
+        "results": results,
+        "count": len(results),
+    }
+    if debug:
+        payload["retrieval"] = {
+            "fusion": {"algorithm": "reciprocal_rank_fusion", "k": RRF_K},
+            "vector_stage": vector_stage,
+            "stages": {
+                "fts": {"source": fts_source, "candidate_count": len(fts_rows)},
+                "vector": {"status": vector_stage, "candidate_count": len(vector_rows)},
+            },
+        }
+    return payload
 
 
 def _handle_alice_recall_debug(
@@ -971,6 +1044,7 @@ def _handle_alice_resume(context: MCPRuntimeContext, arguments: Mapping[str, obj
                     key="include_non_promotable_facts",
                     default=False,
                 ),
+                debug=_parse_bool(arguments, key="debug", default=False),
             ),
         )
 
@@ -1142,29 +1216,25 @@ def _handle_alice_prefetch_context(context: MCPRuntimeContext, arguments: Mappin
 
 
 def _handle_alice_open_loops(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    limit = _parse_int(
-        arguments,
-        key="limit",
-        default=DEFAULT_CONTINUITY_OPEN_LOOP_LIMIT,
-        minimum=0,
-        maximum=MAX_CONTINUITY_OPEN_LOOP_LIMIT,
-    )
+    action = (_parse_optional_text(arguments, "action") or "list").lower()
+    if action not in _OPEN_LOOP_TOOL_ACTIONS:
+        allowed = ", ".join(_OPEN_LOOP_TOOL_ACTIONS)
+        raise MCPToolError(f"action must be one of: {allowed}")
+    if action == "list":
+        return _handle_alice_vnext_open_loops(context, arguments)
 
-    with _store_context(context) as store:
-        return compile_continuity_open_loop_dashboard(
-            store,
-            user_id=context.user_id,
-            request=ContinuityOpenLoopDashboardQueryInput(
-                query=_parse_optional_text(arguments, "query"),
-                thread_id=_parse_optional_uuid(arguments, "thread_id"),
-                task_id=_parse_optional_uuid(arguments, "task_id"),
-                project=_parse_optional_text(arguments, "project"),
-                person=_parse_optional_text(arguments, "person"),
-                since=_parse_optional_datetime(arguments, "since"),
-                until=_parse_optional_datetime(arguments, "until"),
-                limit=limit,
-            ),
+    loop_id = _parse_required_text(arguments, "loop_id")
+    with _vnext_store_context(context) as store:
+        loop = VNextProjectService(store).review_open_loop(
+            loop_id=loop_id,
+            action=action,
+            title=_parse_optional_text(arguments, "title"),
+            description=_parse_optional_text(arguments, "description"),
+            due_at=_parse_optional_text(arguments, "due_at"),
+            priority=_parse_optional_text(arguments, "priority"),
+            resolution_note=_parse_optional_text(arguments, "resolution_note"),
         )
+    return {"action": action, "open_loop": loop}
 
 
 def _recent_decisions_payload(
@@ -1507,10 +1577,14 @@ def _handle_alice_trust_signals(
 
 
 def _handle_alice_explain(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    memory_id = _parse_optional_text(arguments, "memory_id")
     continuity_object_id = _parse_optional_uuid(arguments, "continuity_object_id")
     entity_id = _parse_optional_uuid(arguments, "entity_id")
-    if continuity_object_id is not None and entity_id is not None:
-        raise MCPToolError("alice_explain accepts either continuity_object_id or entity_id, not both")
+    provided = [value for value in (memory_id, continuity_object_id, entity_id) if value is not None]
+    if len(provided) > 1:
+        raise MCPToolError("alice_explain accepts exactly one of memory_id, continuity_object_id, or entity_id")
+    if memory_id is not None:
+        return _handle_alice_vnext_memory_audit(context, arguments)
     if entity_id is not None:
         with _store_context(context) as store:
             return get_temporal_explain(
@@ -1522,7 +1596,7 @@ def _handle_alice_explain(context: MCPRuntimeContext, arguments: Mapping[str, ob
                 ),
             )
     if continuity_object_id is None:
-        raise MCPToolError("alice_explain requires continuity_object_id or entity_id")
+        raise MCPToolError("alice_explain requires memory_id, continuity_object_id, or entity_id")
 
     include_raw_content = _parse_bool(arguments, key="include_raw_content", default=False)
     if include_raw_content and get_settings().app_env not in {"development", "test"}:
@@ -1554,71 +1628,68 @@ def _handle_alice_artifact_inspect(
         )
 
 
+_COMPACT_MEMORY_FIELDS = (
+    "id",
+    "memory_type",
+    "title",
+    "canonical_text",
+    "summary",
+    "status",
+    "confidence",
+    "domain",
+    "sensitivity",
+    "last_seen_at",
+)
+_COMPACT_OPEN_LOOP_FIELDS = (
+    "id",
+    "title",
+    "description",
+    "status",
+    "priority",
+    "due_at",
+    "domain",
+    "project_id",
+)
+_COMPACT_SOURCE_FIELDS = ("id", "source_type", "title", "captured_at", "domain", "sensitivity")
+
+
+def _compact_fields(item: object, fields: tuple[str, ...]) -> JsonObject:
+    if not isinstance(item, Mapping):
+        return {}
+    return {key: item[key] for key in fields if item.get(key) is not None}
+
+
+def _compact_items(items: object, fields: tuple[str, ...]) -> list[JsonObject]:
+    if not isinstance(items, list):
+        return []
+    return [_compact_fields(item, fields) for item in items]
+
+
 def _handle_alice_context_pack(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    open_loops_limit = _parse_int(
-        arguments,
-        key="open_loops_limit",
-        default=DEFAULT_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
-        minimum=0,
-        maximum=MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
-    )
-    recent_changes_limit = _parse_int(
-        arguments,
-        key="recent_changes_limit",
-        default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
-        minimum=0,
-        maximum=MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
-    )
-    recent_decisions_limit = _parse_int(
-        arguments,
-        key="recent_decisions_limit",
-        default=DEFAULT_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
-        minimum=1,
-        maximum=MAX_CONTINUITY_RECALL_LIMIT,
-    )
-
-    with _store_context(context) as store:
-        resumption_payload = compile_continuity_resumption_brief(
-            store,
-            user_id=context.user_id,
-            request=ContinuityResumptionBriefRequestInput(
-                query=_parse_optional_text(arguments, "query"),
-                thread_id=_parse_optional_uuid(arguments, "thread_id"),
-                task_id=_parse_optional_uuid(arguments, "task_id"),
-                project=_parse_optional_text(arguments, "project"),
-                person=_parse_optional_text(arguments, "person"),
-                since=_parse_optional_datetime(arguments, "since"),
-                until=_parse_optional_datetime(arguments, "until"),
-                max_recent_changes=recent_changes_limit,
-                max_open_loops=open_loops_limit,
-            ),
-        )
-
-    brief = resumption_payload["brief"]
-    recent_decisions = _recent_decisions_payload(
-        context,
-        arguments=arguments,
-        limit=recent_decisions_limit,
-    )
-    return {
-        "context_pack": {
-            "assembly_version": _CONTEXT_PACK_ASSEMBLY_VERSION_V0,
-            "scope": brief["scope"],
-            "last_decision": brief["last_decision"],
-            "next_action": brief["next_action"],
-            "open_loops": brief["open_loops"],
-            "recent_changes": brief["recent_changes"],
-            "recent_decisions": recent_decisions,
-            "sources": [
-                "continuity_capture_events",
-                "continuity_objects",
-                "continuity_correction_events",
-            ],
-        }
+    debug = _parse_bool(arguments, key="debug", default=False)
+    pack = _vnext_context_pack_payload(context, arguments)
+    interpretation = pack.get("query_interpretation")
+    if not isinstance(interpretation, Mapping):
+        interpretation = {}
+    payload: JsonObject = {
+        "context_pack_id": pack.get("context_pack_id"),
+        "query": interpretation.get("query"),
+        "query_type": interpretation.get("query_type"),
+        "memories": _compact_items(pack.get("relevant_memories"), _COMPACT_MEMORY_FIELDS),
+        "open_loops": _compact_items(pack.get("open_loops"), _COMPACT_OPEN_LOOP_FIELDS),
+        "sources": _compact_items(pack.get("sources"), _COMPACT_SOURCE_FIELDS),
+        "supporting_evidence": pack.get("supporting_evidence", []),
+        "missing_information": pack.get("missing_information", []),
+        "warnings": pack.get("warnings", []),
+        "trace_id": pack.get("trace_id"),
     }
+    if debug:
+        payload["query_interpretation"] = dict(interpretation)
+        payload["trace"] = pack.get("trace")
+    return payload
 
 
-def _handle_alice_vnext_context_pack(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+def _vnext_context_pack_payload(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     max_items = _parse_int(
         arguments,
         key="max_items",
@@ -1639,7 +1710,7 @@ def _handle_alice_vnext_context_pack(context: MCPRuntimeContext, arguments: Mapp
         "private",
         "unknown",
     )
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
 
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
@@ -1682,6 +1753,10 @@ def _handle_alice_vnext_context_pack(context: MCPRuntimeContext, arguments: Mapp
     return payload
 
 
+def _handle_alice_vnext_context_pack(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    return _vnext_context_pack_payload(context, arguments)
+
+
 def _handle_alice_vnext_context_tree(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     limit = _parse_int(arguments, key="limit", default=12, minimum=1, maximum=50)
     sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
@@ -1690,7 +1765,7 @@ def _handle_alice_vnext_context_tree(context: MCPRuntimeContext, arguments: Mapp
         "private",
         "unknown",
     )
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
 
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
@@ -1895,7 +1970,7 @@ def _project_request_from_arguments(arguments: Mapping[str, object]) -> ProjectA
 
 def _handle_alice_project_update_candidate(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     request = _project_request_from_arguments(arguments)
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -1990,7 +2065,7 @@ def _handle_alice_open_loop_review(context: MCPRuntimeContext, arguments: Mappin
 
 
 def _handle_alice_vnext_capture(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     domain = _parse_optional_text(arguments, "domain") or "unknown"
     sensitivity = _parse_optional_text(arguments, "sensitivity") or "unknown"
     blocked_decision: PolicyDecision | None = None
@@ -2029,7 +2104,7 @@ def _handle_alice_vnext_capture(context: MCPRuntimeContext, arguments: Mapping[s
 
 
 def _handle_alice_vnext_ingest_agent_output(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     if identity is None:
         raise MCPToolError("agent_id is required for alice_vnext_ingest_agent_output")
     domain = _parse_optional_text(arguments, "domain") or "project"
@@ -2076,7 +2151,7 @@ def _handle_alice_vnext_ingest_agent_output(context: MCPRuntimeContext, argument
 
 
 def _handle_alice_vnext_queue_task(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     domain = _parse_optional_text(arguments, "domain") or "unknown"
     sensitivity = _parse_optional_text(arguments, "sensitivity") or "unknown"
     write_policy = _parse_optional_text(arguments, "write_policy") or "proposal_only"
@@ -2135,7 +2210,7 @@ def _handle_alice_vnext_generate_artifact(context: MCPRuntimeContext, arguments:
             "workflow_type must be daily_brief, weekly_synthesis, connection_report, "
             "contradiction_report, open_loop_review, project_update_scan, or memory_consolidation"
         )
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
         "public",
         "internal",
@@ -2216,7 +2291,7 @@ def _handle_alice_vnext_open_loops(context: MCPRuntimeContext, arguments: Mappin
 
 
 def _handle_alice_vnext_propose_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     if identity is None:
         raise MCPToolError("agent_id is required for alice_vnext_propose_memory")
     proposal_type = _parse_optional_text(arguments, "proposal_type") or "candidate_memory"
@@ -2285,7 +2360,7 @@ def _handle_alice_vnext_propose_memory(context: MCPRuntimeContext, arguments: Ma
 
 
 def _handle_alice_vnext_commit_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     payload: JsonObject | None = None
     confidence = _parse_optional_float(arguments, "confidence")
     request = memory_commit_request_from_payload(
@@ -2314,7 +2389,7 @@ def _handle_alice_vnext_commit_memory(context: MCPRuntimeContext, arguments: Map
 
 
 def _handle_alice_vnext_confirm_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -2337,7 +2412,7 @@ def _handle_alice_vnext_confirm_memory(context: MCPRuntimeContext, arguments: Ma
 
 
 def _handle_alice_vnext_undo_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -2358,7 +2433,7 @@ def _handle_alice_vnext_undo_memory(context: MCPRuntimeContext, arguments: Mappi
 
 
 def _handle_alice_vnext_correct_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -2380,7 +2455,7 @@ def _handle_alice_vnext_correct_memory(context: MCPRuntimeContext, arguments: Ma
 
 
 def _handle_alice_vnext_forget_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -2401,7 +2476,7 @@ def _handle_alice_vnext_forget_memory(context: MCPRuntimeContext, arguments: Map
 
 
 def _handle_alice_vnext_recent_memory_commits(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -2420,7 +2495,7 @@ def _handle_alice_vnext_recent_memory_commits(context: MCPRuntimeContext, argume
 
 
 def _handle_alice_vnext_memory_audit(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -2456,7 +2531,7 @@ def _handle_alice_vnext_artifact_get(context: MCPRuntimeContext, arguments: Mapp
 
 
 def _handle_alice_vnext_artifact_review(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     artifact_id = _parse_required_text(arguments, "artifact_id")
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
@@ -2482,7 +2557,7 @@ def _handle_alice_vnext_scheduler_status(context: MCPRuntimeContext, _arguments:
 
 
 def _handle_alice_vnext_scheduler_run_now(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     workflow_type = _parse_required_text(arguments, "workflow_type")
     sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
         "public",
@@ -2534,7 +2609,7 @@ def _handle_alice_vnext_scheduler_run_now(context: MCPRuntimeContext, arguments:
 
 
 def _handle_alice_vnext_scheduler_run_due(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     limit_value = arguments.get("limit", 10)
     if not isinstance(limit_value, int):
         raise MCPToolError("limit must be an integer")
@@ -2559,7 +2634,7 @@ def _handle_alice_vnext_scheduler_run_due(context: MCPRuntimeContext, arguments:
 
 
 def _handle_alice_vnext_scheduler_pause(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -2576,7 +2651,7 @@ def _handle_alice_vnext_scheduler_pause(context: MCPRuntimeContext, arguments: M
 
 
 def _handle_alice_vnext_scheduler_resume(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
-    identity = _agent_identity_from_arguments(arguments)
+    identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -2618,20 +2693,496 @@ def _vnext_agent_tool_schema(
     }
 
 
-_TOOL_DEFINITIONS: list[dict[str, object]] = [
+# Optional caller-identity block shared by the core tools that accept agent
+# callers. Declaring an identity routes the call through the permission checks
+# and audit logging; omitting it means a direct user call.
+_AGENT_IDENTITY_SCHEMA_PROPERTIES: dict[str, object] = {
+    "agent_id": {
+        "type": "string",
+        "description": "Stable identifier of the calling agent, for example 'hermes'. Omit when a human calls directly.",
+    },
+    "agent_type": {
+        "type": "string",
+        "description": "Category of the calling agent, such as 'coding_agent' or 'personal_assistant'.",
+    },
+    "agent_run_id": {
+        "type": "string",
+        "description": "Identifier of the agent's current run, recorded in the audit log.",
+    },
+    "task_id": {
+        "type": "string",
+        "description": "Identifier of the task the agent is working on, recorded in the audit log.",
+    },
+    "project_scope": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "Project names the agent may access; requests outside this scope are filtered or blocked.",
+    },
+    "permission_profile": {
+        "type": "string",
+        "description": "Named permission level for the agent, such as 'trusted_local_agent' or 'project_scoped_agent'.",
+    },
+    "trace_id": {
+        "type": "string",
+        "description": "Correlation id used to link this call with other logged events.",
+    },
+}
+
+_DOMAINS_FILTER_SCHEMA: dict[str, object] = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": "Restrict to these life or work areas, such as 'project', 'professional', or 'personal'.",
+}
+_SENSITIVITY_ALLOWED_SCHEMA: dict[str, object] = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": "Sensitivity levels the caller may see. Defaults to public, internal, private, and unknown.",
+}
+
+# The default MCP surface. Exactly these nine tools are listed and callable
+# unless ALICE_MCP_LEGACY_TOOLS=1 also enables the legacy long tail below.
+_CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
         "name": "alice_capture",
-        "description": "Capture continuity input into deterministic continuity objects.",
+        "description": (
+            "Submit new information to Alice as a source-backed, reviewable memory. The text is "
+            "stored verbatim with provenance and split into searchable chunks; it only becomes "
+            "trusted memory after review. Use this whenever you learn something worth keeping."
+        ),
         "inputSchema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["raw_content"],
+            "required": ["raw_text"],
             "properties": {
-                "raw_content": {"type": "string"},
-                "explicit_signal": {"type": "string", "enum": list(CONTINUITY_CAPTURE_EXPLICIT_SIGNALS)},
+                "raw_text": {
+                    "type": "string",
+                    "description": "The text to capture. Stored verbatim as source evidence.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short human-readable title for the captured text.",
+                },
+                "domain": {
+                    "type": "string",
+                    "description": "Life or work area this belongs to, such as 'project', 'professional', or 'personal'. Defaults to 'unknown'.",
+                },
+                "sensitivity": {
+                    "type": "string",
+                    "description": "How sensitive the content is: 'public', 'internal', 'private', or 'unknown' (default).",
+                },
+                **_AGENT_IDENTITY_SCHEMA_PROPERTIES,
             },
         },
     },
+    {
+        "name": "alice_recall",
+        "description": (
+            "Search Alice's memory. Runs full-text and semantic vector search over stored "
+            "memories and merges both rankings (reciprocal-rank fusion); falls back to "
+            "full-text only when no embedding endpoint is configured. Returns compact matches "
+            "with relevance scores and provenance counts."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to search for, in natural language or keywords.",
+                },
+                "domains": _DOMAINS_FILTER_SCHEMA,
+                "sensitivity_allowed": _SENSITIVITY_ALLOWED_SCHEMA,
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": _RECALL_MAX_LIMIT,
+                    "description": "Maximum number of results to return. Defaults to 8.",
+                },
+                "debug": {
+                    "type": "boolean",
+                    "description": "When true, include a retrieval trace showing which search stages ran and why vector search was on or off.",
+                },
+            },
+        },
+    },
+    {
+        "name": "alice_resume",
+        "description": (
+            "Get a brief for picking work back up: the last recorded decision, the suggested "
+            "next action, open loops, and recent changes, optionally scoped to a project, "
+            "person, or conversation thread."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Free-text topic to focus the brief on.",
+                },
+                "thread_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Limit the brief to one conversation thread (UUID).",
+                },
+                "task_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Limit the brief to one task (UUID).",
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Limit the brief to one project name.",
+                },
+                "person": {
+                    "type": "string",
+                    "description": "Limit the brief to one person's name.",
+                },
+                "since": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Only include items from at or after this ISO-8601 timestamp.",
+                },
+                "until": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Only include items from at or before this ISO-8601 timestamp.",
+                },
+                "max_recent_changes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
+                    "description": "Maximum number of recent changes to include.",
+                },
+                "max_open_loops": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
+                    "description": "Maximum number of open loops to include.",
+                },
+                "include_non_promotable_facts": {
+                    "type": "boolean",
+                    "description": "When true, also include captured facts that were not approved for reuse.",
+                },
+                "debug": {
+                    "type": "boolean",
+                    "description": "When true, attach the underlying retrieval trace to the brief.",
+                },
+            },
+        },
+    },
+    {
+        "name": "alice_context_pack",
+        "description": (
+            "Build a scoped context bundle for a task: the most relevant memories, open loops, "
+            "and source documents for a query, with supporting evidence. Use this to brief an "
+            "agent before it starts work."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The task or question the context should support.",
+                },
+                "domains": _DOMAINS_FILTER_SCHEMA,
+                "projects": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Project names to prioritize when selecting context.",
+                },
+                "people": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "People to prioritize when selecting context.",
+                },
+                "time_window": {
+                    "type": "string",
+                    "description": "Time range to consider, such as 'all' (default), '7d', or '30d'.",
+                },
+                "sensitivity_allowed": _SENSITIVITY_ALLOWED_SCHEMA,
+                "include_sources": {
+                    "type": "boolean",
+                    "description": "Include matching source documents. Defaults to true.",
+                },
+                "include_contradictions": {
+                    "type": "boolean",
+                    "description": "Include known contradicting evidence when relevant. Defaults to true.",
+                },
+                "max_items": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Maximum number of memories to include. Defaults to 8.",
+                },
+                "max_tokens": {
+                    "type": "integer",
+                    "minimum": 500,
+                    "maximum": 50000,
+                    "description": "Soft budget for overall pack size, in tokens. Defaults to 8000.",
+                },
+                "debug": {
+                    "type": "boolean",
+                    "description": "When true, include the full retrieval trace and query interpretation.",
+                },
+                **_AGENT_IDENTITY_SCHEMA_PROPERTIES,
+            },
+        },
+    },
+    {
+        "name": "alice_open_loops",
+        "description": (
+            "List or manage open loops: unresolved tasks, blockers, and follow-ups. The default "
+            "action 'list' returns current loops; 'close', 'snooze', 'edit', and 'reopen' "
+            "update one loop by id."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": list(_OPEN_LOOP_TOOL_ACTIONS),
+                    "description": "What to do: 'list' (default) to read loops, or 'close', 'snooze', 'edit', 'reopen' to change one loop.",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "For 'list': filter by loop status such as 'open' (default), 'resolved', or 'all'.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "For 'list': maximum number of loops to return. Defaults to 20.",
+                },
+                "domains": _DOMAINS_FILTER_SCHEMA,
+                "sensitivity_allowed": _SENSITIVITY_ALLOWED_SCHEMA,
+                "loop_id": {
+                    "type": "string",
+                    "description": "Id of the loop to change. Required for every action except 'list'.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "For 'edit': new title for the loop.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "For 'edit': new description for the loop.",
+                },
+                "due_at": {
+                    "type": "string",
+                    "description": "For 'snooze' (required) or 'edit': new due timestamp, ISO-8601.",
+                },
+                "priority": {
+                    "type": "string",
+                    "description": "For 'edit': new priority label, such as 'high'.",
+                },
+                "resolution_note": {
+                    "type": "string",
+                    "description": "For 'close': short note recording how the loop was resolved.",
+                },
+                **_AGENT_IDENTITY_SCHEMA_PROPERTIES,
+            },
+        },
+    },
+    {
+        "name": "alice_recent_decisions",
+        "description": (
+            "List the most recent recorded decisions, newest first, optionally filtered by "
+            "project, person, thread, or time window."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Free-text filter for which decisions to return.",
+                },
+                "thread_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Limit results to one conversation thread (UUID).",
+                },
+                "task_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Limit results to one task (UUID).",
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Limit results to one project name.",
+                },
+                "person": {
+                    "type": "string",
+                    "description": "Limit results to one person's name.",
+                },
+                "since": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Only include decisions recorded at or after this ISO-8601 timestamp.",
+                },
+                "until": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Only include decisions recorded at or before this ISO-8601 timestamp.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_CONTINUITY_RECALL_LIMIT,
+                    "description": "Maximum number of decisions to return.",
+                },
+            },
+        },
+    },
+    {
+        "name": "alice_memory_review",
+        "description": (
+            "Inspect the memory review queue. Without an id it lists items awaiting human "
+            "review; with review_item_id it returns full detail for one item, including why it "
+            "was flagged. Use alice_memory_correct to act on an item."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "review_item_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "UUID of one review item to inspect in detail.",
+                },
+                "continuity_object_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Alias for review_item_id; both refer to the stored memory record's UUID.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": list(_REVIEW_STATUS_CHOICES),
+                    "description": "Which queue slice to list, such as 'pending_review' or 'correction_ready' (default). Use 'all' for everything.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_CONTINUITY_REVIEW_LIMIT,
+                    "description": "Maximum number of queue items to return.",
+                },
+            },
+        },
+    },
+    {
+        "name": "alice_memory_correct",
+        "description": (
+            "Propose a correction to an existing memory: approve it as-is, edit and approve, "
+            "reject it, or supersede it with a replacement. Every change keeps an audit trail."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["action"],
+            "properties": {
+                "review_item_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "UUID of the memory record to act on. Provide this or continuity_object_id.",
+                },
+                "continuity_object_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "Alias for review_item_id; both refer to the same memory record UUID.",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": list(_REVIEW_APPLY_ACTION_CHOICES),
+                    "description": "What to do with the memory: 'approve', 'edit-and-approve', 'reject', or 'supersede-existing'.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why the change is being made. Stored in the audit trail.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "For edit-and-approve: corrected title.",
+                },
+                "body": {
+                    "type": "object",
+                    "description": "For edit-and-approve: corrected structured content.",
+                },
+                "provenance": {
+                    "type": "object",
+                    "description": "For edit-and-approve: corrected provenance details.",
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": "For edit-and-approve: corrected confidence, between 0 and 1.",
+                },
+                "replacement_title": {
+                    "type": "string",
+                    "description": "For supersede-existing: title of the replacement memory.",
+                },
+                "replacement_body": {
+                    "type": "object",
+                    "description": "For supersede-existing: structured content of the replacement memory.",
+                },
+                "replacement_provenance": {
+                    "type": "object",
+                    "description": "For supersede-existing: provenance details of the replacement memory.",
+                },
+                "replacement_confidence": {
+                    "type": "number",
+                    "description": "For supersede-existing: confidence of the replacement memory, between 0 and 1.",
+                },
+            },
+        },
+    },
+    {
+        "name": "alice_explain",
+        "description": (
+            "Explain where a memory came from and why it can be trusted: source evidence, "
+            "revision history, corroborations, and contradiction signals. Pass memory_id for a "
+            "result from alice_recall, continuity_object_id for a reviewed record, or entity_id "
+            "(optionally with 'at') for a point-in-time explanation."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "Id of a memory returned by alice_recall; returns its provenance links, revisions, and event history.",
+                },
+                "continuity_object_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "UUID of a reviewed memory record; returns its evidence chain and trust signals.",
+                },
+                "entity_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "UUID of an entity; explains which facts were in effect for it and why.",
+                },
+                "at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "With entity_id: the point in time to explain, ISO-8601. Defaults to now.",
+                },
+                "include_raw_content": {
+                    "type": "boolean",
+                    "description": "Include raw captured content in the explanation. Only allowed in development or test environments.",
+                },
+            },
+        },
+    },
+]
+
+# Legacy long-tail surface. Hidden unless ALICE_MCP_LEGACY_TOOLS=1; kept for
+# existing integrations. Tool names that collide with the core nine are owned
+# by the core definitions above.
+_LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
         "name": "alice_capture_candidates",
         "description": "Extract continuity candidates from one user/assistant turn without writing memory.",
@@ -2727,24 +3278,6 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
-        "name": "alice_recall",
-        "description": "Recall continuity objects with deterministic ranking and provenance fields.",
-        "inputSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "query": {"type": "string"},
-                "thread_id": {"type": "string", "format": "uuid"},
-                "task_id": {"type": "string", "format": "uuid"},
-                "project": {"type": "string"},
-                "person": {"type": "string"},
-                "since": {"type": "string", "format": "date-time"},
-                "until": {"type": "string", "format": "date-time"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_CONTINUITY_RECALL_LIMIT},
-            },
-        },
-    },
-    {
         "name": "alice_recall_debug",
         "description": "Run hybrid continuity retrieval with per-candidate stage scores and exclusion reasons.",
         "inputSchema": {
@@ -2772,34 +3305,6 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
             "properties": {
                 "entity_id": {"type": "string", "format": "uuid"},
                 "at": {"type": "string", "format": "date-time"},
-            },
-        },
-    },
-    {
-        "name": "alice_resume",
-        "description": "Compile continuity resumption brief for decisions, open loops, and next action.",
-        "inputSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "query": {"type": "string"},
-                "thread_id": {"type": "string", "format": "uuid"},
-                "task_id": {"type": "string", "format": "uuid"},
-                "project": {"type": "string"},
-                "person": {"type": "string"},
-                "since": {"type": "string", "format": "date-time"},
-                "until": {"type": "string", "format": "date-time"},
-                "max_recent_changes": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
-                },
-                "max_open_loops": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
-                },
-                "include_non_promotable_facts": {"type": "boolean"},
             },
         },
     },
@@ -2999,42 +3504,6 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
-        "name": "alice_open_loops",
-        "description": "List continuity open loops grouped by deterministic posture sections.",
-        "inputSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "query": {"type": "string"},
-                "thread_id": {"type": "string", "format": "uuid"},
-                "task_id": {"type": "string", "format": "uuid"},
-                "project": {"type": "string"},
-                "person": {"type": "string"},
-                "since": {"type": "string", "format": "date-time"},
-                "until": {"type": "string", "format": "date-time"},
-                "limit": {"type": "integer", "minimum": 0, "maximum": MAX_CONTINUITY_OPEN_LOOP_LIMIT},
-            },
-        },
-    },
-    {
-        "name": "alice_recent_decisions",
-        "description": "List most recent continuity decisions in deterministic recency order.",
-        "inputSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "query": {"type": "string"},
-                "thread_id": {"type": "string", "format": "uuid"},
-                "task_id": {"type": "string", "format": "uuid"},
-                "project": {"type": "string"},
-                "person": {"type": "string"},
-                "since": {"type": "string", "format": "date-time"},
-                "until": {"type": "string", "format": "date-time"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_CONTINUITY_RECALL_LIMIT},
-            },
-        },
-    },
-    {
         "name": "alice_recent_changes",
         "description": "List recent continuity changes from the shipped resumption assembly logic.",
         "inputSchema": {
@@ -3166,57 +3635,6 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
-        "name": "alice_memory_review",
-        "description": "Legacy alias for review queue/detail (use alice_review_queue).",
-        "inputSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "review_item_id": {"type": "string", "format": "uuid"},
-                "continuity_object_id": {"type": "string", "format": "uuid"},
-                "status": {"type": "string", "enum": list(_REVIEW_STATUS_CHOICES)},
-                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_CONTINUITY_REVIEW_LIMIT},
-            },
-        },
-    },
-    {
-        "name": "alice_memory_correct",
-        "description": "Legacy alias for review apply (use alice_review_apply).",
-        "inputSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["continuity_object_id", "action"],
-            "properties": {
-                "review_item_id": {"type": "string", "format": "uuid"},
-                "continuity_object_id": {"type": "string", "format": "uuid"},
-                "action": {"type": "string", "enum": list(CONTINUITY_CORRECTION_ACTIONS)},
-                "reason": {"type": "string"},
-                "title": {"type": "string"},
-                "body": {"type": "object"},
-                "provenance": {"type": "object"},
-                "confidence": {"type": "number"},
-                "replacement_title": {"type": "string"},
-                "replacement_body": {"type": "object"},
-                "replacement_provenance": {"type": "object"},
-                "replacement_confidence": {"type": "number"},
-            },
-        },
-    },
-    {
-        "name": "alice_explain",
-        "description": "Show continuity evidence for one continuity object or temporal explain output for one entity.",
-        "inputSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "continuity_object_id": {"type": "string", "format": "uuid"},
-                "entity_id": {"type": "string", "format": "uuid"},
-                "at": {"type": "string", "format": "date-time"},
-                "include_raw_content": {"type": "boolean"},
-            },
-        },
-    },
-    {
         "name": "alice_artifact_inspect",
         "description": "Inspect one archived artifact with copies and extracted segments.",
         "inputSchema": {
@@ -3226,38 +3644,6 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
             "properties": {
                 "artifact_id": {"type": "string", "format": "uuid"},
                 "include_raw_content": {"type": "boolean"},
-            },
-        },
-    },
-    {
-        "name": "alice_context_pack",
-        "description": "Assemble a deterministic continuity context pack for scoped external-agent use.",
-        "inputSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "query": {"type": "string"},
-                "thread_id": {"type": "string", "format": "uuid"},
-                "task_id": {"type": "string", "format": "uuid"},
-                "project": {"type": "string"},
-                "person": {"type": "string"},
-                "since": {"type": "string", "format": "date-time"},
-                "until": {"type": "string", "format": "date-time"},
-                "recent_decisions_limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": MAX_CONTINUITY_RECALL_LIMIT,
-                },
-                "recent_changes_limit": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": MAX_CONTINUITY_RESUMPTION_RECENT_CHANGES_LIMIT,
-                },
-                "open_loops_limit": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": MAX_CONTINUITY_RESUMPTION_OPEN_LOOP_LIMIT,
-                },
             },
         },
     },
@@ -3777,7 +4163,7 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
 ]
 
 _TOOL_HANDLERS = {
-    "alice_capture": _handle_alice_capture,
+    "alice_capture": _handle_alice_vnext_capture,
     "alice_capture_candidates": _handle_alice_capture_candidates,
     "alice_commit_captures": _handle_alice_commit_captures,
     "alice_memory_mutations_generate": _handle_alice_memory_mutations_generate,
@@ -3854,8 +4240,22 @@ _TOOL_HANDLERS = {
 }
 
 
+_CORE_TOOL_NAMES = frozenset(str(tool["name"]) for tool in _CORE_TOOL_DEFINITIONS)
+_LEGACY_TOOL_NAMES = frozenset(str(tool["name"]) for tool in _LEGACY_TOOL_DEFINITIONS)
+
+
+def _legacy_tools_enabled() -> bool:
+    return os.environ.get(MCP_LEGACY_TOOLS_ENV, "").strip().casefold() in _LEGACY_ENABLED_VALUES
+
+
+def _enabled_tool_definitions() -> list[dict[str, object]]:
+    if _legacy_tools_enabled():
+        return [*_CORE_TOOL_DEFINITIONS, *_LEGACY_TOOL_DEFINITIONS]
+    return list(_CORE_TOOL_DEFINITIONS)
+
+
 def list_mcp_tools() -> list[dict[str, object]]:
-    return _canonicalize_json(_TOOL_DEFINITIONS)  # type: ignore[return-value]
+    return _canonicalize_json(_enabled_tool_definitions())  # type: ignore[return-value]
 
 
 def call_mcp_tool(
@@ -3867,6 +4267,11 @@ def call_mcp_tool(
     handler = _TOOL_HANDLERS.get(name)
     if handler is None:
         raise MCPToolNotFoundError(f"unknown tool '{name}'")
+    if name not in _CORE_TOOL_NAMES and not _legacy_tools_enabled():
+        raise MCPToolNotFoundError(
+            f"tool '{name}' is part of the legacy MCP surface and is currently disabled; "
+            f"set {MCP_LEGACY_TOOLS_ENV}=1 in the MCP server environment to enable legacy tools"
+        )
 
     parsed_arguments = _normalize_arguments(arguments)
     try:
@@ -3876,7 +4281,6 @@ def call_mcp_tool(
         ContinuityRecallValidationError,
         ContinuityBriefValidationError,
         ContinuityResumptionValidationError,
-        ContinuityOpenLoopValidationError,
         ContinuityReviewValidationError,
         ContinuityReviewNotFoundError,
         ContinuityContradictionValidationError,
@@ -3901,6 +4305,7 @@ def call_mcp_tool(
 
 
 __all__ = [
+    "MCP_LEGACY_TOOLS_ENV",
     "MCPRuntimeContext",
     "MCPToolError",
     "MCPToolNotFoundError",
