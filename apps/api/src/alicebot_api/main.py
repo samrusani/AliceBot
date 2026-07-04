@@ -484,6 +484,7 @@ from alicebot_api.vnext_connectors import (
     VNextConnectorValidationError,
     list_connector_definitions,
 )
+from alicebot_api.vnext_context_tree import ContextTreeRequest, VNextContextTreeService, VNextContextTreeValidationError
 from alicebot_api.vnext_contradictions import (
     ContradictionFinderRequest,
     VNextContradictionService,
@@ -6859,6 +6860,34 @@ def create_vnext_context_pack(request: VNextContextPackRequest) -> JSONResponse:
         status_code=201,
         content=jsonable_encoder(payload),
     )
+
+
+@app.get("/v0/vnext/context-tree")
+def get_vnext_context_tree(
+    user_id: UUID,
+    query: str = "",
+    domains: Annotated[list[str] | None, Query()] = None,
+    sensitivity_allowed: Annotated[list[str] | None, Query()] = None,
+    limit: int = 12,
+    include_events: bool = True,
+) -> JSONResponse:
+    settings = get_settings()
+    try:
+        with user_connection(settings.database_url, user_id) as conn:
+            payload = VNextContextTreeService(PostgresVNextStore(conn)).build_tree(
+                ContextTreeRequest(
+                    query=query,
+                    domains=tuple(domains or ()),
+                    sensitivity_allowed=tuple(sensitivity_allowed or ("public", "internal", "private", "unknown")),
+                    limit=limit,
+                    include_events=include_events,
+                    generated_by="user",
+                )
+            )
+    except VNextContextTreeValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
 
 
 @app.post("/v0/vnext/memories/{memory_id}/review")

@@ -55,6 +55,36 @@ Request scoped context with `alice_vnext_context_pack`:
 }
 ```
 
+Request read-only navigation context with `alice_vnext_context_tree` when an agent needs to orient itself before selecting a narrower context pack:
+
+```json
+{
+  "agent_id": "openclaw",
+  "agent_type": "coding_agent",
+  "permission_profile": "project_scoped_agent",
+  "project_scope": ["Alice"],
+  "domains": ["project"],
+  "query": "Alice public preview packaging",
+  "limit": 8,
+  "include_events": true
+}
+```
+
+Generate a review-only memory consolidation artifact through `alice_vnext_generate_artifact`:
+
+```json
+{
+  "agent_id": "hermes",
+  "agent_type": "personal_assistant",
+  "permission_profile": "trusted_local_agent",
+  "workflow_type": "memory_consolidation",
+  "domains": ["project"],
+  "sensitivity_allowed": ["public", "internal", "private", "unknown"]
+}
+```
+
+Consolidation may create candidate memories for review, but it never promotes trusted memory automatically.
+
 Submit output with `alice_vnext_ingest_agent_output`:
 
 ```json
@@ -83,7 +113,9 @@ Trusted agents can write explicit "remember/save/add this to memory" instruction
 - `review_required`: external, generated, low-confidence, or review-only-agent memory stays in `/vnext`.
 - `rejected`: read-only, out-of-scope, unsafe, or policy-bypass attempts are blocked.
 
-Use canonical schema values for persisted labels. For quote saves, use `memory_type=semantic`; use `domain=learning` only when a quote collection needs an explicit domain. Avoid invented values like `memory_type=quote`, `domain=quotes`, or `sensitivity=sensitive`.
+Use canonical schema values for persisted labels. For quote saves, use `memory_type=semantic`; use `memory_type=procedure` for repeatable playbooks such as setup, release, or review steps; use `domain=learning` only when a quote collection needs an explicit domain. Avoid invented values like `memory_type=quote`, `domain=quotes`, or `sensitivity=sensitive`.
+
+For first-run tester expectations and examples that prove memory is working, see [first-memory.md](first-memory.md). Normal chat is not guaranteed to become trusted memory; agents should call `alice_vnext_commit_memory` for explicit user-directed memory instructions.
 
 ```json
 {

@@ -87,6 +87,8 @@ alicebot vnext sources capture-text "TODO: confirm launch checklist owner" --dom
 alicebot daily-brief --generate --domain project --generated-for 2026-05-11
 ```
 
+For a first trusted-memory check, use the [first memory guide](../alpha/first-memory.md). Alice does not treat arbitrary chat as automatic trusted memory; explicit "remember/save this" behavior should go through the vNext memory commit path.
+
 ## Live Capture Connector Demo
 
 List vNext connectors and health:

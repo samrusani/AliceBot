@@ -14,6 +14,13 @@
 ## Active vNext Preview Rule
 - While `v0.5.1-vnext-preview` is the active release gate, prioritize release accuracy, install clarity, preview-safe docs, and verification evidence. Do not add net-new feature scope unless it is required to fix preview readiness, release evidence, or operator safety.
 
+## Research-Informed Memory Rule
+- Treat the research-informed memory upgrade as bounded vNext ergonomics, not a substrate rewrite.
+- `memory_consolidation` must produce reviewable artifacts and candidate memories only; it must not auto-promote trusted memory.
+- `procedure` memories must use the existing `memories`/`memory_revisions`/provenance/review model, not a separate procedural memory store.
+- Agent context trees must remain read-only navigation over existing projects, sources, artifacts, memories, open loops, entities, and traces.
+- Benchmark-aligned suites should be local and fixture-backed until a separate external-dataset decision is recorded.
+
 ## Provider Rules
 - Continuity semantics must not fork by provider.
 - A provider may change capability support, latency, token budgets, and model-specific quirks.

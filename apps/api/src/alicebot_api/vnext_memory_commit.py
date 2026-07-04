@@ -53,6 +53,7 @@ VNEXT_MEMORY_TYPES = (
     "decision",
     "commitment",
     "routine",
+    "procedure",
     "constraint",
     "working_style",
     "episode",

@@ -39,7 +39,7 @@ Alice vNext is the next release candidate for the true second-brain product. It 
 - **Alice Brain**: user-facing second-brain workflows such as daily briefs, weekly syntheses, context packs, contradiction reports, project updates, open loops, and reviewable artifacts.
 - **Alice Agent Memory**: CLI, API, and MCP surfaces that let agents capture, retrieve, resume, explain, generate context, propose or explicitly commit memory through policy, and trigger governed workflows without owning the memory store.
 
-The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, model-backed source-grounded synthesis, human artifact quality ratings, deterministic-vs-model comparison controls, synthetic evals, live local capture connectors for Telegram, local folders/Obsidian notes, browser clips, and Hermes/OpenClaw-style agent outputs, dedicated connector settings/state storage, encrypted local secret references, deterministic document connector payload ingestion, trusted agent memory commit with inline confirmation/review/reject policy, agent identity/policy auditing, a governed local scheduler with due scans, a local scheduler daemon, policy telemetry, dogfooding readiness telemetry, doctor/readiness checks, capture-to-brief traceability, and a live/fixture-backed `/vnext` operator workspace with source review, memory review, trusted commit audit, artifact review, project, open-loop, scheduler, connector, and doctor controls.
+The vNext preview currently includes deterministic source capture, retrieval/context packs, queue/artifact workflows, daily and weekly brain artifacts, connection/contradiction/project/open-loop workflows, review-only memory consolidation, first-class `procedure` memories, model-backed source-grounded synthesis, human artifact quality ratings, deterministic-vs-model comparison controls, synthetic and benchmark-aligned evals, agent context-tree navigation, live local capture connectors for Telegram, local folders/Obsidian notes, browser clips, and Hermes/OpenClaw-style agent outputs, dedicated connector settings/state storage, encrypted local secret references, deterministic document connector payload ingestion, trusted agent memory commit with inline confirmation/review/reject policy, agent identity/policy auditing, a governed local scheduler with due scans, a local scheduler daemon, policy telemetry, dogfooding readiness telemetry, doctor/readiness checks, capture-to-brief traceability, and a live/fixture-backed `/vnext` operator workspace with source review, memory review, trusted commit audit, artifact review, project, open-loop, scheduler, connector, and doctor controls.
 
 ## Public Preview Quickstart
 
@@ -448,6 +448,7 @@ Deferred beyond `v0.5.1`:
 - [vNext Preview](docs/vnext/README.md)
 - [Public Alpha](docs/alpha/README.md)
 - [Public Alpha Quickstart](docs/alpha/quickstart.md)
+- [First Memory Guide](docs/alpha/first-memory.md)
 - [Public Alpha Agent Integration](docs/alpha/agent-integration.md)
 - [Headless Ubuntu Install](docs/alpha/headless-ubuntu-install.md)
 - [Hermes Dogfood On Ubuntu](docs/alpha/hermes-dogfood-ubuntu.md)

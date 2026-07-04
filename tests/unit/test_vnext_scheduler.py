@@ -35,6 +35,7 @@ class InMemorySchedulerStore:
             {
                 "id": "memory-1",
                 "memory_type": "project_state",
+                "memory_key": "project.scheduler.reviewable_artifacts",
                 "canonical_text": "Scheduler generated artifacts stay reviewable.",
                 "status": "active",
                 "domain": "project",
@@ -154,6 +155,15 @@ class InMemorySchedulerStore:
         self.append_event({"event_type": "artifact.created", "actor_type": actor_type, "target_id": row["id"]})
         return row
 
+    def create_memory(self, memory: dict[str, object], *, actor_type: str = "system") -> dict[str, object]:
+        row = {**memory, "id": f"memory-{len(self.memories) + 1}"}
+        self.memories.append(row)
+        self.append_event({"event_type": "memory.created", "actor_type": actor_type, "target_id": row["id"]})
+        return row
+
+    def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
+        return [memory for memory in self.memories if status is None or memory.get("status") == status]
+
     def search_sources(self, **kwargs) -> list[dict[str, object]]:
         return self.sources[: kwargs.get("limit", 8)]
 
@@ -176,6 +186,17 @@ class InMemorySchedulerStore:
         limit = kwargs.get("limit")
         rows = list(reversed(self.events))
         return rows[:limit] if isinstance(limit, int) else rows
+
+    def list_artifact_quality_ratings(self, **kwargs) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "rating-1",
+                "artifact_id": "artifact-seeded",
+                "usefulness": 4,
+                "source_grounding": 5,
+                "metadata_json": {},
+            }
+        ][: kwargs.get("limit", 20)]
 
 
 def test_schedule_validation_and_next_run_are_deterministic() -> None:
@@ -307,6 +328,7 @@ def test_scheduler_run_due_skips_workflow_when_lock_is_not_acquired() -> None:
         ("contradiction_report", "contradiction_report"),
         ("open_loop_review", "open_loop_report"),
         ("project_update_scan", "project_update"),
+        ("memory_consolidation", "memory_consolidation"),
     ],
 )
 def test_remaining_scheduler_workflows_create_reviewable_artifacts(workflow_type: str, artifact_type: str) -> None:
@@ -346,7 +368,44 @@ def test_remaining_scheduler_workflows_create_reviewable_artifacts(workflow_type
     assert metadata["review_status"] == "needs_review"
 
 
-@pytest.mark.parametrize("workflow_type", ["connection_report", "contradiction_report", "open_loop_review", "project_update_scan"])
+def test_memory_consolidation_creates_deduped_candidate_without_auto_promotion() -> None:
+    store = InMemorySchedulerStore()
+    service = VNextSchedulerService(store)
+
+    first = service.run_now(
+        SchedulerRunRequest(
+            workflow_type="memory_consolidation",
+            domains=("project",),
+            sensitivity_allowed=("public", "private"),
+            generated_for="2026-05-11",
+        )
+    )
+    second = service.run_now(
+        SchedulerRunRequest(
+            workflow_type="memory_consolidation",
+            domains=("project",),
+            sensitivity_allowed=("public", "private"),
+            generated_for="2026-05-11",
+        )
+    )
+
+    candidates = [memory for memory in store.memories if memory.get("status") == "candidate"]
+    active = [memory for memory in store.memories if memory.get("status") == "active"]
+    assert first["artifact"]["artifact_type"] == "memory_consolidation"
+    assert first["artifact"]["status"] == "needs_review"
+    assert first["artifact"]["metadata_json"]["candidate_memory_ids"] == [candidates[0]["id"]]
+    assert second["artifact"]["metadata_json"]["candidate_memory_ids"] == [candidates[0]["id"]]
+    assert len(candidates) == 1
+    assert [memory["id"] for memory in active] == ["memory-1"]
+    assert candidates[0]["memory_type"] == "semantic"
+    assert candidates[0]["metadata_json"]["review_required"] is True
+    assert "memory.consolidation.generated" in [event["event_type"] for event in store.events]
+
+
+@pytest.mark.parametrize(
+    "workflow_type",
+    ["connection_report", "contradiction_report", "open_loop_review", "project_update_scan", "memory_consolidation"],
+)
 def test_remaining_scheduler_workflows_support_model_backed_mode(workflow_type: str) -> None:
     store = InMemorySchedulerStore()
     store.open_loops.append(

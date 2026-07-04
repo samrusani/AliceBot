@@ -137,6 +137,7 @@ from alicebot_api.vnext_agent_control import (
 from alicebot_api.vnext_brain import BrainArtifactRequest, VNextBrainService
 from alicebot_api.vnext_capture import VNextCaptureService
 from alicebot_api.vnext_connections import ConnectionFinderRequest, VNextConnectionService
+from alicebot_api.vnext_context_tree import ContextTreeRequest, VNextContextTreeService
 from alicebot_api.vnext_connectors import VNextConnectorService
 from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextContradictionService
 from alicebot_api.vnext_event_log import append_event
@@ -1681,6 +1682,50 @@ def _handle_alice_vnext_context_pack(context: MCPRuntimeContext, arguments: Mapp
     return payload
 
 
+def _handle_alice_vnext_context_tree(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    limit = _parse_int(arguments, key="limit", default=12, minimum=1, maximum=50)
+    sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
+        "public",
+        "internal",
+        "private",
+        "unknown",
+    )
+    identity = _agent_identity_from_arguments(arguments)
+
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        actor_type, _actor_id, decision = _policy_checked(
+            store,
+            identity=identity,
+            action="context_pack.request",
+            domains=_parse_string_list(arguments, "domains"),
+            sensitivity_allowed=sensitivity_allowed,
+            project_scope=_parse_string_list(arguments, "project_scope") or _parse_string_list(arguments, "projects"),
+        )
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = VNextContextTreeService(store).build_tree(
+                ContextTreeRequest(
+                    query=_parse_optional_text(arguments, "query") or "",
+                    domains=decision.effective_domains,
+                    sensitivity_allowed=decision.effective_sensitivity_allowed,
+                    limit=limit,
+                    include_events=_parse_bool(arguments, key="include_events", default=True),
+                    generated_by=actor_type,
+                    agent_identity=identity.to_record() if identity is not None else None,
+                    policy_decision=decision.to_record(),
+                    trace_id=_parse_optional_text(arguments, "trace_id") or decision.trace_id,
+                )
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext context-tree request did not complete")
+    return payload
+
+
 def _brain_artifact_request_from_arguments(arguments: Mapping[str, object]) -> BrainArtifactRequest:
     sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
         "public",
@@ -2081,14 +2126,14 @@ def _handle_alice_vnext_generate_artifact(context: MCPRuntimeContext, arguments:
         return _handle_alice_generate_connections(context, arguments)
     if workflow_type in {"contradiction_report", "contradictions"}:
         return _handle_alice_generate_contradictions(context, arguments)
-    if workflow_type in {"open_loop_review", "project_update_scan"}:
+    if workflow_type in {"open_loop_review", "project_update_scan", "memory_consolidation"}:
         scheduler_arguments = dict(arguments)
         scheduler_arguments["workflow_type"] = workflow_type
         return _handle_alice_vnext_scheduler_run_now(context, scheduler_arguments)
     if workflow_type not in {"daily_brief", "weekly_synthesis"}:
         raise MCPToolError(
             "workflow_type must be daily_brief, weekly_synthesis, connection_report, "
-            "contradiction_report, open_loop_review, or project_update_scan"
+            "contradiction_report, open_loop_review, project_update_scan, or memory_consolidation"
         )
     identity = _agent_identity_from_arguments(arguments)
     sensitivity_allowed = _parse_string_list(arguments, "sensitivity_allowed") or (
@@ -2445,7 +2490,15 @@ def _handle_alice_vnext_scheduler_run_now(context: MCPRuntimeContext, arguments:
         "private",
         "unknown",
     )
-    generation_kwargs = _parse_model_generation_kwargs(arguments)
+    generation_kwargs = {
+        **_parse_model_generation_kwargs(arguments),
+        "source_limit": _parse_int(arguments, key="source_limit", default=12, minimum=1, maximum=100),
+        "memory_limit": _parse_int(arguments, key="memory_limit", default=12, minimum=1, maximum=100),
+        "artifact_limit": _parse_int(arguments, key="artifact_limit", default=8, minimum=1, maximum=100),
+        "event_limit": _parse_int(arguments, key="event_limit", default=30, minimum=1, maximum=100),
+        "rating_limit": _parse_int(arguments, key="rating_limit", default=20, minimum=1, maximum=100),
+        "create_candidate_memories": _parse_bool(arguments, key="create_candidate_memories", default=True),
+    }
     blocked_decision: PolicyDecision | None = None
     payload: JsonObject | None = None
     with _vnext_store_context(context) as store:
@@ -3230,6 +3283,19 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
         },
     },
     {
+        "name": "alice_vnext_context_tree",
+        "description": "Return a read-only agent-navigable tree over vNext projects, memories, sources, open loops, artifacts, and events.",
+        "inputSchema": _vnext_agent_tool_schema(
+            {
+                "query": {"type": "string"},
+                "projects": {"type": "array", "items": {"type": "string"}},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "include_events": {"type": "boolean"},
+                "trace_id": {"type": "string"},
+            },
+        ),
+    },
+    {
         "name": "alice_generate_daily_brief",
         "description": "Generate a vNext daily brief artifact with provenance and review status.",
         "inputSchema": {
@@ -3485,6 +3551,12 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "workflow_type": {"type": "string"},
                 "generated_for": {"type": "string"},
                 "max_items": {"type": "integer", "minimum": 1, "maximum": 50},
+                "source_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "memory_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "artifact_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "event_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "rating_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "create_candidate_memories": {"type": "boolean"},
                 **_MODEL_GENERATION_SCHEMA_PROPERTIES,
             },
         ),
@@ -3676,6 +3748,12 @@ _TOOL_DEFINITIONS: list[dict[str, object]] = [
             {
                 "workflow_type": {"type": "string"},
                 "generated_for": {"type": "string"},
+                "source_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "memory_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "artifact_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "event_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "rating_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "create_candidate_memories": {"type": "boolean"},
                 **_MODEL_GENERATION_SCHEMA_PROPERTIES,
             },
             required=["workflow_type"],
@@ -3733,6 +3811,7 @@ _TOOL_HANDLERS = {
     "alice_artifact_inspect": _handle_alice_artifact_inspect,
     "alice_context_pack": _handle_alice_context_pack,
     "alice_vnext_context_pack": _handle_alice_vnext_context_pack,
+    "alice_vnext_context_tree": _handle_alice_vnext_context_tree,
     "alice_generate_daily_brief": _handle_alice_generate_daily_brief,
     "alice_generate_weekly_synthesis": _handle_alice_generate_weekly_synthesis,
     "alice_generate_connections": _handle_alice_generate_connections,

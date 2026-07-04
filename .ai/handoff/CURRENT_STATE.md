@@ -14,6 +14,7 @@
 - `M-001` Archive Maintenance CI Repair is implemented in this working tree.
 - Alice vNext public preview release gate is active.
 - Alice vNext dogfood hardening is implemented in this working tree.
+- The research-informed memory upgrade is implemented in this working tree.
 
 ## Current Baseline Truth
 - Alice has typed memory, provenance, trust classes, correction/supersession behavior, open loops, recall, resumption, and explainability.
@@ -44,6 +45,7 @@
 - The vNext preview includes Sprint 12 public release polish: README vNext preview positioning, docs for quickstart/Docker/local install/architecture/security/privacy/contribution, example `ALICE.md`, synthetic demo dataset, demo video script, and vNext public release checklist with no-secrets and verification gates.
 - The vNext preview includes the live capture connectors sprint: allowlisted Telegram sync, local folder/Obsidian scan and watch, browser clipper capture endpoint/bookmarklet guidance, Hermes/OpenClaw-style agent output ingestion through CLI/API/MCP, connector health telemetry, dogfooding dashboard metrics, capture-to-brief smoke validation, and review-only trust preservation for all live connector output.
 - The vNext preview includes dogfood hardening: dedicated connector settings/state tables, environment/encrypted-local secret-provider references, restart-safe cursor/checkpoint storage, migration/doctor readiness checks, live `/vnext` connector configuration, browser clipper token enforcement, Telegram retry/cursor hardening, generated-output recapture prevention, and daily dogfood runbook.
+- The vNext preview includes the research-informed memory upgrade: review-only `memory_consolidation` scheduler workflow, candidate-only consolidation proposals, first-class `procedure` memory type, benchmark-aligned local eval suites for multi-session actionability/evolving state/procedural reuse/consolidation/context efficiency, and read-only agent context tree access through CLI/API/MCP.
 
 ## Phase Transition Note
 - Phase 14 is complete as a feature phase.
@@ -51,6 +53,7 @@
 - `v0.5.1` closes the shipped Phase 14 platform plus the post-phase logging safety hardening.
 - `M-001` is implemented in this working tree and should be validated in GitHub Actions after PR push/merge.
 - Alice vNext Sprint 1 through Sprint 12, the live capture connectors sprint, and dogfood hardening are implemented and in the public-preview release gate.
+- The research-informed memory upgrade is implemented as bounded vNext work and preserves review-first/no-auto-promotion semantics.
 
 ## Post-Preview Decisions
 - After the preview gate closes, choose the next product slice: broader live-backed `/vnext` workflows, managed connector OAuth, production scheduling, or model-backed evaluation.

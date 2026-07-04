@@ -20,6 +20,7 @@ These remain baseline truth and are not future milestones.
 - Alice vNext Sprint 1 through Sprint 12 preview scope is implemented.
 - Alice vNext live capture connectors are implemented for allowlisted Telegram, local folder/Obsidian notes, browser clips, and agent outputs.
 - Alice vNext dogfood hardening is implemented for dedicated connector settings/state, local secret references, readiness doctor checks, live `/vnext` connector configuration, and daily-use runbooks.
+- Alice vNext research-informed memory ergonomics are implemented: review-only memory consolidation, procedural memory, benchmark-aligned local evals, and read-only context-tree access.
 - Alice vNext public preview release gate is active for `v0.5.1-vnext-preview`.
 
 ## Completed Phase 14 Sequence
@@ -61,8 +62,9 @@ Status: shipped
 - include dogfood hardening evidence for connector settings/state persistence, secret redaction, doctor checks, live connector configuration, and repeatable smoke validation
 
 ## Next Roadmap Gate
-- After the vNext dogfood hardening merge, choose the next product slice: broader live-backed `/vnext` review/workflow UI, managed connector OAuth, production scheduling, or model-backed/live-store evals.
+- After the vNext preview gate closes, choose the next product slice: broader live-backed `/vnext` review/workflow UI, managed connector OAuth, production scheduling, or model-backed/live-store evals.
 - Preserve the shipped Phase 14 platform plus the `HF-001` logging guardrails as baseline behavior.
+- Do not reopen shipped hybrid retrieval, trust/contradiction, provider/model-pack, or research-informed memory ergonomics unless a concrete defect or new product slice requires it.
 
 ## Beyond Phase 14
 - Alice vNext follows `docs/alice_vnext_true_second_brain_tech_spec.md`.

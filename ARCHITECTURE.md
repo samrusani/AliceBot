@@ -41,6 +41,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - live local capture connectors for allowlisted Telegram sync, local folder/Obsidian scan and watch, browser clip captures, and Hermes/OpenClaw-style agent output ingestion
 - dedicated connector settings/state storage for connector defaults, sync modes, cursors, counters, failures, and restart-safe health posture
 - local connector secret-provider abstraction with environment references, encrypted local fallback, and redaction before persistence
+- research-informed memory ergonomics: review-only `memory_consolidation` scheduler workflow, first-class `procedure` memories in the existing memory/revision model, benchmark-aligned eval suites, and read-only agent context tree over existing records
 - `/vnext` operator workspace with live/fixture-backed review, Ask Alice, generated artifacts, model comparison, scheduler controls, live connector configuration, connector health, dogfooding telemetry, and privacy settings
 
 ## Current Data Model Summary
@@ -51,6 +52,7 @@ Alice is a modular continuity platform with shared continuity semantics across l
 - `open_loops`
 - `memory_operation_candidates`, `memory_operations`
 - `contradiction_cases`, `trust_signals`
+- `procedure` is a canonical `memories.memory_type` for repeatable playbooks; it uses the same review, revision, provenance, correction, and supersession model as other memories
 
 ### Retrieval And Evaluation
 - `embedding_configs`, `memory_embeddings`
@@ -79,6 +81,11 @@ Alice is a modular continuity platform with shared continuity semantics across l
 1. Recall loads continuity candidates.
 2. Ranking considers semantic similarity, lexical/entity signals, trust, freshness, provenance, and supersession.
 3. Resumption and one-call continuity compose ranked recall into decisions, open loops, recent changes, provenance, trust posture, and next action.
+
+### Consolidation And Context Navigation
+1. The governed scheduler can run `memory_consolidation` over accepted memories, reviewed sources, generated artifacts, recent events, corrections, and artifact ratings.
+2. Consolidation creates reviewable artifacts and optional candidate memories only; it never promotes trusted memory automatically.
+3. Agents can request a read-only context tree over projects, memories, sources, open loops, artifacts, and recent traces without receiving direct write access to the memory store.
 
 ### Provider Runtime
 1. Workspace binds provider and optional model-pack configuration.

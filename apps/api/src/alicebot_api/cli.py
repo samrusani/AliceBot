@@ -212,6 +212,7 @@ from alicebot_api.vnext_connectors import (
     list_connector_definitions,
     load_connector_items_from_file,
 )
+from alicebot_api.vnext_context_tree import ContextTreeRequest, VNextContextTreeService
 from alicebot_api.vnext_contradictions import (
     ContradictionFinderRequest,
     VNextContradictionService,
@@ -1385,6 +1386,22 @@ def _run_context_pack(ctx: CLIContext, args: argparse.Namespace) -> str:
                 include_contradictions=not args.no_contradictions,
                 max_items=args.max_items,
                 max_tokens=args.max_tokens,
+            )
+        )
+    return _json_dumps(payload)
+
+
+def _run_vnext_context_tree(ctx: CLIContext, args: argparse.Namespace) -> str:
+    query = " ".join(args.query).strip()
+    with _vnext_store_context(ctx) as store:
+        payload = VNextContextTreeService(store).build_tree(
+            ContextTreeRequest(
+                query=query,
+                domains=tuple(args.domain),
+                sensitivity_allowed=_vnext_sensitivity_allowed(args),
+                limit=args.limit,
+                include_events=not args.no_events,
+                generated_by="cli",
             )
         )
     return _json_dumps(payload)
@@ -4343,6 +4360,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     context_pack_parser.set_defaults(handler=_run_context_pack)
 
+    context_tree_parser = subparsers.add_parser("context-tree", help="Compile a read-only Alice vNext context tree.")
+    context_tree_parser.add_argument("query", nargs="*", help="Optional query to shape tree selection.")
+    context_tree_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
+    context_tree_parser.add_argument(
+        "--sensitivity-allowed",
+        action="append",
+        default=None,
+        help="Allowed sensitivity. Repeatable.",
+    )
+    context_tree_parser.add_argument("--limit", type=int, default=12, help="Maximum items per tree group.")
+    context_tree_parser.add_argument("--no-events", action="store_true", help="Exclude recent event nodes.")
+    context_tree_parser.set_defaults(handler=_run_vnext_context_tree)
+
     daily_brief_parser = subparsers.add_parser("daily-brief", help="Generate a vNext daily brief artifact.")
     daily_brief_parser.add_argument("--generate", action="store_true", help="Generate the daily brief now.")
     daily_brief_parser.add_argument("--generated-for", default=None, help="ISO date for the brief.")
@@ -5634,7 +5664,11 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_eval_run_parser.add_argument(
         "--suite",
         default="all",
-        help="Suite key to run: all, recall, temporal, contradictions, privacy, provenance, open_loops, or prompt_injection.",
+        help=(
+            "Suite key to run: all, recall, temporal, contradictions, privacy, provenance, "
+            "open_loops, prompt_injection, multi_session_actionability, evolving_state, "
+            "procedural_reuse, consolidation_quality, or context_efficiency."
+        ),
     )
     vnext_eval_run_parser.add_argument(
         "--corpus-path",
@@ -5655,7 +5689,11 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_eval_report_parser.add_argument(
         "--suite",
         default="all",
-        help="Suite key to report: all, recall, temporal, contradictions, privacy, provenance, open_loops, or prompt_injection.",
+        help=(
+            "Suite key to report: all, recall, temporal, contradictions, privacy, provenance, "
+            "open_loops, prompt_injection, multi_session_actionability, evolving_state, "
+            "procedural_reuse, consolidation_quality, or context_efficiency."
+        ),
     )
     vnext_eval_report_parser.add_argument(
         "--corpus-path",
@@ -5737,6 +5775,13 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             option_name="--max-tokens",
             minimum=500,
             maximum=50_000,
+        )
+    elif args.command == "context-tree":
+        _validate_limit(
+            args.limit,
+            option_name="--limit",
+            minimum=1,
+            maximum=50,
         )
     elif args.command == "contradictions" and args.contradictions_command in {"detect", "list"}:
         _validate_limit(

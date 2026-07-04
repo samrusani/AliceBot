@@ -1,6 +1,6 @@
 # Alice vNext Public Preview
 
-Alice vNext is the next public wedge for Alice as an agent-native second brain: a local-first memory kernel, governed explicit agent memory commits, reviewable generated briefs, model-backed source-grounded synthesis, live local connector-backed evidence capture, hardened connector settings/state/secrets, agent-facing context packs, governed agent proposals, and a local scheduler runtime.
+Alice vNext is the next public wedge for Alice as an agent-native second brain: a local-first memory kernel, governed explicit agent memory commits, reviewable generated briefs, review-only memory consolidation, procedural memory, model-backed source-grounded synthesis, live local connector-backed evidence capture, hardened connector settings/state/secrets, agent-facing context packs and context trees, governed agent proposals, and a local scheduler runtime.
 
 This preview is not a hosted launch. It is a repo-local, deterministic public preview built around the vNext memory-kernel schema and the fixture-safe workflows shipped under `v0.5.1-vnext-preview`.
 
@@ -9,21 +9,22 @@ This preview is not a hosted launch. It is a repo-local, deterministic public pr
 Alice vNext has three layers:
 
 - **Alice Core**: the local-first persistence, provenance, policy, and event-log substrate. Core owns sources, chunks, memories, revisions, graph edges, projects, open loops, artifacts, evals, and connector evidence.
-- **Alice Brain**: the user-facing second-brain workflows on top of Core. Brain generates daily briefs, weekly syntheses, context packs, contradiction reports, connection reports, project updates, open-loop reviews, and reviewable artifacts in deterministic or model-backed mode.
-- **Alice Agent Memory**: the agent integration layer. Agent Memory exposes continuity through CLI, API, and MCP so external agents can capture, retrieve, resume, explain, generate context, explicitly commit user-directed memory through policy, propose reviewable memory, and trigger governed scheduler workflows without owning the memory database.
+- **Alice Brain**: the user-facing second-brain workflows on top of Core. Brain generates daily briefs, weekly syntheses, context packs, memory consolidation artifacts, contradiction reports, connection reports, project updates, open-loop reviews, and reviewable artifacts in deterministic or model-backed mode.
+- **Alice Agent Memory**: the agent integration layer. Agent Memory exposes continuity through CLI, API, and MCP so external agents can capture, retrieve, resume, explain, generate context, navigate read-only context trees, explicitly commit user-directed memory through policy, propose reviewable memory, and trigger governed scheduler workflows without owning the memory database.
 
 ## Preview Surfaces
 
 - Source capture: manual text, local text/Markdown files, Markdown folders, ChatGPT exports.
 - Retrieval: deterministic context packs with domain/sensitivity filters and provenance.
-- Brain workflows: daily brief, weekly synthesis, connection report, contradiction report, project update, open-loop review.
+- Brain workflows: daily brief, weekly synthesis, connection report, contradiction report, project update, open-loop review, and review-only memory consolidation.
+- Procedural memory: `procedure` is a first-class memory type for repeatable playbooks while preserving the existing review, provenance, correction, supersession, and revision model.
 - Model-backed intelligence: provider/routing abstraction, local-first model policy, source-grounded sections, prompt hashes, context hashes, model metadata, and deterministic-vs-model comparison mode.
 - Quality review: artifact ratings for usefulness, accuracy, source grounding, novel connections, actionability, hallucination risk, verbosity, missed context, and comments.
 - Agentic control plane: scoped agent identities, permission profiles, policy decisions, explicit trusted memory commits, inline confirmations, memory proposals, undo/correction/forget lifecycle controls, and Agent Activity audit surface.
 - Governed scheduler: disabled-by-default workflow controls, a local daemon runner, due scans, run history, trace IDs, failures, duplicate-run locks, and reviewable artifacts.
 - Connectors: allowlisted Telegram sync, local folder/Obsidian scan and watch, browser clipper capture endpoint, Hermes/OpenClaw-style agent output ingestion, dedicated settings/state rows, local encrypted secret references, retry/cursor hardening, plus deterministic PDF, DOCX, CSV, screenshot OCR, and voice transcript payload ingestion.
 - UI: live/fixture-backed `/vnext` workspace for source review, source archive, capture-to-brief traces, Ask Alice, briefs, queue, projects, Agent Activity, trusted memory commit audit, inline confirmations, Schedules, beliefs, graph, live connector configuration, connector health/defaults/bookmarklet guidance, dogfooding readiness telemetry, doctor/readiness checks, privacy settings, model comparison, and quality ratings.
-- Evals: synthetic corpus and baseline metrics for recall, temporal reasoning, contradictions, provenance, privacy, open loops, and prompt injection.
+- Evals: synthetic corpus and baseline metrics for recall, temporal reasoning, contradictions, provenance, privacy, open loops, prompt injection, multi-session actionability, evolving state, procedural reuse, consolidation quality, and context efficiency.
 
 ## Start Here
 

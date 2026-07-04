@@ -82,6 +82,17 @@ If `alicebot` is not on your shell path, use:
 ./.venv/bin/alicebot vnext alpha check
 ```
 
+## First Memory
+
+If Alice starts correctly but no memory appears after normal chat, follow the [first memory guide](first-memory.md).
+
+Short version:
+
+- use `alice_vnext_commit_memory` for explicit "remember/save this" requests from trusted agents
+- use `alice_vnext_ingest_agent_output` with `propose_memory=true` for reviewable agent-derived memory proposals
+- use `alicebot vnext sources capture-text "Fact: ..."` for source-backed candidate memory
+- do not expect arbitrary conversation to become trusted memory automatically
+
 ## Load Safe Demo Data
 
 ```bash

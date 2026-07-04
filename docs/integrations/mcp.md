@@ -42,6 +42,7 @@ MCP uses the same local runtime scope as CLI:
 - `alice_explain`
 - `alice_context_pack`
 - `alice_vnext_context_pack`
+- `alice_vnext_context_tree`
 - `alice_vnext_capture`
 - `alice_vnext_queue_task`
 - `alice_vnext_generate_artifact`
@@ -70,9 +71,15 @@ MCP uses the same local runtime scope as CLI:
 
 The `alice_vnext_*` tools carry the agentic control-plane contract. Agent callers can include `agent_id`, `agent_type`, `agent_run_id`, `task_id`, `project_scope`, `permission_profile`, domain filters, and sensitivity filters. Policy decisions are logged, restricted requests are filtered or blocked, memory writes stay proposal/review-only, and scheduler actions create governed run records with trace IDs.
 
+`alice_vnext_context_tree` returns a read-only navigation tree over existing vNext projects, memories, sources, open loops, artifacts, and recent events. It is for agent orientation and context selection, not mutation.
+
+`alice_vnext_generate_artifact` supports `memory_consolidation` in addition to daily/weekly and report workflows. Memory consolidation creates a reviewable artifact and optional candidate memories only; it does not auto-promote trusted memory.
+
 Model-backed artifact tools also accept `generation_mode`, `model_route_mode`, `model_provider`, `model`, `model_temperature`, and `allow_cloud_private`. Supported generation modes are `deterministic` and `model_backed`; supported route modes are `local_only`, `cloud_allowed`, `cloud_requires_approval`, and `model_disabled`. Agent-triggered model-backed generation is policy checked before a workflow runs, and private/highly sensitive scopes remain local-only or disabled unless explicitly configured.
 
 `alice_vnext_ingest_agent_output` is the live capture seam for Hermes/OpenClaw-style agent outputs. It stores the agent output as source evidence, creates a review-only generated artifact, optionally creates a candidate memory proposal, links provenance back to the captured source, and logs the agent identity and policy decision. It does not accept or promote trusted memory automatically.
+
+For first-run memory expectations and a deterministic way to prove memory is working, see [../alpha/first-memory.md](../alpha/first-memory.md). Normal chat is not guaranteed to become trusted memory; explicit memory instructions should use `alice_vnext_commit_memory`.
 
 ## Example: Claude Desktop MCP Config
 

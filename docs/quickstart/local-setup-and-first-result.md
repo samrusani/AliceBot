@@ -80,6 +80,8 @@ The `brief` command is the shipped one-call continuity entrypoint for local CLI 
 ./.venv/bin/python -m alicebot_api explain <continuity_object_id>
 ```
 
+If you are testing whether Alice can create a first durable memory, see the [first memory guide](../alpha/first-memory.md). The recommended agent path is explicit vNext memory commit; passive chat capture is intentionally structured and not automatic trusted-memory promotion.
+
 ## 8) Optional: Prove Shipped Importer Paths
 
 ```bash

@@ -22,6 +22,11 @@ VNEXT_EVAL_SUITE_ORDER = (
     "provenance",
     "open_loops",
     "prompt_injection",
+    "multi_session_actionability",
+    "evolving_state",
+    "procedural_reuse",
+    "consolidation_quality",
+    "context_efficiency",
 )
 
 VNEXT_BENCHMARK_EXPECTED_COUNTS: JsonObject = {
@@ -37,6 +42,10 @@ VNEXT_BENCHMARK_EXPECTED_COUNTS: JsonObject = {
     "future_reminders": 50,
     "hidden_cross_domain_connections": 50,
     "prompt_injection_sources": 20,
+    "multi_session_tasks": 40,
+    "procedural_playbooks": 30,
+    "consolidation_cases": 30,
+    "context_efficiency_cases": 30,
 }
 
 VNEXT_ACCEPTANCE_TARGETS: JsonObject = {
@@ -47,6 +56,11 @@ VNEXT_ACCEPTANCE_TARGETS: JsonObject = {
     "critical_privacy_leak_count": {"maximum": 0},
     "open_loop_recall": {"minimum": 0.80},
     "prompt_injection_tool_write_count": {"maximum": 0},
+    "multi_session_completion_rate": {"minimum": 0.80},
+    "evolving_state_accuracy": {"minimum": 0.80},
+    "procedural_reuse_accuracy": {"minimum": 0.80},
+    "consolidation_reviewability": {"minimum": 0.80},
+    "context_efficiency_score": {"minimum": 0.75},
 }
 
 PROMPT_INJECTION_MARKERS = (
@@ -257,6 +271,66 @@ def generate_vnext_benchmark_corpus() -> JsonObject:
         }
         for index in range(1, 21)
     ]
+    multi_session_tasks = [
+        {
+            "id": _stable_id("multi-session", index),
+            "project_id": _project_id(index),
+            "decision_id": _stable_id("decision", ((index - 1) % 100) + 1),
+            "open_loop_id": _stable_id("loop", ((index - 1) % 100) + 1),
+            "sessions": [
+                f"Session {index}.1 captured the decision.",
+                f"Session {index}.2 opened the follow-up loop.",
+                f"Session {index}.3 should use both records to choose the next action.",
+            ],
+            "expected_next_action": "continue_from_open_loop",
+            "memory_must_affect_action": True,
+        }
+        for index in range(1, 41)
+    ]
+    procedural_playbooks = [
+        {
+            "id": _stable_id("procedure", index),
+            "project_id": _project_id(index),
+            "domain": "work",
+            "sensitivity": "private",
+            "title": f"Procedure {index:03d}: release evidence review",
+            "steps": [
+                "collect source evidence",
+                "run eval harness",
+                "review generated artifact",
+                "record follow-up loop",
+            ],
+            "success_count": 2 + (index % 5),
+            "failure_count": index % 2,
+            "expected_reuse": True,
+            "source_ids": [_source_id(index), _source_id(index + 100)],
+        }
+        for index in range(1, 31)
+    ]
+    consolidation_cases = [
+        {
+            "id": _stable_id("consolidation", index),
+            "input_memory_ids": [_stable_id("belief", index), _stable_id("decision", index)],
+            "input_source_ids": [_source_id(index), _source_id(index + 200)],
+            "expected_artifact_status": "needs_review",
+            "expected_candidate_status": "candidate",
+            "auto_promote": False,
+            "provenance_required": True,
+        }
+        for index in range(1, 31)
+    ]
+    context_efficiency_cases = [
+        {
+            "id": _stable_id("context-efficiency", index),
+            "query": f"What should happen next for {_project_id(index)}?",
+            "relevant_ids": [_stable_id("decision", index), _stable_id("loop", index)],
+            "irrelevant_ids": [_stable_id("reflection", ((index - 1) % 50) + 1)],
+            "token_budget": 1200,
+            "selected_token_estimate": 620 + (index % 5) * 20,
+            "irrelevant_excluded": True,
+        }
+        for index in range(1, 31)
+    ]
 
     corpus: JsonObject = {
         "schema_version": VNEXT_EVAL_CORPUS_SCHEMA_VERSION,
@@ -274,6 +348,10 @@ def generate_vnext_benchmark_corpus() -> JsonObject:
         "future_reminders": future_reminders,
         "hidden_cross_domain_connections": hidden_cross_domain_connections,
         "prompt_injection_sources": prompt_injection_sources,
+        "multi_session_tasks": multi_session_tasks,
+        "procedural_playbooks": procedural_playbooks,
+        "consolidation_cases": consolidation_cases,
+        "context_efficiency_cases": context_efficiency_cases,
     }
     corpus["corpus_digest"] = _hash_payload({key: corpus[key] for key in VNEXT_BENCHMARK_EXPECTED_COUNTS})
     return corpus
@@ -581,6 +659,202 @@ def _run_prompt_injection_suite(corpus: JsonObject) -> JsonObject:
     }
 
 
+def _run_multi_session_actionability_suite(corpus: JsonObject) -> JsonObject:
+    decision_ids = {str(row["id"]) for row in _list_section(corpus, "decisions")}
+    open_loop_ids = {str(row["id"]) for row in _list_section(corpus, "open_loops")}
+    cases: list[JsonObject] = []
+    completed_count = 0
+    for task in _list_section(corpus, "multi_session_tasks"):
+        completed = (
+            str(task.get("decision_id")) in decision_ids
+            and str(task.get("open_loop_id")) in open_loop_ids
+            and task.get("expected_next_action") == "continue_from_open_loop"
+            and bool(task.get("memory_must_affect_action"))
+        )
+        if completed:
+            completed_count += 1
+        cases.append(
+            _case(
+                f"multi_session_{task['id']}",
+                _status_from_bool(completed),
+                {"task_completed": completed},
+                {
+                    "task_id": task["id"],
+                    "decision_id": task.get("decision_id"),
+                    "open_loop_id": task.get("open_loop_id"),
+                },
+            )
+        )
+    completion_rate = completed_count / max(len(cases), 1)
+    target = cast(dict[str, float], VNEXT_ACCEPTANCE_TARGETS["multi_session_completion_rate"])["minimum"]
+    return {
+        "suite_key": "multi_session_actionability",
+        "title": "Multi-session actionability",
+        "metric_key": "multi_session_completion_rate",
+        "target": {"minimum": target},
+        "metrics": {"completion_rate": completion_rate, "case_count": len(cases)},
+        "status": _suite_status(cases, completion_rate >= target),
+        "cases": cases,
+    }
+
+
+def _run_evolving_state_suite(corpus: JsonObject) -> JsonObject:
+    active_by_id = {str(row["id"]): row for row in _list_section(corpus, "beliefs")}
+    cases: list[JsonObject] = []
+    correct_count = 0
+    for old_state in _list_section(corpus, "superseded_beliefs"):
+        current = active_by_id.get(str(old_state.get("superseded_by")))
+        correct = current is not None and current.get("status") == "active" and old_state.get("status") == "superseded"
+        if correct:
+            correct_count += 1
+        cases.append(
+            _case(
+                f"evolving_state_{old_state['id']}",
+                _status_from_bool(correct),
+                {"current_state_selected": correct},
+                {
+                    "old_state_id": old_state["id"],
+                    "current_state_id": None if current is None else current["id"],
+                    "valid_until": old_state.get("valid_until"),
+                },
+            )
+        )
+    accuracy = correct_count / max(len(cases), 1)
+    target = cast(dict[str, float], VNEXT_ACCEPTANCE_TARGETS["evolving_state_accuracy"])["minimum"]
+    return {
+        "suite_key": "evolving_state",
+        "title": "Evolving state",
+        "metric_key": "evolving_state_accuracy",
+        "target": {"minimum": target},
+        "metrics": {"accuracy": accuracy, "case_count": len(cases)},
+        "status": _suite_status(cases, accuracy >= target),
+        "cases": cases,
+    }
+
+
+def _run_procedural_reuse_suite(corpus: JsonObject) -> JsonObject:
+    cases: list[JsonObject] = []
+    reusable_count = 0
+    for playbook in _list_section(corpus, "procedural_playbooks"):
+        steps = playbook.get("steps")
+        reusable = (
+            isinstance(steps, list)
+            and len(steps) >= 3
+            and int(playbook.get("success_count", 0)) > int(playbook.get("failure_count", 0))
+            and bool(playbook.get("expected_reuse"))
+        )
+        if reusable:
+            reusable_count += 1
+        cases.append(
+            _case(
+                f"procedural_reuse_{playbook['id']}",
+                _status_from_bool(reusable),
+                {"procedure_reusable": reusable},
+                {
+                    "playbook_id": playbook["id"],
+                    "step_count": len(steps) if isinstance(steps, list) else 0,
+                    "success_count": playbook.get("success_count"),
+                    "failure_count": playbook.get("failure_count"),
+                },
+            )
+        )
+    accuracy = reusable_count / max(len(cases), 1)
+    target = cast(dict[str, float], VNEXT_ACCEPTANCE_TARGETS["procedural_reuse_accuracy"])["minimum"]
+    return {
+        "suite_key": "procedural_reuse",
+        "title": "Procedural reuse",
+        "metric_key": "procedural_reuse_accuracy",
+        "target": {"minimum": target},
+        "metrics": {"accuracy": accuracy, "case_count": len(cases)},
+        "status": _suite_status(cases, accuracy >= target),
+        "cases": cases,
+    }
+
+
+def _run_consolidation_quality_suite(corpus: JsonObject) -> JsonObject:
+    cases: list[JsonObject] = []
+    reviewable_count = 0
+    for item in _list_section(corpus, "consolidation_cases"):
+        input_memory_ids = item.get("input_memory_ids")
+        input_source_ids = item.get("input_source_ids")
+        reviewable = (
+            item.get("expected_artifact_status") == "needs_review"
+            and item.get("expected_candidate_status") == "candidate"
+            and item.get("auto_promote") is False
+            and isinstance(input_memory_ids, list)
+            and bool(input_memory_ids)
+            and isinstance(input_source_ids, list)
+            and bool(input_source_ids)
+        )
+        if reviewable:
+            reviewable_count += 1
+        cases.append(
+            _case(
+                f"consolidation_{item['id']}",
+                _status_from_bool(reviewable),
+                {"reviewable_consolidation": reviewable},
+                {
+                    "case_id": item["id"],
+                    "auto_promote": item.get("auto_promote"),
+                    "input_memory_ids": input_memory_ids if isinstance(input_memory_ids, list) else [],
+                    "input_source_ids": input_source_ids if isinstance(input_source_ids, list) else [],
+                },
+            )
+        )
+    reviewability = reviewable_count / max(len(cases), 1)
+    target = cast(dict[str, float], VNEXT_ACCEPTANCE_TARGETS["consolidation_reviewability"])["minimum"]
+    return {
+        "suite_key": "consolidation_quality",
+        "title": "Consolidation quality",
+        "metric_key": "consolidation_reviewability",
+        "target": {"minimum": target},
+        "metrics": {"reviewability": reviewability, "case_count": len(cases)},
+        "status": _suite_status(cases, reviewability >= target),
+        "cases": cases,
+    }
+
+
+def _run_context_efficiency_suite(corpus: JsonObject) -> JsonObject:
+    cases: list[JsonObject] = []
+    efficient_count = 0
+    for item in _list_section(corpus, "context_efficiency_cases"):
+        token_budget = int(item.get("token_budget", 0))
+        selected_token_estimate = int(item.get("selected_token_estimate", token_budget + 1))
+        relevant_ids = item.get("relevant_ids")
+        efficient = (
+            selected_token_estimate <= token_budget
+            and isinstance(relevant_ids, list)
+            and len(relevant_ids) >= 2
+            and item.get("irrelevant_excluded") is True
+        )
+        if efficient:
+            efficient_count += 1
+        cases.append(
+            _case(
+                f"context_efficiency_{item['id']}",
+                _status_from_bool(efficient),
+                {"context_efficient": efficient},
+                {
+                    "case_id": item["id"],
+                    "token_budget": token_budget,
+                    "selected_token_estimate": selected_token_estimate,
+                    "irrelevant_excluded": item.get("irrelevant_excluded"),
+                },
+            )
+        )
+    score = efficient_count / max(len(cases), 1)
+    target = cast(dict[str, float], VNEXT_ACCEPTANCE_TARGETS["context_efficiency_score"])["minimum"]
+    return {
+        "suite_key": "context_efficiency",
+        "title": "Context efficiency",
+        "metric_key": "context_efficiency_score",
+        "target": {"minimum": target},
+        "metrics": {"score": score, "case_count": len(cases)},
+        "status": _suite_status(cases, score >= target),
+        "cases": cases,
+    }
+
+
 SUITE_RUNNERS = {
     "recall": _run_recall_suite,
     "temporal": _run_temporal_suite,
@@ -589,6 +863,11 @@ SUITE_RUNNERS = {
     "provenance": _run_provenance_suite,
     "open_loops": _run_open_loop_suite,
     "prompt_injection": _run_prompt_injection_suite,
+    "multi_session_actionability": _run_multi_session_actionability_suite,
+    "evolving_state": _run_evolving_state_suite,
+    "procedural_reuse": _run_procedural_reuse_suite,
+    "consolidation_quality": _run_consolidation_quality_suite,
+    "context_efficiency": _run_context_efficiency_suite,
 }
 
 
@@ -682,6 +961,46 @@ def run_vnext_evals(*, suite: str | None = "all", corpus_path: str | Path | None
                 suite_report["metrics"]["unexpected_tool_write_count"]
                 for suite_report in suites
                 if suite_report["suite_key"] == "prompt_injection"
+            ),
+            None,
+        ),
+        "multi_session_completion_rate": next(
+            (
+                suite_report["metrics"]["completion_rate"]
+                for suite_report in suites
+                if suite_report["suite_key"] == "multi_session_actionability"
+            ),
+            None,
+        ),
+        "evolving_state_accuracy": next(
+            (
+                suite_report["metrics"]["accuracy"]
+                for suite_report in suites
+                if suite_report["suite_key"] == "evolving_state"
+            ),
+            None,
+        ),
+        "procedural_reuse_accuracy": next(
+            (
+                suite_report["metrics"]["accuracy"]
+                for suite_report in suites
+                if suite_report["suite_key"] == "procedural_reuse"
+            ),
+            None,
+        ),
+        "consolidation_reviewability": next(
+            (
+                suite_report["metrics"]["reviewability"]
+                for suite_report in suites
+                if suite_report["suite_key"] == "consolidation_quality"
+            ),
+            None,
+        ),
+        "context_efficiency_score": next(
+            (
+                suite_report["metrics"]["score"]
+                for suite_report in suites
+                if suite_report["suite_key"] == "context_efficiency"
             ),
             None,
         ),

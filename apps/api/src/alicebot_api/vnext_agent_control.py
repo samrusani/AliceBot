@@ -303,7 +303,12 @@ def evaluate_agent_policy(
         }:
             reasons.append("project_scope_required")
             decision = "blocked"
-        if action == "scheduler.run_now" and workflow_type not in {"connection_report", "contradiction_report", "project_update_scan"}:
+        if action == "scheduler.run_now" and workflow_type not in {
+            "connection_report",
+            "contradiction_report",
+            "project_update_scan",
+            "memory_consolidation",
+        }:
             reasons.append("project_scoped_agent_cannot_run_global_workflow")
             decision = "blocked"
         if action == "scheduler.run_due":

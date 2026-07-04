@@ -52,6 +52,7 @@ def test_mcp_tool_surface_is_adr_aligned_and_deterministic() -> None:
         "alice_artifact_inspect",
         "alice_context_pack",
         "alice_vnext_context_pack",
+        "alice_vnext_context_tree",
         "alice_generate_daily_brief",
         "alice_generate_weekly_synthesis",
         "alice_generate_connections",
@@ -141,6 +142,8 @@ class FakeVNextMCPStore:
         self.artifacts: dict[str, dict[str, object]] = {}
         self.open_loops: list[dict[str, object]] = []
         self.edges: dict[str, dict[str, object]] = {}
+        self.workflows: dict[str, dict[str, object]] = {}
+        self.runs: dict[str, dict[str, object]] = {}
         self.agent_identities: dict[str, dict[str, object]] = {}
         self.projects: dict[str, dict[str, object]] = {
             "project-1": {
@@ -377,13 +380,76 @@ class FakeVNextMCPStore:
         )
         return belief
 
-    def list_events(self, *, target_type: str | None = None, target_id: str | None = None) -> list[dict[str, object]]:
-        return [
+    def list_events(
+        self,
+        *,
+        target_type: str | None = None,
+        target_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, object]]:
+        rows = [
             event
             for event in self.events
             if (target_type is None or event.get("target_type") == target_type)
             and (target_id is None or event.get("target_id") == target_id)
         ]
+        return rows[:limit] if limit is not None else rows
+
+    def upsert_scheduler_workflow(self, workflow: dict[str, object], **_kwargs) -> dict[str, object]:
+        workflow_type = str(workflow["workflow_type"])
+        row = {
+            **workflow,
+            "id": f"workflow-{workflow_type}",
+            "last_run_id": None,
+            "last_run_at": None,
+            "last_result": None,
+            "last_error": None,
+        }
+        self.workflows[workflow_type] = row
+        return row
+
+    def update_scheduler_workflow(self, *, workflow_type: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
+        workflow = self.workflows[workflow_type]
+        workflow.update(patch)
+        return workflow
+
+    def get_scheduler_workflow(self, workflow_type: str) -> dict[str, object] | None:
+        return self.workflows.get(workflow_type)
+
+    def list_scheduler_workflows(self) -> list[dict[str, object]]:
+        return list(self.workflows.values())
+
+    def create_scheduler_run(self, run: dict[str, object], **_kwargs) -> dict[str, object]:
+        row = {**run, "id": f"run-{len(self.runs) + 1}", "finished_at": None}
+        self.runs[str(row["id"])] = row
+        return row
+
+    def update_scheduler_run(self, *, run_id: str, patch: dict[str, object], **_kwargs) -> dict[str, object]:
+        run = self.runs[run_id]
+        run.update(patch)
+        if run.get("status") in {"succeeded", "failed"}:
+            run["finished_at"] = "2026-05-10T00:01:00Z"
+        return run
+
+    def list_scheduler_runs(self, *, workflow_type: str | None = None, limit: int = 20) -> list[dict[str, object]]:
+        return [
+            row
+            for row in self.runs.values()
+            if workflow_type is None or row.get("workflow_type") == workflow_type
+        ][:limit]
+
+    def try_scheduler_workflow_lock(self, _workflow_type: str) -> bool:
+        return True
+
+    def list_artifact_quality_ratings(self, **kwargs) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "rating-1",
+                "artifact_id": "artifact-1",
+                "usefulness": 4,
+                "source_grounding": 5,
+            }
+        ][: kwargs.get("limit", 20)]
 
     def list_provenance_links(self, **_kwargs) -> list[dict[str, object]]:
         return []
@@ -416,6 +482,34 @@ def test_alice_vnext_context_pack_mcp_tool(monkeypatch) -> None:
     assert payload["sources"][0]["id"] == "source-1"
     assert payload["trace_id"] == payload["trace"]["trace_id"]
     assert store.events[-1]["event_type"] == "retrieval.context_pack_compiled"
+
+
+def test_alice_vnext_context_tree_mcp_tool_returns_read_only_groups(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_vnext_context_tree",
+        arguments={"query": "Alice vNext", "domains": ["project"], "limit": 4},
+    )
+
+    root_ids = [root["id"] for root in payload["roots"]]
+    assert payload["schema_version"] == "vnext_context_tree_v0"
+    assert payload["read_only"] is True
+    assert "root:projects" in root_ids
+    assert "root:memories" in root_ids
+    assert payload["summary"]["projects"] == 1
+    assert store.events[-1]["event_type"] == "context_tree.generated"
 
 
 def test_alice_vnext_context_pack_mcp_tool_normalizes_row_scalars(monkeypatch) -> None:
@@ -559,6 +653,39 @@ def test_alice_vnext_agentic_memory_commit_normalizes_quote_aliases(monkeypatch)
     assert payload["memory"]["sensitivity"] == "private"
 
 
+def test_alice_vnext_agentic_memory_commit_accepts_procedure_type(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_vnext_commit_memory",
+        arguments={
+            "agent_id": "hermes",
+            "agent_type": "personal_assistant",
+            "permission_profile": "trusted_local_agent",
+            "title": "Release evidence procedure",
+            "canonical_text": "Procedure: collect evidence, run gates, review artifact, then record follow-up loops.",
+            "memory_type": "procedure",
+            "domain": "project",
+            "sensitivity": "private",
+            "confidence": 0.94,
+        },
+    )
+
+    assert payload["status"] == "committed"
+    assert payload["memory"]["memory_type"] == "procedure"
+
+
 def test_alice_vnext_agentic_memory_commit_rejects_invalid_enum_before_store(monkeypatch) -> None:
     def fail_if_store_opened(_context):
         raise AssertionError("store should not be opened for invalid enum input")
@@ -697,6 +824,40 @@ def test_alice_vnext_generate_artifact_supports_model_backed_agent_options(monke
     assert payload["metadata_json"]["agent_id"] == "hermes"
     assert payload["metadata_json"]["policy_decision"]["decision"] == "allowed"
     assert "source:source-1" in payload["metadata_json"]["source_refs"]
+
+
+def test_alice_vnext_generate_artifact_supports_memory_consolidation(monkeypatch) -> None:
+    store = FakeVNextMCPStore()
+
+    @contextmanager
+    def fake_vnext_store_context(_context):
+        yield store
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_store_context", fake_vnext_store_context)
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    payload = call_mcp_tool(
+        context,
+        name="alice_vnext_generate_artifact",
+        arguments={
+            "workflow_type": "memory_consolidation",
+            "generated_for": "2026-05-10",
+            "domains": ["project"],
+            "sensitivity_allowed": ["public", "internal", "private"],
+            "agent_id": "hermes",
+            "permission_profile": "trusted_local_agent",
+        },
+    )
+
+    artifact = payload["artifact"]
+    assert payload["run"]["status"] == "succeeded"
+    assert artifact["artifact_type"] == "memory_consolidation"
+    assert artifact["status"] == "needs_review"
+    assert artifact["metadata_json"]["workflow_type"] == "memory_consolidation"
+    assert store.memories[-1]["status"] == "candidate"
 
 
 def test_alice_vnext_ingest_agent_output_creates_review_only_records(monkeypatch) -> None:
