@@ -1,0 +1,95 @@
+[
+  {
+    "question_id": "synthetic_1",
+    "question_type": "single-session-user",
+    "question": "What breed is the user's dog Biscuit?",
+    "answer": "Golden retriever",
+    "question_date": "2023/06/01 (Thu) 10:00",
+    "haystack_dates": [
+      "2023/04/10 (Mon) 23:07",
+      "2023/05/20 (Sat) 14:10",
+      "2023/05/28 (Sun) 09:45"
+    ],
+    "haystack_session_ids": [
+      "noans_synth_11",
+      "answer_synth_1",
+      "noans_synth_12"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "I want to make a vegetarian lasagna for six people this weekend. Any tips on layering?"
+        },
+        {
+          "role": "assistant",
+          "content": "For six people, use a 9x13 pan and three layers of pasta. Salt the zucchini first so the lasagna is not watery, and rest it ten minutes before serving."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "My dog Biscuit is a three-year-old golden retriever and she loves swimming at the lake.",
+          "has_answer": true
+        },
+        {
+          "role": "assistant",
+          "content": "Golden retrievers are usually strong swimmers. After lake days, rinse Biscuit's coat and dry her ears well to avoid infections."
+        },
+        {
+          "role": "user",
+          "content": "Good idea. She shakes water everywhere, so I keep towels by the door now."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "I am planning a trip to Lisbon in September. Is that a good month to visit?"
+        },
+        {
+          "role": "assistant",
+          "content": "September is a great month for Lisbon: the summer crowds thin out, the ocean is still warm, and average highs are around 26 degrees Celsius."
+        }
+      ]
+    ],
+    "answer_session_ids": ["answer_synth_1"]
+  },
+  {
+    "question_id": "synthetic_2_abs",
+    "question_type": "multi-session",
+    "question": "When did the user say they started taking piano lessons?",
+    "answer": "The user only ever discussed taking guitar lessons; piano lessons were never mentioned in any conversation.",
+    "question_date": "2023/07/15 (Sat) 18:30",
+    "haystack_dates": [
+      "2023/05/02 (Tue) 20:15",
+      "2023/06/11 (Sun) 11:05"
+    ],
+    "haystack_session_ids": [
+      "noans_synth_21",
+      "noans_synth_22"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "I started taking guitar lessons last month and my fingertips are so sore after practice."
+        },
+        {
+          "role": "assistant",
+          "content": "Sore fingertips are normal in the first weeks of guitar lessons. Keep sessions short and daily, and calluses will form within about a month."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "My guitar teacher wants me to learn barre chords next. Any practice advice for music beginners?"
+        },
+        {
+          "role": "assistant",
+          "content": "For barre chords, place your index finger close to the fret and practice the F major shape a few minutes each lesson rather than in one long session."
+        }
+      ]
+    ],
+    "answer_session_ids": []
+  }
+]
