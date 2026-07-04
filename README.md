@@ -45,7 +45,30 @@ make dev
 
 Open the review console at `http://localhost:3000/vnext`. The detailed walkthrough — demo data, smoke checks, first memory — is in [docs/alpha/quickstart.md](docs/alpha/quickstart.md).
 
-> **Install note:** Alice currently runs from a repo checkout. The PyPI name [`alice-memory`](https://pypi.org/project/alice-memory/) is claimed with a placeholder release; the packaged runtime (including a zero-infrastructure SQLite mode) will ship under it. The name `alice-core` on PyPI belongs to an unrelated project.
+> **Install note:** Alice currently runs from a repo checkout. The PyPI name [`alice-memory`](https://pypi.org/project/alice-memory/) is claimed with a placeholder release; the packaged runtime will ship under it. The name `alice-core` on PyPI belongs to an unrelated project.
+
+### Try it without Docker
+
+For a zero-infrastructure trial, Alice can run the nine core MCP tools against a single local SQLite file — no Docker, Node, or Postgres. From a checkout:
+
+```bash
+pip install -e . && alice-memory mcp --data-dir ~/.alice
+```
+
+Once the package is published, `uvx alice-memory mcp --data-dir ~/.alice` replaces the checkout. MCP client config — note there is no `DATABASE_URL`:
+
+```json
+{
+  "mcpServers": {
+    "alice": {
+      "command": "/ABSOLUTE/PATH/TO/AliceBot/.venv/bin/alice-memory",
+      "args": ["mcp", "--data-dir", "/ABSOLUTE/PATH/TO/.alice"]
+    }
+  }
+}
+```
+
+SQLite mode is the trial and single-agent path: it serves the nine core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. For the full experience — review console, scheduler, legacy surfaces — use the Postgres setup above. Boundaries are listed in [known limitations](docs/alpha/known-limitations.md).
 
 ## Connect an agent
 
