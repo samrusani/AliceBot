@@ -102,11 +102,17 @@ def create_agent_key(
     agent_id: str,
     permission_profile: str,
     label: str | None = None,
+    project_scope: str | None = None,
 ) -> tuple[JsonObject, str]:
     """Create an agent API key. Returns (record, raw_key).
 
     The raw key is returned exactly once and never persisted; the store keeps
     only its sha256 hash plus a short prefix for identification.
+
+    ``project_scope`` optionally binds the key to one project: identities
+    resolved from a bound key carry that project scope from the key record
+    (the payload may narrow to a subset, never widen) and write actions
+    outside the bound scope are blocked by policy.
     """
 
     normalized_agent_id = " ".join(str(agent_id).split()).strip()
@@ -117,12 +123,16 @@ def create_agent_key(
             f"permission_profile must be one of {', '.join(PERMISSION_PROFILES)}"
         )
     normalized_label = " ".join(str(label).split()).strip() if label is not None else None
+    normalized_project_scope = (
+        " ".join(str(project_scope).split()).strip() if project_scope is not None else None
+    )
     raw_key = mint_agent_key()
     record = store.create_agent_api_key(
         {
             "user_id": str(user_id),
             "agent_id": normalized_agent_id,
             "permission_profile": permission_profile,
+            "project_scope": normalized_project_scope or None,
             "key_hash": hash_agent_key(raw_key),
             "key_prefix": agent_key_prefix(raw_key),
             "label": normalized_label or None,
@@ -158,9 +168,14 @@ def resolve_agent_identity(
 
     With a valid key, agent_id and permission_profile come from the key
     record; the payload may claim a lower profile (downgrade) but claiming a
-    different agent_id or a higher profile is rejected. Without a key, the
-    payload identity is honored only while the user has no active keys at all
-    and is marked ``auth: "unauthenticated_local"``.
+    different agent_id or a higher profile is rejected. When the key record
+    carries a ``project_scope`` binding, the effective identity's project
+    scope is the key's: the payload may narrow it to a subset but never
+    widen it (violations are rejected with 403 and audited), and the
+    identity is marked ``project_scope_locked`` so policy evaluation blocks
+    out-of-scope writes. Without a key, the payload identity is honored only
+    while the user has no active keys at all and is marked
+    ``auth: "unauthenticated_local"``.
     """
 
     claimed = AgentIdentity.from_payload(payload)
@@ -228,10 +243,44 @@ def resolve_agent_identity(
         claimed = AgentIdentity.from_payload(
             {"agent_id": key_agent_id, "permission_profile": key_profile}
         ) or AgentIdentity(agent_id=key_agent_id, permission_profile=key_profile)
+
+    key_project_scope = _claimed_text(record.get("project_scope"))
+    # Read the scope claim from the payload source directly (like the
+    # profile claim): key-only calls without an agent_id still must not be
+    # able to widen the binding.
+    claimed_scope = _claimed_project_scope(source) or claimed.project_scope
+    effective_project_scope = claimed.project_scope or claimed_scope
+    project_scope_locked = False
+    if key_project_scope is not None:
+        bound_scope = (key_project_scope,)
+        widened = tuple(value for value in claimed_scope if value not in bound_scope)
+        if widened:
+            _append_key_rejection_event(
+                store,
+                record=record,
+                reason="project_scope_escalation",
+                claimed={
+                    "claimed_project_scope": list(claimed_scope),
+                    "granted_project_scope": key_project_scope,
+                },
+            )
+            raise AgentKeyAuthenticationError(
+                f"agent API key is bound to project scope '{key_project_scope}'; the "
+                f"payload claims project(s) {', '.join(repr(value) for value in widened)} "
+                "outside that scope. Narrow the claim or request a key bound to those "
+                "projects.",
+                status_code=403,
+            )
+        # A subset claim narrows; an empty claim inherits the key binding.
+        effective_project_scope = claimed_scope or bound_scope
+        project_scope_locked = True
+
     return replace(
         claimed,
         agent_id=key_agent_id,
         permission_profile=effective_profile,
+        project_scope=effective_project_scope,
+        project_scope_locked=project_scope_locked,
         auth=AGENT_KEY_AUTH,
     )
 
@@ -251,6 +300,18 @@ def _claimed_text(value: object) -> str | None:
         return None
     normalized = " ".join(value.split()).strip()
     return normalized or None
+
+
+def _claimed_project_scope(source: Mapping[str, object]) -> tuple[str, ...]:
+    value = source.get("project_scope")
+    if not isinstance(value, (list, tuple)):
+        return ()
+    values: list[str] = []
+    for item in value:
+        normalized = _claimed_text(item)
+        if normalized is not None:
+            values.append(normalized)
+    return tuple(values)
 
 
 def _append_key_rejection_event(

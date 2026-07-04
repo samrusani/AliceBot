@@ -62,9 +62,10 @@ class VNextRetrievalStore(Protocol):
     ``list_beliefs`` (contradicting_evidence section): stores without them
     yield empty sections instead of failing.
 
-    ``memory_types``/``projects`` are only forwarded to the store when the
-    request sets them, so minimal stores that predate those keyword
-    arguments keep working for unfiltered requests.
+    ``memory_types``/``projects``/``created_by_agent_ids``/``run_id`` are
+    only forwarded to the store when the request sets them, so minimal
+    stores that predate those keyword arguments keep working for unfiltered
+    requests.
     """
 
     def append_event(self, event: JsonObject) -> JsonObject: ...
@@ -78,6 +79,8 @@ class VNextRetrievalStore(Protocol):
         limit: int = DEFAULT_CONTEXT_PACK_LIMIT,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
         include_expired: bool = False,
     ) -> list[JsonObject]: ...
 
@@ -111,6 +114,12 @@ class VNextRetrievalRequest:
     projects: tuple[str, ...] = ()
     people: tuple[str, ...] = ()
     memory_types: tuple[str, ...] = ()
+    # Scope filters over the first-class memory columns: restrict retrieval
+    # to memories written by these agents / this agent run. filter_run_id is
+    # distinct from ``run_id`` below, which attributes the retrieval *event*
+    # to the caller's run in the event log.
+    created_by_agent_ids: tuple[str, ...] = ()
+    filter_run_id: str | None = None
     time_window: str = "all"
     sensitivity_allowed: tuple[str, ...] = DEFAULT_SENSITIVITY_ALLOWED
     include_sources: bool = True
@@ -386,6 +395,8 @@ def _memory_reference(memory: JsonObject) -> JsonObject:
 def _optional_search_filters(
     memory_types: tuple[str, ...],
     projects: tuple[str, ...],
+    created_by_agent_ids: tuple[str, ...] = (),
+    run_id: str | None = None,
 ) -> dict[str, object]:
     """Only forward filter kwargs when set, so minimal stores keep working."""
     filters: dict[str, object] = {}
@@ -393,6 +404,10 @@ def _optional_search_filters(
         filters["memory_types"] = tuple(memory_types)
     if projects:
         filters["projects"] = tuple(projects)
+    if created_by_agent_ids:
+        filters["created_by_agent_ids"] = tuple(created_by_agent_ids)
+    if run_id is not None:
+        filters["run_id"] = run_id
     return filters
 
 
@@ -430,8 +445,10 @@ class VNextRetrievalService:
         limit: int,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
     ) -> tuple[list[JsonObject], str]:
-        filters = _optional_search_filters(memory_types, projects)
+        filters = _optional_search_filters(memory_types, projects, created_by_agent_ids, run_id)
         search_memories_fts = getattr(self.store, "search_memories_fts", None)
         if callable(search_memories_fts):
             rows = search_memories_fts(
@@ -460,6 +477,8 @@ class VNextRetrievalService:
         limit: int,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
     ) -> tuple[list[JsonObject], str]:
         if self.embedding_provider is None:
             return [], VECTOR_STAGE_DISABLED_NO_PROVIDER
@@ -473,7 +492,7 @@ class VNextRetrievalService:
                 domains=domains or None,
                 sensitivity_allowed=sensitivity_allowed,
                 limit=limit,
-                **_optional_search_filters(memory_types, projects),
+                **_optional_search_filters(memory_types, projects, created_by_agent_ids, run_id),
             )
         except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
             return [], f"disabled: query embedding failed ({exc})"
@@ -488,6 +507,8 @@ class VNextRetrievalService:
         sensitivity_allowed = list(interpretation["sensitivity_allowed"])  # type: ignore[arg-type]
         memory_types = tuple(request.memory_types)
         projects = tuple(request.projects)
+        created_by_agent_ids = tuple(request.created_by_agent_ids)
+        filter_run_id = request.filter_run_id
         trace_id = request.trace_id or str(uuid4())
         context_pack_id = str(uuid4())
         memory_candidate_limit = max(request.max_items * 2, request.max_items)
@@ -499,6 +520,8 @@ class VNextRetrievalService:
             limit=memory_candidate_limit,
             memory_types=memory_types,
             projects=projects,
+            created_by_agent_ids=created_by_agent_ids,
+            run_id=filter_run_id,
         )
         vector_rows, vector_stage = self._memory_vector_rows(
             query=str(interpretation["query"]),
@@ -507,6 +530,8 @@ class VNextRetrievalService:
             limit=memory_candidate_limit,
             memory_types=memory_types,
             projects=projects,
+            created_by_agent_ids=created_by_agent_ids,
+            run_id=filter_run_id,
         )
         memory_lists: dict[str, Sequence[JsonObject]] = {"fts": fts_rows}
         if vector_stage == VECTOR_STAGE_ENABLED:
@@ -601,6 +626,8 @@ class VNextRetrievalService:
                 "time_window": request.time_window,
                 "memory_types": list(memory_types),
                 "projects": list(projects),
+                "created_by_agent_ids": list(created_by_agent_ids),
+                "run_id": filter_run_id,
             },
             "fusion": {"algorithm": "reciprocal_rank_fusion", "k": RRF_K},
             "vector_stage": vector_stage,

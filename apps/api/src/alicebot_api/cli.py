@@ -1727,6 +1727,7 @@ def _agent_key_public_record(record: dict[str, object]) -> JsonObject:
         "key_prefix": record.get("key_prefix"),
         "agent_id": record.get("agent_id"),
         "permission_profile": record.get("permission_profile"),
+        "project_scope": record.get("project_scope"),
         "label": record.get("label"),
         "created_at": record.get("created_at"),
         "last_used_at": record.get("last_used_at"),
@@ -1743,6 +1744,7 @@ def _run_agent_keys_create(ctx: CLIContext, args: argparse.Namespace) -> str:
             agent_id=args.agent_id,
             permission_profile=args.profile,
             label=args.label,
+            project_scope=args.project_scope,
         )
     return _json_dumps(
         {
@@ -4622,6 +4624,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Permission profile granted to the key.",
     )
     agent_keys_create_parser.add_argument("--label", default=None, help="Optional human-readable key label.")
+    agent_keys_create_parser.add_argument(
+        "--project-scope",
+        default=None,
+        help=(
+            "Optionally bind the key to one project. Identities resolved from a bound key "
+            "carry that project scope (payloads may narrow it, never widen it) and write "
+            "actions outside the scope are blocked by policy."
+        ),
+    )
     agent_keys_create_parser.set_defaults(handler=_run_agent_keys_create)
     agent_keys_list_parser = agent_keys_subparsers.add_parser(
         "list",

@@ -22,11 +22,12 @@ _SEARCH_STOPWORDS = {"about", "what", "when", "where", "which", "with", "from", 
 # sqlite_store._MEMORY_SEARCHABLE_STATUSES_SQL; keep the two in sync.
 _MEMORY_SEARCHABLE_STATUSES_SQL = "('active', 'accepted')"
 
-# Seam for the Wave-2 memories.project_id column: project filtering reads
-# the project id from metadata_json today. When the real column lands,
-# swapping this expression for "project_id::text" updates every memory
-# search in one line.
-_MEMORY_PROJECT_ID_SQL = "metadata_json ->> 'project_id'"
+# The memories.project_id column (migration 20260704_0076) is the real
+# project scope; the metadata_json fallback covers rows written before the
+# column existed or by writers that still stash project_id in metadata only
+# (e.g. capture-created candidates). Drop the COALESCE once a follow-up
+# backfill retires the metadata-only writers.
+_MEMORY_PROJECT_ID_SQL = "COALESCE(project_id, metadata_json ->> 'project_id')"
 
 
 def _vector_literal(vector: list[float]) -> str:
@@ -174,6 +175,11 @@ MEMORY_COLUMNS = """
                   metadata_json,
                   commit_digest,
                   confirmation_id,
+                  project_id,
+                  created_by_agent_id,
+                  run_id,
+                  superseded_by,
+                  supersedes,
                   created_at,
                   updated_at,
                   deleted_at
@@ -226,6 +232,7 @@ GRAPH_EDGE_COLUMNS = """
                   explanation,
                   created_by,
                   created_at,
+                  observed_at,
                   valid_from,
                   valid_to,
                   metadata_json
@@ -392,6 +399,7 @@ AGENT_API_KEY_COLUMNS = """
                   user_id,
                   agent_id,
                   permission_profile,
+                  project_scope,
                   key_hash,
                   key_prefix,
                   label,
@@ -1118,6 +1126,11 @@ class PostgresVNextStore:
                   metadata_json,
                   commit_digest,
                   confirmation_id,
+                  project_id,
+                  created_by_agent_id,
+                  run_id,
+                  superseded_by,
+                  supersedes,
                   created_at,
                   updated_at
                 )
@@ -1153,6 +1166,11 @@ class PostgresVNextStore:
                   %s,
                   %s,
                   %s,
+                  %s,
+                  %s,
+                  %s,
+                  %s::uuid,
+                  %s::uuid,
                   clock_timestamp(),
                   clock_timestamp()
                 )
@@ -1189,6 +1207,11 @@ class PostgresVNextStore:
                 _json_object(memory.get("metadata_json")),
                 memory.get("commit_digest"),
                 memory.get("confirmation_id"),
+                memory.get("project_id"),
+                memory.get("created_by_agent_id"),
+                memory.get("run_id"),
+                memory.get("superseded_by"),
+                memory.get("supersedes"),
             ),
         )
         self._append_mutation_event(
@@ -1241,12 +1264,15 @@ class PostgresVNextStore:
         limit: int = 8,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
         include_expired: bool = False,
     ) -> list[VNextRow]:
         patterns = _search_patterns(query)
         exact_pattern = patterns[0]
         memory_type_list = list(memory_types) or None
         project_list = list(projects) or None
+        created_by_list = list(created_by_agent_ids) or None
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS}
@@ -1257,6 +1283,8 @@ class PostgresVNextStore:
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                   AND (%s::text[] IS NULL OR memory_type = ANY(%s::text[]))
                   AND (%s::text[] IS NULL OR {_MEMORY_PROJECT_ID_SQL} = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR created_by_agent_id = ANY(%s::text[]))
+                  AND (%s::text IS NULL OR run_id = %s)
                   AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
                   AND (
                     memory_key ILIKE ANY(%s::text[])
@@ -1287,6 +1315,10 @@ class PostgresVNextStore:
                 memory_type_list,
                 project_list,
                 project_list,
+                created_by_list,
+                created_by_list,
+                run_id,
+                run_id,
                 include_expired,
                 patterns,
                 patterns,
@@ -1310,10 +1342,13 @@ class PostgresVNextStore:
         limit: int = 50,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
         include_expired: bool = False,
     ) -> list[VNextRow]:
         memory_type_list = list(memory_types) or None
         project_list = list(projects) or None
+        created_by_list = list(created_by_agent_ids) or None
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS},
@@ -1325,6 +1360,8 @@ class PostgresVNextStore:
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                   AND (%s::text[] IS NULL OR memory_type = ANY(%s::text[]))
                   AND (%s::text[] IS NULL OR {_MEMORY_PROJECT_ID_SQL} = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR created_by_agent_id = ANY(%s::text[]))
+                  AND (%s::text IS NULL OR run_id = %s)
                   AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
                   AND search_tsv @@ websearch_to_tsquery('english', %s)
                 ORDER BY fts_score DESC, updated_at DESC, created_at DESC, id DESC
@@ -1340,6 +1377,10 @@ class PostgresVNextStore:
                 memory_type_list,
                 project_list,
                 project_list,
+                created_by_list,
+                created_by_list,
+                run_id,
+                run_id,
                 include_expired,
                 query,
                 limit,
@@ -1355,11 +1396,14 @@ class PostgresVNextStore:
         limit: int = 50,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
         include_expired: bool = False,
     ) -> list[VNextRow]:
         vector_param = _vector_literal(query_vector)
         memory_type_list = list(memory_types) or None
         project_list = list(projects) or None
+        created_by_list = list(created_by_agent_ids) or None
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS},
@@ -1372,6 +1416,8 @@ class PostgresVNextStore:
                   AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
                   AND (%s::text[] IS NULL OR memory_type = ANY(%s::text[]))
                   AND (%s::text[] IS NULL OR {_MEMORY_PROJECT_ID_SQL} = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR created_by_agent_id = ANY(%s::text[]))
+                  AND (%s::text IS NULL OR run_id = %s)
                   AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
                 ORDER BY embedding_vector <=> %s::vector
                 LIMIT %s
@@ -1386,6 +1432,10 @@ class PostgresVNextStore:
                 memory_type_list,
                 project_list,
                 project_list,
+                created_by_list,
+                created_by_list,
+                run_id,
+                run_id,
                 include_expired,
                 vector_param,
                 limit,
@@ -1492,6 +1542,8 @@ class PostgresVNextStore:
                     last_seen_at = COALESCE(%s, last_seen_at),
                     last_reviewed_at = COALESCE(%s, last_reviewed_at),
                     metadata_json = COALESCE(%s, metadata_json),
+                    superseded_by = COALESCE(%s::uuid, superseded_by),
+                    supersedes = COALESCE(%s::uuid, supersedes),
                     updated_at = clock_timestamp(),
                     deleted_at = CASE
                       WHEN %s = 'archived' THEN clock_timestamp()
@@ -1526,6 +1578,8 @@ class PostgresVNextStore:
                 patch.get("last_seen_at"),
                 patch.get("last_reviewed_at"),
                 _json_object(patch["metadata_json"]) if "metadata_json" in patch else None,
+                patch.get("superseded_by"),
+                patch.get("supersedes"),
                 patch.get("status"),
                 memory_id,
             ),
@@ -1747,6 +1801,18 @@ class PostgresVNextStore:
         )
 
     def create_edge(self, edge: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        # observed_at is event time: when the observation the edge encodes
+        # actually happened (callers pass the source's source_created_at,
+        # falling back to captured_at). Creation sites without source
+        # context fall back to write time, noted in the edge metadata so
+        # as-of readers can tell real event time from an ingestion-time
+        # stand-in. valid_from defaults to observed_at so the validity
+        # interval starts when the observation happened, not when it was
+        # written. now() is transaction-stable, so defaulted observed_at
+        # and valid_from land on the same instant.
+        metadata = dict(edge.get("metadata_json") or {})
+        if edge.get("observed_at") is None:
+            metadata.setdefault("observed_at_source", "now")
         row = self._fetch_one(
             "create_edge",
             f"""
@@ -1761,6 +1827,7 @@ class PostgresVNextStore:
                   confidence,
                   explanation,
                   created_by,
+                  observed_at,
                   valid_from,
                   valid_to,
                   metadata_json
@@ -1776,7 +1843,8 @@ class PostgresVNextStore:
                   %s,
                   %s,
                   %s,
-                  %s,
+                  COALESCE(%s::timestamptz, now()),
+                  COALESCE(%s::timestamptz, %s::timestamptz, now()),
                   %s,
                   %s
                 )
@@ -1792,9 +1860,11 @@ class PostgresVNextStore:
                 edge.get("confidence", 0.5),
                 edge.get("explanation"),
                 edge.get("created_by", actor_type),
+                edge.get("observed_at"),
                 edge.get("valid_from"),
+                edge.get("observed_at"),
                 edge.get("valid_to"),
-                _json_object(edge.get("metadata_json")),
+                _json_object(metadata),
             ),
         )
         self._append_mutation_event(
@@ -1817,6 +1887,27 @@ class PostgresVNextStore:
                 ORDER BY created_at DESC, id DESC
                 """,
             (from_id, from_id, to_id, to_id),
+        )
+
+    def list_edges_as_of(self, at: object, *, limit: int = 50) -> list[VNextRow]:
+        """Edges that were in effect at ``at``: valid_from <= at < valid_to.
+
+        User scoping comes from the graph_edges RLS policy, like every
+        other read. Edges written before the temporal slice carry NULL
+        ``valid_from`` and are excluded (their event time was never
+        recorded).
+        """
+        return self._fetch_all(
+            f"""
+                SELECT {GRAPH_EDGE_COLUMNS}
+                FROM graph_edges
+                WHERE valid_from IS NOT NULL
+                  AND valid_from <= %s::timestamptz
+                  AND (valid_to IS NULL OR valid_to > %s::timestamptz)
+                ORDER BY valid_from DESC, created_at DESC, id DESC
+                LIMIT %s
+                """,
+            (at, at, limit),
         )
 
     def update_edge_status(self, *, edge_id: str, status: str, actor_type: str = "system") -> VNextRow:
@@ -2999,6 +3090,7 @@ class PostgresVNextStore:
                   user_id,
                   agent_id,
                   permission_profile,
+                  project_scope,
                   key_hash,
                   key_prefix,
                   label
@@ -3006,6 +3098,7 @@ class PostgresVNextStore:
                 VALUES (
                   COALESCE(%s::uuid, gen_random_uuid()),
                   app.current_user_id(),
+                  %s,
                   %s,
                   %s,
                   %s,
@@ -3018,6 +3111,7 @@ class PostgresVNextStore:
                 key.get("id"),
                 key["agent_id"],
                 key["permission_profile"],
+                key.get("project_scope"),
                 key["key_hash"],
                 key["key_prefix"],
                 key.get("label"),
@@ -3032,6 +3126,7 @@ class PostgresVNextStore:
                 "operation": "create",
                 "agent_id": str(row["agent_id"]),
                 "permission_profile": str(row["permission_profile"]),
+                "project_scope": row.get("project_scope"),
                 "key_prefix": str(row["key_prefix"]),
                 "label": row.get("label"),
             },

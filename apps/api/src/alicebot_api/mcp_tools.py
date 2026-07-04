@@ -407,10 +407,10 @@ def _parse_memory_types(arguments: Mapping[str, object], *, key: str = "memory_t
 def _retrieval_filter_kwargs(arguments: Mapping[str, object]) -> dict[str, object]:
     """Optional typed/scoped retrieval filters, passed through only when set.
 
-    ``memory_types`` and ``projects`` are forwarded as keyword arguments so
-    the retrieval service signature stays the source of truth; when a filter
-    is not requested the argument is omitted entirely and the service
-    defaults (``()``) apply.
+    ``memory_types``, ``projects``, and ``created_by_agents`` (forwarded as
+    ``created_by_agent_ids``) are keyword arguments so the retrieval service
+    signature stays the source of truth; when a filter is not requested the
+    argument is omitted entirely and the service defaults (``()``) apply.
     """
     kwargs: dict[str, object] = {}
     memory_types = _parse_memory_types(arguments)
@@ -419,6 +419,9 @@ def _retrieval_filter_kwargs(arguments: Mapping[str, object]) -> dict[str, objec
     projects = _parse_string_list(arguments, "projects")
     if projects:
         kwargs["projects"] = projects
+    created_by_agents = _parse_string_list(arguments, "created_by_agents")
+    if created_by_agents:
+        kwargs["created_by_agent_ids"] = created_by_agents
     return kwargs
 
 
@@ -1769,6 +1772,10 @@ def _sqlite_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, o
                 if replacement_body is not None
                 else cast(str, replacement_title)
             )
+            # The supersession pointer is a first-class column
+            # (memories.supersedes / memories.superseded_by, migration
+            # 20260704_0077); the metadata_json copies below stay for
+            # backward compatibility.
             replacement_metadata: JsonObject = {
                 "supersedes": memory_id,
                 "correction_reason": reason,
@@ -1782,6 +1789,7 @@ def _sqlite_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, o
                     if replacement_body is not None
                     else {"text": canonical_text},
                     "status": "active",
+                    "supersedes": memory_id,
                     "memory_type": memory.get("memory_type") or "semantic",
                     "confidence": replacement_confidence,
                     "title": replacement_title or canonical_text[:120],
@@ -1823,6 +1831,7 @@ def _sqlite_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, o
                 memory_id=memory_id,
                 patch={
                     "status": "superseded",
+                    "superseded_by": replacement_id,
                     "last_reviewed_at": now_iso,
                     "metadata_json": {**existing_metadata, "superseded_by": replacement_id},
                 },
@@ -2416,6 +2425,9 @@ def _vnext_context_pack_payload(context: MCPRuntimeContext, arguments: Mapping[s
                 # Forwarded only when requested so the retrieval request
                 # dataclass stays the source of truth for the default ().
                 request_kwargs["memory_types"] = memory_types
+            created_by_agents = _parse_string_list(arguments, "created_by_agents")
+            if created_by_agents:
+                request_kwargs["created_by_agent_ids"] = created_by_agents
             payload = VNextRetrievalService(store).compile_context_pack(
                 VNextRetrievalRequest(
                     query=_parse_required_text(arguments, "query"),
@@ -3115,6 +3127,7 @@ def _handle_alice_vnext_undo_memory(context: MCPRuntimeContext, arguments: Mappi
                 identity=identity,
                 memory_id=_parse_optional_text(arguments, "memory_id"),
                 reason=_parse_optional_text(arguments, "reason"),
+                superseded_by_memory_id=_parse_optional_text(arguments, "superseded_by"),
             )
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
@@ -3591,6 +3604,14 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "items": {"type": "string"},
                     "description": "Restrict results to memories scoped to these project names.",
                 },
+                "created_by_agents": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Restrict results to memories committed by these agent ids "
+                        "(for example ['openclaw']). Omit to search memories from every writer."
+                    ),
+                },
                 "sensitivity_allowed": _SENSITIVITY_ALLOWED_SCHEMA,
                 "limit": {
                     "type": "integer",
@@ -3693,6 +3714,14 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Project names to prioritize when selecting context.",
+                },
+                "created_by_agents": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Restrict the memory sections to memories committed by these agent ids. "
+                        "Omit to build the pack from every writer's memories."
+                    ),
                 },
                 "people": {
                     "type": "array",
@@ -3972,6 +4001,10 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "type": "string",
                     "description": "Why this change is being made. Stored in the audit trail.",
                 },
+                "superseded_by": {
+                    "type": "string",
+                    "description": "For undo: id of the memory that replaces the undone one. Links the two so alice_explain can show what changed and when.",
+                },
                 **_AGENT_IDENTITY_SCHEMA_PROPERTIES,
             },
         },
@@ -3980,9 +4013,11 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
         "name": "alice_explain",
         "description": (
             "Explain where a memory came from and why it can be trusted: source evidence, "
-            "revision history, corroborations, and contradiction signals. Pass memory_id for a "
-            "result from alice_recall, continuity_object_id for a reviewed record, or entity_id "
-            "(optionally with 'at') for a point-in-time explanation."
+            "revision history, corroborations, and contradiction signals, plus the memory's "
+            "supersession chain (what it replaced and what replaced it, oldest to newest). "
+            "Pass memory_id for a result from alice_recall, continuity_object_id for a "
+            "reviewed record, or entity_id (optionally with 'at') for a point-in-time "
+            "explanation."
         ),
         "inputSchema": {
             "type": "object",
@@ -3990,7 +4025,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "properties": {
                 "memory_id": {
                     "type": "string",
-                    "description": "Id of a memory returned by alice_recall; returns its provenance links, revisions, and event history.",
+                    "description": "Id of a memory returned by alice_recall; returns its provenance links, revisions, event history, and supersession_chain (each entry has id, title, status, created_at, and its relation to this memory: predecessor, self, or successor).",
                 },
                 "continuity_object_id": {
                     "type": "string",
@@ -4896,6 +4931,7 @@ _LEGACY_TOOL_DEFINITIONS: list[dict[str, object]] = [
             {
                 "memory_id": {"type": "string"},
                 "reason": {"type": "string"},
+                "superseded_by": {"type": "string"},
             },
         ),
     },

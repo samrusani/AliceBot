@@ -36,6 +36,12 @@ SOURCE_GROUNDED_SECTIONS = (
     "Contradictions Considered",
     "Open Questions",
 )
+CONSOLIDATION_MERGE_WORKFLOW = "consolidation_merge"
+# Providers that cannot synthesize novel merged text. The deterministic local
+# provider only echoes extracted facts, so letting it "write" a merged memory
+# would fabricate synthesis it never performed; it must refuse instead.
+NON_SYNTHESIZING_PROVIDERS = frozenset({"deterministic_local", "disabled"})
+CONSOLIDATION_MERGE_GROUNDING_MIN_OVERLAP = 0.5
 
 
 class VNextModelIntelligenceError(ValueError):
@@ -117,6 +123,38 @@ class ModelBackedArtifact:
     input_context_hash: str
     model_info: JsonObject
     metadata: JsonObject
+
+
+@dataclass(frozen=True, slots=True)
+class ConsolidationMergeRequest:
+    """A request to write one consolidated memory from near-duplicate members."""
+
+    cluster_members: tuple[JsonObject, ...]
+    route: ModelRoutingDecision | None = None
+    temperature: float = 0.2
+    trace_id: str | None = None
+    max_canonical_text_chars: int = 1200
+
+
+@dataclass(frozen=True, slots=True)
+class ConsolidationMergeResult:
+    """Outcome of a consolidation merge completion.
+
+    ``status`` is ``"merged"`` when a real model produced grounded merged
+    text, or ``"refused"`` when routing, the provider, or grounding checks
+    prevented synthesis. Callers must map a refusal to dedup mode instead of
+    inventing merged text themselves.
+    """
+
+    status: str
+    title: str | None
+    canonical_text: str | None
+    refusal_reason: str | None
+    model_provenance: JsonObject
+
+    @property
+    def merged(self) -> bool:
+        return self.status == "merged"
 
 
 class DisabledBrainModelProvider:
@@ -460,6 +498,167 @@ def _build_prompt(request: ModelBackedRequest, context_json: str) -> str:
     )
 
 
+def _consolidation_member_context(members: tuple[JsonObject, ...]) -> list[JsonObject]:
+    context: list[JsonObject] = []
+    for member in members:
+        metadata = member.get("metadata_json")
+        source_refs = []
+        if isinstance(metadata, dict) and isinstance(metadata.get("source_refs"), list):
+            source_refs = [str(ref) for ref in metadata["source_refs"] if isinstance(ref, str)]
+        context.append(
+            {
+                "memory_id": str(member.get("id")),
+                "title": member.get("title"),
+                "canonical_text": member.get("canonical_text"),
+                "summary": member.get("summary"),
+                "memory_type": member.get("memory_type"),
+                "provenance_count": len(source_refs) + len(
+                    member.get("source_event_ids") if isinstance(member.get("source_event_ids"), list) else []
+                ),
+            }
+        )
+    return context
+
+
+def _build_consolidation_merge_prompt(context_json: str) -> str:
+    return "\n\n".join(
+        [
+            _model_system_instruction(),
+            f"Workflow: {CONSOLIDATION_MERGE_WORKFLOW}",
+            "The context lists near-duplicate memories that describe the same fact or preference.",
+            "Write ONE consolidated memory that preserves every concrete detail the members agree on.",
+            "Rules: use only facts present in the member texts; do not invent names, dates, numbers, "
+            "or qualifiers that are absent from the members; prefer the most specific phrasing on conflict.",
+            'Return strict JSON only, shaped exactly as {"title": "...", "canonical_text": "..."} '
+            "with no markdown fences and no additional keys.",
+            "[UNTRUSTED_CONTEXT_JSON]",
+            context_json,
+        ]
+    )
+
+
+def _parse_consolidation_merge_output(raw: str) -> JsonObject | None:
+    candidate = raw.strip()
+    if candidate.startswith("```"):
+        candidate = re.sub(r"^```[a-zA-Z]*\s*", "", candidate)
+        candidate = re.sub(r"\s*```$", "", candidate)
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", candidate, flags=re.DOTALL)
+        if match is None:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"[a-z0-9]+", text.casefold()) if len(token) > 3}
+
+
+def _merge_grounding_overlap(canonical_text: str, members: tuple[JsonObject, ...]) -> float:
+    merged_tokens = _content_tokens(canonical_text)
+    if not merged_tokens:
+        return 0.0
+    member_tokens: set[str] = set()
+    for member in members:
+        for key in ("title", "canonical_text", "summary"):
+            value = member.get(key)
+            if isinstance(value, str):
+                member_tokens |= _content_tokens(value)
+    if not member_tokens:
+        return 0.0
+    return len(merged_tokens & member_tokens) / len(merged_tokens)
+
+
+def generate_consolidation_merge(
+    request: ConsolidationMergeRequest,
+    provider: BrainModelProvider | None = None,
+) -> ConsolidationMergeResult:
+    """Ask a real model to write one consolidated memory for a duplicate cluster.
+
+    Reuses the existing routing seam (``resolve_model_route`` /
+    ``provider_for_route``) and the injection-stripping plumbing
+    (``_clean_untrusted_text``). Deterministic and disabled providers return a
+    structured refusal instead of fabricated merged text; the caller is
+    expected to fall back to dedup mode on refusal.
+    """
+    if len(request.cluster_members) < 2:
+        raise VNextModelIntelligenceError("consolidation merge requires at least two cluster members")
+    route = request.route or resolve_model_route(
+        ModelRoutingRequest(workflow_type=CONSOLIDATION_MERGE_WORKFLOW, generation_mode="model_backed")
+    )
+    context_payload = _json_safe(
+        {
+            "workflow_type": CONSOLIDATION_MERGE_WORKFLOW,
+            "cluster_members": _consolidation_member_context(request.cluster_members),
+        }
+    )
+    context_json = json.dumps(context_payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    input_context_hash = _sha256(context_json)
+    prompt = _build_consolidation_merge_prompt(context_json)
+    prompt_hash = _sha256(prompt)
+    provenance: JsonObject = {
+        "workflow_type": CONSOLIDATION_MERGE_WORKFLOW,
+        "routing": route.to_record(),
+        "policy_mode": route.policy_mode,
+        "prompt_hash": prompt_hash,
+        "input_context_hash": input_context_hash,
+        "trace_id": request.trace_id,
+        "created_at": datetime.now(UTC).isoformat(),
+        "prompt_injection_guard": "source_content_untrusted_no_tool_execution",
+    }
+
+    def _refusal(reason: str, *, provider_name: str = "disabled", model_name: str = "none") -> ConsolidationMergeResult:
+        return ConsolidationMergeResult(
+            status="refused",
+            title=None,
+            canonical_text=None,
+            refusal_reason=reason,
+            model_provenance={**provenance, "provider": provider_name, "model": model_name},
+        )
+
+    if route.approval_required or route.route_mode == "model_disabled":
+        return _refusal("model_route_disallows_synthesis")
+    provider = provider or provider_for_route(route)
+    if provider.provider in NON_SYNTHESIZING_PROVIDERS:
+        return _refusal(
+            "deterministic_provider_refuses_merge_synthesis",
+            provider_name=provider.provider,
+            model_name=provider.model,
+        )
+    provenance = {**provenance, "provider": provider.provider, "model": provider.model}
+    try:
+        raw = provider.chat(prompt=prompt, temperature=request.temperature)
+    except VNextModelIntelligenceError as exc:
+        return _refusal(f"provider_error: {exc}", provider_name=provider.provider, model_name=provider.model)
+    parsed = _parse_consolidation_merge_output(raw)
+    if parsed is None:
+        return _refusal("unparseable_model_output", provider_name=provider.provider, model_name=provider.model)
+    title = _clean_untrusted_text(str(parsed.get("title") or ""))
+    canonical_text = _clean_untrusted_text(str(parsed.get("canonical_text") or ""))
+    if not canonical_text:
+        return _refusal("empty_model_output", provider_name=provider.provider, model_name=provider.model)
+    overlap = _merge_grounding_overlap(canonical_text, request.cluster_members)
+    if overlap < CONSOLIDATION_MERGE_GROUNDING_MIN_OVERLAP:
+        return _refusal(
+            f"ungrounded_model_output: token_overlap={overlap:.2f}",
+            provider_name=provider.provider,
+            model_name=provider.model,
+        )
+    canonical_text = canonical_text[: request.max_canonical_text_chars]
+    return ConsolidationMergeResult(
+        status="merged",
+        title=title[:200] or canonical_text[:80],
+        canonical_text=canonical_text,
+        refusal_reason=None,
+        model_provenance={**provenance, "grounding_token_overlap": round(overlap, 4)},
+    )
+
+
 def _source_grounded_markdown(
     *,
     request: ModelBackedRequest,
@@ -624,18 +823,23 @@ def _sha256(value: str) -> str:
 
 __all__ = [
     "BrainModelProvider",
+    "CONSOLIDATION_MERGE_WORKFLOW",
+    "ConsolidationMergeRequest",
+    "ConsolidationMergeResult",
     "GENERATION_MODES",
     "MODEL_ROUTE_MODES",
     "ModelBackedArtifact",
     "ModelBackedRequest",
     "ModelRoutingDecision",
     "ModelRoutingRequest",
+    "NON_SYNTHESIZING_PROVIDERS",
     "OpenAIResponsesBrainModelProvider",
     "DeterministicBrainModelProvider",
     "DisabledBrainModelProvider",
     "SOURCE_GROUNDED_SECTIONS",
     "VNextModelIntelligenceError",
     "build_model_backed_artifact",
+    "generate_consolidation_merge",
     "provider_for_route",
     "resolve_model_route",
 ]

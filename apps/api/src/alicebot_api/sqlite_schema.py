@@ -142,6 +142,32 @@ OPEN_LOOP_STATUSES = (
 
 OPEN_LOOP_PRIORITIES = ("low", "normal", "high", "urgent")
 
+EDGE_TYPES = (
+    "supports",
+    "contradicts",
+    "caused_by",
+    "influenced_by",
+    "similar_to",
+    "supersedes",
+    "depends_on",
+    "mentions",
+    "asks",
+    "answers",
+    "reframes",
+    "predicts",
+    "invalidates",
+    "reopens",
+    "same_problem",
+    "same_principle",
+    "cross_domain_pattern",
+    "old_idea_now_relevant",
+    "belief_reinforcement",
+    "belief_challenge",
+    "owned_by",
+    "belongs_to_project",
+    "related_to_person",
+)
+
 AGENT_TYPES = (
     "personal_assistant",
     "coding_agent",
@@ -174,6 +200,7 @@ _REVISION_TYPES_SQL = _sql_list(REVISION_TYPES)
 _EVIDENCE_ROLES_SQL = _sql_list(EVIDENCE_ROLES)
 _OPEN_LOOP_STATUSES_SQL = _sql_list(OPEN_LOOP_STATUSES)
 _OPEN_LOOP_PRIORITIES_SQL = _sql_list(OPEN_LOOP_PRIORITIES)
+_EDGE_TYPES_SQL = _sql_list(EDGE_TYPES)
 _AGENT_TYPES_SQL = _sql_list(AGENT_TYPES)
 _PERMISSION_PROFILES_SQL = _sql_list(PERMISSION_PROFILES)
 
@@ -181,7 +208,7 @@ _PERMISSION_PROFILES_SQL = _sql_list(PERMISSION_PROFILES)
 # closely enough for lexicographic ordering (milliseconds vs microseconds).
 _NOW_UTC_ISO_SQL = "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
 
-_SCHEMA_STATEMENTS: tuple[str, ...] = (
+_TABLE_STATEMENTS: tuple[str, ...] = (
     f"""
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -279,6 +306,11 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
       metadata_json TEXT NOT NULL DEFAULT '{{}}',
       commit_digest TEXT NULL,
       confirmation_id TEXT NULL,
+      project_id TEXT NULL,
+      created_by_agent_id TEXT NULL,
+      run_id TEXT NULL,
+      superseded_by TEXT NULL,
+      supersedes TEXT NULL,
       embedding BLOB NULL,
       created_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
       updated_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
@@ -380,6 +412,34 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         CHECK (evidence_role IN ({_EVIDENCE_ROLES_SQL})),
       CONSTRAINT provenance_links_confidence_range_check
         CHECK (confidence >= 0.0 AND confidence <= 1.0)
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS graph_edges (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      from_type TEXT NOT NULL,
+      from_id TEXT NOT NULL,
+      to_type TEXT NOT NULL,
+      to_id TEXT NOT NULL,
+      edge_type TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0.5,
+      explanation TEXT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      observed_at TEXT NULL,
+      valid_from TEXT NULL,
+      valid_to TEXT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{{}}',
+      UNIQUE (id, user_id),
+      CONSTRAINT graph_edges_edge_type_check
+        CHECK (edge_type IN ({_EDGE_TYPES_SQL})),
+      CONSTRAINT graph_edges_confidence_range_check
+        CHECK (confidence >= 0.0 AND confidence <= 1.0),
+      CONSTRAINT graph_edges_valid_range_check
+        CHECK (valid_from IS NULL OR valid_to IS NULL OR valid_to >= valid_from),
+      CONSTRAINT graph_edges_metadata_json_object_check
+        CHECK (json_type(metadata_json) = 'object')
     )
     """,
     f"""
@@ -487,6 +547,7 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       agent_id TEXT NOT NULL,
       permission_profile TEXT NOT NULL,
+      project_scope TEXT NULL,
       key_hash TEXT NOT NULL UNIQUE,
       key_prefix TEXT NOT NULL,
       label TEXT NULL,
@@ -498,6 +559,45 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
         CHECK (permission_profile IN ({_PERMISSION_PROFILES_SQL}))
     )
     """,
+)
+
+# Columns added to existing tables after their CREATE TABLE first shipped
+# (mirrors Postgres migrations 20260704_0076 and 20260704_0077). The
+# bootstrap's idempotent CREATE TABLE IF NOT EXISTS never alters an existing
+# table, so pre-existing database files get these via a PRAGMA
+# table_info-guarded ALTER TABLE in bootstrap_sqlite_schema. Runs before the
+# index statements because memories_user_project_idx references
+# memories.project_id (and memories_user_superseded_by_idx references
+# memories.superseded_by).
+_ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("memories", "project_id", "TEXT NULL"),
+    ("memories", "created_by_agent_id", "TEXT NULL"),
+    ("memories", "run_id", "TEXT NULL"),
+    ("memories", "superseded_by", "TEXT NULL"),
+    ("memories", "supersedes", "TEXT NULL"),
+    ("agent_api_keys", "project_scope", "TEXT NULL"),
+)
+
+# One-shot backfills that run only when the paired additive column was just
+# added to a pre-existing file (mirrors the Postgres 20260704_0077 backfill:
+# supersession pointers were previously recorded only in metadata_json; the
+# metadata copies are kept for backward compatibility).
+_ADDITIVE_COLUMN_BACKFILLS: dict[tuple[str, str], str] = {
+    ("memories", "superseded_by"): """
+        UPDATE memories
+        SET superseded_by = json_extract(metadata_json, '$.superseded_by')
+        WHERE superseded_by IS NULL
+          AND json_type(metadata_json, '$.superseded_by') = 'text'
+        """,
+    ("memories", "supersedes"): """
+        UPDATE memories
+        SET supersedes = json_extract(metadata_json, '$.supersedes')
+        WHERE supersedes IS NULL
+          AND json_type(metadata_json, '$.supersedes') = 'text'
+        """,
+}
+
+_INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     # Indexes mirroring the hot Postgres access paths.
     """
     CREATE INDEX IF NOT EXISTS sources_user_content_hash_idx
@@ -518,6 +618,25 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS memories_user_domain_sensitivity_updated_idx
       ON memories (user_id, domain, sensitivity, updated_at DESC, id DESC)
+    """,
+    # Partial project-scope index (mirrors memories_user_project_idx from
+    # Postgres migration 20260704_0076).
+    """
+    CREATE INDEX IF NOT EXISTS memories_user_project_idx
+      ON memories (user_id, project_id)
+      WHERE project_id IS NOT NULL
+    """,
+    # Partial supersession index (mirrors memories_user_superseded_by_idx
+    # from Postgres migration 20260704_0077).
+    """
+    CREATE INDEX IF NOT EXISTS memories_user_superseded_by_idx
+      ON memories (user_id, superseded_by)
+      WHERE superseded_by IS NOT NULL
+    """,
+    # Mirrors graph_edges_user_edge_idx from Postgres migration 20260510_0067.
+    """
+    CREATE INDEX IF NOT EXISTS graph_edges_user_edge_idx
+      ON graph_edges (user_id, edge_type, created_at DESC, id DESC)
     """,
     """
     CREATE INDEX IF NOT EXISTS memory_revisions_memory_created_idx
@@ -616,17 +735,60 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = (
 )
 
 
+# Full statement list, kept for introspection; bootstrap_sqlite_schema
+# interleaves the additive-column guard between the two halves.
+_SCHEMA_STATEMENTS: tuple[str, ...] = _TABLE_STATEMENTS + _INDEX_AND_TRIGGER_STATEMENTS
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    # Tolerate any row_factory the caller installed (tuples, sqlite3.Row,
+    # or the store's dict rows): resolve the "name" column positionally
+    # from the cursor description instead of hardcoding an index.
+    cursor = conn.execute(f"PRAGMA table_info({table})")
+    name_index = next(
+        index for index, description in enumerate(cursor.description) if description[0] == "name"
+    )
+    columns: set[str] = set()
+    for row in cursor.fetchall():
+        if isinstance(row, dict):
+            columns.add(str(row["name"]))
+        else:
+            columns.add(str(row[name_index]))
+    return columns
+
+
+def _ensure_additive_columns(conn: sqlite3.Connection) -> None:
+    """Upgrade pre-existing database files with columns added after v1 DDL.
+
+    A column's backfill (if any) runs exactly once, in the same bootstrap
+    that adds the column; fresh files whose CREATE TABLE already carries the
+    column never re-run it.
+    """
+    for table, column, declaration in _ADDITIVE_COLUMNS:
+        if column not in _table_columns(conn, table):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+            backfill = _ADDITIVE_COLUMN_BACKFILLS.get((table, column))
+            if backfill is not None:
+                conn.execute(backfill)
+
+
 def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
-    """Create the vNext SQLite schema. Safe to call repeatedly."""
+    """Create or upgrade the vNext SQLite schema. Safe to call repeatedly."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    for statement in _SCHEMA_STATEMENTS:
+    for statement in _TABLE_STATEMENTS:
+        conn.execute(statement)
+    # Existing files created before the scope columns shipped need ALTERs
+    # before the index statements reference the new columns.
+    _ensure_additive_columns(conn)
+    for statement in _INDEX_AND_TRIGGER_STATEMENTS:
         conn.execute(statement)
 
 
 __all__ = [
     "AGENT_TYPES",
     "DOMAINS",
+    "EDGE_TYPES",
     "EVIDENCE_ROLES",
     "MEMORY_CONFIRMATION_STATUSES",
     "MEMORY_PROMOTION_ELIGIBILITIES",

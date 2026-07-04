@@ -321,6 +321,29 @@ def _source_uuid(value: object) -> str | None:
     return None
 
 
+def _scope_columns(
+    *,
+    identity: AgentIdentity | None,
+    request: MemoryCommitRequest,
+) -> JsonObject:
+    """First-class scope columns for a memory row written by the commit path.
+
+    ``project_id`` is only populated when the effective project scope is
+    singular (one project on the request, falling back to one project on the
+    authenticated identity); ambiguous multi-project scopes stay
+    metadata-only so the hard column never guesses. ``created_by_agent_id``
+    and ``run_id`` come from the authenticated identity. ``run_id`` is
+    deliberately metadata-plus-filter only: there is no session entity
+    behind it.
+    """
+    scope = request.project_scope or (identity.project_scope if identity is not None else ())
+    return {
+        "project_id": scope[0] if len(scope) == 1 else None,
+        "created_by_agent_id": identity.agent_id if identity is not None else None,
+        "run_id": identity.agent_run_id if identity is not None else None,
+    }
+
+
 def _memory_metadata(row: Mapping[str, object] | None) -> dict[str, object]:
     if row is None:
         return {}
@@ -332,6 +355,31 @@ def _agentic_metadata(row: Mapping[str, object] | None) -> dict[str, object]:
     metadata = _memory_metadata(row)
     agentic = metadata.get("agentic_memory")
     return dict(agentic) if isinstance(agentic, Mapping) else {}
+
+
+# Supersession chains are short in practice (one correction, occasionally
+# a handful); the bound only guards against pathological pointer data.
+_SUPERSESSION_CHAIN_MAX_DEPTH = 10
+
+
+def _supersession_pointer(row: Mapping[str, object] | None, key: str) -> str | None:
+    """Read a supersession pointer: real column first, metadata fallback.
+
+    The metadata_json fallback covers rows written before migration
+    20260704_0077 promoted the pointers to columns (the migration
+    backfills, but a not-yet-migrated row costs nothing to tolerate).
+    """
+    if row is None:
+        return None
+    value = row.get(key)
+    if value:
+        return str(value)
+    metadata = row.get("metadata_json")
+    if isinstance(metadata, Mapping):
+        fallback = metadata.get(key)
+        if isinstance(fallback, str) and fallback:
+            return fallback
+    return None
 
 
 def _append_policy_decision(
@@ -722,10 +770,27 @@ class VNextMemoryCommitService:
         identity: AgentIdentity | None,
         memory_id: str | None = None,
         reason: str | None = None,
+        superseded_by_memory_id: str | None = None,
     ) -> JsonObject:
+        """Retire a commit; optionally link the memory that replaces it.
+
+        When ``superseded_by_memory_id`` names the replacement (the usual
+        replace-then-undo correction pattern), both rows get real
+        supersession pointer columns -- ``superseded_by`` on the retired
+        row and ``supersedes`` on the replacement -- plus metadata_json
+        copies for backward compatibility, so the supersession chain in
+        audit/explain can answer "what did I believe before".
+        """
         memory = self.store.get_memory(memory_id) if memory_id else self._latest_agentic_commit(identity)
         if memory is None:
             raise VNextMemoryCommitValidationError("memory was not found")
+        successor: VNextRow | None = None
+        if superseded_by_memory_id is not None:
+            successor = self.store.get_memory(superseded_by_memory_id)
+            if successor is None:
+                raise VNextMemoryCommitValidationError("superseding memory was not found")
+            if str(successor["id"]) == str(memory["id"]):
+                raise VNextMemoryCommitValidationError("a memory cannot supersede itself")
         return self._transition_memory(
             identity=identity,
             memory=memory,
@@ -735,6 +800,7 @@ class VNextMemoryCommitService:
             revision_type="superseded",
             action="agentic_memory_undo",
             reason=reason or "Agentic memory commit undone.",
+            superseded_by=successor,
         )
 
     def correct(
@@ -841,10 +907,55 @@ class VNextMemoryCommitService:
             raise VNextMemoryCommitValidationError("memory was not found")
         return {
             "memory": memory,
+            "supersession_chain": self._supersession_chain(memory),
             "revisions": self.store.list_revisions(memory_id),
             "events": self.store.list_events(target_type="memory", target_id=memory_id),
             "provenance_links": self.store.list_provenance_links(target_type="memory", target_id=memory_id),
         }
+
+    def _supersession_chain(self, memory: VNextRow) -> list[JsonObject]:
+        """Full replacement history around ``memory``, oldest to newest.
+
+        Walks the ``supersedes`` pointers backwards and the
+        ``superseded_by`` pointers forwards, bounded to
+        ``_SUPERSESSION_CHAIN_MAX_DEPTH`` hops per direction and cycle-safe
+        (a pointer to an already-visited row ends the walk). A memory with
+        no supersession history yields a single 'self' entry.
+        """
+
+        def _entry(row: VNextRow, relation: str) -> JsonObject:
+            return {
+                "id": str(row.get("id")),
+                "title": row.get("title"),
+                "status": row.get("status"),
+                "created_at": json_safe(row.get("created_at")),
+                "relation": relation,
+            }
+
+        seen: set[str] = {str(memory.get("id"))}
+
+        def _walk(key: str) -> list[VNextRow]:
+            rows: list[VNextRow] = []
+            current: VNextRow = memory
+            for _hop in range(_SUPERSESSION_CHAIN_MAX_DEPTH):
+                pointer = _supersession_pointer(current, key)
+                if pointer is None or pointer in seen:
+                    break
+                row = self.store.get_memory(pointer)
+                if row is None:
+                    break
+                seen.add(pointer)
+                rows.append(row)
+                current = row
+            return rows
+
+        predecessors = _walk("supersedes")
+        successors = _walk("superseded_by")
+        return [
+            *(_entry(row, "predecessor") for row in reversed(predecessors)),
+            _entry(memory, "self"),
+            *(_entry(row, "successor") for row in successors),
+        ]
 
     def inline_confirmations(self, *, limit: int = 20) -> list[VNextRow]:
         rows: list[VNextRow] = []
@@ -960,6 +1071,7 @@ class VNextMemoryCommitService:
                 "last_confirmed_at": now,
                 "metadata_json": metadata,
                 "commit_digest": request.idempotency_key,
+                **_scope_columns(identity=identity, request=request),
             },
             actor_type=actor_type,
         )
@@ -1052,6 +1164,7 @@ class VNextMemoryCommitService:
                 "metadata_json": metadata,
                 "commit_digest": request.idempotency_key,
                 "confirmation_id": confirmation_id,
+                **_scope_columns(identity=identity, request=request),
             },
             actor_type=actor_type,
         )
@@ -1131,6 +1244,7 @@ class VNextMemoryCommitService:
                 "sensitivity": request.sensitivity,
                 "metadata_json": metadata,
                 "commit_digest": request.idempotency_key,
+                **_scope_columns(identity=identity, request=request),
             },
             actor_type=actor_type,
         )
@@ -1281,6 +1395,7 @@ class VNextMemoryCommitService:
         revision_type: str,
         action: str,
         reason: str,
+        superseded_by: VNextRow | None = None,
     ) -> JsonObject:
         metadata = _memory_metadata(memory)
         agentic = _agentic_metadata(memory)
@@ -1290,11 +1405,34 @@ class VNextMemoryCommitService:
         agentic["lifecycle_history"] = history
         actor_type = "agent" if identity is not None else "user"
         actor_id = identity.agent_id if identity is not None else None
+        patch: JsonObject = {"status": next_status, "metadata_json": {**metadata, "agentic_memory": agentic}}
+        successor_id: str | None = None
+        if superseded_by is not None:
+            # Supersession pointers are first-class columns; the
+            # metadata_json copies stay for backward compatibility.
+            successor_id = str(superseded_by["id"])
+            patch["superseded_by"] = successor_id
+            patch["metadata_json"] = {**metadata, "superseded_by": successor_id, "agentic_memory": agentic}
         updated = self.store.update_memory(
             memory_id=str(memory["id"]),
-            patch={"status": next_status, "metadata_json": {**metadata, "agentic_memory": agentic}},
+            patch=patch,
             actor_type=actor_type,
         )
+        if superseded_by is not None and successor_id is not None:
+            successor_metadata = _memory_metadata(superseded_by)
+            self.store.update_memory(
+                memory_id=successor_id,
+                patch={
+                    "supersedes": str(memory["id"]),
+                    "metadata_json": {**successor_metadata, "supersedes": str(memory["id"])},
+                },
+                actor_type=actor_type,
+            )
+        revision_metadata: JsonObject = {"lifecycle_status": lifecycle_status}
+        event_payload: JsonObject = {"lifecycle_status": lifecycle_status, "reason": reason}
+        if successor_id is not None:
+            revision_metadata["superseded_by"] = successor_id
+            event_payload["superseded_by"] = successor_id
         self.store.append_revision(
             {
                 "memory_id": str(updated["id"]),
@@ -1309,7 +1447,7 @@ class VNextMemoryCommitService:
                 "reason": reason,
                 "actor_type": actor_type,
                 "actor_id": actor_id,
-                "metadata_json": {"lifecycle_status": lifecycle_status},
+                "metadata_json": revision_metadata,
             },
             actor_type=actor_type,
         )
@@ -1320,7 +1458,7 @@ class VNextMemoryCommitService:
             actor_id=actor_id,
             target_type="memory",
             target_id=str(updated["id"]),
-            payload={"lifecycle_status": lifecycle_status, "reason": reason},
+            payload=event_payload,
         )
         return {"status": lifecycle_status, "write_mode": "commit", "memory": updated}
 

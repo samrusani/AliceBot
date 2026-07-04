@@ -120,9 +120,32 @@ MEMORY_COLUMNS = (
     "metadata_json",
     "commit_digest",
     "confirmation_id",
+    "project_id",
+    "created_by_agent_id",
+    "run_id",
+    "superseded_by",
+    "supersedes",
     "created_at",
     "updated_at",
     "deleted_at",
+)
+
+GRAPH_EDGE_COLUMNS = (
+    "id",
+    "user_id",
+    "from_type",
+    "from_id",
+    "to_type",
+    "to_id",
+    "edge_type",
+    "confidence",
+    "explanation",
+    "created_by",
+    "created_at",
+    "observed_at",
+    "valid_from",
+    "valid_to",
+    "metadata_json",
 )
 
 REVISION_COLUMNS = (
@@ -201,6 +224,7 @@ AGENT_API_KEY_COLUMNS = (
     "user_id",
     "agent_id",
     "permission_profile",
+    "project_scope",
     "key_hash",
     "key_prefix",
     "label",
@@ -230,11 +254,15 @@ _JSON_COLUMNS = frozenset(
 # vnext_store._MEMORY_SEARCHABLE_STATUSES_SQL; keep the two in sync.
 _MEMORY_SEARCHABLE_STATUSES_SQL = "('active', 'accepted')"
 
-# Seam for the Wave-2 memories.project_id column: project filtering reads
-# the project id from metadata_json today. When the real column lands,
-# swapping this template for "{prefix}project_id" updates every memory
-# search in one line.
-_MEMORY_PROJECT_ID_SQL_TEMPLATE = "json_extract({prefix}metadata_json, '$.project_id')"
+# The memories.project_id column (sqlite_schema additive column, mirroring
+# Postgres migration 20260704_0076) is the real project scope; the
+# json_extract fallback covers rows written before the column existed or by
+# writers that still stash project_id in metadata only (e.g. capture-created
+# candidates). Drop the COALESCE once a follow-up backfill retires the
+# metadata-only writers.
+_MEMORY_PROJECT_ID_SQL_TEMPLATE = (
+    "COALESCE({prefix}project_id, json_extract({prefix}metadata_json, '$.project_id'))"
+)
 
 # The snowball English stopword list -- the same list the Postgres
 # 'english' text-search configuration applies inside
@@ -532,6 +560,24 @@ class SQLiteVNextStore:
         project_id_sql = _MEMORY_PROJECT_ID_SQL_TEMPLATE.format(prefix=prefix)
         clause = f" AND {project_id_sql} IN ({self._placeholders(values)})"
         return clause, list(values)
+
+    def _created_by_clause(
+        self,
+        created_by_agent_ids: tuple[str, ...],
+        *,
+        prefix: str = "",
+    ) -> tuple[str, list[object]]:
+        if not created_by_agent_ids:
+            return "", []
+        values = list(created_by_agent_ids)
+        clause = f" AND {prefix}created_by_agent_id IN ({self._placeholders(values)})"
+        return clause, list(values)
+
+    @staticmethod
+    def _run_clause(run_id: str | None, *, prefix: str = "") -> tuple[str, list[object]]:
+        if run_id is None:
+            return "", []
+        return f" AND {prefix}run_id = ?", [run_id]
 
     @staticmethod
     def _expiry_clause(include_expired: bool, *, prefix: str = "") -> tuple[str, list[object]]:
@@ -851,12 +897,17 @@ class SQLiteVNextStore:
                   metadata_json,
                   commit_digest,
                   confirmation_id,
+                  project_id,
+                  created_by_agent_id,
+                  run_id,
+                  superseded_by,
+                  supersedes,
                   created_at,
                   updated_at
                 )
                 VALUES (
-                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
             (
@@ -891,6 +942,11 @@ class SQLiteVNextStore:
                 _json_object_text(memory.get("metadata_json")),
                 memory.get("commit_digest"),
                 memory.get("confirmation_id"),
+                memory.get("project_id"),
+                memory.get("created_by_agent_id"),
+                memory.get("run_id"),
+                _uuid_text(memory.get("superseded_by")),
+                _uuid_text(memory.get("supersedes")),
                 now,
                 now,
             ),
@@ -962,6 +1018,8 @@ class SQLiteVNextStore:
                     last_seen_at = COALESCE(?, last_seen_at),
                     last_reviewed_at = COALESCE(?, last_reviewed_at),
                     metadata_json = COALESCE(?, metadata_json),
+                    superseded_by = COALESCE(?, superseded_by),
+                    supersedes = COALESCE(?, supersedes),
                     updated_at = ?,
                     deleted_at = CASE
                       WHEN ? = 'archived' THEN ?
@@ -996,6 +1054,8 @@ class SQLiteVNextStore:
                 _iso_or_none(patch.get("last_seen_at")),
                 _iso_or_none(patch.get("last_reviewed_at")),
                 _json_object_text(patch["metadata_json"]) if "metadata_json" in patch else None,
+                _uuid_text(patch.get("superseded_by")),
+                _uuid_text(patch.get("supersedes")),
                 _utc_now_iso(),
                 patch.get("status"),
                 _utc_now_iso(),
@@ -1028,6 +1088,8 @@ class SQLiteVNextStore:
         limit: int = 8,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
         include_expired: bool = False,
     ) -> list[VNextRow]:
         patterns = [pattern.casefold() for pattern in _search_patterns(query)]
@@ -1036,6 +1098,8 @@ class SQLiteVNextStore:
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed)
         type_sql, type_params = self._memory_type_clause(memory_types)
         project_sql, project_params = self._project_clause(projects)
+        created_by_sql, created_by_params = self._created_by_clause(created_by_agent_ids)
+        run_sql, run_params = self._run_clause(run_id)
         expiry_sql, expiry_params = self._expiry_clause(include_expired)
         count = len(patterns)
         match_columns = ("memory_key", "title", "canonical_text", "summary", "value")
@@ -1045,6 +1109,8 @@ class SQLiteVNextStore:
         params.extend(sensitivity_params)
         params.extend(type_params)
         params.extend(project_params)
+        params.extend(created_by_params)
+        params.extend(run_params)
         params.extend(expiry_params)
         for _column in match_columns:
             params.extend(patterns)
@@ -1059,7 +1125,7 @@ class SQLiteVNextStore:
                 FROM memories
                 WHERE user_id = ?
                   AND deleted_at IS NULL
-                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{expiry_sql}
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}
                   AND ({match_sql})
                 ORDER BY
                   CASE
@@ -1086,6 +1152,8 @@ class SQLiteVNextStore:
         limit: int = 50,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
         include_expired: bool = False,
     ) -> list[VNextRow]:
         match_expression = _fts_match_expression(query)
@@ -1095,6 +1163,8 @@ class SQLiteVNextStore:
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed, prefix="m.")
         type_sql, type_params = self._memory_type_clause(memory_types, prefix="m.")
         project_sql, project_params = self._project_clause(projects, prefix="m.")
+        created_by_sql, created_by_params = self._created_by_clause(created_by_agent_ids, prefix="m.")
+        run_sql, run_params = self._run_clause(run_id, prefix="m.")
         expiry_sql, expiry_params = self._expiry_clause(include_expired, prefix="m.")
         prefixed_columns = ", ".join(f"m.{column}" for column in MEMORY_COLUMNS)
         params: list[object] = [match_expression, self.user_id]
@@ -1102,6 +1172,8 @@ class SQLiteVNextStore:
         params.extend(sensitivity_params)
         params.extend(type_params)
         params.extend(project_params)
+        params.extend(created_by_params)
+        params.extend(run_params)
         params.extend(expiry_params)
         params.append(limit)
         try:
@@ -1114,7 +1186,7 @@ class SQLiteVNextStore:
                     WHERE memories_fts MATCH ?
                       AND m.user_id = ?
                       AND m.deleted_at IS NULL
-                      AND m.status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{expiry_sql}
+                      AND m.status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}
                     ORDER BY fts_score DESC, m.updated_at DESC, m.created_at DESC, m.id DESC
                     LIMIT ?
                     """,
@@ -1134,6 +1206,8 @@ class SQLiteVNextStore:
         limit: int = 50,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
         include_expired: bool = False,
     ) -> list[VNextRow]:
         if not query_vector:
@@ -1145,12 +1219,16 @@ class SQLiteVNextStore:
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed)
         type_sql, type_params = self._memory_type_clause(memory_types)
         project_sql, project_params = self._project_clause(projects)
+        created_by_sql, created_by_params = self._created_by_clause(created_by_agent_ids)
+        run_sql, run_params = self._run_clause(run_id)
         expiry_sql, expiry_params = self._expiry_clause(include_expired)
         params: list[object] = [self.user_id]
         params.extend(domain_params)
         params.extend(sensitivity_params)
         params.extend(type_params)
         params.extend(project_params)
+        params.extend(created_by_params)
+        params.extend(run_params)
         params.extend(expiry_params)
         candidates = self._fetch_all(
             f"""
@@ -1159,7 +1237,7 @@ class SQLiteVNextStore:
                 WHERE user_id = ?
                   AND deleted_at IS NULL
                   AND embedding IS NOT NULL
-                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{expiry_sql}
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}
                 """,
             tuple(params),
         )
@@ -1361,6 +1439,107 @@ class SQLiteVNextStore:
                 ORDER BY created_at DESC, id DESC
                 """,
             (target_type, target_id, self.user_id),
+        )
+
+    # -- graph edges -----------------------------------------------------------------
+    #
+    # Minimal graph substrate for the on-ramp: create + list + as-of list.
+    # Temporal semantics mirror PostgresVNextStore.create_edge:
+    # ``observed_at`` is event time (when the connected observation
+    # happened), defaulting to write time with the fallback noted in the
+    # edge metadata; ``valid_from`` defaults to ``observed_at``.
+
+    def create_graph_edge(self, edge: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        edge_id = _new_id(edge.get("id"))
+        now = _utc_now_iso()
+        observed_at = _iso_or_none(edge.get("observed_at"))
+        metadata = dict(edge.get("metadata_json") or {})
+        if observed_at is None:
+            observed_at = now
+            metadata.setdefault("observed_at_source", "now")
+        valid_from = _iso_or_none(edge.get("valid_from")) or observed_at
+        self._execute(
+            """
+                INSERT INTO graph_edges (
+                  id,
+                  user_id,
+                  from_type,
+                  from_id,
+                  to_type,
+                  to_id,
+                  edge_type,
+                  confidence,
+                  explanation,
+                  created_by,
+                  created_at,
+                  observed_at,
+                  valid_from,
+                  valid_to,
+                  metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            (
+                edge_id,
+                self.user_id,
+                edge["from_type"],
+                edge["from_id"],
+                edge["to_type"],
+                edge["to_id"],
+                edge["edge_type"],
+                edge.get("confidence", 0.5),
+                edge.get("explanation"),
+                edge.get("created_by", actor_type),
+                now,
+                observed_at,
+                valid_from,
+                _iso_or_none(edge.get("valid_to")),
+                _json_object_text(metadata),
+            ),
+        )
+        row = self._get_row("create_graph_edge", "graph_edges", GRAPH_EDGE_COLUMNS, edge_id)
+        self._append_mutation_event(
+            event_type="graph_edge.created",
+            actor_type=actor_type,
+            target_type="graph_edge",
+            target_id=row["id"],
+            payload={"operation": "create", "edge_type": str(row["edge_type"])},
+        )
+        return row
+
+    def list_edges(self, *, from_id: str | None = None, to_id: str | None = None) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(GRAPH_EDGE_COLUMNS)}
+                FROM graph_edges
+                WHERE user_id = ?
+                  AND (? IS NULL OR from_id = ?)
+                  AND (? IS NULL OR to_id = ?)
+                  AND valid_to IS NULL
+                ORDER BY created_at DESC, id DESC
+                """,
+            (self.user_id, from_id, from_id, to_id, to_id),
+        )
+
+    def list_edges_as_of(self, at: object, *, limit: int = 50) -> list[VNextRow]:
+        """Edges that were in effect at ``at``: valid_from <= at < valid_to.
+
+        Edges written before the temporal slice carry NULL ``valid_from``
+        and are excluded (their event time was never recorded).
+        """
+        at_iso = _iso_or_none(at)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(GRAPH_EDGE_COLUMNS)}
+                FROM graph_edges
+                WHERE user_id = ?
+                  AND valid_from IS NOT NULL
+                  AND valid_from <= ?
+                  AND (valid_to IS NULL OR valid_to > ?)
+                ORDER BY valid_from DESC, created_at DESC, id DESC
+                LIMIT ?
+                """,
+            (self.user_id, at_iso, at_iso, limit),
         )
 
     # -- open loops -------------------------------------------------------------------
@@ -1706,18 +1885,20 @@ class SQLiteVNextStore:
                   user_id,
                   agent_id,
                   permission_profile,
+                  project_scope,
                   key_hash,
                   key_prefix,
                   label,
                   created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
             (
                 key_id,
                 self.user_id,
                 key["agent_id"],
                 key["permission_profile"],
+                key.get("project_scope"),
                 key["key_hash"],
                 key["key_prefix"],
                 key.get("label"),
@@ -1734,6 +1915,7 @@ class SQLiteVNextStore:
                 "operation": "create",
                 "agent_id": str(row["agent_id"]),
                 "permission_profile": str(row["permission_profile"]),
+                "project_scope": row.get("project_scope"),
                 "key_prefix": str(row["key_prefix"]),
                 "label": row.get("label"),
             },

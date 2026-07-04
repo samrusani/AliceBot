@@ -89,6 +89,8 @@ class InMemoryVNextRetrievalStore:
         *,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
     ) -> list[dict[str, object]]:
         if memory_types:
             rows = [row for row in rows if row.get("memory_type") in memory_types]
@@ -96,9 +98,16 @@ class InMemoryVNextRetrievalStore:
             rows = [
                 row
                 for row in rows
-                if isinstance(row.get("metadata_json"), dict)
-                and row["metadata_json"].get("project_id") in projects
+                if row.get("project_id") in projects
+                or (
+                    isinstance(row.get("metadata_json"), dict)
+                    and row["metadata_json"].get("project_id") in projects
+                )
             ]
+        if created_by_agent_ids:
+            rows = [row for row in rows if row.get("created_by_agent_id") in created_by_agent_ids]
+        if run_id is not None:
+            rows = [row for row in rows if row.get("run_id") == run_id]
         return rows
 
     def search_memories(
@@ -110,11 +119,19 @@ class InMemoryVNextRetrievalStore:
         limit: int = 8,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
         include_expired: bool = False,
     ) -> list[dict[str, object]]:
         del query, sensitivity_allowed, include_expired
         self.memory_search_domains = domains
-        rows = self._apply_filters(self.memories, memory_types=memory_types, projects=projects)
+        rows = self._apply_filters(
+            self.memories,
+            memory_types=memory_types,
+            projects=projects,
+            created_by_agent_ids=created_by_agent_ids,
+            run_id=run_id,
+        )
         return rows[:limit]
 
     def search_memories_fts(
@@ -126,14 +143,29 @@ class InMemoryVNextRetrievalStore:
         limit: int = 50,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
         include_expired: bool = False,
     ) -> list[dict[str, object]]:
         del sensitivity_allowed, include_expired
         self.memory_search_domains = domains
-        self.memory_search_kwargs.append({"memory_types": memory_types, "projects": projects})
+        self.memory_search_kwargs.append(
+            {
+                "memory_types": memory_types,
+                "projects": projects,
+                "created_by_agent_ids": created_by_agent_ids,
+                "run_id": run_id,
+            }
+        )
         terms = [term.casefold() for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]+", query)]
         rows = [row for row in self.memories if any(term in self._memory_text(row) for term in terms)]
-        rows = self._apply_filters(rows, memory_types=memory_types, projects=projects)
+        rows = self._apply_filters(
+            rows,
+            memory_types=memory_types,
+            projects=projects,
+            created_by_agent_ids=created_by_agent_ids,
+            run_id=run_id,
+        )
         return rows[:limit]
 
     def search_memories_vector(
@@ -145,12 +177,20 @@ class InMemoryVNextRetrievalStore:
         limit: int = 50,
         memory_types: tuple[str, ...] = (),
         projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
         include_expired: bool = False,
     ) -> list[dict[str, object]]:
         del query_vector, domains, sensitivity_allowed, include_expired
         if self.vector_memories is None:
             return []
-        rows = self._apply_filters(self.vector_memories, memory_types=memory_types, projects=projects)
+        rows = self._apply_filters(
+            self.vector_memories,
+            memory_types=memory_types,
+            projects=projects,
+            created_by_agent_ids=created_by_agent_ids,
+            run_id=run_id,
+        )
         return rows[:limit]
 
     def list_events(
@@ -609,9 +649,16 @@ def test_context_pack_threads_memory_types_and_projects_to_recall_stages() -> No
         )
     )
 
-    assert store.memory_search_kwargs[-1] == {"memory_types": ("decision",), "projects": ("alicebot",)}
+    assert store.memory_search_kwargs[-1] == {
+        "memory_types": ("decision",),
+        "projects": ("alicebot",),
+        "created_by_agent_ids": (),
+        "run_id": None,
+    }
     assert pack["trace"]["filters"]["memory_types"] == ["decision"]
     assert pack["trace"]["filters"]["projects"] == ["alicebot"]
+    assert pack["trace"]["filters"]["created_by_agent_ids"] == []
+    assert pack["trace"]["filters"]["run_id"] is None
     assert pack["query_interpretation"]["memory_types"] == ["decision"]
 
 
@@ -654,6 +701,82 @@ def test_context_pack_filters_memories_by_project_metadata() -> None:
     )
 
     assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-alicebot"]
+
+
+def test_context_pack_threads_created_by_agents_and_run_filter_to_recall_stages() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            {
+                **_memory_row("memory-openclaw-run1", "Alice agent scoped row one."),
+                "created_by_agent_id": "openclaw",
+                "run_id": "run-1",
+            },
+            {
+                **_memory_row("memory-openclaw-run2", "Alice agent scoped row two."),
+                "created_by_agent_id": "openclaw",
+                "run_id": "run-2",
+            },
+            {
+                **_memory_row("memory-hermes", "Alice agent scoped row three."),
+                "created_by_agent_id": "hermes",
+                "run_id": "run-3",
+            },
+        ],
+        sources=[],
+    )
+    service = VNextRetrievalService(store)
+
+    pack = service.compile_context_pack(
+        VNextRetrievalRequest(
+            query="Alice agent scoped",
+            created_by_agent_ids=("openclaw",),
+            filter_run_id="run-2",
+        )
+    )
+
+    assert store.memory_search_kwargs[-1] == {
+        "memory_types": (),
+        "projects": (),
+        "created_by_agent_ids": ("openclaw",),
+        "run_id": "run-2",
+    }
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-openclaw-run2"]
+    assert pack["trace"]["filters"]["created_by_agent_ids"] == ["openclaw"]
+    assert pack["trace"]["filters"]["run_id"] == "run-2"
+
+    # created_by filter alone returns every run from that agent.
+    agent_pack = service.compile_context_pack(
+        VNextRetrievalRequest(query="Alice agent scoped", created_by_agent_ids=("openclaw",))
+    )
+    assert {memory["id"] for memory in agent_pack["relevant_memories"]} == {
+        "memory-openclaw-run1",
+        "memory-openclaw-run2",
+    }
+
+
+def test_filter_run_id_is_independent_of_the_event_attribution_run_id() -> None:
+    """request.run_id attributes the retrieval event to the caller's run; it
+    must never scope which memories are retrieved (filter_run_id does)."""
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            {
+                **_memory_row("memory-other-run", "Alice run attribution row."),
+                "run_id": "run-writer",
+            },
+        ],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice run attribution", run_id="run-caller")
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-other-run"]
+    assert store.memory_search_kwargs[-1]["run_id"] is None
+    compiled_events = [
+        event for event in store.events if event["event_type"] == "retrieval.context_pack_compiled"
+    ]
+    assert compiled_events[-1]["run_id"] == "run-caller"
 
 
 # -- staleness notes ---------------------------------------------------------------

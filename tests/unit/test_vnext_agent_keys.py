@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from alicebot_api.vnext_agent_control import PERMISSION_PROFILES
+from alicebot_api.vnext_agent_control import PERMISSION_PROFILES, evaluate_agent_policy
 from alicebot_api.vnext_agent_keys import (
     AGENT_KEY_PREFIX,
     AGENT_KEY_PREFIX_LENGTH,
@@ -303,6 +303,184 @@ def test_resolve_agent_identity_non_agent_calls_stay_untouched() -> None:
     )
 
     assert resolve_agent_identity(store, user_id=uuid4(), raw_key=None, payload={}) is None
+
+
+def test_create_agent_key_normalizes_and_stores_project_scope_binding() -> None:
+    store = FakeAgentKeyStore()
+
+    bound, _raw = create_agent_key(
+        store,
+        user_id=uuid4(),
+        agent_id="openclaw",
+        permission_profile="project_scoped_agent",
+        project_scope="  Alice   Bot  ",
+    )
+    unbound, _raw = create_agent_key(
+        store,
+        user_id=uuid4(),
+        agent_id="hermes",
+        permission_profile="trusted_local_agent",
+    )
+
+    assert bound["project_scope"] == "Alice Bot"
+    assert unbound["project_scope"] is None
+
+
+def test_resolve_agent_identity_binds_project_scope_from_the_key_record() -> None:
+    store = FakeAgentKeyStore()
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="openclaw",
+        permission_profile="project_scoped_agent",
+        project_scope="alicebot",
+    )
+
+    # Empty payload claim inherits the key binding.
+    identity = resolve_agent_identity(
+        store, user_id=user_id, raw_key=raw_key, payload={"agent_id": "openclaw"}
+    )
+    assert identity is not None
+    assert identity.project_scope == ("alicebot",)
+    assert identity.project_scope_locked is True
+    assert identity.to_record()["project_scope_locked"] is True
+
+    # A subset claim (here: the same single project) narrows, never widens.
+    narrowed = resolve_agent_identity(
+        store,
+        user_id=user_id,
+        raw_key=raw_key,
+        payload={"agent_id": "openclaw", "project_scope": ["alicebot"]},
+    )
+    assert narrowed is not None
+    assert narrowed.project_scope == ("alicebot",)
+    assert narrowed.project_scope_locked is True
+
+
+def test_resolve_agent_identity_rejects_project_scope_widening_and_audits() -> None:
+    store = FakeAgentKeyStore()
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="openclaw",
+        permission_profile="project_scoped_agent",
+        project_scope="alicebot",
+    )
+
+    with pytest.raises(AgentKeyAuthenticationError) as exc_info:
+        resolve_agent_identity(
+            store,
+            user_id=user_id,
+            raw_key=raw_key,
+            payload={"agent_id": "openclaw", "project_scope": ["alicebot", "other-project"]},
+        )
+
+    assert exc_info.value.status_code == 403
+    rejection_events = [
+        event for event in store.events if event["event_type"] == "agent.key_escalation_rejected"
+    ]
+    assert len(rejection_events) == 1
+    payload = rejection_events[0]["payload_json"]
+    assert payload["reason"] == "project_scope_escalation"
+    assert payload["granted_project_scope"] == "alicebot"
+    assert payload["claimed_project_scope"] == ["alicebot", "other-project"]
+    serialized = str(store.events)
+    assert raw_key not in serialized
+    assert hash_agent_key(raw_key) not in serialized
+
+
+def test_resolve_agent_identity_unbound_keys_keep_payload_project_scope() -> None:
+    store = FakeAgentKeyStore()
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="openclaw",
+        permission_profile="project_scoped_agent",
+    )
+
+    identity = resolve_agent_identity(
+        store,
+        user_id=user_id,
+        raw_key=raw_key,
+        payload={"agent_id": "openclaw", "project_scope": ["anything-goes"]},
+    )
+
+    assert identity is not None
+    assert identity.project_scope == ("anything-goes",)
+    assert identity.project_scope_locked is False
+
+
+def test_policy_blocks_write_actions_outside_the_bound_project_scope() -> None:
+    store = FakeAgentKeyStore()
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="openclaw",
+        permission_profile="project_scoped_agent",
+        project_scope="alicebot",
+    )
+    identity = resolve_agent_identity(
+        store, user_id=user_id, raw_key=raw_key, payload={"agent_id": "openclaw"}
+    )
+    assert identity is not None
+
+    blocked = evaluate_agent_policy(
+        identity=identity,
+        action="memory.commit",
+        domains=("project",),
+        project_scope=("other-project",),
+    )
+    assert blocked.decision == "blocked"
+    assert "project_scope_binding_violation" in blocked.reasons
+
+    allowed = evaluate_agent_policy(
+        identity=identity,
+        action="memory.commit",
+        domains=("project",),
+        project_scope=("alicebot",),
+    )
+    assert allowed.decision != "blocked"
+    assert "project_scope_binding_violation" not in allowed.reasons
+
+    # Reads outside the binding are not blocked by the binding rule.
+    read = evaluate_agent_policy(
+        identity=identity,
+        action="context_pack.request",
+        domains=("project",),
+        project_scope=("other-project",),
+    )
+    assert "project_scope_binding_violation" not in read.reasons
+
+
+def test_policy_binding_rule_only_applies_when_a_binding_exists() -> None:
+    store = FakeAgentKeyStore()
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="openclaw",
+        permission_profile="project_scoped_agent",
+    )
+    identity = resolve_agent_identity(
+        store,
+        user_id=user_id,
+        raw_key=raw_key,
+        payload={"agent_id": "openclaw", "project_scope": ["self-asserted"]},
+    )
+    assert identity is not None
+    assert identity.project_scope_locked is False
+
+    decision = evaluate_agent_policy(
+        identity=identity,
+        action="memory.commit",
+        domains=("project",),
+        project_scope=("completely-different",),
+    )
+    assert "project_scope_binding_violation" not in decision.reasons
 
 
 def test_agent_key_from_authorization_parses_bearer_and_ignores_other_tokens() -> None:
