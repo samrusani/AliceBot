@@ -23,12 +23,19 @@ the report status is `skipped`.
 > `vnext_eval_report_v0`, generated_at `2026-05-11T00:00:00Z`) is meaningless
 > and should be discarded.
 
+Four suites (`VNEXT_EVAL_SUITE_ORDER`): `retrieval_quality`,
+`correction_suppression`, `decision_recovery`, `provenance_explanation`.
+`--suite all` runs every one; each suite key is also individually
+addressable via `--suite <key>`. All four run against either backend and
+each opens (and rolls back) its own transaction, so suites stay isolated
+from one another and leave no rows behind.
+
 ### Suite: `retrieval_quality`
 
-The one current suite. It executes the production retrieval pipeline
-end-to-end against either backend — Postgres (`PostgresVNextStore`) or the
-zero-infrastructure SQLite on-ramp (`SQLiteVNextStore`), selected by the
-URL in `ALICEBOT_EVAL_DATABASE_URL`:
+Executes the production retrieval pipeline end-to-end against either
+backend — Postgres (`PostgresVNextStore`) or the zero-infrastructure
+SQLite on-ramp (`SQLiteVNextStore`), selected by the URL in
+`ALICEBOT_EVAL_DATABASE_URL`:
 
 1. Seeds a deterministic 216-memory corpus through the real store
    `create_memory` write path (inside a rolled-back transaction — nothing
@@ -81,13 +88,113 @@ arithmetic — fully deterministic, no randomness at runtime. `alicebot eval
 seed` writes it to `eval/fixtures/vnext_benchmark_corpus.json` if you want to
 inspect it; the harness generates it in memory otherwise.
 
+### Suite: `correction_suppression`
+
+A regression gate over the correction lifecycle. An empirical probe showed
+the production flows already behave correctly; this suite locks that in so
+a future retrieval/store change cannot silently resurface corrected or
+rejected memories.
+
+Per case (6 deterministic triplets on topics disjoint from the
+retrieval-quality corpus, plus 8 distractors):
+
+1. Commit stale fact **A** through the real `VNextMemoryCommitService`
+   (trusted agent identity, explicit intent, high confidence — the real
+   auto-commit path) and verify through the production retrieval pipeline
+   that A actually surfaces (`pre_correction_visibility` — this keeps the
+   suppression claim non-vacuous).
+2. Commit replacement **B**, then supersede A via the service undo path
+   with a reason referencing B (`superseded_by:<B>`).
+3. Commit **C** at medium confidence — which lands on the real
+   inline-confirmation review path — and reject it through
+   `VNextMemoryCommitService.confirm(action="reject")`.
+4. Probe the production pipeline with the correction query plus targeted
+   probes for A's stale detail and C's detail, and audit A and C via
+   `VNextMemoryCommitService.audit`.
+
+Metrics and targets:
+
+| Metric | Meaning | Target |
+| --- | --- | --- |
+| `pre_correction_visibility` | A ranked in top-5 before correction | >= 1.0 |
+| `suppression_rate` | A and C absent from *all* probe results | >= 1.0 |
+| `replacement_recall_at_5` | B in top-5 for the correction query | >= 0.80 |
+| `audit_completeness` | A's audit shows a reasoned `superseded` revision referencing B + the `agent.memory_undone` event; C's shows the `rejected` revision + rejection event | >= 1.0 |
+
+### Suite: `decision_recovery`
+
+Seeds 10 `memory_type='decision'` rows among 30 mixed-type distractors
+(semantic / preference / episode / procedure / commitment / project_state /
+routine — several are confusables that share the decision's topic
+vocabulary, three also contain the "decided" stem) and runs decision-intent
+query phrasings ("what did we decide about ...") through the production
+pipeline.
+
+Metrics and targets:
+
+| Metric | Target |
+| --- | --- |
+| `decision_recall_at_5` (unfiltered, lexical-overlap phrasings) | >= 0.80 |
+| `decision_recall_at_1`, `decision_mrr` | reported |
+| `filtered_decision_recall_at_5` (with `memory_types=['decision']`) | >= 0.80, enforced only when the filter parameter exists |
+
+The `memory_types` retrieval filter is **feature-detected at runtime**
+(`retrieval_request_supports_memory_types()`): when
+`VNextRetrievalRequest` has the parameter, the suite measures and reports
+both the unfiltered and filtered variants; when it does not, it reports
+unfiltered numbers plus an explicit TODO note in
+`metrics.memory_types_filter.note`. (At the time of writing the parameter
+has landed, so live runs report both.)
+
+### Suite: `provenance_explanation`
+
+Creates real source rows, commits 6 memories through
+`VNextMemoryCommitService` with `source_refs` pointing at them (which
+creates real provenance links), corrects 2 of them through the service
+correction path, then audits every one via
+`VNextMemoryCommitService.audit` and asserts concrete content:
+
+- at least one revision with a non-empty reason,
+- at least one provenance link whose `source_id` resolves to a real source
+  row (unresolvable links are counted as orphans),
+- the `agent.memory_committed` event in the event trail,
+- for corrected memories: a `corrected` revision whose `text_after` matches
+  the corrected text, the `agent.memory_corrected` event, and the
+  correction recorded in the agentic metadata.
+
+Metrics and targets:
+
+| Metric | Target |
+| --- | --- |
+| `explain_completeness_rate` | >= 1.0 |
+| `orphan_provenance_count` | <= 0 |
+
+### How the new suites stay honest
+
+- Every suite runs real production code (`VNextMemoryCommitService`,
+  `VNextRetrievalService`) against a live store, inside the same
+  rolled-back transaction discipline as `retrieval_quality`; without a
+  live store they report `status: "skipped"` with a reason — never a
+  fabricated pass.
+- Corpora are hand-authored constants (digest-hashed, zero runtime
+  randomness); directly-seeded rows pin explicit `status: "active"` and a
+  fixed far-future `valid_to`, so the staleness-demotion work landing in
+  the search SQL cannot silently demote eval rows.
+- The unit tests prove each suite can genuinely fail by breaking one
+  production behavior at a time through a delegating store wrapper
+  (dropped status transitions → suppression fails; blind search → decision
+  recall fails; missing revisions / unresolvable sources → provenance
+  fails).
+
 ### Running against SQLite (no services)
 
 The fastest live run needs nothing but the repo checkout — no Docker, no
 Postgres:
 
 ```bash
-ALICEBOT_EVAL_DATABASE_URL="sqlite:///:memory:" alicebot eval run --suite retrieval_quality
+ALICEBOT_EVAL_DATABASE_URL="sqlite:///:memory:" alicebot eval run --suite all
+# or a single suite:
+ALICEBOT_EVAL_DATABASE_URL="sqlite:///:memory:" alicebot eval run --suite correction_suppression
 ```
 
 A file path (`sqlite:///eval.db`) works too and behaves the same: the
@@ -141,12 +248,17 @@ Notes:
   regardless.
 - `ALICEBOT_AUTH_USER_ID` selects the acting user id if you need a specific
   one; otherwise a fixed default is used.
-- Programmatic use: `run_retrieval_quality_eval(store)` accepts any live
-  store handle directly; `run_vnext_evals(...)` also accepts `store=` /
-  `retrieval_fn=` injection.
-- The `--suite` help text in `cli.py` still lists the deleted v0 suite names;
-  passing one of them now raises `unknown vNext eval suite`. Only `all` and
-  `retrieval_quality` are valid.
+- Programmatic use: `run_retrieval_quality_eval(store)`,
+  `run_correction_suppression_eval(store)`, `run_decision_recovery_eval(store)`
+  and `run_provenance_explanation_eval(store)` accept any live store handle
+  directly; `run_vnext_evals(...)` also accepts `store=` / `retrieval_fn=`
+  injection (`retrieval_fn` only drives `retrieval_quality` — the
+  commit-flow suites need a real store and skip honestly without one).
+- Valid `--suite` values: `all`, `retrieval_quality`,
+  `correction_suppression`, `decision_recovery`, `provenance_explanation`.
+  Anything else raises `unknown vNext eval suite`. (The `--suite` help
+  string in `cli.py` may lag this list; `VNEXT_EVAL_SUITE_ORDER` in
+  `vnext_evals.py` is the source of truth.)
 
 ### What the unit tests cover (and don't)
 
@@ -158,10 +270,18 @@ unit tests **also execute the full live pipeline** against
 `sqlite:///:memory:` and a temp file — real seeding, FTS5 retrieval, RRF
 fusion, and rollback — so the live eval path runs in CI with no external
 services. They assert lexical recall@5 == 1.0 on FTS5 alone and paraphrase
-recall == 0.0 without embeddings (the honest degraded number). What unit
-tests still cannot tell you is how the Postgres backend or a configured
-embedding provider performs — for that, run the CLI against the real thing
-as above.
+recall == 0.0 without embeddings (the honest degraded number).
+
+For the memory-quality suites the unit tests additionally execute the full
+commit/review/audit flows live against SQLite (all four suites end-to-end
+via `--suite all` semantics, plus a file-backed run asserting zero residual
+rows across `memories`, `sources`, `memory_revisions`, `provenance_links`,
+`event_log`), and prove genuine failability by breaking one production
+behavior at a time through delegating store wrappers.
+
+What unit tests still cannot tell you is how the Postgres backend or a
+configured embedding provider performs — for that, run the CLI against the
+real thing as above.
 
 ## Legacy baselines in `eval/baselines/` — read with caution
 
