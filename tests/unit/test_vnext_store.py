@@ -187,9 +187,16 @@ def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> 
     assert "status IN ('active', 'accepted')" in memory_query
     assert "domain = ANY" in memory_query
     assert "sensitivity = ANY" in memory_query
+    assert "memory_type = ANY" in memory_query
+    assert "metadata_json ->> 'project_id'" in memory_query
+    assert "valid_to IS NULL OR valid_to >= clock_timestamp()" in memory_query
     assert "ILIKE ANY" in memory_query
     assert memory_params is not None
-    assert memory_params[4] == ["%Alice provenance%", "%alice%", "%provenance%"]
+    # Unset filters arrive as NULLs, expiry defaults to excluded (False).
+    assert memory_params[4] is None  # memory_types
+    assert memory_params[6] is None  # projects
+    assert memory_params[8] is False  # include_expired
+    assert memory_params[9] == ["%Alice provenance%", "%alice%", "%provenance%"]
     assert memory_params[-1] == 4
     assert "FROM sources" in source_query
     assert "ILIKE ANY" in source_query
@@ -799,6 +806,9 @@ def test_fts_search_builds_websearch_tsquery_with_pushed_down_filters() -> None:
     assert "deleted_at IS NULL" in query
     assert "domain = ANY" in query
     assert "sensitivity = ANY" in query
+    assert "memory_type = ANY" in query
+    assert "metadata_json ->> 'project_id'" in query
+    assert "valid_to IS NULL OR valid_to >= clock_timestamp()" in query
     assert "ORDER BY fts_score DESC" in query
     assert params == (
         "Alice provenance retrieval",
@@ -806,6 +816,45 @@ def test_fts_search_builds_websearch_tsquery_with_pushed_down_filters() -> None:
         ["project"],
         ["public", "private"],
         ["public", "private"],
+        None,  # memory_types unset
+        None,
+        None,  # projects unset
+        None,
+        False,  # include_expired defaults to excluded
+        "Alice provenance retrieval",
+        25,
+    )
+
+
+def test_fts_search_pushes_down_memory_type_project_and_expiry_filters() -> None:
+    cursor = RecordingCursor(
+        fetchone_results=[],
+        fetchall_result=[{"id": "memory-1", "fts_score": 0.42}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.search_memories_fts(
+        query="Alice provenance retrieval",
+        domains=["project"],
+        sensitivity_allowed=["private"],
+        limit=25,
+        memory_types=("decision", "procedure"),
+        projects=("alicebot",),
+        include_expired=True,
+    )
+
+    _query, params = cursor.executed[0]
+    assert params == (
+        "Alice provenance retrieval",
+        ["project"],
+        ["project"],
+        ["private"],
+        ["private"],
+        ["decision", "procedure"],
+        ["decision", "procedure"],
+        ["alicebot"],
+        ["alicebot"],
+        True,
         "Alice provenance retrieval",
         25,
     )
@@ -830,6 +879,9 @@ def test_vector_search_orders_by_cosine_distance_and_skips_null_embeddings() -> 
     assert "FROM memories" in query
     assert "embedding_vector IS NOT NULL" in query
     assert "status IN ('active', 'accepted')" in query
+    assert "memory_type = ANY" in query
+    assert "metadata_json ->> 'project_id'" in query
+    assert "valid_to IS NULL OR valid_to >= clock_timestamp()" in query
     assert "ORDER BY embedding_vector <=> %s::vector" in query
     assert "(embedding_vector <=> %s::vector) AS vector_distance" in query
     assert params == (
@@ -838,6 +890,11 @@ def test_vector_search_orders_by_cosine_distance_and_skips_null_embeddings() -> 
         ["project"],
         ["private"],
         ["private"],
+        None,  # memory_types unset
+        None,
+        None,  # projects unset
+        None,
+        False,  # include_expired defaults to excluded
         "[0.25,-1.0]",
         12,
     )

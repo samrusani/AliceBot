@@ -224,7 +224,17 @@ _JSON_COLUMNS = frozenset(
     }
 )
 
+# Statuses the memory read path returns. Everything else -- including
+# 'stale' (demoted by maintenance), 'superseded', and 'rejected' -- is
+# excluded-by-default from retrieval. Mirrors
+# vnext_store._MEMORY_SEARCHABLE_STATUSES_SQL; keep the two in sync.
 _MEMORY_SEARCHABLE_STATUSES_SQL = "('active', 'accepted')"
+
+# Seam for the Wave-2 memories.project_id column: project filtering reads
+# the project id from metadata_json today. When the real column lands,
+# swapping this template for "{prefix}project_id" updates every memory
+# search in one line.
+_MEMORY_PROJECT_ID_SQL_TEMPLATE = "json_extract({prefix}metadata_json, '$.project_id')"
 
 # The snowball English stopword list -- the same list the Postgres
 # 'english' text-search configuration applies inside
@@ -497,6 +507,39 @@ class SQLiteVNextStore:
             return "", []
         clause = f" AND {prefix}sensitivity IN ({self._placeholders(sensitivity_allowed)})"
         return clause, list(sensitivity_allowed)
+
+    def _memory_type_clause(
+        self,
+        memory_types: tuple[str, ...],
+        *,
+        prefix: str = "",
+    ) -> tuple[str, list[object]]:
+        if not memory_types:
+            return "", []
+        values = list(memory_types)
+        clause = f" AND {prefix}memory_type IN ({self._placeholders(values)})"
+        return clause, list(values)
+
+    def _project_clause(
+        self,
+        projects: tuple[str, ...],
+        *,
+        prefix: str = "",
+    ) -> tuple[str, list[object]]:
+        if not projects:
+            return "", []
+        values = list(projects)
+        project_id_sql = _MEMORY_PROJECT_ID_SQL_TEMPLATE.format(prefix=prefix)
+        clause = f" AND {project_id_sql} IN ({self._placeholders(values)})"
+        return clause, list(values)
+
+    @staticmethod
+    def _expiry_clause(include_expired: bool, *, prefix: str = "") -> tuple[str, list[object]]:
+        """Exclude memories whose validity window has closed (valid_to < now)."""
+        if include_expired:
+            return "", []
+        clause = f" AND ({prefix}valid_to IS NULL OR {prefix}valid_to >= ?)"
+        return clause, [_utc_now_iso()]
 
     @staticmethod
     def _like_any(column: str, pattern_count: int) -> str:
@@ -983,17 +1026,26 @@ class SQLiteVNextStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 8,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        include_expired: bool = False,
     ) -> list[VNextRow]:
         patterns = [pattern.casefold() for pattern in _search_patterns(query)]
         exact_pattern = patterns[0]
         domain_sql, domain_params = self._domain_clause(domains)
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed)
+        type_sql, type_params = self._memory_type_clause(memory_types)
+        project_sql, project_params = self._project_clause(projects)
+        expiry_sql, expiry_params = self._expiry_clause(include_expired)
         count = len(patterns)
         match_columns = ("memory_key", "title", "canonical_text", "summary", "value")
         match_sql = " OR ".join(self._like_any(column, count) for column in match_columns)
         params: list[object] = [self.user_id]
         params.extend(domain_params)
         params.extend(sensitivity_params)
+        params.extend(type_params)
+        params.extend(project_params)
+        params.extend(expiry_params)
         for _column in match_columns:
             params.extend(patterns)
         params.append(exact_pattern)
@@ -1007,7 +1059,7 @@ class SQLiteVNextStore:
                 FROM memories
                 WHERE user_id = ?
                   AND deleted_at IS NULL
-                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{expiry_sql}
                   AND ({match_sql})
                 ORDER BY
                   CASE
@@ -1032,16 +1084,25 @@ class SQLiteVNextStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 50,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        include_expired: bool = False,
     ) -> list[VNextRow]:
         match_expression = _fts_match_expression(query)
         if match_expression is None:
             return []
         domain_sql, domain_params = self._domain_clause(domains, prefix="m.")
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed, prefix="m.")
+        type_sql, type_params = self._memory_type_clause(memory_types, prefix="m.")
+        project_sql, project_params = self._project_clause(projects, prefix="m.")
+        expiry_sql, expiry_params = self._expiry_clause(include_expired, prefix="m.")
         prefixed_columns = ", ".join(f"m.{column}" for column in MEMORY_COLUMNS)
         params: list[object] = [match_expression, self.user_id]
         params.extend(domain_params)
         params.extend(sensitivity_params)
+        params.extend(type_params)
+        params.extend(project_params)
+        params.extend(expiry_params)
         params.append(limit)
         try:
             return self._fetch_all(
@@ -1053,7 +1114,7 @@ class SQLiteVNextStore:
                     WHERE memories_fts MATCH ?
                       AND m.user_id = ?
                       AND m.deleted_at IS NULL
-                      AND m.status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}
+                      AND m.status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{expiry_sql}
                     ORDER BY fts_score DESC, m.updated_at DESC, m.created_at DESC, m.id DESC
                     LIMIT ?
                     """,
@@ -1071,6 +1132,9 @@ class SQLiteVNextStore:
         domains: list[str] | None = None,
         sensitivity_allowed: list[str] | None = None,
         limit: int = 50,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        include_expired: bool = False,
     ) -> list[VNextRow]:
         if not query_vector:
             raise ContinuityStoreInvariantError("embedding vectors must not be empty")
@@ -1079,9 +1143,15 @@ class SQLiteVNextStore:
         query_norm = float(np.linalg.norm(query_array))
         domain_sql, domain_params = self._domain_clause(domains)
         sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed)
+        type_sql, type_params = self._memory_type_clause(memory_types)
+        project_sql, project_params = self._project_clause(projects)
+        expiry_sql, expiry_params = self._expiry_clause(include_expired)
         params: list[object] = [self.user_id]
         params.extend(domain_params)
         params.extend(sensitivity_params)
+        params.extend(type_params)
+        params.extend(project_params)
+        params.extend(expiry_params)
         candidates = self._fetch_all(
             f"""
                 SELECT {", ".join(MEMORY_COLUMNS)}, embedding
@@ -1089,7 +1159,7 @@ class SQLiteVNextStore:
                 WHERE user_id = ?
                   AND deleted_at IS NULL
                   AND embedding IS NOT NULL
-                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{expiry_sql}
                 """,
             tuple(params),
         )

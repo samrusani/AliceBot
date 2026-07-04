@@ -85,6 +85,9 @@ MEMORY_STATUSES = (
     "accepted",
     "rejected",
     "superseded",
+    # Demoted-but-kept memories (e.g. long-unconfirmed facts). Excluded
+    # from retrieval by default alongside superseded/rejected.
+    "stale",
     "archived",
     "needs_review",
     "private_only",
