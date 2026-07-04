@@ -5,14 +5,14 @@ Hermes is the reference path when another agent runtime owns orchestration and A
 Recommended deployment shape: `provider_plus_mcp`.
 
 - Provider gives Hermes always-on prefetch plus post-turn capture hooks.
-- MCP gives Hermes the deeper Alice tool surface, including `alice_brief`, targeted recall, review, and correction flows.
+- MCP gives Hermes the Alice tool surface: nine core tools by default, plus the deeper legacy surface (`alice_brief`, review queues, briefs) when the MCP server runs with `ALICE_MCP_LEGACY_TOOLS=1`.
 - MCP-only remains available when provider install is blocked.
 
 ## What Stays Stable
 
 Hermes does not create a second Alice runtime contract.
 
-- one-call continuity stays `POST /v1/continuity/brief`, `alice brief`, and `alice_brief`
+- one-call continuity stays `POST /v1/continuity/brief`, `alice brief`, and MCP `alice_brief` (legacy surface, `ALICE_MCP_LEGACY_TOOLS=1`)
 - provider registration and runtime shaping stay on the shipped Alice provider surface
 - model packs stay Alice-side defaults layered on top of the shipped provider/runtime baseline
 
@@ -67,6 +67,9 @@ mcp_servers:
       DATABASE_URL: "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot"
       ALICEBOT_AUTH_USER_ID: "00000000-0000-0000-0000-000000000001"
       PYTHONPATH: "/path/to/alice/apps/api/src:/path/to/alice/workers"
+      # Required for the legacy tools this guide references
+      # (alice_brief, alice_review_queue, alice_review_apply):
+      ALICE_MCP_LEGACY_TOOLS: "1"
 ```
 
 Use the full operator examples for production config details:
@@ -76,13 +79,13 @@ Use the full operator examples for production config details:
 
 ## One-Call Continuity Inside Hermes
 
-For generic continuity lookups, start with `alice_brief`.
+For generic continuity lookups, start with `alice_brief` (legacy MCP surface; the server must run with `ALICE_MCP_LEGACY_TOOLS=1`).
 
 That keeps Hermes on the shipped one-call continuity surface instead of manually choreographing recall plus resumption plus conflict checks. Reach for narrower tools only when Hermes explicitly needs them:
 
-- `alice_recall` for ranked facts only
-- `alice_resume` for the legacy resume layout
-- `alice_review_queue` and `alice_review_apply` for explicit review workflows
+- `alice_recall` (core) for ranked facts only
+- `alice_resume` (core) for a structured resumption brief
+- `alice_review_queue` and `alice_review_apply` (legacy, flag-gated) for explicit review workflows; the core `alice_memory_review` and `alice_memory_correct` tools cover the same review/correction flow without the flag
 
 ## Provider And Pack Guidance
 

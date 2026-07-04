@@ -1,6 +1,6 @@
 # Local + Self-Hosted Provider Adapters
 
-This guide covers the sprint-owned local and self-hosted provider paths:
+This guide covers the local and self-hosted provider paths:
 
 - `POST /v1/providers/ollama/register`
 - `POST /v1/providers/llamacpp/register`
@@ -97,7 +97,7 @@ curl -sS -X POST "http://127.0.0.1:8000/v1/runtime/invoke" \
 
 ## Runnable End-to-End Script
 
-Use the sprint helper script for a full register/test/invoke flow:
+Use the helper script for a full register/test/invoke flow:
 
 ```bash
 ./scripts/run_phase11_local_provider_e2e.py \

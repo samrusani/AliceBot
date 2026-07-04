@@ -2,7 +2,7 @@
 
 This folder keeps the legacy `docs/alpha` path name, but the current release posture is Alice vNext public preview.
 
-Alice vNext public preview is a technical, local-first package for design partners who want agent memory and continuity without hosted storage or direct database writes by agents.
+Alice vNext public preview is a technical, local-first package for people who want agent memory and continuity without hosted storage or direct database writes by agents. Alice is the continuity layer for AI agents.
 
 Alice is agent-first, not dashboard-first:
 
@@ -33,7 +33,7 @@ Start here:
 - [Troubleshooting](troubleshooting.md)
 - [Known limitations](known-limitations.md)
 - [Security and privacy](security-and-privacy.md)
-- [Design partner onboarding](design-partner-onboarding.md)
+- [Alpha onboarding](design-partner-onboarding.md)
 - [Alpha release notes](release-notes.md)
 
 Current alpha posture:

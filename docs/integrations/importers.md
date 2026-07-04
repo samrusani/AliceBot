@@ -1,6 +1,6 @@
 # Importer Integration
 
-Alice ships three importer paths from `P9-S36` and `P9-S37`.
+Alice ships three importer paths.
 
 ## Shipped Importers
 
@@ -54,4 +54,4 @@ Evidence paths:
 
 ## Scope Guard
 
-No additional importer families are part of `P9-S38`.
+No additional importer families are currently shipped.

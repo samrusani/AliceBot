@@ -17,7 +17,7 @@ All examples create reviewable source/artifact evidence. `propose_memory` create
 ## Research Agent Report
 
 ```json
-{"agent_id":"researcher","agent_type":"research_agent","agent_run_id":"research-001","task_id":"market-map","project_scope":["Alice"],"title":"Research report","content":"Finding: design partners value agent context continuity more than dashboard-first workflows.","output_type":"research_summary","domain":"project","sensitivity":"private","propose_memory":true}
+{"agent_id":"researcher","agent_type":"research_agent","agent_run_id":"research-001","task_id":"market-map","project_scope":["Alice"],"title":"Research report","content":"Finding: users value agent context continuity more than dashboard-first workflows.","output_type":"research_summary","domain":"project","sensitivity":"private","propose_memory":true}
 ```
 
 ## Code Review Findings
@@ -41,7 +41,7 @@ All examples create reviewable source/artifact evidence. `propose_memory` create
 ## Unresolved Risks And Open Loops
 
 ```json
-{"agent_id":"openclaw","agent_type":"coding_agent","agent_run_id":"risk-001","task_id":"alpha-risk","project_scope":["Alice"],"title":"Unresolved alpha risks","content":"TODO: Verify the first design partner can complete setup without hand-holding.","output_type":"project_update","domain":"project","sensitivity":"private","propose_memory":true}
+{"agent_id":"openclaw","agent_type":"coding_agent","agent_run_id":"risk-001","task_id":"alpha-risk","project_scope":["Alice"],"title":"Unresolved alpha risks","content":"TODO: Verify a new user can complete setup without hand-holding.","output_type":"project_update","domain":"project","sensitivity":"private","propose_memory":true}
 ```
 
 Audit behavior:

@@ -27,8 +27,8 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="ROADMAP.md",
         required_markers=(
-            "`v0.5.1`: released.",
-            "## In Progress: Product Overhaul",
+            "`v0.6.0`: released.",
+            "## Next",
             "## Explicit Non-Goals For Now",
         ),
     ),
@@ -43,15 +43,17 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="CURRENT_STATE.md",
         required_markers=(
-            "`v0.5.1` is the latest tagged pre-1.0 baseline",
-            "## Product-Overhaul Workstreams",
+            "`v0.6.0` is the latest release",
+            "## What `v0.6.0` Contains",
+            "## Boundaries That Hold",
         ),
     ),
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "`v0.5.1` is the latest tagged pre-1.0 baseline",
-            "## Product-Overhaul Workstreams",
+            "`v0.6.0` is the latest release",
+            "## What `v0.6.0` Contains",
+            "## Boundaries That Hold",
         ),
     ),
     ControlDocTruthRule(

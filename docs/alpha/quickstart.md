@@ -89,8 +89,9 @@ If Alice starts correctly but no memory appears after normal chat, follow the [f
 
 Short version:
 
-- use `alice_vnext_commit_memory` for explicit "remember/save this" requests from trusted agents
-- use `alice_vnext_ingest_agent_output` with `propose_memory=true` for reviewable agent-derived memory proposals
+- use the core `alice_capture` MCP tool to submit new information as source-backed, reviewable memory
+- use `alice_vnext_commit_memory` for explicit "remember/save this" requests from trusted agents (legacy MCP surface; requires `ALICE_MCP_LEGACY_TOOLS=1` on the MCP server)
+- use `alice_vnext_ingest_agent_output` with `propose_memory=true` for reviewable agent-derived memory proposals (legacy MCP surface; same flag)
 - use `alicebot vnext sources capture-text "Fact: ..."` for source-backed candidate memory
 - do not expect arbitrary conversation to become trusted memory automatically
 

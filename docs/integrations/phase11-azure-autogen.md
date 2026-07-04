@@ -1,6 +1,6 @@
-# Phase 11 Azure + AutoGen Integration (P11-S5)
+# Azure + AutoGen Integration
 
-This guide covers the sprint-owned enterprise provider and framework path:
+This guide covers the enterprise provider and framework path:
 
 - `POST /v1/providers/azure/register`
 - `POST /v1/providers/test`
@@ -95,7 +95,7 @@ Optional model-pack seam (if you want explicit pack selection):
 
 ## AutoGen Sample Path
 
-Use the sprint bridge script to call Alice runtime through an AutoGen-style model client shape:
+Use the bridge script to call Alice runtime through an AutoGen-style model client shape:
 
 ```bash
 ./scripts/run_phase11_autogen_runtime_bridge.py \
@@ -110,7 +110,7 @@ The script exposes `AutoGenAliceRuntimeClient.create(messages=[...])`, which let
 
 ## Guardrails
 
-- This sprint adds Azure + AutoGen path only.
+- This guide covers the Azure + AutoGen path only.
 - Broader framework integrations beyond AutoGen remain out of scope.
 - For phase-close compatibility/setup posture, see:
   - `docs/integrations/phase11-model-pack-compatibility.md`

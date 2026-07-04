@@ -1,6 +1,6 @@
 # Alice vNext Public Preview Install Notes
 
-Audience: technical design partners and agent builders.
+Audience: technical users and agent builders.
 
 This file stays under the legacy `docs/alpha` path, but it now describes the current public-preview install posture.
 
@@ -28,7 +28,7 @@ This is a local technical preview, not hosted SaaS, not a production SLA, and no
 ## Who It Is For
 
 - technical users comfortable with local setup
-- design partners testing agent memory
+- early adopters testing agent memory
 - builders connecting Hermes, OpenClaw, or custom agents
 
 ## What It Can Do

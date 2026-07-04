@@ -2,7 +2,7 @@
 
 ## Supported Scope
 
-Alice `v0.2.0` is a pre-1.0 release. Security posture in this repo is scoped to shipped local/runtime surfaces and deterministic verification paths through Phase 11 and Bridge `B1` through `B4`.
+Alice is pre-1.0 software (`v0.5.1` is the latest tagged release). Security posture in this repo is scoped to the shipped local/runtime surfaces and deterministic verification paths on the current baseline.
 
 ## Reporting a Vulnerability
 
@@ -26,4 +26,5 @@ Do not open public issues for active security vulnerabilities.
 
 - keep `.env` local and do not commit secrets
 - keep local services bound to loopback where possible
+- treat per-agent API keys (`alicebot agent keys create`) as secrets; they are stored hashed, printed exactly once, and can be revoked with `alicebot agent keys revoke`
 - run verification commands before release tagging

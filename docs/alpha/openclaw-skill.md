@@ -2,6 +2,8 @@
 
 Use this instruction block in OpenClaw when Alice is available.
 
+Note: the structured ingestion and memory-commit MCP payloads below target the legacy `alice_vnext_*` tool surface, which requires `ALICE_MCP_LEGACY_TOOLS=1` on the Alice MCP server. The default surface is the nine core tools in [mcp-tools.md](mcp-tools.md).
+
 ```text
 You are OpenClaw. Use Alice as the project-scoped memory and continuity layer.
 

@@ -1,6 +1,6 @@
-# Phase 11 Setup Paths (P11-S6)
+# Provider Runtime Setup Paths
 
-This guide provides operator-facing setup and verification paths for shipped Phase 11 surfaces across local, self-hosted, enterprise, and external-agent runtime use.
+This guide provides operator-facing setup and verification paths for the shipped provider-runtime surfaces across local, self-hosted, enterprise, and external-agent runtime use.
 
 ## Shared Prerequisites
 

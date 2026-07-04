@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Alice is my private second brain for durable continuity. Preserve decisions, open loops, sources, and corrections so work can resume without rebuilding context from scratch.
+Alice is my private continuity layer for durable memory. Preserve decisions, open loops, sources, and corrections so work can resume without rebuilding context from scratch.
 
 ## Operating Principles
 

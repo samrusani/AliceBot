@@ -39,6 +39,8 @@ Any third-party agent should follow the same Alice pattern.
 
 ## MCP Example
 
+The default MCP surface is the nine core tools (`alice_capture`, `alice_recall`, `alice_context_pack`, and friends; see [mcp-tools.md](mcp-tools.md)). The `alice_vnext_*` tools below are on the legacy surface and require `ALICE_MCP_LEGACY_TOOLS=1` on the Alice MCP server.
+
 Use `alice_vnext_context_tree` when the agent needs read-only navigation, then use `alice_vnext_context_pack` with the same identity fields before acting. Submit important output with `alice_vnext_ingest_agent_output`.
 
 For explicit "remember this" instructions, use `alice_vnext_commit_memory`:
