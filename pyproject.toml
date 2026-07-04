@@ -9,7 +9,7 @@ description = "Alice: the continuity layer for AI agents. Local-first memory wit
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.14,<2.0",
-  "fastapi>=0.115,<1.0",
+  "fastapi>=0.139.0,<1.0",
   "numpy>=1.26,<3.0",
   "psycopg[binary]>=3.2,<4.0",
   "redis>=5.0,<6.0",
