@@ -216,3 +216,82 @@ def test_capture_file_rejects_unsupported_suffix(tmp_path: Path) -> None:
 
     with pytest.raises(VNextCaptureValidationError, match="unsupported vNext text source type"):
         service.capture_file(binary_file)
+
+
+def _single_candidate(line: str):
+    candidates = extract_candidate_memories([{"id": "chunk-0", "chunk_index": 0, "text": line}])
+    assert len(candidates) == 1
+    return candidates[0]
+
+
+def test_procedure_prefix_extracts_procedure_candidate() -> None:
+    candidate = _single_candidate("Procedure: Restart the ingest worker after every config change.")
+
+    assert candidate.memory_type == "procedure"
+    assert candidate.extraction_rule == "prefixed_procedure"
+    assert candidate.text == "Restart the ingest worker after every config change."
+
+
+def test_playbook_prefix_extracts_procedure_candidate() -> None:
+    candidate = _single_candidate("Playbook: Rotate the Telegram bot token monthly via connector settings.")
+
+    assert candidate.memory_type == "procedure"
+    assert candidate.extraction_rule == "prefixed_procedure"
+    assert candidate.text == "Rotate the Telegram bot token monthly via connector settings."
+
+
+def test_how_to_line_extracts_procedure_and_keeps_full_text() -> None:
+    candidate = _single_candidate("How to recover a failed scheduler run from the run history")
+
+    assert candidate.memory_type == "procedure"
+    assert candidate.extraction_rule == "how_to_procedure"
+    assert candidate.text == "How to recover a failed scheduler run from the run history"
+
+
+def test_how_to_question_still_captures_as_question() -> None:
+    candidate = _single_candidate("How to fix the printer?")
+
+    assert candidate.memory_type == "question"
+    assert candidate.extraction_rule == "question_sentence"
+
+
+def test_happened_prefix_extracts_episode_candidate() -> None:
+    candidate = _single_candidate("Happened: The Postgres restore drill completed in 40 minutes.")
+
+    assert candidate.memory_type == "episode"
+    assert candidate.extraction_rule == "prefixed_episode"
+    assert candidate.text == "The Postgres restore drill completed in 40 minutes."
+
+
+def test_log_prefix_extracts_episode_candidate() -> None:
+    candidate = _single_candidate("Log: Deployed v0.7.1 to the dogfood box at 09:12 UTC.")
+
+    assert candidate.memory_type == "episode"
+    assert candidate.extraction_rule == "prefixed_episode"
+    assert candidate.text == "Deployed v0.7.1 to the dogfood box at 09:12 UTC."
+
+
+def test_existing_prefix_rules_are_untouched_by_new_rules() -> None:
+    chunk_rows = [
+        {
+            "id": "chunk-0",
+            "chunk_index": 0,
+            "text": "\n".join(
+                [
+                    "Decision: Ship the staleness sweep this sprint.",
+                    "Preference: Sam prefers review-first memory writes.",
+                    "Remember: Alice is the continuity layer for agents.",
+                    "Commitment: Send the migration notes by Friday.",
+                ]
+            ),
+        }
+    ]
+
+    candidates = extract_candidate_memories(chunk_rows)
+
+    assert [candidate.memory_type for candidate in candidates] == [
+        "decision",
+        "preference",
+        "semantic",
+        "open_loop",
+    ]

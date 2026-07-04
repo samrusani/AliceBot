@@ -19,12 +19,15 @@ def test_revision_chain_extends_agent_api_keys() -> None:
     assert module.down_revision == "20260704_0073"
 
 
-def test_migration_types_match_scheduler_workflow_types() -> None:
+def test_migration_types_are_a_prefix_of_scheduler_workflow_types() -> None:
     module = load_migration_module()
 
-    assert module.WORKFLOW_TYPES == WORKFLOW_TYPES
+    # The migration froze the vocabulary as of 0074; later migrations may
+    # extend the live tuple, so assert prefix rather than equality.
+    frozen = tuple(module.WORKFLOW_TYPES)
+    assert WORKFLOW_TYPES[: len(frozen)] == frozen
     assert "memory_consolidation" in module.WORKFLOW_TYPES
-    assert module.LEGACY_WORKFLOW_TYPES == WORKFLOW_TYPES[:-1]
+    assert module.LEGACY_WORKFLOW_TYPES == frozen[:-1]
 
 
 def test_upgrade_extends_both_type_checks(monkeypatch) -> None:

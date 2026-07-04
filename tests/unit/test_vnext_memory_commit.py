@@ -4,6 +4,7 @@ import pytest
 
 from alicebot_api.vnext_agent_control import AgentIdentity
 from alicebot_api.vnext_memory_commit import (
+    MEMORY_STATUSES,
     MemoryCommitRequest,
     VNextMemoryCommitService,
     evaluate_memory_commit_policy,
@@ -223,6 +224,115 @@ def test_confirm_uses_confirmation_id_lookup_and_persisted_column() -> None:
     assert confirmed["status"] == "committed"
     assert confirmed["memory"]["status"] == "active"
     assert ("confirmation_id", confirmation_id) in store.lookup_calls
+
+
+def test_memory_status_vocabulary_includes_stale() -> None:
+    assert "stale" in MEMORY_STATUSES
+    # The base row statuses stay present; "stale" extends, not replaces.
+    for status in ("candidate", "active", "rejected", "superseded", "archived", "needs_review"):
+        assert status in MEMORY_STATUSES
+
+
+def test_confirm_refreshes_last_confirmed_at_and_notes_it_in_revision() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    pending = service.commit(
+        identity=identity,
+        request=_request(domain="professional", sensitivity="internal", confidence=0.7),
+    )
+    memory_id = str(pending["memory"]["id"])
+    assert store.memories[memory_id].get("last_confirmed_at") is None
+
+    confirmed = service.confirm(identity=identity, confirmation_id=pending["confirmation_id"])
+
+    assert confirmed["status"] == "committed"
+    assert store.memories[memory_id]["last_confirmed_at"] is not None
+    confirm_revisions = [
+        revision for revision in store.revisions if revision.get("action") == "agentic_memory_confirm_confirm"
+    ]
+    assert confirm_revisions[-1]["metadata_json"]["last_confirmed_at_refreshed"] is True
+
+
+def test_repeated_confirm_is_idempotent_and_refreshes_last_confirmed_at() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    pending = service.commit(
+        identity=identity,
+        request=_request(domain="professional", sensitivity="internal", confidence=0.7),
+    )
+    confirmation_id = pending["confirmation_id"]
+    memory_id = str(pending["memory"]["id"])
+
+    first = service.confirm(identity=identity, confirmation_id=confirmation_id)
+    first_confirmed_at = store.memories[memory_id]["last_confirmed_at"]
+    replay = service.confirm(identity=identity, confirmation_id=confirmation_id)
+
+    assert first["status"] == "committed"
+    assert replay["status"] == "committed"
+    assert replay["idempotent_replay"] is True
+    assert replay["memory"]["id"] == memory_id
+    assert len(store.memories) == 1
+    assert store.memories[memory_id]["last_confirmed_at"] is not None
+    assert store.memories[memory_id]["last_confirmed_at"] >= first_confirmed_at
+    reconfirm_revisions = [
+        revision for revision in store.revisions if revision.get("action") == "agentic_memory_reconfirm"
+    ]
+    assert len(reconfirm_revisions) == 1
+    assert reconfirm_revisions[0]["metadata_json"]["last_confirmed_at_refreshed"] is True
+    assert reconfirm_revisions[0]["revision_type"] == "edited"
+
+
+def test_confirm_reject_replay_is_idempotent_without_mutation() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    pending = service.commit(
+        identity=identity,
+        request=_request(domain="professional", sensitivity="internal", confidence=0.7),
+    )
+    confirmation_id = pending["confirmation_id"]
+
+    rejected = service.confirm(identity=identity, confirmation_id=confirmation_id, action="reject")
+    revisions_after_reject = len(store.revisions)
+    replay = service.confirm(identity=identity, confirmation_id=confirmation_id, action="reject")
+
+    assert rejected["status"] == "rejected"
+    assert replay["status"] == "rejected"
+    assert replay["idempotent_replay"] is True
+    assert len(store.revisions) == revisions_after_reject
+
+
+def test_correct_refreshes_last_confirmed_at() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    committed = service.commit(
+        identity=identity,
+        request=_request(domain="professional", sensitivity="internal"),
+    )
+    memory_id = str(committed["memory"]["id"])
+    committed_at = store.memories[memory_id]["last_confirmed_at"]
+
+    corrected = service.correct(
+        identity=identity,
+        memory_id=memory_id,
+        canonical_text="Sam prefers tea before noon.",
+        reason="User corrected the beverage.",
+    )
+
+    assert corrected["status"] == "committed"
+    assert store.memories[memory_id]["last_confirmed_at"] is not None
+    assert store.memories[memory_id]["last_confirmed_at"] >= committed_at
+    correction_revisions = [
+        revision for revision in store.revisions if revision.get("action") == "agentic_memory_correct"
+    ]
+    assert correction_revisions[-1]["metadata_json"]["last_confirmed_at_refreshed"] is True
 
 
 def test_undo_without_memory_id_uses_latest_agentic_commit_lookup() -> None:

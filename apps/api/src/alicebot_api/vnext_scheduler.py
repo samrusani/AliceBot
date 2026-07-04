@@ -31,9 +31,30 @@ WORKFLOW_TYPES = (
     "open_loop_review",
     "project_update_scan",
     "memory_consolidation",
+    "staleness_sweep",
 )
 PRIMARY_WORKFLOWS = ("daily_brief", "weekly_synthesis")
 DAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+# Workflow types whose default cadence is daily.
+DAILY_WORKFLOWS = ("daily_brief", "staleness_sweep")
+
+DEFAULT_STALENESS_WINDOW_DAYS = 180
+DEFAULT_STALENESS_MEMORY_LIMIT = 500
+# Only working-state memory types decay when they go unconfirmed. Stability
+# priors differ by type: durable types (preference, semantic, procedure,
+# identity/relationship facts, values, ...) stay true without periodic
+# re-confirmation — silence does not make "prefers dark roast" or a playbook
+# less valid — while open loops, commitments, and project state describe a
+# world that moves on without confirmation, so they are the only types the
+# confirmation-age rule applies to. Explicit `valid_to` expiry applies to
+# every type: a row that declares its own end of validity is stale once that
+# time passes.
+STALENESS_REVIEW_MEMORY_TYPES = ("open_loop", "commitment", "project_state")
+# The sweep only inspects trusted/active rows. Candidates and review items are
+# already in a review queue; superseded/rejected/archived rows are already out
+# of recall. Sweeping only "active" also makes the sweep idempotent: a row
+# marked "stale" is never re-scanned.
+STALENESS_SWEEP_STATUSES = ("active",)
 
 
 class VNextSchedulerValidationError(ValueError):
@@ -69,6 +90,10 @@ class VNextSchedulerStore(Protocol):
 
     def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
+    def update_memory(self, *, memory_id: str, patch: JsonObject, actor_type: str = "system") -> JsonObject: ...
+
+    def append_revision(self, revision: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
+
     def list_memories(self, **kwargs) -> list[JsonObject]: ...
 
     def search_sources(self, **kwargs) -> list[JsonObject]: ...
@@ -103,6 +128,8 @@ def default_schedule(workflow_type: str) -> JsonObject:
         return {"kind": "daily", "time_of_day": "08:00", "days_of_week": list(DAY_NAMES)}
     if workflow_type == "weekly_synthesis":
         return {"kind": "weekly", "day_of_week": "monday", "time_of_day": "09:00"}
+    if workflow_type == "staleness_sweep":
+        return {"kind": "daily", "time_of_day": "03:30", "days_of_week": list(DAY_NAMES)}
     return {"kind": "manual"}
 
 
@@ -159,11 +186,12 @@ def validate_schedule(workflow_type: str, schedule_json: JsonObject) -> JsonObje
     if not isinstance(schedule_json, dict):
         raise VNextSchedulerValidationError("schedule_json must be an object")
 
-    kind = schedule_json.get("kind") or ("daily" if workflow_type == "daily_brief" else "weekly" if workflow_type == "weekly_synthesis" else "manual")
+    kind = schedule_json.get("kind") or ("daily" if workflow_type in DAILY_WORKFLOWS else "weekly" if workflow_type == "weekly_synthesis" else "manual")
     if kind == "manual":
         return {"kind": "manual"}
-    if workflow_type == "daily_brief":
-        when = _parse_time_of_day(schedule_json.get("time_of_day", "08:00"))
+    if workflow_type in DAILY_WORKFLOWS:
+        default_time = "08:00" if workflow_type == "daily_brief" else "03:30"
+        when = _parse_time_of_day(schedule_json.get("time_of_day", default_time))
         days = schedule_json.get("days_of_week", list(DAY_NAMES))
         if not isinstance(days, list) or not days:
             raise VNextSchedulerValidationError("days_of_week must be a non-empty list")
@@ -212,6 +240,22 @@ def compute_next_run_at(
         if candidate > local_now:
             return candidate.astimezone(UTC).isoformat()
     raise VNextSchedulerValidationError("could not compute next scheduler run")
+
+
+def _memory_timestamp(value: object) -> datetime | None:
+    """Parse a memory row timestamp leniently; unparseable values become None."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _coerce_datetime(value: object) -> datetime | None:
@@ -566,6 +610,8 @@ class VNextSchedulerService:
                     **generation_kwargs,
                 )
             )
+        if request.workflow_type == "staleness_sweep":
+            return self._run_staleness_sweep(request, metadata=metadata)
         if request.workflow_type == "open_loop_review":
             return self._generate_open_loop_review_artifact(request, metadata=metadata)
         if request.workflow_type == "project_update_scan":
@@ -611,6 +657,181 @@ class VNextSchedulerService:
             },
             actor_type="scheduler",
         )
+
+    def _run_staleness_sweep(self, request: SchedulerRunRequest, *, metadata: JsonObject) -> JsonObject:
+        """Mark expired or long-unconfirmed memories as stale.
+
+        Review-first semantics: the sweep only transitions ``status`` to
+        ``stale`` — it never deletes, archives, or supersedes anything. Stale
+        rows stay fully auditable and can be re-confirmed or archived through
+        the normal review paths. The sweep is idempotent because it only
+        scans ``active`` rows, so a row marked stale is never re-marked.
+        """
+        now = _memory_timestamp(request.options.get("reference_time")) or datetime.now(UTC)
+        window_days = _option_int(request.options, "staleness_window_days", DEFAULT_STALENESS_WINDOW_DAYS)
+        if window_days < 1:
+            window_days = DEFAULT_STALENESS_WINDOW_DAYS
+        mark_limit = _option_int(request.options, "staleness_memory_limit", DEFAULT_STALENESS_MEMORY_LIMIT)
+        window_start = now - timedelta(days=window_days)
+
+        scanned_count = 0
+        expired_marked: list[JsonObject] = []
+        unconfirmed_marked: list[JsonObject] = []
+        for status in STALENESS_SWEEP_STATUSES:
+            for memory in self.store.list_memories(status=status):
+                if len(expired_marked) + len(unconfirmed_marked) >= mark_limit:
+                    break
+                scanned_count += 1
+                valid_to = _memory_timestamp(memory.get("valid_to"))
+                if valid_to is not None and valid_to < now:
+                    expired_marked.append(
+                        self._mark_memory_stale(
+                            memory,
+                            reason="valid_to_expired",
+                            note=f"valid_to {valid_to.isoformat()} passed before {now.isoformat()}",
+                            metadata=metadata,
+                        )
+                    )
+                    continue
+                if str(memory.get("memory_type")) not in STALENESS_REVIEW_MEMORY_TYPES:
+                    # Durable types are exempt from the confirmation-age rule;
+                    # see STALENESS_REVIEW_MEMORY_TYPES for the rationale.
+                    continue
+                confirmed_at = (
+                    _memory_timestamp(memory.get("last_confirmed_at"))
+                    or _memory_timestamp(memory.get("last_seen_at"))
+                    or _memory_timestamp(memory.get("created_at"))
+                )
+                if confirmed_at is None:
+                    # No freshness signal at all: stay conservative, skip.
+                    continue
+                if confirmed_at < window_start:
+                    unconfirmed_marked.append(
+                        self._mark_memory_stale(
+                            memory,
+                            reason="confirmation_window_elapsed",
+                            note=(
+                                f"last confirmation {confirmed_at.isoformat()} is older than "
+                                f"{window_days} days for working-state type {memory.get('memory_type')}"
+                            ),
+                            metadata=metadata,
+                        )
+                    )
+
+        marked = [*expired_marked, *unconfirmed_marked]
+        generated_for = request.generated_for or now.date().isoformat()
+        marked_lines = [
+            f"- memory:{row.get('id')} ({row.get('memory_type')}) - {str(row.get('title') or row.get('canonical_text') or 'untitled')[:120]}"
+            for row in marked
+        ] or ["- No memories crossed an expiry or confirmation-age threshold."]
+        content = "\n".join(
+            [
+                f"# Staleness Sweep - {generated_for}",
+                "",
+                "## Summary",
+                f"- Scanned active memories: {scanned_count}",
+                f"- Marked stale (valid_to expired): {len(expired_marked)}",
+                f"- Marked stale (unconfirmed working-state, window {window_days} days): {len(unconfirmed_marked)}",
+                "",
+                "## Marked Memories",
+                *marked_lines,
+                "",
+                "## Review Policy",
+                "- The sweep marks memories stale; it never deletes, archives, or supersedes them.",
+                "- Durable types (preference, semantic, procedure, facts) are exempt from the confirmation-age rule.",
+                "- Stale memories stay auditable and can be re-confirmed or archived through review.",
+            ]
+        )
+        return self.store.create_artifact(
+            {
+                "artifact_type": "system_report",
+                "title": f"Staleness Sweep - {generated_for}",
+                "content_markdown": content,
+                "status": "needs_review",
+                "domain": request.domains[0] if len(request.domains) == 1 else "unknown",
+                "sensitivity": "unknown",
+                "generated_by": "scheduler",
+                "metadata_json": {
+                    **metadata,
+                    "workflow": "staleness_sweep",
+                    "source_refs": [],
+                    "stale_marked_memory_ids": [str(row.get("id")) for row in marked],
+                    "staleness_window_days": window_days,
+                    "input_counts": {
+                        "scanned": scanned_count,
+                        "expired_marked": len(expired_marked),
+                        "unconfirmed_marked": len(unconfirmed_marked),
+                    },
+                    "review_policy": "marks_stale_never_deletes",
+                },
+            },
+            actor_type="scheduler",
+        )
+
+    def _mark_memory_stale(
+        self,
+        memory: JsonObject,
+        *,
+        reason: str,
+        note: str,
+        metadata: JsonObject,
+    ) -> JsonObject:
+        memory_metadata = dict(memory.get("metadata_json")) if isinstance(memory.get("metadata_json"), dict) else {}
+        memory_metadata["staleness"] = {
+            "marked_by": "staleness_sweep",
+            "reason": reason,
+            "note": note,
+            "scheduler_run_id": metadata.get("scheduler_run_id"),
+            "trace_id": metadata.get("trace_id"),
+        }
+        updated = self.store.update_memory(
+            memory_id=str(memory["id"]),
+            patch={"status": "stale", "metadata_json": memory_metadata},
+            actor_type="scheduler",
+        )
+        # The revision-type vocabulary (REVISION_TYPES, enforced by the
+        # Postgres memory_revisions_revision_type_check constraint) has no
+        # "stale_marked" value, so the sweep records revision_type="edited"
+        # and carries the intended type in the reason/metadata note.
+        self.store.append_revision(
+            {
+                "memory_id": str(updated["id"]),
+                "memory_key": str(updated.get("memory_key") or ""),
+                "previous_value": memory.get("value"),
+                "new_value": updated.get("value"),
+                "source_event_ids": updated.get("source_event_ids"),
+                "revision_type": "edited",
+                "action": "staleness_sweep_mark",
+                "text_before": str(memory.get("canonical_text") or ""),
+                "text_after": str(updated.get("canonical_text") or ""),
+                "reason": f"stale_marked: {note}",
+                "actor_type": "scheduler",
+                "actor_id": None,
+                "metadata_json": {
+                    "requested_revision_type": "stale_marked",
+                    "staleness_reason": reason,
+                    "workflow_type": "staleness_sweep",
+                    "scheduler_run_id": metadata.get("scheduler_run_id"),
+                },
+            },
+            actor_type="scheduler",
+        )
+        append_event(
+            self.store,
+            event_type="memory.stale_marked",
+            actor_type="scheduler",
+            target_type="memory",
+            target_id=str(updated["id"]),
+            trace_id=str(metadata.get("trace_id")) if metadata.get("trace_id") is not None else None,
+            run_id=str(metadata.get("scheduler_run_id")) if metadata.get("scheduler_run_id") is not None else None,
+            payload={
+                "reason": reason,
+                "note": note,
+                "memory_type": memory.get("memory_type"),
+                "previous_status": memory.get("status"),
+            },
+        )
+        return updated
 
     def _generate_open_loop_review_artifact(self, request: SchedulerRunRequest, *, metadata: JsonObject) -> JsonObject:
         domains = list(request.domains) if request.domains else None
@@ -867,7 +1088,11 @@ class VNextSchedulerService:
 
 
 __all__ = [
+    "DEFAULT_STALENESS_MEMORY_LIMIT",
+    "DEFAULT_STALENESS_WINDOW_DAYS",
     "PRIMARY_WORKFLOWS",
+    "STALENESS_REVIEW_MEMORY_TYPES",
+    "STALENESS_SWEEP_STATUSES",
     "SchedulerRunRequest",
     "VNextSchedulerService",
     "VNextSchedulerStore",
