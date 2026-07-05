@@ -2,12 +2,15 @@
 
 **The continuity layer for AI agents.**
 
+[![LongMemEval](https://img.shields.io/badge/LongMemEval__s-64.6%25-6f42c1)](docs/benchmarks/longmemeval/README.md)
 ![Local-first](https://img.shields.io/badge/local--first-core-0A7B61)
 ![MCP](https://img.shields.io/badge/MCP-supported-1f6feb)
 ![Python](https://img.shields.io/badge/python-3.12%2B-3776AB)
 ![License](https://img.shields.io/badge/license-MIT-2ea043)
 
 Alice is a local-first memory service that lets AI agents resume interrupted work, track open loops, recall decisions with provenance, and improve when corrected — instead of re-reading transcripts or trusting opaque summaries.
+
+It matches the best published scores on [LongMemEval](docs/benchmarks/longmemeval/README.md), the long-term-memory benchmark — **64.6%** with the official judge protocol — and it is the only system in its category that commits the full per-question evidence, methodology, and reproduction script to the repo.
 
 Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes land as policy-checked commits or reviewable proposals, and a local review console is where memory gets approved, corrected, or forgotten. That review boundary is a feature, not a limitation — it is what makes the memory trustworthy enough to act on.
 
