@@ -15,6 +15,8 @@ Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes 
 
 Most agent memory tools — mem0, Zep, Letta, and similar — focus on extracting facts from conversations and retrieving them later. That solves recall, and they do it well. Alice focuses on continuity: it stores typed continuity objects (decisions, open loops, resumption briefs) alongside plain memories; every answer carries explainable provenance back to source evidence; and writes are review-governed, so an agent cannot silently promote a bad extraction into durable truth. If you mainly need conversational fact recall, those tools are solid choices. If your agents need to resume work, honor past decisions, and explain why they believe something, that is what Alice is built for.
 
+On [LongMemEval](docs/benchmarks/longmemeval/README.md), the long-term-memory benchmark, Alice scores **64.6%** with GPT-4o and the official judge protocol — alongside Zep's published 63.8% and above Mem0's reported ~49% — with full methodology and per-question evidence in the repo. Knowledge-update questions score 74.4%, which is the correction and supersession machinery doing its job.
+
 ## What Alice stores
 
 - **Memories** — typed, revisioned facts with trust classification and provenance links to source evidence.
