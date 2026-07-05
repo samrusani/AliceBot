@@ -4,8 +4,10 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+import pytest
 from psycopg.types.json import Jsonb
 
+from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_event_log import build_event_log_record
 from alicebot_api.vnext_store import PostgresVNextStore, _search_patterns
 
@@ -1216,3 +1218,247 @@ def test_memory_writes_accept_supersession_pointer_columns() -> None:
     assert "supersedes = COALESCE(%s::uuid, supersedes)" in update_query
     assert update_params is not None
     assert successor_id in update_params
+
+
+# -- entity substrate: resolution, mentions, relationship history ---------------
+
+
+def test_entity_crud_methods_normalize_names_and_write_audit_events() -> None:
+    entity_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": entity_id, "entity_type": "organization"},
+            _event_row(entity_id),
+            {"id": entity_id},
+            {"id": entity_id},
+            {"id": entity_id},
+            _event_row(entity_id),
+        ],
+        fetchall_result=[{"id": entity_id, "entity_type": "organization"}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    created = store.create_entity(
+        {
+            "id": entity_id,
+            "entity_type": "organization",
+            "name": "OpenAI, Inc.",
+            "aliases": ["open ai"],
+            "metadata_json": {"hq": "sf"},
+        }
+    )
+    fetched = store.get_entity(entity_id)
+    by_name = store.get_entity_by_normalized_name("organization", "openai inc")
+    listed = store.list_entities(entity_type="organization", limit=7)
+    updated = store.update_entity(
+        entity_id=entity_id, patch={"name": "OpenAI", "aliases": ["oai"]}
+    )
+
+    assert created["id"] == entity_id
+    assert fetched is not None
+    assert by_name is not None
+    assert listed[0]["id"] == entity_id
+    assert updated["id"] == entity_id
+    assert _event_log_insert_count(cursor) == 2
+
+    insert_query, insert_params = cursor.executed[0]
+    assert "INSERT INTO vnext_entities" in insert_query
+    assert "app.current_user_id()" in insert_query
+    assert insert_params is not None
+    assert insert_params[0] == entity_id
+    assert insert_params[1] == "organization"
+    assert insert_params[2] == "OpenAI, Inc."  # display name keeps its casing
+    assert insert_params[3] == "openai inc"  # resolution key computed via normalize_entity_name
+    assert isinstance(insert_params[4], Jsonb)
+    assert insert_params[4].obj == ["open ai"]
+    assert isinstance(insert_params[5], Jsonb)
+    assert insert_params[5].obj == {"hq": "sf"}
+    assert insert_params[8] == 0  # mention_count defaults to zero
+
+    get_query, get_params = cursor.executed[2]
+    assert "FROM vnext_entities" in get_query
+    assert "WHERE id = %s::uuid" in get_query
+    assert "deleted_at IS NULL" in get_query
+    assert get_params == (entity_id,)
+
+    by_name_query, by_name_params = cursor.executed[3]
+    assert "entity_type = %s" in by_name_query
+    assert "normalized_name = %s" in by_name_query
+    assert "LIMIT 1" in by_name_query
+    assert by_name_params == ("organization", "openai inc")
+
+    list_query, list_params = cursor.executed[4]
+    assert "%s::text IS NULL OR entity_type = %s" in list_query
+    assert "ORDER BY updated_at DESC, created_at DESC, id DESC" in list_query
+    assert list_params == ("organization", "organization", 7)
+
+    update_query, update_params = cursor.executed[5]
+    assert "UPDATE vnext_entities" in update_query
+    assert "name = COALESCE(%s, name)" in update_query
+    assert "aliases = COALESCE(%s, aliases)" in update_query
+    assert "deleted_at IS NULL" in update_query
+    assert update_params is not None
+    assert update_params[0] == "OpenAI"
+    assert isinstance(update_params[1], Jsonb)
+    assert update_params[1].obj == ["oai"]
+    assert update_params[-1] == entity_id
+
+
+def test_update_entity_rejects_immutable_patch_fields_before_touching_sql() -> None:
+    cursor = RecordingCursor(fetchone_results=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    for immutable_patch in (
+        {"normalized_name": "hijacked"},
+        {"entity_type": "person"},
+        {"id": str(uuid4())},
+        {"user_id": str(uuid4())},
+    ):
+        with pytest.raises(ContinuityStoreInvariantError, match="immutable"):
+            store.update_entity(entity_id=str(uuid4()), patch=immutable_patch)
+    assert cursor.executed == []
+
+
+def test_find_entities_by_names_matches_normalized_names_and_aliases_in_one_query() -> None:
+    cursor = RecordingCursor(
+        fetchone_results=[],
+        fetchall_result=[{"id": "entity-1", "normalized_name": "openai"}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    rows = store.find_entities_by_names(("openai", "type3.capital"))
+
+    assert rows[0]["id"] == "entity-1"
+    assert len(cursor.executed) == 1  # one round trip covers both match paths
+    query, params = cursor.executed[0]
+    assert "FROM vnext_entities" in query
+    assert "normalized_name = ANY(%s::text[])" in query
+    assert "aliases ?| %s::text[]" in query
+    assert "deleted_at IS NULL" in query
+    assert "ORDER BY mention_count DESC, updated_at DESC, id DESC" in query
+    assert params == (["openai", "type3.capital"], ["openai", "type3.capital"])
+
+    # An empty name tuple short-circuits without touching the database.
+    assert store.find_entities_by_names(()) == []
+    assert len(cursor.executed) == 1
+
+
+def test_record_entity_mention_increments_count_and_widens_window() -> None:
+    entity_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"id": entity_id},
+            _event_row(entity_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    row = store.record_entity_mention(
+        entity_id=entity_id, observed_at="2026-05-01T00:00:00Z", source_id="source-1"
+    )
+
+    assert row["id"] == entity_id
+    assert _event_log_insert_count(cursor) == 1
+    query, params = cursor.executed[0]
+    assert "mention_count = mention_count + 1" in query
+    assert "LEAST(COALESCE(first_observed_at, %s::timestamptz), %s::timestamptz)" in query
+    assert "GREATEST(COALESCE(last_observed_at, %s::timestamptz), %s::timestamptz)" in query
+    assert "deleted_at IS NULL" in query
+    assert params == (
+        "2026-05-01T00:00:00Z",
+        "2026-05-01T00:00:00Z",
+        "2026-05-01T00:00:00Z",
+        "2026-05-01T00:00:00Z",
+        entity_id,
+    )
+
+    # Missing observed_at fails loudly before any SQL runs.
+    fresh_cursor = RecordingCursor(fetchone_results=[])
+    fresh_store = PostgresVNextStore(RecordingConnection(fresh_cursor))
+    with pytest.raises(ContinuityStoreInvariantError, match="observed_at"):
+        fresh_store.record_entity_mention(entity_id=entity_id, observed_at=None)
+    assert fresh_cursor.executed == []
+
+
+def test_record_relationship_change_appends_history_and_updates_current_pointer() -> None:
+    entity_id = str(uuid4())
+    event_id = str(uuid4())
+    source_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"relationship_type_before": "advisor"},
+            {"id": event_id, "relationship_type_after": "investor"},
+            {"id": entity_id},
+            _event_row(entity_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    row = store.record_relationship_change(
+        entity_id=entity_id,
+        relationship_type="investor",
+        changed_at="2026-02-01T00:00:00Z",
+        source_id=source_id,
+        metadata_json={"round": "seed"},
+    )
+
+    assert row["id"] == event_id
+    assert _event_log_insert_count(cursor) == 1
+
+    before_query, before_params = cursor.executed[0]
+    assert "metadata_json ->> 'relationship_type'" in before_query
+    assert "deleted_at IS NULL" in before_query
+    assert before_params == (entity_id,)
+
+    insert_query, insert_params = cursor.executed[1]
+    assert "INSERT INTO entity_relationship_events" in insert_query
+    assert "app.current_user_id()" in insert_query
+    assert insert_params is not None
+    assert insert_params[0] == entity_id
+    assert insert_params[1] == "advisor"  # before comes from the current pointer
+    assert insert_params[2] == "investor"
+    assert insert_params[3] == "2026-02-01T00:00:00Z"
+    assert insert_params[4] == source_id
+    assert isinstance(insert_params[5], Jsonb)
+    assert insert_params[5].obj == {"round": "seed"}
+
+    pointer_query, pointer_params = cursor.executed[2]
+    assert "UPDATE vnext_entities" in pointer_query
+    assert "metadata_json = metadata_json || %s" in pointer_query
+    assert pointer_params is not None
+    assert isinstance(pointer_params[0], Jsonb)
+    assert pointer_params[0].obj == {"relationship_type": "investor"}
+    assert pointer_params[1] == entity_id
+
+    event_query, event_params = cursor.executed[3]
+    assert "INSERT INTO event_log" in event_query
+    assert event_params is not None
+    assert isinstance(event_params[7], Jsonb)
+    assert event_params[7].obj["relationship_type_before"] == "advisor"
+    assert event_params[7].obj["relationship_type_after"] == "investor"
+    assert event_params[7].obj["relationship_event_id"] == event_id
+
+    # A missing entity aborts after the lookup, before any history is written.
+    missing_cursor = RecordingCursor(fetchone_results=[])
+    missing_store = PostgresVNextStore(RecordingConnection(missing_cursor))
+    with pytest.raises(ContinuityStoreInvariantError, match="existing entity"):
+        missing_store.record_relationship_change(entity_id=entity_id, relationship_type="advisor")
+    assert len(missing_cursor.executed) == 1
+
+
+def test_list_relationship_events_reads_history_most_recent_first() -> None:
+    entity_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[],
+        fetchall_result=[{"id": "event-1", "relationship_type_after": "investor"}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    rows = store.list_relationship_events(entity_id)
+
+    assert rows[0]["id"] == "event-1"
+    query, params = cursor.executed[0]
+    assert "FROM entity_relationship_events" in query
+    assert "WHERE entity_id = %s::uuid" in query
+    assert "ORDER BY changed_at DESC, id DESC" in query
+    assert params == (entity_id,)

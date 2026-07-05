@@ -35,6 +35,7 @@ import numpy as np
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.store import ContinuityStoreInvariantError
 from alicebot_api.vnext_embeddings import EMBEDDING_VECTOR_DIMENSIONS, pad_embedding_vector
+from alicebot_api.vnext_entity_names import ENTITY_IMMUTABLE_PATCH_FIELDS, normalize_entity_name
 from alicebot_api.vnext_event_log import build_event_log_record
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
@@ -233,10 +234,38 @@ AGENT_API_KEY_COLUMNS = (
     "last_used_at",
 )
 
+ENTITY_COLUMNS = (
+    "id",
+    "user_id",
+    "entity_type",
+    "name",
+    "normalized_name",
+    "aliases",
+    "metadata_json",
+    "created_at",
+    "updated_at",
+    "deleted_at",
+    "first_observed_at",
+    "last_observed_at",
+    "mention_count",
+)
+
+ENTITY_RELATIONSHIP_EVENT_COLUMNS = (
+    "id",
+    "user_id",
+    "entity_id",
+    "relationship_type_before",
+    "relationship_type_after",
+    "changed_at",
+    "source_id",
+    "metadata_json",
+)
+
 # Columns stored as JSON TEXT that must decode back to dicts/lists so
 # returned rows match psycopg's jsonb decoding.
 _JSON_COLUMNS = frozenset(
     {
+        "aliases",
         "candidate",
         "metadata_json",
         "new_value",
@@ -1540,6 +1569,351 @@ class SQLiteVNextStore:
                 LIMIT ?
                 """,
             (self.user_id, at_iso, at_iso, limit),
+        )
+
+    # -- entities -----------------------------------------------------------
+    #
+    # Mirrors PostgresVNextStore's entity substrate (migration
+    # 20260705_0078): one row per resolved real-world thing, keyed for
+    # resolution by (entity_type, normalized_name). Entities participate
+    # in the graph without edge changes: graph_edges.from_type/from_id
+    # and to_type/to_id are free-text node references, so an edge can
+    # point at an entity with from_type='entity', from_id=<entity id>;
+    # only edge_type is CHECK-constrained.
+
+    def create_entity(self, entity: JsonObject, *, actor_type: str = "system") -> VNextRow:
+        entity_id = _new_id(entity.get("id"))
+        name = str(entity["name"])
+        normalized_name = str(entity.get("normalized_name") or normalize_entity_name(name))
+        now = _utc_now_iso()
+        self._execute(
+            """
+                INSERT INTO vnext_entities (
+                  id,
+                  user_id,
+                  entity_type,
+                  name,
+                  normalized_name,
+                  aliases,
+                  metadata_json,
+                  first_observed_at,
+                  last_observed_at,
+                  mention_count,
+                  created_at,
+                  updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            (
+                entity_id,
+                self.user_id,
+                entity["entity_type"],
+                name,
+                normalized_name,
+                _json_list_text(entity.get("aliases")),
+                _json_object_text(entity.get("metadata_json")),
+                _iso_or_none(entity.get("first_observed_at")),
+                _iso_or_none(entity.get("last_observed_at")),
+                entity.get("mention_count", 0),
+                now,
+                now,
+            ),
+        )
+        row = self._get_row("create_entity", "vnext_entities", ENTITY_COLUMNS, entity_id)
+        self._append_mutation_event(
+            event_type="entity.created",
+            actor_type=actor_type,
+            target_type="entity",
+            target_id=row["id"],
+            payload={
+                "operation": "create",
+                "entity_type": str(row["entity_type"]),
+                "fields": _sorted_field_names(entity),
+            },
+        )
+        return row
+
+    def get_entity(self, entity_id: str) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {", ".join(ENTITY_COLUMNS)}
+                FROM vnext_entities
+                WHERE id = ?
+                  AND user_id = ?
+                  AND deleted_at IS NULL
+                """,
+            (str(entity_id), self.user_id),
+        )
+
+    def get_entity_by_normalized_name(self, entity_type: str, normalized_name: str) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {", ".join(ENTITY_COLUMNS)}
+                FROM vnext_entities
+                WHERE entity_type = ?
+                  AND normalized_name = ?
+                  AND user_id = ?
+                  AND deleted_at IS NULL
+                LIMIT 1
+                """,
+            (entity_type, normalized_name, self.user_id),
+        )
+
+    def find_entities_by_names(self, normalized_names: tuple[str, ...]) -> list[VNextRow]:
+        """One-round-trip resolution lookup for query-time entity linking.
+
+        Matches ``normalized_name`` OR any element of the ``aliases``
+        JSON array (via ``json_each``). Alias values are expected to
+        already be normalized via ``normalize_entity_name`` -- matching
+        is exact string equality. Most-mentioned entities sort first so
+        callers can take the top match per name.
+        """
+        if not normalized_names:
+            return []
+        names = [str(name) for name in normalized_names]
+        placeholders = self._placeholders(names)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(ENTITY_COLUMNS)}
+                FROM vnext_entities
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND (
+                    normalized_name IN ({placeholders})
+                    OR EXISTS (
+                      SELECT 1
+                      FROM json_each(vnext_entities.aliases)
+                      WHERE json_each.value IN ({placeholders})
+                    )
+                  )
+                ORDER BY mention_count DESC, updated_at DESC, id DESC
+                """,
+            (self.user_id, *names, *names),
+        )
+
+    def list_entities(
+        self,
+        *,
+        entity_type: str | None = None,
+        limit: int = 100,
+    ) -> list[VNextRow]:
+        type_sql = ""
+        params: list[object] = [self.user_id]
+        if entity_type is not None:
+            type_sql = " AND entity_type = ?"
+            params.append(entity_type)
+        params.append(limit)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(ENTITY_COLUMNS)}
+                FROM vnext_entities
+                WHERE user_id = ?{type_sql}
+                  AND deleted_at IS NULL
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT ?
+                """,
+            tuple(params),
+        )
+
+    def update_entity(self, *, entity_id: str, patch: JsonObject, actor_type: str = "system") -> VNextRow:
+        immutable = sorted(set(patch) & ENTITY_IMMUTABLE_PATCH_FIELDS)
+        if immutable:
+            raise ContinuityStoreInvariantError(
+                f"update_entity cannot modify immutable fields: {', '.join(immutable)}"
+            )
+        cursor = self._execute(
+            """
+                UPDATE vnext_entities
+                SET name = COALESCE(?, name),
+                    aliases = COALESCE(?, aliases),
+                    metadata_json = COALESCE(?, metadata_json),
+                    mention_count = COALESCE(?, mention_count),
+                    first_observed_at = COALESCE(?, first_observed_at),
+                    last_observed_at = COALESCE(?, last_observed_at),
+                    updated_at = ?
+                WHERE id = ?
+                  AND user_id = ?
+                  AND deleted_at IS NULL
+                """,
+            (
+                patch.get("name"),
+                _json_list_text(patch["aliases"]) if "aliases" in patch else None,
+                _json_object_text(patch["metadata_json"]) if "metadata_json" in patch else None,
+                patch.get("mention_count"),
+                _iso_or_none(patch.get("first_observed_at")),
+                _iso_or_none(patch.get("last_observed_at")),
+                _utc_now_iso(),
+                str(entity_id),
+                self.user_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ContinuityStoreInvariantError(
+                "update_entity did not return a row from the database",
+            )
+        row = self._get_row("update_entity", "vnext_entities", ENTITY_COLUMNS, str(entity_id))
+        self._append_mutation_event(
+            event_type="entity.updated",
+            actor_type=actor_type,
+            target_type="entity",
+            target_id=row["id"],
+            payload={"operation": "update", "changes": patch},
+        )
+        return row
+
+    def record_entity_mention(
+        self,
+        *,
+        entity_id: str,
+        observed_at: object,
+        source_id: str | None = None,
+        actor_type: str = "system",
+    ) -> VNextRow:
+        """Count a mention and widen the observation window.
+
+        ``first_observed_at``/``last_observed_at`` take COALESCE min/max
+        semantics: out-of-order observations only ever widen the window.
+        MIN/MAX over the store's ISO-8601 UTC "Z" TEXT convention orders
+        lexicographically like the Postgres LEAST/GREATEST on
+        timestamptz.
+        """
+        observed = _iso_or_none(observed_at)
+        if observed is None:
+            raise ContinuityStoreInvariantError("record_entity_mention requires observed_at")
+        cursor = self._execute(
+            """
+                UPDATE vnext_entities
+                SET mention_count = mention_count + 1,
+                    first_observed_at = MIN(COALESCE(first_observed_at, ?), ?),
+                    last_observed_at = MAX(COALESCE(last_observed_at, ?), ?),
+                    updated_at = ?
+                WHERE id = ?
+                  AND user_id = ?
+                  AND deleted_at IS NULL
+                """,
+            (
+                observed,
+                observed,
+                observed,
+                observed,
+                _utc_now_iso(),
+                str(entity_id),
+                self.user_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise ContinuityStoreInvariantError(
+                "record_entity_mention did not return a row from the database",
+            )
+        row = self._get_row("record_entity_mention", "vnext_entities", ENTITY_COLUMNS, str(entity_id))
+        self._append_mutation_event(
+            event_type="entity.mention_recorded",
+            actor_type=actor_type,
+            target_type="entity",
+            target_id=row["id"],
+            payload={
+                "operation": "record_mention",
+                "observed_at": observed,
+                "source_id": source_id,
+            },
+        )
+        return row
+
+    def record_relationship_change(
+        self,
+        *,
+        entity_id: str,
+        relationship_type: str,
+        changed_at: object | None = None,
+        source_id: str | None = None,
+        metadata_json: JsonObject | None = None,
+        actor_type: str = "system",
+    ) -> VNextRow:
+        """Append a relationship transition and update the entity.
+
+        update_person overwrites relationship_type in place; this keeps
+        the "advisor -> investor" history in the append-only
+        entity_relationship_events table while the entity's
+        metadata_json carries the current relationship_type.
+        """
+        entity = self.get_entity(entity_id)
+        if entity is None:
+            raise ContinuityStoreInvariantError(
+                "record_relationship_change requires an existing entity"
+            )
+        current_metadata = cast(dict[str, object], entity.get("metadata_json") or {})
+        before_value = current_metadata.get("relationship_type")
+        before = None if before_value is None else str(before_value)
+        event_id = _new_id(None)
+        self._execute(
+            """
+                INSERT INTO entity_relationship_events (
+                  id,
+                  user_id,
+                  entity_id,
+                  relationship_type_before,
+                  relationship_type_after,
+                  changed_at,
+                  source_id,
+                  metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            (
+                event_id,
+                self.user_id,
+                str(entity_id),
+                before,
+                relationship_type,
+                _iso_or_now(changed_at),
+                _uuid_text(source_id),
+                _json_object_text(metadata_json),
+            ),
+        )
+        # Shallow merge mirrors the Postgres jsonb `||` update.
+        merged_metadata = {**current_metadata, "relationship_type": relationship_type}
+        self._execute(
+            """
+                UPDATE vnext_entities
+                SET metadata_json = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND user_id = ?
+                  AND deleted_at IS NULL
+                """,
+            (_json_object_text(merged_metadata), _utc_now_iso(), str(entity_id), self.user_id),
+        )
+        row = self._get_row(
+            "record_relationship_change",
+            "entity_relationship_events",
+            ENTITY_RELATIONSHIP_EVENT_COLUMNS,
+            event_id,
+        )
+        self._append_mutation_event(
+            event_type="entity.relationship_changed",
+            actor_type=actor_type,
+            target_type="entity",
+            target_id=str(entity_id),
+            payload={
+                "operation": "record_relationship_change",
+                "relationship_type_before": before,
+                "relationship_type_after": relationship_type,
+                "relationship_event_id": str(row["id"]),
+                "source_id": source_id,
+            },
+        )
+        return row
+
+    def list_relationship_events(self, entity_id: str) -> list[VNextRow]:
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(ENTITY_RELATIONSHIP_EVENT_COLUMNS)}
+                FROM entity_relationship_events
+                WHERE entity_id = ?
+                  AND user_id = ?
+                ORDER BY changed_at DESC, id DESC
+                """,
+            (str(entity_id), self.user_id),
         )
 
     # -- open loops -------------------------------------------------------------------
