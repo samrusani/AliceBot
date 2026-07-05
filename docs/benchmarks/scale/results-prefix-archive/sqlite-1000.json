@@ -1,0 +1,171 @@
+{
+  "benchmark": "alice-scale-envelope",
+  "generated_at": "2026-07-05T17:31:10.911543Z",
+  "backend": "sqlite",
+  "scale": 1000,
+  "seed": 42,
+  "store": "/Users/samirusani/Desktop/Codex/AliceBot/eval/scale/data/scale_42_1000.db",
+  "store_size_bytes": 14868480,
+  "environment": {
+    "platform": "macOS-26.5.1-arm64-arm-64bit",
+    "python": "3.12.11",
+    "commit": "7e53ecc",
+    "cpu": "Apple M3 Max",
+    "ram_gb": 128,
+    "cores": "16",
+    "postgres_image": "pgvector/pgvector:pg16",
+    "embedding_model": "det-mix-256 (deterministic local; no API latency included)"
+  },
+  "ingest": {
+    "memories": 1000,
+    "sources": 200,
+    "entities": 40,
+    "edges": 254,
+    "provenance_links": 1000,
+    "entities_seconds": 0.0,
+    "sources_seconds": 0.02,
+    "memories_seconds": 0.75,
+    "total_seconds": 0.77,
+    "memories_per_second": 1328.7,
+    "embed_on_write": true
+  },
+  "operations": {
+    "recall_context_pack": {
+      "iterations": 50,
+      "warmup_iterations": 3,
+      "p50_ms": 20.138,
+      "p95_ms": 22.963,
+      "mean_ms": 18.603,
+      "min_ms": 5.184,
+      "max_ms": 32.05,
+      "total_seconds": 0.93,
+      "notes": {
+        "queries": 8,
+        "stages_entity_query": {
+          "fts": [
+            "postgres_fts",
+            0
+          ],
+          "vector": [
+            "enabled",
+            16
+          ],
+          "graph": [
+            "enabled",
+            8
+          ],
+          "sources": [
+            "store_lexical",
+            8
+          ],
+          "open_loops": [
+            null,
+            0
+          ],
+          "contradictions": [
+            "disabled: not requested",
+            0
+          ],
+          "recent_changes": [
+            null,
+            5
+          ]
+        }
+      }
+    },
+    "capture_text_single": {
+      "iterations": 50,
+      "warmup_iterations": 3,
+      "p50_ms": 1.553,
+      "p95_ms": 4.905,
+      "mean_ms": 1.779,
+      "min_ms": 1.367,
+      "max_ms": 5.379,
+      "total_seconds": 0.09,
+      "notes": {}
+    },
+    "memory_commit": {
+      "iterations": 50,
+      "warmup_iterations": 3,
+      "p50_ms": 18.298,
+      "p95_ms": 24.377,
+      "mean_ms": 19.132,
+      "min_ms": 16.41,
+      "max_ms": 33.767,
+      "total_seconds": 0.96,
+      "notes": {
+        "write_mode_last": "commit",
+        "status_last": "committed"
+      }
+    },
+    "review_queue_list": {
+      "iterations": 50,
+      "warmup_iterations": 3,
+      "p50_ms": 0.51,
+      "p95_ms": 0.645,
+      "mean_ms": 0.531,
+      "min_ms": 0.493,
+      "max_ms": 0.733,
+      "total_seconds": 0.03,
+      "notes": {
+        "returned_rows_last": 20
+      }
+    },
+    "entity_find_by_names": {
+      "iterations": 50,
+      "warmup_iterations": 3,
+      "p50_ms": 0.097,
+      "p95_ms": 0.114,
+      "mean_ms": 0.101,
+      "min_ms": 0.094,
+      "max_ms": 0.146,
+      "total_seconds": 0.01,
+      "notes": {
+        "lookup_names": 5,
+        "entities_matched_last": 2
+      }
+    },
+    "graph_one_hop_hot_entity": {
+      "iterations": 50,
+      "warmup_iterations": 3,
+      "p50_ms": 0.302,
+      "p95_ms": 0.368,
+      "mean_ms": 0.314,
+      "min_ms": 0.3,
+      "max_ms": 0.515,
+      "total_seconds": 0.02,
+      "notes": {
+        "hot_entity_edges": 21
+      }
+    },
+    "staleness_sweep_pass": {
+      "iterations": 50,
+      "warmup_iterations": 1,
+      "p50_ms": 14.49,
+      "p95_ms": 23.156,
+      "mean_ms": 15.194,
+      "min_ms": 12.817,
+      "max_ms": 27.079,
+      "total_seconds": 0.76,
+      "notes": {
+        "first_pass_ms": 18.5,
+        "artifact_persisted": false
+      }
+    },
+    "consolidation_pass": {
+      "iterations": 50,
+      "warmup_iterations": 0,
+      "p50_ms": 155.885,
+      "p95_ms": 168.878,
+      "mean_ms": 157.634,
+      "min_ms": 151.689,
+      "max_ms": 169.728,
+      "total_seconds": 7.88,
+      "notes": {
+        "embedded_memory_hard_cap": 5000,
+        "artifact_persisted": false
+      }
+    }
+  },
+  "combo_seconds": 11.9
+}

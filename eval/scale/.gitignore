@@ -1,0 +1,8 @@
+# Generated corpora and working stores are large and reproducible; only the
+# harness code and the small result JSONs (under docs/benchmarks/scale/) are
+# committed.
+data/
+work/
+*.db
+*.db-journal
+*.sqlite3
