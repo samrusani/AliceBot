@@ -2136,3 +2136,39 @@ def test_bootstrap_upgrades_legacy_strict_append_only_triggers() -> None:
     # The flag row exists and is off.
     assert conn.execute("SELECT enabled FROM redaction_mode WHERE id = 1").fetchone()[0] == 0
     conn.close()
+
+
+def test_latest_agentic_commit_memory_finds_newest_by_agent() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    mallory = _make_store(conn)
+    first = _create_memory(
+        store,
+        memory_key="agentic-1",
+        title="First commit",
+        status="active",
+        metadata_json={"agentic_memory": {"kind": "agentic_memory_commit", "agent_id": "hermes"}},
+    )
+    second = _create_memory(
+        store,
+        memory_key="agentic-2",
+        title="Second commit",
+        status="active",
+        metadata_json={
+            "agentic_memory": {
+                "kind": "agentic_memory_commit",
+                "agent_identity": {"agent_id": "openclaw"},
+            }
+        },
+    )
+    _create_memory(store, memory_key="manual-1", title="Manual note", status="active")
+
+    newest_any = store.latest_agentic_commit_memory()
+    assert newest_any is not None and newest_any["id"] == second["id"]
+    hermes = store.latest_agentic_commit_memory(agent_id="hermes")
+    assert hermes is not None and hermes["id"] == first["id"]
+    openclaw = store.latest_agentic_commit_memory(agent_id="openclaw")
+    assert openclaw is not None and openclaw["id"] == second["id"]
+    assert store.latest_agentic_commit_memory(agent_id="unknown") is None
+    # Cross-user isolation: another user's store sees nothing.
+    assert mallory.latest_agentic_commit_memory() is None
