@@ -2,7 +2,7 @@
 
 ``SQLiteVNextStore`` mirrors the method signatures and return shapes of
 ``alicebot_api.vnext_store.PostgresVNextStore`` for the store surface the
-nine core MCP tools use, backed by a local SQLite file instead of
+core MCP tools use, backed by a local SQLite file instead of
 Postgres.
 
 Tenancy: Postgres scopes every statement with row-level security bound to
