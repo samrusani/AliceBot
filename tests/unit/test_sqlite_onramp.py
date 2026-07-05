@@ -553,13 +553,13 @@ ADMIN_AGENT = {
 
 
 def test_memory_manage_redact_expunges_content_and_keeps_audit_skeleton(sqlite_context) -> None:
-    secret = "Aurora-Kestrel-7741"
+    codename = "Aurora-Kestrel-7741"
     memory_id = _commit_active_memory(
         sqlite_context,
-        title=f"Codename {secret}",
-        text=f"The unreleased launch codename is {secret}.",
+        title=f"Codename {codename}",
+        text=f"The unreleased launch codename is {codename}.",
     )
-    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": secret})["count"] == 1
+    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": codename})["count"] == 1
 
     redacted = call_mcp_tool(
         sqlite_context,
@@ -574,13 +574,13 @@ def test_memory_manage_redact_expunges_content_and_keeps_audit_skeleton(sqlite_c
     assert redacted["redacted_revisions"] >= 2  # created + archived revisions were scrubbed
     assert redacted["redacted_events"] >= 1
 
-    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": secret})["count"] == 0
+    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": codename})["count"] == 0
 
     # Direct SQL: marker-only content, archived status, and no trace of the
-    # secret anywhere — while the skeleton and redaction trail survive.
+    # codename anywhere — while the skeleton and redaction trail survive.
     import sqlite3
 
-    like = f"%{secret}%"
+    like = f"%{codename}%"
     with sqlite3.connect(_db_path(sqlite_context)) as conn:
         title, canonical_text, summary, status = conn.execute(
             "SELECT title, canonical_text, summary, status FROM memories WHERE id = ?", (memory_id,)

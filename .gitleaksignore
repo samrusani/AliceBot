@@ -2,3 +2,7 @@
 # snippet — a literal ellipsis, not a real credential. The file now uses an
 # env-var reference; this entry covers the historical blob in the PR range.
 e08cc1e0945522df94adf765f6183bf39020939d:docs/alpha/agent-integration.md:curl-auth-header:49
+# Test fixture in the redaction e2e: a fake launch codename assigned to a
+# variable then named 'secret' (renamed to 'codename' in the follow-up
+# commit); proves redaction expunges content. Not a credential.
+c71d9b39dd429942eb345b33c9ef218a4b800440:tests/unit/test_sqlite_onramp.py:generic-api-key:556
