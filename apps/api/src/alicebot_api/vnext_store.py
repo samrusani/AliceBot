@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import psycopg
@@ -29,6 +32,51 @@ _MEMORY_SEARCHABLE_STATUSES_SQL = "('active', 'accepted')"
 # (e.g. capture-created candidates). Drop the COALESCE once a follow-up
 # backfill retires the metadata-only writers.
 _MEMORY_PROJECT_ID_SQL = "COALESCE(project_id, metadata_json ->> 'project_id')"
+
+# Canonical true-redaction marker. Content columns are replaced with this
+# literal (text columns) or with {"redacted": True} (JSON columns) so the
+# audit skeleton proves something existed and was redacted without
+# retaining what it said. Keep in lockstep with Postgres migration
+# 20260706_0079 (the append-only triggers only admit marker-shaped
+# updates) and with sqlite_store, which re-exports this constant.
+REDACTION_MARKER = "[REDACTED]"
+
+# JSON replacement written into redacted JSON content columns.
+REDACTED_JSON_VALUE: JsonObject = {"redacted": True}
+
+# metadata_json keys that survive memory redaction: pure structure and
+# references (consolidation ids, scope pointers, run/agent attribution),
+# never prose. Everything else in metadata_json is treated as
+# content-bearing and dropped.
+REDACTION_METADATA_STRUCTURAL_KEYS = frozenset(
+    {
+        "consolidation_digest",
+        "project_id",
+        "superseded_by",
+        "supersedes",
+        "source_refs",
+        "run_id",
+        "agent_id",
+        "created_by_agent_id",
+    }
+)
+
+
+def redacted_memory_metadata(metadata: object, *, redacted_at: str) -> JsonObject:
+    """Scrub a memory's metadata_json down to structural keys.
+
+    Keeps only ``REDACTION_METADATA_STRUCTURAL_KEYS``, then stamps the
+    ``redacted`` flag and ``redacted_at`` timestamp. Shared by both store
+    backends so the scrub policy cannot drift.
+    """
+    scrubbed: JsonObject = {}
+    if isinstance(metadata, dict):
+        for key in sorted(REDACTION_METADATA_STRUCTURAL_KEYS):
+            if key in metadata:
+                scrubbed[key] = metadata[key]
+    scrubbed["redacted"] = True
+    scrubbed["redacted_at"] = redacted_at
+    return scrubbed
 
 
 def _vector_literal(vector: list[float]) -> str:
@@ -1715,6 +1763,172 @@ class PostgresVNextStore:
                 """,
             (memory_id,),
         )
+
+    # -- true redaction ----------------------------------------------------
+    #
+    # Alice's forget is a soft delete; redaction expunges CONTENT while
+    # preserving the audit SKELETON (ids, timestamps, event/revision
+    # types, actor columns). The append-only triggers on event_log and
+    # memory_revisions (replaced by migration 20260706_0079) only admit
+    # these updates while the app.redaction_in_progress session flag is
+    # 'on' AND the change is marker-shaped; _redaction_mode manages the
+    # flag and resets it even on error paths.
+
+    @contextmanager
+    def _redaction_mode(self) -> Iterator[None]:
+        """Set/reset the privileged redaction session flag around a block."""
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT set_config('app.redaction_in_progress', 'on', false)")
+        try:
+            yield
+        finally:
+            try:
+                with self.conn.cursor() as cur:
+                    cur.execute("SELECT set_config('app.redaction_in_progress', 'off', false)")
+            except Exception:
+                # The failing statement aborted the transaction, so the
+                # reset statement cannot run -- but the rollback that
+                # follows discards the session-scoped flag with it
+                # (set_config assignments are transactional).
+                pass
+
+    def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
+        """Expunge a memory's content in place, keeping the skeleton.
+
+        Content columns (title, canonical_text, summary, trust_reason,
+        value) become the redaction marker, metadata_json is scrubbed to
+        structural keys plus redacted_at, the embedding is cleared, and
+        the row is archived. Applies to already-archived (soft-deleted)
+        rows too -- that is the primary redaction target.
+        """
+        current = self._fetch_optional_one(
+            """
+                SELECT metadata_json
+                FROM memories
+                WHERE id = %s::uuid
+                """,
+            (memory_id,),
+        )
+        if current is None:
+            raise ContinuityStoreInvariantError(
+                "redact_memory_content did not find the memory to redact",
+            )
+        redacted_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        scrubbed = redacted_memory_metadata(current.get("metadata_json"), redacted_at=redacted_at)
+        with self._redaction_mode():
+            row = self._fetch_one(
+                "redact_memory_content",
+                f"""
+                    UPDATE memories
+                    SET title = CASE WHEN title IS NULL THEN NULL ELSE %s END,
+                        canonical_text = %s,
+                        summary = CASE WHEN summary IS NULL THEN NULL ELSE %s END,
+                        trust_reason = CASE WHEN trust_reason IS NULL THEN NULL ELSE %s END,
+                        value = %s,
+                        metadata_json = %s,
+                        embedding_vector = NULL,
+                        status = 'archived',
+                        deleted_at = COALESCE(deleted_at, clock_timestamp()),
+                        updated_at = clock_timestamp()
+                    WHERE id = %s::uuid
+                    RETURNING {MEMORY_COLUMNS}
+                    """,
+                (
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    _json_object(REDACTED_JSON_VALUE),
+                    _json_object(scrubbed),
+                    memory_id,
+                ),
+            )
+        self._append_mutation_event(
+            event_type="memory.redacted",
+            actor_type=actor_type,
+            target_type="memory",
+            target_id=row["id"],
+            payload={"operation": "redact_memory_content"},
+        )
+        return row
+
+    def redact_memory_revisions(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
+        """Expunge revision content for a memory, keeping the skeleton.
+
+        text_before/text_after/reason become the marker (reasons can
+        carry content, so they are redacted too); previous_value/
+        new_value/candidate/metadata_json become {"redacted": true}.
+        NULL content stays NULL so the created-vs-edited shape survives.
+        ids, sequence/revision numbers, revision_type, actor columns,
+        and created_at are untouched.
+        """
+        with self._redaction_mode():
+            redacted = self._fetch_all(
+                """
+                    UPDATE memory_revisions
+                    SET previous_value = CASE WHEN previous_value IS NULL THEN NULL ELSE %s END,
+                        new_value = CASE WHEN new_value IS NULL THEN NULL ELSE %s END,
+                        candidate = %s,
+                        text_before = CASE WHEN text_before IS NULL THEN NULL ELSE %s END,
+                        text_after = %s,
+                        reason = CASE WHEN reason IS NULL THEN NULL ELSE %s END,
+                        metadata_json = %s
+                    WHERE memory_id = %s::uuid
+                    RETURNING id
+                    """,
+                (
+                    _json_object(REDACTED_JSON_VALUE),
+                    _json_object(REDACTED_JSON_VALUE),
+                    _json_object(REDACTED_JSON_VALUE),
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    _json_object(REDACTED_JSON_VALUE),
+                    memory_id,
+                ),
+            )
+        self._append_mutation_event(
+            event_type="memory.redacted",
+            actor_type=actor_type,
+            target_type="memory",
+            target_id=memory_id,
+            payload={"operation": "redact_memory_revisions", "redacted_revisions": len(redacted)},
+        )
+        return {"memory_id": memory_id, "redacted_revisions": len(redacted)}
+
+    def redact_memory_events(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
+        """Expunge event payloads that reference a memory.
+
+        Matching rows keep event_type, actor columns, target columns,
+        occurred_at, and trace/run references; payload_json becomes
+        {"redacted": true, "memory_id": ..., "event_type": <own column>}
+        and integrity_hash is cleared (it derives from the payload, so
+        keeping it would allow confirming guesses of redacted content).
+        """
+        with self._redaction_mode():
+            redacted = self._fetch_all(
+                """
+                    UPDATE event_log
+                    SET payload_json = jsonb_build_object(
+                          'redacted', true,
+                          'memory_id', %s::text,
+                          'event_type', event_type
+                        ),
+                        integrity_hash = NULL
+                    WHERE (target_type = 'memory' AND target_id = %s)
+                       OR payload_json::text LIKE %s
+                    RETURNING id
+                    """,
+                (memory_id, memory_id, f"%{memory_id}%"),
+            )
+        self._append_mutation_event(
+            event_type="memory.redacted",
+            actor_type=actor_type,
+            target_type="memory",
+            target_id=memory_id,
+            payload={"operation": "redact_memory_events", "redacted_events": len(redacted)},
+        )
+        return {"memory_id": memory_id, "redacted_events": len(redacted)}
 
     def create_provenance_link(self, link: JsonObject, *, actor_type: str = "system") -> VNextRow:
         row = self._fetch_one(

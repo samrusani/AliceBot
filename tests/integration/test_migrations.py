@@ -962,7 +962,10 @@ def test_migrations_upgrade_and_downgrade(database_urls):
                 False,
                 False,
                 True,
-                False,
+                # memory_revisions UPDATE: granted by migration 20260706_0079
+                # for the trigger-guarded redaction mode; the append-only
+                # trigger still rejects every non-redaction UPDATE.
+                True,
                 False,
                 False,
                 False,

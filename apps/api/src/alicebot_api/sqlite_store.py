@@ -39,7 +39,12 @@ from alicebot_api.vnext_entity_names import ENTITY_IMMUTABLE_PATCH_FIELDS, norma
 from alicebot_api.vnext_event_log import build_event_log_record
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
-from alicebot_api.vnext_store import _search_patterns
+from alicebot_api.vnext_store import (
+    REDACTED_JSON_VALUE,
+    REDACTION_MARKER,
+    _search_patterns,
+    redacted_memory_metadata,
+)
 
 VNextRow = dict[str, object]
 
@@ -1002,6 +1007,37 @@ class SQLiteVNextStore:
             (str(memory_id), self.user_id),
         )
 
+    def get_memory_by_commit_digest(self, commit_digest: str) -> VNextRow | None:
+        """Indexed idempotency lookup; without this the commit service falls
+        back to a Python full-table scan (measured: 18ms -> 222ms at 10k
+        memories in the scale benchmark)."""
+        return self._fetch_optional_one(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE commit_digest = ?
+                  AND user_id = ?
+                  AND deleted_at IS NULL
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (str(commit_digest), self.user_id),
+        )
+
+    def get_memory_by_confirmation_id(self, confirmation_id: str) -> VNextRow | None:
+        return self._fetch_optional_one(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE confirmation_id = ?
+                  AND user_id = ?
+                  AND deleted_at IS NULL
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (str(confirmation_id), self.user_id),
+        )
+
     def list_memories(self, *, status: str | None = None) -> list[VNextRow]:
         status_sql = ""
         params: list[object] = [self.user_id]
@@ -1413,6 +1449,175 @@ class SQLiteVNextStore:
                 """,
             (str(memory_id), self.user_id),
         )
+
+    # -- true redaction ------------------------------------------------------------
+    #
+    # Mirrors PostgresVNextStore: redaction expunges CONTENT while
+    # preserving the audit SKELETON. SQLite has no session variables, so
+    # the append-only triggers (sqlite_schema) consult the one-row
+    # redaction_mode flag table instead of a Postgres session setting;
+    # _redaction_mode flips it around the redaction statements and resets
+    # it on every exit path.
+
+    @contextmanager
+    def _redaction_mode(self) -> Iterator[None]:
+        """Set/reset the privileged redaction flag around a block."""
+        self._execute("UPDATE redaction_mode SET enabled = 1 WHERE id = 1")
+        try:
+            yield
+        finally:
+            self._execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
+
+    def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
+        """Expunge a memory's content in place, keeping the skeleton.
+
+        Content columns (title, canonical_text, summary, trust_reason,
+        value) become the redaction marker, metadata_json is scrubbed to
+        structural keys plus redacted_at, the embedding is cleared, and
+        the row is archived. Applies to already-archived (soft-deleted)
+        rows too -- that is the primary redaction target.
+        """
+        mid = str(memory_id)
+        current = self._fetch_optional_one(
+            """
+                SELECT metadata_json
+                FROM memories
+                WHERE id = ?
+                  AND user_id = ?
+                """,
+            (mid, self.user_id),
+        )
+        if current is None:
+            raise ContinuityStoreInvariantError(
+                "redact_memory_content did not find the memory to redact",
+            )
+        now = _utc_now_iso()
+        scrubbed = redacted_memory_metadata(current.get("metadata_json"), redacted_at=now)
+        with self._redaction_mode():
+            self._execute(
+                """
+                    UPDATE memories
+                    SET title = CASE WHEN title IS NULL THEN NULL ELSE ? END,
+                        canonical_text = ?,
+                        summary = CASE WHEN summary IS NULL THEN NULL ELSE ? END,
+                        trust_reason = CASE WHEN trust_reason IS NULL THEN NULL ELSE ? END,
+                        value = ?,
+                        metadata_json = ?,
+                        embedding = NULL,
+                        status = 'archived',
+                        deleted_at = COALESCE(deleted_at, ?),
+                        updated_at = ?
+                    WHERE id = ?
+                      AND user_id = ?
+                    """,
+                (
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    _json_object_text(REDACTED_JSON_VALUE),
+                    _json_object_text(scrubbed),
+                    now,
+                    now,
+                    mid,
+                    self.user_id,
+                ),
+            )
+        row = self._get_row("redact_memory_content", "memories", MEMORY_COLUMNS, mid)
+        self._append_mutation_event(
+            event_type="memory.redacted",
+            actor_type=actor_type,
+            target_type="memory",
+            target_id=row["id"],
+            payload={"operation": "redact_memory_content"},
+        )
+        return row
+
+    def redact_memory_revisions(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
+        """Expunge revision content for a memory, keeping the skeleton.
+
+        text_before/text_after/reason become the marker (reasons can
+        carry content, so they are redacted too); previous_value/
+        new_value/candidate/metadata_json become {"redacted": true}.
+        NULL content stays NULL so the created-vs-edited shape survives.
+        ids, sequence/revision numbers, revision_type, actor columns,
+        and created_at are untouched.
+        """
+        mid = str(memory_id)
+        redacted_json = _json_object_text(REDACTED_JSON_VALUE)
+        with self._redaction_mode():
+            cursor = self._execute(
+                """
+                    UPDATE memory_revisions
+                    SET previous_value = CASE WHEN previous_value IS NULL THEN NULL ELSE ? END,
+                        new_value = CASE WHEN new_value IS NULL THEN NULL ELSE ? END,
+                        candidate = ?,
+                        text_before = CASE WHEN text_before IS NULL THEN NULL ELSE ? END,
+                        text_after = ?,
+                        reason = CASE WHEN reason IS NULL THEN NULL ELSE ? END,
+                        metadata_json = ?
+                    WHERE memory_id = ?
+                      AND user_id = ?
+                    """,
+                (
+                    redacted_json,
+                    redacted_json,
+                    redacted_json,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    REDACTION_MARKER,
+                    redacted_json,
+                    mid,
+                    self.user_id,
+                ),
+            )
+            redacted_count = cursor.rowcount
+        self._append_mutation_event(
+            event_type="memory.redacted",
+            actor_type=actor_type,
+            target_type="memory",
+            target_id=mid,
+            payload={"operation": "redact_memory_revisions", "redacted_revisions": redacted_count},
+        )
+        return {"memory_id": mid, "redacted_revisions": redacted_count}
+
+    def redact_memory_events(self, *, memory_id: str, actor_type: str = "user") -> VNextRow:
+        """Expunge event payloads that reference a memory.
+
+        Matching rows keep event_type, actor columns, target columns,
+        occurred_at, and trace/run references; payload_json becomes
+        {"redacted": true, "memory_id": ..., "event_type": <own column>}
+        and integrity_hash is cleared (it derives from the payload, so
+        keeping it would allow confirming guesses of redacted content).
+        """
+        mid = str(memory_id)
+        with self._redaction_mode():
+            cursor = self._execute(
+                """
+                    UPDATE event_log
+                    SET payload_json = json_object(
+                          'redacted', json('true'),
+                          'memory_id', ?,
+                          'event_type', event_type
+                        ),
+                        integrity_hash = NULL
+                    WHERE user_id = ?
+                      AND (
+                        (target_type = 'memory' AND target_id = ?)
+                        OR instr(payload_json, ?) > 0
+                      )
+                    """,
+                (mid, self.user_id, mid, mid),
+            )
+            redacted_count = cursor.rowcount
+        self._append_mutation_event(
+            event_type="memory.redacted",
+            actor_type=actor_type,
+            target_type="memory",
+            target_id=mid,
+            payload={"operation": "redact_memory_events", "redacted_events": redacted_count},
+        )
+        return {"memory_id": mid, "redacted_events": redacted_count}
 
     # -- provenance ----------------------------------------------------------------
 
@@ -2378,6 +2583,7 @@ class SQLiteVNextStore:
 
 
 __all__ = [
+    "REDACTION_MARKER",
     "SQLiteVNextStore",
     "ensure_sqlite_user",
     "sqlite_user_connection",

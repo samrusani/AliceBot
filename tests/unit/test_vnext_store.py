@@ -1462,3 +1462,215 @@ def test_list_relationship_events_reads_history_most_recent_first() -> None:
     assert "WHERE entity_id = %s::uuid" in query
     assert "ORDER BY changed_at DESC, id DESC" in query
     assert params == (entity_id,)
+
+
+# -- true redaction ------------------------------------------------------------
+
+
+class FailingCursor(RecordingCursor):
+    """Records like RecordingCursor, then raises on a chosen statement."""
+
+    def __init__(self, fail_on: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.fail_on = fail_on
+
+    def execute(self, query: str, params: tuple[object, ...] | None = None) -> None:
+        super().execute(query, params)
+        if self.fail_on in query:
+            raise RuntimeError("boom mid-redaction")
+
+
+def _redaction_flag_statements(cursor: RecordingCursor) -> list[str]:
+    return [
+        query
+        for query, _params in cursor.executed
+        if "app.redaction_in_progress" in query
+    ]
+
+
+def test_redaction_marker_constant() -> None:
+    from alicebot_api.vnext_store import REDACTION_MARKER, redacted_memory_metadata
+
+    assert REDACTION_MARKER == "[REDACTED]"
+    scrubbed = redacted_memory_metadata(
+        {
+            "note": "content-bearing prose",
+            "project_id": "proj-1",
+            "consolidation_digest": "digest-1",
+            "superseded_by": "mem-2",
+        },
+        redacted_at="2026-07-06T00:00:00Z",
+    )
+    assert scrubbed == {
+        "consolidation_digest": "digest-1",
+        "project_id": "proj-1",
+        "superseded_by": "mem-2",
+        "redacted": True,
+        "redacted_at": "2026-07-06T00:00:00Z",
+    }
+
+
+def test_redact_memory_content_wraps_marker_update_in_redaction_mode() -> None:
+    from alicebot_api.vnext_store import REDACTION_MARKER
+
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {"metadata_json": {"note": "SECRET", "project_id": "proj-1"}},
+            {"id": memory_id, "status": "archived"},
+            _event_row(memory_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    row = store.redact_memory_content(memory_id=memory_id)
+
+    assert row["id"] == memory_id
+    queries = [query for query, _params in cursor.executed]
+    assert "SELECT metadata_json" in queries[0]
+    assert "set_config('app.redaction_in_progress', 'on', false)" in queries[1]
+    assert "UPDATE memories" in queries[2]
+    assert "set_config('app.redaction_in_progress', 'off', false)" in queries[3]
+    assert "INSERT INTO event_log" in queries[4]
+
+    update_query, update_params = cursor.executed[2]
+    # Content columns become the marker; skeleton and scope survive.
+    assert "CASE WHEN title IS NULL THEN NULL ELSE %s END" in update_query
+    assert "canonical_text = %s" in update_query
+    assert "CASE WHEN summary IS NULL THEN NULL ELSE %s END" in update_query
+    assert "CASE WHEN trust_reason IS NULL THEN NULL ELSE %s END" in update_query
+    assert "embedding_vector = NULL" in update_query
+    assert "status = 'archived'" in update_query
+    assert "deleted_at = COALESCE(deleted_at, clock_timestamp())" in update_query
+    # No deleted_at filter: soft-deleted memories are the primary target.
+    assert "deleted_at IS NULL" not in update_query
+    assert update_params is not None
+    assert update_params[:4] == (REDACTION_MARKER,) * 4
+    assert isinstance(update_params[4], Jsonb)
+    assert update_params[4].obj == {"redacted": True}
+    assert isinstance(update_params[5], Jsonb)
+    scrubbed = update_params[5].obj
+    assert scrubbed["project_id"] == "proj-1"
+    assert scrubbed["redacted"] is True
+    assert "redacted_at" in scrubbed
+    assert "note" not in scrubbed
+    assert update_params[6] == memory_id
+
+    event_query, event_params = cursor.executed[4]
+    assert event_params is not None
+    assert event_params[1] == "memory.redacted"
+    payload = next(param for param in event_params if isinstance(param, Jsonb))
+    assert payload.obj == {"operation": "redact_memory_content"}
+    assert "SECRET" not in repr(payload.obj)
+
+
+def test_redact_memory_content_raises_when_memory_is_missing() -> None:
+    cursor = RecordingCursor(fetchone_results=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    with pytest.raises(ContinuityStoreInvariantError, match="did not find the memory"):
+        store.redact_memory_content(memory_id=str(uuid4()))
+    # Redaction mode was never entered.
+    assert _redaction_flag_statements(cursor) == []
+
+
+def test_redact_memory_revisions_scrubs_content_columns_only() -> None:
+    from alicebot_api.vnext_store import REDACTION_MARKER
+
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[_event_row(memory_id)],
+        fetchall_result=[{"id": str(uuid4())}, {"id": str(uuid4())}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    result = store.redact_memory_revisions(memory_id=memory_id)
+
+    assert result == {"memory_id": memory_id, "redacted_revisions": 2}
+    update_query, update_params = next(
+        (query, params) for query, params in cursor.executed if "UPDATE memory_revisions" in query
+    )
+    # NULL content stays NULL; non-NULL content becomes the marker shape.
+    assert "CASE WHEN previous_value IS NULL THEN NULL ELSE %s END" in update_query
+    assert "CASE WHEN new_value IS NULL THEN NULL ELSE %s END" in update_query
+    assert "CASE WHEN text_before IS NULL THEN NULL ELSE %s END" in update_query
+    assert "text_after = %s" in update_query
+    # Reasons can carry content, so reason is redacted too.
+    assert "CASE WHEN reason IS NULL THEN NULL ELSE %s END" in update_query
+    assert "WHERE memory_id = %s::uuid" in update_query
+    assert "RETURNING id" in update_query
+    # Skeleton columns are never assigned.
+    for column in ("sequence_no", "revision_number", "revision_type", "actor_type", "created_at"):
+        assert f"{column} =" not in update_query
+    assert update_params is not None
+    assert update_params[-1] == memory_id
+    assert REDACTION_MARKER in update_params
+    jsonb_params = [param.obj for param in update_params if isinstance(param, Jsonb)]
+    assert jsonb_params == [{"redacted": True}] * 4
+
+    flags = _redaction_flag_statements(cursor)
+    assert "'on'" in flags[0] and "'off'" in flags[1]
+    event_query, event_params = cursor.executed[-1]
+    assert "INSERT INTO event_log" in event_query
+    assert event_params is not None
+    assert event_params[1] == "memory.redacted"
+    payload = next(param for param in event_params if isinstance(param, Jsonb))
+    assert payload.obj == {"operation": "redact_memory_revisions", "redacted_revisions": 2}
+
+
+def test_redact_memory_events_scrubs_payloads_and_clears_integrity_hash() -> None:
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[_event_row(memory_id)],
+        fetchall_result=[{"id": str(uuid4())}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    result = store.redact_memory_events(memory_id=memory_id)
+
+    assert result == {"memory_id": memory_id, "redacted_events": 1}
+    update_query, update_params = next(
+        (query, params) for query, params in cursor.executed if "UPDATE event_log" in query
+    )
+    assert "jsonb_build_object" in update_query
+    assert "'redacted', true" in update_query
+    assert "'event_type', event_type" in update_query
+    assert "integrity_hash = NULL" in update_query
+    assert "target_type = 'memory' AND target_id = %s" in update_query
+    assert "payload_json::text LIKE %s" in update_query
+    # Skeleton columns are never assigned in the SET clause.
+    set_clause = update_query.split("WHERE")[0].replace("'event_type', event_type", "")
+    for column in ("event_type =", "actor_type =", "occurred_at =", "target_id ="):
+        assert column not in set_clause
+    assert update_params == (memory_id, memory_id, f"%{memory_id}%")
+
+    flags = _redaction_flag_statements(cursor)
+    assert len(flags) == 2 and "'on'" in flags[0] and "'off'" in flags[1]
+    event_query, event_params = cursor.executed[-1]
+    assert "INSERT INTO event_log" in event_query
+    assert event_params is not None
+    assert event_params[1] == "memory.redacted"
+    payload = next(param for param in event_params if isinstance(param, Jsonb))
+    assert payload.obj == {"operation": "redact_memory_events", "redacted_events": 1}
+
+
+def test_redaction_mode_resets_even_when_the_update_fails() -> None:
+    memory_id = str(uuid4())
+    cursor = FailingCursor(
+        fail_on="UPDATE memory_revisions",
+        fetchone_results=[],
+        fetchall_result=[],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    with pytest.raises(RuntimeError, match="boom mid-redaction"):
+        store.redact_memory_revisions(memory_id=memory_id)
+
+    flags = _redaction_flag_statements(cursor)
+    assert len(flags) == 2
+    assert "'on'" in flags[0]
+    assert "'off'" in flags[1]
+    # The reset is the last statement issued; no event is appended after
+    # a failed redaction.
+    assert "app.redaction_in_progress" in cursor.executed[-1][0]
+    assert not any("INSERT INTO event_log" in query for query, _params in cursor.executed)
