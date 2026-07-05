@@ -104,11 +104,7 @@ jobs:
       - name: Provide local env (mirrors make setup)
         run: test -f .env.local || cp .env.local.example .env.local
       - name: Test
-        # CI runners are slower than dev machines; one heavy page test needs
-        # more than vitest's 10s default there.
-        # No `--` separator: pnpm forwards it literally and vitest would treat
-        # the flag as a filename filter.
-        run: pnpm test --testTimeout=30000
+        run: pnpm test
       - name: Lint
         run: pnpm lint
       - name: Build
