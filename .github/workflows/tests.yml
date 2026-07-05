@@ -106,7 +106,9 @@ jobs:
       - name: Test
         # CI runners are slower than dev machines; one heavy page test needs
         # more than vitest's 10s default there.
-        run: pnpm test -- --testTimeout=30000
+        # No `--` separator: pnpm forwards it literally and vitest would treat
+        # the flag as a filename filter.
+        run: pnpm test --testTimeout=30000
       - name: Lint
         run: pnpm lint
       - name: Build
