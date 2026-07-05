@@ -25,7 +25,7 @@ jobs:
         run: python -m pytest tests/unit -q
       - name: LongMemEval harness tests (no dataset required)
         run: python -m pytest eval/longmemeval/test_harness.py -q
-      - name: Live eval battery on sqlite:///:memory:
+      - name: "Live eval battery on sqlite in-memory"
         env:
           ALICEBOT_EVAL_DATABASE_URL: "sqlite:///:memory:"
         run: |
