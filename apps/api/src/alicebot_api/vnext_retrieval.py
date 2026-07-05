@@ -12,6 +12,7 @@ from uuid import uuid4
 # so it calls the pure candidate finder directly instead of
 # generate_contradiction_report (which persists edges/artifacts/events).
 from alicebot_api import vnext_contradictions
+from alicebot_api.vnext_entity_names import normalize_entity_name
 from alicebot_api.vnext_embeddings import (
     EmbeddingProvider,
     VNextEmbeddingConfigurationError,
@@ -46,6 +47,36 @@ EXCLUSION_REASON_TOKEN_BUDGET = "token_budget"
 CONTRADICTIONS_STAGE_ENABLED = "enabled"
 CONTRADICTIONS_STAGE_NOT_REQUESTED = "disabled: not requested"
 CONTRADICTIONS_STAGE_NO_STORE_SUPPORT = "disabled: store does not support beliefs"
+# Entity-hop graph stage: query text -> resolved entities -> memories
+# connected to those entities via mentions/about edges. Joins RRF as a third
+# ranked list ("graph") next to fts/vector, so a memory with zero lexical
+# overlap with the query can still surface through a shared entity.
+GRAPH_STAGE_ENABLED = "enabled"
+GRAPH_STAGE_DISABLED_NO_ENTITY_MATCH = "disabled: no entity match"
+GRAPH_STAGE_DISABLED_NO_STORE_SUPPORT = "disabled: store does not support entities"
+# At most this many resolved entities seed the hop; find_entities_by_names
+# orders by mention_count DESC, so these are the most-established matches.
+GRAPH_ENTITY_MATCH_LIMIT = 5
+# Edge types that connect a memory node to an entity node in graph_edges.
+MEMORY_ENTITY_EDGE_TYPES = ("mentions", "about")
+# Mirror of the stores' _MEMORY_SEARCHABLE_STATUSES_SQL ('active',
+# 'accepted'): get_memory does not enforce the searchable-status discipline
+# the search_* SQL bakes in, so the graph stage re-applies it in Python.
+MEMORY_SEARCHABLE_STATUSES = ("active", "accepted")
+# Tiny stopword set for entity-name candidate generation: n-grams whose
+# first or last token is one of these never name an entity on their own.
+ENTITY_NAME_STOPWORDS = frozenset(
+    {
+        "a", "an", "and", "are", "about", "at", "be", "by", "did", "do",
+        "does", "for", "from", "how", "i", "in", "is", "it", "me", "my",
+        "of", "on", "or", "our", "should", "that", "the", "this", "to",
+        "was", "we", "were", "what", "when", "where", "which", "who",
+        "with", "your",
+    }
+)
+# Bound on candidate names per query so the single find_entities_by_names
+# round-trip stays small even for long queries.
+ENTITY_NAME_CANDIDATE_LIMIT = 64
 
 
 class VNextRetrievalValidationError(ValueError):
@@ -58,9 +89,11 @@ class VNextRetrievalStore(Protocol):
     Stores may additionally expose ``search_memories_fts`` and
     ``search_memories_vector`` (see ``PostgresVNextStore``); the service
     detects them at runtime and degrades to ``search_memories`` otherwise.
-    The same applies to ``list_events`` (recent_changes section) and
-    ``list_beliefs`` (contradicting_evidence section): stores without them
-    yield empty sections instead of failing.
+    The same applies to ``list_events`` (recent_changes section),
+    ``list_beliefs`` (contradicting_evidence section), and the entity
+    substrate ``find_entities_by_names``/``get_memory`` (entity-hop graph
+    stage): stores without them yield empty sections / an honest disabled
+    stage status instead of failing.
 
     ``memory_types``/``projects``/``created_by_agent_ids``/``run_id`` are
     only forwarded to the store when the request sets them, so minimal
@@ -178,6 +211,34 @@ def query_terms(query: str) -> list[str]:
     return deduped
 
 
+def entity_name_candidates(query: str) -> list[str]:
+    """Candidate normalized entity names generated from the query text.
+
+    Unigrams, bigrams, and trigrams over the ``normalize_entity_name`` form
+    of the query, skipping any n-gram whose first or last token is a
+    stopword (a stopword can sit inside a longer name, e.g. "bank of
+    america"). Deduplicated, order-preserving, and bounded to
+    ``ENTITY_NAME_CANDIDATE_LIMIT`` so the resolution lookup stays one
+    small round-trip.
+    """
+    tokens = normalize_entity_name(query).split()
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for size in (1, 2, 3):
+        for start in range(len(tokens) - size + 1):
+            gram = tokens[start : start + size]
+            if gram[0] in ENTITY_NAME_STOPWORDS or gram[-1] in ENTITY_NAME_STOPWORDS:
+                continue
+            name = " ".join(gram)
+            if name in seen:
+                continue
+            seen.add(name)
+            candidates.append(name)
+            if len(candidates) >= ENTITY_NAME_CANDIDATE_LIMIT:
+                return candidates
+    return candidates
+
+
 def _contains_any(query: str, words: tuple[str, ...]) -> bool:
     lowered = query.casefold()
     return any(word in lowered for word in words)
@@ -241,6 +302,59 @@ def _allowed(item: JsonObject, *, domains: list[str], sensitivity_allowed: list[
     if isinstance(item_sensitivity, str) and item_sensitivity not in sensitivity_allowed:
         return "sensitivity_filtered"
     return None
+
+
+_GRAPH_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _compact_entity(entity: JsonObject) -> JsonObject:
+    return {
+        "id": str(entity.get("id")),
+        "name": entity.get("name"),
+        "entity_type": entity.get("entity_type"),
+        "mention_count": entity.get("mention_count"),
+    }
+
+
+def _graph_memory_admissible(
+    row: JsonObject,
+    *,
+    now: datetime,
+    domains: list[str],
+    sensitivity_allowed: list[str],
+    memory_types: tuple[str, ...],
+    projects: tuple[str, ...],
+    created_by_agent_ids: tuple[str, ...],
+    run_id: str | None,
+) -> bool:
+    """Apply the search stages' row discipline to a hop-sourced memory row.
+
+    ``get_memory`` returns any non-deleted row, but the fts/vector stages
+    only ever see searchable-status, unexpired rows that pass the request's
+    scope filters. The graph stage must not smuggle in rows the other
+    stages would never return, so it re-applies the same rules here.
+    """
+    if str(row.get("status")) not in MEMORY_SEARCHABLE_STATUSES:
+        return False
+    valid_to = _parse_timestamp(row.get("valid_to"))
+    if valid_to is not None and valid_to < now:
+        return False
+    if _allowed(row, domains=domains, sensitivity_allowed=sensitivity_allowed) is not None:
+        return False
+    if memory_types and row.get("memory_type") not in memory_types:
+        return False
+    if projects:
+        metadata = row.get("metadata_json")
+        project_id = row.get("project_id") or (
+            metadata.get("project_id") if isinstance(metadata, Mapping) else None
+        )
+        if project_id not in projects:
+            return False
+    if created_by_agent_ids and row.get("created_by_agent_id") not in created_by_agent_ids:
+        return False
+    if run_id is not None and row.get("run_id") != run_id:
+        return False
+    return True
 
 
 def reciprocal_rank_fusion(
@@ -498,6 +612,95 @@ class VNextRetrievalService:
             return [], f"disabled: query embedding failed ({exc})"
         return list(rows), VECTOR_STAGE_ENABLED
 
+    def _memory_graph_rows(
+        self,
+        *,
+        query: str,
+        domains: list[str],
+        sensitivity_allowed: list[str],
+        limit: int,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
+    ) -> tuple[list[JsonObject], str, list[JsonObject]]:
+        """Entity-hop graph stage: ``(rows, stage_status, matched_entities)``.
+
+        Resolution: n-gram candidate names from the query (see
+        ``entity_name_candidates``) go through ONE ``find_entities_by_names``
+        round-trip; the top ``GRAPH_ENTITY_MATCH_LIMIT`` matches (by
+        mention_count, the store's ordering) seed the hop. One hop: edges of
+        type mentions/about between those entities and memory nodes, walked
+        in both directions. Connected memories are fetched through
+        ``get_memory`` and re-filtered with the same status/expiry/scope
+        discipline the fts/vector stages honor, then ranked by edge
+        observed_at DESC (recency proxy) and memory recency.
+
+        Duck-typed via getattr so legacy/minimal stores without the entity
+        substrate degrade to an honest disabled status instead of failing.
+        """
+        find_entities_by_names = getattr(self.store, "find_entities_by_names", None)
+        list_edges = getattr(self.store, "list_edges", None)
+        get_memory = getattr(self.store, "get_memory", None)
+        if not (callable(find_entities_by_names) and callable(list_edges) and callable(get_memory)):
+            return [], GRAPH_STAGE_DISABLED_NO_STORE_SUPPORT, []
+        candidate_names = entity_name_candidates(query)
+        entities = list(find_entities_by_names(tuple(candidate_names))) if candidate_names else []
+        entities = entities[:GRAPH_ENTITY_MATCH_LIMIT]
+        if not entities:
+            return [], GRAPH_STAGE_DISABLED_NO_ENTITY_MATCH, []
+        matched_entities = [_compact_entity(entity) for entity in entities]
+
+        # One hop: newest edge observed_at per connected memory.
+        observed_at_by_memory: dict[str, datetime] = {}
+        for entity in entities:
+            entity_id = str(entity.get("id"))
+            edge_sides = (
+                (list_edges(to_id=entity_id), "memory", "entity", "from_id"),
+                (list_edges(from_id=entity_id), "entity", "memory", "to_id"),
+            )
+            for edges, from_type, to_type, memory_key in edge_sides:
+                for edge in edges:
+                    if edge.get("edge_type") not in MEMORY_ENTITY_EDGE_TYPES:
+                        continue
+                    if str(edge.get("from_type")) != from_type or str(edge.get("to_type")) != to_type:
+                        continue
+                    memory_id = str(edge.get(memory_key))
+                    observed_at = _parse_timestamp(edge.get("observed_at")) or _GRAPH_EPOCH
+                    previous = observed_at_by_memory.get(memory_id)
+                    if previous is None or observed_at > previous:
+                        observed_at_by_memory[memory_id] = observed_at
+
+        now = datetime.now(UTC)
+        ranked: list[tuple[datetime, datetime, str, JsonObject]] = []
+        for memory_id, observed_at in observed_at_by_memory.items():
+            row = get_memory(memory_id)
+            if row is None:
+                continue
+            if not _graph_memory_admissible(
+                row,
+                now=now,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                memory_types=memory_types,
+                projects=projects,
+                created_by_agent_ids=created_by_agent_ids,
+                run_id=run_id,
+            ):
+                continue
+            recency = (
+                _parse_timestamp(row.get("updated_at"))
+                or _parse_timestamp(row.get("created_at"))
+                or _GRAPH_EPOCH
+            )
+            ranked.append((observed_at, recency, str(row.get("id")), row))
+        # Deterministic order: edge observed_at DESC, memory recency DESC,
+        # id ASC on ties (id-ascending pre-sort survives the stable sort).
+        ranked.sort(key=lambda entry: entry[2])
+        ranked.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
+        rows = [entry[3] for entry in ranked[:limit]]
+        return rows, GRAPH_STAGE_ENABLED, matched_entities
+
     def compile_context_pack(self, request: VNextRetrievalRequest) -> JsonObject:
         if request.max_tokens is not None and request.max_tokens < 1:
             raise VNextRetrievalValidationError("max_tokens must be a positive integer when set")
@@ -533,9 +736,21 @@ class VNextRetrievalService:
             created_by_agent_ids=created_by_agent_ids,
             run_id=filter_run_id,
         )
+        graph_rows, graph_stage, matched_entities = self._memory_graph_rows(
+            query=request.query,
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=memory_candidate_limit,
+            memory_types=memory_types,
+            projects=projects,
+            created_by_agent_ids=created_by_agent_ids,
+            run_id=filter_run_id,
+        )
         memory_lists: dict[str, Sequence[JsonObject]] = {"fts": fts_rows}
         if vector_stage == VECTOR_STAGE_ENABLED:
             memory_lists["vector"] = vector_rows
+        if graph_stage == GRAPH_STAGE_ENABLED:
+            memory_lists["graph"] = graph_rows
 
         source_rows = self.store.search_sources(
             query=request.query,
@@ -635,6 +850,11 @@ class VNextRetrievalService:
             "stages": {
                 "fts": {"source": fts_source, "candidate_count": len(fts_rows)},
                 "vector": {"status": vector_stage, "candidate_count": len(vector_rows)},
+                "graph": {
+                    "status": graph_stage,
+                    "matched_entities": matched_entities,
+                    "candidate_count": len(graph_rows),
+                },
                 "sources": {"source": "store_lexical", "candidate_count": len(source_rows)},
                 "open_loops": {"candidate_count": len(open_loop_rows)},
                 "contradictions": {"status": contradictions_stage, "candidate_count": len(contradicting_evidence)},
@@ -646,6 +866,12 @@ class VNextRetrievalService:
         pack: JsonObject = {
             "context_pack_id": context_pack_id,
             "query_interpretation": interpretation,
+        }
+        if matched_entities:
+            # WHO the pack is about: compact resolved entities from the
+            # graph stage. Only present when the query matched entities.
+            pack["entities"] = matched_entities
+        pack.update({
             # Compact references only; the full rows appear once, in
             # relevant_memories.
             "current_known_state": [_memory_reference(item) for item in selected_memories],
@@ -665,7 +891,7 @@ class VNextRetrievalService:
             "trace": trace,
             "agent_identity": request.agent_identity,
             "policy_decision": request.policy_decision,
-        }
+        })
         append_event(
             self.store,
             event_type="retrieval.context_pack_compiled",
@@ -681,6 +907,7 @@ class VNextRetrievalService:
                 "candidate_count": trace["candidate_count"],
                 "selected_count": trace["selected_count"],
                 "vector_stage": vector_stage,
+                "graph_stage": graph_stage,
                 "budget": budget.to_record(),
                 "warnings": warnings,
                 "agent_identity": request.agent_identity,
@@ -822,7 +1049,15 @@ __all__ = [
     "DEFAULT_CONTEXT_PACK_LIMIT",
     "DEFAULT_RECENT_CHANGES_LIMIT",
     "DEFAULT_SENSITIVITY_ALLOWED",
+    "ENTITY_NAME_CANDIDATE_LIMIT",
+    "ENTITY_NAME_STOPWORDS",
     "EXCLUSION_REASON_TOKEN_BUDGET",
+    "GRAPH_ENTITY_MATCH_LIMIT",
+    "GRAPH_STAGE_DISABLED_NO_ENTITY_MATCH",
+    "GRAPH_STAGE_DISABLED_NO_STORE_SUPPORT",
+    "GRAPH_STAGE_ENABLED",
+    "MEMORY_ENTITY_EDGE_TYPES",
+    "MEMORY_SEARCHABLE_STATUSES",
     "RRF_K",
     "STALENESS_NOTE_AFTER_DAYS",
     "TOKEN_ESTIMATE_CHARS_PER_TOKEN",
@@ -834,6 +1069,7 @@ __all__ = [
     "VNextRetrievalStore",
     "VNextRetrievalValidationError",
     "classify_query",
+    "entity_name_candidates",
     "estimate_item_tokens",
     "normalize_query",
     "query_terms",

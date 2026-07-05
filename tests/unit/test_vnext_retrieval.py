@@ -9,7 +9,12 @@ from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
 from alicebot_api.vnext_retrieval import (
     CONTRADICTIONS_STAGE_ENABLED,
     CONTRADICTIONS_STAGE_NO_STORE_SUPPORT,
+    ENTITY_NAME_CANDIDATE_LIMIT,
     EXCLUSION_REASON_TOKEN_BUDGET,
+    GRAPH_ENTITY_MATCH_LIMIT,
+    GRAPH_STAGE_DISABLED_NO_ENTITY_MATCH,
+    GRAPH_STAGE_DISABLED_NO_STORE_SUPPORT,
+    GRAPH_STAGE_ENABLED,
     RRF_K,
     STALENESS_NOTE_AFTER_DAYS,
     VECTOR_STAGE_DISABLED_NO_PROVIDER,
@@ -17,6 +22,7 @@ from alicebot_api.vnext_retrieval import (
     VNextRetrievalRequest,
     VNextRetrievalService,
     classify_query,
+    entity_name_candidates,
     estimate_item_tokens,
     query_terms,
     reciprocal_rank_fusion,
@@ -62,6 +68,8 @@ class InMemoryVNextRetrievalStore:
         vector_memories: list[dict[str, object]] | None = None,
         beliefs: list[dict[str, object]] | None = None,
         seeded_events: list[dict[str, object]] | None = None,
+        entities: list[dict[str, object]] | None = None,
+        edges: list[dict[str, object]] | None = None,
     ) -> None:
         self.memories = memories
         self.sources = sources
@@ -69,6 +77,8 @@ class InMemoryVNextRetrievalStore:
         self.provenance_links = provenance_links or []
         self.vector_memories = vector_memories
         self.beliefs = beliefs
+        self.entities = entities or []
+        self.edges = edges or []
         self.events: list[dict[str, object]] = list(seeded_events or [])
         self.memory_search_domains: object = _UNSET
         self.source_search_domains: object = _UNSET
@@ -253,8 +263,29 @@ class InMemoryVNextRetrievalStore:
         ]
 
     def list_edges(self, *, from_id: str | None = None, to_id: str | None = None) -> list[dict[str, object]]:
-        del from_id, to_id
-        return []
+        return [
+            edge
+            for edge in self.edges
+            if (from_id is None or edge.get("from_id") == from_id)
+            and (to_id is None or edge.get("to_id") == to_id)
+            and edge.get("valid_to") is None
+        ]
+
+    def get_memory(self, memory_id: str) -> dict[str, object] | None:
+        for row in [*self.memories, *(self.vector_memories or [])]:
+            if str(row.get("id")) == memory_id:
+                return row
+        return None
+
+    def find_entities_by_names(self, normalized_names: tuple[str, ...]) -> list[dict[str, object]]:
+        names = set(normalized_names)
+        matched = [
+            entity
+            for entity in self.entities
+            if entity.get("normalized_name") in names
+            or any(alias in names for alias in entity.get("aliases", []))
+        ]
+        return sorted(matched, key=lambda entity: -int(entity.get("mention_count", 0) or 0))
 
 
 def _memory_row(memory_id: str, text: str, **overrides: object) -> dict[str, object]:
@@ -912,6 +943,281 @@ def test_context_pack_populates_recent_changes_from_memory_events() -> None:
     assert recent[0]["event_id"] == "event-8"
     assert set(recent[0]) == {"event_id", "event_type", "target_id", "occurred_at", "actor_type"}
     assert pack["trace"]["stages"]["recent_changes"] == {"candidate_count": 5}
+
+
+# -- type-aware sections -------------------------------------------------------------
+
+
+# -- entity-hop graph stage ----------------------------------------------------------
+
+
+def _entity_row(entity_id: str, name: str, **overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": entity_id,
+        "entity_type": "organization",
+        "name": name,
+        "normalized_name": name.casefold(),
+        "aliases": [],
+        "mention_count": 1,
+    }
+    row.update(overrides)
+    return row
+
+
+def _mention_edge(memory_id: str, entity_id: str, **overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "id": f"edge-{memory_id}-{entity_id}",
+        "from_type": "memory",
+        "from_id": memory_id,
+        "to_type": "entity",
+        "to_id": entity_id,
+        "edge_type": "mentions",
+        "observed_at": "2026-07-01T00:00:00Z",
+        "valid_to": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_entity_name_candidates_builds_ngrams_minus_stopwords() -> None:
+    candidates = entity_name_candidates("What did Jane Rivera say about the Meridian acquisition?")
+
+    # Unigrams survive unless they are stopwords; punctuation is normalized away.
+    assert "jane" in candidates
+    assert "meridian" in candidates
+    assert "acquisition" in candidates
+    assert "what" not in candidates
+    assert "the" not in candidates
+    # Bigrams/trigrams are generated, but never with a stopword on an edge.
+    assert "jane rivera" in candidates
+    assert "jane rivera say" in candidates
+    assert "about the" not in candidates
+    assert "the meridian" not in candidates
+    # A stopword may still sit INSIDE a trigram name.
+    assert "bank of america" in entity_name_candidates("Call Bank of America today")
+    # Deduplicated and bounded.
+    assert len(candidates) == len(set(candidates))
+    long_query = " ".join(f"token{index}" for index in range(100))
+    assert len(entity_name_candidates(long_query)) == ENTITY_NAME_CANDIDATE_LIMIT
+
+
+def test_graph_stage_finds_entity_connected_memory_that_fts_misses() -> None:
+    """THE multi-session mechanism: a past session stored a memory with zero
+    lexical overlap with today's query. FTS misses it; the query resolves to
+    the shared entity and the one-hop graph walk brings the memory back."""
+    lexical = _memory_row("memory-lexical", "Meridian acquisition status notes.")
+    # No query term appears in this text: FTS alone can never rank it.
+    connected = _memory_row("memory-connected", "Legal review is blocking the Q3 close.")
+    store = InMemoryVNextRetrievalStore(
+        memories=[lexical, connected],
+        sources=[],
+        entities=[_entity_row("entity-meridian", "Meridian", mention_count=7)],
+        edges=[_mention_edge("memory-connected", "entity-meridian")],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Meridian acquisition status", domains=("project",))
+    )
+
+    selected_ids = [memory["id"] for memory in pack["relevant_memories"]]
+    assert "memory-connected" in selected_ids
+    # Honest per-stage provenance: FTS really did miss the connected memory.
+    graph_trace = pack["trace"]["stages"]["graph"]
+    assert graph_trace == {
+        "status": GRAPH_STAGE_ENABLED,
+        "matched_entities": [
+            {"id": "entity-meridian", "name": "Meridian", "entity_type": "organization", "mention_count": 7}
+        ],
+        "candidate_count": 1,
+    }
+    by_id = {record["target_id"]: record for record in pack["trace"]["selected"]}
+    assert by_id["memory-connected"]["stage_ranks"] == {"graph": 1}
+    assert by_id["memory-lexical"]["stage_ranks"] == {"fts": 1}
+    # The pack says WHO it is about.
+    assert pack["entities"] == graph_trace["matched_entities"]
+
+    # Control: the same store without the edge never surfaces the memory.
+    store.edges = []
+    control = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Meridian acquisition status", domains=("project",))
+    )
+    assert "memory-connected" not in [memory["id"] for memory in control["relevant_memories"]]
+
+
+def test_graph_stage_improves_rrf_rank_for_memory_seen_by_both_stages() -> None:
+    shared = _memory_row("memory-shared", "Meridian roadmap detail three.")
+    fts_only = [
+        _memory_row("memory-top", "Meridian roadmap detail one."),
+        _memory_row("memory-second", "Meridian roadmap detail two."),
+    ]
+    store = InMemoryVNextRetrievalStore(
+        memories=[*fts_only, shared],
+        sources=[],
+        entities=[_entity_row("entity-meridian", "Meridian")],
+        edges=[_mention_edge("memory-shared", "entity-meridian")],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Meridian roadmap", domains=("project",))
+    )
+
+    # FTS alone ranks memory-shared third; the graph vote lifts it to first.
+    assert [memory["id"] for memory in pack["relevant_memories"]][0] == "memory-shared"
+    by_id = {record["target_id"]: record for record in pack["trace"]["selected"]}
+    assert by_id["memory-shared"]["stage_ranks"] == {"fts": 3, "graph": 1}
+    assert by_id["memory-shared"]["rrf_score"] == pytest.approx(
+        1.0 / (RRF_K + 3) + 1.0 / (RRF_K + 1), abs=1e-6
+    )
+
+
+def test_graph_candidates_are_ordered_by_edge_observed_at_then_memory_recency() -> None:
+    older = _memory_row("memory-older-edge", "Board sync summary.", updated_at="2026-06-30T00:00:00Z")
+    newer = _memory_row("memory-newer-edge", "Latest partner call notes.", updated_at="2026-06-01T00:00:00Z")
+    store = InMemoryVNextRetrievalStore(
+        memories=[older, newer],
+        sources=[],
+        entities=[_entity_row("entity-meridian", "Meridian")],
+        edges=[
+            _mention_edge("memory-older-edge", "entity-meridian", observed_at="2026-06-01T00:00:00Z"),
+            _mention_edge("memory-newer-edge", "entity-meridian", observed_at="2026-07-01T00:00:00Z"),
+        ],
+    )
+
+    rows, stage, _entities = VNextRetrievalService(store)._memory_graph_rows(
+        query="Meridian", domains=[], sensitivity_allowed=["private"], limit=8
+    )
+
+    assert stage == GRAPH_STAGE_ENABLED
+    # Edge recency wins even though the older-edge memory row is fresher.
+    assert [row["id"] for row in rows] == ["memory-newer-edge", "memory-older-edge"]
+
+
+def test_graph_stage_walks_edges_in_both_directions_and_ignores_other_edge_types() -> None:
+    mentioned = _memory_row("memory-mentioned", "Sync notes alpha.")
+    about = _memory_row("memory-about", "Sync notes beta.")
+    unrelated = _memory_row("memory-unrelated", "Sync notes gamma.")
+    store = InMemoryVNextRetrievalStore(
+        memories=[mentioned, about, unrelated],
+        sources=[],
+        entities=[_entity_row("entity-meridian", "Meridian")],
+        edges=[
+            _mention_edge("memory-mentioned", "entity-meridian"),
+            # Reverse direction with the 'about' type is also a valid link.
+            {
+                "id": "edge-reverse",
+                "from_type": "entity",
+                "from_id": "entity-meridian",
+                "to_type": "memory",
+                "to_id": "memory-about",
+                "edge_type": "about",
+                "observed_at": "2026-07-02T00:00:00Z",
+                "valid_to": None,
+            },
+            # Non-mention edge types never pull memories into the stage.
+            _mention_edge("memory-unrelated", "entity-meridian", edge_type="supports"),
+        ],
+    )
+
+    rows, stage, _entities = VNextRetrievalService(store)._memory_graph_rows(
+        query="Meridian", domains=[], sensitivity_allowed=["private"], limit=8
+    )
+
+    assert stage == GRAPH_STAGE_ENABLED
+    assert {row["id"] for row in rows} == {"memory-mentioned", "memory-about"}
+
+
+def test_graph_candidates_respect_status_expiry_and_scope_filters() -> None:
+    searchable = _memory_row("memory-ok", "Weekly recap.", memory_type="decision")
+    candidate_status = _memory_row("memory-candidate", "Unreviewed recap.", status="candidate")
+    expired = _memory_row("memory-expired", "Old recap.", valid_to="2020-01-01T00:00:00Z")
+    too_sensitive = _memory_row("memory-secret", "Secret recap.", sensitivity="highly_sensitive")
+    wrong_type = _memory_row("memory-preference", "Preference recap.", memory_type="preference")
+    wrong_project = _memory_row(
+        "memory-hermes", "Hermes recap.", memory_type="decision", metadata_json={"project_id": "hermes"}
+    )
+    memories = [searchable, candidate_status, expired, too_sensitive, wrong_type, wrong_project]
+    searchable["metadata_json"] = {"project_id": "alicebot"}
+    store = InMemoryVNextRetrievalStore(
+        memories=memories,
+        sources=[],
+        entities=[_entity_row("entity-meridian", "Meridian")],
+        edges=[_mention_edge(str(row["id"]), "entity-meridian") for row in memories],
+    )
+
+    rows, stage, _entities = VNextRetrievalService(store)._memory_graph_rows(
+        query="Meridian",
+        domains=["project"],
+        sensitivity_allowed=["private"],
+        limit=8,
+        memory_types=("decision",),
+        projects=("alicebot",),
+    )
+
+    assert stage == GRAPH_STAGE_ENABLED
+    assert [row["id"] for row in rows] == ["memory-ok"]
+
+
+def test_graph_stage_disables_cleanly_when_no_entity_matches() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Roadmap notes.")],
+        sources=[],
+        entities=[_entity_row("entity-meridian", "Meridian")],
+        edges=[_mention_edge("memory-1", "entity-meridian")],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="roadmap notes", domains=("project",))
+    )
+
+    assert pack["trace"]["stages"]["graph"] == {
+        "status": GRAPH_STAGE_DISABLED_NO_ENTITY_MATCH,
+        "matched_entities": [],
+        "candidate_count": 0,
+    }
+    assert "entities" not in pack
+
+
+def test_graph_stage_disables_honestly_for_stores_without_entity_support() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Meridian roadmap notes.")],
+        sources=[],
+    )
+    # Shadow the class attribute so getattr(...) is not callable, mirroring
+    # legacy/minimal stores that predate the entity substrate entirely.
+    store.find_entities_by_names = None  # type: ignore[method-assign]
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Meridian roadmap", domains=("project",))
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-1"]
+    assert pack["trace"]["stages"]["graph"] == {
+        "status": GRAPH_STAGE_DISABLED_NO_STORE_SUPPORT,
+        "matched_entities": [],
+        "candidate_count": 0,
+    }
+    assert "entities" not in pack
+
+
+def test_graph_stage_caps_matched_entities_at_five_by_mention_count() -> None:
+    entities = [
+        _entity_row(f"entity-{index}", f"Meridian{index}", mention_count=index) for index in range(1, 8)
+    ]
+    store = InMemoryVNextRetrievalStore(
+        memories=[],
+        sources=[],
+        entities=entities,
+        edges=[],
+    )
+
+    query = " ".join(f"Meridian{index}" for index in range(1, 8))
+    _rows, stage, matched = VNextRetrievalService(store)._memory_graph_rows(
+        query=query, domains=[], sensitivity_allowed=["private"], limit=8
+    )
+
+    assert stage == GRAPH_STAGE_ENABLED
+    assert len(matched) == GRAPH_ENTITY_MATCH_LIMIT
+    assert [entity["mention_count"] for entity in matched] == [7, 6, 5, 4, 3]
 
 
 # -- type-aware sections -------------------------------------------------------------

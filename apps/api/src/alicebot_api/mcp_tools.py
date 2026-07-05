@@ -150,6 +150,8 @@ from alicebot_api.vnext_memory_commit import (
 from alicebot_api.vnext_projects import OPEN_LOOP_ACTIONS, ProjectAutomationRequest, VNextProjectService
 from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService
 from alicebot_api.vnext_retrieval import (
+    GRAPH_STAGE_ENABLED,
+    MEMORY_ENTITY_EDGE_TYPES,
     RRF_K,
     VECTOR_STAGE_ENABLED,
     VNextRetrievalRequest,
@@ -1014,9 +1016,18 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
             limit=candidate_limit,
             **retrieval_filters,
         )
+        graph_rows, graph_stage, matched_entities = service._memory_graph_rows(
+            query=query,
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=candidate_limit,
+            **retrieval_filters,
+        )
         ranked_lists: dict[str, list[JsonObject]] = {"fts": fts_rows}
         if vector_stage == VECTOR_STAGE_ENABLED:
             ranked_lists["vector"] = vector_rows
+        if graph_stage == GRAPH_STAGE_ENABLED:
+            ranked_lists["graph"] = graph_rows
         results: list[JsonObject] = []
         for item, score, _stage_ranks in reciprocal_rank_fusion(ranked_lists):
             if len(results) >= limit:
@@ -1031,6 +1042,10 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
         "results": results,
         "count": len(results),
     }
+    if matched_entities:
+        # WHO the results are about: entities the query resolved to via the
+        # graph stage. Only present when the query matched entities.
+        payload["entities"] = matched_entities
     if debug:
         payload["retrieval"] = {
             "fusion": {"algorithm": "reciprocal_rank_fusion", "k": RRF_K},
@@ -1038,6 +1053,11 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
             "stages": {
                 "fts": {"source": fts_source, "candidate_count": len(fts_rows)},
                 "vector": {"status": vector_stage, "candidate_count": len(vector_rows)},
+                "graph": {
+                    "status": graph_stage,
+                    "matched_entities": matched_entities,
+                    "candidate_count": len(graph_rows),
+                },
             },
         }
         if retrieval_filters:
@@ -1682,6 +1702,49 @@ def _sqlite_review_revision(
     )
 
 
+def _link_accepted_memory_entities(store: object, memory: Mapping[str, object]) -> None:
+    """Entity-link a memory at review-acceptance time (sqlite review path).
+
+    Mirrors VNextMemoryCommitService._link_memory_entities: failures never
+    fail the review action; stores without the entity substrate skip.
+    """
+    from alicebot_api.vnext_entities import (
+        EntityLinkingService,
+        derive_person_name_from_title,
+        store_supports_entity_linking,
+    )
+
+    if not store_supports_entity_linking(store):
+        return
+    observed_at = (
+        memory.get("last_reviewed_at") or memory.get("updated_at") or memory.get("created_at")
+    )
+    try:
+        linker = EntityLinkingService(store, actor_type="user", actor_id=None, trace_id=None)
+        text = str(memory.get("canonical_text") or "")
+        if text.strip():
+            linker.link_entities_for_memory(
+                memory_id=str(memory["id"]), text=text, observed_at=observed_at
+            )
+        if str(memory.get("memory_type") or "") == "person":
+            person_name = derive_person_name_from_title(str(memory.get("title") or ""))
+            if person_name is not None:
+                linker.link_memory_to_person(
+                    memory_id=str(memory["id"]), person_name=person_name, observed_at=observed_at
+                )
+    except Exception:
+        try:
+            store.append_event(
+                {
+                    "event_type": "entity.extraction_failed",
+                    "actor_type": "user",
+                    "payload": {"memory_id": str(memory.get("id")), "stage": "mcp_review_approve"},
+                }
+            )
+        except Exception:
+            pass
+
+
 def _sqlite_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     requested_action = _parse_required_text(arguments, "action")
     resolved_action = _resolve_review_apply_action(requested_action, allow_legacy=True)
@@ -1719,6 +1782,9 @@ def _sqlite_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, o
                 action_label="approve",
                 reason=reason,
             )
+            # Acceptance is the promotion into trusted memory, so it is also
+            # the entity-linking moment; proposal-time candidates never link.
+            _link_accepted_memory_entities(store, updated)
         elif resolved_action == "delete":
             updated = store.update_memory(
                 memory_id=memory_id,
@@ -2350,6 +2416,11 @@ def _handle_alice_context_pack(context: MCPRuntimeContext, arguments: Mapping[st
     # Sections that cannot be reconstructed from the memory rows themselves;
     # typed groupings (procedures/decisions/beliefs) are omitted here because
     # every compact memory row already carries memory_type.
+    entities = pack.get("entities")
+    if isinstance(entities, list) and entities:
+        # Already compact ({id, name, entity_type, mention_count}): the
+        # entities the query resolved to, i.e. who the pack is about.
+        payload["entities"] = entities
     contradictions = pack.get("contradicting_evidence")
     if isinstance(contradictions, list) and contradictions:
         payload["contradicting_evidence"] = contradictions
@@ -3230,6 +3301,138 @@ def _handle_alice_vnext_recent_memory_commits(context: MCPRuntimeContext, argume
     return payload
 
 
+# Timeline safety bound: supersession chains are already depth-capped by the
+# commit service, but revision lists are not; keep the merged view small.
+_MEMORY_TIMELINE_MAX_ENTRIES = 50
+
+
+def _timeline_sort_key(value: object) -> str:
+    """ISO-8601 strings (and datetimes rendered by json_safe) sort lexically;
+    entries without a usable timestamp sort last, keeping insertion order."""
+    rendered = json_safe(value)
+    if isinstance(rendered, str) and rendered.strip():
+        return rendered.replace("Z", "+00:00")
+    return "9999"
+
+
+def _memory_linked_entities(store: object, memory_id: str) -> list[JsonObject]:
+    """Entities connected to one memory via mentions/about graph edges.
+
+    Walks both edge directions (memory -> entity and entity -> memory) and
+    resolves each linked entity to a compact record. Callers must check
+    store support (list_edges + get_entity) first.
+    """
+    list_edges = getattr(store, "list_edges")
+    get_entity = getattr(store, "get_entity")
+    entity_ids: list[str] = []
+    edge_sides = (
+        (list_edges(from_id=memory_id), "memory", "entity", "to_id"),
+        (list_edges(to_id=memory_id), "entity", "memory", "from_id"),
+    )
+    for edges, from_type, to_type, entity_key in edge_sides:
+        for edge in edges:
+            if edge.get("edge_type") not in MEMORY_ENTITY_EDGE_TYPES:
+                continue
+            if str(edge.get("from_type")) != from_type or str(edge.get("to_type")) != to_type:
+                continue
+            entity_ids.append(str(edge.get(entity_key)))
+    entities: list[JsonObject] = []
+    seen: set[str] = set()
+    for entity_id in entity_ids:
+        if entity_id in seen:
+            continue
+        seen.add(entity_id)
+        row = get_entity(entity_id)
+        if row is None:
+            continue
+        entities.append(
+            {
+                "id": str(row.get("id")),
+                "name": row.get("name"),
+                "entity_type": row.get("entity_type"),
+                "mention_count": row.get("mention_count"),
+            }
+        )
+    return entities
+
+
+def _memory_evolution_timeline(
+    chain: list[JsonObject], revisions: list[Mapping[str, object]]
+) -> list[JsonObject]:
+    """Merge the supersession chain and revision history into one story.
+
+    One chronological list of ``{at, kind, memory_id, summary}`` entries
+    answering "how did this belief evolve": the oldest chain node is the
+    creation, each later chain node is a replacement (``superseded_by``),
+    and the audited memory's revisions fill in corrections and edits.
+    Cycle safety comes from the chain itself (the commit service walks
+    pointers with a visited set and a depth bound); the merged list is
+    additionally capped at ``_MEMORY_TIMELINE_MAX_ENTRIES``.
+    """
+    entries: list[JsonObject] = []
+    for index, node in enumerate(chain):
+        title = node.get("title")
+        summary = str(title) if isinstance(title, str) and title.strip() else str(node.get("id"))
+        entries.append(
+            {
+                "at": json_safe(node.get("created_at")),
+                "kind": "created" if index == 0 else "superseded_by",
+                "memory_id": str(node.get("id")),
+                "summary": summary if index == 0 else f"Replaced by: {summary}",
+            }
+        )
+    chain_has_successor = any(node.get("relation") == "successor" for node in chain)
+    for revision in revisions:
+        revision_type = str(revision.get("revision_type") or "")
+        if revision_type == "created":
+            continue  # the chain already carries the creation entry
+        if revision_type == "corrected":
+            kind = "corrected"
+        elif revision_type == "superseded":
+            if chain_has_successor:
+                # The successor chain node already tells this part of the
+                # story; a second superseded_by entry would just be noise.
+                continue
+            kind = "superseded_by"
+        else:
+            kind = "revised"
+        reason = revision.get("reason")
+        summary = str(reason) if isinstance(reason, str) and reason.strip() else revision_type
+        entries.append(
+            {
+                "at": json_safe(revision.get("created_at")),
+                "kind": kind,
+                "memory_id": str(revision.get("memory_id")),
+                "summary": summary,
+            }
+        )
+    entries.sort(key=lambda entry: _timeline_sort_key(entry.get("at")))
+    # Over the bound, keep the most recent entries: they answer "where did
+    # this belief end up" better than ancient intermediate edits.
+    return entries[-_MEMORY_TIMELINE_MAX_ENTRIES:]
+
+
+def _extend_memory_audit(store: object, payload: JsonObject) -> JsonObject:
+    """Add entity links and the evolution timeline to an audit payload.
+
+    Chain nodes gain an ``entities`` list (via mentions/about edges) when
+    the store has the entity substrate; stores without it keep the plain
+    chain. The ``timeline`` field is always added on the memory_id branch.
+    """
+    chain_value = payload.get("supersession_chain")
+    chain = [node for node in chain_value if isinstance(node, dict)] if isinstance(chain_value, list) else []
+    revisions_value = payload.get("revisions")
+    revisions = [row for row in revisions_value if isinstance(row, Mapping)] if isinstance(revisions_value, list) else []
+    supports_entities = callable(getattr(store, "list_edges", None)) and callable(
+        getattr(store, "get_entity", None)
+    )
+    if supports_entities:
+        for node in chain:
+            node["entities"] = _memory_linked_entities(store, str(node.get("id")))
+    payload["timeline"] = _memory_evolution_timeline(chain, revisions)
+    return payload
+
+
 def _handle_alice_vnext_memory_audit(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
     identity = _agent_identity_from_arguments(context, arguments)
     blocked_decision: PolicyDecision | None = None
@@ -3239,7 +3442,10 @@ def _handle_alice_vnext_memory_audit(context: MCPRuntimeContext, arguments: Mapp
         if decision.decision == "blocked":
             blocked_decision = decision
         else:
-            payload = VNextMemoryCommitService(store).audit(memory_id=_parse_required_text(arguments, "memory_id"))
+            payload = _extend_memory_audit(
+                store,
+                VNextMemoryCommitService(store).audit(memory_id=_parse_required_text(arguments, "memory_id")),
+            )
     if blocked_decision is not None:
         _raise_mcp_policy_blocked(blocked_decision)
     if payload is None:
@@ -4012,9 +4218,12 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
     {
         "name": "alice_explain",
         "description": (
-            "Explain where a memory came from and why it can be trusted: source evidence, "
-            "revision history, corroborations, and contradiction signals, plus the memory's "
-            "supersession chain (what it replaced and what replaced it, oldest to newest). "
+            "Explain where a memory came from, why it can be trusted, and how it changed "
+            "over time: source evidence, revision history, corroborations, and contradiction "
+            "signals, plus the memory's supersession chain (what it replaced and what "
+            "replaced it, oldest to newest, each entry listing the people, projects, and "
+            "other entities it is linked to) and a timeline that merges creations, edits, "
+            "corrections, and replacements into one chronological story. "
             "Pass memory_id for a result from alice_recall, continuity_object_id for a "
             "reviewed record, or entity_id (optionally with 'at') for a point-in-time "
             "explanation."
@@ -4025,7 +4234,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
             "properties": {
                 "memory_id": {
                     "type": "string",
-                    "description": "Id of a memory returned by alice_recall; returns its provenance links, revisions, event history, and supersession_chain (each entry has id, title, status, created_at, and its relation to this memory: predecessor, self, or successor).",
+                    "description": "Id of a memory returned by alice_recall; returns its provenance links, revisions, event history, supersession_chain (each entry has id, title, status, created_at, its relation to this memory: predecessor, self, or successor, and the entities it is linked to when available), and a timeline: one chronological list of {at, kind, memory_id, summary} entries (kind is created, revised, corrected, or superseded_by) telling how this memory evolved.",
                 },
                 "continuity_object_id": {
                     "type": "string",

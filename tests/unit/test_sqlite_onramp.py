@@ -180,9 +180,18 @@ def test_capture_review_approve_recall_explain_flow(sqlite_context) -> None:
     assert recall["retrieval"]["stages"]["fts"]["candidate_count"] >= 1
 
     audit = call_mcp_tool(sqlite_context, name="alice_explain", arguments={"memory_id": memory_id})
-    assert set(audit) == {"memory", "supersession_chain", "revisions", "events", "provenance_links"}
+    assert set(audit) == {
+        "memory",
+        "supersession_chain",
+        "revisions",
+        "events",
+        "provenance_links",
+        "timeline",
+    }
     assert audit["memory"]["id"] == memory_id
-    # No supersession happened, so the chain is just the memory itself.
+    # No supersession happened, so the chain is just the memory itself. The
+    # SQLite store has the entity substrate, so each chain node lists its
+    # linked entities (none yet for a plain capture).
     assert audit["supersession_chain"] == [
         {
             "id": memory_id,
@@ -190,8 +199,15 @@ def test_capture_review_approve_recall_explain_flow(sqlite_context) -> None:
             "status": "active",
             "created_at": audit["memory"]["created_at"],
             "relation": "self",
+            "entities": [],
         }
     ]
+    # The evolution timeline merges the chain with the revision history.
+    assert [(entry["kind"], entry["memory_id"]) for entry in audit["timeline"]] == [
+        ("created", memory_id),
+        ("revised", memory_id),  # the review approval ("promoted" revision)
+    ]
+    assert all(set(entry) == {"at", "kind", "memory_id", "summary"} for entry in audit["timeline"])
     assert [revision["revision_type"] for revision in audit["revisions"]] == ["promoted"]
     assert any(event["event_type"] == "memory.reviewed" for event in audit["events"])
     assert audit["provenance_links"][0]["evidence_role"] == "quoted_from"
@@ -213,6 +229,89 @@ def test_context_pack_includes_promoted_memory(sqlite_context) -> None:
     assert any(memory["id"] == memory_id for memory in pack["memories"])
     assert pack["context_pack_id"]
     assert pack["trace_id"]
+
+
+def test_recall_graph_stage_finds_entity_connected_memory_fts_misses(sqlite_context) -> None:
+    """Multi-session continuity end-to-end on SQLite: a past session stored a
+    memory whose text shares no words with today's query. Lexical FTS misses
+    it; resolving the query to the shared entity and hopping the mentions
+    edge brings it back."""
+    with _vnext_store_context(sqlite_context) as store:
+        # Capture-shaped seed written directly through the store surface
+        # (the write-path extractor is exercised elsewhere).
+        memory = store.create_memory(
+            {
+                "memory_key": "note.q3-close-blocker",
+                "status": "active",
+                "memory_type": "semantic",
+                "title": "Q3 close blocker",
+                "canonical_text": "Legal review is blocking the Q3 close.",
+                "domain": "project",
+                "sensitivity": "internal",
+                "confidence": 0.9,
+            }
+        )
+        entity = store.create_entity(
+            {
+                "entity_type": "organization",
+                "name": "Meridian Bank",
+                "aliases": ["meridian"],
+                "mention_count": 3,
+            }
+        )
+        store.create_graph_edge(
+            {
+                "from_type": "memory",
+                "from_id": str(memory["id"]),
+                "to_type": "entity",
+                "to_id": str(entity["id"]),
+                "edge_type": "mentions",
+            }
+        )
+    memory_id = str(memory["id"])
+
+    # Paraphrase query: zero lexical overlap with the stored memory text.
+    recall = call_mcp_tool(
+        sqlite_context,
+        name="alice_recall",
+        arguments={"query": "What changed with Meridian?", "debug": True},
+    )
+
+    assert [row["id"] for row in recall["results"]] == [memory_id]
+    assert recall["results"][0]["text"] == "Legal review is blocking the Q3 close."
+    # Trace honesty: FTS really found nothing; the graph stage found it.
+    assert recall["retrieval"]["stages"]["fts"]["candidate_count"] == 0
+    graph_stage = recall["retrieval"]["stages"]["graph"]
+    assert graph_stage["status"] == "enabled"
+    assert graph_stage["candidate_count"] == 1
+    assert graph_stage["matched_entities"] == [
+        {
+            "id": str(entity["id"]),
+            "name": "Meridian Bank",
+            "entity_type": "organization",
+            "mention_count": 3,
+        }
+    ]
+    assert recall["entities"] == graph_stage["matched_entities"]
+
+    # The context pack carries the same "who is this about" section.
+    pack = call_mcp_tool(
+        sqlite_context,
+        name="alice_context_pack",
+        arguments={"query": "What changed with Meridian?"},
+    )
+    assert any(row["id"] == memory_id for row in pack["memories"])
+    assert pack["entities"] == graph_stage["matched_entities"]
+
+    # A query naming no known entity keeps the stage honestly disabled.
+    unmatched = call_mcp_tool(
+        sqlite_context,
+        name="alice_recall",
+        arguments={"query": "totally unrelated topic", "debug": True},
+    )
+    assert unmatched["count"] == 0
+    assert unmatched["retrieval"]["stages"]["graph"]["status"] == "disabled: no entity match"
+    assert "entities" not in unmatched
 
 
 def test_memory_commit_recall_undo_and_forget_flow(sqlite_context) -> None:
