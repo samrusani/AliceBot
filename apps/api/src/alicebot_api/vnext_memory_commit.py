@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from alicebot_api.vnext_agent_control import (
     AgentIdentity,
+    AgentPolicyBlockedError,
     PolicyDecision,
     agent_metadata,
     append_policy_events,
@@ -162,6 +163,18 @@ EXPLICIT_MEMORY_INTENTS = {
     "add_to_memory",
     "commit_memory",
 }
+# Statuses a consolidation candidate may hold when it is accepted.
+CONSOLIDATION_ACCEPTABLE_STATUSES = ("candidate", "needs_review")
+# Rows in these statuses are already retired; expiring or unexpiring them
+# would corrupt the supersession/review audit trail.
+EXPIRE_BLOCKED_STATUSES = ("superseded", "rejected")
+# update_memory in both live stores COALESCEs every column, so a NULL
+# valid_to can never be written back through the patch surface. unexpire()
+# therefore falls back to this far-future timestamp, which the read-path
+# exclusion (valid_to IS NULL OR valid_to >= now) treats identically to
+# NULL. Stores that grow a real clear_memory_valid_to seam make this
+# sentinel unnecessary; until then it is recorded in metadata_json.validity.
+VALID_TO_UNBOUNDED_SENTINEL = "9999-12-31T23:59:59Z"
 SECRET_MARKERS = (
     "sk-",
     "ghp_",
@@ -228,6 +241,29 @@ def _utc_now() -> datetime:
 
 def _utc_iso(value: datetime | None = None) -> str:
     return (value or _utc_now()).isoformat().replace("+00:00", "Z")
+
+
+def _valid_to_iso(value: object | None) -> str:
+    """Normalize an expiry timestamp to ISO-8601 UTC text; default now."""
+    if value is None:
+        return _utc_iso()
+    if isinstance(value, datetime):
+        moment = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return moment.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise VNextMemoryCommitValidationError("valid_to must be an ISO-8601 timestamp") from exc
+        return _valid_to_iso(parsed)
+    raise VNextMemoryCommitValidationError("valid_to must be an ISO-8601 timestamp")
+
+
+def _is_unbounded_valid_to(value: object | None) -> bool:
+    """True when valid_to is the far-future stand-in for 'no expiry'."""
+    if isinstance(value, datetime):
+        return value.year >= 9999
+    return isinstance(value, str) and value.startswith("9999-")
 
 
 def _normalized_text(value: object, *, field_name: str) -> str:
@@ -913,6 +949,409 @@ class VNextMemoryCommitService:
             reason=reason or "Agentic memory forgotten.",
         )
 
+    def accept_consolidation_candidate(
+        self,
+        memory_id: str,
+        *,
+        reason: str,
+        identity: AgentIdentity | None = None,
+    ) -> JsonObject:
+        """Accept a consolidation candidate and execute the proposed merge.
+
+        Acceptance is the promotion decision the consolidation pipeline left
+        to reviewers: the candidate is promoted to active (freshness signals
+        refreshed, revision 'promoted') and every ``proposed_supersede``
+        member is superseded by the accepted row through the existing
+        supersession transition (real ``superseded_by`` pointer column,
+        status flip, revision, event per member).
+
+        Pointer semantics (``supersedes`` is a single-valued column):
+
+        - ``dedup`` proposals copy the survivor's text verbatim, so the
+          accepted row's ``supersedes`` points at ``survivor_memory_id`` --
+          the one member the accepted row canonically descends from. The
+          survivor itself is not in ``proposed_supersede`` and stays active;
+          the pointer records content lineage, not the survivor's retirement.
+        - ``merge`` proposals synthesize new text from every member, so no
+          single-member pointer is honest: ``supersedes`` stays NULL and the
+          full member list is recorded in ``metadata_json.merged_from``.
+
+        Acceptance is a review decision, so an agent identity is policy
+        checked under ``memory.review`` (human reviewers pass ``identity=None``;
+        only admin agents may accept). Rejection stays the existing dashboard
+        review path -- nothing here handles it. Replaying an acceptance is a
+        no-op with a note.
+        """
+        memory = self.store.get_memory(memory_id)
+        if memory is None:
+            raise VNextMemoryCommitValidationError("memory was not found")
+        metadata = _memory_metadata(memory)
+        consolidation_raw = metadata.get("consolidation")
+        if not isinstance(consolidation_raw, Mapping):
+            raise VNextMemoryCommitValidationError("memory is not a consolidation candidate")
+        consolidation = dict(consolidation_raw)
+        accepted_record = consolidation.get("accepted")
+        if isinstance(accepted_record, Mapping):
+            return {
+                "status": "accepted",
+                "memory": memory,
+                "proposal_kind": consolidation.get("proposal_kind"),
+                "superseded_member_ids": list(accepted_record.get("superseded_member_ids") or []),
+                "idempotent_replay": True,
+                "note": "consolidation candidate was already accepted; replay changed nothing",
+            }
+        status = str(memory.get("status") or "")
+        if status not in CONSOLIDATION_ACCEPTABLE_STATUSES:
+            raise VNextMemoryCommitValidationError(
+                "consolidation candidate must be in candidate or needs_review status"
+            )
+        reason_text = _normalized_text(reason, field_name="reason")
+        decision = self._policy_checked_write(identity=identity, action="memory.review", memory=memory)
+
+        accepted_id = str(memory["id"])
+        actor_type = "agent" if identity is not None else "user"
+        actor_id = identity.agent_id if identity is not None else None
+        proposal_kind = str(consolidation.get("proposal_kind") or "dedup")
+        survivor_raw = consolidation.get("survivor_memory_id")
+        survivor_id = str(survivor_raw) if survivor_raw else None
+        member_ids = [str(value) for value in (consolidation.get("cluster_member_ids") or []) if value]
+        proposed = [
+            member_id
+            for member_id in dict.fromkeys(
+                str(value) for value in (consolidation.get("proposed_supersede") or []) if value
+            )
+            if member_id != accepted_id
+        ]
+
+        # Supersede the members before stamping the acceptance marker so a
+        # crash mid-way replays safely: already-superseded members are
+        # skipped, then promotion completes.
+        superseded_member_ids: list[str] = []
+        skipped_members: list[JsonObject] = []
+        for member_id in proposed:
+            member = self.store.get_memory(member_id)
+            if member is None:
+                skipped_members.append({"member_id": member_id, "state": "missing"})
+                continue
+            if str(member.get("status") or "") == "superseded" or _supersession_pointer(member, "superseded_by"):
+                skipped_members.append({"member_id": member_id, "state": "already_superseded"})
+                continue
+            self._transition_memory(
+                identity=identity,
+                memory=member,
+                lifecycle_status="superseded_by_consolidation",
+                next_status="superseded",
+                event_type="agent.memory_superseded",
+                revision_type="superseded",
+                action="agentic_memory_consolidation_supersede",
+                reason=f"Superseded by accepted consolidation candidate {accepted_id}.",
+                superseded_by=memory,
+                # The accepted row's single-valued supersedes pointer is set
+                # once below by the documented dedup/merge rule, not
+                # clobbered per member here.
+                set_successor_pointer=False,
+            )
+            superseded_member_ids.append(member_id)
+
+        now = _utc_iso()
+        consolidation["accepted"] = {
+            "accepted_at": now,
+            "actor_type": actor_type,
+            "accepted_by": actor_id,
+            "reason": reason_text,
+            "superseded_member_ids": superseded_member_ids,
+            "skipped_members": skipped_members,
+        }
+        next_metadata: JsonObject = {**metadata, "consolidation": consolidation, "review_required": False}
+        patch: JsonObject = {
+            "status": "active",
+            "confirmation_status": "confirmed",
+            "last_confirmed_at": now,
+            "last_reviewed_at": now,
+            "metadata_json": next_metadata,
+        }
+        supersedes_pointer: str | None = None
+        if proposal_kind == "dedup" and survivor_id and survivor_id != accepted_id:
+            supersedes_pointer = survivor_id
+            patch["supersedes"] = survivor_id
+            # metadata_json copy mirrors the _transition_memory convention.
+            next_metadata["supersedes"] = survivor_id
+        else:
+            next_metadata["merged_from"] = member_ids
+        updated = self.store.update_memory(memory_id=accepted_id, patch=patch, actor_type=actor_type)
+        attach_memory_embedding(self.store, updated, actor_type=actor_type, actor_id=actor_id)
+        # Acceptance-time entity linking: consolidation candidates, like
+        # review candidates, deliberately skip linking until accepted.
+        self._link_memory_entities(
+            memory=updated,
+            identity=identity,
+            trace_id=decision.trace_id,
+            stage="consolidation_accepted",
+        )
+        self.store.append_revision(
+            {
+                "memory_id": accepted_id,
+                "memory_key": str(updated["memory_key"]),
+                "previous_value": memory.get("value"),
+                "new_value": updated.get("value"),
+                "source_event_ids": updated.get("source_event_ids"),
+                "revision_type": "promoted",
+                "action": "agentic_memory_consolidation_accept",
+                "text_before": str(memory.get("canonical_text") or ""),
+                "text_after": str(updated.get("canonical_text") or ""),
+                "reason": reason_text,
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "metadata_json": {
+                    "proposal_kind": proposal_kind,
+                    "consolidation_digest": metadata.get("consolidation_digest"),
+                    "superseded_member_ids": superseded_member_ids,
+                    "skipped_members": skipped_members,
+                    "supersedes": supersedes_pointer,
+                    "last_confirmed_at_refreshed": True,
+                },
+            },
+            actor_type=actor_type,
+        )
+        append_event(
+            self.store,
+            event_type="agent.memory_consolidation_accepted",
+            actor_type=actor_type,
+            actor_id=actor_id,
+            target_type="memory",
+            target_id=accepted_id,
+            trace_id=decision.trace_id,
+            payload={
+                "proposal_kind": proposal_kind,
+                "superseded_member_ids": superseded_member_ids,
+                "skipped_members": skipped_members,
+                "supersedes": supersedes_pointer,
+                "reason": reason_text,
+            },
+        )
+        return {
+            "status": "accepted",
+            "memory": updated,
+            "proposal_kind": proposal_kind,
+            "superseded_member_ids": superseded_member_ids,
+            "skipped_members": skipped_members,
+            "supersedes": supersedes_pointer,
+            "policy_decision": decision.to_record(),
+            "idempotent_replay": False,
+        }
+
+    def expire(
+        self,
+        memory_id: str,
+        *,
+        valid_to: object | None = None,
+        reason: str,
+        identity: AgentIdentity | None = None,
+    ) -> JsonObject:
+        """Close a memory's validity window without retiring the row.
+
+        Sets ``valid_to`` (default now) so the read-path exclusion
+        (``valid_to IS NULL OR valid_to >= now``) applies immediately. The
+        row's status stays ``active``: expiry is temporal, not a lifecycle
+        judgment -- the staleness sweep later marks long-expired rows stale.
+        Audited with an 'edited' revision noting 'expired' plus an
+        ``agent.memory_expired`` event, and policy checked like undo/forget
+        when an agent identity is present.
+        """
+        memory = self.store.get_memory(memory_id)
+        if memory is None:
+            raise VNextMemoryCommitValidationError("memory was not found")
+        status = str(memory.get("status") or "")
+        if status in EXPIRE_BLOCKED_STATUSES:
+            raise VNextMemoryCommitValidationError(f"cannot expire a {status} memory")
+        reason_text = _normalized_text(reason, field_name="reason")
+        valid_to_iso = _valid_to_iso(valid_to)
+        decision = self._policy_checked_write(identity=identity, action="memory.expire", memory=memory)
+        actor_type = "agent" if identity is not None else "user"
+        actor_id = identity.agent_id if identity is not None else None
+        now = _utc_iso()
+        metadata = _memory_metadata(memory)
+        validity = dict(metadata.get("validity") if isinstance(metadata.get("validity"), Mapping) else {})
+        history = list(validity.get("history") if isinstance(validity.get("history"), list) else [])
+        history.append({"op": "expired", "at": now, "valid_to": valid_to_iso, "reason": reason_text, "actor_id": actor_id})
+        validity.update({"state": "expired", "expired_at": now, "valid_to": valid_to_iso, "history": history})
+        validity.pop("unbounded_sentinel", None)
+        updated = self.store.update_memory(
+            memory_id=str(memory["id"]),
+            patch={
+                "valid_to": valid_to_iso,
+                "last_reviewed_at": now,
+                "metadata_json": {**metadata, "validity": validity},
+            },
+            actor_type=actor_type,
+        )
+        self.store.append_revision(
+            {
+                "memory_id": str(updated["id"]),
+                "memory_key": str(updated["memory_key"]),
+                "previous_value": memory.get("value"),
+                "new_value": updated.get("value"),
+                "source_event_ids": updated.get("source_event_ids"),
+                "revision_type": "edited",
+                "action": "agentic_memory_expire",
+                "text_before": str(memory.get("canonical_text") or ""),
+                "text_after": str(updated.get("canonical_text") or ""),
+                "reason": reason_text,
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "metadata_json": {"note": "expired", "valid_to": valid_to_iso},
+            },
+            actor_type=actor_type,
+        )
+        append_event(
+            self.store,
+            event_type="agent.memory_expired",
+            actor_type=actor_type,
+            actor_id=actor_id,
+            target_type="memory",
+            target_id=str(updated["id"]),
+            trace_id=decision.trace_id,
+            payload={"valid_to": valid_to_iso, "reason": reason_text},
+        )
+        return {
+            "status": "expired",
+            "memory": updated,
+            "valid_to": valid_to_iso,
+            "policy_decision": decision.to_record(),
+        }
+
+    def unexpire(
+        self,
+        memory_id: str,
+        *,
+        reason: str,
+        identity: AgentIdentity | None = None,
+    ) -> JsonObject:
+        """Reopen an expired memory's validity window, with audit.
+
+        Clears ``valid_to`` so the read-path exclusion stops hiding the row.
+        Stores whose ``update_memory`` COALESCEs every column cannot write
+        NULL back; for those the far-future ``VALID_TO_UNBOUNDED_SENTINEL``
+        is written instead (read-path equivalent to NULL) and noted in
+        ``metadata_json.validity.unbounded_sentinel``. A row that is not
+        expired replays as a no-op with a note.
+        """
+        memory = self.store.get_memory(memory_id)
+        if memory is None:
+            raise VNextMemoryCommitValidationError("memory was not found")
+        status = str(memory.get("status") or "")
+        if status in EXPIRE_BLOCKED_STATUSES:
+            raise VNextMemoryCommitValidationError(f"cannot unexpire a {status} memory")
+        reason_text = _normalized_text(reason, field_name="reason")
+        current_valid_to = memory.get("valid_to")
+        if not current_valid_to or _is_unbounded_valid_to(current_valid_to):
+            return {
+                "status": "active",
+                "memory": memory,
+                "idempotent_replay": True,
+                "note": "memory has no validity end to clear; replay changed nothing",
+            }
+        decision = self._policy_checked_write(identity=identity, action="memory.unexpire", memory=memory)
+        actor_type = "agent" if identity is not None else "user"
+        actor_id = identity.agent_id if identity is not None else None
+        now = _utc_iso()
+        metadata = _memory_metadata(memory)
+        validity = dict(metadata.get("validity") if isinstance(metadata.get("validity"), Mapping) else {})
+        history = list(validity.get("history") if isinstance(validity.get("history"), list) else [])
+        history.append({"op": "unexpired", "at": now, "reason": reason_text, "actor_id": actor_id})
+        validity.update({"state": "cleared", "unexpired_at": now, "valid_to": None, "history": history})
+        validity.pop("unbounded_sentinel", None)
+        updated = self.store.update_memory(
+            memory_id=str(memory["id"]),
+            patch={
+                "valid_to": None,
+                "last_reviewed_at": now,
+                "metadata_json": {**metadata, "validity": validity},
+            },
+            actor_type=actor_type,
+        )
+        if updated.get("valid_to") and not _is_unbounded_valid_to(updated.get("valid_to")):
+            # COALESCE-style store: NULL cannot be written through the patch
+            # surface, so fall back to the documented far-future sentinel.
+            validity = {**validity, "unbounded_sentinel": VALID_TO_UNBOUNDED_SENTINEL}
+            updated = self.store.update_memory(
+                memory_id=str(memory["id"]),
+                patch={
+                    "valid_to": VALID_TO_UNBOUNDED_SENTINEL,
+                    "metadata_json": {**metadata, "validity": validity},
+                },
+                actor_type=actor_type,
+            )
+        self.store.append_revision(
+            {
+                "memory_id": str(updated["id"]),
+                "memory_key": str(updated["memory_key"]),
+                "previous_value": memory.get("value"),
+                "new_value": updated.get("value"),
+                "source_event_ids": updated.get("source_event_ids"),
+                "revision_type": "edited",
+                "action": "agentic_memory_unexpire",
+                "text_before": str(memory.get("canonical_text") or ""),
+                "text_after": str(updated.get("canonical_text") or ""),
+                "reason": reason_text,
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+                "metadata_json": {"note": "unexpired", "previous_valid_to": json_safe(current_valid_to)},
+            },
+            actor_type=actor_type,
+        )
+        append_event(
+            self.store,
+            event_type="agent.memory_unexpired",
+            actor_type=actor_type,
+            actor_id=actor_id,
+            target_type="memory",
+            target_id=str(updated["id"]),
+            trace_id=decision.trace_id,
+            payload={"previous_valid_to": json_safe(current_valid_to), "reason": reason_text},
+        )
+        return {
+            "status": "active",
+            "memory": updated,
+            "policy_decision": decision.to_record(),
+            "idempotent_replay": False,
+        }
+
+    def _policy_checked_write(
+        self,
+        *,
+        identity: AgentIdentity | None,
+        action: str,
+        memory: Mapping[str, object],
+    ) -> PolicyDecision:
+        """Mirror the undo/forget policy treatment for service-layer writes.
+
+        Upserts the identity, evaluates the policy scoped to the target
+        memory's domain/sensitivity, appends the policy audit events, and
+        raises ``AgentPolicyBlockedError`` when blocked. ``identity=None``
+        (human/system callers) always evaluates as allowed.
+        """
+        self._upsert_identity(identity)
+        # memory.expire / memory.unexpire / memory.accept_consolidation are
+        # in the agent-control WRITE_ACTIONS vocabulary, so
+        # evaluate_agent_policy carries the read-only write block itself.
+        decision = evaluate_agent_policy(
+            identity=identity,
+            action=action,
+            domains=(str(memory.get("domain") or "unknown"),),
+            sensitivity_allowed=(str(memory.get("sensitivity") or "unknown"),),
+        )
+        append_policy_events(
+            self.store,
+            identity=identity,
+            decision=decision,
+            target_type="memory",
+            target_id=str(memory.get("id")) if memory.get("id") is not None else None,
+        )
+        if decision.decision == "blocked":
+            raise AgentPolicyBlockedError(decision)
+        return decision
+
     def recent_commits(self, *, limit: int = 20) -> JsonObject:
         rows = []
         for memory in self.store.list_memories(status=None):
@@ -1501,6 +1940,7 @@ class VNextMemoryCommitService:
         action: str,
         reason: str,
         superseded_by: VNextRow | None = None,
+        set_successor_pointer: bool = True,
     ) -> JsonObject:
         metadata = _memory_metadata(memory)
         agentic = _agentic_metadata(memory)
@@ -1523,7 +1963,10 @@ class VNextMemoryCommitService:
             patch=patch,
             actor_type=actor_type,
         )
-        if superseded_by is not None and successor_id is not None:
+        # set_successor_pointer=False leaves the successor's single-valued
+        # supersedes column to the caller (consolidation acceptance sets it
+        # once by the dedup/merge rule instead of clobbering it per member).
+        if superseded_by is not None and successor_id is not None and set_successor_pointer:
             successor_metadata = _memory_metadata(superseded_by)
             self.store.update_memory(
                 memory_id=successor_id,
@@ -1610,9 +2053,12 @@ def memory_commit_request_from_payload(payload: Mapping[str, object], *, user_id
 
 
 __all__ = [
+    "CONSOLIDATION_ACCEPTABLE_STATUSES",
+    "EXPIRE_BLOCKED_STATUSES",
     "MEMORY_COMMIT_STATUSES",
     "MEMORY_COMMIT_WRITE_MODES",
     "MEMORY_STATUSES",
+    "VALID_TO_UNBOUNDED_SENTINEL",
     "MemoryCommitPolicyDecision",
     "MemoryCommitRequest",
     "VNextMemoryCommitService",

@@ -636,3 +636,79 @@ def test_live_sqlite_smoke_clusters_near_duplicates_idempotently() -> None:
     for member_id in near_dup_ids:
         assert member_id in active_ids
     conn.close()
+
+
+def test_accepting_the_dedup_candidate_executes_supersessions_on_live_sqlite(monkeypatch) -> None:
+    """Full merge loop: consolidation proposes, acceptance executes.
+
+    The consolidation run stays review-only; accepting the candidate through
+    the memory commit service promotes it and supersedes exactly the
+    proposed members, and the survivor pointer follows the dedup rule.
+    """
+    from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
+
+    monkeypatch.delenv("ALICE_EMBEDDINGS_BASE_URL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_MODEL", raising=False)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_API_KEY", raising=False)
+    conn = sqlite3.connect(":memory:")
+    bootstrap_sqlite_schema(conn)
+    user_id = str(uuid4())
+    ensure_sqlite_user(conn, user_id, "accept@example.com", "Accept User")
+    sqlite_store = SQLiteVNextStore(conn, user_id)
+    store = SQLiteArtifactShim(sqlite_store)
+
+    mapping: dict[str, list[float]] = {}
+    rows: list[JsonObject] = []
+    for index, text in enumerate(
+        (
+            "Sam prefers oat milk lattes in the morning",
+            "Sam prefers oat milk lattes every morning before standup",
+            "Sam usually orders an oat milk latte in the mornings",
+        )
+    ):
+        row = sqlite_store.create_memory(
+            {
+                "memory_key": f"memory.{uuid4()}",
+                "value": {"text": text},
+                "status": "active",
+                "memory_type": "semantic",
+                "title": f"Latte {index}",
+                "canonical_text": text,
+                "summary": text[:80],
+                "domain": "project",
+                "sensitivity": "internal",
+            }
+        )
+        assert sqlite_store.update_memory_embedding(memory_id=str(row["id"]), vector=NEAR_DUP_VECTORS[index]) is not None
+        mapping[memory_embedding_text(row)] = list(NEAR_DUP_VECTORS[index])
+        rows.append(row)
+
+    service = VNextConsolidationService(store, embedding_provider=MappedEmbeddingProvider(mapping))
+    service.generate_memory_consolidation(MemoryConsolidationRequest())
+    candidates = _consolidation_candidates(sqlite_store)
+    assert len(candidates) == 1
+    candidate_id = str(candidates[0]["id"])
+    consolidation = candidates[0]["metadata_json"]["consolidation"]
+    assert consolidation["proposal_kind"] == "dedup"
+    assert any("accept_consolidation_candidate" in line for line in consolidation["reviewer_instructions"])
+    survivor_id = str(consolidation["survivor_memory_id"])
+    proposed = sorted(str(member) for member in consolidation["proposed_supersede"])
+
+    commit_service = VNextMemoryCommitService(sqlite_store)
+    result = commit_service.accept_consolidation_candidate(candidate_id, reason="Reviewed the dedup cluster.")
+
+    assert result["status"] == "accepted"
+    assert sorted(result["superseded_member_ids"]) == proposed
+    accepted = sqlite_store.get_memory(candidate_id)
+    assert accepted["status"] == "active"
+    assert str(accepted["supersedes"]) == survivor_id
+    for member_id in proposed:
+        member = sqlite_store.get_memory(member_id)
+        assert member["status"] == "superseded"
+        assert str(member["superseded_by"]) == candidate_id
+    # The survivor was never proposed and stays active.
+    assert sqlite_store.get_memory(survivor_id)["status"] == "active"
+    # Replay is a no-op.
+    replay = commit_service.accept_consolidation_candidate(candidate_id, reason="Accept again.")
+    assert replay["idempotent_replay"] is True
+    conn.close()
