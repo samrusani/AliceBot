@@ -1024,6 +1024,32 @@ class SQLiteVNextStore:
             (str(commit_digest), self.user_id),
         )
 
+    def latest_agentic_commit_memory(self, *, agent_id: str | None = None) -> VNextRow | None:
+        """Fast lookup for the id-less undo path ("undo my last commit").
+
+        Without this the commit service duck-type falls back to a
+        full-table Python scan. Mirrors the Postgres jsonb path checks via
+        json_extract.
+        """
+        return self._fetch_optional_one(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND status = 'active'
+                  AND json_extract(metadata_json, '$.agentic_memory.kind') = 'agentic_memory_commit'
+                  AND (
+                    ? IS NULL
+                    OR json_extract(metadata_json, '$.agentic_memory.agent_id') = ?
+                    OR json_extract(metadata_json, '$.agentic_memory.agent_identity.agent_id') = ?
+                  )
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT 1
+                """,
+            (self.user_id, agent_id, agent_id, agent_id),
+        )
+
     def get_memory_by_confirmation_id(self, confirmation_id: str) -> VNextRow | None:
         return self._fetch_optional_one(
             f"""
