@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -469,6 +469,331 @@ def test_memory_manage_undo_with_replacement_links_the_supersession_chain(sqlite
     # Only the replacement is recallable; the superseded row is history.
     recall = call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "daily standup"})
     assert [row["id"] for row in recall["results"]] == [new_id]
+
+
+def _commit_active_memory(context: MCPRuntimeContext, *, title: str, text: str, memory_type: str = "semantic") -> str:
+    committed = call_mcp_tool(
+        context,
+        name="alice_memory_commit",
+        arguments={
+            **TRUSTED_AGENT,
+            "title": title,
+            "canonical_text": text,
+            "memory_type": memory_type,
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    assert committed["status"] == "committed"
+    return str(committed["memory"]["id"])
+
+
+def test_memory_manage_expire_hides_from_recall_and_unexpire_restores(sqlite_context) -> None:
+    memory_id = _commit_active_memory(
+        sqlite_context,
+        title="Visa window",
+        text="The visa filing window closes at the end of June.",
+    )
+    assert (
+        call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "visa filing window"})["count"] == 1
+    )
+
+    # Expiry needs a reason: it is an audited validity decision.
+    with pytest.raises(MCPToolError, match="reason"):
+        call_mcp_tool(
+            sqlite_context,
+            name="alice_memory_manage",
+            arguments={**TRUSTED_AGENT, "action": "expire", "memory_id": memory_id},
+        )
+
+    expired = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_manage",
+        arguments={**TRUSTED_AGENT, "action": "expire", "memory_id": memory_id, "reason": "Window has closed"},
+    )
+    assert expired["status"] == "expired"
+    # Expiry is temporal, not a lifecycle judgment: the row stays active.
+    assert expired["memory"]["status"] == "active"
+    assert expired["valid_to"]
+
+    assert (
+        call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "visa filing window"})["count"] == 0
+    )
+    audit = call_mcp_tool(sqlite_context, name="alice_explain", arguments={"memory_id": memory_id})
+    assert any(event["event_type"] == "agent.memory_expired" for event in audit["events"])
+
+    unexpired = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_manage",
+        arguments={**TRUSTED_AGENT, "action": "unexpire", "memory_id": memory_id, "reason": "Deadline extended"},
+    )
+    assert unexpired["status"] == "active"
+    assert unexpired["idempotent_replay"] is False
+
+    restored = call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "visa filing window"})
+    assert [row["id"] for row in restored["results"]] == [memory_id]
+    audit = call_mcp_tool(sqlite_context, name="alice_explain", arguments={"memory_id": memory_id})
+    assert any(event["event_type"] == "agent.memory_unexpired" for event in audit["events"])
+
+    # Unexpiring a memory with no validity end replays as a no-op.
+    replay = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_manage",
+        arguments={**TRUSTED_AGENT, "action": "unexpire", "memory_id": memory_id, "reason": "Replay"},
+    )
+    assert replay["idempotent_replay"] is True
+
+
+ADMIN_AGENT = {
+    "agent_id": "ops",
+    "agent_type": "workflow_agent",
+    "permission_profile": "admin_agent",
+}
+
+
+def test_memory_manage_redact_expunges_content_and_keeps_audit_skeleton(sqlite_context) -> None:
+    secret = "Aurora-Kestrel-7741"
+    memory_id = _commit_active_memory(
+        sqlite_context,
+        title=f"Codename {secret}",
+        text=f"The unreleased launch codename is {secret}.",
+    )
+    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": secret})["count"] == 1
+
+    redacted = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_manage",
+        arguments={**ADMIN_AGENT, "action": "redact", "memory_id": memory_id, "reason": "Erasure request"},
+    )
+    assert redacted["status"] == "redacted"
+    assert redacted["forgotten_first"] is True  # live memory goes through forget first
+    assert redacted["redaction_marker"] == "[REDACTED]"
+    assert redacted["memory"]["status"] == "archived"
+    assert redacted["memory"]["canonical_text"] == "[REDACTED]"
+    assert redacted["redacted_revisions"] >= 2  # created + archived revisions were scrubbed
+    assert redacted["redacted_events"] >= 1
+
+    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": secret})["count"] == 0
+
+    # Direct SQL: marker-only content, archived status, and no trace of the
+    # secret anywhere — while the skeleton and redaction trail survive.
+    import sqlite3
+
+    like = f"%{secret}%"
+    with sqlite3.connect(_db_path(sqlite_context)) as conn:
+        title, canonical_text, summary, status = conn.execute(
+            "SELECT title, canonical_text, summary, status FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        assert (title, canonical_text, summary, status) == ("[REDACTED]", "[REDACTED]", "[REDACTED]", "archived")
+        for table, columns in (
+            ("memories", ("title", "canonical_text", "summary", "value", "metadata_json")),
+            ("memory_revisions", ("previous_value", "new_value", "text_before", "text_after", "reason", "metadata_json")),
+            ("event_log", ("payload_json",)),
+        ):
+            where = " OR ".join(f"{column} LIKE ?" for column in columns)
+            leaks = conn.execute(f"SELECT count(*) FROM {table} WHERE {where}", (like,) * len(columns)).fetchone()[0]
+            assert leaks == 0, f"redacted content leaked in {table}"
+        revision_count = conn.execute(
+            "SELECT count(*) FROM memory_revisions WHERE memory_id = ?", (memory_id,)
+        ).fetchone()[0]
+        assert revision_count >= 2  # the skeleton survives redaction
+        redaction_events = conn.execute(
+            "SELECT count(*) FROM event_log WHERE event_type = 'memory.redacted' AND target_id = ?",
+            (memory_id,),
+        ).fetchone()[0]
+        assert redaction_events == 3  # content, revisions, and events operations each left proof
+
+
+def test_memory_manage_redact_is_blocked_for_non_admin_agents(sqlite_context) -> None:
+    memory_id = _commit_active_memory(
+        sqlite_context,
+        title="Retro window",
+        text="The retro window is on Thursdays.",
+    )
+
+    with pytest.raises(MCPToolError, match="agent policy blocked"):
+        call_mcp_tool(
+            sqlite_context,
+            name="alice_memory_manage",
+            arguments={**TRUSTED_AGENT, "action": "redact", "memory_id": memory_id, "reason": "Not allowed"},
+        )
+    # The blocked call changed nothing.
+    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "retro window"})["count"] == 1
+
+    # A human operator (no agent identity) may redact.
+    redacted = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_manage",
+        arguments={"action": "redact", "memory_id": memory_id, "reason": "User asked for erasure"},
+    )
+    assert redacted["status"] == "redacted"
+    assert call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "retro window"})["count"] == 0
+
+
+def test_memory_manage_accept_consolidation_supersedes_members(sqlite_context) -> None:
+    first_id = _commit_active_memory(
+        sqlite_context, title="Standup window", text="Team standup happens in the morning."
+    )
+    second_id = _commit_active_memory(
+        sqlite_context, title="Standup time", text="Team standup happens at 9:30am."
+    )
+
+    # Seed the candidate shape the consolidation pipeline proposes.
+    with sqlite_user_connection(_db_path(sqlite_context), USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        candidate = store.create_memory(
+            {
+                "memory_type": "semantic",
+                "memory_key": f"consolidation.candidate.{uuid4()}",
+                "value": {"text": "Team standup happens every morning at 9:30am."},
+                "status": "candidate",
+                "confidence": 0.9,
+                "title": "Standup schedule",
+                "canonical_text": "Team standup happens every morning at 9:30am.",
+                "summary": "Team standup happens every morning at 9:30am.",
+                "domain": "professional",
+                "sensitivity": "internal",
+                "metadata_json": {
+                    "consolidation": {
+                        "proposal_kind": "merge",
+                        "cluster_member_ids": [first_id, second_id],
+                        "proposed_supersede": [first_id, second_id],
+                    },
+                    "review_required": True,
+                },
+            },
+            actor_type="system",
+        )
+    candidate_id = str(candidate["id"])
+
+    # Acceptance is a review decision: non-admin agents are blocked.
+    with pytest.raises(MCPToolError, match="agent policy blocked"):
+        call_mcp_tool(
+            sqlite_context,
+            name="alice_memory_manage",
+            arguments={
+                **TRUSTED_AGENT,
+                "action": "accept_consolidation",
+                "memory_id": candidate_id,
+                "reason": "Merge the duplicates",
+            },
+        )
+
+    accepted = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_manage",
+        arguments={
+            "action": "accept_consolidation",
+            "memory_id": candidate_id,
+            "reason": "Two copies of one schedule fact",
+        },
+    )
+    assert accepted["status"] == "accepted"
+    assert accepted["proposal_kind"] == "merge"
+    assert sorted(accepted["superseded_member_ids"]) == sorted([first_id, second_id])
+    assert accepted["memory"]["status"] == "active"
+    assert accepted["memory"]["metadata_json"]["merged_from"] == [first_id, second_id]
+
+    # The supersessions executed: only the accepted memory is recallable.
+    recall = call_mcp_tool(sqlite_context, name="alice_recall", arguments={"query": "team standup"})
+    assert [row["id"] for row in recall["results"]] == [candidate_id]
+    member_audit = call_mcp_tool(sqlite_context, name="alice_explain", arguments={"memory_id": first_id})
+    assert member_audit["memory"]["status"] == "superseded"
+    assert member_audit["memory"]["superseded_by"] == candidate_id
+
+    # Replaying the acceptance changes nothing.
+    replay = call_mcp_tool(
+        sqlite_context,
+        name="alice_memory_manage",
+        arguments={"action": "accept_consolidation", "memory_id": candidate_id, "reason": "Replay"},
+    )
+    assert replay["idempotent_replay"] is True
+
+
+def test_recall_and_context_pack_depth_and_strategy_args_reach_retrieval(sqlite_context) -> None:
+    preference_id = _commit_active_memory(
+        sqlite_context,
+        title="Budget format preference",
+        text="Sami prefers the quarterly budget in euros.",
+        memory_type="preference",
+    )
+    episode_id = _commit_active_memory(
+        sqlite_context,
+        title="Budget review",
+        text="Sami reviewed the quarterly budget on Tuesday.",
+        memory_type="episode",
+    )
+
+    minimal = call_mcp_tool(
+        sqlite_context,
+        name="alice_recall",
+        arguments={
+            "query": "quarterly budget",
+            "debug": True,
+            "context_depth": "minimal",
+            "budget_strategy": "facts_first",
+        },
+    )
+    assert minimal["retrieval"]["context_depth"] == "minimal"
+    assert minimal["retrieval"]["budget_strategy"] == "facts_first"
+    assert minimal["retrieval"]["stages"]["vector"]["status"] == "disabled: context_depth=minimal"
+    assert minimal["retrieval"]["stages"]["graph"]["status"] == "disabled: context_depth=minimal"
+    assert {row["id"] for row in minimal["results"]} == {preference_id, episode_id}
+    # facts_first boosts preference/semantic/decision memories to the front.
+    assert minimal["results"][0]["id"] == preference_id
+
+    with pytest.raises(MCPToolError, match="context_depth"):
+        call_mcp_tool(
+            sqlite_context,
+            name="alice_recall",
+            arguments={"query": "quarterly budget", "context_depth": "bottomless"},
+        )
+    with pytest.raises(MCPToolError, match="budget_strategy"):
+        call_mcp_tool(
+            sqlite_context,
+            name="alice_recall",
+            arguments={"query": "quarterly budget", "budget_strategy": "chaos"},
+        )
+
+    pack = call_mcp_tool(
+        sqlite_context,
+        name="alice_context_pack",
+        arguments={
+            "query": "quarterly budget",
+            "debug": True,
+            "context_depth": "minimal",
+            "budget_strategy": "facts_first",
+        },
+    )
+    assert pack["trace"]["context_depth"] == "minimal"
+    assert pack["trace"]["budget_strategy"] == "facts_first"
+    assert pack["trace"]["stages"]["vector"]["status"] == "disabled: context_depth=minimal"
+
+
+def test_context_pack_include_flags_are_tri_state(sqlite_context) -> None:
+    _commit_active_memory(
+        sqlite_context,
+        title="Provenance rule",
+        text="Context packs must carry provenance for every fact.",
+    )
+
+    def sources_stage(arguments: dict[str, object]) -> dict[str, object]:
+        pack = call_mcp_tool(
+            sqlite_context,
+            name="alice_context_pack",
+            arguments={"query": "context pack provenance", "debug": True, **arguments},
+        )
+        return pack["trace"]["stages"]["sources"]
+
+    # Absent: the default (low) tier keeps sources on.
+    assert "status" not in sources_stage({})
+    # Absent at minimal depth: the tier default turns sources off.
+    assert sources_stage({"context_depth": "minimal"})["status"] == "disabled: context_depth=minimal"
+    # Explicit true always wins over the tier default.
+    assert "status" not in sources_stage({"context_depth": "minimal", "include_sources": True})
+    # Explicit false always wins too, with the honest flag status.
+    assert sources_stage({"include_sources": False})["status"] == "disabled: include_sources=false"
 
 
 def test_memory_commit_confirmation_flow(sqlite_context) -> None:
@@ -1064,6 +1389,7 @@ def test_normalized_argv_defaults_to_mcp_subcommand() -> None:
     assert _normalized_argv(["--data-dir", "/tmp/x"]) == ["mcp", "--data-dir", "/tmp/x"]
     assert _normalized_argv(["mcp", "--db", "x.db"]) == ["mcp", "--db", "x.db"]
     assert _normalized_argv(["export", "--out", "o.jsonl"]) == ["export", "--out", "o.jsonl"]
+    assert _normalized_argv(["import", "--in", "o.jsonl"]) == ["import", "--in", "o.jsonl"]
     assert _normalized_argv(["--version"]) == ["--version"]
 
 
@@ -1097,23 +1423,428 @@ def test_export_writes_jsonl_records(sqlite_context, tmp_path) -> None:
     )
     assert exit_code == 0
 
-    records = [json.loads(line) for line in out_path.read_text(encoding="utf-8").splitlines()]
-    by_type: dict[str, list[dict[str, object]]] = {}
-    for record in records:
-        assert set(record) == {"record_type", "record"}
-        by_type.setdefault(record["record_type"], []).append(record["record"])
-
-    assert set(by_type) == {"memory", "source", "open_loop", "event"}
+    by_type = _read_export_by_type(out_path)
+    # The capture path writes a source, the candidate memory, its
+    # provenance link, and the audit events; the loop was created above.
+    assert {"memory", "source", "open_loop", "event", "provenance_link"} <= set(by_type)
     assert any(row["id"] == memory_id for row in by_type["memory"])
     assert len(by_type["source"]) == 1
     assert by_type["open_loop"][0]["title"] == "Exportable loop"
     assert any(row["event_type"] == "source.captured" for row in by_type["event"])
+    assert all(row["target_id"] == memory_id for row in by_type["provenance_link"])
 
 
 def test_export_fails_cleanly_when_database_missing(tmp_path, capsys) -> None:
     exit_code = onramp_main(["export", "--db", str(tmp_path / "nope.db")])
     assert exit_code == 1
     assert "does not exist" in capsys.readouterr().err
+
+
+# --- export/import round trip ---------------------------------------------------
+
+ALL_RECORD_TYPES = {
+    "source",
+    "source_chunk",
+    "memory",
+    "entity",
+    "graph_edge",
+    "memory_revision",
+    "provenance_link",
+    "open_loop",
+    "event",
+}
+
+
+def _read_export_by_type(path: Path) -> dict[str, list[dict[str, object]]]:
+    """Parse an export JSONL file into ``{record_type: [record, ...]}``."""
+    by_type: dict[str, list[dict[str, object]]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        assert set(record) == {"record_type", "record"}
+        by_type.setdefault(record["record_type"], []).append(record["record"])
+    return by_type
+
+
+def _assert_equivalent_exports(
+    first: dict[str, list[dict[str, object]]],
+    second: dict[str, list[dict[str, object]]],
+) -> None:
+    """Round-trip equivalence: same record types, and for each type the
+    same multiset of records field-for-field (ids, timestamps, JSON
+    payloads included). Only line ORDER may differ, which matters for the
+    event log; records are therefore compared sorted by id."""
+    assert set(first) == set(second)
+    for record_type in first:
+        original = sorted(first[record_type], key=lambda row: str(row["id"]))
+        round_tripped = sorted(second[record_type], key=lambda row: str(row["id"]))
+        assert original == round_tripped, f"record_type {record_type} did not round-trip"
+
+
+def _seed_full_graph(db_path: Path) -> dict[str, dict[str, object]]:
+    """One of every exportable record type, written through the store."""
+    with sqlite_user_connection(db_path, USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        source = store.create_source(
+            {
+                "source_type": "note",
+                "title": "Round-trip source",
+                "content_hash": "hash-round-trip",
+                "captured_at": "2026-06-01T08:00:00Z",
+                "domain": "project",
+                "sensitivity": "internal",
+                "metadata_json": {"origin": "seed"},
+            }
+        )
+        chunk = store.create_source_chunk(
+            {
+                "source_id": source["id"],
+                "chunk_index": 0,
+                "text": "The round-trip chunk text.",
+                "token_count": 6,
+            }
+        )
+        memory = store.create_memory(
+            {
+                "memory_key": "decision.round-trip",
+                "status": "active",
+                "memory_type": "decision",
+                "title": "Round-trip decision",
+                "canonical_text": "Exported data must survive the import round trip.",
+                "domain": "project",
+                "sensitivity": "internal",
+                "confidence": 0.9,
+                "value": {"text": "Exported data must survive the import round trip."},
+            }
+        )
+        entity = store.create_entity(
+            {
+                "entity_type": "organization",
+                "name": "Roundtrip Labs",
+                "aliases": ["roundtrip"],
+                "mention_count": 2,
+            }
+        )
+        open_edge = store.create_graph_edge(
+            {
+                "from_type": "memory",
+                "from_id": str(memory["id"]),
+                "to_type": "entity",
+                "to_id": str(entity["id"]),
+                "edge_type": "mentions",
+            }
+        )
+        # A CLOSED edge (valid_to set): temporal history must round-trip
+        # even though store.list_edges hides it.
+        closed_edge = store.create_graph_edge(
+            {
+                "from_type": "memory",
+                "from_id": str(memory["id"]),
+                "to_type": "entity",
+                "to_id": str(entity["id"]),
+                "edge_type": "similar_to",
+                "valid_from": "2026-01-01T00:00:00Z",
+                "valid_to": "2026-02-01T00:00:00Z",
+            }
+        )
+        revision = store.append_revision(
+            {
+                "memory_id": memory["id"],
+                "memory_key": "decision.round-trip",
+                "revision_type": "edited",
+                "text_after": "Exported data must survive the import round trip.",
+                "reason": "seed revision",
+            }
+        )
+        link = store.create_provenance_link(
+            {
+                "target_type": "memory",
+                "target_id": str(memory["id"]),
+                "source_id": source["id"],
+                "source_chunk_id": chunk["id"],
+                "quote": "round-trip chunk text",
+                "evidence_role": "quoted_from",
+                "confidence": 0.8,
+            }
+        )
+        loop = store.create_open_loop(
+            {
+                "title": "Verify the round trip",
+                "memory_id": memory["id"],
+                "source_id": source["id"],
+                "domain": "project",
+                "sensitivity": "internal",
+            }
+        )
+    return {
+        "source": source,
+        "source_chunk": chunk,
+        "memory": memory,
+        "entity": entity,
+        "graph_edge": open_edge,
+        "closed_edge": closed_edge,
+        "memory_revision": revision,
+        "provenance_link": link,
+        "open_loop": loop,
+    }
+
+
+def _export_to(db_path: Path, out_path: Path) -> dict[str, list[dict[str, object]]]:
+    exit_code = onramp_main(
+        ["export", "--db", str(db_path), "--user-id", str(USER_ID), "--out", str(out_path)]
+    )
+    assert exit_code == 0
+    return _read_export_by_type(out_path)
+
+
+def test_import_round_trip_reproduces_equivalent_export(tmp_path, capsys) -> None:
+    origin_db = tmp_path / "origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    _seed_full_graph(origin_db)
+
+    first_dump = tmp_path / "first.jsonl"
+    first = _export_to(origin_db, first_dump)
+    assert set(first) == ALL_RECORD_TYPES
+    # Closed edges (valid_to set) are part of the export even though
+    # store.list_edges hides them from the live graph.
+    assert any(row["valid_to"] is not None for row in first["graph_edge"])
+
+    # Import into a database file that does not exist yet: the import
+    # bootstraps the directory, schema, and user row on its own.
+    fresh_db = tmp_path / "fresh" / "memory.db"
+    assert not fresh_db.exists()
+    exit_code = onramp_main(
+        ["import", "--in", str(first_dump), "--db", str(fresh_db), "--user-id", str(USER_ID)]
+    )
+    assert exit_code == 0
+    assert fresh_db.exists()
+
+    summary = capsys.readouterr().out
+    total = sum(len(rows) for rows in first.values())
+    assert f"imported {total} records" in summary
+    assert "(0 skipped)" in summary
+    for record_type in ALL_RECORD_TYPES:
+        assert f"{record_type}: {len(first[record_type])} imported, 0 skipped" in summary
+
+    second = _export_to(fresh_db, tmp_path / "second.jsonl")
+    _assert_equivalent_exports(first, second)
+
+
+def test_import_preserves_ids_timestamps_and_provenance_references(tmp_path) -> None:
+    origin_db = tmp_path / "origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    seeded = _seed_full_graph(origin_db)
+
+    dump = tmp_path / "dump.jsonl"
+    first = _export_to(origin_db, dump)
+    # Exported memories carry no embedding blobs (embeddings are
+    # provider-specific and re-derivable); the row set is text + metadata.
+    assert all("embedding" not in row for row in first["memory"])
+
+    fresh_db = tmp_path / "fresh.db"
+    assert (
+        onramp_main(
+            ["import", "--in", str(dump), "--db", str(fresh_db), "--user-id", str(USER_ID)]
+        )
+        == 0
+    )
+
+    origin_memory = seeded["memory"]
+    with sqlite_user_connection(fresh_db, USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        imported_memory = store.get_memory(str(origin_memory["id"]))
+        assert imported_memory == origin_memory  # id, created_at, updated_at, all fields
+        # Embeddings were not exported, so the imported row has none:
+        # FTS-only until re-embedded.
+        embedding_row = conn.execute(
+            "SELECT embedding FROM memories WHERE id = ?", (str(origin_memory["id"]),)
+        ).fetchone()
+        assert embedding_row["embedding"] is None
+
+        # Provenance references stay intact because ids were preserved.
+        links = store.list_provenance_links(
+            target_type="memory", target_id=str(origin_memory["id"])
+        )
+        assert [link["id"] for link in links] == [seeded["provenance_link"]["id"]]
+        assert links[0]["source_id"] == seeded["source"]["id"]
+        assert links[0]["source_chunk_id"] == seeded["source_chunk"]["id"]
+        assert links[0]["created_at"] == seeded["provenance_link"]["created_at"]
+
+        # The audit trail: events keep their ids and occurred_at stamps.
+        imported_events = store.list_events()
+    origin_events = first["event"]
+    assert {event["id"] for event in imported_events} == {row["id"] for row in origin_events}
+    origin_by_id = {row["id"]: row for row in origin_events}
+    for event in imported_events:
+        assert event["occurred_at"] == origin_by_id[event["id"]]["occurred_at"]
+
+    # Imported memories are immediately recallable via FTS (no embeddings).
+    context = MCPRuntimeContext(database_url=sqlite_url_for_path(fresh_db), user_id=USER_ID)
+    recall = call_mcp_tool(context, name="alice_recall", arguments={"query": "import round trip"})
+    assert any(row["id"] == str(origin_memory["id"]) for row in recall["results"])
+
+
+def test_import_summary_notes_memories_lack_embeddings(tmp_path, capsys) -> None:
+    origin_db = tmp_path / "origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    _seed_full_graph(origin_db)
+    dump = tmp_path / "dump.jsonl"
+    _export_to(origin_db, dump)
+
+    fresh_db = tmp_path / "fresh.db"
+    assert (
+        onramp_main(
+            ["import", "--in", str(dump), "--db", str(fresh_db), "--user-id", str(USER_ID)]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "without embeddings" in out
+    assert "ALICE_EMBEDDINGS_" in out
+
+
+def test_import_mode_skip_counts_existing_rows_and_never_overwrites(tmp_path, capsys) -> None:
+    origin_db = tmp_path / "origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    _seed_full_graph(origin_db)
+    dump = tmp_path / "dump.jsonl"
+    first = _export_to(origin_db, dump)
+
+    # Importing an export back into its own database: every id collides,
+    # everything is skipped, nothing is overwritten, exit code stays 0.
+    exit_code = onramp_main(
+        ["import", "--in", str(dump), "--db", str(origin_db), "--user-id", str(USER_ID)]
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    total = sum(len(rows) for rows in first.values())
+    assert f"imported 0 records" in out
+    assert f"({total} skipped)" in out
+    for record_type in ALL_RECORD_TYPES:
+        assert f"{record_type}: 0 imported, {len(first[record_type])} skipped" in out
+
+    # The database is unchanged: a fresh export is equivalent.
+    _assert_equivalent_exports(first, _export_to(origin_db, tmp_path / "after.jsonl"))
+
+
+def test_import_mode_fail_aborts_on_collision_and_writes_nothing(tmp_path, capsys) -> None:
+    origin_db = tmp_path / "origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    _seed_full_graph(origin_db)
+    dump = tmp_path / "dump.jsonl"
+    first = _export_to(origin_db, dump)
+
+    # A novel source followed by a colliding memory: fail mode must abort
+    # the whole import, including the already-inserted novel row.
+    novel_source = {**first["source"][0], "id": str(uuid4()), "content_hash": "hash-novel"}
+    colliding_memory = first["memory"][0]
+    partial = tmp_path / "partial.jsonl"
+    partial.write_text(
+        json.dumps({"record_type": "source", "record": novel_source}) + "\n"
+        + json.dumps({"record_type": "memory", "record": colliding_memory}) + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = onramp_main(
+        [
+            "import",
+            "--in",
+            str(partial),
+            "--db",
+            str(origin_db),
+            "--user-id",
+            str(USER_ID),
+            "--mode",
+            "fail",
+        ]
+    )
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "line 2" in err
+    assert str(colliding_memory["id"]) in err
+    assert "already exists" in err
+    assert "no records were written" in err
+
+    # Rollback: the novel source from line 1 must not have been kept.
+    with sqlite_user_connection(origin_db, USER_ID) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM sources WHERE id = ?", (novel_source["id"],)
+        ).fetchone()
+    assert row is None
+
+
+def test_import_malformed_line_reports_line_number_and_creates_nothing(tmp_path, capsys) -> None:
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text(
+        json.dumps(
+            {
+                "record_type": "open_loop",
+                "record": {"id": str(uuid4()), "title": "Valid loop", "status": "open"},
+            }
+        )
+        + "\nthis is not json\n",
+        encoding="utf-8",
+    )
+    target_db = tmp_path / "target.db"
+    exit_code = onramp_main(
+        ["import", "--in", str(bad), "--db", str(target_db), "--user-id", str(USER_ID)]
+    )
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "line 2" in err
+    assert "invalid JSON" in err
+    # Parsing happens before any database work: nothing was created.
+    assert not target_db.exists()
+
+
+def test_import_unknown_record_type_reports_line_number(tmp_path, capsys) -> None:
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text(
+        json.dumps({"record_type": "wombat", "record": {"id": str(uuid4())}}) + "\n",
+        encoding="utf-8",
+    )
+    exit_code = onramp_main(
+        ["import", "--in", str(bad), "--db", str(tmp_path / "t.db"), "--user-id", str(USER_ID)]
+    )
+    assert exit_code == 1
+    err = capsys.readouterr().err
+    assert "line 1" in err
+    assert "unknown record_type 'wombat'" in err
+
+
+def test_import_missing_file_fails_cleanly(tmp_path, capsys) -> None:
+    exit_code = onramp_main(
+        ["import", "--in", str(tmp_path / "nope.jsonl"), "--db", str(tmp_path / "t.db")]
+    )
+    assert exit_code == 1
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_import_reads_old_exports_lacking_newer_record_types(tmp_path) -> None:
+    """Backward compat: exports written before source_chunk/entity/
+    graph_edge/memory_revision/provenance_link existed still import."""
+    origin_db = tmp_path / "origin.db"
+    bootstrap_database(origin_db, user_id=USER_ID, user_email="local@alice")
+    _seed_full_graph(origin_db)
+    full = _export_to(origin_db, tmp_path / "full.jsonl")
+
+    old_types = ("memory", "source", "open_loop", "event")
+    old_dump = tmp_path / "old-format.jsonl"
+    with old_dump.open("w", encoding="utf-8") as stream:
+        for record_type in old_types:
+            for record in full[record_type]:
+                stream.write(json.dumps({"record_type": record_type, "record": record}) + "\n")
+
+    fresh_db = tmp_path / "fresh.db"
+    exit_code = onramp_main(
+        ["import", "--in", str(old_dump), "--db", str(fresh_db), "--user-id", str(USER_ID)]
+    )
+    assert exit_code == 0
+    with sqlite_user_connection(fresh_db, USER_ID) as conn:
+        store = SQLiteVNextStore(conn, USER_ID)
+        assert [row["id"] for row in store.list_memories()] == [
+            row["id"] for row in full["memory"]
+        ]
+        assert len(store.list_events()) == len(full["event"])
 
 
 # --- true subprocess smoke over stdio ------------------------------------------

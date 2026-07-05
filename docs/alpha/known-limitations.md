@@ -29,6 +29,9 @@ SQLite mode (`alice-memory mcp`) is the trial/single-agent path and carries extr
 - no web console review — review runs through `alice_memory_review` / `alice_memory_correct`
 - no scheduler
 - one user per local database file
-- no automatic migration to Postgres; `alice-memory export` gets your data out
+- no automatic migration to Postgres; `alice-memory export` gets your data out and `alice-memory import` loads an export into another local database (ids and timestamps preserved)
+- embedding vectors are not exported: after `alice-memory import`, memories are keyword-searchable (FTS) immediately but stay out of vector search until re-embedded — configure `ALICE_EMBEDDINGS_*` and touch or re-commit the imported memories
+- import never overwrites existing rows: colliding ids are skipped (default) or abort the import (`--mode fail`)
+- users, agent identities/API keys, and entity relationship history are not part of the export/import surface; soft-deleted rows stay behind
 
 Do not describe this alpha as hosted SaaS, production-ready, or automatic memory autopilot.
