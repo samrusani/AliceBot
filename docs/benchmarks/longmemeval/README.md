@@ -63,9 +63,27 @@ Roughly 2.5 hours and under $10 of API usage with this configuration.
 
 ## Honest caveats
 
-- **Self-reported, one run.** Generation is temperature-0 but OpenAI
-  inference is not bit-deterministic; a validation slice and the full run
-  scored within half a point of each other (64.2% / 64.6%).
+- **Run-to-run variance is real; treat single-run deltas under ~2 points as
+  noise.** Three full 500-question runs have been completed: 64.2% and
+  64.6% on the quoted release, and 63.0% on a later build that added
+  entity-graph retrieval. The spread (63.0–64.6, mean ≈ 63.9) is consistent
+  with binomial variance at n=500 under non-bit-deterministic temperature-0
+  inference. We quote 64.6% because it is the run with the complete archived
+  per-question evidence; the honest summary is "approximately 64%".
+- **Negative result, disclosed:** the entity-graph retrieval stage (which
+  provably lifts entity-name queries in `graph_hop_retrieval` from 0.0 to
+  1.0 recall) did **not** move this benchmark's multi-session category
+  (45.1% → 42.1%, within noise). Diagnosis: LongMemEval's multi-session
+  questions aggregate everyday facts with no named entities to hop through.
+  The mechanism is real; this benchmark's weakest category needs retrieval
+  breadth, not graphs.
+- **Breadth ablation (multi-session only):** re-running just the 133
+  multi-session questions with widened retrieval (16 items, ~6k context
+  tokens instead of ~3k) scored **49.2%** — a directional +4–7 point lift
+  over the 42.1%/45.1% full-run readings at double the context cost. This
+  motivates the planned aggregation mode (query-shape-aware breadth
+  defaults); it is reported here as an ablation with its config disclosed,
+  not folded into the headline number.
 - **Cross-system comparisons are approximate.** Published numbers for other
   systems use their own ingestion, retrieval, prompt, and (sometimes) judge
   variations. The judge model and prompts here are the benchmark's official

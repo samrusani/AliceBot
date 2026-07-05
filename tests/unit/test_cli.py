@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import pytest
+
 import alicebot_api.cli as cli_module
 from alicebot_api.config import Settings
 from alicebot_api.contracts import ContinuityRecallResponse
@@ -65,6 +67,13 @@ def test_parser_routes_required_commands() -> None:
         (["vnext", "memories", "undo"], "_run_vnext_memory_undo"),
         (["vnext", "memories", "correct", "memory-1", "--text", "Corrected"], "_run_vnext_memory_correct"),
         (["vnext", "memories", "forget", "memory-1"], "_run_vnext_memory_forget"),
+        (["vnext", "memories", "expire", "memory-1", "--reason", "Window closed"], "_run_vnext_memory_expire"),
+        (["vnext", "memories", "unexpire", "memory-1", "--reason", "Extended"], "_run_vnext_memory_unexpire"),
+        (["vnext", "memories", "redact", "memory-1", "--reason", "Erasure"], "_run_vnext_memory_redact"),
+        (
+            ["vnext", "memories", "accept-consolidation", "memory-1", "--reason", "Merge duplicates"],
+            "_run_vnext_memory_accept_consolidation",
+        ),
         (["vnext", "memories", "recent"], "_run_vnext_memory_recent"),
         (["vnext", "memories", "audit", "memory-1"], "_run_vnext_memory_audit"),
         (["vnext", "memories", "backfill-embeddings"], "_run_vnext_memories_backfill_embeddings"),
@@ -131,6 +140,41 @@ def test_parser_routes_required_commands() -> None:
     for argv, expected_handler_name in cases:
         parsed = parser.parse_args(argv)
         assert parsed.handler.__name__ == expected_handler_name
+
+
+def test_context_pack_parser_tuning_and_tri_state_flags() -> None:
+    parser = cli_module.build_parser()
+
+    omitted = parser.parse_args(["context-pack", "coffee"])
+    # Tri-state: omitted flags stay None so the context_depth tier decides.
+    assert omitted.sources is None
+    assert omitted.contradictions is None
+    assert omitted.context_depth is None
+    assert omitted.budget_strategy is None
+
+    explicit = parser.parse_args(
+        [
+            "context-pack",
+            "coffee",
+            "--no-sources",
+            "--contradictions",
+            "--context-depth",
+            "minimal",
+            "--budget-strategy",
+            "facts_first",
+        ]
+    )
+    assert explicit.sources is False
+    assert explicit.contradictions is True
+    assert explicit.context_depth == "minimal"
+    assert explicit.budget_strategy == "facts_first"
+
+
+def test_new_memory_lifecycle_subcommands_require_a_reason() -> None:
+    parser = cli_module.build_parser()
+    for subcommand in ("expire", "unexpire", "redact", "accept-consolidation"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["vnext", "memories", subcommand, "memory-1"])
 
 
 def test_parser_preserves_explicit_vnext_sensitivity_filter() -> None:
@@ -880,6 +924,57 @@ def test_context_pack_cli_returns_structured_vnext_pack(monkeypatch) -> None:
     assert payload["sources"][0]["id"] == str(source_id)
     assert payload["sources"][0]["captured_at"] == "2026-05-10T00:00:00+00:00"
     assert payload["trace"]["selected_count"] == 2
+
+
+def test_context_pack_cli_forwards_depth_strategy_and_tri_state_flags(monkeypatch) -> None:
+    store = FakeVNextCliStore()
+    store.memories.append(
+        {
+            "id": uuid4(),
+            "memory_type": "semantic",
+            "canonical_text": "Quarterly budget lives in the finance folder.",
+            "status": "active",
+            "confidence": 0.8,
+            "domain": "project",
+            "sensitivity": "private",
+        }
+    )
+
+    @contextmanager
+    def fake_vnext_store_context(_ctx):
+        yield store
+
+    monkeypatch.setattr(cli_module, "_vnext_store_context", fake_vnext_store_context)
+    ctx = cli_module.CLIContext(
+        settings=Settings(database_url="postgresql://db"),
+        database_url="postgresql://db",
+        user_id=uuid4(),
+    )
+    parser = cli_module.build_parser()
+
+    tuned_args = parser.parse_args(
+        [
+            "context-pack",
+            "quarterly budget",
+            "--context-depth",
+            "minimal",
+            "--budget-strategy",
+            "facts_first",
+            "--no-sources",
+        ]
+    )
+    tuned = json.loads(tuned_args.handler(ctx, tuned_args))
+    assert tuned["trace"]["context_depth"] == "minimal"
+    assert tuned["trace"]["budget_strategy"] == "facts_first"
+    # Explicit --no-sources wins over the tier default, with the honest status.
+    assert tuned["trace"]["stages"]["sources"]["status"] == "disabled: include_sources=false"
+
+    default_args = parser.parse_args(["context-pack", "quarterly budget"])
+    default = json.loads(default_args.handler(ctx, default_args))
+    # Omitted flags fall back to the request dataclass tier defaults.
+    assert default["trace"]["context_depth"] == "low"
+    assert default["trace"]["budget_strategy"] == "balanced"
+    assert "status" not in default["trace"]["stages"]["sources"]
 
 
 def test_vnext_brain_cli_generates_daily_and_weekly_artifacts(monkeypatch) -> None:

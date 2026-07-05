@@ -53,8 +53,14 @@ Claude Desktop / IDE config:
 - `alice_memory_correct` — act on a memory: approve, edit-and-approve,
   reject, or supersede with a replacement. Every change is audited.
 - `alice_memory_manage` — lifecycle verbs for committed memories: `confirm`
-  a pending confirmation, `undo` a commit, or `forget` a memory. Undo and
-  forget hide the memory from recall but keep its revisions and events.
+  a pending confirmation, `undo` a commit, `forget` a memory, `expire` /
+  `unexpire` its validity window, `accept_consolidation` for a
+  consolidation candidate, or `redact` its content. Undo, forget, and
+  expire hide the memory from recall but keep its revisions and events;
+  redact permanently expunges the content from the row, revisions, and
+  event payloads while keeping the audit skeleton. Redact and
+  accept_consolidation require a human operator or an admin agent, and
+  expire/unexpire/accept_consolidation/redact all require a `reason`.
 
 **Read**
 
@@ -62,13 +68,23 @@ Claude Desktop / IDE config:
   merged with reciprocal-rank fusion. Falls back to full-text only (and
   says so) when no embedding endpoint is configured. Accepts optional
   `memory_types` (typed filter, e.g. only `decision` or `procedure`
-  memories) and `projects` (project-scope filter) arrays.
+  memories) and `projects` (project-scope filter) arrays, plus
+  `context_depth` (`minimal` runs full-text only and caps results at 4;
+  `low` is the default hybrid behavior) and `budget_strategy`
+  (`facts_first` / `recent_first` reorder results; `balanced` is the
+  default).
 - `alice_context_pack` — a scoped context bundle for a task: relevant
   memories, open loops, and sources with supporting evidence. Accepts the
   same `memory_types` filter, and `max_tokens` is enforced: lowest-ranked
   items are dropped to fit the budget and the response carries a
   `token_report` (`token_budget`, `token_estimate`, `truncated`,
-  `dropped_item_count`).
+  `dropped_item_count`). `context_depth` picks the cost/coverage tier
+  (`minimal` | `low` | `medium` | `high`) and `budget_strategy` decides how
+  a tight token budget is spent (`balanced` | `facts_first` |
+  `recent_first` | `contradictions_first` | `sources_first`). The
+  `include_sources`/`include_contradictions` flags are tri-state: omit them
+  to let the `context_depth` tier decide; an explicit true/false always
+  wins.
 - `alice_resume` — a pick-work-back-up brief: last decision, suggested next
   action, open loops, recent changes; scopable to a project, person, or
   thread.

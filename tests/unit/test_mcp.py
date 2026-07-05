@@ -1882,7 +1882,23 @@ def test_new_core_tool_schemas_reuse_canonical_enums(core_surface) -> None:
 
     manage_schema = tools["alice_memory_manage"]["inputSchema"]
     assert manage_schema["required"] == ["action"]
-    assert manage_schema["properties"]["action"]["enum"] == ["confirm", "undo", "forget"]
+    assert manage_schema["properties"]["action"]["enum"] == [
+        "confirm",
+        "undo",
+        "forget",
+        "expire",
+        "unexpire",
+        "accept_consolidation",
+        "redact",
+    ]
+    assert "valid_to" in manage_schema["properties"]
+
+    from alicebot_api.vnext_retrieval import BUDGET_STRATEGIES, CONTEXT_DEPTHS
+
+    for tool_name in ("alice_recall", "alice_context_pack"):
+        tuning_properties = tools[tool_name]["inputSchema"]["properties"]
+        assert tuning_properties["context_depth"]["enum"] == list(CONTEXT_DEPTHS)
+        assert tuning_properties["budget_strategy"]["enum"] == list(BUDGET_STRATEGIES)
 
     for tool_name in ("alice_recall", "alice_context_pack"):
         memory_types_schema = tools[tool_name]["inputSchema"]["properties"]["memory_types"]
