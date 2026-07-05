@@ -13,9 +13,16 @@ deliberately inside the 0.5-0.8 band because every rule is a heuristic,
 never certainty):
 
 - ``capitalized_span`` (0.75): two or more consecutive capitalized
-  tokens ("Sami Rusani", "Alice Core"). Leading/trailing blocklisted
-  tokens are stripped ("The Alice Core" -> "Alice Core"); the span is
-  dropped if fewer than two tokens survive.
+  tokens ("Sami Rusani", "Type3 Capital") that carry POSITIVE type
+  evidence (org suffix, honorific, or a person-context cue -- see the
+  type table below). Leading/trailing blocklisted tokens are stripped
+  ("The Alice Core" -> "Alice Core"); the span is dropped if fewer than
+  two tokens survive.
+- ``capitalized_span_default`` (0.60): the same multi-token spans when
+  NO type evidence is present ("Street Threads", "Alice Core"). These
+  are typed 'other' -- a bare "Two Capitalized Words" shape is NOT
+  evidence of a person; LongMemEval-style shopping chatter is full of
+  brandish two-token spans.
 - ``domain`` (0.70): bare domains such as ``type3.capital``. The final
   label must be alphabetic, and common file suffixes (``notes.md``,
   ``node.js``) are excluded via ``_FILE_SUFFIX_PSEUDO_TLDS``.
@@ -28,15 +35,28 @@ never certainty):
   word that never appears mid-sentence is treated as noise.
 
 Coarse ``entity_type`` guesses come from a deliberately small,
-documented table:
+documented table (checked in this order):
 
 - organization: span ends in an org suffix (``_ORGANIZATION_SUFFIXES``)
   or the candidate is a bare domain;
-- person: span starts with an honorific (``_HONORIFICS``), the span is
-  exactly two capitalized words (the "First Last" pattern), or the
-  candidate is an @handle;
-- other: everything else (acronyms, repeated single tokens, longer
-  spans without an org suffix).
+- person: span starts with an honorific (``_HONORIFICS``); OR the span
+  is exactly two capitalized words AND a cheap relational/possessive
+  cue appears in the +-3-token context window around the span -- a cue
+  word directly before it ("with X", "met X", "my friend X"; see
+  ``_PERSON_CONTEXT_CUES_BEFORE``) or a speech verb immediately after
+  it ("X said", "X told me"; see ``_PERSON_CONTEXT_CUES_AFTER``); OR
+  the candidate is an @handle;
+- other: everything else -- including two-token spans WITHOUT such
+  evidence (the pre-LongMemEval default of "exactly two capitalized
+  tokens => person" misfiled brand names wholesale).
+
+Volume guards (noisy conversational text must not flood the entity
+table): in texts longer than ``LONG_TEXT_CHAR_THRESHOLD`` characters a
+multi-token span must occur at least ``LONG_TEXT_SPAN_REPEAT_MINIMUM``
+times to become a candidate (one mention in a short note is signal; one
+mention in a 10k-char transcript is noise), and linking writes at most
+``MAX_LINKED_ENTITIES_PER_TEXT`` candidates per text, selected by
+confidence then in-text frequency (``select_candidates_for_linking``).
 
 ``EntityLinkingService`` resolves candidates against the entities
 substrate (``find_entities_by_names``), records mentions on existing
@@ -62,7 +82,8 @@ above 'private' -- see ``ENTITY_EXTRACTION_SKIP_SENSITIVITIES``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 import re
 
@@ -88,6 +109,7 @@ ENTITY_EXTRACTION_BLOCKLIST = frozenset(
         "when", "where", "while", "after", "before", "however", "meanwhile",
         "also", "and", "but", "because", "although", "though", "unless",
         "until", "if", "in", "on", "at", "by", "to", "of", "as", "or", "not",
+        "with", "met",
         "is", "are", "was", "were", "be", "been", "it", "its", "we", "our",
         "i", "my", "you", "your", "he", "his", "she", "her", "they", "their",
         "yes", "no", "please", "thanks", "thank", "hello", "hi", "hey", "dear",
@@ -123,11 +145,16 @@ ENTITY_EXTRACTION_SKIP_SENSITIVITIES = frozenset(
 )
 
 # Fixed per-rule confidence, kept inside the 0.5-0.8 heuristic band.
+# capitalized_span is the evidence-backed span rule (org suffix,
+# honorific, or person-context cue); capitalized_span_default is the
+# same span shape WITHOUT type evidence and sits lower in the band so
+# cap selection and future bulk re-typing flows can target it.
 RULE_CONFIDENCE = {
     "capitalized_span": 0.75,
     "domain": 0.7,
     "handle": 0.65,
     "acronym": 0.6,
+    "capitalized_span_default": 0.6,
     "repeated_capitalized": 0.55,
 }
 
@@ -139,15 +166,69 @@ RULE_CONFIDENCE = {
 ENTITY_MENTION_EDGE_TYPE = "mentions"
 PERSON_ABOUT_EDGE_TYPE = "related_to_person"
 
-# Upper bound on linked candidates per text: extraction stays pure and
-# unbounded, but one runaway document must not fan out into thousands of
-# entity/edge writes.
-MAX_LINKED_ENTITIES_PER_TEXT = 50
+MAX_LINKED_ENTITIES_PER_TEXT = 25
+"""Per-text cap on candidates that may become entity/edge writes.
+
+Extraction stays pure and unbounded, but one runaway document must not
+fan out into hundreds of entity/edge writes. Survivors are selected by
+confidence, then in-text frequency -- NOT first-appearance order -- so
+a strong candidate late in a noisy text always beats weak early noise
+(see ``select_candidates_for_linking``).
+"""
+
+LONG_TEXT_CHAR_THRESHOLD = 1500
+"""Character length above which a text counts as LONG for extraction.
+
+Long conversational texts (LongMemEval-style transcripts) mention many
+incidental capitalized spans exactly once; short notes name the things
+they are actually about. Texts longer than this keep the stricter
+``LONG_TEXT_SPAN_REPEAT_MINIMUM`` repeat rule; texts at or under it
+keep single-mention capture (a person mentioned once in a short note is
+signal).
+"""
+
+LONG_TEXT_SPAN_REPEAT_MINIMUM = 2
+"""Occurrences a multi-token span needs in a LONG text to qualify.
+
+Applies only to ``capitalized_span``/``capitalized_span_default``
+candidates in texts longer than ``LONG_TEXT_CHAR_THRESHOLD`` chars: a
+span that appears once in a 10k-char transcript is noise, so it must
+repeat at least this many times to become a candidate. Occurrences of
+below-threshold spans still mask their text range from the weaker
+single-token rule (dropping a span must not resurrect its halves).
+"""
 
 _ORGANIZATION_SUFFIXES = frozenset(
-    {"inc", "llc", "ltd", "corp", "corporation", "labs", "gmbh", "ventures", "capital", "partners"}
+    {
+        "inc", "llc", "ltd", "co", "corp", "corporation", "labs", "gmbh",
+        "ventures", "capital", "partners", "group", "systems",
+    }
 )
 _HONORIFICS = frozenset({"mr", "mrs", "ms", "dr", "prof", "professor"})
+
+# Person-context cues: cheap positive evidence that a two-token
+# capitalized span names a person. BEFORE cues may appear anywhere in
+# the 3 tokens preceding the span ("met up with Sami Rusani", "my
+# friend Alice Rivers"); AFTER cues must be the FIRST token following
+# the span ("Marcus Chen said", "Sami Rusani, who ..."), because speech
+# verbs further out stop being about the span. Deliberately small and
+# relational -- generic subject verbs ("runs", "has", "launched") are
+# things brands do in shopping chatter and stay out of this table.
+_PERSON_CONTEXT_CUES_BEFORE = frozenset(
+    {
+        "with", "met", "meet", "meeting", "told", "asked", "thank",
+        "thanks", "thanked", "emailed", "pinged", "dear",
+        "friend", "colleague", "coworker", "cousin", "brother", "sister",
+        "mom", "dad", "wife", "husband", "boss",
+    }
+)
+_PERSON_CONTEXT_CUES_AFTER = frozenset(
+    {"said", "says", "told", "tells", "asked", "asks", "replied", "wrote", "mentioned", "who"}
+)
+# +-3 tokens around the span; 60 chars is enough to carry 3 tokens.
+_CONTEXT_WINDOW_TOKENS = 3
+_CONTEXT_WINDOW_CHARS = 60
+_CONTEXT_WORD_RE = re.compile(r"[A-Za-z']+")
 
 # Domain-rule exclusions: final labels that are file suffixes, not TLDs.
 _FILE_SUFFIX_PSEUDO_TLDS = frozenset(
@@ -181,6 +262,9 @@ class EntityCandidate:
     entity_type: str
     confidence: float
     source_rule: str
+    # In-text occurrence count across all rules for this normalized
+    # name; the frequency tie-break for cap selection.
+    occurrences: int = 1
 
     def to_record(self) -> JsonObject:
         return {
@@ -189,6 +273,7 @@ class EntityCandidate:
             "entity_type": self.entity_type,
             "confidence": self.confidence,
             "source_rule": self.source_rule,
+            "occurrences": self.occurrences,
         }
 
 
@@ -211,15 +296,34 @@ def _is_sentence_initial(text: str, start: int) -> bool:
     return index < 0 or text[index] in _SENTENCE_BOUNDARY_CHARS
 
 
-def _guess_span_type(token_normals: list[str]) -> str:
-    """Coarse entity_type guess for a capitalized span (documented table)."""
+def _has_person_context(text: str, start: int, end: int) -> bool:
+    """Cheap +-3-token window check for person evidence around a span."""
+    before = _CONTEXT_WORD_RE.findall(text[max(0, start - _CONTEXT_WINDOW_CHARS) : start])
+    if any(
+        token.casefold() in _PERSON_CONTEXT_CUES_BEFORE
+        for token in before[-_CONTEXT_WINDOW_TOKENS:]
+    ):
+        return True
+    after = _CONTEXT_WORD_RE.findall(text[end : end + _CONTEXT_WINDOW_CHARS])
+    return bool(after) and after[0].casefold() in _PERSON_CONTEXT_CUES_AFTER
+
+
+def _classify_span(token_normals: list[str], person_context: bool) -> tuple[str, str]:
+    """(entity_type, source_rule) for a capitalized span (documented table).
+
+    'person' requires POSITIVE evidence: an honorific prefix, or the
+    exact "First Last" two-token shape backed by a relational cue in
+    the surrounding context window. A bare two-token span defaults to
+    'other' via the lower-confidence ``capitalized_span_default`` rule
+    -- brandish spans ("Street Threads", "Urban Edge") are not people.
+    """
     if token_normals and token_normals[-1] in _ORGANIZATION_SUFFIXES:
-        return "organization"
+        return "organization", "capitalized_span"
     if token_normals and token_normals[0] in _HONORIFICS:
-        return "person"
-    if len(token_normals) == 2:
-        return "person"
-    return "other"
+        return "person", "capitalized_span"
+    if len(token_normals) == 2 and person_context:
+        return "person", "capitalized_span"
+    return "other", "capitalized_span_default"
 
 
 def _candidate(name: str, entity_type: str, rule: str) -> EntityCandidate | None:
@@ -239,16 +343,25 @@ def extract_entity_candidates(text: str) -> tuple[EntityCandidate, ...]:
     """Deterministic, pure entity extraction over ``text``.
 
     Returns candidates in first-appearance order, deduplicated by
-    normalized name (the highest-confidence rule wins a tie). See the
-    module docstring for the rule table and noise controls.
+    normalized name (the highest-confidence rule wins a tie) and
+    carrying their in-text ``occurrences`` count. In texts longer than
+    ``LONG_TEXT_CHAR_THRESHOLD`` chars, multi-token spans must repeat
+    at least ``LONG_TEXT_SPAN_REPEAT_MINIMUM`` times. See the module
+    docstring for the rule table and noise controls.
     """
     if not isinstance(text, str) or not text.strip():
         return ()
 
     found: list[tuple[int, EntityCandidate]] = []
     covered: list[tuple[int, int]] = []
+    long_text = len(text) > LONG_TEXT_CHAR_THRESHOLD
 
     # Rule: capitalized multi-word spans (2+ tokens), edges de-noised.
+    # Occurrences are grouped per normalized name first so LONG texts
+    # can enforce the repeat threshold; every occurrence still marks
+    # its range as covered so a below-threshold span never resurfaces
+    # through the single-token rule.
+    span_groups: dict[str, list[tuple[int, EntityCandidate]]] = {}
     for match in _CAP_SPAN_RE.finditer(text):
         tokens = [
             (token.start() + match.start(), token.group())
@@ -264,11 +377,16 @@ def extract_entity_candidates(text: str) -> tuple[EntityCandidate, ...]:
         end = tokens[-1][0] + len(tokens[-1][1])
         surface = text[start:end]
         token_normals = [normalize_entity_name(token) for _, token in tokens]
-        candidate = _candidate(surface, _guess_span_type(token_normals), "capitalized_span")
+        entity_type, rule = _classify_span(token_normals, _has_person_context(text, start, end))
+        candidate = _candidate(surface, entity_type, rule)
         if candidate is None:
             continue
         covered.append((start, end))
-        found.append((start, candidate))
+        span_groups.setdefault(candidate.normalized, []).append((start, candidate))
+    for group in span_groups.values():
+        if long_text and len(group) < LONG_TEXT_SPAN_REPEAT_MINIMUM:
+            continue
+        found.extend(group)
 
     # Rule: bare domains (type3.capital) -> organization.
     for match in _DOMAIN_RE.finditer(text):
@@ -320,22 +438,50 @@ def extract_entity_candidates(text: str) -> tuple[EntityCandidate, ...]:
             continue
         if all(sentence_initial for _, _, sentence_initial in spots):
             continue
-        position, surface, _ = spots[0]
+        first_position, surface, _ = spots[0]
         candidate = _candidate(surface, "other", "repeated_capitalized")
-        if candidate is not None:
-            found.append((position, candidate))
+        if candidate is None:
+            continue
+        # One entry per occurrence so the frequency tie-break sees the
+        # real in-text count; dedupe below collapses them again.
+        found.extend((position, candidate) for position, _, _ in spots)
 
     found.sort(key=lambda item: item[0])
     best: dict[str, EntityCandidate] = {}
+    counts: dict[str, int] = {}
     order: list[str] = []
     for _position, candidate in found:
+        counts[candidate.normalized] = counts.get(candidate.normalized, 0) + 1
         existing = best.get(candidate.normalized)
         if existing is None:
             best[candidate.normalized] = candidate
             order.append(candidate.normalized)
         elif candidate.confidence > existing.confidence:
             best[candidate.normalized] = candidate
-    return tuple(best[key] for key in order)
+    return tuple(replace(best[key], occurrences=counts[key]) for key in order)
+
+
+def select_candidates_for_linking(
+    candidates: Sequence[EntityCandidate],
+    *,
+    cap: int = MAX_LINKED_ENTITIES_PER_TEXT,
+) -> tuple[EntityCandidate, ...]:
+    """Choose which candidates may fan out into entity/edge writes.
+
+    When a text produces more than ``cap`` candidates, survivors are
+    selected by confidence (desc), then in-text occurrence count
+    (desc), then first-appearance order as the deterministic tie-break
+    -- NOT by first appearance alone, so a strong candidate late in a
+    noisy text always beats weak early noise. The returned tuple
+    preserves first-appearance order for stable linking output.
+    """
+    if len(candidates) <= cap:
+        return tuple(candidates)
+    ranked = sorted(
+        range(len(candidates)),
+        key=lambda index: (-candidates[index].confidence, -candidates[index].occurrences, index),
+    )
+    return tuple(candidates[index] for index in sorted(ranked[:cap]))
 
 
 def derive_person_name_from_title(title: str) -> str | None:
@@ -460,7 +606,14 @@ class EntityLinkingService:
                     "first_observed_at": observed_at,
                     "last_observed_at": observed_at,
                     "mention_count": 1,
-                    "metadata_json": {"created_by": "vnext_entity_linker", "source_rule": "person_memory_title"},
+                    "metadata_json": {
+                        "created_by": "vnext_entity_linker",
+                        "source_rule": "person_memory_title",
+                        # Type-correction surface: review flows re-type
+                        # low-confidence entities in bulk off these keys.
+                        "extraction_rule": "person_memory_title",
+                        "extraction_confidence": 0.8,
+                    },
                 },
                 actor_type=self.actor_type,
             )
@@ -499,7 +652,7 @@ class EntityLinkingService:
         observed_at: object,
         mention_source_id: str | None,
     ) -> list[JsonObject]:
-        candidates = extract_entity_candidates(text)[:MAX_LINKED_ENTITIES_PER_TEXT]
+        candidates = select_candidates_for_linking(extract_entity_candidates(text))
         if not candidates:
             return []
 
@@ -545,6 +698,11 @@ class EntityLinkingService:
                         "metadata_json": {
                             "created_by": "vnext_entity_linker",
                             "source_rule": candidate.source_rule,
+                            # Type-correction surface: review flows can
+                            # re-type low-confidence entities in bulk by
+                            # filtering on rule + confidence.
+                            "extraction_rule": candidate.source_rule,
+                            "extraction_confidence": candidate.confidence,
                         },
                     },
                     actor_type=self.actor_type,
@@ -647,10 +805,13 @@ __all__ = [
     "ENTITY_MENTION_EDGE_TYPE",
     "EntityCandidate",
     "EntityLinkingService",
+    "LONG_TEXT_CHAR_THRESHOLD",
+    "LONG_TEXT_SPAN_REPEAT_MINIMUM",
     "MAX_LINKED_ENTITIES_PER_TEXT",
     "PERSON_ABOUT_EDGE_TYPE",
     "RULE_CONFIDENCE",
     "derive_person_name_from_title",
     "extract_entity_candidates",
+    "select_candidates_for_linking",
     "store_supports_entity_linking",
 ]
