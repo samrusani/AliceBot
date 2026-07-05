@@ -22,7 +22,7 @@ from alicebot_api.store import ContinuityStore
 
 THREAD_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 REQUIRED_HERMES_TOOL_NAMES = (
-    "mcp_alice_core_alice_recall",
+    "mcp_alice_core_alice_recall_debug",
     "mcp_alice_core_alice_resume",
     "mcp_alice_core_alice_open_loops",
     "mcp_alice_core_alice_capture_candidates",
@@ -134,6 +134,10 @@ def _build_local_mcp_compat_runtime():
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
+    # This smoke exercises the legacy capture/review flows alongside the core
+    # surface, so the long-tail tools must be registered.
+    os.environ.setdefault("ALICE_MCP_LEGACY_TOOLS", "1")
+
     # Import Hermes MCP runtime lazily so the script can print a clear error
     # when Hermes dependencies are not installed in this Python environment.
     runtime_mode = "hermes_runtime"
@@ -192,10 +196,12 @@ def main(argv: list[str] | None = None) -> int:
                 "DATABASE_URL": args.database_url,
                 "ALICEBOT_AUTH_USER_ID": str(user_id),
                 "PYTHONPATH": pythonpath,
+                # Legacy capture/review flows plus the debug recall view.
+                "ALICE_MCP_LEGACY_TOOLS": "1",
             },
             "tools": {
                 "include": [
-                    "alice_recall",
+                    "alice_recall_debug",
                     "alice_resume",
                     "alice_open_loops",
                     "alice_capture_candidates",
@@ -218,7 +224,7 @@ def main(argv: list[str] | None = None) -> int:
 
         recall = _dispatch_mcp_tool(
             registry,
-            tool_name="mcp_alice_core_alice_recall",
+            tool_name="mcp_alice_core_alice_recall_debug",
             arguments={"thread_id": str(THREAD_ID), "query": "Hermes", "limit": 5},
         )
         resume = _dispatch_mcp_tool(
@@ -307,8 +313,13 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("Recall returned no continuity items.")
         if resume["brief"]["last_decision"]["item"]["id"] != str(decision["id"]):
             raise RuntimeError("Resume did not surface the seeded decision.")
-        if open_loops["dashboard"]["waiting_for"]["items"][0]["id"] != str(waiting_for["id"]):
-            raise RuntimeError("Open loops did not surface the seeded waiting-for item.")
+        # Core alice_open_loops lists vNext open loops ({items, count}); the
+        # seeded legacy WaitingFor stays visible through the debug recall view.
+        if not isinstance(open_loops.get("items"), list) or "count" not in open_loops:
+            raise RuntimeError("Open loops did not return the core items/count shape.")
+        recall_ids = {item["id"] for item in recall.get("items", [])}
+        if str(waiting_for["id"]) not in recall_ids:
+            raise RuntimeError("Debug recall did not surface the seeded waiting-for item.")
         if commit_summary.get("auto_saved_count", 0) < 1:
             raise RuntimeError("Commit captures did not auto-save any candidate.")
         if commit_summary.get("review_queued_count", 0) < 1:
@@ -325,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
             "registered_tools": sorted(required_tools),
             "recall_items": recall["summary"]["returned_count"],
             "resume_last_decision_title": resume["brief"]["last_decision"]["item"]["title"],
-            "open_loop_count": open_loops["dashboard"]["summary"]["total_count"],
+            "open_loop_count": open_loops["count"],
             "capture_candidate_count": capture_candidates["summary"]["candidate_count"],
             "capture_auto_saved_count": commit_summary["auto_saved_count"],
             "capture_review_queued_count": commit_summary["review_queued_count"],
