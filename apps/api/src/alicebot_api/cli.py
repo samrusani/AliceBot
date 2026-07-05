@@ -237,7 +237,13 @@ from alicebot_api.vnext_evals import (
 from alicebot_api.vnext_projects import ProjectAutomationRequest, VNextProjectService, VNextProjectValidationError
 from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService, VNextQueueValidationError
 from alicebot_api.vnext_repositories import JsonObject
-from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService, VNextRetrievalValidationError
+from alicebot_api.vnext_retrieval import (
+    BUDGET_STRATEGIES,
+    CONTEXT_DEPTHS,
+    VNextRetrievalRequest,
+    VNextRetrievalService,
+    VNextRetrievalValidationError,
+)
 from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerService, VNextSchedulerValidationError, WORKFLOW_TYPES, default_schedule
 from alicebot_api.vnext_scheduler_runtime import (
     DEFAULT_LOG_FILE,
@@ -261,6 +267,7 @@ from alicebot_api.vnext_embeddings import (
 )
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
+from alicebot_api.mcp_tools import redact_memory_flow
 from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitService,
     VNextMemoryCommitValidationError,
@@ -1389,6 +1396,13 @@ def _run_vnext_artifact_insight_feedback(ctx: CLIContext, args: argparse.Namespa
 
 def _run_context_pack(ctx: CLIContext, args: argparse.Namespace) -> str:
     query = " ".join(args.query).strip()
+    # Only forwarded when the caller sets them, so the retrieval request
+    # dataclass stays the source of truth for the tier defaults.
+    tuning_kwargs: dict[str, object] = {}
+    if args.context_depth is not None:
+        tuning_kwargs["context_depth"] = args.context_depth
+    if args.budget_strategy is not None:
+        tuning_kwargs["budget_strategy"] = args.budget_strategy
     with _vnext_store_context(ctx) as store:
         payload = VNextRetrievalService(store).compile_context_pack(
             VNextRetrievalRequest(
@@ -1397,10 +1411,13 @@ def _run_context_pack(ctx: CLIContext, args: argparse.Namespace) -> str:
                 projects=tuple(args.project),
                 people=tuple(args.person),
                 sensitivity_allowed=_vnext_sensitivity_allowed(args),
-                include_sources=not args.no_sources,
-                include_contradictions=not args.no_contradictions,
+                # Tri-state flags: omitted means "let the context_depth tier
+                # decide"; --sources/--no-sources force an explicit value.
+                include_sources=args.sources,
+                include_contradictions=args.contradictions,
                 max_items=args.max_items,
                 max_tokens=args.max_tokens,
+                **tuning_kwargs,  # type: ignore[arg-type]
             )
         )
     return _json_dumps(payload)
@@ -1615,6 +1632,59 @@ def _run_vnext_memory_forget(ctx: CLIContext, args: argparse.Namespace) -> str:
         )
         ensure_policy_allowed(decision)
         payload = VNextMemoryCommitService(store).forget(identity=identity, memory_id=args.memory_id, reason=args.reason)
+    return _json_dumps(payload)
+
+
+def _run_vnext_memory_expire(ctx: CLIContext, args: argparse.Namespace) -> str:
+    # The commit service policy-checks memory.expire itself (and appends the
+    # policy events), so no CLI-side pre-check is needed; a blocked decision
+    # raises AgentPolicyBlockedError exactly like ensure_policy_allowed.
+    with _vnext_store_context(ctx) as store:
+        identity = _vnext_agent_identity_from_args(args)
+        payload = VNextMemoryCommitService(store).expire(
+            args.memory_id,
+            valid_to=args.valid_to,
+            reason=args.reason,
+            identity=identity,
+        )
+    return _json_dumps(payload)
+
+
+def _run_vnext_memory_unexpire(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        identity = _vnext_agent_identity_from_args(args)
+        payload = VNextMemoryCommitService(store).unexpire(
+            args.memory_id,
+            reason=args.reason,
+            identity=identity,
+        )
+    return _json_dumps(payload)
+
+
+def _run_vnext_memory_accept_consolidation(ctx: CLIContext, args: argparse.Namespace) -> str:
+    # Acceptance is a review decision: the commit service policy-checks it
+    # internally (human or admin agent only).
+    with _vnext_store_context(ctx) as store:
+        identity = _vnext_agent_identity_from_args(args)
+        payload = VNextMemoryCommitService(store).accept_consolidation_candidate(
+            args.memory_id,
+            reason=args.reason,
+            identity=identity,
+        )
+    return _json_dumps(payload)
+
+
+def _run_vnext_memory_redact(ctx: CLIContext, args: argparse.Namespace) -> str:
+    with _vnext_store_context(ctx) as store:
+        # Redaction has no commit-service seam, so the destructive-action
+        # policy (memory.redact: human or admin agent only) is checked here.
+        identity, _actor_type, _actor_id, decision = _vnext_policy_checked_for_args(
+            store,
+            args,
+            action="memory.redact",
+        )
+        ensure_policy_allowed(decision)
+        payload = redact_memory_flow(store, memory_id=args.memory_id, reason=args.reason, identity=identity)
     return _json_dumps(payload)
 
 
@@ -4501,11 +4571,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     context_pack_parser.add_argument("--max-items", type=int, default=8, help="Maximum selected memories.")
     context_pack_parser.add_argument("--max-tokens", type=int, default=8000, help="Approximate context token budget.")
-    context_pack_parser.add_argument("--no-sources", action="store_true", help="Do not require source references.")
     context_pack_parser.add_argument(
-        "--no-contradictions",
-        action="store_true",
-        help="Do not request contradiction placeholders by default.",
+        "--sources",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Force source documents on (--sources) or off (--no-sources). Omit to let --context-depth decide.",
+    )
+    context_pack_parser.add_argument(
+        "--contradictions",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Force contradicting evidence on (--contradictions) or off (--no-contradictions). Omit to let --context-depth decide.",
+    )
+    context_pack_parser.add_argument(
+        "--context-depth",
+        choices=CONTEXT_DEPTHS,
+        default=None,
+        help="Cost/coverage tier: minimal (FTS only, at most 4 items), low (default), medium, or high.",
+    )
+    context_pack_parser.add_argument(
+        "--budget-strategy",
+        choices=BUDGET_STRATEGIES,
+        default=None,
+        help="How the token budget is spent: balanced (default), facts_first, recent_first, contradictions_first, or sources_first.",
     )
     context_pack_parser.set_defaults(handler=_run_context_pack)
 
@@ -5119,7 +5207,10 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_open_loop_review_parser.add_argument("--resolution-note", default=None, help="Resolution note for close.")
     vnext_open_loop_review_parser.set_defaults(handler=_run_vnext_open_loop_review)
 
-    vnext_memories_parser = vnext_subparsers.add_parser("memories", help="Commit, confirm, undo, correct, forget, and audit vNext memories.")
+    vnext_memories_parser = vnext_subparsers.add_parser(
+        "memories",
+        help="Commit, confirm, undo, correct, forget, expire, unexpire, redact, accept-consolidation, and audit vNext memories.",
+    )
     vnext_memories_subparsers = vnext_memories_parser.add_subparsers(dest="vnext_memories_command", required=True)
     vnext_memory_commit_parser = vnext_memories_subparsers.add_parser(
         "commit",
@@ -5167,6 +5258,43 @@ def build_parser() -> argparse.ArgumentParser:
     vnext_memory_forget_parser.add_argument("memory_id", help="Memory id.")
     vnext_memory_forget_parser.add_argument("--reason", default=None, help="Forget reason.")
     vnext_memory_forget_parser.set_defaults(handler=_run_vnext_memory_forget)
+
+    vnext_memory_expire_parser = vnext_memories_subparsers.add_parser(
+        "expire",
+        help="Close a memory's validity window (valid_to) so recall stops returning it; the row stays active.",
+    )
+    _add_vnext_agent_arguments(vnext_memory_expire_parser)
+    vnext_memory_expire_parser.add_argument("memory_id", help="Memory id.")
+    vnext_memory_expire_parser.add_argument("--valid-to", default=None, help="ISO-8601 validity end. Defaults to now.")
+    vnext_memory_expire_parser.add_argument("--reason", required=True, help="Expiry reason. Stored in the audit trail.")
+    vnext_memory_expire_parser.set_defaults(handler=_run_vnext_memory_expire)
+
+    vnext_memory_unexpire_parser = vnext_memories_subparsers.add_parser(
+        "unexpire",
+        help="Reopen an expired memory's validity window so recall returns it again.",
+    )
+    _add_vnext_agent_arguments(vnext_memory_unexpire_parser)
+    vnext_memory_unexpire_parser.add_argument("memory_id", help="Memory id.")
+    vnext_memory_unexpire_parser.add_argument("--reason", required=True, help="Unexpire reason. Stored in the audit trail.")
+    vnext_memory_unexpire_parser.set_defaults(handler=_run_vnext_memory_unexpire)
+
+    vnext_memory_accept_consolidation_parser = vnext_memories_subparsers.add_parser(
+        "accept-consolidation",
+        help="Accept a consolidation candidate and supersede the memories it merges (human or admin agent only).",
+    )
+    _add_vnext_agent_arguments(vnext_memory_accept_consolidation_parser)
+    vnext_memory_accept_consolidation_parser.add_argument("memory_id", help="Consolidation candidate memory id.")
+    vnext_memory_accept_consolidation_parser.add_argument("--reason", required=True, help="Acceptance reason. Stored in the audit trail.")
+    vnext_memory_accept_consolidation_parser.set_defaults(handler=_run_vnext_memory_accept_consolidation)
+
+    vnext_memory_redact_parser = vnext_memories_subparsers.add_parser(
+        "redact",
+        help="Permanently expunge a memory's content from the row, revisions, and event payloads, keeping the audit skeleton (human or admin agent only).",
+    )
+    _add_vnext_agent_arguments(vnext_memory_redact_parser)
+    vnext_memory_redact_parser.add_argument("memory_id", help="Memory id.")
+    vnext_memory_redact_parser.add_argument("--reason", required=True, help="Redaction reason. Stored in the audit trail.")
+    vnext_memory_redact_parser.set_defaults(handler=_run_vnext_memory_redact)
 
     vnext_memory_recent_parser = vnext_memories_subparsers.add_parser("recent", help="List recent agentic memory commits.")
     _add_vnext_agent_arguments(vnext_memory_recent_parser)

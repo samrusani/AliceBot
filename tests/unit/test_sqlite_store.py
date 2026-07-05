@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from uuid import uuid4
@@ -1744,4 +1745,394 @@ def test_bootstrap_upgrades_a_pre_existing_db_file_with_the_entity_substrate(tmp
     ]
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         conn.execute("DELETE FROM entity_relationship_events")
+    conn.close()
+
+
+# -- true redaction ------------------------------------------------------------
+
+
+def _secret_memory(store: SQLiteVNextStore) -> dict[str, object]:
+    return _create_memory(
+        store,
+        title="SECRET-TITLE quantum sprocket",
+        canonical_text="SECRET-BODY the quantum sprocket calibration ritual",
+        summary="SECRET-SUMMARY sprocket notes",
+        value={"text": "SECRET-VALUE sprocket"},
+        trust_reason="user said SECRET-TRUST",
+        metadata_json={
+            "note": "SECRET-META",
+            "project_id": "proj-123",
+            "consolidation_digest": "digest-abc",
+        },
+    )
+
+
+def _secret_revision(store: SQLiteVNextStore, memory: dict[str, object]) -> dict[str, object]:
+    return store.append_revision(
+        {
+            "memory_id": memory["id"],
+            "memory_key": memory["memory_key"],
+            "previous_value": {"text": "SECRET-OLD"},
+            "new_value": {"text": "SECRET-NEW"},
+            "candidate": {"text": "SECRET-CAND"},
+            "text_before": "SECRET-BEFORE",
+            "text_after": "SECRET-AFTER",
+            "reason": "correcting SECRET-REASON",
+            "revision_type": "edited",
+            "metadata_json": {"note": "SECRET-REV-META"},
+        }
+    )
+
+
+def _table_dump(conn: sqlite3.Connection, table: str) -> str:
+    rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+    return repr(rows)
+
+
+def test_redact_memory_content_expunges_content_and_archives() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _secret_memory(store)
+    store.update_memory_embedding(memory_id=str(memory["id"]), vector=[0.5, 0.25])
+
+    row = store.redact_memory_content(memory_id=str(memory["id"]))
+
+    assert row["title"] == "[REDACTED]"
+    assert row["canonical_text"] == "[REDACTED]"
+    assert row["summary"] == "[REDACTED]"
+    assert row["trust_reason"] == "[REDACTED]"
+    assert row["value"] == {"redacted": True}
+    assert row["status"] == "archived"
+    assert row["deleted_at"] is not None
+    metadata = row["metadata_json"]
+    assert metadata["redacted"] is True
+    assert metadata["redacted_at"]
+    # Structural keys survive; content-bearing keys are gone.
+    assert metadata["project_id"] == "proj-123"
+    assert metadata["consolidation_digest"] == "digest-abc"
+    assert "note" not in metadata
+    # Skeleton is intact and the embedding is really gone.
+    direct = conn.execute(
+        "SELECT id, memory_key, created_at, embedding FROM memories WHERE id = ?",
+        (str(memory["id"]),),
+    ).fetchone()
+    assert direct[0] == memory["id"]
+    assert direct[1] == memory["memory_key"]
+    assert direct[2] == memory["created_at"]
+    assert direct[3] is None
+    assert "SECRET" not in _table_dump(conn, "memories")
+    # Exactly one memory.redacted event was appended, itself content-free.
+    redaction_events = [
+        event for event in store.list_events(target_type="memory", target_id=str(memory["id"]))
+        if event["event_type"] == "memory.redacted"
+    ]
+    assert len(redaction_events) == 1
+    assert redaction_events[0]["payload_json"] == {"operation": "redact_memory_content"}
+    conn.close()
+
+
+def test_redact_memory_content_works_on_soft_deleted_memories() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _secret_memory(store)
+    store.update_memory(memory_id=str(memory["id"]), patch={"status": "archived"})
+
+    row = store.redact_memory_content(memory_id=str(memory["id"]))
+
+    assert row["status"] == "archived"
+    assert row["canonical_text"] == "[REDACTED]"
+    assert "SECRET" not in _table_dump(conn, "memories")
+    conn.close()
+
+
+def test_redact_memory_content_missing_memory_raises() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+
+    with pytest.raises(ContinuityStoreInvariantError, match="did not find the memory"):
+        store.redact_memory_content(memory_id=str(uuid4()))
+    conn.close()
+
+
+def test_redact_memory_revisions_scrubs_content_and_preserves_skeleton() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _secret_memory(store)
+    created = store.append_revision(
+        {
+            "memory_id": memory["id"],
+            "memory_key": memory["memory_key"],
+            "new_value": {"text": "SECRET-FIRST"},
+            "candidate": {"text": "SECRET-FIRST"},
+            "text_after": "SECRET-FIRST",
+            "revision_type": "created",
+            "action": "ADD",
+        }
+    )
+    edited = _secret_revision(store, memory)
+    before = store.list_revisions(str(memory["id"]))
+    assert len(before) == 2
+
+    result = store.redact_memory_revisions(memory_id=str(memory["id"]))
+
+    assert result == {"memory_id": str(memory["id"]), "redacted_revisions": 2}
+    after = store.list_revisions(str(memory["id"]))
+    assert len(after) == 2
+    # Audit skeleton intact: ids, ordering numbers, types, actors, timestamps.
+    for before_row, after_row in zip(before, after):
+        for column in (
+            "id",
+            "memory_id",
+            "sequence_no",
+            "action",
+            "memory_key",
+            "source_event_ids",
+            "revision_number",
+            "revision_type",
+            "actor_type",
+            "actor_id",
+            "created_at",
+        ):
+            assert after_row[column] == before_row[column]
+    by_id = {row["id"]: row for row in after}
+    created_after = by_id[created["id"]]
+    edited_after = by_id[edited["id"]]
+    # NULL content stays NULL so the created-vs-edited shape survives.
+    assert created_after["previous_value"] is None
+    assert created_after["text_before"] is None
+    assert created_after["reason"] is None
+    assert created_after["text_after"] == "[REDACTED]"
+    assert created_after["new_value"] == {"redacted": True}
+    assert created_after["candidate"] == {"redacted": True}
+    assert edited_after["previous_value"] == {"redacted": True}
+    assert edited_after["new_value"] == {"redacted": True}
+    assert edited_after["candidate"] == {"redacted": True}
+    assert edited_after["text_before"] == "[REDACTED]"
+    assert edited_after["text_after"] == "[REDACTED]"
+    assert edited_after["reason"] == "[REDACTED]"
+    assert edited_after["metadata_json"] == {"redacted": True}
+    assert "SECRET" not in _table_dump(conn, "memory_revisions")
+    redaction_events = [
+        event for event in store.list_events(target_type="memory", target_id=str(memory["id"]))
+        if event["event_type"] == "memory.redacted"
+    ]
+    assert len(redaction_events) == 1
+    assert redaction_events[0]["payload_json"] == {
+        "operation": "redact_memory_revisions",
+        "redacted_revisions": 2,
+    }
+    conn.close()
+
+
+def test_redact_memory_events_scrubs_payloads_and_preserves_skeleton() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _secret_memory(store)
+    # memory.updated carries the content patch in its payload.
+    store.update_memory(memory_id=str(memory["id"]), patch={"summary": "SECRET-PATCH"})
+    # An event referencing the memory only inside its payload.
+    store.append_event(
+        {
+            "event_type": "custom.note",
+            "actor_type": "system",
+            "payload_json": {"memory_id": str(memory["id"]), "text": "SECRET-EVT"},
+            "integrity_hash": "hash-abc",
+        }
+    )
+    unrelated = store.append_event(
+        {
+            "event_type": "custom.other",
+            "actor_type": "system",
+            "payload_json": {"text": "UNRELATED-SECRET"},
+        }
+    )
+    before = {
+        row["id"]: row
+        for row in store.list_events()
+        if str(memory["id"]) in json.dumps(row["payload_json"])
+        or (row["target_type"] == "memory" and row["target_id"] == str(memory["id"]))
+    }
+    assert len(before) >= 3
+
+    result = store.redact_memory_events(memory_id=str(memory["id"]))
+
+    assert result["redacted_events"] == len(before)
+    after = {row["id"]: row for row in store.list_events()}
+    for event_id, before_row in before.items():
+        after_row = after[event_id]
+        # Skeleton intact.
+        for column in ("event_type", "actor_type", "actor_id", "target_type", "target_id", "occurred_at", "trace_id", "run_id"):
+            assert after_row[column] == before_row[column]
+        # Content gone: exactly the redaction shape, hash cleared.
+        assert after_row["payload_json"] == {
+            "redacted": True,
+            "memory_id": str(memory["id"]),
+            "event_type": before_row["event_type"],
+        }
+        assert after_row["integrity_hash"] is None
+    # Unrelated events are untouched.
+    assert after[unrelated["id"]]["payload_json"] == {"text": "UNRELATED-SECRET"}
+    dump = _table_dump(conn, "event_log")
+    assert "SECRET-PATCH" not in dump
+    assert "SECRET-EVT" not in dump
+    assert "hash-abc" not in dump
+    redaction_events = [
+        row for row in after.values() if row["event_type"] == "memory.redacted"
+    ]
+    assert len(redaction_events) == 1
+    assert redaction_events[0]["payload_json"] == {
+        "operation": "redact_memory_events",
+        "redacted_events": len(before),
+    }
+    conn.close()
+
+
+def test_append_only_still_enforced_for_normal_updates_after_redaction_support() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _secret_memory(store)
+    revision = _secret_revision(store, memory)
+    event = store.append_event(
+        {"event_type": "custom.note", "actor_type": "system", "payload_json": {"text": "x"}}
+    )
+
+    # Without redaction mode: every UPDATE and DELETE is rejected.
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute("UPDATE event_log SET payload_json = '{}' WHERE id = ?", (event["id"],))
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute("DELETE FROM event_log WHERE id = ?", (event["id"],))
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute(
+            "UPDATE memory_revisions SET text_after = 'tampered' WHERE id = ?",
+            (revision["id"],),
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute("DELETE FROM memory_revisions WHERE id = ?", (revision["id"],))
+
+    # Even WITH redaction mode on: skeleton mutations and non-marker
+    # content are still rejected, and DELETE stays impossible.
+    conn.execute("UPDATE redaction_mode SET enabled = 1 WHERE id = 1")
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            conn.execute(
+                "UPDATE event_log SET event_type = 'evil' WHERE id = ?", (event["id"],)
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            conn.execute(
+                "UPDATE event_log SET payload_json = '{\"free\": \"rewrite\"}' WHERE id = ?",
+                (event["id"],),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            conn.execute(
+                "UPDATE memory_revisions SET text_after = 'rewritten history' WHERE id = ?",
+                (revision["id"],),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            conn.execute("DELETE FROM event_log WHERE id = ?", (event["id"],))
+    finally:
+        conn.execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
+    conn.close()
+
+
+def test_redaction_mode_resets_after_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _secret_memory(store)
+    _secret_revision(store, memory)
+    original_execute = store._execute
+
+    def failing_execute(query: str, params: tuple[object, ...] = ()):
+        if "UPDATE memory_revisions" in query:
+            raise RuntimeError("boom mid-redaction")
+        return original_execute(query, params)
+
+    monkeypatch.setattr(store, "_execute", failing_execute)
+    with pytest.raises(RuntimeError, match="boom mid-redaction"):
+        store.redact_memory_revisions(memory_id=str(memory["id"]))
+
+    enabled = conn.execute("SELECT enabled FROM redaction_mode WHERE id = 1").fetchone()[0]
+    assert enabled == 0
+    # And append-only is still enforced afterwards.
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute("UPDATE memory_revisions SET text_after = 'tampered'")
+    conn.close()
+
+
+def test_redaction_is_user_scoped() -> None:
+    conn = _open_connection()
+    store_a = _make_store(conn)
+    store_b = _make_store(conn)
+    memory = _secret_memory(store_a)
+    _secret_revision(store_a, memory)
+
+    with pytest.raises(ContinuityStoreInvariantError, match="did not find the memory"):
+        store_b.redact_memory_content(memory_id=str(memory["id"]))
+    # B sees none of A's events referencing the memory. (Run before the
+    # revisions call: that call appends B's own memory.redacted audit
+    # event, which a later redact_memory_events would legitimately match.)
+    assert store_b.redact_memory_events(memory_id=str(memory["id"]))["redacted_events"] == 0
+    assert store_b.redact_memory_revisions(memory_id=str(memory["id"]))["redacted_revisions"] == 0
+
+    # User A's content is untouched.
+    assert "SECRET-TITLE" in _table_dump(conn, "memories")
+    assert "SECRET-BEFORE" in _table_dump(conn, "memory_revisions")
+    assert [
+        row for row in store_a.list_events() if row["event_type"] == "memory.redacted"
+    ] == []
+    conn.close()
+
+
+def test_redacted_memory_is_invisible_to_search() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _secret_memory(store)
+    store.update_memory_embedding(memory_id=str(memory["id"]), vector=[0.5, 0.25])
+    assert store.search_memories(query="sprocket") != []
+    assert store.search_memories_fts(query="sprocket") != []
+    assert store.search_memories_vector(query_vector=[0.5, 0.25]) != []
+
+    store.redact_memory_content(memory_id=str(memory["id"]))
+
+    assert store.search_memories(query="sprocket") == []
+    assert store.search_memories_fts(query="sprocket") == []
+    assert store.search_memories_vector(query_vector=[0.5, 0.25]) == []
+    # The FTS shadow index itself no longer matches the redacted content.
+    assert conn.execute(
+        "SELECT count(*) FROM memories_fts WHERE memories_fts MATCH 'sprocket'"
+    ).fetchone()[0] == 0
+    conn.close()
+
+
+def test_bootstrap_upgrades_legacy_strict_append_only_triggers() -> None:
+    conn = sqlite3.connect(":memory:")
+    bootstrap_sqlite_schema(conn)
+    # Simulate a database file created before the redaction-aware triggers.
+    for table in ("event_log", "memory_revisions"):
+        conn.execute(f"DROP TRIGGER {table}_append_only_update")
+        conn.execute(
+            f"""
+            CREATE TRIGGER {table}_append_only_update
+            BEFORE UPDATE ON {table}
+            BEGIN
+              SELECT RAISE(ABORT, '{table} is append-only');
+            END
+            """
+        )
+
+    bootstrap_sqlite_schema(conn)
+
+    for table in ("event_log", "memory_revisions"):
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+            (f"{table}_append_only_update",),
+        ).fetchone()[0]
+        assert "redaction_mode" in sql
+        assert "[REDACTED]" in sql or table == "event_log"
+        delete_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+            (f"{table}_append_only_delete",),
+        ).fetchone()[0]
+        assert "redaction_mode" not in delete_sql
+    # The flag row exists and is off.
+    assert conn.execute("SELECT enabled FROM redaction_mode WHERE id = 1").fetchone()[0] == 0
     conn.close()

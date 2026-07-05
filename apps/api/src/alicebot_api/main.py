@@ -498,6 +498,7 @@ from alicebot_api.vnext_contradictions import (
 from alicebot_api.vnext_dogfooding import VNextDogfoodingService
 from alicebot_api.vnext_doctor import VNextDoctorService
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.mcp_tools import redact_memory_flow
 from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitService,
     VNextMemoryCommitValidationError,
@@ -1527,6 +1528,31 @@ class VNextMemoryForgetRequest(VNextAgentRequest):
     reason: str | None = Field(default=None, min_length=1, max_length=4000)
 
 
+class VNextMemoryExpireRequest(VNextAgentRequest):
+    user_id: UUID
+    memory_id: UUID
+    valid_to: str | None = Field(default=None, min_length=1, max_length=120)
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class VNextMemoryUnexpireRequest(VNextAgentRequest):
+    user_id: UUID
+    memory_id: UUID
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class VNextMemoryAcceptConsolidationRequest(VNextAgentRequest):
+    user_id: UUID
+    memory_id: UUID
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class VNextMemoryRedactRequest(VNextAgentRequest):
+    user_id: UUID
+    memory_id: UUID
+    reason: str = Field(min_length=1, max_length=4000)
+
+
 class VNextSchedulerWorkflowPatchRequest(VNextAgentRequest):
     user_id: UUID
     enabled: bool | None = None
@@ -1624,6 +1650,24 @@ def _vnext_string_list(mapping: dict[str, object], key: str) -> tuple[str, ...]:
 def _vnext_bool(mapping: dict[str, object], key: str, default: bool) -> bool:
     value = mapping.get(key)
     return value if isinstance(value, bool) else default
+
+
+def _vnext_optional_bool(mapping: dict[str, object], key: str) -> bool | None:
+    """Tri-state option: absent (or non-boolean) means "caller did not say".
+
+    Retrieval flags such as ``include_sources`` treat None as "let the
+    context_depth tier decide", so absence must stay distinguishable from an
+    explicit false.
+    """
+    value = mapping.get(key)
+    return value if isinstance(value, bool) else None
+
+
+def _vnext_text_option(mapping: dict[str, object], key: str) -> str | None:
+    value = mapping.get(key)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _vnext_int(mapping: dict[str, object], key: str, default: int) -> int:
@@ -6901,6 +6945,15 @@ def create_vnext_context_pack(
             "private",
             "unknown",
         )
+        # Only forwarded when the caller sets them, so the retrieval request
+        # dataclass stays the source of truth for the tier defaults.
+        tuning_kwargs: dict[str, object] = {}
+        context_depth = _vnext_text_option(options, "context_depth")
+        if context_depth is not None:
+            tuning_kwargs["context_depth"] = context_depth
+        budget_strategy = _vnext_text_option(options, "budget_strategy")
+        if budget_strategy is not None:
+            tuning_kwargs["budget_strategy"] = budget_strategy
         retrieval_request = VNextRetrievalRequest(
             query=request.query,
             domains=requested_domains,
@@ -6908,10 +6961,13 @@ def create_vnext_context_pack(
             people=_vnext_string_list(scope, "people"),
             time_window=str(scope.get("time_window", "all")),
             sensitivity_allowed=requested_sensitivity,
-            include_sources=_vnext_bool(options, "include_sources", True),
-            include_contradictions=_vnext_bool(options, "include_contradictions", True),
+            # Tri-state: absent means "let the context_depth tier decide";
+            # an explicit true/false always wins.
+            include_sources=_vnext_optional_bool(options, "include_sources"),
+            include_contradictions=_vnext_optional_bool(options, "include_contradictions"),
             max_items=_vnext_int(options, "max_items", 8),
             max_tokens=_vnext_int(options, "max_tokens", 8000),
+            **tuning_kwargs,  # type: ignore[arg-type]
         )
         with user_connection(settings.database_url, request.user_id) as conn:
             store = PostgresVNextStore(conn)
@@ -6939,6 +6995,8 @@ def create_vnext_context_pack(
                     sensitivity_allowed=decision.effective_sensitivity_allowed,
                     include_sources=retrieval_request.include_sources,
                     include_contradictions=retrieval_request.include_contradictions,
+                    context_depth=retrieval_request.context_depth,
+                    budget_strategy=retrieval_request.budget_strategy,
                     max_items=retrieval_request.max_items,
                     max_tokens=retrieval_request.max_tokens,
                     actor_type=actor_type,
@@ -7402,6 +7460,153 @@ def forget_vnext_memory(
                 identity=identity,
                 memory_id=str(request.memory_id),
                 reason=request.reason,
+            )
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+    except VNextMemoryCommitValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/memories/expire")
+def expire_vnext_memory(
+    request: VNextMemoryExpireRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
+            # The commit service policy-checks memory.expire itself (and
+            # appends the policy events); returning from inside the store
+            # context keeps the blocked-decision audit events committed.
+            try:
+                payload = VNextMemoryCommitService(store).expire(
+                    str(request.memory_id),
+                    valid_to=request.valid_to,
+                    reason=request.reason,
+                    identity=identity,
+                )
+            except AgentPolicyBlockedError as exc:
+                return _vnext_permission_response(exc.decision)
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+    except VNextMemoryCommitValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/memories/unexpire")
+def unexpire_vnext_memory(
+    request: VNextMemoryUnexpireRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
+            try:
+                payload = VNextMemoryCommitService(store).unexpire(
+                    str(request.memory_id),
+                    reason=request.reason,
+                    identity=identity,
+                )
+            except AgentPolicyBlockedError as exc:
+                return _vnext_permission_response(exc.decision)
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+    except VNextMemoryCommitValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/memories/accept-consolidation")
+def accept_vnext_memory_consolidation(
+    request: VNextMemoryAcceptConsolidationRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
+            # Acceptance is a review decision: the commit service
+            # policy-checks it internally (human or admin agent only).
+            try:
+                payload = VNextMemoryCommitService(store).accept_consolidation_candidate(
+                    str(request.memory_id),
+                    reason=request.reason,
+                    identity=identity,
+                )
+            except AgentPolicyBlockedError as exc:
+                return _vnext_permission_response(exc.decision)
+    except AgentKeyAuthenticationError as exc:
+        return _vnext_agent_auth_error_response(exc)
+    except VNextMemoryCommitValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    return JSONResponse(status_code=200, content=jsonable_encoder(payload))
+
+
+@app.post("/v0/vnext/memories/redact")
+def redact_vnext_memory(
+    request: VNextMemoryRedactRequest,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    settings = get_settings()
+    try:
+        identity = _vnext_agent_identity(request)
+    except AgentIdentityValidationError as exc:
+        return _vnext_public_error_response(status_code=400, detail=str(exc))
+
+    try:
+        with user_connection(settings.database_url, request.user_id) as conn:
+            store = PostgresVNextStore(conn)
+            identity = _vnext_authenticated_agent_identity(
+                store, request, user_id=request.user_id, authorization=authorization
+            )
+            # Redaction has no commit-service seam, so the destructive-action
+            # policy (memory.redact: human or admin agent only) is checked
+            # here, mirroring the undo/forget endpoints.
+            decision = _vnext_policy_checked(
+                store=store,
+                identity=identity,
+                action="memory.redact",
+                project_scope=tuple(request.project_scope),
+            )
+            if decision.decision == "blocked":
+                return _vnext_permission_response(decision)
+            payload = redact_memory_flow(
+                store,
+                memory_id=str(request.memory_id),
+                reason=request.reason,
+                identity=identity,
             )
     except AgentKeyAuthenticationError as exc:
         return _vnext_agent_auth_error_response(exc)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import pytest
 
 from alicebot_api.vnext_agent_control import (
+    HUMAN_OR_ADMIN_ACTIONS,
+    WRITE_ACTIONS,
     AgentIdentity,
     AgentPolicyBlockedError,
     append_policy_events,
@@ -138,6 +140,36 @@ def test_scheduler_policy_distinguishes_project_scoped_trusted_and_admin_agents(
     assert pause.decision == "allowed"
     assert run_due.decision == "allowed"
     assert configure.decision == "allowed"
+
+
+def test_memory_lifecycle_actions_are_write_actions_blocked_for_read_only_agents() -> None:
+    reader = AgentIdentity.from_payload({"agent_id": "viewer", "permission_profile": "read_only_agent"})
+    assert reader is not None
+
+    for action in ("memory.expire", "memory.unexpire", "memory.redact", "memory.accept_consolidation"):
+        assert action in WRITE_ACTIONS
+        decision = evaluate_agent_policy(identity=reader, action=action)
+        assert decision.decision == "blocked", action
+        assert "read_only_agent_cannot_write" in decision.reasons, action
+
+
+def test_redact_and_accept_consolidation_require_human_or_admin_agent() -> None:
+    hermes = AgentIdentity.from_payload({"agent_id": "hermes"})  # trusted_local_agent
+    admin = AgentIdentity.from_payload({"agent_id": "ops", "permission_profile": "admin_agent"})
+    assert hermes is not None and admin is not None
+    assert {"memory.redact", "memory.accept_consolidation"} <= set(HUMAN_OR_ADMIN_ACTIONS)
+
+    for action in ("memory.redact", "memory.accept_consolidation"):
+        trusted = evaluate_agent_policy(identity=hermes, action=action)
+        assert trusted.decision == "blocked", action
+        assert "human_or_admin_review_required" in trusted.reasons, action
+        assert evaluate_agent_policy(identity=admin, action=action).decision == "allowed", action
+        # Human/system callers (no agent identity) are always allowed.
+        assert evaluate_agent_policy(identity=None, action=action).decision == "allowed", action
+
+    # Expire/unexpire stay open to trusted agents, exactly like memory.undo.
+    for action in ("memory.expire", "memory.unexpire", "memory.undo"):
+        assert evaluate_agent_policy(identity=hermes, action=action).decision == "allowed", action
 
 
 def test_policy_events_log_decision_and_filtered_or_blocked_outcomes() -> None:

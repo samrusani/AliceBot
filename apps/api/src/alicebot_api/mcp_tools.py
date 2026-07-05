@@ -124,6 +124,7 @@ from alicebot_api.task_briefing import (
 from alicebot_api.vnext_agent_control import (
     AgentIdentity,
     AgentIdentityValidationError,
+    AgentPolicyBlockedError,
     PolicyDecision,
     agent_metadata,
     append_policy_events,
@@ -142,6 +143,7 @@ from alicebot_api.vnext_contradictions import ContradictionFinderRequest, VNextC
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitService,
+    VNextMemoryCommitValidationError,
     VNEXT_DOMAINS,
     VNEXT_MEMORY_TYPES,
     VNEXT_SENSITIVITY_LEVELS,
@@ -150,17 +152,25 @@ from alicebot_api.vnext_memory_commit import (
 from alicebot_api.vnext_projects import OPEN_LOOP_ACTIONS, ProjectAutomationRequest, VNextProjectService
 from alicebot_api.vnext_queue import QueueTaskRequest, VNextQueueService
 from alicebot_api.vnext_retrieval import (
+    BUDGET_STRATEGIES,
+    BUDGET_STRATEGY_BALANCED,
+    CONTEXT_DEPTHS,
+    CONTEXT_DEPTH_LOW,
+    CONTEXT_DEPTH_MINIMAL,
+    CONTEXT_DEPTH_MINIMAL_MAX_ITEMS,
     GRAPH_STAGE_ENABLED,
     MEMORY_ENTITY_EDGE_TYPES,
     RRF_K,
+    STAGE_DISABLED_MINIMAL,
     VECTOR_STAGE_ENABLED,
     VNextRetrievalRequest,
     VNextRetrievalService,
+    _order_memories_for_strategy,
     reciprocal_rank_fusion,
 )
 from alicebot_api.vnext_scheduler import SchedulerRunRequest, VNextSchedulerService
 from alicebot_api.vnext_json import json_safe
-from alicebot_api.vnext_store import PostgresVNextStore
+from alicebot_api.vnext_store import REDACTION_MARKER, PostgresVNextStore
 
 
 _REVIEW_STATUS_CHOICES = (
@@ -663,6 +673,29 @@ def _parse_bool(arguments: Mapping[str, object], *, key: str, default: bool = Fa
     raise MCPToolError(f"{key} must be a boolean")
 
 
+def _parse_optional_bool(arguments: Mapping[str, object], *, key: str) -> bool | None:
+    """Tri-state boolean: absent (or null) means "caller did not specify".
+
+    Retrieval flags such as ``include_sources`` treat None as "let the
+    context_depth tier decide", so absence must stay distinguishable from an
+    explicit false.
+    """
+    if arguments.get(key) is None:
+        return None
+    return _parse_bool(arguments, key=key)
+
+
+def _parse_context_pack_tuning(arguments: Mapping[str, object]) -> tuple[str, str]:
+    """Validated (context_depth, budget_strategy) pair with tier defaults."""
+    depth = _parse_optional_text(arguments, "context_depth") or CONTEXT_DEPTH_LOW
+    if depth not in CONTEXT_DEPTHS:
+        raise MCPToolError(f"context_depth must be one of: {', '.join(CONTEXT_DEPTHS)}")
+    strategy = _parse_optional_text(arguments, "budget_strategy") or BUDGET_STRATEGY_BALANCED
+    if strategy not in BUDGET_STRATEGIES:
+        raise MCPToolError(f"budget_strategy must be one of: {', '.join(BUDGET_STRATEGIES)}")
+    return depth, strategy
+
+
 def _parse_model_generation_kwargs(arguments: Mapping[str, object]) -> JsonObject:
     generation_mode = _parse_optional_text(arguments, "generation_mode") or "deterministic"
     if generation_mode not in _MODEL_GENERATION_MODES:
@@ -991,6 +1024,11 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
         maximum=_RECALL_MAX_LIMIT,
     )
     debug = _parse_bool(arguments, key="debug", default=False)
+    context_depth, budget_strategy = _parse_context_pack_tuning(arguments)
+    if context_depth == CONTEXT_DEPTH_MINIMAL:
+        # Same tier semantics as the context-pack compiler: the cheapest
+        # useful call caps the result count and runs full-text search only.
+        limit = min(limit, CONTEXT_DEPTH_MINIMAL_MAX_ITEMS)
     domains = list(_parse_string_list(arguments, "domains"))
     sensitivity_allowed = list(
         _parse_string_list(arguments, "sensitivity_allowed") or _DEFAULT_SENSITIVITY_ALLOWED
@@ -1009,33 +1047,51 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
             limit=candidate_limit,
             **retrieval_filters,
         )
-        vector_rows, vector_stage = service._memory_vector_rows(
-            query=query,
-            domains=domains,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=candidate_limit,
-            **retrieval_filters,
-        )
-        graph_rows, graph_stage, matched_entities = service._memory_graph_rows(
-            query=query,
-            domains=domains,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=candidate_limit,
-            **retrieval_filters,
-        )
+        if context_depth == CONTEXT_DEPTH_MINIMAL:
+            # No query embedding, no entity resolution or graph hop; honest
+            # tier status instead (mirrors compile_context_pack).
+            vector_rows, vector_stage = [], STAGE_DISABLED_MINIMAL
+            graph_rows, graph_stage, matched_entities = [], STAGE_DISABLED_MINIMAL, []
+        else:
+            vector_rows, vector_stage = service._memory_vector_rows(
+                query=query,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=candidate_limit,
+                **retrieval_filters,
+            )
+            graph_rows, graph_stage, matched_entities = service._memory_graph_rows(
+                query=query,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=candidate_limit,
+                **retrieval_filters,
+            )
         ranked_lists: dict[str, list[JsonObject]] = {"fts": fts_rows}
         if vector_stage == VECTOR_STAGE_ENABLED:
             ranked_lists["vector"] = vector_rows
         if graph_stage == GRAPH_STAGE_ENABLED:
             ranked_lists["graph"] = graph_rows
-        results: list[JsonObject] = []
+        fused: list[tuple[JsonObject, float]] = []
         for item, score, _stage_ranks in reciprocal_rank_fusion(ranked_lists):
-            if len(results) >= limit:
+            if len(fused) >= limit:
                 break
+            fused.append((item, score))
+        # The budget strategy reorders the fused selection exactly like the
+        # context-pack packer would (facts_first/recent_first partitions);
+        # it never changes what was retrieved or ranked.
+        scores = {str(item.get("id")): score for item, score in fused}
+        ordered_rows = _order_memories_for_strategy([item for item, _score in fused], budget_strategy)
+        results: list[JsonObject] = []
+        for item in ordered_rows:
             provenance_count = len(
                 store.list_provenance_links(target_type="memory", target_id=str(item.get("id")))
             )
-            results.append(_compact_recall_result(item, score=score, provenance_count=provenance_count))
+            results.append(
+                _compact_recall_result(
+                    item, score=scores[str(item.get("id"))], provenance_count=provenance_count
+                )
+            )
 
     payload: JsonObject = {
         "query": query,
@@ -1050,6 +1106,8 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
         payload["retrieval"] = {
             "fusion": {"algorithm": "reciprocal_rank_fusion", "k": RRF_K},
             "vector_stage": vector_stage,
+            "context_depth": context_depth,
+            "budget_strategy": budget_strategy,
             "stages": {
                 "fts": {"source": fts_source, "candidate_count": len(fts_rows)},
                 "vector": {"status": vector_stage, "candidate_count": len(vector_rows)},
@@ -2499,6 +2557,7 @@ def _vnext_context_pack_payload(context: MCPRuntimeContext, arguments: Mapping[s
             created_by_agents = _parse_string_list(arguments, "created_by_agents")
             if created_by_agents:
                 request_kwargs["created_by_agent_ids"] = created_by_agents
+            context_depth, budget_strategy = _parse_context_pack_tuning(arguments)
             payload = VNextRetrievalService(store).compile_context_pack(
                 VNextRetrievalRequest(
                     query=_parse_required_text(arguments, "query"),
@@ -2507,8 +2566,12 @@ def _vnext_context_pack_payload(context: MCPRuntimeContext, arguments: Mapping[s
                     people=_parse_string_list(arguments, "people"),
                     time_window=_parse_optional_text(arguments, "time_window") or "all",
                     sensitivity_allowed=decision.effective_sensitivity_allowed,
-                    include_sources=_parse_bool(arguments, key="include_sources", default=True),
-                    include_contradictions=_parse_bool(arguments, key="include_contradictions", default=True),
+                    # Tri-state: absent means "let the context_depth tier
+                    # decide"; an explicit true/false always wins.
+                    include_sources=_parse_optional_bool(arguments, key="include_sources"),
+                    include_contradictions=_parse_optional_bool(arguments, key="include_contradictions"),
+                    context_depth=context_depth,
+                    budget_strategy=budget_strategy,
                     max_items=max_items,
                     max_tokens=max_tokens,
                     actor_type=actor_type,
@@ -3250,7 +3313,155 @@ def _handle_alice_vnext_forget_memory(context: MCPRuntimeContext, arguments: Map
     return payload
 
 
-_MEMORY_MANAGE_ACTIONS = ("confirm", "undo", "forget")
+# Statuses that no longer participate in recall; redaction skips the
+# forget-first transition for rows already retired.
+_REDACT_RETIRED_STATUSES = {"superseded", "archived", "rejected"}
+
+
+def redact_memory_flow(
+    store,
+    *,
+    memory_id: str,
+    reason: str,
+    identity: AgentIdentity | None = None,
+) -> JsonObject:
+    """Expunge one memory's content everywhere, keeping the audit skeleton.
+
+    Order: forget/archive first (when the row is still live, so the
+    lifecycle trail records why it left recall), then redact the memory row
+    content, then its revisions, then event payloads that reference it. The
+    skeleton — ids, types, timestamps, actors, and the ``memory.redacted``
+    event trail — survives, which is what proves redaction happened.
+
+    Policy is the caller's job: ``memory.redact`` is restricted to a human
+    or an admin agent (HUMAN_OR_ADMIN_ACTIONS); every surface (MCP, HTTP,
+    CLI) must evaluate it before calling this flow.
+    """
+    reason_text = " ".join(reason.split()).strip() if isinstance(reason, str) else ""
+    if not reason_text:
+        raise VNextMemoryCommitValidationError("reason is required to redact a memory")
+    memory = store.get_memory(memory_id)
+    if memory is None:
+        raise VNextMemoryCommitValidationError("memory was not found")
+    actor_type = "agent" if identity is not None else "user"
+    forgotten_first = False
+    if str(memory.get("status") or "") not in _REDACT_RETIRED_STATUSES:
+        VNextMemoryCommitService(store).forget(identity=identity, memory_id=memory_id, reason=reason_text)
+        forgotten_first = True
+    redacted_memory = store.redact_memory_content(memory_id=memory_id, actor_type=actor_type)
+    revisions_result = store.redact_memory_revisions(memory_id=memory_id, actor_type=actor_type)
+    events_result = store.redact_memory_events(memory_id=memory_id, actor_type=actor_type)
+    return {
+        "status": "redacted",
+        "memory": redacted_memory,
+        "forgotten_first": forgotten_first,
+        "redacted_revisions": revisions_result.get("redacted_revisions"),
+        "redacted_events": events_result.get("redacted_events"),
+        "redaction_marker": REDACTION_MARKER,
+        "reason": reason_text,
+    }
+
+
+def _handle_alice_vnext_expire_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(context, arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        # The commit service policy-checks memory.expire itself (and appends
+        # the policy events); a tool-level pre-check would double-log.
+        try:
+            payload = VNextMemoryCommitService(store).expire(
+                _parse_required_text(arguments, "memory_id"),
+                valid_to=_parse_optional_text(arguments, "valid_to"),
+                reason=_parse_required_text(arguments, "reason"),
+                identity=identity,
+            )
+        except AgentPolicyBlockedError as exc:
+            # Exit the store context normally so the blocked-policy audit
+            # events commit before the tool error is raised.
+            blocked_decision = exc.decision
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext memory expire did not complete")
+    return payload
+
+
+def _handle_alice_vnext_unexpire_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(context, arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        try:
+            payload = VNextMemoryCommitService(store).unexpire(
+                _parse_required_text(arguments, "memory_id"),
+                reason=_parse_required_text(arguments, "reason"),
+                identity=identity,
+            )
+        except AgentPolicyBlockedError as exc:
+            blocked_decision = exc.decision
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext memory unexpire did not complete")
+    return payload
+
+
+def _handle_alice_vnext_accept_consolidation(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(context, arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        # Acceptance is a review decision: the commit service policy-checks
+        # it internally (human or admin agent only).
+        try:
+            payload = VNextMemoryCommitService(store).accept_consolidation_candidate(
+                _parse_required_text(arguments, "memory_id"),
+                reason=_parse_required_text(arguments, "reason"),
+                identity=identity,
+            )
+        except AgentPolicyBlockedError as exc:
+            blocked_decision = exc.decision
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext consolidation acceptance did not complete")
+    return payload
+
+
+def _handle_alice_vnext_redact_memory(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
+    identity = _agent_identity_from_arguments(context, arguments)
+    blocked_decision: PolicyDecision | None = None
+    payload: JsonObject | None = None
+    with _vnext_store_context(context) as store:
+        # Redaction has no commit-service seam, so the destructive-action
+        # policy (memory.redact: human or admin agent only) is checked here.
+        _actor_type, _actor_id, decision = _policy_checked(store, identity=identity, action="memory.redact")
+        if decision.decision == "blocked":
+            blocked_decision = decision
+        else:
+            payload = redact_memory_flow(
+                store,
+                memory_id=_parse_required_text(arguments, "memory_id"),
+                reason=_parse_required_text(arguments, "reason"),
+                identity=identity,
+            )
+    if blocked_decision is not None:
+        _raise_mcp_policy_blocked(blocked_decision)
+    if payload is None:
+        raise MCPToolError("vNext memory redaction did not complete")
+    return payload
+
+
+_MEMORY_MANAGE_ACTIONS = (
+    "confirm",
+    "undo",
+    "forget",
+    "expire",
+    "unexpire",
+    "accept_consolidation",
+    "redact",
+)
 
 
 def _handle_alice_memory_manage(context: MCPRuntimeContext, arguments: Mapping[str, object]) -> JsonObject:
@@ -3258,7 +3469,9 @@ def _handle_alice_memory_manage(context: MCPRuntimeContext, arguments: Mapping[s
 
     Dispatches to the same policy-checked commit-service handlers as the
     legacy alice_vnext_confirm_memory / alice_vnext_undo_memory /
-    alice_vnext_forget_memory tools; no logic is duplicated here.
+    alice_vnext_forget_memory tools; no logic is duplicated here. The
+    expire/unexpire/accept_consolidation/redact actions route to the v0.9
+    commit-service seams (and the store redaction methods) the same way.
     """
     action = (_parse_optional_text(arguments, "action") or "").casefold()
     if action not in _MEMORY_MANAGE_ACTIONS:
@@ -3279,6 +3492,14 @@ def _handle_alice_memory_manage(context: MCPRuntimeContext, arguments: Mapping[s
         return _handle_alice_vnext_confirm_memory(context, delegate_arguments)
     if action == "undo":
         return _handle_alice_vnext_undo_memory(context, delegate_arguments)
+    if action == "expire":
+        return _handle_alice_vnext_expire_memory(context, delegate_arguments)
+    if action == "unexpire":
+        return _handle_alice_vnext_unexpire_memory(context, delegate_arguments)
+    if action == "accept_consolidation":
+        return _handle_alice_vnext_accept_consolidation(context, delegate_arguments)
+    if action == "redact":
+        return _handle_alice_vnext_redact_memory(context, delegate_arguments)
     return _handle_alice_vnext_forget_memory(context, delegate_arguments)
 
 
@@ -3825,6 +4046,16 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                     "maximum": _RECALL_MAX_LIMIT,
                     "description": "Maximum number of results to return. Defaults to 8.",
                 },
+                "context_depth": {
+                    "type": "string",
+                    "enum": list(CONTEXT_DEPTHS),
+                    "description": "Cost/coverage tier: 'minimal' runs full-text search only and caps results at 4, 'low' (default) adds vector and entity-graph stages, 'medium' and 'high' match the context-pack tiers.",
+                },
+                "budget_strategy": {
+                    "type": "string",
+                    "enum": list(BUDGET_STRATEGIES),
+                    "description": "How to order results: 'balanced' (default) keeps fused relevance order, 'facts_first' boosts semantic/decision/preference memories, 'recent_first' orders by recency; 'contradictions_first' and 'sources_first' match the context-pack strategies and keep fused order here.",
+                },
                 "debug": {
                     "type": "boolean",
                     "description": "When true, include a retrieval trace showing which search stages ran and why vector search was on or off.",
@@ -3941,11 +4172,21 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "sensitivity_allowed": _SENSITIVITY_ALLOWED_SCHEMA,
                 "include_sources": {
                     "type": "boolean",
-                    "description": "Include matching source documents. Defaults to true.",
+                    "description": "Include matching source documents. Omit to let context_depth decide (on for low/medium/high, off for minimal); an explicit true or false always wins over the tier default.",
                 },
                 "include_contradictions": {
                     "type": "boolean",
-                    "description": "Include known contradicting evidence when relevant. Defaults to true.",
+                    "description": "Include known contradicting evidence when relevant. Omit to let context_depth decide (on for low/medium/high, off for minimal); an explicit true or false always wins over the tier default.",
+                },
+                "context_depth": {
+                    "type": "string",
+                    "enum": list(CONTEXT_DEPTHS),
+                    "description": "Cost/coverage tier: 'minimal' runs full-text only with at most 4 items, 'low' (default) is the standard hybrid retrieval, 'medium' adds fuller sections, 'high' also walks supersession chains. No tier performs LLM synthesis.",
+                },
+                "budget_strategy": {
+                    "type": "string",
+                    "enum": list(BUDGET_STRATEGIES),
+                    "description": "How the token budget is spent when max_tokens is tight: 'balanced' (default), 'facts_first' boosts semantic/decision/preference memories, 'recent_first' orders memories by recency, 'contradictions_first' packs contradicting evidence before memories, 'sources_first' packs source documents before memories.",
                 },
                 "max_items": {
                     "type": "integer",
@@ -4178,8 +4419,12 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
         "name": "alice_memory_manage",
         "description": (
             "Manage a memory written through alice_memory_commit: confirm a pending "
-            "confirmation, undo a commit, or forget a memory. Undo and forget hide the memory "
-            "from recall but keep its revisions and audit events."
+            "confirmation, undo a commit, forget a memory, expire or unexpire its validity "
+            "window, accept a consolidation candidate, or redact its content. Undo, forget, "
+            "and expire hide the memory from recall but keep its revisions and audit events; "
+            "redact permanently expunges the content everywhere while keeping the audit "
+            "skeleton, and is restricted to a human operator or an admin agent (as is "
+            "accept_consolidation)."
         ),
         "inputSchema": {
             "type": "object",
@@ -4189,7 +4434,15 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                 "action": {
                     "type": "string",
                     "enum": list(_MEMORY_MANAGE_ACTIONS),
-                    "description": "What to do: 'confirm' completes a pending confirmation by confirmation_id, 'undo' reverses a commit, 'forget' retires a memory from recall.",
+                    "description": (
+                        "What to do: 'confirm' completes a pending confirmation by confirmation_id, "
+                        "'undo' reverses a commit, 'forget' retires a memory from recall, 'expire' "
+                        "closes the memory's validity window (valid_to) so recall stops returning it, "
+                        "'unexpire' reopens that window, 'accept_consolidation' accepts a "
+                        "consolidation candidate and supersedes the memories it merges, and 'redact' "
+                        "permanently expunges the memory's content from the row, its revisions, and "
+                        "event payloads while keeping the audit skeleton."
+                    ),
                 },
                 "confirmation_id": {
                     "type": "string",
@@ -4197,7 +4450,7 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                 },
                 "memory_id": {
                     "type": "string",
-                    "description": "The memory to act on. Required for forget; for undo it defaults to the calling agent's most recent commit.",
+                    "description": "The memory to act on. Required for forget, expire, unexpire, accept_consolidation, and redact; for undo it defaults to the calling agent's most recent commit.",
                 },
                 "canonical_text": {
                     "type": "string",
@@ -4205,7 +4458,11 @@ _CORE_TOOL_DEFINITIONS: list[dict[str, object]] = [
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Why this change is being made. Stored in the audit trail.",
+                    "description": "Why this change is being made. Stored in the audit trail. Required for expire, unexpire, accept_consolidation, and redact.",
+                },
+                "valid_to": {
+                    "type": "string",
+                    "description": "For expire: ISO-8601 timestamp when the memory stops being valid. Defaults to now, which hides the memory from recall immediately.",
                 },
                 "superseded_by": {
                     "type": "string",
@@ -5397,4 +5654,5 @@ __all__ = [
     "MCPToolNotFoundError",
     "call_mcp_tool",
     "list_mcp_tools",
+    "redact_memory_flow",
 ]

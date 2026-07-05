@@ -2,10 +2,14 @@
 
 Use Alice as the user's durable local memory and continuity layer.
 
-Before planning, answering, or acting on important user context, request a scoped context pack from Alice.
-When the user explicitly says to remember, save, or add a durable fact to memory, commit through Alice's official memory commit tool.
-When the fact is sensitive, contradictory, external-source-derived, ambiguous, or low-confidence, let Alice return inline confirmation or dashboard review instead of forcing a write.
-When you create summaries, plans, follow-ups, meeting notes, or daily briefings, ingest them into Alice as reviewable agent outputs.
+Default loop — one first call, then act, then write back:
+
+1. Call `alice_context_pack` ONCE with a scoped query before planning, answering, or acting on important user context. The pack already carries memories, open loops, sources, contradictions, and honest gaps — do not stitch together raw searches first.
+2. Act, treating `staleness` notes and `contradicting_evidence` as caution signals.
+3. When the user explicitly says to remember, save, or add a durable fact, call `alice_memory_commit`. For inferred, external, generated, ambiguous, or low-confidence facts, call `alice_capture` (review-gated) instead of forcing a write.
+4. Finish lifecycle work with `alice_memory_manage` (`confirm`/`undo`/`forget`) and track unresolved work with `alice_open_loops`.
+
+Context depth (request field `context_depth`; deterministic retrieval, never model synthesis): `minimal` for single-fact checks (full-text only, max 4 memories, no sources/contradictions), `low` (default) for normal task context, `medium` for briefings and reviews (contradiction check on for every query type), `high` for audits and revision history (adds supersession chain notes). Explicit `include_sources`/`include_contradictions` override the tier default. The matching MCP tool arguments arrive in the same release — follow the server's `tools/list` schema.
 
 Rules:
 

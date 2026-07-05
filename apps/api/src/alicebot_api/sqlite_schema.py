@@ -11,7 +11,19 @@ Conventions:
 - Timestamps are ISO-8601 TEXT in UTC with a trailing ``Z``.
 - JSON columns are TEXT holding ``json.dumps(json_safe(value))``.
 - ``event_log`` (and ``memory_revisions``, mirroring Postgres) are
-  append-only, enforced by triggers.
+  append-only, enforced by triggers. Mirroring Postgres migration
+  ``20260706_0079``, the UPDATE triggers admit exactly one privileged
+  exception -- true redaction: SQLite has no session variables, so a
+  one-row ``redaction_mode`` flag table stands in for Postgres's
+  ``current_setting('app.redaction_in_progress', true)``. The trigger's
+  WHEN clause only lets an UPDATE through while ``redaction_mode.enabled``
+  is 1 AND every skeleton column (ids, timestamps, types, actor columns)
+  is unchanged AND the content columns hold nothing but the literal
+  redaction marker ``'[REDACTED]'`` (JSON content columns must carry the
+  ``{"redacted": true}`` shape). ``SQLiteVNextStore`` flips the flag
+  around its redaction statements and resets it even on error paths;
+  bootstrap also defensively resets it to 0. DELETEs are always
+  rejected.
 - ``memories_fts`` is an external-content FTS5 index over
   memories(title, canonical_text, summary, memory_key), kept in sync by
   AFTER INSERT/UPDATE/DELETE triggers. It uses the ``porter unicode61``
@@ -222,6 +234,10 @@ _ENTITY_TYPES_SQL = _sql_list(ENTITY_TYPES)
 # Default matches the store's Python-generated ISO-8601 UTC "Z" convention
 # closely enough for lexicographic ordering (milliseconds vs microseconds).
 _NOW_UTC_ISO_SQL = "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+
+# Canonical true-redaction marker. Mirrors REDACTION_MARKER in
+# alicebot_api.vnext_store and Postgres migration 20260706_0079.
+REDACTION_MARKER = "[REDACTED]"
 
 _TABLE_STATEMENTS: tuple[str, ...] = (
     f"""
@@ -615,6 +631,18 @@ _TABLE_STATEMENTS: tuple[str, ...] = (
         )
     )
     """,
+    # One-row flag table standing in for Postgres's
+    # app.redaction_in_progress session setting (SQLite triggers cannot
+    # read connection-local state). The append-only UPDATE triggers below
+    # consult it in their WHEN clause; SQLiteVNextStore sets enabled=1
+    # only for the duration of its redaction statements and resets it on
+    # every exit path, and bootstrap_sqlite_schema resets it defensively.
+    """
+    CREATE TABLE IF NOT EXISTS redaction_mode (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1))
+    )
+    """,
     # Append-only relationship history (append-only enforced by triggers
     # below, mirroring event_log). source_id carries NO foreign key on
     # purpose: an FK with ON DELETE SET NULL would have to UPDATE this
@@ -715,6 +743,20 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
       ON memories (user_id, superseded_by)
       WHERE superseded_by IS NOT NULL
     """,
+    # Partial idempotency/confirmation lookup indexes: the commit service's
+    # duck-typed fast paths (get_memory_by_commit_digest/confirmation_id)
+    # need these to stay O(log n); the scale benchmark measured the Python
+    # fallback at 222ms p50 by 10k memories.
+    """
+    CREATE INDEX IF NOT EXISTS memories_user_commit_digest_idx
+      ON memories (user_id, commit_digest)
+      WHERE commit_digest IS NOT NULL
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS memories_user_confirmation_id_idx
+      ON memories (user_id, confirmation_id)
+      WHERE confirmation_id IS NOT NULL
+    """,
     # Mirrors graph_edges_user_edge_idx from Postgres migration 20260510_0067.
     """
     CREATE INDEX IF NOT EXISTS graph_edges_user_edge_idx
@@ -756,10 +798,35 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
       ON entity_relationship_events (user_id, entity_id, changed_at DESC, id DESC)
     """,
     # Append-only enforcement (mirrors app.reject_event_log_mutation and
-    # app.reject_memory_revision_mutation in Postgres).
-    """
-    CREATE TRIGGER IF NOT EXISTS event_log_append_only_update
+    # app.reject_memory_revision_mutation in Postgres, as replaced by
+    # migration 20260706_0079). Append-only stays the default posture:
+    # DELETE is always rejected, and UPDATE is rejected unless the store
+    # is in redaction mode AND only content columns change, to the
+    # redaction marker shape (see module docstring). The UPDATE triggers
+    # are DROPped before re-creation so database files created under the
+    # old unconditional trigger bodies pick up the conditional ones
+    # (CREATE TRIGGER IF NOT EXISTS alone would keep the stale body).
+    # NULL-safe comparisons use IS, never =, so a NULL skeleton column
+    # (e.g. actor_id) cannot slip an UPDATE past the WHEN clause.
+    "DROP TRIGGER IF EXISTS event_log_append_only_update",
+    f"""
+    CREATE TRIGGER event_log_append_only_update
     BEFORE UPDATE ON event_log
+    WHEN NOT (
+      COALESCE((SELECT enabled FROM redaction_mode WHERE id = 1), 0) = 1
+      AND NEW.id IS OLD.id
+      AND NEW.user_id IS OLD.user_id
+      AND NEW.event_type IS OLD.event_type
+      AND NEW.actor_type IS OLD.actor_type
+      AND NEW.actor_id IS OLD.actor_id
+      AND NEW.target_type IS OLD.target_type
+      AND NEW.target_id IS OLD.target_id
+      AND NEW.occurred_at IS OLD.occurred_at
+      AND NEW.trace_id IS OLD.trace_id
+      AND NEW.run_id IS OLD.run_id
+      AND NEW.integrity_hash IS NULL
+      AND json_extract(NEW.payload_json, '$.redacted') IS 1
+    )
     BEGIN
       SELECT RAISE(ABORT, 'event_log is append-only');
     END
@@ -771,9 +838,34 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
       SELECT RAISE(ABORT, 'event_log is append-only');
     END
     """,
-    """
-    CREATE TRIGGER IF NOT EXISTS memory_revisions_append_only_update
+    "DROP TRIGGER IF EXISTS memory_revisions_append_only_update",
+    f"""
+    CREATE TRIGGER memory_revisions_append_only_update
     BEFORE UPDATE ON memory_revisions
+    WHEN NOT (
+      COALESCE((SELECT enabled FROM redaction_mode WHERE id = 1), 0) = 1
+      AND NEW.id IS OLD.id
+      AND NEW.user_id IS OLD.user_id
+      AND NEW.memory_id IS OLD.memory_id
+      AND NEW.sequence_no IS OLD.sequence_no
+      AND NEW.action IS OLD.action
+      AND NEW.memory_key IS OLD.memory_key
+      AND NEW.source_event_ids IS OLD.source_event_ids
+      AND NEW.revision_number IS OLD.revision_number
+      AND NEW.revision_type IS OLD.revision_type
+      AND NEW.actor_type IS OLD.actor_type
+      AND NEW.actor_id IS OLD.actor_id
+      AND NEW.created_at IS OLD.created_at
+      AND NEW.text_after IS '{REDACTION_MARKER}'
+      AND (NEW.text_before IS NULL OR NEW.text_before IS '{REDACTION_MARKER}')
+      AND (NEW.reason IS NULL OR NEW.reason IS '{REDACTION_MARKER}')
+      AND (NEW.previous_value IS NULL
+           OR json_extract(NEW.previous_value, '$.redacted') IS 1)
+      AND (NEW.new_value IS NULL
+           OR json_extract(NEW.new_value, '$.redacted') IS 1)
+      AND json_extract(NEW.candidate, '$.redacted') IS 1
+      AND json_extract(NEW.metadata_json, '$.redacted') IS 1
+    )
     BEGIN
       SELECT RAISE(ABORT, 'memory_revisions is append-only');
     END
@@ -891,6 +983,11 @@ def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
     # Existing files created before the scope columns shipped need ALTERs
     # before the index statements reference the new columns.
     _ensure_additive_columns(conn)
+    # The redaction flag row must exist before the append-only triggers
+    # reference it, and it must be OFF: a crashed process must never leave
+    # a database file with redaction mode stuck open.
+    conn.execute("INSERT OR IGNORE INTO redaction_mode (id, enabled) VALUES (1, 0)")
+    conn.execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
     for statement in _INDEX_AND_TRIGGER_STATEMENTS:
         conn.execute(statement)
 
@@ -909,6 +1006,7 @@ __all__ = [
     "OPEN_LOOP_PRIORITIES",
     "OPEN_LOOP_STATUSES",
     "PERMISSION_PROFILES",
+    "REDACTION_MARKER",
     "REVISION_TYPES",
     "SENSITIVITY_LEVELS",
     "bootstrap_sqlite_schema",

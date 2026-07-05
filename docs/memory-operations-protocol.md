@@ -5,7 +5,7 @@ taken back. Alice exposes memory as a small set of verbs — the same verbs on
 MCP, HTTP, and the CLI — and every one of them runs through the same policy
 engine and lands in the same audit trail. Agents request; Alice decides.
 
-Eight verbs cover the lifecycle of a memory:
+Ten verbs cover the lifecycle of a memory:
 
 | Verb | What it does | Status |
 |---|---|---|
@@ -16,7 +16,9 @@ Eight verbs cover the lifecycle of a memory:
 | [undo](#undo) | Reverse a commit without erasing its history | Shipped |
 | [forget](#forget) | Retire a memory from recall on request | Shipped |
 | [audit](#audit) | Explain a memory: sources, revisions, events | Shipped |
-| [merge / expire](#merge--expire-planned) | Consolidate duplicates; age out stale facts | Planned |
+| [merge](#merge) | Accept a consolidation candidate; supersede its members | Shipped |
+| [expire / unexpire](#expire--unexpire) | Close or reopen a memory's validity window | Shipped |
+| [redact](#redact) | Expunge a memory's content everywhere, keeping the audit skeleton | Shipped |
 
 All shipped verbs are on the default (core) MCP surface — no
 `ALICE_MCP_LEGACY_TOOLS` flag needed — and all of them work in SQLite
@@ -56,8 +58,9 @@ Every verb below appends to two append-only stores:
 - **Events** (`event_log`): each verb emits a typed event
   (`agent.memory_committed`, `agent.memory_confirmed`,
   `agent.memory_corrected`, `agent.memory_undone`, `agent.memory_forgotten`,
-  plus the policy decision events), correlated by `trace_id` and the agent's
-  `run_id`.
+  `agent.memory_expired`, `agent.memory_unexpired`,
+  `agent.memory_consolidation_accepted`, `memory.redacted`, plus the policy
+  decision events), correlated by `trace_id` and the agent's `run_id`.
 
 Committed memories also carry **provenance links** to their source
 references, so [audit](#audit) can answer "where did this come from?".
@@ -110,8 +113,16 @@ project scope.
 - HTTP: `POST /v0/vnext/context-packs`
 - CLI: `alicebot context-pack "query" ...`
 
+Both tools accept `context_depth` (`minimal` | `low` | `medium` | `high` —
+cost/coverage tier; `minimal` is full-text only) and `budget_strategy`
+(`balanced` | `facts_first` | `recent_first` | `contradictions_first` |
+`sources_first` — how the token budget is spent). The
+`include_sources`/`include_contradictions` flags are tri-state: omitted
+means the `context_depth` tier decides; an explicit true/false always wins.
+
 Only searchable statuses (`active`, `accepted`) are returned: candidates,
-rejected, superseded, and forgotten memories never leak into results.
+rejected, superseded, forgotten, and [expired](#expire--unexpire) memories
+never leak into results.
 
 ## correct
 
@@ -175,9 +186,8 @@ Outcome: `forgotten`; the memory's status becomes `superseded`. Audit: an
 **The honest boundary:** forget is a soft delete plus exclusion. The memory
 disappears from recall, context packs, and resume briefs, but its content
 remains in the revision history and event log — that is what makes forget
-reversible and auditable. True content redaction (scrubbing revisions and
-events) is a planned feature; until it ships, do not treat forget as
-cryptographic erasure.
+reversible and auditable. When the content itself must go, use
+[redact](#redact).
 
 ## audit
 
@@ -192,15 +202,81 @@ and its provenance links back to sources.
 Recent write activity is listable via `GET /v0/vnext/memories/recent-commits`
 and `alicebot vnext memories recent`.
 
-## merge / expire (planned)
+## merge
 
-- **merge** — consolidating near-duplicate memories into one, behind the
-  existing candidate/review gate: planned; see the consolidation milestone
-  in [docs/plans/memory-frontier.md](plans/memory-frontier.md).
-- **expire** — aging out time-bounded facts: memories whose validity window
-  has closed (`valid_to` in the past) are already excluded from search; the
-  `stale` status and scheduled expiry sweep are landing next — see
-  staleness v1 in [docs/plans/memory-frontier.md](plans/memory-frontier.md).
+Consolidating near-duplicate memories into one, behind the candidate/review
+gate. The consolidation pipeline proposes candidates; **accepting** one is
+the merge decision, and acceptance is restricted to a human reviewer or an
+admin agent (any other agent profile is blocked with
+`human_or_admin_review_required`).
+
+- MCP: `alice_memory_manage` with `action: "accept_consolidation"`,
+  `memory_id` (the candidate), and a required `reason`
+- HTTP: `POST /v0/vnext/memories/accept-consolidation`
+- CLI: `alicebot vnext memories accept-consolidation <memory_id> --reason ...`
+
+Outcome: `accepted` — the candidate is promoted to active and every memory
+in the proposal's `proposed_supersede` list is superseded by it (real
+`superseded_by` pointer columns, one revision and one event per member).
+`dedup` proposals record content lineage with a `supersedes` pointer to the
+survivor; `merge` proposals record the full member list in
+`metadata_json.merged_from`. Replaying an acceptance is a no-op with a note.
+Audit: a `promoted` revision on the accepted row, `superseded` revisions on
+the members, and an `agent.memory_consolidation_accepted` event.
+
+## expire / unexpire
+
+Ages out time-bounded facts by closing the memory's validity window —
+temporal exclusion, not a lifecycle judgment: the row's status stays
+`active`, but recall, context packs, and briefs stop returning it once
+`valid_to` passes (the staleness sweep later marks long-expired rows
+`stale`). Unexpire reopens the window. Both require a `reason`.
+
+- MCP: `alice_memory_manage` with `action: "expire"` (optional `valid_to`
+  ISO-8601 timestamp, default now) or `action: "unexpire"`
+- HTTP: `POST /v0/vnext/memories/expire`, `POST /v0/vnext/memories/unexpire`
+- CLI: `alicebot vnext memories expire <memory_id> --reason ... [--valid-to ...]`
+  and `alicebot vnext memories unexpire <memory_id> --reason ...`
+
+Outcomes: `expired` (with the effective `valid_to`) and `active`.
+Unexpiring a memory that has no validity end replays as a no-op with a
+note. Superseded and rejected rows cannot be expired or unexpired. Audit:
+an `edited` revision plus an `agent.memory_expired` /
+`agent.memory_unexpired` event recording the window change and reason.
+
+## redact
+
+Expunges a memory's content everywhere — for content that must actually
+go, not just leave recall. Redaction is destructive, requires a `reason`,
+and is restricted to a human operator or an admin agent.
+
+- MCP: `alice_memory_manage` with `action: "redact"`, `memory_id`, and
+  `reason`
+- HTTP: `POST /v0/vnext/memories/redact`
+- CLI: `alicebot vnext memories redact <memory_id> --reason ...`
+
+Order of operations: if the memory is still live it goes through the
+[forget](#forget) flow first (so the lifecycle trail records why it left
+recall), then content is expunged from the memory row, then from its
+revisions, then from event payloads that reference it.
+
+**Honest semantics:** the content is expunged; the skeleton is not.
+
+- *Expunged*: the row's title, canonical text, summary, and value become
+  the `[REDACTED]` marker; the embedding vector is cleared; metadata is
+  scrubbed to structural keys; revision texts, values, and reasons become
+  the marker; event payloads that reference the memory become
+  `{"redacted": true, ...}` and their integrity hashes are cleared (a kept
+  hash would let someone confirm guesses of the redacted content).
+- *Retained*: ids, memory/revision/event types, timestamps, actor columns,
+  and sequence numbers — the audit skeleton.
+- *Proof*: the row is archived and the `memory.redacted` event trail
+  (content, revisions, events operations) proves the redaction happened
+  and when.
+
+Works on both backends (Postgres and the SQLite on-ramp). Redaction is not
+reversible and is not a substitute for backup hygiene: copies that left the
+store (exports, backups) are out of its reach.
 
 ---
 

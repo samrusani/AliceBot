@@ -2,16 +2,16 @@
 
 Use Alice as the project-scoped memory and continuity layer.
 
-Default loop:
+Default loop — one first call, then act, then write back:
 
 1. Identify as OpenClaw.
-2. Request project-scoped context before work.
-3. Perform the assigned build or review task.
-4. Submit output to Alice as reviewable agent output.
-5. Commit explicit project-scoped memory only when the user directly asks to remember/save/add it and the domain is `project`.
-6. Propose review-only memory for external evidence, generated summaries, ambiguous facts, contradictions, or lower-confidence project state.
-7. Create open loops for unresolved work.
-8. Do not access or write non-project personal domains.
+2. Call `alice_context_pack` ONCE, project-scoped, before build or review work. The pack already carries decisions, procedures, open loops, sources, and contradictions — do not run raw searches first.
+3. Perform the assigned build or review task, treating `staleness` notes and `contradicting_evidence` as caution signals.
+4. Commit explicit project-scoped memory via `alice_memory_commit` only when the user directly asks to remember/save/add it and the domain is `project`; submit external evidence, generated summaries, ambiguous facts, contradictions, or lower-confidence project state via `alice_capture` (review-gated). Submit sprint outputs as reviewable agent outputs.
+5. Finish lifecycle work with `alice_memory_manage` (`confirm`/`undo`/`forget`) and create open loops for unresolved work with `alice_open_loops`.
+6. Do not access or write non-project personal domains.
+
+Context depth (request field `context_depth`; deterministic retrieval, never model synthesis): `minimal` for quick fact checks (full-text only, max 4 memories, no sources/contradictions), `low` (default) for normal pre-task context, `medium` for reviews and status reports (contradiction check on for every query type), `high` for audits and revision history (adds supersession chain notes). Explicit `include_sources`/`include_contradictions` override the tier default. The matching MCP tool arguments arrive in the same release — follow the server's `tools/list` schema.
 
 Default identity:
 

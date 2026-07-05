@@ -11,11 +11,16 @@ from alicebot_api.vnext_entities import (
     ENTITY_EXTRACTION_BLOCKLIST,
     ENTITY_EXTRACTION_SKIP_SENSITIVITIES,
     ENTITY_MENTION_EDGE_TYPE,
+    LONG_TEXT_CHAR_THRESHOLD,
+    LONG_TEXT_SPAN_REPEAT_MINIMUM,
+    MAX_LINKED_ENTITIES_PER_TEXT,
     PERSON_ABOUT_EDGE_TYPE,
     RULE_CONFIDENCE,
+    EntityCandidate,
     EntityLinkingService,
     derive_person_name_from_title,
     extract_entity_candidates,
+    select_candidates_for_linking,
     store_supports_entity_linking,
 )
 from alicebot_api.vnext_entity_names import ENTITY_TYPES
@@ -33,23 +38,63 @@ def _by_normalized(text: str) -> dict[str, object]:
     return {candidate.normalized: candidate for candidate in extract_entity_candidates(text)}
 
 
-def test_capitalized_multi_word_span_extracts_person_guess() -> None:
+# Behavior change (LongMemEval noise fix): a bare "First Last" span is
+# no longer positive evidence of a person — brand names share the exact
+# same shape. Without honorific/context evidence the span defaults to
+# 'other' via the lower-confidence capitalized_span_default rule.
+def test_bare_two_token_span_defaults_to_other_not_person() -> None:
     candidates = extract_entity_candidates("Yesterday Sami Rusani shipped the retrieval fix.")
 
     assert len(candidates) == 1
     candidate = candidates[0]
     assert candidate.name == "Sami Rusani"
     assert candidate.normalized == "sami rusani"
-    assert candidate.entity_type == "person"
-    assert candidate.source_rule == "capitalized_span"
-    assert candidate.confidence == RULE_CONFIDENCE["capitalized_span"]
+    assert candidate.entity_type == "other"
+    assert candidate.source_rule == "capitalized_span_default"
+    assert candidate.confidence == RULE_CONFIDENCE["capitalized_span_default"]
+
+
+def test_relational_context_promotes_two_token_span_to_person() -> None:
+    for text in (
+        "Met with Sami Rusani about the fund strategy.",  # "with X" cue before
+        "Met Sami Rusani at the offsite.",  # "met X" cue before
+        "Dinner with my friend Sami Rusani tomorrow.",  # relational noun before
+        "Sami Rusani said the round is closing.",  # "X said" cue directly after
+        "Sami Rusani told me the round is closing.",  # "X told" cue directly after
+    ):
+        candidates = extract_entity_candidates(text)
+        assert len(candidates) == 1, text
+        assert candidates[0].normalized == "sami rusani", text
+        assert candidates[0].entity_type == "person", text
+        assert candidates[0].source_rule == "capitalized_span", text
+        assert candidates[0].confidence == RULE_CONFIDENCE["capitalized_span"], text
+
+
+def test_brandish_two_token_spans_are_not_typed_person() -> None:
+    candidates = _by_normalized(
+        "I bought a hoodie from Street Threads, browsed Hype Street, "
+        "and returned jeans at Urban Edge before joining Culture Club."
+    )
+
+    for key in ("street threads", "hype street", "urban edge", "culture club"):
+        assert candidates[key].entity_type == "other", key
+        assert candidates[key].source_rule == "capitalized_span_default", key
+        assert candidates[key].confidence == RULE_CONFIDENCE["capitalized_span_default"], key
 
 
 def test_org_suffix_span_guesses_organization() -> None:
+    # "met X" is a person cue, but org-suffix evidence is checked first.
     candidates = _by_normalized("We met Type3 Capital and Redwood Labs about the raise.")
 
     assert candidates["type3 capital"].entity_type == "organization"
     assert candidates["redwood labs"].entity_type == "organization"
+
+
+def test_group_and_systems_suffixes_guess_organization() -> None:
+    candidates = _by_normalized("Halcyon Group and Verdant Systems signed the pilot.")
+
+    assert candidates["halcyon group"].entity_type == "organization"
+    assert candidates["verdant systems"].entity_type == "organization"
 
 
 def test_honorific_span_guesses_person_even_with_three_tokens() -> None:
@@ -164,6 +209,7 @@ def test_empty_and_blank_text_yield_no_candidates() -> None:
 def test_all_confidences_stay_inside_the_documented_band() -> None:
     assert set(RULE_CONFIDENCE) == {
         "capitalized_span",
+        "capitalized_span_default",
         "domain",
         "handle",
         "acronym",
@@ -171,6 +217,9 @@ def test_all_confidences_stay_inside_the_documented_band() -> None:
     }
     for confidence in RULE_CONFIDENCE.values():
         assert 0.5 <= confidence <= 0.8
+    # Evidence-less spans must rank below evidence-backed ones so cap
+    # selection and future re-typing flows can target them.
+    assert RULE_CONFIDENCE["capitalized_span_default"] < RULE_CONFIDENCE["capitalized_span"]
 
 
 def test_entity_type_guesses_are_valid_store_entity_types() -> None:
@@ -189,6 +238,122 @@ def test_private_or_stricter_sensitivities_are_in_the_skip_set() -> None:
         assert sensitivity in ENTITY_EXTRACTION_SKIP_SENSITIVITIES
     for sensitivity in ("public", "internal", "unknown"):
         assert sensitivity not in ENTITY_EXTRACTION_SKIP_SENSITIVITIES
+
+
+# -- volume guards: long-text repeat threshold + linking cap ----------------------
+
+
+_LOWERCASE_FILLER = "plain lowercase filler about budgets and vendor timelines. " * 30
+
+
+def test_long_text_multi_token_spans_require_repeat() -> None:
+    once = _LOWERCASE_FILLER + "We saw Quiet Storm at the show."
+    twice = _LOWERCASE_FILLER + "Quiet Storm opened the show. The crowd loved Quiet Storm."
+    assert len(once) > LONG_TEXT_CHAR_THRESHOLD
+
+    assert extract_entity_candidates(once) == ()
+    repeated = extract_entity_candidates(twice)
+    assert [candidate.normalized for candidate in repeated] == ["quiet storm"]
+    assert repeated[0].occurrences == LONG_TEXT_SPAN_REPEAT_MINIMUM
+
+
+def test_short_text_keeps_single_mention_capture() -> None:
+    short = "We saw Quiet Storm at the show."
+    assert len(short) <= LONG_TEXT_CHAR_THRESHOLD
+
+    candidates = extract_entity_candidates(short)
+    assert [candidate.normalized for candidate in candidates] == ["quiet storm"]
+
+
+def test_dropped_long_text_span_does_not_resurface_as_single_tokens() -> None:
+    # "Storm" occurs once inside the below-threshold span and once
+    # alone: the span occurrence must stay masked, leaving the single
+    # token under its own repeat threshold.
+    text = _LOWERCASE_FILLER + "We saw Quiet Storm on stage. Fans praised Storm loudly."
+    assert len(text) > LONG_TEXT_CHAR_THRESHOLD
+
+    assert extract_entity_candidates(text) == ()
+
+
+def test_cap_selection_prefers_confidence_then_frequency_then_order() -> None:
+    def _make(normalized: str, confidence: float, occurrences: int) -> EntityCandidate:
+        return EntityCandidate(
+            name=normalized.title(),
+            normalized=normalized,
+            entity_type="other",
+            confidence=confidence,
+            source_rule="acronym",
+            occurrences=occurrences,
+        )
+
+    weak = [_make(f"weak{index:02d}", 0.6, 1) for index in range(24)]
+    frequent = _make("frequent", 0.6, 5)
+    strong = _make("strong span", 0.75, 1)
+    candidates = [*weak, frequent, strong]  # strongest candidates appear LAST
+
+    survivors = select_candidates_for_linking(candidates, cap=25)
+
+    names = [candidate.normalized for candidate in survivors]
+    assert len(names) == 25
+    # Confidence beats frequency beats first-appearance; the weakest
+    # (last equal-confidence, single-occurrence) candidate is dropped.
+    assert "strong span" in names
+    assert "frequent" in names
+    assert "weak23" not in names
+    # Survivors come back in first-appearance order.
+    assert names[-2:] == ["frequent", "strong span"]
+
+    # At or under the cap, input passes through untouched.
+    assert select_candidates_for_linking(candidates[:3], cap=25) == tuple(candidates[:3])
+
+
+def test_default_linking_cap_is_25() -> None:
+    assert MAX_LINKED_ENTITIES_PER_TEXT == 25
+
+
+# The LongMemEval-shaped regression: a ~1.7k-char brand-heavy shopping
+# note. Pre-fix, extraction returned every brand PLUS the one-off span,
+# all typed 'person' (the exactly-2-capitalized-tokens heuristic). Now
+# only the repeated brands survive, none typed person.
+_BRAND_HAYSTACK = (
+    "I've been shopping around for a fall wardrobe refresh and wanted to keep notes. "
+    "I checked out Street Threads yesterday and their hoodies looked great, though the "
+    "prices at Street Threads run higher than I remembered from last season. The staff "
+    "were helpful and the fitting rooms were clean, which honestly matters a lot to me. "
+    "After that I walked over to Hype Street because they had a sale banner in the "
+    "window. Most of what Hype Street stocks is streetwear basics, and I grabbed two "
+    "tees and a cap from the clearance rack near the back of the store. "
+    "For jeans I usually go to Urban Edge since their slim cuts fit me best, and the "
+    "denim wall at Urban Edge had a buy-one-get-one deal running through the weekend. "
+    "I also browsed Culture Club for the first time; a coworker keeps recommending it. "
+    "The Culture Club loyalty program gives points on every purchase, which could add "
+    "up quickly if I keep shopping there for basics and accessories through winter. "
+    "They also teased a Winter Capsule drop next month, but no date was confirmed yet. "
+    "Overall the loyalty deal at Culture Club seems better than what Street Threads "
+    "offers, and Urban Edge still wins on fit. Hype Street is the cheapest of the "
+    "four by a wide margin, but the stitching on their tees felt thin and the sizing "
+    "ran small on everything I tried, so I would size up next time for sure. "
+    "Budget-wise I want to stay under four hundred for the whole refresh, including "
+    "shoes, which probably means skipping the leather jacket until the January sales. "
+    "Next weekend I plan to compare return policies and shipping times before deciding "
+    "where the bulk of the order goes, and I will update these notes after that trip."
+)
+
+
+def test_longmemeval_brand_haystack_yields_few_non_person_entities() -> None:
+    assert len(_BRAND_HAYSTACK) > LONG_TEXT_CHAR_THRESHOLD
+
+    candidates = extract_entity_candidates(_BRAND_HAYSTACK)
+
+    names = {candidate.normalized for candidate in candidates}
+    # Only the four repeated brands; the one-off "Winter Capsule" span
+    # is below the long-text repeat threshold.
+    assert names == {"street threads", "hype street", "urban edge", "culture club"}
+    assert all(candidate.entity_type == "other" for candidate in candidates)
+    assert all(candidate.source_rule == "capitalized_span_default" for candidate in candidates)
+    assert all(
+        candidate.occurrences >= LONG_TEXT_SPAN_REPEAT_MINIMUM for candidate in candidates
+    )
 
 
 def test_derive_person_name_from_title_takes_the_head_before_separators() -> None:
@@ -243,7 +408,7 @@ def test_linking_creates_new_entities_with_observation_window_and_mention_edges(
 
     linked = service.link_entities_for_source(
         source_id=source_id,
-        text="Sami Rusani runs Type3 Capital.",
+        text="We met Sami Rusani of Type3 Capital.",
         observed_at=OBSERVED_AT,
     )
 
@@ -254,6 +419,11 @@ def test_linking_creates_new_entities_with_observation_window_and_mention_edges(
     assert person["mention_count"] == 1
     assert person["first_observed_at"] == OBSERVED_AT
     assert person["last_observed_at"] == OBSERVED_AT
+    # Type-correction surface: created entities carry their extraction
+    # rule + confidence so review flows can re-type in bulk.
+    for entity in (person, org):
+        assert entity["metadata_json"]["extraction_rule"] == "capitalized_span"
+        assert entity["metadata_json"]["extraction_confidence"] == RULE_CONFIDENCE["capitalized_span"]
 
     edges = store.list_edges(from_id=source_id)
     assert {(str(edge["to_id"]), str(edge["edge_type"])) for edge in edges} == {
@@ -275,10 +445,10 @@ def test_second_source_records_mention_and_widens_the_observation_window(conn) -
     second_source = _source(store, "Second")
 
     service.link_entities_for_source(
-        source_id=first_source, text="Sami Rusani shipped it.", observed_at=OBSERVED_AT
+        source_id=first_source, text="Met Sami Rusani about the plan.", observed_at=OBSERVED_AT
     )
     linked = service.link_entities_for_source(
-        source_id=second_source, text="Sami Rusani reviewed it.", observed_at=LATER_OBSERVED_AT
+        source_id=second_source, text="Spoke with Sami Rusani again.", observed_at=LATER_OBSERVED_AT
     )
 
     assert [record["action"] for record in linked] == ["mentioned"]
@@ -294,11 +464,11 @@ def test_out_of_order_observation_only_widens_the_window_backwards(conn) -> None
     store = _store(conn)
     service = EntityLinkingService(store)
     service.link_entities_for_source(
-        source_id=_source(store), text="Sami Rusani shipped it.", observed_at=OBSERVED_AT
+        source_id=_source(store), text="Met Sami Rusani about shipping.", observed_at=OBSERVED_AT
     )
 
     service.link_entities_for_source(
-        source_id=_source(store), text="Sami Rusani planned it.", observed_at=EARLIER_OBSERVED_AT
+        source_id=_source(store), text="Met Sami Rusani for planning.", observed_at=EARLIER_OBSERVED_AT
     )
 
     entity = store.get_entity_by_normalized_name("person", "sami rusani")
@@ -310,7 +480,7 @@ def test_relinking_the_same_source_is_idempotent(conn) -> None:
     store = _store(conn)
     service = EntityLinkingService(store)
     source_id = _source(store)
-    text = "Sami Rusani runs Type3 Capital."
+    text = "We met Sami Rusani of Type3 Capital."
 
     service.link_entities_for_source(source_id=source_id, text=text, observed_at=OBSERVED_AT)
     replay = service.link_entities_for_source(source_id=source_id, text=text, observed_at=LATER_OBSERVED_AT)
@@ -326,7 +496,7 @@ def test_honorific_variant_matches_existing_entity_and_appends_alias(conn) -> No
     store = _store(conn)
     service = EntityLinkingService(store)
     service.link_entities_for_source(
-        source_id=_source(store), text="Sami Rusani joined the call.", observed_at=OBSERVED_AT
+        source_id=_source(store), text="Met with Sami Rusani on the call.", observed_at=OBSERVED_AT
     )
 
     linked = service.link_entities_for_source(
@@ -356,11 +526,11 @@ def test_memory_linking_creates_memory_to_entity_edges(conn) -> None:
     memory = store.create_memory(
         {
             "memory_key": f"memory.{uuid4()}",
-            "value": {"text": "Sami Rusani prefers async standups."},
+            "value": {"text": "Chatted with Sami Rusani about async standups."},
             "status": "active",
             "memory_type": "semantic",
             "title": "Standup preference",
-            "canonical_text": "Sami Rusani prefers async standups.",
+            "canonical_text": "Chatted with Sami Rusani about async standups.",
         }
     )
 
@@ -376,6 +546,24 @@ def test_memory_linking_creates_memory_to_entity_edges(conn) -> None:
     assert edges[0]["from_type"] == "memory"
     assert edges[0]["edge_type"] == ENTITY_MENTION_EDGE_TYPE
     assert edges[0]["observed_at"] == OBSERVED_AT
+
+
+def test_linking_caps_writes_and_keeps_the_high_confidence_candidate(conn) -> None:
+    store = _store(conn)
+    service = EntityLinkingService(store)
+    source_id = _source(store)
+    # 30 low-confidence acronyms (0.60) separated by lowercase filler,
+    # then one high-confidence org span (0.75) at the very END of the
+    # text: first-appearance capping would drop it.
+    acronyms = [f"Z{chr(65 + index // 26)}{chr(65 + index % 26)}" for index in range(30)]
+    text = "then " + " then ".join(acronyms) + " happened. Later Type3 Capital funded it."
+
+    linked = service.link_entities_for_source(source_id=source_id, text=text, observed_at=OBSERVED_AT)
+
+    assert len(linked) == MAX_LINKED_ENTITIES_PER_TEXT
+    assert store.get_entity_by_normalized_name("organization", "type3 capital") is not None
+    assert len(store.list_edges(from_id=source_id)) == MAX_LINKED_ENTITIES_PER_TEXT
+    assert len(store.list_entities(limit=100)) == MAX_LINKED_ENTITIES_PER_TEXT
 
 
 def test_link_memory_to_person_creates_person_entity_and_about_edge(conn) -> None:
@@ -403,6 +591,8 @@ def test_link_memory_to_person_creates_person_entity_and_about_edge(conn) -> Non
     assert result["edge"] is not None
     entity = store.get_entity_by_normalized_name("person", "sami rusani")
     assert entity is not None
+    assert entity["metadata_json"]["extraction_rule"] == "person_memory_title"
+    assert entity["metadata_json"]["extraction_confidence"] == 0.8
     edges = [
         edge
         for edge in store.list_edges(from_id=str(memory["id"]))
@@ -423,7 +613,7 @@ def test_linking_is_isolated_between_users_sharing_a_database(conn) -> None:
     source_a = _source(store_a)
 
     EntityLinkingService(store_a).link_entities_for_source(
-        source_id=source_a, text="Sami Rusani runs Type3 Capital.", observed_at=OBSERVED_AT
+        source_id=source_a, text="We met Sami Rusani of Type3 Capital.", observed_at=OBSERVED_AT
     )
 
     assert store_b.list_entities() == []
@@ -432,7 +622,7 @@ def test_linking_is_isolated_between_users_sharing_a_database(conn) -> None:
     # User B linking the same names creates B-scoped rows, not shared ones.
     source_b = _source(store_b)
     EntityLinkingService(store_b).link_entities_for_source(
-        source_id=source_b, text="Sami Rusani runs Type3 Capital.", observed_at=OBSERVED_AT
+        source_id=source_b, text="We met Sami Rusani of Type3 Capital.", observed_at=OBSERVED_AT
     )
     entity_a = store_a.get_entity_by_normalized_name("person", "sami rusani")
     entity_b = store_b.get_entity_by_normalized_name("person", "sami rusani")

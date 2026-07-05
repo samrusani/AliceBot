@@ -58,6 +58,10 @@ WRITE_ACTIONS = {
     "memory.correct",
     "memory.forget",
     "memory.undo",
+    "memory.expire",
+    "memory.unexpire",
+    "memory.redact",
+    "memory.accept_consolidation",
     "memory.propose",
     "open_loop.create",
     "open_loop.update",
@@ -68,6 +72,20 @@ WRITE_ACTIONS = {
     "scheduler.resume",
     "scheduler.configure",
 }
+
+# Actions only a human (identity=None) or an admin agent may perform:
+# review decisions (artifact/memory review, consolidation acceptance) and
+# destructive operations (content redaction). Enforced in
+# evaluate_agent_policy with the same profile-restriction mechanism as the
+# scheduler controls.
+HUMAN_OR_ADMIN_ACTIONS = frozenset(
+    {
+        "artifact.review",
+        "memory.review",
+        "memory.redact",
+        "memory.accept_consolidation",
+    }
+)
 
 
 class AgentIdentityValidationError(ValueError):
@@ -304,7 +322,7 @@ def evaluate_agent_policy(
             if decision == "allowed":
                 decision = "requires_review"
 
-    if action in {"artifact.review", "memory.review"} and profile != "admin_agent":
+    if action in HUMAN_OR_ADMIN_ACTIONS and profile != "admin_agent":
         reasons.append("human_or_admin_review_required")
         decision = "blocked"
 
@@ -594,8 +612,11 @@ def agent_metadata(identity: AgentIdentity | None, decision: PolicyDecision | No
 __all__ = [
     "AGENT_AUTH_METHODS",
     "AGENT_TYPES",
+    "HUMAN_OR_ADMIN_ACTIONS",
     "PERMISSION_PROFILES",
     "POLICY_DECISIONS",
+    "READ_ACTIONS",
+    "WRITE_ACTIONS",
     "AgentIdentity",
     "AgentIdentityValidationError",
     "AgentPolicyBlockedError",

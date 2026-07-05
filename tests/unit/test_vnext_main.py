@@ -84,6 +84,70 @@ class FakeVNextStore:
                 return memory
         raise AssertionError(memory_id)
 
+    def get_memory(self, memory_id: str) -> dict[str, object] | None:
+        for memory in self.memories:
+            if str(memory["id"]) == str(memory_id):
+                return memory
+        return None
+
+    def redact_memory_content(self, *, memory_id: str, actor_type: str = "user") -> dict[str, object]:
+        memory = self.get_memory(memory_id)
+        assert memory is not None, memory_id
+        memory.update(
+            {
+                "title": "[REDACTED]",
+                "canonical_text": "[REDACTED]",
+                "summary": "[REDACTED]",
+                "value": {"redacted": True},
+                "metadata_json": {"redacted": True},
+                "status": "archived",
+            }
+        )
+        self.append_event(
+            {
+                "event_type": "memory.redacted",
+                "actor_type": actor_type,
+                "target_type": "memory",
+                "target_id": memory_id,
+                "payload_json": {"operation": "redact_memory_content"},
+            }
+        )
+        return memory
+
+    def redact_memory_revisions(self, *, memory_id: str, actor_type: str = "user") -> dict[str, object]:
+        redacted = 0
+        for revision in self.revisions:
+            if str(revision.get("memory_id")) == str(memory_id):
+                revision.update({"text_before": "[REDACTED]", "text_after": "[REDACTED]", "reason": "[REDACTED]"})
+                redacted += 1
+        self.append_event(
+            {
+                "event_type": "memory.redacted",
+                "actor_type": actor_type,
+                "target_type": "memory",
+                "target_id": memory_id,
+                "payload_json": {"operation": "redact_memory_revisions", "redacted_revisions": redacted},
+            }
+        )
+        return {"memory_id": memory_id, "redacted_revisions": redacted}
+
+    def redact_memory_events(self, *, memory_id: str, actor_type: str = "user") -> dict[str, object]:
+        redacted = 0
+        for event in self.events:
+            if str(event.get("target_id")) == str(memory_id):
+                event["payload_json"] = {"redacted": True, "memory_id": memory_id}
+                redacted += 1
+        self.append_event(
+            {
+                "event_type": "memory.redacted",
+                "actor_type": actor_type,
+                "target_type": "memory",
+                "target_id": memory_id,
+                "payload_json": {"operation": "redact_memory_events", "redacted_events": redacted},
+            }
+        )
+        return {"memory_id": memory_id, "redacted_events": redacted}
+
     def append_revision(self, revision: dict[str, object], **_kwargs) -> dict[str, object]:
         row = {**revision, "id": f"revision-{len(self.revisions) + 1}"}
         self.revisions.append(row)
@@ -1177,6 +1241,199 @@ def test_vnext_agent_endpoint_without_keys_marks_unauthenticated_local(monkeypat
     assert policy_events
     identity_record = policy_events[0]["payload_json"]["agent_identity"]
     assert identity_record["auth"] == "unauthenticated_local"
+
+
+def _seed_active_memory(store: FakeVNextStore, *, text: str = "The quarterly plan is drafted.") -> str:
+    memory_id = str(uuid4())
+    store.memories.append(
+        {
+            "id": memory_id,
+            "memory_type": "semantic",
+            "memory_key": f"seed.{memory_id}",
+            "value": {"text": text},
+            "status": "active",
+            "confidence": 0.9,
+            "title": text[:60],
+            "canonical_text": text,
+            "summary": text,
+            "domain": "professional",
+            "sensitivity": "internal",
+            "metadata_json": {},
+            "valid_to": None,
+        }
+    )
+    return memory_id
+
+
+def test_vnext_memory_expire_and_unexpire_endpoints(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    memory_id = _seed_active_memory(store)
+
+    expired = main_module.expire_vnext_memory(
+        main_module.VNextMemoryExpireRequest(user_id=user_id, memory_id=memory_id, reason="Window closed")
+    )
+    assert expired.status_code == 200
+    expired_payload = json.loads(expired.body)
+    assert expired_payload["status"] == "expired"
+    assert expired_payload["valid_to"]
+    assert store.get_memory(memory_id)["valid_to"] == expired_payload["valid_to"]
+    # Expiry is temporal, not a lifecycle judgment: the row stays active.
+    assert store.get_memory(memory_id)["status"] == "active"
+    assert any(event.get("event_type") == "agent.memory_expired" for event in store.events)
+
+    unexpired = main_module.unexpire_vnext_memory(
+        main_module.VNextMemoryUnexpireRequest(user_id=user_id, memory_id=memory_id, reason="Deadline extended")
+    )
+    assert unexpired.status_code == 200
+    assert json.loads(unexpired.body)["status"] == "active"
+    assert store.get_memory(memory_id)["valid_to"] is None
+    assert any(event.get("event_type") == "agent.memory_unexpired" for event in store.events)
+
+
+def test_vnext_memory_accept_consolidation_endpoint_supersedes_members(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    member_id = _seed_active_memory(store, text="Standup happens in the morning.")
+    candidate_id = _seed_active_memory(store, text="Standup happens every morning at 9:30am.")
+    candidate = store.get_memory(candidate_id)
+    candidate["status"] = "candidate"
+    candidate["metadata_json"] = {
+        "consolidation": {
+            "proposal_kind": "merge",
+            "cluster_member_ids": [member_id],
+            "proposed_supersede": [member_id],
+        },
+        "review_required": True,
+    }
+
+    response = main_module.accept_vnext_memory_consolidation(
+        main_module.VNextMemoryAcceptConsolidationRequest(
+            user_id=user_id, memory_id=candidate_id, reason="Duplicates of one fact"
+        )
+    )
+
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    assert payload["status"] == "accepted"
+    assert payload["superseded_member_ids"] == [member_id]
+    assert store.get_memory(candidate_id)["status"] == "active"
+    assert store.get_memory(member_id)["status"] == "superseded"
+    assert store.get_memory(member_id)["superseded_by"] == candidate_id
+    assert any(
+        event.get("event_type") == "agent.memory_consolidation_accepted" for event in store.events
+    )
+
+
+def test_vnext_memory_redact_endpoint_forgets_then_scrubs(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    memory_id = _seed_active_memory(store, text="The secret codename is Kestrel.")
+
+    response = main_module.redact_vnext_memory(
+        main_module.VNextMemoryRedactRequest(user_id=user_id, memory_id=memory_id, reason="Erasure request")
+    )
+
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    assert payload["status"] == "redacted"
+    assert payload["forgotten_first"] is True
+    assert payload["redaction_marker"] == "[REDACTED]"
+    memory = store.get_memory(memory_id)
+    assert memory["status"] == "archived"
+    assert memory["canonical_text"] == "[REDACTED]"
+    # Order of operations: the forget transition ran before the scrub, and
+    # the memory.redacted trail survives it (earlier trail payloads are
+    # themselves scrubbed by the events pass — event types are what remain).
+    assert any(revision.get("revision_type") == "archived" for revision in store.revisions)
+    redaction_trail = [event for event in store.events if event.get("event_type") == "memory.redacted"]
+    assert len(redaction_trail) == 3  # content, revisions, and events operations
+    assert redaction_trail[-1]["payload_json"].get("operation") == "redact_memory_events"
+
+    missing = main_module.redact_vnext_memory(
+        main_module.VNextMemoryRedactRequest(user_id=user_id, memory_id=uuid4(), reason="Nothing there")
+    )
+    assert missing.status_code == 400
+
+
+def test_vnext_memory_redact_endpoint_blocks_non_admin_agents(monkeypatch) -> None:
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    memory_id = _seed_active_memory(store)
+
+    response = main_module.redact_vnext_memory(
+        main_module.VNextMemoryRedactRequest(
+            user_id=user_id, memory_id=memory_id, reason="Not allowed", agent_id="hermes"
+        )
+    )
+
+    assert response.status_code == 403
+    assert store.get_memory(memory_id)["status"] == "active"
+    blocked_events = [event for event in store.events if event.get("event_type") == "agent.policy_blocked"]
+    assert blocked_events
+    decision = blocked_events[0]["payload_json"]["policy_decision"]
+    assert decision["action"] == "memory.redact"
+    assert "human_or_admin_review_required" in decision["reasons"]
+
+
+def test_vnext_memory_lifecycle_endpoints_share_agent_key_auth(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    memory_id = _seed_active_memory(store)
+    _record, raw_key = create_agent_key(
+        store, user_id=user_id, agent_id="hermes", permission_profile="trusted_local_agent"
+    )
+
+    # Keyless agent calls are rejected once keys exist — parity with the
+    # other vNext agent endpoints.
+    keyless = main_module.expire_vnext_memory(
+        main_module.VNextMemoryExpireRequest(
+            user_id=user_id, memory_id=memory_id, reason="Window closed", agent_id="hermes"
+        )
+    )
+    assert keyless.status_code == 401
+    assert "Authorization: Bearer alice_sk_" in json.loads(keyless.body)["detail"]
+    assert store.get_memory(memory_id)["valid_to"] is None
+
+    # With the key, the same call succeeds under the key-bound identity.
+    keyed = main_module.expire_vnext_memory(
+        main_module.VNextMemoryExpireRequest(
+            user_id=user_id, memory_id=memory_id, reason="Window closed", agent_id="hermes"
+        ),
+        authorization=f"Bearer {raw_key}",
+    )
+    assert keyed.status_code == 200
+    assert store.get_memory(memory_id)["valid_to"] is not None
+    policy_events = [event for event in store.events if event.get("event_type") == "policy.decision"]
+    assert policy_events
+    identity_record = policy_events[-1]["payload_json"]["agent_identity"]
+    assert identity_record["auth"] == "agent_api_key"
+
+    keyless_unexpire = main_module.unexpire_vnext_memory(
+        main_module.VNextMemoryUnexpireRequest(
+            user_id=user_id, memory_id=memory_id, reason="Extended", agent_id="hermes"
+        )
+    )
+    assert keyless_unexpire.status_code == 401
+    keyless_redact = main_module.redact_vnext_memory(
+        main_module.VNextMemoryRedactRequest(
+            user_id=user_id, memory_id=memory_id, reason="Erase", agent_id="hermes"
+        )
+    )
+    assert keyless_redact.status_code == 401
+    keyless_accept = main_module.accept_vnext_memory_consolidation(
+        main_module.VNextMemoryAcceptConsolidationRequest(
+            user_id=user_id, memory_id=memory_id, reason="Merge", agent_id="hermes"
+        )
+    )
+    assert keyless_accept.status_code == 401
 
 
 def test_agent_output_ingest_api_creates_review_only_records(monkeypatch) -> None:

@@ -542,9 +542,10 @@ class VNextConsolidationService:
         memory_type = memory_types.most_common(1)[0][0] if memory_types else "semantic"
         reviewer_instructions = [
             f"Review candidate memory for cluster {cluster_digest}; accepting it is the promotion decision.",
-            "After accepting, supersede the listed members through the existing memory review/undo flows "
+            "Accepting through the memory commit service (accept_consolidation_candidate) promotes this "
+            "candidate and executes the proposed supersessions "
             f"(members proposed for supersession: {', '.join(proposal['proposed_supersede']) or 'none'}).",
-            "Consolidation never supersedes active memories automatically.",
+            "Consolidation never supersedes active memories automatically; nothing changes until a reviewer accepts.",
         ]
         return self.store.create_memory(
             {
@@ -942,8 +943,9 @@ class VNextConsolidationService:
                 "## Review Policy",
                 "- This artifact is review-only.",
                 "- Proposals are candidate memories; accepting a candidate is the promotion decision.",
-                "- Members marked `proposed_supersede` are only superseded when a reviewer does so through",
-                "  the existing memory review/undo flows; consolidation never supersedes automatically.",
+                "- Accepting a candidate (memory commit service: accept_consolidation_candidate) promotes it",
+                "  and supersedes the members marked `proposed_supersede`; consolidation itself never",
+                "  supersedes automatically.",
             ]
         )
 
