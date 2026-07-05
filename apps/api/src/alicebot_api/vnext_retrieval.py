@@ -1,6 +1,28 @@
+"""Context Pack retrieval service (Context API v2).
+
+Everything in this module is deterministic: ranking is reciprocal rank
+fusion over store-provided stages, the token budget is a greedy packer,
+budget strategies only reorder which sections/items are offered to that
+packer, and depth tiers only switch stages and sections on or off. NO
+depth tier, strategy, or section performs LLM synthesis, summarization,
+or any other model call — the pack is a pure function of stored rows
+plus the request (house no-fake-intelligence rule).
+
+Budget strategies (``VNextRetrievalRequest.budget_strategy``) change the
+greedy packer's section order; ``recent_first`` and ``facts_first``
+additionally reorder the memories list before packing. Depth tiers
+(``VNextRetrievalRequest.context_depth``) trade cost for coverage:
+``minimal`` (FTS only, no sources/contradictions/typed sections/recent
+changes, max_items capped), ``low`` (today's default hybrid behavior),
+``medium`` (low with the contradictions stage forced on for every query
+type), and ``high`` (medium plus supersession chain notes). Explicit
+``include_sources``/``include_contradictions`` flags always override the
+tier default — the caller wins.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 import json
 import re
@@ -44,6 +66,84 @@ STALENESS_NOTE_AFTER_DAYS = 90
 # Trace exclusion_reason for items selected by ranking but dropped by the
 # token budget packer.
 EXCLUSION_REASON_TOKEN_BUDGET = "token_budget"
+# -- budget strategies ---------------------------------------------------------
+# A strategy changes only the ORDER in which sections are offered to the
+# greedy packer (and, for recent_first/facts_first, the order of the
+# memories list itself). It never changes what was retrieved or ranked.
+BUDGET_STRATEGY_BALANCED = "balanced"
+BUDGET_STRATEGY_FACTS_FIRST = "facts_first"
+BUDGET_STRATEGY_RECENT_FIRST = "recent_first"
+BUDGET_STRATEGY_CONTRADICTIONS_FIRST = "contradictions_first"
+BUDGET_STRATEGY_SOURCES_FIRST = "sources_first"
+BUDGET_STRATEGIES = (
+    BUDGET_STRATEGY_BALANCED,
+    BUDGET_STRATEGY_FACTS_FIRST,
+    BUDGET_STRATEGY_RECENT_FIRST,
+    BUDGET_STRATEGY_CONTRADICTIONS_FIRST,
+    BUDGET_STRATEGY_SOURCES_FIRST,
+)
+# Section names double as allocation-report keys and pack section keys.
+SECTION_RELEVANT_MEMORIES = "relevant_memories"
+SECTION_OPEN_LOOPS = "open_loops"
+SECTION_SOURCES = "sources"
+SECTION_SUPPORTING_EVIDENCE = "supporting_evidence"
+SECTION_CONTRADICTING_EVIDENCE = "contradicting_evidence"
+# Invariant: supporting_evidence always packs after relevant_memories
+# because provenance quotes are derived from the packed memories. The
+# contradicting_evidence section derives from the memories packed so far;
+# under contradictions_first it packs before memories, so it derives from
+# the ranking-selected (pre-budget) memories instead — the trade a caller
+# opts into by prioritizing contradictions over the memories themselves.
+_BALANCED_SECTION_ORDER = (
+    SECTION_RELEVANT_MEMORIES,
+    SECTION_OPEN_LOOPS,
+    SECTION_SOURCES,
+    SECTION_SUPPORTING_EVIDENCE,
+    SECTION_CONTRADICTING_EVIDENCE,
+)
+BUDGET_STRATEGY_SECTION_ORDERS: dict[str, tuple[str, ...]] = {
+    BUDGET_STRATEGY_BALANCED: _BALANCED_SECTION_ORDER,
+    BUDGET_STRATEGY_FACTS_FIRST: _BALANCED_SECTION_ORDER,
+    BUDGET_STRATEGY_RECENT_FIRST: _BALANCED_SECTION_ORDER,
+    BUDGET_STRATEGY_CONTRADICTIONS_FIRST: (
+        SECTION_CONTRADICTING_EVIDENCE,
+        SECTION_RELEVANT_MEMORIES,
+        SECTION_OPEN_LOOPS,
+        SECTION_SOURCES,
+        SECTION_SUPPORTING_EVIDENCE,
+    ),
+    BUDGET_STRATEGY_SOURCES_FIRST: (
+        SECTION_SOURCES,
+        SECTION_RELEVANT_MEMORIES,
+        SECTION_OPEN_LOOPS,
+        SECTION_SUPPORTING_EVIDENCE,
+        SECTION_CONTRADICTING_EVIDENCE,
+    ),
+}
+# facts_first boosts these memory_types to the front of the memories list
+# (stable within each partition, so fused rank still breaks ties).
+FACTS_FIRST_MEMORY_TYPES = frozenset({"semantic", "decision", "preference"})
+# -- depth tiers ---------------------------------------------------------------
+CONTEXT_DEPTH_MINIMAL = "minimal"
+CONTEXT_DEPTH_LOW = "low"
+CONTEXT_DEPTH_MEDIUM = "medium"
+CONTEXT_DEPTH_HIGH = "high"
+CONTEXT_DEPTHS = (
+    CONTEXT_DEPTH_MINIMAL,
+    CONTEXT_DEPTH_LOW,
+    CONTEXT_DEPTH_MEDIUM,
+    CONTEXT_DEPTH_HIGH,
+)
+# minimal caps max_items at min(CONTEXT_DEPTH_MINIMAL_MAX_ITEMS, requested).
+CONTEXT_DEPTH_MINIMAL_MAX_ITEMS = 4
+# Honest stage status when a tier (not a store limitation) skips a stage.
+STAGE_DISABLED_MINIMAL = "disabled: context_depth=minimal"
+# Honest stage status when the caller explicitly turned sources off.
+SOURCES_STAGE_DISABLED_BY_FLAG = "disabled: include_sources=false"
+# Supersession chain notes (high tier): walk supersedes/superseded_by
+# pointers at most this many hops in each direction, with a cycle guard.
+SUPERSESSION_CHAIN_HOP_LIMIT = 5
+SUPERSESSION_STAGE_ENABLED = "enabled"
 CONTRADICTIONS_STAGE_ENABLED = "enabled"
 CONTRADICTIONS_STAGE_NOT_REQUESTED = "disabled: not requested"
 CONTRADICTIONS_STAGE_NO_STORE_SUPPORT = "disabled: store does not support beliefs"
@@ -155,12 +255,21 @@ class VNextRetrievalRequest:
     filter_run_id: str | None = None
     time_window: str = "all"
     sensitivity_allowed: tuple[str, ...] = DEFAULT_SENSITIVITY_ALLOWED
-    include_sources: bool = True
-    include_contradictions: bool = True
+    # None means "let the depth tier decide" (sources/contradictions on for
+    # low/medium/high, off for minimal; contradictions additionally gated to
+    # strategic query types at low). An explicit True/False always wins over
+    # the tier default.
+    include_sources: bool | None = None
+    include_contradictions: bool | None = None
     max_items: int = DEFAULT_CONTEXT_PACK_LIMIT
     # None means "no token budget": nothing is dropped, but the pack still
     # reports its token estimate. When set, the greedy packer enforces it.
     max_tokens: int | None = None
+    # How the greedy packer spends max_tokens; see BUDGET_STRATEGIES.
+    budget_strategy: str = BUDGET_STRATEGY_BALANCED
+    # Cost/coverage tier; see CONTEXT_DEPTHS. "low" is today's default
+    # hybrid behavior. No tier performs LLM synthesis.
+    context_depth: str = CONTEXT_DEPTH_LOW
     actor_type: str = "system"
     actor_id: str | None = None
     agent_identity: JsonObject | None = None
@@ -244,7 +353,40 @@ def _contains_any(query: str, words: tuple[str, ...]) -> bool:
     return any(word in lowered for word in words)
 
 
+def _validate_choice(value: str, *, field_name: str, choices: tuple[str, ...]) -> None:
+    if value not in choices:
+        raise VNextRetrievalValidationError(
+            f"{field_name} must be one of: {', '.join(choices)} (got {value!r})"
+        )
+
+
+def _resolve_section_flags(request: VNextRetrievalRequest, *, query_type: str) -> tuple[bool, bool]:
+    """Resolve (requires_sources, requires_contradictions) — caller wins.
+
+    Explicit ``include_sources``/``include_contradictions`` always take
+    precedence. When unset (None), the depth tier decides: minimal turns
+    both off; low keeps today's defaults (sources on, contradictions only
+    for strategic query types); medium/high force contradictions on for
+    every query type — that gate is the only low/medium difference.
+    """
+    depth = request.context_depth
+    if request.include_sources is not None:
+        requires_sources = request.include_sources
+    else:
+        requires_sources = depth != CONTEXT_DEPTH_MINIMAL
+    if request.include_contradictions is not None:
+        requires_contradictions = request.include_contradictions
+    elif depth == CONTEXT_DEPTH_MINIMAL:
+        requires_contradictions = False
+    elif depth in (CONTEXT_DEPTH_MEDIUM, CONTEXT_DEPTH_HIGH):
+        requires_contradictions = True
+    else:
+        requires_contradictions = query_type in STRATEGIC_QUERY_TYPES
+    return requires_sources, requires_contradictions
+
+
 def classify_query(request: VNextRetrievalRequest) -> JsonObject:
+    _validate_choice(request.context_depth, field_name="context_depth", choices=CONTEXT_DEPTHS)
     query = normalize_query(request.query)
     lowered = query.casefold()
 
@@ -269,6 +411,7 @@ def classify_query(request: VNextRetrievalRequest) -> JsonObject:
 
     domains = list(request.domains) or _infer_domains(lowered)
     sensitivity_allowed = list(request.sensitivity_allowed) or list(DEFAULT_SENSITIVITY_ALLOWED)
+    requires_sources, requires_contradictions = _resolve_section_flags(request, query_type=query_type)
     return {
         "query": query,
         "query_type": query_type,
@@ -279,8 +422,8 @@ def classify_query(request: VNextRetrievalRequest) -> JsonObject:
         "memory_types": list(request.memory_types),
         "time_window": request.time_window,
         "sensitivity_allowed": sensitivity_allowed,
-        "requires_sources": request.include_sources or query_type in STRATEGIC_QUERY_TYPES,
-        "requires_contradictions": request.include_contradictions and query_type in STRATEGIC_QUERY_TYPES,
+        "requires_sources": requires_sources,
+        "requires_contradictions": requires_contradictions,
         "requires_raw_evidence": _contains_any(lowered, ("quote", "source", "evidence", "prove", "where did")),
     }
 
@@ -433,17 +576,27 @@ def estimate_item_tokens(item: JsonObject) -> int:
 class _TokenBudget:
     """Greedy token-budget packer state.
 
-    Items are offered in priority order. Once one item does not fit, the
-    budget is marked truncated and every later item is dropped too, keeping
-    the packed prefix aligned with the ranking order.
+    Items are offered section by section in the strategy's section order.
+    Once one item does not fit, the budget is marked truncated and every
+    later item is dropped too, keeping the packed prefix aligned with the
+    offer order. ``allocation`` records the admitted token estimate per
+    section so agents can see where the budget went; the values always sum
+    to ``token_estimate``.
     """
 
     token_budget: int | None
+    strategy: str = BUDGET_STRATEGY_BALANCED
     token_estimate: int = 0
     truncated: bool = False
     dropped_item_count: int = 0
+    allocation: dict[str, int] = field(default_factory=dict)
 
-    def admit(self, item: JsonObject) -> bool:
+    def open_section(self, section: str) -> None:
+        """Register a section so the allocation report has stable keys."""
+        self.allocation.setdefault(section, 0)
+
+    def admit(self, item: JsonObject, *, section: str) -> bool:
+        self.open_section(section)
         cost = estimate_item_tokens(item)
         if self.truncated or (
             self.token_budget is not None and self.token_estimate + cost > self.token_budget
@@ -452,6 +605,7 @@ class _TokenBudget:
             self.dropped_item_count += 1
             return False
         self.token_estimate += cost
+        self.allocation[section] += cost
         return True
 
     def to_record(self) -> JsonObject:
@@ -460,6 +614,8 @@ class _TokenBudget:
             "token_estimate": self.token_estimate,
             "truncated": self.truncated,
             "dropped_item_count": self.dropped_item_count,
+            "strategy": self.strategy,
+            "allocation": dict(self.allocation),
         }
 
 
@@ -488,6 +644,32 @@ def _staleness_note(memory: JsonObject, *, now: datetime) -> JsonObject | None:
         "threshold_days": STALENESS_NOTE_AFTER_DAYS,
         "note": f"last confirmed {age_days} days ago (over the {STALENESS_NOTE_AFTER_DAYS}-day threshold)",
     }
+
+
+def _memory_recency(memory: JsonObject) -> datetime:
+    """Best-effort recency timestamp for recent_first ordering."""
+    for key in ("updated_at", "last_seen_at", "created_at", "first_seen_at"):
+        parsed = _parse_timestamp(memory.get(key))
+        if parsed is not None:
+            return parsed
+    return _GRAPH_EPOCH
+
+
+def _order_memories_for_strategy(memories: list[JsonObject], strategy: str) -> list[JsonObject]:
+    """Reorder the ranking-selected memories list for the budget strategy.
+
+    recent_first: recency DESC before fused rank (stable sort keeps fused
+    order on recency ties). facts_first: memory_types in
+    FACTS_FIRST_MEMORY_TYPES boosted to the front, fused order preserved
+    inside each partition. Every other strategy keeps the fused order.
+    """
+    if strategy == BUDGET_STRATEGY_RECENT_FIRST:
+        return sorted(memories, key=_memory_recency, reverse=True)
+    if strategy == BUDGET_STRATEGY_FACTS_FIRST:
+        facts = [item for item in memories if item.get("memory_type") in FACTS_FIRST_MEMORY_TYPES]
+        rest = [item for item in memories if item.get("memory_type") not in FACTS_FIRST_MEMORY_TYPES]
+        return [*facts, *rest]
+    return list(memories)
 
 
 def _memory_title(memory: JsonObject) -> str:
@@ -704,17 +886,26 @@ class VNextRetrievalService:
     def compile_context_pack(self, request: VNextRetrievalRequest) -> JsonObject:
         if request.max_tokens is not None and request.max_tokens < 1:
             raise VNextRetrievalValidationError("max_tokens must be a positive integer when set")
+        _validate_choice(request.budget_strategy, field_name="budget_strategy", choices=BUDGET_STRATEGIES)
+        _validate_choice(request.context_depth, field_name="context_depth", choices=CONTEXT_DEPTHS)
+        strategy = request.budget_strategy
+        depth = request.context_depth
         interpretation = classify_query(request)
         terms = list(interpretation["terms"])  # type: ignore[arg-type]
         domains = list(interpretation["domains"])  # type: ignore[arg-type]
         sensitivity_allowed = list(interpretation["sensitivity_allowed"])  # type: ignore[arg-type]
+        sources_enabled = bool(interpretation["requires_sources"])
+        contradictions_requested = bool(interpretation["requires_contradictions"])
         memory_types = tuple(request.memory_types)
         projects = tuple(request.projects)
         created_by_agent_ids = tuple(request.created_by_agent_ids)
         filter_run_id = request.filter_run_id
         trace_id = request.trace_id or str(uuid4())
         context_pack_id = str(uuid4())
-        memory_candidate_limit = max(request.max_items * 2, request.max_items)
+        max_items = request.max_items
+        if depth == CONTEXT_DEPTH_MINIMAL:
+            max_items = min(CONTEXT_DEPTH_MINIMAL_MAX_ITEMS, max_items)
+        memory_candidate_limit = max(max_items * 2, max_items)
 
         fts_rows, fts_source = self._memory_fts_rows(
             query=request.query,
@@ -726,38 +917,52 @@ class VNextRetrievalService:
             created_by_agent_ids=created_by_agent_ids,
             run_id=filter_run_id,
         )
-        vector_rows, vector_stage = self._memory_vector_rows(
-            query=str(interpretation["query"]),
-            domains=domains,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=memory_candidate_limit,
-            memory_types=memory_types,
-            projects=projects,
-            created_by_agent_ids=created_by_agent_ids,
-            run_id=filter_run_id,
-        )
-        graph_rows, graph_stage, matched_entities = self._memory_graph_rows(
-            query=request.query,
-            domains=domains,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=memory_candidate_limit,
-            memory_types=memory_types,
-            projects=projects,
-            created_by_agent_ids=created_by_agent_ids,
-            run_id=filter_run_id,
-        )
+        if depth == CONTEXT_DEPTH_MINIMAL:
+            # The cheapest useful call: FTS only. No query embedding, no
+            # entity resolution or graph hop; honest tier status instead.
+            vector_rows, vector_stage = [], STAGE_DISABLED_MINIMAL
+            graph_rows, graph_stage, matched_entities = [], STAGE_DISABLED_MINIMAL, []
+        else:
+            vector_rows, vector_stage = self._memory_vector_rows(
+                query=str(interpretation["query"]),
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=memory_candidate_limit,
+                memory_types=memory_types,
+                projects=projects,
+                created_by_agent_ids=created_by_agent_ids,
+                run_id=filter_run_id,
+            )
+            graph_rows, graph_stage, matched_entities = self._memory_graph_rows(
+                query=request.query,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=memory_candidate_limit,
+                memory_types=memory_types,
+                projects=projects,
+                created_by_agent_ids=created_by_agent_ids,
+                run_id=filter_run_id,
+            )
         memory_lists: dict[str, Sequence[JsonObject]] = {"fts": fts_rows}
         if vector_stage == VECTOR_STAGE_ENABLED:
             memory_lists["vector"] = vector_rows
         if graph_stage == GRAPH_STAGE_ENABLED:
             memory_lists["graph"] = graph_rows
 
-        source_rows = self.store.search_sources(
-            query=request.query,
-            domains=domains or None,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=max(DEFAULT_SOURCE_LIMIT, request.max_items),
-        )
+        if sources_enabled:
+            source_rows = self.store.search_sources(
+                query=request.query,
+                domains=domains or None,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=max(DEFAULT_SOURCE_LIMIT, max_items),
+            )
+            sources_stage_record: JsonObject = {"source": "store_lexical", "candidate_count": len(source_rows)}
+        else:
+            source_rows = []
+            sources_stage_status = (
+                SOURCES_STAGE_DISABLED_BY_FLAG if request.include_sources is False else STAGE_DISABLED_MINIMAL
+            )
+            sources_stage_record = {"source": "store_lexical", "candidate_count": 0, "status": sources_stage_status}
         open_loop_rows = self.store.list_open_loops(
             status="open",
             domains=domains or None,
@@ -770,7 +975,7 @@ class VNextRetrievalService:
             target_type="memory",
             domains=domains,
             sensitivity_allowed=sensitivity_allowed,
-            limit=request.max_items,
+            limit=max_items,
         )
         source_candidates = _fused_candidates(
             {"lexical": source_rows},
@@ -787,19 +992,58 @@ class VNextRetrievalService:
             limit=DEFAULT_OPEN_LOOP_LIMIT,
         )
 
-        selected_memories = [_compact_item(candidate.item) for candidate in memory_candidates if candidate.selected]
-        selected_sources = [_compact_item(candidate.item) for candidate in source_candidates if candidate.selected]
-        selected_open_loops = [_compact_item(candidate.item) for candidate in open_loop_candidates if candidate.selected]
+        ranked_memories = [_compact_item(candidate.item) for candidate in memory_candidates if candidate.selected]
+        ordered_memories = _order_memories_for_strategy(ranked_memories, strategy)
+        ranked_sources = [_compact_item(candidate.item) for candidate in source_candidates if candidate.selected]
+        ranked_open_loops = [_compact_item(candidate.item) for candidate in open_loop_candidates if candidate.selected]
 
-        # Greedy token-budget packing in priority order: memories (fused
-        # rank), then open loops, then sources, then provenance quotes.
-        budget = _TokenBudget(token_budget=request.max_tokens)
-        selected_memories = [item for item in selected_memories if budget.admit(item)]
-        selected_open_loops = [item for item in selected_open_loops if budget.admit(item)]
-        selected_sources = [item for item in selected_sources if budget.admit(item)]
-        supporting_evidence = [
-            evidence for evidence in self._supporting_evidence(selected_memories) if budget.admit(evidence)
-        ]
+        # Greedy token-budget packing, section by section in the strategy's
+        # order (balanced: memories, open loops, sources, provenance quotes,
+        # contradictions). Derived sections (supporting/contradicting
+        # evidence) come from the memories packed so far; when a strategy
+        # packs contradictions before memories, they derive from the
+        # ranking-selected (pre-budget) memories instead.
+        contradictions_not_requested_status = (
+            STAGE_DISABLED_MINIMAL
+            if depth == CONTEXT_DEPTH_MINIMAL and request.include_contradictions is None
+            else CONTRADICTIONS_STAGE_NOT_REQUESTED
+        )
+        budget = _TokenBudget(token_budget=request.max_tokens, strategy=strategy)
+        selected_memories: list[JsonObject] = []
+        selected_open_loops: list[JsonObject] = []
+        selected_sources: list[JsonObject] = []
+        supporting_evidence: list[JsonObject] = []
+        contradicting_evidence: list[JsonObject] = []
+        contradictions_stage = contradictions_not_requested_status
+        memories_packed = False
+        for section in BUDGET_STRATEGY_SECTION_ORDERS[strategy]:
+            budget.open_section(section)
+            if section == SECTION_RELEVANT_MEMORIES:
+                selected_memories = [item for item in ordered_memories if budget.admit(item, section=section)]
+                memories_packed = True
+            elif section == SECTION_OPEN_LOOPS:
+                selected_open_loops = [item for item in ranked_open_loops if budget.admit(item, section=section)]
+            elif section == SECTION_SOURCES:
+                selected_sources = [item for item in ranked_sources if budget.admit(item, section=section)]
+            elif section == SECTION_SUPPORTING_EVIDENCE:
+                evidence_base = selected_memories if memories_packed else ordered_memories
+                supporting_evidence = [
+                    evidence
+                    for evidence in self._supporting_evidence(evidence_base)
+                    if budget.admit(evidence, section=section)
+                ]
+            elif section == SECTION_CONTRADICTING_EVIDENCE:
+                contradiction_base = selected_memories if memories_packed else ordered_memories
+                contradiction_records, contradictions_stage = self._contradicting_evidence(
+                    contradiction_base,
+                    requested=contradictions_requested,
+                    domains=domains,
+                    sensitivity_allowed=sensitivity_allowed,
+                    not_requested_status=contradictions_not_requested_status,
+                )
+                contradicting_evidence = [
+                    record for record in contradiction_records if budget.admit(record, section=section)
+                ]
         memory_candidates = _apply_budget_exclusions(memory_candidates, selected_memories)
         open_loop_candidates = _apply_budget_exclusions(open_loop_candidates, selected_open_loops)
         source_candidates = _apply_budget_exclusions(source_candidates, selected_sources)
@@ -810,13 +1054,16 @@ class VNextRetrievalService:
             if staleness is not None:
                 memory["staleness"] = staleness
 
-        contradicting_evidence, contradictions_stage = self._contradicting_evidence(
-            selected_memories,
-            requested=bool(interpretation["requires_contradictions"]),
-            domains=domains,
-            sensitivity_allowed=sensitivity_allowed,
-        )
-        recent_changes = self._recent_changes()
+        supersession_context: list[JsonObject] | None = None
+        if depth == CONTEXT_DEPTH_HIGH:
+            supersession_context = self._supersession_context(selected_memories)
+
+        if depth == CONTEXT_DEPTH_MINIMAL:
+            recent_changes: list[JsonObject] | None = None
+            recent_changes_stage_record: JsonObject = {"status": STAGE_DISABLED_MINIMAL, "candidate_count": 0}
+        else:
+            recent_changes = self._recent_changes()
+            recent_changes_stage_record = {"candidate_count": len(recent_changes)}
 
         warnings = self._warnings(
             memory_candidates=memory_candidates,
@@ -846,6 +1093,8 @@ class VNextRetrievalService:
             },
             "fusion": {"algorithm": "reciprocal_rank_fusion", "k": RRF_K},
             "vector_stage": vector_stage,
+            "context_depth": depth,
+            "budget_strategy": strategy,
             "budget": budget.to_record(),
             "stages": {
                 "fts": {"source": fts_source, "candidate_count": len(fts_rows)},
@@ -855,14 +1104,19 @@ class VNextRetrievalService:
                     "matched_entities": matched_entities,
                     "candidate_count": len(graph_rows),
                 },
-                "sources": {"source": "store_lexical", "candidate_count": len(source_rows)},
+                "sources": sources_stage_record,
                 "open_loops": {"candidate_count": len(open_loop_rows)},
                 "contradictions": {"status": contradictions_stage, "candidate_count": len(contradicting_evidence)},
-                "recent_changes": {"candidate_count": len(recent_changes)},
+                "recent_changes": recent_changes_stage_record,
             },
             "selected": selected_trace,
             "excluded_counts": excluded_counts,
         }
+        if supersession_context is not None:
+            trace["stages"]["supersession"] = {  # type: ignore[index]
+                "status": SUPERSESSION_STAGE_ENABLED,
+                "candidate_count": len(supersession_context),
+            }
         pack: JsonObject = {
             "context_pack_id": context_pack_id,
             "query_interpretation": interpretation,
@@ -876,17 +1130,36 @@ class VNextRetrievalService:
             # relevant_memories.
             "current_known_state": [_memory_reference(item) for item in selected_memories],
             "relevant_memories": selected_memories,
-            "relevant_beliefs": [item for item in selected_memories if item.get("memory_type") in {"belief", "thesis"}],
-            "decisions": [item for item in selected_memories if item.get("memory_type") == "decision"],
-            "procedures": [item for item in selected_memories if item.get("memory_type") in {"procedure", "routine"}],
+        })
+        if depth != CONTEXT_DEPTH_MINIMAL:
+            # Typed sections are views over relevant_memories; minimal
+            # keeps only the memories themselves.
+            pack.update({
+                "relevant_beliefs": [
+                    item for item in selected_memories if item.get("memory_type") in {"belief", "thesis"}
+                ],
+                "decisions": [item for item in selected_memories if item.get("memory_type") == "decision"],
+                "procedures": [
+                    item for item in selected_memories if item.get("memory_type") in {"procedure", "routine"}
+                ],
+            })
+        pack.update({
             "open_loops": selected_open_loops,
             "supporting_evidence": supporting_evidence,
             "contradicting_evidence": contradicting_evidence,
-            "recent_changes": recent_changes,
-            "missing_information": self._missing_information(selected_memories, selected_sources),
+        })
+        if recent_changes is not None:
+            pack["recent_changes"] = recent_changes
+        if supersession_context is not None:
+            pack["supersession_context"] = supersession_context
+        pack.update({
+            "missing_information": self._missing_information(
+                selected_memories, selected_sources, sources_enabled=sources_enabled
+            ),
             "sources": selected_sources,
             "warnings": warnings,
             "budget": budget.to_record(),
+            "context_depth": depth,
             "trace_id": trace_id,
             "trace": trace,
             "agent_identity": request.agent_identity,
@@ -908,6 +1181,8 @@ class VNextRetrievalService:
                 "selected_count": trace["selected_count"],
                 "vector_stage": vector_stage,
                 "graph_stage": graph_stage,
+                "context_depth": depth,
+                "budget_strategy": strategy,
                 "budget": budget.to_record(),
                 "warnings": warnings,
                 "agent_identity": request.agent_identity,
@@ -941,6 +1216,7 @@ class VNextRetrievalService:
         requested: bool,
         domains: list[str],
         sensitivity_allowed: list[str],
+        not_requested_status: str = CONTRADICTIONS_STAGE_NOT_REQUESTED,
     ) -> tuple[list[JsonObject], str]:
         """Contradiction candidates between the selected memories and active beliefs.
 
@@ -950,7 +1226,7 @@ class VNextRetrievalService:
         to an empty section with an honest stage status.
         """
         if not requested:
-            return [], CONTRADICTIONS_STAGE_NOT_REQUESTED
+            return [], not_requested_status
         list_beliefs = getattr(self.store, "list_beliefs", None)
         if not callable(list_beliefs):
             return [], CONTRADICTIONS_STAGE_NO_STORE_SUPPORT
@@ -1033,22 +1309,116 @@ class VNextRetrievalService:
         return warnings
 
     @staticmethod
-    def _missing_information(memories: list[JsonObject], sources: list[JsonObject]) -> list[JsonObject]:
+    def _missing_information(
+        memories: list[JsonObject],
+        sources: list[JsonObject],
+        *,
+        sources_enabled: bool = True,
+    ) -> list[JsonObject]:
         missing: list[JsonObject] = []
         if not memories:
             missing.append({"kind": "memory", "reason": "No matching memory was selected."})
-        if not sources:
+        if sources_enabled and not sources:
             missing.append({"kind": "source", "reason": "No matching source was selected."})
         return missing
 
+    def _supersession_context(self, memories: list[JsonObject]) -> list[JsonObject]:
+        """Compact supersession chain notes (context_depth=high only).
+
+        For each packed memory carrying a ``supersedes`` or
+        ``superseded_by`` pointer, walk each direction through
+        ``get_memory`` (duck-typed; unresolvable pointers degrade to
+        id-only references) up to SUPERSESSION_CHAIN_HOP_LIMIT hops with a
+        cycle guard. Deterministic — chain notes quote stored rows only.
+        """
+        get_memory = getattr(self.store, "get_memory", None)
+        resolver = get_memory if callable(get_memory) else None
+        notes: list[JsonObject] = []
+        for memory in memories:
+            supersedes_pointer = memory.get("supersedes")
+            superseded_by_pointer = memory.get("superseded_by")
+            if not supersedes_pointer and not superseded_by_pointer:
+                continue
+            memory_id = str(memory.get("id"))
+            newer = (
+                self._walk_supersession_chain(
+                    str(superseded_by_pointer), pointer_key="superseded_by", resolver=resolver, seen={memory_id}
+                )
+                if superseded_by_pointer
+                else []
+            )
+            older = (
+                self._walk_supersession_chain(
+                    str(supersedes_pointer), pointer_key="supersedes", resolver=resolver, seen={memory_id}
+                )
+                if supersedes_pointer
+                else []
+            )
+            note_parts: list[str] = []
+            if newer:
+                note_parts.append(f"superseded by {len(newer)} newer revision(s)")
+            if older:
+                note_parts.append(f"supersedes {len(older)} older revision(s)")
+            notes.append(
+                {
+                    "memory_id": memory_id,
+                    "superseded_by": newer,
+                    "supersedes": older,
+                    "note": "; ".join(note_parts),
+                }
+            )
+        return notes
+
+    @staticmethod
+    def _walk_supersession_chain(
+        start_id: str,
+        *,
+        pointer_key: str,
+        resolver: object,
+        seen: set[str],
+    ) -> list[JsonObject]:
+        chain: list[JsonObject] = []
+        current: str | None = start_id
+        while current and current not in seen and len(chain) < SUPERSESSION_CHAIN_HOP_LIMIT:
+            seen.add(current)
+            row = resolver(current) if callable(resolver) else None
+            if row is None:
+                chain.append({"id": current})
+                break
+            chain.append(
+                {
+                    "id": current,
+                    "title": _memory_title(row),
+                    "memory_type": row.get("memory_type"),
+                    "status": row.get("status"),
+                }
+            )
+            next_pointer = row.get(pointer_key)
+            current = str(next_pointer) if next_pointer else None
+        return chain
+
 
 __all__ = [
+    "BUDGET_STRATEGIES",
+    "BUDGET_STRATEGY_BALANCED",
+    "BUDGET_STRATEGY_CONTRADICTIONS_FIRST",
+    "BUDGET_STRATEGY_FACTS_FIRST",
+    "BUDGET_STRATEGY_RECENT_FIRST",
+    "BUDGET_STRATEGY_SECTION_ORDERS",
+    "BUDGET_STRATEGY_SOURCES_FIRST",
+    "CONTEXT_DEPTHS",
+    "CONTEXT_DEPTH_HIGH",
+    "CONTEXT_DEPTH_LOW",
+    "CONTEXT_DEPTH_MEDIUM",
+    "CONTEXT_DEPTH_MINIMAL",
+    "CONTEXT_DEPTH_MINIMAL_MAX_ITEMS",
     "CONTRADICTIONS_STAGE_ENABLED",
     "CONTRADICTIONS_STAGE_NOT_REQUESTED",
     "CONTRADICTIONS_STAGE_NO_STORE_SUPPORT",
     "DEFAULT_CONTEXT_PACK_LIMIT",
     "DEFAULT_RECENT_CHANGES_LIMIT",
     "DEFAULT_SENSITIVITY_ALLOWED",
+    "FACTS_FIRST_MEMORY_TYPES",
     "ENTITY_NAME_CANDIDATE_LIMIT",
     "ENTITY_NAME_STOPWORDS",
     "EXCLUSION_REASON_TOKEN_BUDGET",
@@ -1059,7 +1429,16 @@ __all__ = [
     "MEMORY_ENTITY_EDGE_TYPES",
     "MEMORY_SEARCHABLE_STATUSES",
     "RRF_K",
+    "SECTION_CONTRADICTING_EVIDENCE",
+    "SECTION_OPEN_LOOPS",
+    "SECTION_RELEVANT_MEMORIES",
+    "SECTION_SOURCES",
+    "SECTION_SUPPORTING_EVIDENCE",
+    "SOURCES_STAGE_DISABLED_BY_FLAG",
+    "STAGE_DISABLED_MINIMAL",
     "STALENESS_NOTE_AFTER_DAYS",
+    "SUPERSESSION_CHAIN_HOP_LIMIT",
+    "SUPERSESSION_STAGE_ENABLED",
     "TOKEN_ESTIMATE_CHARS_PER_TOKEN",
     "VECTOR_STAGE_DISABLED_NO_PROVIDER",
     "VECTOR_STAGE_DISABLED_NO_STORE_SUPPORT",

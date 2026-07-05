@@ -2,17 +2,104 @@
 
 Agents should use Alice as a durable, private, provenance-aware, reviewable memory layer.
 
-Universal pattern:
+## Connect your agent in 5 minutes
 
-1. Identify yourself.
-2. Request scoped context, not raw memory.
-3. Use Alice context packs before planning or acting.
-4. Submit important outputs back to Alice.
-5. Commit explicit "remember/save/add this to memory" instructions only through Alice's official memory commit path.
-6. Propose memory for inferred, external, generated, ambiguous, or lower-confidence facts.
-7. Create open loops when work remains.
-8. Respect domain and sensitivity policy.
-9. Use `/vnext` for review, audit, undo, correction, forget, and troubleshooting.
+1. Point your MCP-capable agent at the Alice MCP server:
+
+```json
+{
+  "mcpServers": {
+    "alice": {
+      "command": "/ABSOLUTE/PATH/TO/AliceBot/.venv/bin/python",
+      "args": ["-m", "alicebot_api.mcp_server"],
+      "cwd": "/ABSOLUTE/PATH/TO/AliceBot",
+      "env": {
+        "DATABASE_URL": "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot",
+        "ALICEBOT_AUTH_USER_ID": "00000000-0000-0000-0000-000000000001"
+      }
+    }
+  }
+}
+```
+
+   No Postgres yet? `alice-memory mcp --data-dir ~/.alice` serves the same
+   eleven core tools against a local SQLite file — no `DATABASE_URL` needed.
+
+2. (Recommended) Bind the server to an agent identity: create a key with
+   `alicebot agent keys create` and set `ALICE_AGENT_API_KEY` in the MCP
+   server env (details under [Authentication](#authentication)).
+3. Drop one of the skill blocks into your agent's instructions:
+   [hermes-skill.md](hermes-skill.md) for personal assistants,
+   [openclaw-skill.md](openclaw-skill.md) for coding agents.
+4. Ask the agent something it should need memory for. Its first tool call
+   should be `alice_context_pack`.
+
+## The default loop
+
+One first call, then act, then write back:
+
+1. **`alice_context_pack`** — ONE scoped call before planning or acting.
+   The pack carries relevant memories, open loops, sources, supporting
+   evidence, contradictions, and honest gaps (`missing_information`,
+   `warnings`) — do not stitch together raw searches first.
+2. **Act** — perform the task with the pack as ground truth. Treat
+   `staleness` notes and `contradicting_evidence` as caution signals.
+3. **Write back through Alice** — `alice_memory_commit` for explicit
+   "remember/save/add to memory" instructions; `alice_capture` for
+   inferred, external, generated, ambiguous, or lower-confidence facts
+   (source-backed, review-gated).
+4. **Close the loop** — `alice_memory_manage` for `confirm`/`undo`/`forget`
+   follow-ups, and `alice_open_loops` to create or close open loops for
+   unresolved work.
+
+Respect domain and sensitivity policy on every call, and use `/vnext` for
+review, audit, undo, correction, forget, and troubleshooting.
+
+### Which context depth to request
+
+The context-pack request accepts `context_depth` (default `low`). Every
+tier is deterministic retrieval and packing — no tier performs LLM
+synthesis or summarization. Pick the cheapest tier that answers the
+question class:
+
+| `context_depth` | Question class | What runs |
+| --- | --- | --- |
+| `minimal` | Single-fact lookups, quick pre-flight checks, "do I know X at all?" | Full-text stage only (no vector, no graph hop), at most 4 memories, no sources, no contradictions, no typed sections, no recent changes. The cheapest useful call. |
+| `low` (default) | Normal task context before acting | Hybrid full-text + vector + entity-graph retrieval, sources, open loops, supporting evidence; contradiction check only for strategic query shapes (status, synthesis, contradiction, agent-context queries). |
+| `medium` | Reviews, plans, status reports, anything you will assert to the user | Everything `low` does, plus the contradiction check forced on for every query type. That contradictions default is the only difference between `low` and `medium`. |
+| `high` | Audits, conflicting-history questions, resuming long-running work | Everything `medium` does, plus compact supersession chain notes (`supersession_context`) for packed memories that supersede or are superseded by other revisions, and the resolved `entities` list whenever the query matched entities. |
+
+Explicit `include_sources` / `include_contradictions` flags always override
+the tier default — the caller wins (e.g. `minimal` plus
+`include_sources: true` returns sources). The tier is echoed back as
+`context_depth` on the pack and in the retrieval trace, and skipped stages
+report honest statuses such as `disabled: context_depth=minimal`.
+
+### Budget strategies and the allocation report
+
+When the request sets `max_tokens`, a greedy packer drops lowest-priority
+items to fit. `budget_strategy` (default `balanced`) controls the packing
+order — never what was retrieved or ranked:
+
+| `budget_strategy` | Packs first | Reach for it when |
+| --- | --- | --- |
+| `balanced` (default) | memories, then open loops, sources, evidence quotes, contradictions | General use. |
+| `facts_first` | Same section order; `semantic`/`decision`/`preference` memories boosted to the front of the memories list | Durable facts and decisions matter more than narrative under a tight budget. |
+| `recent_first` | Same section order; memories ordered newest-first before fused rank | "What changed" and freshness-sensitive tasks. |
+| `contradictions_first` | Contradiction records before everything else | Verification and consistency checks — contradictions survive even when the memories themselves get dropped. |
+| `sources_first` | Sources before memories | Citation-heavy, evidence-first workflows. |
+
+The pack's `budget` report shows where the budget went:
+`{token_budget, token_estimate, truncated, dropped_item_count, strategy,
+allocation}`, where `allocation` is per-section token estimates
+(`relevant_memories`, `open_loops`, `sources`, `supporting_evidence`,
+`contradicting_evidence`) that always sum to `token_estimate`.
+
+`context_depth` and `budget_strategy` are fields on the context-pack
+request across the service surfaces; the matching `alice_context_pack` MCP
+tool arguments land in the same release — check the server's `tools/list`
+response (the source of truth for input schemas) before passing them, and
+keep tool payloads generic otherwise.
 
 The full verb contract — remember, recall, correct, confirm, undo, forget,
 audit — with outcomes and audit guarantees per verb is documented in the

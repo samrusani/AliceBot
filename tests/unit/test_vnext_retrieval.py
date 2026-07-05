@@ -7,7 +7,11 @@ import pytest
 
 from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
 from alicebot_api.vnext_retrieval import (
+    BUDGET_STRATEGIES,
+    CONTEXT_DEPTHS,
+    CONTEXT_DEPTH_MINIMAL_MAX_ITEMS,
     CONTRADICTIONS_STAGE_ENABLED,
+    CONTRADICTIONS_STAGE_NOT_REQUESTED,
     CONTRADICTIONS_STAGE_NO_STORE_SUPPORT,
     ENTITY_NAME_CANDIDATE_LIMIT,
     EXCLUSION_REASON_TOKEN_BUDGET,
@@ -16,11 +20,15 @@ from alicebot_api.vnext_retrieval import (
     GRAPH_STAGE_DISABLED_NO_STORE_SUPPORT,
     GRAPH_STAGE_ENABLED,
     RRF_K,
+    SOURCES_STAGE_DISABLED_BY_FLAG,
+    STAGE_DISABLED_MINIMAL,
     STALENESS_NOTE_AFTER_DAYS,
+    SUPERSESSION_STAGE_ENABLED,
     VECTOR_STAGE_DISABLED_NO_PROVIDER,
     VECTOR_STAGE_ENABLED,
     VNextRetrievalRequest,
     VNextRetrievalService,
+    VNextRetrievalValidationError,
     classify_query,
     entity_name_candidates,
     estimate_item_tokens,
@@ -1241,3 +1249,635 @@ def test_context_pack_groups_procedures_and_routines_into_procedures_section() -
     assert {item["id"] for item in pack["procedures"]} == {"memory-procedure", "memory-routine"}
     assert [item["id"] for item in pack["relevant_beliefs"]] == ["memory-belief"]
     assert [item["id"] for item in pack["decisions"]] == ["memory-decision"]
+
+
+# -- per-section budget allocation report ----------------------------------------
+
+
+ALL_ALLOCATION_SECTIONS = {
+    "relevant_memories",
+    "open_loops",
+    "sources",
+    "supporting_evidence",
+    "contradicting_evidence",
+}
+
+
+def test_budget_allocation_reports_per_section_tokens_and_sums_to_estimate() -> None:
+    memory = _memory_row("memory-1", "Alice allocation report memory row.")
+    loop = {
+        "id": "loop-1",
+        "title": "Alice allocation report loop",
+        "status": "open",
+        "domain": "project",
+        "sensitivity": "private",
+    }
+    source = {
+        "id": "source-1",
+        "source_type": "manual_text",
+        "title": "Alice allocation report source",
+        "content_hash": "sha256:alloc",
+        "domain": "project",
+        "sensitivity": "private",
+    }
+    store = InMemoryVNextRetrievalStore(
+        memories=[memory],
+        sources=[source],
+        open_loops=[loop],
+        provenance_links=[
+            {
+                "id": "link-1",
+                "target_type": "memory",
+                "target_id": "memory-1",
+                "source_id": "source-1",
+                "source_chunk_id": "chunk-1",
+                "quote": "Alice allocation report memory row.",
+                "evidence_role": "quoted_from",
+                "confidence": 0.9,
+            }
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice allocation report", domains=("project",))
+    )
+
+    budget = pack["budget"]
+    allocation = budget["allocation"]
+    # Stable keys: every packed section reports, even at zero.
+    assert set(allocation) == ALL_ALLOCATION_SECTIONS
+    assert sum(allocation.values()) == budget["token_estimate"]
+    assert allocation["relevant_memories"] == estimate_item_tokens(memory)
+    assert allocation["open_loops"] == estimate_item_tokens(loop)
+    assert allocation["sources"] == estimate_item_tokens(source)
+    assert allocation["supporting_evidence"] == estimate_item_tokens(pack["supporting_evidence"][0])
+    assert allocation["contradicting_evidence"] == 0
+    assert budget["strategy"] == "balanced"
+    assert pack["trace"]["budget"] == budget
+    assert pack["trace"]["budget_strategy"] == "balanced"
+
+
+# -- budget strategies -------------------------------------------------------------
+
+
+def test_unknown_budget_strategy_is_rejected_with_choices_listed() -> None:
+    store = InMemoryVNextRetrievalStore(memories=[], sources=[])
+
+    with pytest.raises(VNextRetrievalValidationError) as excinfo:
+        VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(query="Alice", budget_strategy="alphabetical")
+        )
+
+    message = str(excinfo.value)
+    assert "budget_strategy" in message
+    for choice in BUDGET_STRATEGIES:
+        assert choice in message
+
+
+def test_sources_first_flips_which_section_survives_a_tight_budget() -> None:
+    memory = _memory_row(
+        "memory-1",
+        "Alice strategy flip memory row with deliberately long padding text so it costs more tokens.",
+    )
+    source = {
+        "id": "source-1",
+        "source_type": "manual_text",
+        "title": "Alice strategy flip source",
+        "content_hash": "sha256:flip",
+        "domain": "project",
+        "sensitivity": "private",
+    }
+    memory_cost = estimate_item_tokens(memory)
+    source_cost = estimate_item_tokens(source)
+    assert source_cost < memory_cost
+    budget_tokens = memory_cost  # fits the memory alone, or the source with room to spare — never both
+
+    def compile_with(strategy: str) -> dict[str, object]:
+        store = InMemoryVNextRetrievalStore(memories=[dict(memory)], sources=[dict(source)])
+        return VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query="Alice strategy flip",
+                domains=("project",),
+                max_tokens=budget_tokens,
+                budget_strategy=strategy,
+            )
+        )
+
+    balanced = compile_with("balanced")
+    sources_first = compile_with("sources_first")
+
+    # balanced packs memories first: the source no longer fits.
+    assert [item["id"] for item in balanced["relevant_memories"]] == ["memory-1"]
+    assert balanced["sources"] == []
+    # sources_first packs sources first: the memory no longer fits.
+    assert [item["id"] for item in sources_first["sources"]] == ["source-1"]
+    assert sources_first["relevant_memories"] == []
+    for pack in (balanced, sources_first):
+        assert pack["budget"]["truncated"] is True
+        assert sum(pack["budget"]["allocation"].values()) == pack["budget"]["token_estimate"]
+    assert sources_first["budget"]["strategy"] == "sources_first"
+    assert sources_first["trace"]["budget_strategy"] == "sources_first"
+
+
+def test_recent_first_orders_memories_by_recency_before_fused_rank() -> None:
+    older = _memory_row("memory-old", "Alice recency strategy row A", updated_at="2026-01-01T00:00:00Z")
+    newer = _memory_row("memory-new", "Alice recency strategy row B", updated_at="2026-07-01T00:00:00Z")
+    assert estimate_item_tokens(older) == estimate_item_tokens(newer)
+    one_memory_budget = estimate_item_tokens(older)
+
+    def compile_with(strategy: str, max_tokens: int | None) -> dict[str, object]:
+        store = InMemoryVNextRetrievalStore(memories=[dict(older), dict(newer)], sources=[])
+        return VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query="Alice recency strategy",
+                domains=("project",),
+                max_tokens=max_tokens,
+                budget_strategy=strategy,
+            )
+        )
+
+    # Without a budget the strategy still reorders the packed memories.
+    assert [item["id"] for item in compile_with("balanced", None)["relevant_memories"]] == [
+        "memory-old",
+        "memory-new",
+    ]
+    assert [item["id"] for item in compile_with("recent_first", None)["relevant_memories"]] == [
+        "memory-new",
+        "memory-old",
+    ]
+    # Under a one-memory budget the strategy flips which memory survives.
+    assert [item["id"] for item in compile_with("balanced", one_memory_budget)["relevant_memories"]] == [
+        "memory-old"
+    ]
+    assert [item["id"] for item in compile_with("recent_first", one_memory_budget)["relevant_memories"]] == [
+        "memory-new"
+    ]
+
+
+def test_facts_first_boosts_fact_memory_types_to_the_front_of_packing() -> None:
+    episodic = _memory_row("memory-epi-1", "Alice facts strategy row one", memory_type="episodic")
+    decision = _memory_row("memory-dec-1", "Alice facts strategy row two", memory_type="decision")
+    assert estimate_item_tokens(episodic) == estimate_item_tokens(decision)
+    one_memory_budget = estimate_item_tokens(episodic)
+
+    def compile_with(strategy: str, max_tokens: int | None) -> dict[str, object]:
+        store = InMemoryVNextRetrievalStore(memories=[dict(episodic), dict(decision)], sources=[])
+        return VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query="Alice facts strategy",
+                domains=("project",),
+                max_tokens=max_tokens,
+                budget_strategy=strategy,
+            )
+        )
+
+    assert [item["id"] for item in compile_with("facts_first", None)["relevant_memories"]] == [
+        "memory-dec-1",
+        "memory-epi-1",
+    ]
+    # Under a one-memory budget: balanced keeps the fused-rank leader, while
+    # facts_first keeps the boosted decision memory instead.
+    assert [item["id"] for item in compile_with("balanced", one_memory_budget)["relevant_memories"]] == [
+        "memory-epi-1"
+    ]
+    assert [item["id"] for item in compile_with("facts_first", one_memory_budget)["relevant_memories"]] == [
+        "memory-dec-1"
+    ]
+
+
+def test_contradictions_first_lets_contradictions_survive_a_budget_that_drops_them_elsewhere() -> None:
+    memory = _memory_row("memory-1", "The deployment pipeline is not ready for production launch.")
+    belief = {
+        "id": "belief-1",
+        "memory_id": "memory-belief",
+        "claim": "The deployment pipeline is ready for production launch.",
+        "status": "active",
+        "memory_type": "belief",
+    }
+
+    def compile_with(strategy: str, max_tokens: int | None) -> dict[str, object]:
+        store = InMemoryVNextRetrievalStore(memories=[dict(memory)], sources=[], beliefs=[dict(belief)])
+        return VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query="deployment pipeline production launch",
+                max_tokens=max_tokens,
+                budget_strategy=strategy,
+            )
+        )
+
+    probe = compile_with("balanced", None)
+    assert len(probe["contradicting_evidence"]) == 1
+    record_cost = estimate_item_tokens(probe["contradicting_evidence"][0])
+    memory_cost = estimate_item_tokens(memory)
+    # The contradiction record quotes both texts, so it costs at least as
+    # much as the memory row itself; a record-sized budget fits exactly one.
+    assert memory_cost <= record_cost
+
+    balanced = compile_with("balanced", record_cost)
+    contradictions_first = compile_with("contradictions_first", record_cost)
+
+    # balanced packs the memory; the contradiction record no longer fits.
+    assert [item["id"] for item in balanced["relevant_memories"]] == ["memory-1"]
+    assert balanced["contradicting_evidence"] == []
+    # contradictions_first packs the contradiction first (derived from the
+    # ranking-selected memories); the memory row itself no longer fits.
+    assert len(contradictions_first["contradicting_evidence"]) == 1
+    assert contradictions_first["contradicting_evidence"][0]["belief_id"] == "belief-1"
+    assert contradictions_first["relevant_memories"] == []
+    assert contradictions_first["budget"]["allocation"]["contradicting_evidence"] == record_cost
+    assert (
+        sum(contradictions_first["budget"]["allocation"].values())
+        == contradictions_first["budget"]["token_estimate"]
+    )
+
+
+# -- deterministic depth tiers ------------------------------------------------------
+
+
+def test_unknown_context_depth_is_rejected_with_choices_listed() -> None:
+    store = InMemoryVNextRetrievalStore(memories=[], sources=[])
+
+    with pytest.raises(VNextRetrievalValidationError) as excinfo:
+        VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(query="Alice", context_depth="extreme")
+        )
+
+    message = str(excinfo.value)
+    assert "context_depth" in message
+    for choice in CONTEXT_DEPTHS:
+        assert choice in message
+
+
+def _minimal_tier_store() -> tuple[InMemoryVNextRetrievalStore, StubEmbeddingProvider]:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Meridian acquisition status decision.", memory_type="decision")],
+        sources=[
+            {
+                "id": "source-1",
+                "source_type": "manual_text",
+                "title": "Meridian acquisition source",
+                "content_hash": "sha256:meridian",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        ],
+        vector_memories=[_memory_row("memory-vector", "Semantically nearby but lexically distant.")],
+        beliefs=[
+            {
+                "id": "belief-1",
+                "memory_id": "memory-belief",
+                "claim": "The Meridian acquisition status decision is not final.",
+                "status": "active",
+                "memory_type": "belief",
+            }
+        ],
+        entities=[_entity_row("entity-meridian", "Meridian", mention_count=7)],
+        edges=[_mention_edge("memory-1", "entity-meridian")],
+        seeded_events=[
+            {
+                "id": "event-1",
+                "event_type": "memory.created",
+                "actor_type": "system",
+                "target_type": "memory",
+                "target_id": "memory-1",
+                "occurred_at": "2026-07-01T00:00:00Z",
+            }
+        ],
+    )
+    return store, StubEmbeddingProvider()
+
+
+def test_minimal_depth_is_fts_only_with_honest_disabled_stage_statuses() -> None:
+    store, provider = _minimal_tier_store()
+
+    pack = VNextRetrievalService(store, embedding_provider=provider).compile_context_pack(
+        VNextRetrievalRequest(query="Meridian acquisition status", domains=("project",), context_depth="minimal")
+    )
+
+    # FTS still works; vector and graph are skipped without a provider call.
+    assert [item["id"] for item in pack["relevant_memories"]] == ["memory-1"]
+    assert provider.embedded_texts == []
+    stages = pack["trace"]["stages"]
+    assert stages["vector"] == {"status": STAGE_DISABLED_MINIMAL, "candidate_count": 0}
+    assert stages["graph"] == {"status": STAGE_DISABLED_MINIMAL, "matched_entities": [], "candidate_count": 0}
+    assert "entities" not in pack
+    # No sources, no contradictions, no recent changes, no typed sections.
+    assert pack["sources"] == []
+    assert stages["sources"] == {"source": "store_lexical", "candidate_count": 0, "status": STAGE_DISABLED_MINIMAL}
+    assert pack["contradicting_evidence"] == []
+    assert stages["contradictions"] == {"status": STAGE_DISABLED_MINIMAL, "candidate_count": 0}
+    assert "recent_changes" not in pack
+    assert stages["recent_changes"] == {"status": STAGE_DISABLED_MINIMAL, "candidate_count": 0}
+    for typed_section in ("relevant_beliefs", "decisions", "procedures"):
+        assert typed_section not in pack
+    # Tier is recorded in the pack and the trace; the flag defaults resolve off.
+    assert pack["context_depth"] == "minimal"
+    assert pack["trace"]["context_depth"] == "minimal"
+    assert pack["query_interpretation"]["requires_sources"] is False
+    assert pack["query_interpretation"]["requires_contradictions"] is False
+    # Disabled sources produce no misleading missing-source note.
+    assert all(entry["kind"] != "source" for entry in pack["missing_information"])
+
+    # Control: the same corpus at the default depth uses every stage.
+    control_store, control_provider = _minimal_tier_store()
+    control = VNextRetrievalService(control_store, embedding_provider=control_provider).compile_context_pack(
+        VNextRetrievalRequest(query="Meridian acquisition status", domains=("project",))
+    )
+    assert control["context_depth"] == "low"
+    assert control["trace"]["stages"]["vector"]["status"] == VECTOR_STAGE_ENABLED
+    assert control["trace"]["stages"]["graph"]["status"] == GRAPH_STAGE_ENABLED
+    assert [item["id"] for item in control["sources"]] == ["source-1"]
+    assert len(control["recent_changes"]) == 1
+
+
+def test_minimal_depth_caps_max_items_at_four() -> None:
+    memories = [_memory_row(f"memory-{index}", f"Alice depth cap row {index}.") for index in range(1, 7)]
+    store = InMemoryVNextRetrievalStore(memories=memories, sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice depth cap", max_items=8, context_depth="minimal")
+    )
+    assert len(pack["relevant_memories"]) == CONTEXT_DEPTH_MINIMAL_MAX_ITEMS
+
+    smaller = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice depth cap", max_items=2, context_depth="minimal")
+    )
+    assert len(smaller["relevant_memories"]) == 2
+
+
+def test_explicit_flags_override_the_minimal_tier_defaults() -> None:
+    store, provider = _minimal_tier_store()
+
+    pack = VNextRetrievalService(store, embedding_provider=provider).compile_context_pack(
+        VNextRetrievalRequest(
+            query="Meridian acquisition status",
+            domains=("project",),
+            context_depth="minimal",
+            include_sources=True,
+            include_contradictions=True,
+        )
+    )
+
+    # Caller wins: sources and contradictions come back on, everything else
+    # stays minimal (vector/graph still skipped).
+    assert [item["id"] for item in pack["sources"]] == ["source-1"]
+    assert pack["trace"]["stages"]["sources"] == {"source": "store_lexical", "candidate_count": 1}
+    assert pack["trace"]["stages"]["contradictions"]["status"] == CONTRADICTIONS_STAGE_ENABLED
+    assert pack["trace"]["stages"]["vector"]["status"] == STAGE_DISABLED_MINIMAL
+    assert pack["query_interpretation"]["requires_sources"] is True
+    assert pack["query_interpretation"]["requires_contradictions"] is True
+
+
+def test_explicit_flags_override_the_medium_and_low_tier_defaults() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "The deployment pipeline is not ready for production launch.")],
+        sources=[
+            {
+                "id": "source-1",
+                "source_type": "manual_text",
+                "title": "Deployment pipeline source",
+                "content_hash": "sha256:deploy",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        ],
+        beliefs=[
+            {
+                "id": "belief-1",
+                "memory_id": "memory-belief",
+                "claim": "The deployment pipeline is ready for production launch.",
+                "status": "active",
+                "memory_type": "belief",
+            }
+        ],
+    )
+    service = VNextRetrievalService(store)
+
+    # medium forces contradictions on; an explicit False wins over the tier.
+    medium_off = service.compile_context_pack(
+        VNextRetrievalRequest(
+            query="deployment pipeline production launch",
+            context_depth="medium",
+            include_contradictions=False,
+        )
+    )
+    assert medium_off["contradicting_evidence"] == []
+    assert medium_off["trace"]["stages"]["contradictions"]["status"] == CONTRADICTIONS_STAGE_NOT_REQUESTED
+
+    # low includes sources by default; an explicit False wins over the tier.
+    low_no_sources = service.compile_context_pack(
+        VNextRetrievalRequest(query="deployment pipeline production launch", include_sources=False)
+    )
+    assert low_no_sources["sources"] == []
+    assert low_no_sources["trace"]["stages"]["sources"]["status"] == SOURCES_STAGE_DISABLED_BY_FLAG
+
+
+def test_medium_depth_forces_contradictions_on_for_non_strategic_queries() -> None:
+    def build_store() -> InMemoryVNextRetrievalStore:
+        return InMemoryVNextRetrievalStore(
+            memories=[_memory_row("memory-1", "The deployment pipeline is not ready for production launch.")],
+            sources=[],
+            beliefs=[
+                {
+                    "id": "belief-1",
+                    "memory_id": "memory-belief",
+                    "claim": "The deployment pipeline is ready for production launch.",
+                    "status": "active",
+                    "memory_type": "belief",
+                }
+            ],
+        )
+
+    # "when ... timeline ..." classifies as temporal_recall, a non-strategic
+    # query type: at low the contradictions stage stays off by default.
+    query = "when did the deployment pipeline timeline change"
+    low = VNextRetrievalService(build_store()).compile_context_pack(VNextRetrievalRequest(query=query))
+    assert low["query_interpretation"]["query_type"] == "temporal_recall"
+    assert low["contradicting_evidence"] == []
+    assert low["trace"]["stages"]["contradictions"]["status"] == CONTRADICTIONS_STAGE_NOT_REQUESTED
+
+    # medium is low plus the contradictions stage forced on for every query
+    # type — the only default difference between the two tiers.
+    medium = VNextRetrievalService(build_store()).compile_context_pack(
+        VNextRetrievalRequest(query=query, context_depth="medium")
+    )
+    assert medium["context_depth"] == "medium"
+    assert len(medium["contradicting_evidence"]) == 1
+    assert medium["trace"]["stages"]["contradictions"]["status"] == CONTRADICTIONS_STAGE_ENABLED
+
+
+def test_high_depth_adds_supersession_chain_notes_for_packed_memories() -> None:
+    current = _memory_row(
+        "memory-current",
+        "Alice supersession current release gate policy.",
+        supersedes="memory-v2",
+    )
+    version_two = _memory_row(
+        "memory-v2",
+        "Old release gate policy revision two.",
+        status="superseded",
+        supersedes="memory-v1",
+    )
+    version_one = _memory_row("memory-v1", "Old release gate policy revision one.", status="superseded")
+    orphan = _memory_row(
+        "memory-orphan",
+        "Alice supersession orphan pointer row.",
+        superseded_by="memory-missing",
+    )
+    plain = _memory_row("memory-plain", "Alice supersession plain row without pointers.")
+    store = InMemoryVNextRetrievalStore(
+        memories=[current, orphan, plain, version_two, version_one],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice supersession", domains=("project",), context_depth="high")
+    )
+
+    assert pack["context_depth"] == "high"
+    notes = {note["memory_id"]: note for note in pack["supersession_context"]}
+    assert set(notes) == {"memory-current", "memory-orphan"}
+    assert notes["memory-current"]["supersedes"] == [
+        {
+            "id": "memory-v2",
+            "title": "Old release gate policy revision two.",
+            "memory_type": "semantic",
+            "status": "superseded",
+        },
+        {
+            "id": "memory-v1",
+            "title": "Old release gate policy revision one.",
+            "memory_type": "semantic",
+            "status": "superseded",
+        },
+    ]
+    assert notes["memory-current"]["superseded_by"] == []
+    assert notes["memory-current"]["note"] == "supersedes 2 older revision(s)"
+    # Unresolvable pointers degrade to id-only references.
+    assert notes["memory-orphan"]["superseded_by"] == [{"id": "memory-missing"}]
+    assert notes["memory-orphan"]["note"] == "superseded by 1 newer revision(s)"
+    assert pack["trace"]["stages"]["supersession"] == {
+        "status": SUPERSESSION_STAGE_ENABLED,
+        "candidate_count": 2,
+    }
+
+    # Below high, the section and its trace stage do not exist.
+    low = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice supersession", domains=("project",))
+    )
+    assert "supersession_context" not in low
+    assert "supersession" not in low["trace"]["stages"]
+
+
+def test_high_depth_supersession_chains_guard_against_cycles_and_cap_hops() -> None:
+    cyclic_a = _memory_row("memory-a", "Alice cycle guard row alpha.", superseded_by="memory-b")
+    cyclic_b = _memory_row("memory-b", "Cycle partner row beta.", superseded_by="memory-a")
+    chain_rows = [
+        _memory_row(
+            f"memory-chain-{index}",
+            f"Chain revision {index}.",
+            status="superseded",
+            supersedes=f"memory-chain-{index + 1}",
+        )
+        for index in range(1, 9)
+    ]
+    head = _memory_row("memory-head", "Alice cycle guard chain head.", supersedes="memory-chain-1")
+    store = InMemoryVNextRetrievalStore(
+        memories=[cyclic_a, head, cyclic_b, *chain_rows],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice cycle guard", domains=("project",), context_depth="high")
+    )
+
+    notes = {note["memory_id"]: note for note in pack["supersession_context"]}
+    # The cycle stops after one hop instead of looping forever.
+    assert [ref["id"] for ref in notes["memory-a"]["superseded_by"]] == ["memory-b"]
+    # Long chains are capped at the hop limit.
+    assert [ref["id"] for ref in notes["memory-head"]["supersedes"]] == [
+        f"memory-chain-{index}" for index in range(1, 6)
+    ]
+
+
+def test_context_depth_low_matches_default_behavior_regression_pin() -> None:
+    def build_store() -> InMemoryVNextRetrievalStore:
+        return InMemoryVNextRetrievalStore(
+            memories=[
+                _memory_row("memory-decision", "Meridian roadmap release decision.", memory_type="decision"),
+                _memory_row("memory-belief", "Meridian roadmap strong belief.", memory_type="belief"),
+                _memory_row("memory-note", "Meridian roadmap plain note."),
+            ],
+            sources=[
+                {
+                    "id": "source-1",
+                    "source_type": "manual_text",
+                    "title": "Meridian roadmap source",
+                    "content_hash": "sha256:pin",
+                    "domain": "project",
+                    "sensitivity": "private",
+                }
+            ],
+            open_loops=[
+                {
+                    "id": "loop-1",
+                    "title": "Meridian roadmap follow-up",
+                    "status": "open",
+                    "domain": "project",
+                    "sensitivity": "private",
+                }
+            ],
+            provenance_links=[
+                {
+                    "id": "link-1",
+                    "target_type": "memory",
+                    "target_id": "memory-decision",
+                    "source_id": "source-1",
+                    "source_chunk_id": "chunk-1",
+                    "quote": "Meridian roadmap release decision.",
+                    "evidence_role": "quoted_from",
+                    "confidence": 0.9,
+                }
+            ],
+            vector_memories=[_memory_row("memory-vector", "Semantically adjacent roadmap thought.")],
+            beliefs=[
+                {
+                    "id": "belief-1",
+                    "memory_id": "memory-belief-row",
+                    "claim": "The Meridian roadmap is not a release decision.",
+                    "status": "active",
+                    "memory_type": "belief",
+                }
+            ],
+            entities=[_entity_row("entity-meridian", "Meridian", mention_count=3)],
+            edges=[_mention_edge("memory-note", "entity-meridian")],
+            seeded_events=[
+                {
+                    "id": "event-1",
+                    "event_type": "memory.created",
+                    "actor_type": "system",
+                    "target_type": "memory",
+                    "target_id": "memory-decision",
+                    "occurred_at": "2026-07-01T00:00:00Z",
+                }
+            ],
+        )
+
+    def compile_pack(**overrides: object) -> dict[str, object]:
+        return VNextRetrievalService(build_store(), embedding_provider=StubEmbeddingProvider()).compile_context_pack(
+            VNextRetrievalRequest(
+                query="Meridian roadmap release status",
+                domains=("project",),
+                trace_id="trace-pin",
+                **overrides,  # type: ignore[arg-type]
+            )
+        )
+
+    default_pack = compile_pack()
+    low_pack = compile_pack(context_depth="low")
+
+    # Only the per-compile pack id may differ: low IS the default behavior.
+    default_pack.pop("context_pack_id")
+    low_pack.pop("context_pack_id")
+    assert low_pack == default_pack
+    assert default_pack["context_depth"] == "low"

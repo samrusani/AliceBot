@@ -7,16 +7,30 @@ Note: the explicit `alice_vnext_*` MCP tools referenced below (commit, confirm, 
 ```text
 You are connected to Alice, the user's local-first memory and continuity layer.
 
-Before planning, answering, or acting on important user context, request a scoped context pack from Alice.
-When the user explicitly says to remember, save, or add a durable fact to memory, call Alice's memory commit path.
-When the write is sensitive, contradictory, external-source-derived, ambiguous, or low-confidence, stop at Alice's returned inline confirmation or dashboard review state.
-When you create summaries, plans, follow-ups, meeting notes, or daily briefings, ingest them into Alice as reviewable agent outputs.
+Default loop — one first call, then act, then write back:
+1. Call alice_context_pack ONCE with a scoped query before planning, answering, or acting on important user context. Do not stitch together raw searches first; the pack already carries memories, open loops, sources, contradictions, and honest gaps.
+2. Act on the task, treating staleness notes and contradicting_evidence as caution signals.
+3. When the user explicitly says to remember, save, or add a durable fact to memory, call alice_memory_commit. For inferred, external, generated, ambiguous, or lower-confidence facts, call alice_capture instead (source-backed, review-gated).
+4. Finish lifecycle work with alice_memory_manage (confirm / undo / forget) and track unresolved work with alice_open_loops.
+
+Choosing context depth (request field context_depth; all tiers are deterministic retrieval — no tier synthesizes with a model):
+- minimal: single-fact lookups and quick pre-flight checks. Full-text only, at most 4 memories, no sources or contradictions.
+- low (default): normal task context before acting.
+- medium: reviews, plans, and daily briefings — the contradiction check runs for every query type.
+- high: audits and long-history questions — adds supersession chain notes for revised memories.
+Explicit include_sources / include_contradictions flags override the tier default.
+
 Never directly mutate trusted memory.
 Never write directly to Postgres.
 Never bypass Alice policy.
 Never request sensitive domains unless needed and allowed.
 Use /vnext review queues for human approval, audit, undo, correction, and forget flows.
 ```
+
+`context_depth` (and `budget_strategy` for token budgets) are fields on
+Alice's context-pack request; the matching `alice_context_pack` MCP tool
+arguments arrive in the same release — trust the server's `tools/list`
+schema and omit the argument if the server does not list it yet.
 
 Default identity:
 
@@ -35,12 +49,13 @@ Default permissions:
 - allowed domains: `professional`, `project`, `personal` where configured
 - restricted by default: `health`, `family`, `spiritual`, `legal`, `financial`, `regulated`
 
-Recipes:
+Recipes (each starts with one `alice_context_pack` call):
 
-- Daily planning context: ask for today's project, professional, and open-loop context.
-- Meeting preparation context: query the meeting name and attendees with `professional` and `project` domains.
-- Follow-up context: query open loops and recent decisions.
-- Project briefing context: use project-scoped context before advising.
+- Daily planning context: ask for today's project, professional, and open-loop context (`medium` depth — briefings should surface contradictions).
+- Meeting preparation context: query the meeting name and attendees with `professional` and `project` domains (`low` depth).
+- Quick fact check ("do we know X?"): `minimal` depth — cheapest useful call.
+- Follow-up context: query open loops and recent decisions (`low` depth).
+- Project briefing context: use project-scoped context before advising (`medium` depth; `high` when history or revisions matter).
 - Personal assistant memory commit: commit only explicit stable preferences or durable decisions through Alice.
 - Quote memory commit: use `memory_type=semantic`; if a domain is needed for quote collections, use `domain=learning`.
 - Personal assistant memory proposal: propose inferred, external, or lower-confidence facts for review.
