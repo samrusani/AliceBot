@@ -1,7 +1,7 @@
 """SQLite DDL bootstrap for the zero-infrastructure vNext on-ramp.
 
 Mirrors the Postgres vNext memory-kernel schema for exactly the store
-surface the nine core MCP tools use. Allowed enum values mirror
+surface the core MCP tools use. Allowed enum values mirror
 ``apps/api/alembic/versions/20260510_0067_vnext_memory_kernel_schema.py``
 (plus ``procedure`` from ``20260621_0071``) and
 ``alicebot_api.vnext_memory_commit``.

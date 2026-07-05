@@ -51,7 +51,7 @@ uvx alice-memory mcp --data-dir ~/.alice
 ```
 
 That command starts the MCP server against a local SQLite file, exposes the
-nine core tools, and requires zero configuration. Postgres remains the
+core tools, and requires zero configuration. Postgres remains the
 recommended path for real deployments; SQLite is the trial and
 single-agent-laptop path.
 
@@ -69,7 +69,7 @@ A full port would fork every query. The scoped approach below avoids that.
 
 1. **Store protocol extraction (prerequisite, ~small).** The vnext
    repositories already define protocols (`vnext_repositories.py`). Tighten
-   the retrieval-facing surface to the minimal set the nine core tools use:
+   the retrieval-facing surface to the minimal set the core tools use:
    memory CRUD, source CRUD, FTS search, vector search, open loops,
    review actions, provenance lookups, event append.
 2. **SQLite backend implementing only that surface (~medium).**
@@ -82,7 +82,7 @@ A full port would fork every query. The scoped approach below avoids that.
      surface.
 3. **Single-file runtime profile.** `alice-memory mcp` entrypoint: creates
    the SQLite file, runs SQLite-dialect schema bootstrap (a dedicated
-   schema module, not Alembic), starts the MCP server with the nine core
+   schema module, not Alembic), starts the MCP server with the core
    tools. Review actions run through `alice_memory_review` rather than the
    web console, so Node/pnpm are not required on this path.
 4. **Packaging.** Publish `alice-memory` to PyPI (name reserved in
@@ -100,6 +100,6 @@ A full port would fork every query. The scoped approach below avoids that.
 ## Acceptance
 
 - `uvx alice-memory mcp` works on a clean machine with only Python 3.12+.
-- The nine core tools pass an integration smoke against the SQLite backend.
+- The core tools pass an integration smoke against the SQLite backend.
 - Retrieval evals (recall@k on the seeded corpus) run against both backends
   and report both numbers side by side.
