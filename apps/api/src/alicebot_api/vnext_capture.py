@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -8,6 +9,11 @@ import re
 from typing import Protocol
 
 from alicebot_api.vnext_embeddings import attach_memory_embedding
+from alicebot_api.vnext_entities import (
+    ENTITY_EXTRACTION_SKIP_SENSITIVITIES,
+    EntityLinkingService,
+    store_supports_entity_linking,
+)
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_repositories import JsonObject
 
@@ -540,6 +546,7 @@ class VNextCaptureService:
             )
 
             candidates = extract_candidate_memories(chunk_rows)
+            memory_rows: list[JsonObject] = []
             for candidate in candidates:
                 memory = self.store.create_memory(
                     {
@@ -573,6 +580,7 @@ class VNextCaptureService:
                     },
                     actor_type=self.actor_type,
                 )
+                memory_rows.append(memory)
                 attach_memory_embedding(
                     self.store,
                     memory,
@@ -604,6 +612,14 @@ class VNextCaptureService:
                     },
                 )
 
+            self._link_captured_entities(
+                source=source,
+                source_id=source_id,
+                raw_text=normalized_text,
+                sensitivity=source_input.sensitivity,
+                memory_rows=memory_rows,
+            )
+
             return CaptureResult(
                 status="imported",
                 source_id=source_id,
@@ -619,6 +635,65 @@ class VNextCaptureService:
                 metadata=source_input.metadata_json,
             )
             raise
+
+    def _link_captured_entities(
+        self,
+        *,
+        source: JsonObject,
+        source_id: str,
+        raw_text: str,
+        sensitivity: str,
+        memory_rows: list[JsonObject],
+    ) -> None:
+        """Best-effort deterministic entity linking after a successful capture.
+
+        - Sensitivity gate: sources at or above 'private' skip extraction
+          entirely, because entity rows leak content into ``entities.name``
+          (a person/org name IS content).
+        - Optional surface: stores without the entity substrate skip
+          silently, mirroring how ``attach_memory_embedding`` degrades.
+        - Failure isolation: extraction/link errors NEVER fail capture;
+          they are logged as ``entity.extraction_failed`` and capture
+          continues, mirroring embedding attach failures.
+        """
+        if str(sensitivity).casefold() in ENTITY_EXTRACTION_SKIP_SENSITIVITIES:
+            return
+        if not store_supports_entity_linking(self.store):
+            return
+        # Event time for entity observations and mention edges: the
+        # source's own timestamp, falling back to ingestion time.
+        observed_at = (
+            source.get("source_created_at")
+            or source.get("captured_at")
+            or datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        )
+        try:
+            linker = EntityLinkingService(
+                self.store,
+                actor_type=self.actor_type,
+                actor_id=self.actor_id,
+                trace_id=self.trace_id,
+            )
+            linker.link_entities_for_source(source_id=source_id, text=raw_text, observed_at=observed_at)
+            for memory_row in memory_rows:
+                text = str(memory_row.get("canonical_text") or "")
+                if text.strip():
+                    linker.link_entities_for_memory(
+                        memory_id=str(memory_row["id"]),
+                        text=text,
+                        observed_at=observed_at,
+                    )
+        except Exception as exc:
+            self._log_event(
+                event_type="entity.extraction_failed",
+                target_type="source",
+                target_id=source_id,
+                payload={
+                    "stage": "capture",
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
+            )
 
     def import_markdown_folder(
         self,

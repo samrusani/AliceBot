@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import sqlite3
+from uuid import uuid4
+
 import pytest
 
+from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
+from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_agent_control import AgentIdentity
+from alicebot_api.vnext_entities import ENTITY_MENTION_EDGE_TYPE, PERSON_ABOUT_EDGE_TYPE
 from alicebot_api.vnext_memory_commit import (
     MEMORY_STATUSES,
     MemoryCommitRequest,
@@ -473,6 +479,267 @@ def test_undo_without_memory_id_uses_latest_agentic_commit_lookup() -> None:
     assert undone["memory"]["id"] == committed["memory"]["id"]
     assert undone["memory"]["status"] == "superseded"
     assert ("latest_agentic_commit", identity.agent_id) in store.lookup_calls
+
+
+# -- entity linking on the commit path (live sqlite) ---------------------------
+
+
+def _live_sqlite_store() -> SQLiteVNextStore:
+    conn = sqlite3.connect(":memory:")
+    bootstrap_sqlite_schema(conn)
+    user_id = str(uuid4())
+    ensure_sqlite_user(conn, user_id, "commit@example.com")
+    return SQLiteVNextStore(conn, user_id)
+
+
+def test_committed_memory_links_entities_with_memory_mention_edges() -> None:
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    committed = service.commit(
+        identity=identity,
+        request=_request(
+            domain="professional",
+            sensitivity="internal",
+            title="Standup preference",
+            canonical_text="Sami Rusani prefers async standups at Type3 Capital.",
+        ),
+    )
+
+    assert committed["status"] == "committed"
+    memory_id = str(committed["memory"]["id"])
+    person = store.get_entity_by_normalized_name("person", "sami rusani")
+    org = store.get_entity_by_normalized_name("organization", "type3 capital")
+    assert person is not None and org is not None
+    edges = store.list_edges(from_id=memory_id)
+    assert {(str(edge["to_id"]), str(edge["edge_type"])) for edge in edges} == {
+        (str(person["id"]), ENTITY_MENTION_EDGE_TYPE),
+        (str(org["id"]), ENTITY_MENTION_EDGE_TYPE),
+    }
+    assert all(edge["from_type"] == "memory" for edge in edges)
+    assert all(edge["observed_at"] is not None for edge in edges)
+
+
+def test_person_memory_creates_person_entity_and_about_edge() -> None:
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    committed = service.commit(
+        identity=identity,
+        request=_request(
+            domain="professional",
+            sensitivity="internal",
+            memory_type="person",
+            title="Sami Rusani — Type3 intro",
+            canonical_text="GP at a seed fund; met about the continuity layer.",
+        ),
+    )
+
+    assert committed["status"] == "committed"
+    memory_id = str(committed["memory"]["id"])
+    person = store.get_entity_by_normalized_name("person", "sami rusani")
+    assert person is not None
+    assert person["entity_type"] == "person"
+    about_edges = [
+        edge
+        for edge in store.list_edges(from_id=memory_id)
+        if str(edge["edge_type"]) == PERSON_ABOUT_EDGE_TYPE
+    ]
+    assert len(about_edges) == 1
+    assert str(about_edges[0]["to_id"]) == str(person["id"])
+    assert about_edges[0]["metadata_json"]["relation"] == "about"
+
+
+def test_person_memory_reuses_the_existing_person_entity() -> None:
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    seeded = store.create_entity(
+        {
+            "entity_type": "person",
+            "name": "Sami Rusani",
+            "first_observed_at": "2026-06-01T00:00:00Z",
+            "last_observed_at": "2026-06-01T00:00:00Z",
+            "mention_count": 3,
+        }
+    )
+
+    service.commit(
+        identity=identity,
+        request=_request(
+            domain="professional",
+            sensitivity="internal",
+            memory_type="person",
+            title="Sami Rusani",
+            canonical_text="Now leading the continuity round.",
+        ),
+    )
+
+    entities = store.list_entities(entity_type="person")
+    assert [str(row["id"]) for row in entities] == [str(seeded["id"])]
+    refreshed = store.get_entity(str(seeded["id"]))
+    assert refreshed["mention_count"] == 4
+    assert refreshed["first_observed_at"] == "2026-06-01T00:00:00Z"
+
+
+def test_review_candidates_do_not_link_entities_until_accepted() -> None:
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    review = service.commit(
+        identity=identity,
+        request=_request(
+            domain="professional",
+            sensitivity="internal",
+            source_type="browser_clip",
+            title="Clipped bio",
+            canonical_text="Zara Quill founded Quillworks Labs.",
+        ),
+    )
+
+    assert review["status"] == "review_required"
+    assert review["memory"]["status"] == "candidate"
+    assert store.list_entities() == []
+    assert store.list_edges(from_id=str(review["memory"]["id"])) == []
+
+
+def test_inline_confirmation_links_entities_only_after_acceptance() -> None:
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    pending = service.commit(
+        identity=identity,
+        request=_request(
+            domain="professional",
+            sensitivity="internal",
+            confidence=0.7,
+            title="Intro note",
+            canonical_text="Ondrej Pavel leads the Prague office.",
+        ),
+    )
+    assert pending["status"] == "confirmation_required"
+    assert store.list_entities() == []
+
+    confirmed = service.confirm(identity=identity, confirmation_id=pending["confirmation_id"])
+
+    assert confirmed["status"] == "committed"
+    person = store.get_entity_by_normalized_name("person", "ondrej pavel")
+    assert person is not None
+    edges = store.list_edges(from_id=str(confirmed["memory"]["id"]))
+    assert [(str(edge["to_id"]), str(edge["edge_type"])) for edge in edges] == [
+        (str(person["id"]), ENTITY_MENTION_EDGE_TYPE)
+    ]
+
+
+def test_rejected_inline_confirmation_never_links_entities() -> None:
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    pending = service.commit(
+        identity=identity,
+        request=_request(
+            domain="professional",
+            sensitivity="internal",
+            confidence=0.7,
+            title="Intro note",
+            canonical_text="Ondrej Pavel leads the Prague office.",
+        ),
+    )
+    rejected = service.confirm(
+        identity=identity, confirmation_id=pending["confirmation_id"], action="reject"
+    )
+
+    assert rejected["status"] == "rejected"
+    assert store.list_entities() == []
+
+
+def test_correction_links_entities_introduced_by_the_new_text() -> None:
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    committed = service.commit(
+        identity=identity,
+        request=_request(
+            domain="professional",
+            sensitivity="internal",
+            title="Round lead",
+            canonical_text="The continuity round has no lead yet.",
+        ),
+    )
+    memory_id = str(committed["memory"]["id"])
+
+    service.correct(
+        identity=identity,
+        memory_id=memory_id,
+        canonical_text="Sami Rusani leads the continuity round.",
+        reason="Lead confirmed.",
+    )
+
+    person = store.get_entity_by_normalized_name("person", "sami rusani")
+    assert person is not None
+    assert (str(person["id"]), ENTITY_MENTION_EDGE_TYPE) in {
+        (str(edge["to_id"]), str(edge["edge_type"])) for edge in store.list_edges(from_id=memory_id)
+    }
+
+
+class _BrokenEntityLookupSQLiteStore(SQLiteVNextStore):
+    def find_entities_by_names(self, normalized_names):  # type: ignore[override]
+        raise RuntimeError("entity lookup exploded")
+
+
+def test_entity_linking_failure_never_fails_the_commit() -> None:
+    conn = sqlite3.connect(":memory:")
+    bootstrap_sqlite_schema(conn)
+    user_id = str(uuid4())
+    ensure_sqlite_user(conn, user_id, "broken-commit@example.com")
+    store = _BrokenEntityLookupSQLiteStore(conn, user_id)
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    committed = service.commit(
+        identity=identity,
+        request=_request(
+            domain="professional",
+            sensitivity="internal",
+            title="Standup preference",
+            canonical_text="Sami Rusani prefers async standups.",
+        ),
+    )
+
+    assert committed["status"] == "committed"
+    failures = [
+        event
+        for event in store.list_events()
+        if event.get("event_type") == "entity.extraction_failed"
+    ]
+    assert len(failures) == 1
+    assert failures[0]["payload_json"]["stage"] == "commit"
+    assert failures[0]["payload_json"]["error_type"] == "RuntimeError"
+
+
+def test_stores_without_the_entity_surface_commit_without_linking() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+
+    committed = service.commit(
+        identity=identity,
+        request=_request(
+            domain="professional",
+            sensitivity="internal",
+            canonical_text="Sami Rusani prefers async standups.",
+        ),
+    )
+
+    assert committed["status"] == "committed"
+    assert not [
+        event for event in store.events if event.get("event_type") == "entity.extraction_failed"
+    ]
 
 
 # -- temporal slice: supersession pointers and the audit chain -----------------
