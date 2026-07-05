@@ -60,6 +60,31 @@ mostly exist; almost nothing reads them. The risk to avoid is "enum theater"
    (`source_created_at` fallback `captured_at`); as-of reads; `superseded_by`
    pointers on memories; a history answer on the core surface.
 
+### Sprint D — Temporal Graph Memory + Entity Resolution (planned; the multi-session play)
+Sprints A–C shipped the temporal substrate (event-time on edges, first-class
+supersession pointers, as-of queries, supersession chains in `alice_explain`).
+Sprint D makes the graph *load-bearing for retrieval* — the mechanism aimed
+directly at the weakest LongMemEval category (multi-session synthesis, 45.1%):
+
+1. **Entity extraction & canonicalization** — deterministic-first (capitalized
+   spans, handles, alias tables); optional LLM-backed extraction through the
+   same review gate. Nothing invents entities silently. Link the `person`
+   memory type to the people/entities substrate.
+2. **Graph traversal as a retrieval stage** — entity-hop expansion fused into
+   the existing hybrid ranking (never replacing it): question mentions X →
+   X's edges → connected memories join the candidate pool.
+3. **Belief/thesis evolution timeline** — built on the supersession-chain
+   primitive; "how did this thesis form, what supported it, what contradicted
+   it, what changed."
+4. **Relationship history** — stop overwriting `relationship_type` in place;
+   record `relationship_changed_at` transitions.
+5. **Graph quality evals** — a suite that can fail, plus the decisive test:
+   re-run LongMemEval and watch the multi-session score move.
+
+Non-goals: adopting Zep/Graphiti as a dependency (borrow the insight — Alice
+stays the governed memory OS); graph-only retrieval (the hybrid stack always
+fuses; graph must earn its rank contribution).
+
 ## Deliberately deferred
 - RL-trained memory policies (AgeMem-style) — need dogfooding telemetry first.
 - `app_scope`/`source_scope` — weakest motivation of the proposed scopes.
