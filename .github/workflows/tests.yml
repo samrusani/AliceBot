@@ -62,8 +62,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install
-        run: python -m pip install -e '.[dev]'
+      - name: Install (repo-local venv — integration tests spawn scripts that require .venv)
+        run: |
+          python -m venv .venv
+          ./.venv/bin/python -m pip install -e '.[dev]'
       - name: Bootstrap extension and app role
         # The app role must NOT be a superuser: superusers bypass row-level
         # security, which silently disables every isolation test.
@@ -79,7 +81,7 @@ jobs:
         env:
           DATABASE_URL: postgresql://alicebot_app:ci@localhost:5432/alicebot
           DATABASE_ADMIN_URL: postgresql://alicebot_admin:ci@localhost:5432/alicebot
-        run: python -m pytest tests/integration -q -p no:cacheprovider
+        run: ./.venv/bin/python -m pytest tests/integration -q -p no:cacheprovider
 
   web:
     name: Web tests, lint, build
@@ -102,7 +104,9 @@ jobs:
       - name: Provide local env (mirrors make setup)
         run: test -f .env.local || cp .env.local.example .env.local
       - name: Test
-        run: pnpm test
+        # CI runners are slower than dev machines; one heavy page test needs
+        # more than vitest's 10s default there.
+        run: pnpm test -- --testTimeout=30000
       - name: Lint
         run: pnpm lint
       - name: Build
