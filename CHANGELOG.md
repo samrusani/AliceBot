@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.8.0 — 2026-07-05
 
+- Published Alice's first benchmark result: **64.6% on LongMemEval_s** with the official judge protocol, in the same range as the best published results in the category — full methodology, per-question evidence, and reproduction script in `docs/benchmarks/longmemeval/`.
 - Real memory scopes: `project_id`, `created_by_agent_id`, and `run_id` columns on memories (backfilled from metadata, migration `20260704_0076`); scope filters through both store backends, the context compiler, and the `alice_recall`/`alice_context_pack` tools; agent API keys can bind a project scope — bound identities may narrow but never widen it, with escalations rejected and audited.
 - Consolidation that actually consolidates: embedding-based near-duplicate clustering (single-linkage, bounded and logged) produces merge/dedup candidate memories through the existing review gate — model-backed merges are grounding-gated with structured refusals, the deterministic path never fabricates text, supersession is never automatic, and reinforced preferences spanning ≥3 sources/days are surfaced for review.
 - Temporal slice: graph edges carry real event time (`observed_at`/`valid_from` from source timestamps, migration `20260704_0077`); supersession pointers are first-class columns with metadata backfill; both stores answer as-of edge queries; `alice_explain` returns the full supersession chain (cycle-safe, both directions); the SQLite on-ramp gains the graph substrate.
