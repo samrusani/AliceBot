@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
+from uuid import uuid4
 
 import pytest
 
+from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
+from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_capture import (
     VNextCaptureService,
     VNextCaptureValidationError,
@@ -12,6 +16,7 @@ from alicebot_api.vnext_capture import (
     content_hash_for_text,
     extract_candidate_memories,
 )
+from alicebot_api.vnext_entities import ENTITY_MENTION_EDGE_TYPE
 
 
 class InMemoryVNextCaptureStore:
@@ -269,6 +274,131 @@ def test_log_prefix_extracts_episode_candidate() -> None:
     assert candidate.memory_type == "episode"
     assert candidate.extraction_rule == "prefixed_episode"
     assert candidate.text == "Deployed v0.7.1 to the dogfood box at 09:12 UTC."
+
+
+# -- entity linking on the capture path ---------------------------------------------
+
+
+def _sqlite_store() -> SQLiteVNextStore:
+    conn = sqlite3.connect(":memory:")
+    bootstrap_sqlite_schema(conn)
+    user_id = str(uuid4())
+    ensure_sqlite_user(conn, user_id, "capture@example.com")
+    return SQLiteVNextStore(conn, user_id)
+
+
+def test_capture_links_entities_for_source_and_candidate_memories() -> None:
+    store = _sqlite_store()
+    service = VNextCaptureService(store)
+
+    result = service.capture_text(
+        "Fact: Sami Rusani runs Type3 Capital.",
+        title="Team note",
+        domain="professional",
+        sensitivity="internal",
+    )
+
+    assert result.status == "imported"
+    assert result.candidate_memory_count == 1
+    person = store.get_entity_by_normalized_name("person", "sami rusani")
+    org = store.get_entity_by_normalized_name("organization", "type3 capital")
+    assert person is not None and org is not None
+
+    source_edges = store.list_edges(from_id=result.source_id)
+    assert {(str(edge["to_id"]), str(edge["edge_type"])) for edge in source_edges} == {
+        (str(person["id"]), ENTITY_MENTION_EDGE_TYPE),
+        (str(org["id"]), ENTITY_MENTION_EDGE_TYPE),
+    }
+    # Event time on the edges is the source's own timestamp (captured_at
+    # fallback since manual text carries no source_created_at).
+    source_row = store.get_source(result.source_id)
+    for edge in source_edges:
+        assert edge["observed_at"] == source_row["captured_at"]
+
+    # The candidate memory extracted from the prefixed line links too.
+    candidate_memory = store.list_memories(status="candidate")[0]
+    memory_edges = store.list_edges(from_id=str(candidate_memory["id"]))
+    assert {str(edge["to_id"]) for edge in memory_edges} == {str(person["id"]), str(org["id"])}
+    assert all(edge["from_type"] == "memory" for edge in memory_edges)
+
+
+def test_recapturing_duplicate_content_does_not_double_count_mentions() -> None:
+    store = _sqlite_store()
+    service = VNextCaptureService(store)
+    raw_text = "Fact: Sami Rusani runs Type3 Capital."
+
+    first = service.capture_text(raw_text, sensitivity="internal")
+    second = service.capture_text(raw_text, sensitivity="internal")
+
+    assert second.status == "duplicate"
+    person = store.get_entity_by_normalized_name("person", "sami rusani")
+    # One source mention + one candidate-memory mention from the first
+    # capture; the duplicate recapture added nothing.
+    assert person["mention_count"] == 2
+    assert len(store.list_edges(from_id=first.source_id)) == 2
+
+
+def test_private_sensitivity_skips_entity_extraction_entirely() -> None:
+    store = _sqlite_store()
+    service = VNextCaptureService(store)
+
+    result = service.capture_text(
+        "Fact: Sami Rusani runs Type3 Capital.",
+        sensitivity="private",
+    )
+
+    assert result.status == "imported"
+    assert store.list_entities() == []
+    assert store.list_edges(from_id=result.source_id) == []
+    assert not [
+        event
+        for event in store.list_events()
+        if str(event.get("event_type", "")).startswith("entity.")
+    ]
+
+
+class _BrokenEntityLookupStore(SQLiteVNextStore):
+    def find_entities_by_names(self, normalized_names):  # type: ignore[override]
+        raise RuntimeError("entity lookup exploded")
+
+
+def test_entity_extraction_failure_never_fails_capture() -> None:
+    conn = sqlite3.connect(":memory:")
+    bootstrap_sqlite_schema(conn)
+    user_id = str(uuid4())
+    ensure_sqlite_user(conn, user_id, "broken@example.com")
+    store = _BrokenEntityLookupStore(conn, user_id)
+    service = VNextCaptureService(store)
+
+    result = service.capture_text(
+        "Fact: Sami Rusani runs Type3 Capital.",
+        sensitivity="internal",
+    )
+
+    assert result.status == "imported"
+    assert store.list_entities() == []
+    failures = [
+        event for event in store.list_events() if event.get("event_type") == "entity.extraction_failed"
+    ]
+    assert len(failures) == 1
+    assert failures[0]["target_id"] == result.source_id
+    assert failures[0]["payload_json"]["error_type"] == "RuntimeError"
+    # No source.import_failed was logged: the capture itself succeeded.
+    assert not [
+        event for event in store.list_events() if event.get("event_type") == "source.import_failed"
+    ]
+
+
+def test_stores_without_the_entity_surface_skip_linking_silently() -> None:
+    store = InMemoryVNextCaptureStore()
+    service = VNextCaptureService(store)
+
+    result = service.capture_text("Fact: Sami Rusani runs Type3 Capital.", sensitivity="internal")
+
+    assert result.status == "imported"
+    assert not [
+        event for event in store.events if event.get("event_type") == "entity.extraction_failed"
+    ]
 
 
 def test_existing_prefix_rules_are_untouched_by_new_rules() -> None:

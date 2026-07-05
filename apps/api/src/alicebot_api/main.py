@@ -1561,6 +1561,49 @@ def _vnext_public_error_response(*, status_code: int, detail: str) -> JSONRespon
     return JSONResponse(status_code=status_code, content={"detail": detail})
 
 
+def _link_reviewed_memory_entities(store: PostgresVNextStore, memory: dict[str, object]) -> None:
+    """Entity-link a memory the moment dashboard review accepts it.
+
+    Review candidates deliberately do not link at proposal time; acceptance is
+    the promotion into trusted memory, so it is also the linking moment.
+    Mirrors VNextMemoryCommitService._link_memory_entities semantics: linking
+    failures never fail the review action.
+    """
+    from alicebot_api.vnext_entities import (
+        EntityLinkingService,
+        derive_person_name_from_title,
+        store_supports_entity_linking,
+    )
+
+    if not store_supports_entity_linking(store):
+        return
+    observed_at = memory.get("last_reviewed_at") or memory.get("updated_at") or memory.get("created_at")
+    try:
+        linker = EntityLinkingService(store, actor_type="user", actor_id=None, trace_id=None)
+        text = str(memory.get("canonical_text") or "")
+        if text.strip():
+            linker.link_entities_for_memory(
+                memory_id=str(memory["id"]), text=text, observed_at=observed_at
+            )
+        if str(memory.get("memory_type") or "") == "person":
+            person_name = derive_person_name_from_title(str(memory.get("title") or ""))
+            if person_name is not None:
+                linker.link_memory_to_person(
+                    memory_id=str(memory["id"]), person_name=person_name, observed_at=observed_at
+                )
+    except Exception:
+        try:
+            store.append_event(
+                {
+                    "event_type": "entity.extraction_failed",
+                    "actor_type": "user",
+                    "payload": {"memory_id": str(memory.get("id")), "stage": "dashboard_review_accept"},
+                }
+            )
+        except Exception:
+            pass
+
+
 def _vnext_string_list(mapping: dict[str, object], key: str) -> tuple[str, ...]:
     value = mapping.get(key)
     if isinstance(value, str):
@@ -7005,6 +7048,8 @@ def review_vnext_memory(memory_id: UUID, request: VNextMemoryReviewRequest) -> J
             patch["sensitivity"] = request.sensitivity
 
         updated = store.update_memory(memory_id=str(memory_id), patch=patch, actor_type="user")
+        if action in ("accept", "promote"):
+            _link_reviewed_memory_entities(store, updated)
         if action == "assign_project" and request.project_id is not None:
             store.create_edge(
                 {

@@ -500,12 +500,14 @@ def test_corpus_and_report_writers_round_trip(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------
 
 
-def test_suite_order_contains_all_four_suites() -> None:
+def test_suite_order_contains_all_registered_suites() -> None:
     assert VNEXT_EVAL_SUITE_ORDER == (
         RETRIEVAL_QUALITY_SUITE_KEY,
         CORRECTION_SUPPRESSION_SUITE_KEY,
         DECISION_RECOVERY_SUITE_KEY,
         PROVENANCE_EXPLANATION_SUITE_KEY,
+        ENTITY_RESOLUTION_SUITE_KEY,
+        GRAPH_HOP_RETRIEVAL_SUITE_KEY,
     )
     # Each new key is individually dispatchable (the CLI passes --suite through).
     for suite_key in MEMORY_QUALITY_SUITE_KEYS:
@@ -782,3 +784,95 @@ def test_provenance_explanation_fails_on_orphaned_provenance_links() -> None:
         assert suite["status"] == "fail"
         assert suite["metrics"]["orphan_provenance_count"] > 0
         assert suite["metrics"]["target_checks"]["orphan_provenance_count"] == "fail"
+
+
+# ---------------------------------------------------------------------------
+# Sprint D suites: entity_resolution and graph_hop_retrieval
+# ---------------------------------------------------------------------------
+
+from alicebot_api.vnext_evals import (  # noqa: E402
+    ENTITY_RESOLUTION_SUITE_KEY,
+    GRAPH_HOP_RETRIEVAL_SUITE_KEY,
+    run_entity_resolution_eval,
+    run_graph_hop_retrieval_eval,
+)
+
+
+def test_suite_order_includes_sprint_d_suites() -> None:
+    assert ENTITY_RESOLUTION_SUITE_KEY in VNEXT_EVAL_SUITE_ORDER
+    assert GRAPH_HOP_RETRIEVAL_SUITE_KEY in VNEXT_EVAL_SUITE_ORDER
+
+
+def test_sprint_d_suites_skip_without_live_store() -> None:
+    for runner, key in (
+        (run_entity_resolution_eval, ENTITY_RESOLUTION_SUITE_KEY),
+        (run_graph_hop_retrieval_eval, GRAPH_HOP_RETRIEVAL_SUITE_KEY),
+    ):
+        suite = runner(None)
+        assert suite["suite_key"] == key
+        assert suite["status"] == "skipped"
+        assert suite["reason"]
+
+
+def test_live_entity_resolution_passes_through_real_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(VNEXT_EVAL_DATABASE_URL_ENV, "sqlite:///:memory:")
+
+    report = run_vnext_evals(suite=ENTITY_RESOLUTION_SUITE_KEY)
+
+    assert report["status"] == "pass"
+    suite = report["suites"][0]
+    metrics = suite["metrics"]
+    assert metrics["resolution_rate"] == 1.0
+    assert metrics["noise_entity_count"] == 0
+    assert metrics["alias_growth_rate"] == 1.0
+    assert metrics["mention_accuracy"] == 1.0
+    assert metrics["backend"] == "sqlite"
+
+
+def test_entity_resolution_fails_when_blocklist_is_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    from alicebot_api import vnext_entities
+
+    monkeypatch.setattr(vnext_entities, "ENTITY_EXTRACTION_BLOCKLIST", frozenset())
+    with _live_sqlite_store() as store:
+        suite = run_entity_resolution_eval(store)
+
+    assert suite["metrics"]["noise_entity_count"] > 0
+    assert suite["metrics"]["target_checks"]["noise_entity_count"] == "fail"
+    assert suite["status"] == "fail"
+
+
+def test_live_graph_hop_retrieval_measures_the_multi_session_mechanism(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(VNEXT_EVAL_DATABASE_URL_ENV, "sqlite:///:memory:")
+
+    report = run_vnext_evals(suite=GRAPH_HOP_RETRIEVAL_SUITE_KEY)
+
+    assert report["status"] == "pass"
+    suite = report["suites"][0]
+    metrics = suite["metrics"]
+    assert metrics["graph_recall_at_5"] == 1.0
+    assert metrics["fts_only_recall_at_5"] == 0.0
+    assert metrics["graph_lift"] == 1.0
+    assert metrics["winner_graph_rank_rate"] == 1.0
+    for case in suite["cases"]:
+        assert case["status"] == "pass"
+        assert "graph" in case["evidence"]["winner_stage_ranks"]
+        control_stage = case["evidence"]["control_graph_stage"]
+        assert str(control_stage.get("status", "")).startswith("disabled")
+
+
+def test_graph_hop_retrieval_fails_without_entity_links(monkeypatch: pytest.MonkeyPatch) -> None:
+    from alicebot_api.vnext_entities import EntityLinkingService
+
+    monkeypatch.setattr(
+        EntityLinkingService,
+        "link_entities_for_memory",
+        lambda self, **kwargs: [],
+    )
+    with _live_sqlite_store() as store:
+        suite = run_graph_hop_retrieval_eval(store)
+
+    assert suite["metrics"]["graph_recall_at_5"] < 0.8
+    assert suite["metrics"]["target_checks"]["graph_recall_at_5"] == "fail"
+    assert suite["status"] == "fail"

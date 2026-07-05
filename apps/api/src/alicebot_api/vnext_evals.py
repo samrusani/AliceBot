@@ -110,12 +110,16 @@ RETRIEVAL_QUALITY_SUITE_KEY = "retrieval_quality"
 CORRECTION_SUPPRESSION_SUITE_KEY = "correction_suppression"
 DECISION_RECOVERY_SUITE_KEY = "decision_recovery"
 PROVENANCE_EXPLANATION_SUITE_KEY = "provenance_explanation"
+ENTITY_RESOLUTION_SUITE_KEY = "entity_resolution"
+GRAPH_HOP_RETRIEVAL_SUITE_KEY = "graph_hop_retrieval"
 
 VNEXT_EVAL_SUITE_ORDER = (
     RETRIEVAL_QUALITY_SUITE_KEY,
     CORRECTION_SUPPRESSION_SUITE_KEY,
     DECISION_RECOVERY_SUITE_KEY,
     PROVENANCE_EXPLANATION_SUITE_KEY,
+    ENTITY_RESOLUTION_SUITE_KEY,
+    GRAPH_HOP_RETRIEVAL_SUITE_KEY,
 )
 
 VNEXT_EVAL_SQLITE_URL_PREFIX = "sqlite:///"
@@ -2143,11 +2147,496 @@ def run_provenance_explanation_eval(
     }
 
 
+# --------------------------------------------------------------------------
+# Entity-resolution suite (Sprint D)
+# --------------------------------------------------------------------------
+
+ENTITY_RESOLUTION_TITLE = "Entity resolution (capture pipeline extraction + canonicalization)"
+
+_ENTITY_RESOLUTION_GROUPS: tuple[JsonObject, ...] = (
+    {
+        "group_key": "person-sami",
+        "canonical_name": "Sami Rusani",
+        "entity_type": "person",
+        "expected_alias": "dr sami rusani",
+        "source_texts": (
+            "Met with Sami Rusani about the fund strategy and follow-ups.",
+            "Dr Sami Rusani confirmed the allocation timeline yesterday.",
+        ),
+    },
+    {
+        "group_key": "org-meridian",
+        "canonical_name": "Meridian Capital",
+        "entity_type": "organization",
+        "expected_alias": None,
+        "source_texts": (
+            "Meridian Capital opened the data room for diligence.",
+            "The diligence call with Meridian Capital ran long again.",
+        ),
+    },
+    {
+        "group_key": "org-alice-core",
+        "canonical_name": "Alice Core",
+        "entity_type": None,
+        "expected_alias": None,
+        "source_texts": (
+            "Alice Core stores every revision with provenance links.",
+            "We profiled Alice Core under heavier workloads today.",
+        ),
+    },
+)
+
+# Blocklist-noise probes: capitalized tokens the extractor must NOT turn into
+# entities (weekday, month). Each noise token repeats with a mid-sentence
+# occurrence so it clears the repeat-threshold rule and is stopped ONLY by
+# the blocklist — which is exactly what makes the suite able to fail when
+# the blocklist regresses. Kept free of other capitalized spans.
+_ENTITY_RESOLUTION_NOISE_TEXTS: tuple[str, ...] = (
+    "Monday standup ran long, so we moved Monday planning to the afternoon.",
+    "The review closed in January because January carried the audit window.",
+)
+
+ENTITY_RESOLUTION_TARGETS: JsonObject = {
+    "resolution_rate": {"minimum": 0.90},
+    "noise_entity_count": {"maximum": 0},
+    "mention_accuracy": {"minimum": 1.0},
+    "alias_growth_rate": {"minimum": 1.0},
+}
+
+_ENTITY_RESOLUTION_REQUIRED_STORE_SURFACE = (
+    "create_source",
+    "create_memory",
+    "find_entities_by_names",
+    "list_entities",
+)
+
+
+def generate_entity_resolution_corpus() -> JsonObject:
+    groups = [deepcopy(group) for group in _ENTITY_RESOLUTION_GROUPS]
+    corpus: JsonObject = {
+        "schema_version": VNEXT_EVAL_CORPUS_SCHEMA_VERSION,
+        "kind": ENTITY_RESOLUTION_SUITE_KEY,
+        "groups": groups,
+        "noise_texts": list(_ENTITY_RESOLUTION_NOISE_TEXTS),
+        "counts": {
+            "groups": len(groups),
+            "source_texts": sum(len(cast(tuple, g["source_texts"])) for g in groups)
+            + len(_ENTITY_RESOLUTION_NOISE_TEXTS),
+        },
+    }
+    corpus["corpus_digest"] = _hash_payload(
+        {"groups": groups, "noise_texts": list(_ENTITY_RESOLUTION_NOISE_TEXTS)}
+    )
+    return corpus
+
+
+def run_entity_resolution_eval(
+    store: object | None,
+    *,
+    corpus: JsonObject | None = None,
+    backend: str | None = None,
+) -> JsonObject:
+    """Execute entity extraction/canonicalization against the REAL capture path.
+
+    Every source text goes through ``VNextCaptureService.capture_text``; the
+    suite then asserts that surface variants of the same entity resolved to a
+    single canonical row, that blocklist noise created zero entities, that
+    mention counts equal the number of capturing sources, and that honorific
+    variants grew the alias list.
+    """
+    from alicebot_api.vnext_capture import VNextCaptureService
+    from alicebot_api.vnext_entity_names import normalize_entity_name
+
+    if store is None:
+        return _skipped_suite(
+            ENTITY_RESOLUTION_SUITE_KEY,
+            ENTITY_RESOLUTION_TITLE,
+            ENTITY_RESOLUTION_TARGETS,
+            VNEXT_EVAL_LIVE_STORE_SKIP_REASON,
+        )
+    missing = _missing_store_surface(store, _ENTITY_RESOLUTION_REQUIRED_STORE_SURFACE)
+    if missing:
+        return _skipped_suite(
+            ENTITY_RESOLUTION_SUITE_KEY,
+            ENTITY_RESOLUTION_TITLE,
+            ENTITY_RESOLUTION_TARGETS,
+            f"store does not expose required surface: {', '.join(missing)}",
+        )
+    resolved_corpus = corpus if corpus is not None else generate_entity_resolution_corpus()
+
+    capture = VNextCaptureService(cast("PostgresVNextStore", store))
+    for group in cast(list[JsonObject], resolved_corpus["groups"]):
+        for text in cast(Sequence[str], group["source_texts"]):
+            capture.capture_text(str(text), domain="professional", sensitivity="internal")
+    for text in cast(Sequence[str], resolved_corpus["noise_texts"]):
+        capture.capture_text(str(text), domain="professional", sensitivity="internal")
+
+    entities = cast(list[JsonObject], store.list_entities(limit=200))  # type: ignore[attr-defined]
+    by_normalized: dict[str, JsonObject] = {}
+    for entity in entities:
+        by_normalized[str(entity["normalized_name"])] = entity
+
+    expected_normalized: set[str] = set()
+    cases: list[JsonObject] = []
+    resolved_groups = 0
+    mention_correct = 0
+    alias_expected = 0
+    alias_grown = 0
+    for group in cast(list[JsonObject], resolved_corpus["groups"]):
+        canonical = normalize_entity_name(str(group["canonical_name"]))
+        expected_normalized.add(canonical)
+        source_texts = cast(Sequence[str], group["source_texts"])
+        matches = cast(
+            list[JsonObject],
+            store.find_entities_by_names((canonical,)),  # type: ignore[attr-defined]
+        )
+        entity = matches[0] if matches else None
+        distinct_rows = {str(m["id"]) for m in matches}
+        group_resolved = entity is not None and len(distinct_rows) == 1
+        if group_resolved:
+            resolved_groups += 1
+        mentions_ok = bool(entity) and int(cast(int, entity.get("mention_count", 0))) >= len(source_texts)
+        if mentions_ok:
+            mention_correct += 1
+        alias_ok = True
+        expected_alias = group.get("expected_alias")
+        if expected_alias is not None:
+            alias_expected += 1
+            aliases = [str(a) for a in cast(list[object], (entity or {}).get("aliases", []))]
+            alias_ok = str(expected_alias) in aliases
+            if alias_ok:
+                alias_grown += 1
+            expected_normalized.add(str(expected_alias))
+        cases.append(
+            {
+                "case_key": str(group["group_key"]),
+                "status": "pass" if (group_resolved and mentions_ok and alias_ok) else "fail",
+                "metrics": {
+                    "resolved": 1.0 if group_resolved else 0.0,
+                    "mention_count": int(cast(int, (entity or {}).get("mention_count", 0))),
+                },
+                "evidence": {
+                    "canonical_normalized": canonical,
+                    "entity_id": str(entity["id"]) if entity else None,
+                    "aliases": (entity or {}).get("aliases", []),
+                },
+            }
+        )
+
+    noise_entities = [
+        {"normalized_name": name, "entity_type": row.get("entity_type")}
+        for name, row in sorted(by_normalized.items())
+        if name not in expected_normalized
+    ]
+
+    group_count = len(cast(list[object], resolved_corpus["groups"]))
+    metrics: JsonObject = {
+        "backend": _eval_backend_label(store, backend),
+        "group_count": group_count,
+        "entity_count": len(entities),
+        "resolution_rate": (resolved_groups / group_count) if group_count else 0.0,
+        "mention_accuracy": (mention_correct / group_count) if group_count else 0.0,
+        "alias_growth_rate": (alias_grown / alias_expected) if alias_expected else 1.0,
+        "noise_entity_count": len(noise_entities),
+        "noise_entities": noise_entities,
+        "corpus_digest": resolved_corpus.get("corpus_digest"),
+    }
+    checks = _target_checks(metrics, ENTITY_RESOLUTION_TARGETS)
+    metrics["target_checks"] = {key: ("pass" if passed else "fail") for key, passed in sorted(checks.items())}
+    return {
+        "suite_key": ENTITY_RESOLUTION_SUITE_KEY,
+        "title": ENTITY_RESOLUTION_TITLE,
+        "status": "pass" if cases and all(checks.values()) else "fail",
+        "targets": deepcopy(ENTITY_RESOLUTION_TARGETS),
+        "metrics": metrics,
+        "cases": cases,
+    }
+
+
+# --------------------------------------------------------------------------
+# Graph-hop retrieval suite (Sprint D — the multi-session mechanism measure)
+# --------------------------------------------------------------------------
+
+GRAPH_HOP_RETRIEVAL_TITLE = "Graph-hop retrieval (entity-connected memories beyond lexical reach)"
+GRAPH_HOP_MEMORY_KEY_PREFIX = "vnext-eval/graph-hop/"
+
+# Each truth group: the entity is established through REAL capture (sources
+# mentioning it), the target memory is lexically DISJOINT from the query, and
+# the memory->entity 'mentions' edge is seeded as corpus ground truth (in
+# production the edge arises when an entity-bearing memory is accepted; the
+# association itself is what retrieval is being measured against).
+_GRAPH_HOP_GROUPS: tuple[JsonObject, ...] = (
+    {
+        "group_key": "hop-meridian",
+        "entity_name": "Meridian Capital",
+        "entity_sources": (
+            "Meridian Capital opened the data room for the round.",
+            "Call notes: Meridian Capital wants weekly updates.",
+        ),
+        "memory_title": "Diligence blocker",
+        "memory_text": "Legal review is blocking the third-quarter close.",
+        "query": "what is happening with Meridian Capital",
+    },
+    {
+        "group_key": "hop-northwind",
+        "entity_name": "Northwind Labs",
+        "entity_sources": (
+            "Northwind Labs shipped their sensor firmware beta.",
+            "Northwind Labs asked for the integration checklist.",
+        ),
+        "memory_title": "Partnership decision",
+        "memory_text": "The pilot agreement was signed after the demo succeeded.",
+        "query": "latest on Northwind Labs",
+    },
+    {
+        "group_key": "hop-aurora",
+        "entity_name": "Project Aurora",
+        "entity_sources": (
+            "Project Aurora kickoff covered scope and staffing.",
+            "Project Aurora retro flagged the vendor dependency.",
+        ),
+        "memory_title": "Budget change",
+        "memory_text": "Spending approval moved to a monthly cadence.",
+        "query": "Project Aurora status",
+    },
+    {
+        "group_key": "hop-halcyon",
+        "entity_name": "Halcyon Group",
+        "entity_sources": (
+            "Halcyon Group introduced their platform team.",
+            "Halcyon Group requested the security addendum.",
+        ),
+        "memory_title": "Contract state",
+        "memory_text": "Redlines were returned and the signature packet is ready.",
+        "query": "where do we stand with Halcyon Group",
+    },
+    {
+        "group_key": "hop-verdant",
+        "entity_name": "Verdant Systems",
+        "entity_sources": (
+            "Verdant Systems published the migration schedule.",
+            "Verdant Systems confirmed the sandbox credentials.",
+        ),
+        "memory_title": "Rollout risk",
+        "memory_text": "The cutover depends on freezing schema changes first.",
+        "query": "any news about Verdant Systems",
+    },
+)
+
+GRAPH_HOP_RETRIEVAL_TARGETS: JsonObject = {
+    "graph_recall_at_5": {"minimum": 0.80},
+    "graph_lift": {"minimum": 0.31},
+}
+
+_GRAPH_HOP_REQUIRED_STORE_SURFACE = (
+    "create_source",
+    "create_memory",
+    "find_entities_by_names",
+    "list_entities",
+    "list_edges",
+)
+
+
+class _GraphlessStore:
+    """Duck-type wrapper hiding the entity/edge surface.
+
+    The production graph stage feature-detects ``find_entities_by_names`` and
+    ``list_edges``; hiding them yields the honest FTS-only control run for
+    the same seeded corpus.
+    """
+
+    _HIDDEN = {"find_entities_by_names", "list_edges", "list_edges_as_of"}
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> object:
+        if name in self._HIDDEN:
+            raise AttributeError(name)
+        return getattr(self._inner, name)
+
+
+def generate_graph_hop_corpus() -> JsonObject:
+    groups = [deepcopy(group) for group in _GRAPH_HOP_GROUPS]
+    corpus: JsonObject = {
+        "schema_version": VNEXT_EVAL_CORPUS_SCHEMA_VERSION,
+        "kind": GRAPH_HOP_RETRIEVAL_SUITE_KEY,
+        "groups": groups,
+        "counts": {"groups": len(groups)},
+    }
+    corpus["corpus_digest"] = _hash_payload({"groups": groups})
+    return corpus
+
+
+def _graph_hop_retrieval_fn(store: object) -> Callable[[str], JsonObject]:
+    service = VNextRetrievalService(cast(VNextRetrievalStore, store))
+
+    def _retrieve(query: str) -> JsonObject:
+        pack = service.compile_context_pack(
+            VNextRetrievalRequest(
+                query=query,
+                max_items=RETRIEVAL_QUALITY_RECALL_LIMIT,
+                include_sources=False,
+                include_contradictions=False,
+                actor_type="system",
+            )
+        )
+        relevant = cast(list[JsonObject], pack.get("relevant_memories", []))
+        trace = cast(JsonObject, pack.get("trace", {}))
+        selected = cast(list[JsonObject], trace.get("selected", []))
+        stage_ranks_by_id: dict[str, JsonObject] = {}
+        for item in selected:
+            target_id = str(item.get("target_id") or "")
+            if target_id:
+                stage_ranks_by_id[target_id] = cast(JsonObject, item.get("stage_ranks", {}))
+        graph_stage = cast(JsonObject, trace.get("stages", {})).get("graph", {})
+        return {
+            "ranked_memory_keys": [str(m["memory_key"]) for m in relevant if m.get("memory_key")],
+            "stage_ranks_by_id": stage_ranks_by_id,
+            "graph_stage": graph_stage,
+        }
+
+    return _retrieve
+
+
+def run_graph_hop_retrieval_eval(
+    store: object | None,
+    *,
+    corpus: JsonObject | None = None,
+    backend: str | None = None,
+) -> JsonObject:
+    """Measure entity-hop retrieval against its honest FTS-only control.
+
+    Entities are established through the real capture pipeline; target
+    memories share no content words with their queries; the memory->entity
+    association is corpus ground truth. The same production retrieval runs
+    twice — once normally, once against a wrapper hiding the entity/edge
+    surface — and the lift between the two is the multi-session mechanism's
+    measured contribution.
+    """
+    from alicebot_api.vnext_capture import VNextCaptureService
+    from alicebot_api.vnext_entities import EntityLinkingService
+    from alicebot_api.vnext_entity_names import normalize_entity_name
+
+    if store is None:
+        return _skipped_suite(
+            GRAPH_HOP_RETRIEVAL_SUITE_KEY,
+            GRAPH_HOP_RETRIEVAL_TITLE,
+            GRAPH_HOP_RETRIEVAL_TARGETS,
+            VNEXT_EVAL_LIVE_STORE_SKIP_REASON,
+        )
+    missing = _missing_store_surface(store, _GRAPH_HOP_REQUIRED_STORE_SURFACE)
+    if missing:
+        return _skipped_suite(
+            GRAPH_HOP_RETRIEVAL_SUITE_KEY,
+            GRAPH_HOP_RETRIEVAL_TITLE,
+            GRAPH_HOP_RETRIEVAL_TARGETS,
+            f"store does not expose required surface: {', '.join(missing)}",
+        )
+    resolved_corpus = corpus if corpus is not None else generate_graph_hop_corpus()
+
+    capture = VNextCaptureService(cast("PostgresVNextStore", store))
+    linker = EntityLinkingService(store, actor_type="system", actor_id=None, trace_id=None)
+    for index, group in enumerate(cast(list[JsonObject], resolved_corpus["groups"]), start=1):
+        for text in cast(Sequence[str], group["entity_sources"]):
+            capture.capture_text(str(text), domain="professional", sensitivity="internal")
+        memory_key = f"{GRAPH_HOP_MEMORY_KEY_PREFIX}{index:03d}"
+        group["memory_key"] = memory_key
+        memory = _seed_direct_memory(
+            store,
+            memory_key=memory_key,
+            title=str(group["memory_title"]),
+            text=str(group["memory_text"]),
+            memory_type="semantic",
+        )
+        group["memory_id"] = str(memory["id"])
+        # Ground-truth association: link the accepted memory to the captured
+        # entity by name (same call the acceptance paths make), which creates
+        # the memory->entity mentions edge without requiring the entity name
+        # inside the memory text.
+        linker.link_entities_for_memory(
+            memory_id=str(memory["id"]),
+            text=str(group["entity_name"]),
+            observed_at=memory.get("created_at"),
+        )
+        group["normalized_entity_name"] = normalize_entity_name(str(group["entity_name"]))
+
+    retrieve_graph = _graph_hop_retrieval_fn(store)
+    retrieve_fts = _graph_hop_retrieval_fn(_GraphlessStore(store))
+
+    cases: list[JsonObject] = []
+    for group in cast(list[JsonObject], resolved_corpus["groups"]):
+        query = str(group["query"])
+        expected_key = str(group["memory_key"])
+        graph_result = retrieve_graph(query)
+        fts_result = retrieve_fts(query)
+        graph_ranked = cast(list[str], graph_result["ranked_memory_keys"])
+        fts_ranked = cast(list[str], fts_result["ranked_memory_keys"])
+        winner_stage_ranks = cast(JsonObject, graph_result["stage_ranks_by_id"]).get(
+            str(group.get("memory_id", "")), {}
+        )
+        case_metrics: JsonObject = {
+            "graph_recall_at_5": recall_at_k(graph_ranked, expected_key, 5),
+            "fts_recall_at_5": recall_at_k(fts_ranked, expected_key, 5),
+            "winner_has_graph_rank": 1.0 if "graph" in winner_stage_ranks else 0.0,
+        }
+        cases.append(
+            {
+                "case_key": str(group["group_key"]),
+                "status": "pass"
+                if case_metrics["graph_recall_at_5"] == 1.0 and case_metrics["winner_has_graph_rank"] == 1.0
+                else "fail",
+                "metrics": case_metrics,
+                "evidence": {
+                    "query": query,
+                    "expected_memory_key": expected_key,
+                    "graph_top_keys": graph_ranked[:5],
+                    "fts_top_keys": fts_ranked[:5],
+                    "winner_stage_ranks": winner_stage_ranks,
+                    "control_graph_stage": fts_result["graph_stage"],
+                },
+            }
+        )
+
+    case_metrics_list = [cast(JsonObject, case["metrics"]) for case in cases]
+    graph_recall = _mean([cast(float, m["graph_recall_at_5"]) for m in case_metrics_list])
+    fts_recall = _mean([cast(float, m["fts_recall_at_5"]) for m in case_metrics_list])
+    metrics: JsonObject = {
+        "backend": _eval_backend_label(store, backend),
+        "group_count": len(cases),
+        "graph_recall_at_5": graph_recall,
+        "fts_only_recall_at_5": fts_recall,
+        "graph_lift": graph_recall - fts_recall,
+        "winner_graph_rank_rate": _mean(
+            [cast(float, m["winner_has_graph_rank"]) for m in case_metrics_list]
+        ),
+        "control_mechanism": "duck-type wrapper hiding find_entities_by_names/list_edges",
+        "corpus_digest": resolved_corpus.get("corpus_digest"),
+    }
+    checks = _target_checks(metrics, GRAPH_HOP_RETRIEVAL_TARGETS)
+    metrics["target_checks"] = {key: ("pass" if passed else "fail") for key, passed in sorted(checks.items())}
+    return {
+        "suite_key": GRAPH_HOP_RETRIEVAL_SUITE_KEY,
+        "title": GRAPH_HOP_RETRIEVAL_TITLE,
+        "status": "pass" if cases and all(checks.values()) else "fail",
+        "targets": deepcopy(GRAPH_HOP_RETRIEVAL_TARGETS),
+        "metrics": metrics,
+        "cases": cases,
+    }
+
+
 _MEMORY_QUALITY_SUITE_RUNNERS: dict[str, Callable[..., JsonObject]] = {
     CORRECTION_SUPPRESSION_SUITE_KEY: run_correction_suppression_eval,
     DECISION_RECOVERY_SUITE_KEY: run_decision_recovery_eval,
     PROVENANCE_EXPLANATION_SUITE_KEY: run_provenance_explanation_eval,
+    ENTITY_RESOLUTION_SUITE_KEY: run_entity_resolution_eval,
+    GRAPH_HOP_RETRIEVAL_SUITE_KEY: run_graph_hop_retrieval_eval,
 }
+
+# The Sprint D suite targets are defined adjacent to their suites (above),
+# after the acceptance-targets map near the top of the module was built.
+VNEXT_ACCEPTANCE_TARGETS[ENTITY_RESOLUTION_SUITE_KEY] = deepcopy(ENTITY_RESOLUTION_TARGETS)
+VNEXT_ACCEPTANCE_TARGETS[GRAPH_HOP_RETRIEVAL_SUITE_KEY] = deepcopy(GRAPH_HOP_RETRIEVAL_TARGETS)
 
 
 def _run_memory_quality_suite(suite_key: str, *, store: object | None) -> JsonObject:
@@ -2302,6 +2791,15 @@ __all__ = [
     "DECISION_MEMORY_KEY_PREFIX",
     "DECISION_RECOVERY_SUITE_KEY",
     "DECISION_RECOVERY_TARGETS",
+    "ENTITY_RESOLUTION_SUITE_KEY",
+    "ENTITY_RESOLUTION_TARGETS",
+    "GRAPH_HOP_MEMORY_KEY_PREFIX",
+    "GRAPH_HOP_RETRIEVAL_SUITE_KEY",
+    "GRAPH_HOP_RETRIEVAL_TARGETS",
+    "generate_entity_resolution_corpus",
+    "generate_graph_hop_corpus",
+    "run_entity_resolution_eval",
+    "run_graph_hop_retrieval_eval",
     "MEMORY_TYPES_FILTER_FIELD",
     "PROVENANCE_EXPLANATION_SUITE_KEY",
     "PROVENANCE_EXPLANATION_TARGETS",

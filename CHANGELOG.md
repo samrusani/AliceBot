@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Temporal graph memory + entity resolution (Sprint D): a generic `vnext_entities` substrate with canonicalization, aliases, mention windows, and append-only relationship history (migration `20260705_0078`); deterministic entity extraction (capitalized spans, acronyms, handles, domains, repeat-thresholds, blocklist — no LLM) linking sources at capture and memories at acceptance on every acceptance path; entity-hop graph retrieval fused into RRF as a third stage with full trace honesty; a belief-evolution timeline in `alice_explain`; and two new eval suites — `entity_resolution` and `graph_hop_retrieval` — where the graph mechanism proves recall 1.0 on entity-only queries that lexical search scores 0.0 on.
+
 ## v0.8.0 — 2026-07-05
 
 - Published Alice's first benchmark result: **64.6% on LongMemEval_s** with the official judge protocol, in the same range as the best published results in the category — full methodology, per-question evidence, and reproduction script in `docs/benchmarks/longmemeval/`.

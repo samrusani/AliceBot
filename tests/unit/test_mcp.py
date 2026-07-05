@@ -1214,6 +1214,223 @@ def test_alice_context_pack_is_compact_and_gates_trace_behind_debug(
     assert debug["query_interpretation"]["query_type"]
 
 
+class EntityGraphRetrievalStore(FakeVNextMCPStore):
+    """Fake store with the entity substrate the graph stage duck-types."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entities: dict[str, dict[str, object]] = {}
+        self.entity_lookup_calls: list[tuple[str, ...]] = []
+
+    def find_entities_by_names(self, normalized_names: tuple[str, ...]) -> list[dict[str, object]]:
+        self.entity_lookup_calls.append(tuple(normalized_names))
+        names = set(normalized_names)
+        matched = [
+            entity
+            for entity in self.entities.values()
+            if entity.get("normalized_name") in names
+            or any(alias in names for alias in entity.get("aliases", []))
+        ]
+        return sorted(matched, key=lambda entity: -int(entity.get("mention_count", 0) or 0))
+
+    def get_entity(self, entity_id: str) -> dict[str, object] | None:
+        return self.entities.get(entity_id)
+
+
+def _seed_entity_connected_memory(store: EntityGraphRetrievalStore) -> None:
+    # Zero lexical overlap with the "Meridian" queries used below: only the
+    # graph hop through the entity can surface this memory.
+    store.memories.append(
+        {
+            "id": "memory-meridian",
+            "memory_type": "semantic",
+            "canonical_text": "Legal review is blocking the Q3 close.",
+            "status": "active",
+            "confidence": 0.9,
+            "domain": "project",
+            "sensitivity": "private",
+        }
+    )
+    store.entities["entity-meridian"] = {
+        "id": "entity-meridian",
+        "entity_type": "organization",
+        "name": "Meridian",
+        "normalized_name": "meridian",
+        "aliases": ["meridian bank"],
+        "mention_count": 4,
+    }
+    store.create_edge(
+        {
+            "from_type": "memory",
+            "from_id": "memory-meridian",
+            "to_type": "entity",
+            "to_id": "entity-meridian",
+            "edge_type": "mentions",
+            "observed_at": "2026-07-01T00:00:00Z",
+        }
+    )
+
+
+def test_alice_recall_graph_stage_finds_entity_connected_memory(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = EntityGraphRetrievalStore()
+    _seed_entity_connected_memory(store)
+    _patch_vnext_store(monkeypatch, store)
+
+    payload = call_mcp_tool(
+        _mcp_context(),
+        name="alice_recall",
+        arguments={"query": "Meridian update", "debug": True},
+    )
+
+    assert "memory-meridian" in [result["id"] for result in payload["results"]]
+    assert payload["entities"] == [
+        {"id": "entity-meridian", "name": "Meridian", "entity_type": "organization", "mention_count": 4}
+    ]
+    graph_stage = payload["retrieval"]["stages"]["graph"]
+    assert graph_stage["status"] == "enabled"
+    assert graph_stage["candidate_count"] == 1
+    assert graph_stage["matched_entities"] == payload["entities"]
+    # Resolution is one round-trip over the query's candidate names.
+    assert len(store.entity_lookup_calls) == 1
+    assert "meridian" in store.entity_lookup_calls[0]
+
+    # Without an entity match the stage reports itself disabled and the
+    # payload stays free of an empty entities section.
+    unmatched = call_mcp_tool(
+        _mcp_context(),
+        name="alice_recall",
+        arguments={"query": "provenance", "debug": True},
+    )
+    assert "entities" not in unmatched
+    assert unmatched["retrieval"]["stages"]["graph"]["status"] == "disabled: no entity match"
+
+
+def test_alice_context_pack_lists_the_entities_the_query_resolved_to(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = EntityGraphRetrievalStore()
+    _seed_entity_connected_memory(store)
+    _patch_vnext_store(monkeypatch, store)
+
+    pack = call_mcp_tool(
+        _mcp_context(),
+        name="alice_context_pack",
+        arguments={"query": "Meridian update", "domains": ["project"]},
+    )
+
+    assert pack["entities"] == [
+        {"id": "entity-meridian", "name": "Meridian", "entity_type": "organization", "mention_count": 4}
+    ]
+    assert "memory-meridian" in [memory["id"] for memory in pack["memories"]]
+
+    no_match = call_mcp_tool(
+        _mcp_context(),
+        name="alice_context_pack",
+        arguments={"query": "provenance", "domains": ["project"]},
+    )
+    assert "entities" not in no_match
+
+
+def test_alice_explain_timeline_and_chain_entity_links(
+    monkeypatch, core_surface, no_embedding_provider
+) -> None:
+    store = EntityGraphRetrievalStore()
+    _patch_vnext_store(monkeypatch, store)
+
+    original = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={
+            **_trusted_identity_arguments(),
+            "title": "Meridian deal is on track",
+            "canonical_text": "The Meridian acquisition closes in Q3.",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    replacement = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={
+            **_trusted_identity_arguments(),
+            "title": "Meridian deal slipped",
+            "canonical_text": "The Meridian acquisition slipped to Q4.",
+            "domain": "professional",
+            "sensitivity": "internal",
+            "confidence": 0.96,
+        },
+    )
+    old_id = str(original["memory"]["id"])
+    new_id = str(replacement["memory"]["id"])
+    store.entities["entity-meridian"] = {
+        "id": "entity-meridian",
+        "entity_type": "organization",
+        "name": "Meridian",
+        "normalized_name": "meridian",
+        "aliases": [],
+        "mention_count": 2,
+    }
+    store.create_edge(
+        {
+            "from_type": "memory",
+            "from_id": new_id,
+            "to_type": "entity",
+            "to_id": "entity-meridian",
+            "edge_type": "about",
+            "observed_at": "2026-07-01T00:00:00Z",
+        }
+    )
+    call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_manage",
+        arguments={
+            **_trusted_identity_arguments(),
+            "action": "undo",
+            "memory_id": old_id,
+            "reason": "deal slipped",
+            "superseded_by": new_id,
+        },
+    )
+
+    explained = call_mcp_tool(_mcp_context(), name="alice_explain", arguments={"memory_id": old_id})
+
+    # Chain nodes list their linked entities when the store supports them.
+    chain = {entry["id"]: entry for entry in explained["supersession_chain"]}
+    assert chain[old_id]["entities"] == []
+    assert chain[new_id]["entities"] == [
+        {"id": "entity-meridian", "name": "Meridian", "entity_type": "organization", "mention_count": 2}
+    ]
+    # The timeline merges the chain with the revision history: created, then
+    # replaced. The 'superseded' revision is folded into the successor entry.
+    assert [(entry["kind"], entry["memory_id"]) for entry in explained["timeline"]] == [
+        ("created", old_id),
+        ("superseded_by", new_id),
+    ]
+    assert explained["timeline"][1]["summary"] == "Replaced by: Meridian deal slipped"
+    # The fake store does not stamp created_at, but the shape is stable.
+    assert all(set(entry) == {"at", "kind", "memory_id", "summary"} for entry in explained["timeline"])
+
+    # A correction shows up as its own timeline entry on the successor
+    # (seeded through the store surface the commit service writes to).
+    store.append_revision(
+        {
+            "memory_id": new_id,
+            "revision_type": "corrected",
+            "reason": "date confirmed by counsel",
+            "created_at": "2026-07-03T00:00:00Z",
+        }
+    )
+    corrected = call_mcp_tool(_mcp_context(), name="alice_explain", arguments={"memory_id": new_id})
+    kinds = [entry["kind"] for entry in corrected["timeline"]]
+    assert "corrected" in kinds
+    corrected_entry = next(entry for entry in corrected["timeline"] if entry["kind"] == "corrected")
+    assert corrected_entry["memory_id"] == new_id
+    assert corrected_entry["summary"] == "date confirmed by counsel"
+
+
 def test_alice_recall_passes_memory_types_and_projects_to_retrieval_stages(monkeypatch, core_surface) -> None:
     store = HybridRetrievalStore()
     _patch_vnext_store(monkeypatch, store)

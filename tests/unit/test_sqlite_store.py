@@ -1417,3 +1417,331 @@ def test_bootstrap_upgrades_a_pre_existing_db_file_with_the_temporal_slice(tmp_p
     )
     assert [row["id"] for row in upgraded.list_edges()] == [edge["id"]]
     conn.close()
+
+
+# -- entity substrate: resolution, mentions, relationship history ---------------
+
+
+def _create_entity(store: SQLiteVNextStore, **overrides: object) -> dict[str, object]:
+    entity: dict[str, object] = {
+        "entity_type": "organization",
+        "name": "OpenAI",
+    }
+    entity.update(overrides)
+    return store.create_entity(entity)
+
+
+def test_create_entity_get_roundtrip_computes_normalized_name_and_defaults() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+
+    created = _create_entity(store, name="OpenAI, Inc.")
+    assert created["name"] == "OpenAI, Inc."
+    assert created["normalized_name"] == "openai inc"
+    assert created["entity_type"] == "organization"
+    assert created["aliases"] == []
+    assert created["metadata_json"] == {}
+    assert created["mention_count"] == 0
+    assert created["first_observed_at"] is None
+    assert created["last_observed_at"] is None
+    assert created["deleted_at"] is None
+    assert isinstance(created["created_at"], str) and created["created_at"].endswith("Z")
+
+    fetched = store.get_entity(created["id"])
+    assert fetched is not None
+    assert fetched["id"] == created["id"]
+    assert fetched["normalized_name"] == "openai inc"
+    assert store.get_entity(str(uuid4())) is None
+
+    by_name = store.get_entity_by_normalized_name("organization", "openai inc")
+    assert by_name is not None
+    assert by_name["id"] == created["id"]
+    assert store.get_entity_by_normalized_name("person", "openai inc") is None
+    assert store.get_entity_by_normalized_name("organization", "OpenAI, Inc.") is None
+
+    # A caller-provided normalized_name wins over the computed one.
+    explicit = _create_entity(store, name="Whatever Display Name", normalized_name="custom key")
+    assert explicit["normalized_name"] == "custom key"
+    assert store.get_entity_by_normalized_name("organization", "custom key")["id"] == explicit["id"]
+
+    # Creates emit a mutation event with the audited field list.
+    events = store.list_events(target_type="entity", target_id=str(created["id"]))
+    assert [event["event_type"] for event in events] == ["entity.created"]
+    assert events[0]["payload_json"]["operation"] == "create"
+    assert events[0]["payload_json"]["entity_type"] == "organization"
+    assert "name" in events[0]["payload_json"]["fields"]
+    conn.close()
+
+
+def test_create_entity_enforces_normalized_name_uniqueness_per_user_and_type() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    _create_entity(store, name="OpenAI")
+
+    # Different surface spellings of the same normalized name collide.
+    with pytest.raises(sqlite3.IntegrityError):
+        _create_entity(store, name='"OpenAI,"')
+
+    # The same normalized name under another entity_type is a new entity.
+    topic = _create_entity(store, name="OpenAI", entity_type="topic")
+    assert topic["normalized_name"] == "openai"
+
+    # Another user's namespace is independent.
+    other = _make_store(conn)
+    assert _create_entity(other, name="openai")["normalized_name"] == "openai"
+
+    with pytest.raises(sqlite3.IntegrityError):
+        _create_entity(store, name="Acme", entity_type="not_a_type")
+    # A pure-punctuation name normalizes to "" and fails the length CHECK.
+    with pytest.raises(sqlite3.IntegrityError):
+        _create_entity(store, name="...")
+    conn.close()
+
+
+def test_find_entities_by_names_matches_normalized_names_and_aliases_in_one_call() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    openai = _create_entity(store, name="OpenAI", aliases=["open ai"])
+    type3 = _create_entity(store, name="Type3 Capital")
+    _create_entity(store, name="Anthropic")
+
+    # Mentions push type3 ahead in the mention_count DESC ordering.
+    store.record_entity_mention(entity_id=type3["id"], observed_at="2026-07-01T00:00:00Z")
+
+    rows = store.find_entities_by_names(("type3 capital", "open ai"))
+    assert [row["id"] for row in rows] == [type3["id"], openai["id"]]
+
+    # Alias matching is exact string equality, not substring.
+    assert store.find_entities_by_names(("open",)) == []
+    assert store.find_entities_by_names(()) == []
+    conn.close()
+
+
+def test_update_entity_replaces_aliases_and_rejects_immutable_fields() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    created = _create_entity(store, name="OpenAI", aliases=["oai"])
+
+    updated = store.update_entity(
+        entity_id=created["id"],
+        patch={"name": "OpenAI (research lab)", "aliases": ["oai", "open ai"]},
+    )
+    assert updated["name"] == "OpenAI (research lab)"
+    assert updated["aliases"] == ["oai", "open ai"]
+    assert updated["normalized_name"] == created["normalized_name"]  # resolution key untouched
+    assert updated["updated_at"] >= created["updated_at"]
+    assert [row["id"] for row in store.find_entities_by_names(("open ai",))] == [created["id"]]
+
+    update_events = [
+        event
+        for event in store.list_events(target_type="entity", target_id=str(created["id"]))
+        if event["event_type"] == "entity.updated"
+    ]
+    assert len(update_events) == 1
+    assert update_events[0]["payload_json"]["changes"]["aliases"] == ["oai", "open ai"]
+
+    for immutable_patch in (
+        {"normalized_name": "hijacked"},
+        {"entity_type": "person"},
+        {"id": str(uuid4())},
+        {"user_id": str(uuid4())},
+    ):
+        with pytest.raises(ContinuityStoreInvariantError, match="immutable"):
+            store.update_entity(entity_id=created["id"], patch=immutable_patch)
+    with pytest.raises(ContinuityStoreInvariantError):
+        store.update_entity(entity_id=str(uuid4()), patch={"name": "missing"})
+    conn.close()
+
+
+def test_record_entity_mention_counts_and_widens_the_observation_window() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    entity = _create_entity(store)
+
+    first = store.record_entity_mention(entity_id=entity["id"], observed_at="2026-02-01T00:00:00Z")
+    assert first["mention_count"] == 1
+    assert first["first_observed_at"] == "2026-02-01T00:00:00Z"
+    assert first["last_observed_at"] == "2026-02-01T00:00:00Z"
+
+    # An out-of-order earlier mention widens the start but not the end.
+    earlier = store.record_entity_mention(entity_id=entity["id"], observed_at="2026-01-01T00:00:00Z")
+    assert earlier["mention_count"] == 2
+    assert earlier["first_observed_at"] == "2026-01-01T00:00:00Z"
+    assert earlier["last_observed_at"] == "2026-02-01T00:00:00Z"
+
+    later = store.record_entity_mention(
+        entity_id=entity["id"], observed_at="2026-03-01T00:00:00Z", source_id=str(uuid4())
+    )
+    assert later["mention_count"] == 3
+    assert later["first_observed_at"] == "2026-01-01T00:00:00Z"
+    assert later["last_observed_at"] == "2026-03-01T00:00:00Z"
+
+    with pytest.raises(ContinuityStoreInvariantError, match="observed_at"):
+        store.record_entity_mention(entity_id=entity["id"], observed_at=None)
+    with pytest.raises(ContinuityStoreInvariantError):
+        store.record_entity_mention(entity_id=str(uuid4()), observed_at="2026-03-01T00:00:00Z")
+
+    mention_events = [
+        event
+        for event in store.list_events(target_type="entity", target_id=str(entity["id"]))
+        if event["event_type"] == "entity.mention_recorded"
+    ]
+    assert len(mention_events) == 3
+    assert mention_events[0]["payload_json"]["operation"] == "record_mention"
+    conn.close()
+
+
+def test_record_relationship_change_appends_history_and_tracks_current_type() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    entity = _create_entity(store, name="Jane Advisor", entity_type="person", metadata_json={"note": "keep"})
+
+    first = store.record_relationship_change(
+        entity_id=entity["id"], relationship_type="advisor", changed_at="2026-01-01T00:00:00Z"
+    )
+    assert first["relationship_type_before"] is None
+    assert first["relationship_type_after"] == "advisor"
+    assert first["changed_at"] == "2026-01-01T00:00:00Z"
+    assert first["metadata_json"] == {}
+
+    second = store.record_relationship_change(
+        entity_id=entity["id"],
+        relationship_type="investor",
+        changed_at="2026-02-01T00:00:00Z",
+        metadata_json={"round": "seed"},
+    )
+    assert second["relationship_type_before"] == "advisor"
+    assert second["relationship_type_after"] == "investor"
+    assert second["metadata_json"] == {"round": "seed"}
+
+    # The entity carries the current pointer; caller metadata survives the merge.
+    current = store.get_entity(entity["id"])
+    assert current["metadata_json"] == {"note": "keep", "relationship_type": "investor"}
+
+    # History lists most recent change first.
+    listed = store.list_relationship_events(entity["id"])
+    assert [row["id"] for row in listed] == [second["id"], first["id"]]
+
+    with pytest.raises(ContinuityStoreInvariantError, match="existing entity"):
+        store.record_relationship_change(entity_id=str(uuid4()), relationship_type="advisor")
+
+    change_events = [
+        event
+        for event in store.list_events(target_type="entity", target_id=str(entity["id"]))
+        if event["event_type"] == "entity.relationship_changed"
+    ]
+    assert len(change_events) == 2
+    payloads = {event["payload_json"]["relationship_event_id"]: event["payload_json"] for event in change_events}
+    assert payloads[str(second["id"])]["relationship_type_before"] == "advisor"
+    assert payloads[str(second["id"])]["relationship_type_after"] == "investor"
+    conn.close()
+
+
+def test_entity_relationship_events_reject_update_and_delete() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    entity = _create_entity(store)
+    store.record_relationship_change(entity_id=entity["id"], relationship_type="advisor")
+    assert conn.execute("SELECT count(*) FROM entity_relationship_events").fetchone()[0] == 1
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute("UPDATE entity_relationship_events SET relationship_type_after = 'tampered'")
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute("DELETE FROM entity_relationship_events")
+    conn.close()
+
+
+def test_list_entities_filters_by_type_and_orders_by_recency() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    org = _create_entity(store, name="Type3 Capital")
+    person = _create_entity(store, name="Sam Rusani", entity_type="person")
+    store.update_entity(entity_id=org["id"], patch={"name": "Type3.Capital"})
+
+    everything = store.list_entities()
+    assert [row["id"] for row in everything] == [org["id"], person["id"]]  # most recently updated first
+    assert [row["id"] for row in store.list_entities(entity_type="person")] == [person["id"]]
+    assert store.list_entities(entity_type="market") == []
+    assert len(store.list_entities(limit=1)) == 1
+    conn.close()
+
+
+def test_entity_reads_and_writes_are_scoped_to_the_bound_user() -> None:
+    conn = _open_connection()
+    alice = _make_store(conn)
+    mallory = _make_store(conn)
+
+    entity = _create_entity(alice, name="OpenAI", aliases=["open ai"])
+    event = alice.record_relationship_change(entity_id=entity["id"], relationship_type="vendor")
+
+    # Every new read method comes back empty for the other user.
+    assert mallory.get_entity(entity["id"]) is None
+    assert mallory.get_entity_by_normalized_name("organization", "openai") is None
+    assert mallory.find_entities_by_names(("openai",)) == []
+    assert mallory.find_entities_by_names(("open ai",)) == []
+    assert mallory.list_entities() == []
+    assert mallory.list_relationship_events(entity["id"]) == []
+
+    # Mutations against another user's entity fail loudly.
+    with pytest.raises(ContinuityStoreInvariantError):
+        mallory.update_entity(entity_id=entity["id"], patch={"name": "stolen"})
+    with pytest.raises(ContinuityStoreInvariantError):
+        mallory.record_entity_mention(entity_id=entity["id"], observed_at="2026-07-01T00:00:00Z")
+    with pytest.raises(ContinuityStoreInvariantError):
+        mallory.record_relationship_change(entity_id=entity["id"], relationship_type="stolen")
+
+    # Nothing Mallory attempted altered Alice's view.
+    assert alice.get_entity(entity["id"])["name"] == "OpenAI"
+    assert alice.get_entity(entity["id"])["mention_count"] == 0
+    assert [row["id"] for row in alice.list_relationship_events(entity["id"])] == [event["id"]]
+    conn.close()
+
+
+def test_bootstrap_upgrades_a_pre_existing_db_file_with_the_entity_substrate(tmp_path: Path) -> None:
+    """Files created before the entity substrate shipped gain the entities and
+    entity_relationship_events tables (with their indexes and append-only
+    triggers) from the idempotent bootstrap."""
+    db_path = tmp_path / "alice.db"
+    conn = sqlite3.connect(str(db_path))
+    bootstrap_sqlite_schema(conn)
+    # Rewind the file to the pre-entity-substrate schema (dropping a table
+    # drops its indexes and triggers with it).
+    conn.execute("DROP TABLE entity_relationship_events")
+    conn.execute("DROP TABLE vnext_entities")
+    conn.commit()
+    tables = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }
+    assert "vnext_entities" not in tables
+    conn.close()
+
+    conn = sqlite3.connect(str(db_path))
+    bootstrap_sqlite_schema(conn)
+    tables = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }
+    assert {"vnext_entities", "entity_relationship_events"} <= tables
+    index_names = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+    }
+    assert "vnext_entities_user_normalized_name_idx" in index_names
+    assert "entity_relationship_events_entity_changed_idx" in index_names
+    trigger_names = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'").fetchall()
+    }
+    assert "entity_relationship_events_append_only_update" in trigger_names
+    assert "entity_relationship_events_append_only_delete" in trigger_names
+
+    # The upgraded file is fully usable, append-only enforcement included.
+    store = _make_store(conn)
+    entity = _create_entity(store, name="Type3 Capital")
+    store.record_relationship_change(entity_id=entity["id"], relationship_type="portfolio")
+    assert [row["relationship_type_after"] for row in store.list_relationship_events(entity["id"])] == [
+        "portfolio"
+    ]
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute("DELETE FROM entity_relationship_events")
+    conn.close()

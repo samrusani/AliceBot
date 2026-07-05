@@ -169,6 +169,42 @@ Metrics and targets:
 | `explain_completeness_rate` | >= 1.0 |
 | `orphan_provenance_count` | <= 0 |
 
+### Suite: `entity_resolution` (Sprint D)
+
+Drives surface variants of the same entity through the REAL capture
+pipeline (`VNextCaptureService.capture_text`) — e.g. "Sami Rusani" and
+"Dr Sami Rusani" across separate sources — plus blocklist-noise probes
+(repeated weekday/month capitals engineered to clear the repeat-threshold
+rule so ONLY the blocklist stops them). Asserts variants canonicalize to
+one entity row, mention counts match the capturing sources, honorific
+variants grow the alias list, and zero noise entities exist afterward.
+
+| Metric | Target |
+| --- | --- |
+| `resolution_rate` | >= 0.90 |
+| `noise_entity_count` | <= 0 |
+| `mention_accuracy` | >= 1.0 |
+| `alias_growth_rate` | >= 1.0 |
+
+### Suite: `graph_hop_retrieval` (Sprint D — the multi-session mechanism)
+
+Entities are established through real capture; each truth-group's target
+memory shares NO content words with its query (the entity name is the only
+path); the memory→entity association is corpus ground truth. The same
+production retrieval then runs twice — normally, and against a duck-type
+wrapper hiding `find_entities_by_names`/`list_edges` so the graph stage
+reports itself disabled. The difference is the measured contribution of
+entity-hop retrieval, and every winning candidate must carry a `graph`
+stage rank in the trace.
+
+| Metric | Target |
+| --- | --- |
+| `graph_recall_at_5` | >= 0.80 |
+| `graph_lift` (graph − fts-only) | >= 0.31 |
+
+`fts_only_recall_at_5` is reported as the honest control (expected near
+zero by corpus construction).
+
 ### How the new suites stay honest
 
 - Every suite runs real production code (`VNextMemoryCommitService`,

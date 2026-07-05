@@ -176,6 +176,20 @@ AGENT_TYPES = (
     "unknown",
 )
 
+# Mirrors ENTITY_TYPES in alicebot_api.vnext_entity_names and the CHECK
+# constraint in Postgres migration 20260705_0078.
+ENTITY_TYPES = (
+    "person",
+    "organization",
+    "project",
+    "topic",
+    "technology",
+    "market",
+    "report",
+    "agent",
+    "other",
+)
+
 PERMISSION_PROFILES = (
     "read_only_agent",
     "project_scoped_agent",
@@ -203,6 +217,7 @@ _OPEN_LOOP_PRIORITIES_SQL = _sql_list(OPEN_LOOP_PRIORITIES)
 _EDGE_TYPES_SQL = _sql_list(EDGE_TYPES)
 _AGENT_TYPES_SQL = _sql_list(AGENT_TYPES)
 _PERMISSION_PROFILES_SQL = _sql_list(PERMISSION_PROFILES)
+_ENTITY_TYPES_SQL = _sql_list(ENTITY_TYPES)
 
 # Default matches the store's Python-generated ISO-8601 UTC "Z" convention
 # closely enough for lexicographic ordering (milliseconds vs microseconds).
@@ -537,7 +552,7 @@ _TABLE_STATEMENTS: tuple[str, ...] = (
         CHECK (permission_profile IN ({_PERMISSION_PROFILES_SQL})),
       CONSTRAINT agent_identities_project_scope_json_array_check
         CHECK (json_type(project_scope_json) = 'array'),
-      CONSTRAINT agent_identities_metadata_json_object_check
+      CONSTRAINT agent_idvnext_entities_metadata_json_object_check
         CHECK (json_type(metadata_json) = 'object')
     )
     """,
@@ -557,6 +572,73 @@ _TABLE_STATEMENTS: tuple[str, ...] = (
       UNIQUE (id, user_id),
       CONSTRAINT agent_api_keys_permission_profile_check
         CHECK (permission_profile IN ({_PERMISSION_PROFILES_SQL}))
+    )
+    """,
+    # Entity substrate (mirrors Postgres migration 20260705_0078):
+    # entities.normalized_name is the resolution key, aliases is a JSON
+    # array of alternate normalized names.
+    f"""
+    CREATE TABLE IF NOT EXISTS vnext_entities (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      entity_type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      normalized_name TEXT NOT NULL,
+      aliases TEXT NOT NULL DEFAULT '[]',
+      metadata_json TEXT NOT NULL DEFAULT '{{}}',
+      created_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      updated_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      deleted_at TEXT NULL,
+      first_observed_at TEXT NULL,
+      last_observed_at TEXT NULL,
+      mention_count INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (id, user_id),
+      CONSTRAINT vnext_entities_user_type_normalized_name_key
+        UNIQUE (user_id, entity_type, normalized_name),
+      CONSTRAINT vnext_entities_entity_type_check
+        CHECK (entity_type IN ({_ENTITY_TYPES_SQL})),
+      CONSTRAINT vnext_entities_name_length_check
+        CHECK (length(name) BETWEEN 1 AND 500),
+      CONSTRAINT vnext_entities_normalized_name_length_check
+        CHECK (length(normalized_name) BETWEEN 1 AND 500),
+      CONSTRAINT vnext_entities_aliases_array_check
+        CHECK (json_type(aliases) = 'array'),
+      CONSTRAINT vnext_entities_metadata_json_object_check
+        CHECK (json_type(metadata_json) = 'object'),
+      CONSTRAINT vnext_entities_mention_count_non_negative_check
+        CHECK (mention_count >= 0),
+      CONSTRAINT vnext_entities_observed_range_check
+        CHECK (
+          first_observed_at IS NULL
+          OR last_observed_at IS NULL
+          OR last_observed_at >= first_observed_at
+        )
+    )
+    """,
+    # Append-only relationship history (append-only enforced by triggers
+    # below, mirroring event_log). source_id carries NO foreign key on
+    # purpose: an FK with ON DELETE SET NULL would have to UPDATE this
+    # append-only table when a source is deleted, which the trigger
+    # rejects.
+    f"""
+    CREATE TABLE IF NOT EXISTS entity_relationship_events (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      entity_id TEXT NOT NULL,
+      relationship_type_before TEXT NULL,
+      relationship_type_after TEXT NOT NULL,
+      changed_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
+      source_id TEXT NULL,
+      metadata_json TEXT NOT NULL DEFAULT '{{}}',
+      UNIQUE (id, user_id),
+      CONSTRAINT entity_relationship_events_entity_fkey
+        FOREIGN KEY (entity_id, user_id)
+        REFERENCES vnext_entities(id, user_id)
+        ON DELETE CASCADE,
+      CONSTRAINT entity_relationship_events_after_length_check
+        CHECK (length(relationship_type_after) BETWEEN 1 AND 120),
+      CONSTRAINT entity_relationship_events_metadata_json_object_check
+        CHECK (json_type(metadata_json) = 'object')
     )
     """,
 )
@@ -662,6 +744,17 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS agent_api_keys_user_agent_idx
       ON agent_api_keys (user_id, agent_id)
     """,
+    # Mirrors vnext_entities_user_normalized_name_idx and
+    # entity_relationship_events_entity_changed_idx from Postgres
+    # migration 20260705_0078.
+    """
+    CREATE INDEX IF NOT EXISTS vnext_entities_user_normalized_name_idx
+      ON vnext_entities (user_id, normalized_name)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS entity_relationship_events_entity_changed_idx
+      ON entity_relationship_events (user_id, entity_id, changed_at DESC, id DESC)
+    """,
     # Append-only enforcement (mirrors app.reject_event_log_mutation and
     # app.reject_memory_revision_mutation in Postgres).
     """
@@ -690,6 +783,23 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     BEFORE DELETE ON memory_revisions
     BEGIN
       SELECT RAISE(ABORT, 'memory_revisions is append-only');
+    END
+    """,
+    # Relationship history is append-only (mirrors
+    # app.reject_entity_relationship_event_mutation in Postgres
+    # migration 20260705_0078).
+    """
+    CREATE TRIGGER IF NOT EXISTS entity_relationship_events_append_only_update
+    BEFORE UPDATE ON entity_relationship_events
+    BEGIN
+      SELECT RAISE(ABORT, 'entity_relationship_events is append-only');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS entity_relationship_events_append_only_delete
+    BEFORE DELETE ON entity_relationship_events
+    BEGIN
+      SELECT RAISE(ABORT, 'entity_relationship_events is append-only');
     END
     """,
     # External-content FTS5 index over the same fields as the Postgres
@@ -789,6 +899,7 @@ __all__ = [
     "AGENT_TYPES",
     "DOMAINS",
     "EDGE_TYPES",
+    "ENTITY_TYPES",
     "EVIDENCE_ROLES",
     "MEMORY_CONFIRMATION_STATUSES",
     "MEMORY_PROMOTION_ELIGIBILITIES",

@@ -13,6 +13,11 @@ from alicebot_api.vnext_agent_control import (
     evaluate_agent_policy,
 )
 from alicebot_api.vnext_embeddings import attach_memory_embedding
+from alicebot_api.vnext_entities import (
+    EntityLinkingService,
+    derive_person_name_from_title,
+    store_supports_entity_linking,
+)
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
@@ -634,6 +639,14 @@ class VNextMemoryCommitService:
         updated = self.store.update_memory(memory_id=str(memory["id"]), patch=patch, actor_type=actor_type)
         if next_status == "active":
             attach_memory_embedding(self.store, updated, actor_type=actor_type, actor_id=actor_id)
+            # Acceptance-time entity linking: the confirmation-required
+            # memory deliberately skipped linking at proposal time.
+            self._link_memory_entities(
+                memory=updated,
+                identity=identity,
+                trace_id=str(agentic.get("trace_id") or "") or None,
+                stage="inline_confirmation_accepted",
+            )
         self.store.append_revision(
             {
                 "memory_id": str(updated["id"]),
@@ -841,6 +854,15 @@ class VNextMemoryCommitService:
             actor_type=actor_type,
         )
         attach_memory_embedding(self.store, updated, actor_type=actor_type, actor_id=actor_id)
+        # A correction is an explicit accept of the new text: re-run
+        # entity linking so entities the corrected text introduces are
+        # connected (existing links are idempotently skipped).
+        self._link_memory_entities(
+            memory=updated,
+            identity=identity,
+            trace_id=str(agentic.get("trace_id") or "") or None,
+            stage="correction",
+        )
         self.store.append_revision(
             {
                 "memory_id": str(updated["id"]),
@@ -1091,6 +1113,12 @@ class VNextMemoryCommitService:
             actor_id=actor_id,
         )
         self._create_provenance_links(memory=memory, request=request, actor_type=actor_type)
+        self._link_memory_entities(
+            memory=memory,
+            identity=identity,
+            trace_id=request.trace_id or decision.policy_decision.trace_id,
+            stage="commit",
+        )
         append_event(
             self.store,
             event_type="agent.memory_committed",
@@ -1210,6 +1238,13 @@ class VNextMemoryCommitService:
         request: MemoryCommitRequest,
         decision: MemoryCommitPolicyDecision,
     ) -> JsonObject:
+        # Deliberately NO entity linking here: review candidates await
+        # dashboard review and must not seed the entity substrate until a
+        # human accepts them. Inline confirmations link in confirm();
+        # dashboard acceptance happens in the review flows outside this
+        # module, which do not yet re-enter this service -- linking those
+        # at acceptance time is a known gap until the review flow calls
+        # back into an accept seam here.
         actor_type = "agent" if identity is not None else "user"
         actor_id = identity.agent_id if identity is not None else None
         metadata = self._base_metadata(
@@ -1339,6 +1374,76 @@ class VNextMemoryCommitService:
             },
             actor_type=actor_type,
         )
+
+    def _link_memory_entities(
+        self,
+        *,
+        memory: Mapping[str, object],
+        identity: AgentIdentity | None,
+        trace_id: str | None,
+        stage: str,
+    ) -> None:
+        """Best-effort deterministic entity linking for ACCEPTED memories.
+
+        Runs only on the accept paths (auto-commit, inline confirmation,
+        correction), never on review candidates awaiting dashboard review
+        -- those link when they are accepted. Unlike capture, no
+        sensitivity gate applies here: an explicit commit is a direct
+        user/agent instruction to store exactly this content, so linking
+        it into the people/entity substrate honors that intent.
+
+        ``person``-type memories additionally get a person entity for the
+        memory's title-derived name plus a memory->person
+        ``related_to_person`` edge carrying ``relation: "about"``, closing
+        the audit's "person memory type not linked to the people/entity
+        substrate" gap.
+
+        Failure isolation mirrors ``attach_memory_embedding``: linking
+        errors never fail the commit; they log ``entity.extraction_failed``
+        and the commit proceeds. Stores without the entity substrate skip
+        silently.
+        """
+        if not store_supports_entity_linking(self.store):
+            return
+        actor_type = "agent" if identity is not None else "user"
+        actor_id = identity.agent_id if identity is not None else None
+        memory_id = str(memory["id"])
+        # Event time: when the commitment was accepted (the user just
+        # asserted the fact), not some earlier source timestamp.
+        observed_at = memory.get("last_confirmed_at") or memory.get("created_at") or _utc_iso()
+        try:
+            linker = EntityLinkingService(
+                self.store,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                trace_id=trace_id,
+            )
+            text = str(memory.get("canonical_text") or "")
+            if text.strip():
+                linker.link_entities_for_memory(memory_id=memory_id, text=text, observed_at=observed_at)
+            if str(memory.get("memory_type") or "") == "person":
+                person_name = derive_person_name_from_title(str(memory.get("title") or ""))
+                if person_name is not None:
+                    linker.link_memory_to_person(
+                        memory_id=memory_id,
+                        person_name=person_name,
+                        observed_at=observed_at,
+                    )
+        except Exception as exc:
+            append_event(
+                self.store,
+                event_type="entity.extraction_failed",
+                actor_type=actor_type,
+                actor_id=actor_id,
+                target_type="memory",
+                target_id=memory_id,
+                trace_id=trace_id,
+                payload={
+                    "stage": stage,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
+            )
 
     def _create_provenance_links(self, *, memory: Mapping[str, object], request: MemoryCommitRequest, actor_type: str) -> None:
         seen: set[str] = set()
