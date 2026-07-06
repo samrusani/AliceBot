@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.9.0 — 2026-07-06
+
 - Completed the Memory Operations Protocol — all ten verbs are real: `merge` via consolidation-candidate acceptance that executes member supersessions in one audited action; `expire`/`unexpire` riding the read-path validity exclusion; and true `redact` — content expunged from memories, revisions, and event payloads through a narrowly trigger-guarded redaction mode (append-only stays the default posture; the audit skeleton and a redaction proof-trail survive; migration `20260706_0079`). All wired across MCP (`alice_memory_manage`), HTTP, and CLI with policy vocabulary (redact and consolidation-acceptance require human or admin).
 - Context API v2: per-section token allocation in the budget report, five packing strategies (`balanced`/`facts_first`/`recent_first`/`contradictions_first`/`sources_first`), and deterministic depth tiers (`minimal`/`low`/`medium`/`high` — no tier performs model synthesis); tri-state include flags let tier defaults breathe; the default agent loop docs now center one context call.
 - Complete export/import round-trip: export now covers all nine record types (entities, edges, revisions, provenance, and chunks were previously dropped); `alice-memory import` preserves ids and timestamps exactly, never overwrites, and is all-or-nothing.
@@ -10,6 +12,14 @@
 - LongMemEval documentation: three-run variance disclosure (≈64%, band 63.0–64.6), the disclosed negative result on entity-graph retrieval for multi-session, and a breadth ablation (49.2% multi-session at 2× context) motivating the planned aggregation mode.
 
 - Temporal graph memory + entity resolution (Sprint D): a generic `vnext_entities` substrate with canonicalization, aliases, mention windows, and append-only relationship history (migration `20260705_0078`); deterministic entity extraction (capitalized spans, acronyms, handles, domains, repeat-thresholds, blocklist — no LLM) linking sources at capture and memories at acceptance on every acceptance path; entity-hop graph retrieval fused into RRF as a third stage with full trace honesty; a belief-evolution timeline in `alice_explain`; and two new eval suites — `entity_resolution` and `graph_hop_retrieval` — where the graph mechanism proves recall 1.0 on entity-only queries that lexical search scores 0.0 on.
+
+### Pre-launch fixes
+
+- Human-direct memory commits no longer require an agent identity via MCP.
+- SQLite MCP server bootstraps the user row automatically (`python -m` path) with clearer integrity-error messages.
+- Full-text recall falls back to OR-matching when strict AND finds nothing (the trace shows the fallback).
+- CLI gains `--version`, friendly errors for sqlite URLs and bad UUIDs, and lists all six eval suites.
+- Docs overhaul: pip/uvx install is the primary quickstart, the eleven-core-tool count is corrected everywhere, self-host role bootstrap SQL is documented, and PyPI metadata is completed.
 
 ## v0.8.0 — 2026-07-05
 
