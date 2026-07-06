@@ -586,6 +586,56 @@ def test_search_memories_fts_is_safe_against_fts5_metacharacters() -> None:
     conn.close()
 
 
+def test_search_memories_fts_match_any_ors_terms_the_strict_pass_misses() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _create_memory(
+        store,
+        canonical_text="Decision: Alice public announcement goes out Monday after the pre-launch audit passes.",
+    )
+
+    # Strict AND semantics demand every non-stopword term: "go" never
+    # appears (the text says "goes"), so the natural-language question
+    # returns nothing.
+    question = "When does the Alice public announcement go out?"
+    assert store.search_memories_fts(query=question) == []
+
+    rows = store.search_memories_fts(query=question, match_any=True)
+    assert [row["id"] for row in rows] == [memory["id"]]
+
+    # Single-term queries behave identically under both modes.
+    strict = store.search_memories_fts(query="announcement")
+    relaxed = store.search_memories_fts(query="announcement", match_any=True)
+    assert [row["id"] for row in strict] == [row["id"] for row in relaxed] == [memory["id"]]
+    conn.close()
+
+
+def test_search_memories_fts_match_any_is_safe_against_fts5_metacharacters() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    memory = _create_memory(store, canonical_text="deployment notes with NEAR misses")
+
+    hostile_queries = [
+        'col:*(NEAR "unclosed AND ^',
+        "a AND OR NOT (",
+        '"unbalanced',
+        "x ^ y NEAR/3 z",
+        "-deployment stray",
+    ]
+    for hostile in hostile_queries:
+        rows = store.search_memories_fts(query=hostile, match_any=True)  # must not raise
+        assert isinstance(rows, list)
+
+    # Sanitized empty queries return no rows instead of erroring.
+    assert store.search_memories_fts(query="", match_any=True) == []
+    assert store.search_memories_fts(query="()^*:", match_any=True) == []
+
+    # A leading '-' is stripped, not parsed as NOT: the real term still ORs.
+    rows = store.search_memories_fts(query="-deployment unrelatedterm", match_any=True)
+    assert [row["id"] for row in rows] == [memory["id"]]
+    conn.close()
+
+
 def test_search_memories_fts_reflects_updates_and_archives() -> None:
     conn = _open_connection()
     store = _make_store(conn)

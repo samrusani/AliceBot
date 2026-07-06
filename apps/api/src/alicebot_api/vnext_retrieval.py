@@ -44,6 +44,7 @@ from alicebot_api.vnext_embeddings import (
 from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
+from alicebot_api.vnext_store import fts_fallback_tokens
 
 
 DEFAULT_CONTEXT_PACK_LIMIT = 8
@@ -189,6 +190,10 @@ class VNextRetrievalStore(Protocol):
     Stores may additionally expose ``search_memories_fts`` and
     ``search_memories_vector`` (see ``PostgresVNextStore``); the service
     detects them at runtime and degrades to ``search_memories`` otherwise.
+    ``search_memories_fts`` implementations should accept
+    ``match_any: bool = False`` (the OR-fallback pass for multi-word
+    queries the strict AND pass missed); stores that predate the kwarg
+    simply never get the fallback.
     The same applies to ``list_events`` (recent_changes section),
     ``list_beliefs`` (contradicting_evidence section), and the entity
     substrate ``find_entities_by_names``/``get_memory`` (entity-hop graph
@@ -756,7 +761,33 @@ class VNextRetrievalService:
             )
             # Display-only trace label; SQLite stores override it via
             # ``fts_stage_source`` so traces do not claim a Postgres stage.
-            return list(rows), str(getattr(self.store, "fts_stage_source", "postgres_fts"))
+            fts_source = str(getattr(self.store, "fts_stage_source", "postgres_fts"))
+            if not rows and len(fts_fallback_tokens(query)) >= 2:
+                # Strict AND semantics found nothing for a multi-word query.
+                # With no embeddings configured (the default first-hour
+                # setup) FTS is the whole recall path, so a natural-language
+                # question would return zero results against memories a
+                # keyword query finds instantly. Retry once with OR
+                # semantics; the source string keeps the trace honest about
+                # the relaxed pass, and fallback rows join RRF fusion
+                # exactly like strict FTS rows. Single-token queries skip
+                # the retry (OR and AND are identical there), and a strict
+                # hit above never reaches this branch.
+                try:
+                    rows = search_memories_fts(
+                        query=query,
+                        domains=domains or None,
+                        sensitivity_allowed=sensitivity_allowed,
+                        limit=limit,
+                        match_any=True,
+                        **filters,
+                    )
+                except TypeError:
+                    # Store predates the match_any kwarg; keep the strict
+                    # (empty) result rather than guessing.
+                    return [], fts_source
+                return list(rows), f"{fts_source}_or_fallback"
+            return list(rows), fts_source
         rows = self.store.search_memories(
             query=query,
             domains=domains or None,
