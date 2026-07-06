@@ -768,7 +768,7 @@ def test_natural_language_question_falls_back_to_or_matching_on_sqlite() -> None
 
     assert [item["id"] for item in pack["relevant_memories"]] == [memory["id"]]
     assert pack["trace"]["stages"]["fts"] == {
-        "source": "postgres_fts_or_fallback",
+        "source": "sqlite_fts_or_fallback",
         "candidate_count": 1,
     }
 
@@ -782,7 +782,7 @@ def test_keyword_query_that_and_matches_does_not_use_the_fallback_on_sqlite() ->
     )
 
     assert [item["id"] for item in pack["relevant_memories"]] == [memory["id"]]
-    assert pack["trace"]["stages"]["fts"] == {"source": "postgres_fts", "candidate_count": 1}
+    assert pack["trace"]["stages"]["fts"] == {"source": "sqlite_fts", "candidate_count": 1}
 
 
 def test_single_token_miss_does_not_fire_the_or_fallback() -> None:
