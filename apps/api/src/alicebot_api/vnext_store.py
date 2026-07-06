@@ -18,7 +18,6 @@ from alicebot_api.vnext_repositories import JsonObject
 
 JsonList = list[object]
 VNextRow = dict[str, object]
-_SEARCH_STOPWORDS = {"about", "what", "when", "where", "which", "with", "from", "this", "that", "should", "could"}
 
 # Statuses the memory read path returns. Everything else -- including
 # 'stale' (demoted by maintenance), 'superseded', and 'rejected' -- is
@@ -86,6 +85,14 @@ def _vector_literal(vector: list[float]) -> str:
 
 
 def _search_patterns(query: str) -> list[str]:
+    """LIKE/ILIKE patterns for the keyword-fallback search paths.
+
+    The full normalized phrase always leads (exact matches rank first);
+    per-term fallback patterns are added for every token that is not an
+    ``FTS_QUERY_STOPWORDS`` member, so the LIKE paths drop the same
+    question words the FTS paths drop instead of matching every row that
+    contains e.g. "about" or "your".
+    """
     normalized = " ".join(str(query).split()).strip()
     if len(normalized) >= 2 and (
         (normalized[0] == normalized[-1] and normalized[0] in {"'", '"'})
@@ -99,7 +106,7 @@ def _search_patterns(query: str) -> list[str]:
     seen = {pattern.casefold() for pattern in patterns}
     for term in re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{1,}", normalized):
         folded = term.casefold()
-        if folded in _SEARCH_STOPWORDS:
+        if folded in FTS_QUERY_STOPWORDS:
             continue
         pattern = f"%{folded}%"
         if pattern.casefold() not in seen:
@@ -111,8 +118,9 @@ def _search_patterns(query: str) -> list[str]:
 # The snowball English stopword list -- the same list the Postgres
 # 'english' text-search configuration applies inside websearch_to_tsquery()
 # and to_tsquery(). Shared with sqlite_store (whose FTS5 MATCH builder
-# re-imports it -- FTS5 has no stopword support of its own) and with the
-# retrieval service's OR-fallback trigger, so all three agree on what
+# re-imports it -- FTS5 has no stopword support of its own), with the
+# retrieval service's OR-fallback trigger, and with ``_search_patterns``
+# above (the LIKE keyword fallback), so every query path agrees on what
 # counts as a content-bearing token.
 FTS_QUERY_STOPWORDS = frozenset(
     """
@@ -239,6 +247,13 @@ SOURCE_CHUNK_COLUMNS = """
                   metadata_json,
                   created_at
                 """
+
+# c.-prefixed chunk columns for search_source_chunks, whose JOIN to
+# sources would otherwise make id/user_id/metadata_json/created_at
+# ambiguous.
+_SOURCE_CHUNK_SEARCH_COLUMNS = ", ".join(
+    f"c.{column.strip()}" for column in SOURCE_CHUNK_COLUMNS.split(",")
+)
 
 MEMORY_COLUMNS = """
                   id,
@@ -1212,6 +1227,60 @@ class PostgresVNextStore:
                 ORDER BY chunk_index ASC, id ASC
                 """,
             (source_id,),
+        )
+
+    def search_source_chunks(
+        self,
+        *,
+        query: str,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 50,
+        match_any: bool = False,
+    ) -> list[VNextRow]:
+        """Content search over source_chunks.text; best chunk hit first.
+
+        Rank comes back as ``fts_score`` on each chunk row (row order IS
+        the rank), and every row carries ``source_id`` so the retrieval
+        service can promote the parent source. The domain/sensitivity
+        gates live on the parent source row, so the query joins sources
+        and applies them there, mirroring ``search_sources``. Strict
+        pass: ``websearch_to_tsquery`` ANDs every non-stopword term;
+        ``match_any`` ORs the sanitized lexemes instead (the retrieval
+        service's one-shot fallback for multi-word questions the strict
+        pass missed). Uses the ``search_tsv`` generated column + GIN
+        index from migration 20260707_0081.
+        """
+        if match_any:
+            tsquery_sql = "to_tsquery('english', %s)"
+            tsquery_text = _tsquery_any_expression(query)
+            if tsquery_text is None:
+                return []
+        else:
+            tsquery_sql = "websearch_to_tsquery('english', %s)"
+            tsquery_text = query
+        return self._fetch_all(
+            f"""
+                SELECT {_SOURCE_CHUNK_SEARCH_COLUMNS},
+                  ts_rank(c.search_tsv, {tsquery_sql}) AS fts_score
+                FROM source_chunks c
+                JOIN sources s ON s.id = c.source_id AND s.user_id = c.user_id
+                WHERE s.deleted_at IS NULL
+                  AND (%s::text[] IS NULL OR s.domain = ANY(%s::text[]) OR s.domain = 'unknown')
+                  AND (%s::text[] IS NULL OR s.sensitivity = ANY(%s::text[]))
+                  AND c.search_tsv @@ {tsquery_sql}
+                ORDER BY fts_score DESC, c.created_at DESC, c.id DESC
+                LIMIT %s
+                """,
+            (
+                tsquery_text,
+                domains,
+                domains,
+                sensitivity_allowed,
+                sensitivity_allowed,
+                tsquery_text,
+                limit,
+            ),
         )
 
     def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> VNextRow:
