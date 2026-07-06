@@ -136,6 +136,34 @@ def test_sqlite_url_for_path_round_trips(tmp_path) -> None:
 # --- core tools end-to-end through call_mcp_tool ------------------------------
 
 
+def test_write_tools_work_on_fresh_sqlite_db_without_onramp_bootstrap(tmp_path, monkeypatch) -> None:
+    """A bare ``python -m alicebot_api.mcp_server`` launch never runs the
+    on-ramp's ``bootstrap_database``; the store context must still create the
+    acting user row so the first write does not die on a FOREIGN KEY error."""
+    for env_name in (EMBEDDINGS_BASE_URL_ENV, EMBEDDINGS_MODEL_ENV, EMBEDDINGS_API_KEY_ENV):
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.delenv(mcp_tools_module.MCP_LEGACY_TOOLS_ENV, raising=False)
+    monkeypatch.delenv(mcp_tools_module.AGENT_API_KEY_ENV, raising=False)
+
+    context = MCPRuntimeContext(
+        database_url=sqlite_url_for_path(tmp_path / "fresh.db"), user_id=USER_ID
+    )
+
+    captured = call_mcp_tool(
+        context,
+        name="alice_capture",
+        arguments={"raw_text": "Decision: bootstrap-free launch works.", "domain": "project"},
+    )
+    assert captured["status"] == "imported"
+    assert captured["candidate_memory_count"] == 1
+
+    # The retrieval trace labels the full-text stage honestly for SQLite.
+    recall = call_mcp_tool(
+        context, name="alice_recall", arguments={"query": "bootstrap-free launch", "debug": True}
+    )
+    assert recall["retrieval"]["stages"]["fts"]["source"] == "sqlite_fts"
+
+
 def test_capture_review_approve_recall_explain_flow(sqlite_context) -> None:
     memory_id = _capture_decision(sqlite_context, "Ship the SQLite on-ramp for local agents")
 
