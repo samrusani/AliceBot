@@ -28,6 +28,7 @@ SQLite mode (`alice-memory mcp`) is the trial/single-agent path and carries extr
 - core MCP tools only (11 as of this release); the legacy continuity surfaces are Postgres-only
 - no web console review — review runs through `alice_memory_review` / `alice_memory_correct`
 - no scheduler
+- agent API keys cannot be created (`alicebot agent keys create` requires Postgres); leave `ALICE_AGENT_API_KEY` unset — agent identity is still honored and audited as `unauthenticated_local`, while a set key fails closed and rejects every write
 - one user per local database file
 - no automatic migration to Postgres; `alice-memory export` gets your data out and `alice-memory import` loads an export into another local database (ids and timestamps preserved)
 - embedding vectors are not exported: after `alice-memory import`, memories are keyword-searchable (FTS) immediately but stay out of vector search until re-embedded — configure `ALICE_EMBEDDINGS_*` and touch or re-commit the imported memories

@@ -4,16 +4,22 @@ This is the canonical local setup walkthrough for Alice. Other quickstart pages 
 
 ## Zero-Infrastructure Trial (SQLite)
 
-To try Alice before setting up the full stack, run the MCP server against a single local SQLite file — Python 3.12+ only, no Docker, Node, or Postgres. From a repo checkout:
+To try Alice before setting up the full stack, run the MCP server against a single local SQLite file — Python 3.12+ only, no Docker, Node, or Postgres. Straight from PyPI:
 
 ```bash
+uvx alice-memory mcp --data-dir ~/.alice
+# or: pip install alice-memory && alice-memory mcp --data-dir ~/.alice
+```
+
+Working from a repo checkout instead? Install into a virtualenv first (a bare `pip install -e .` fails on PEP 668-managed systems):
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 alice-memory mcp --data-dir ~/.alice
 ```
 
-(`uvx alice-memory mcp --data-dir ~/.alice` once the package is published.)
-
-This is the trial and single-agent path: the nine core MCP tools for one user, with review through `alice_memory_review` / `alice_memory_correct` instead of the web console. No review console, scheduler, or legacy surfaces — see [known limitations](known-limitations.md). The Postgres setup below remains the full experience.
+This is the trial and single-agent path: the eleven core MCP tools for one user, with review through `alice_memory_review` / `alice_memory_correct` instead of the web console. No review console, scheduler, or legacy surfaces — see [known limitations](known-limitations.md). The Postgres setup below remains the full experience.
 
 ## Requirements
 
@@ -41,6 +47,8 @@ Expected success:
 - Docker services start
 - migrations finish
 - doctor returns `pass` or a warning without blocking failures
+
+If port 5432 is already taken by another local Postgres, stop it or change the mapped port before `make migrate` (see the comments in `.env.example`).
 
 ## Start Alice
 
@@ -102,9 +110,8 @@ If Alice starts correctly but no memory appears after normal chat, follow the [f
 
 Short version:
 
+- use `alice_memory_commit` for explicit "remember/save this" requests — policy-checked, never a silent write
 - use the core `alice_capture` MCP tool to submit new information as source-backed, reviewable memory
-- use `alice_vnext_commit_memory` for explicit "remember/save this" requests from trusted agents (legacy MCP surface; requires `ALICE_MCP_LEGACY_TOOLS=1` on the MCP server)
-- use `alice_vnext_ingest_agent_output` with `propose_memory=true` for reviewable agent-derived memory proposals (legacy MCP surface; same flag)
 - use `alicebot vnext sources capture-text "Fact: ..."` for source-backed candidate memory
 - do not expect arbitrary conversation to become trusted memory automatically
 

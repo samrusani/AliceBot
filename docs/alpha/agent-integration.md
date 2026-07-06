@@ -25,9 +25,12 @@ Agents should use Alice as a durable, private, provenance-aware, reviewable memo
    No Postgres yet? `alice-memory mcp --data-dir ~/.alice` serves the same
    eleven core tools against a local SQLite file — no `DATABASE_URL` needed.
 
-2. (Recommended) Bind the server to an agent identity: create a key with
-   `alicebot agent keys create` and set `ALICE_AGENT_API_KEY` in the MCP
-   server env (details under [Authentication](#authentication)).
+2. (Recommended on Postgres) Bind the server to an agent identity: create
+   a key with `alicebot agent keys create` and set `ALICE_AGENT_API_KEY`
+   in the MCP server env (details under [Authentication](#authentication)).
+   Key creation requires Postgres — in SQLite on-ramp mode, skip this step
+   and leave `ALICE_AGENT_API_KEY` unset; payload identity is honored and
+   audited as `unauthenticated_local`.
 3. Drop one of the skill blocks into your agent's instructions:
    [hermes-skill.md](hermes-skill.md) for personal assistants,
    [openclaw-skill.md](openclaw-skill.md) for coding agents.
@@ -142,8 +145,11 @@ export ALICE_AGENT_API_KEY="<paste the key printed by 'agent keys create'>"
 curl -X POST http://127.0.0.1:8000/v0/vnext/memories/commit \
   -H "Authorization: Bearer $ALICE_AGENT_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "...", "title": "...", "text": "..."}'
+  -d '{"user_id": "00000000-0000-0000-0000-000000000001", "title": "Preferred planning format", "canonical_text": "The user prefers concise daily planning summaries."}'
 ```
+
+The body field is `canonical_text` — the same field name as the
+`alice_memory_commit` MCP schema.
 
 Rules:
 
@@ -201,15 +207,18 @@ and returns one of four outcomes — `committed`, `confirmation_required`
 
 Identity requirements:
 
-- Commits without an agent identity run as the direct human/system
-  operator path (`permission_profile: user_or_system`): no agent profile
-  gates apply, but the shared safety checks (secret screening, explicit
-  intent, source review, confidence thresholds) still do.
-- With a declared agent identity, only `trusted_local_agent` and
-  `admin_agent` profiles can commit outside the `project` domain;
-  `project_scoped_agent` commits are limited to project-domain memories
-  within their project scope; `memory_proposal_agent` and
-  `read_only_agent` callers are routed to review or rejected.
+- Direct human calls (Claude Desktop, an IDE, the CLI as yourself) need no
+  identity fields — omit them and the commit runs as the local operator
+  (`permission_profile: user_or_system`). No agent profile gates apply,
+  but the shared safety checks (secret screening, explicit intent, source
+  review, confidence thresholds) still do.
+- Agent integrations declare identity: pass `agent_id` and `agent_type`
+  (plus the other identity fields above as needed), or bind a key.
+- Only `trusted_local_agent` and `admin_agent` profiles can commit outside
+  the `project` domain; `project_scoped_agent` commits are limited to
+  project-domain memories within their project scope;
+  `memory_proposal_agent` and `read_only_agent` callers are routed to
+  review or rejected.
 - On HTTP, once any agent API key exists for the user, commits that declare
   an agent identity without a key are rejected with `401`; callers must
   send `Authorization: Bearer alice_sk_...`.
@@ -219,8 +228,11 @@ Identity requirements:
   `unauthenticated_local`).
 - When a key is in play, the key record — not the payload — determines
   `agent_id` and `permission_profile`; claiming a different agent or a
-  higher profile is rejected and logged. Key enforcement works in SQLite
-  on-ramp mode too.
+  higher profile is rejected and logged.
+- Keys cannot be minted in SQLite on-ramp mode — `alicebot agent keys
+  create` requires Postgres. Leave `ALICE_AGENT_API_KEY` unset there:
+  identity is honored and audited as `unauthenticated_local`. If it is
+  set anyway, enforcement fails closed and every write is rejected.
 
 ## CLI Example
 
