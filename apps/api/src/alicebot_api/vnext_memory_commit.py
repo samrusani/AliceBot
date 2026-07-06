@@ -453,11 +453,7 @@ def evaluate_memory_commit_policy(
     if identity is not None and identity.permission_profile in PROJECT_COMMIT_PROFILES and request.domain != "project":
         reasons.append("project_scoped_agent_domain_out_of_scope")
 
-    if identity is None:
-        reasons.append("agent_identity_required")
-        mode = "reject"
-        status = "rejected"
-    elif base_decision.decision == "blocked":
+    if base_decision.decision == "blocked":
         reasons.append("agent_policy_blocked")
         mode = "reject"
         status = "rejected"
@@ -477,6 +473,11 @@ def evaluate_memory_commit_policy(
         reasons.append("bulk_source_refs_require_review")
         mode = "propose_review"
         status = "review_required"
+    elif identity is None:
+        # Direct human/system operator path (evaluate_agent_policy already
+        # returned a user_or_system decision): no agent permission-profile
+        # gates apply, but the confidence/sensitivity checks below still run.
+        pass
     elif identity.permission_profile in REVIEW_ONLY_PROFILES:
         reasons.append("memory_proposal_agent_review_only")
         mode = "propose_review"

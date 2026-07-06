@@ -82,6 +82,44 @@ def test_external_source_requires_dashboard_review() -> None:
     assert "external_source_requires_review" in decision.reasons
 
 
+def test_direct_user_commit_without_identity_auto_commits() -> None:
+    decision = evaluate_memory_commit_policy(
+        identity=None,
+        request=_request(domain="professional", sensitivity="internal"),
+    )
+
+    assert decision.write_mode == "commit"
+    assert decision.status == "committed"
+    assert decision.policy_decision.permission_profile == "user_or_system"
+
+
+def test_direct_user_commit_keeps_non_identity_safeguards() -> None:
+    secret = evaluate_memory_commit_policy(
+        identity=None,
+        request=_request(
+            canonical_text="The api_key for staging is tucked in here.",
+            domain="professional",
+            sensitivity="internal",
+        ),
+    )
+    assert secret.write_mode == "reject"
+    assert "unsafe_secret_storage" in secret.reasons
+
+    external = evaluate_memory_commit_policy(
+        identity=None,
+        request=_request(source_type="browser_clip", domain="professional", sensitivity="internal"),
+    )
+    assert external.write_mode == "propose_review"
+    assert "external_source_requires_review" in external.reasons
+
+    sensitive = evaluate_memory_commit_policy(
+        identity=None,
+        request=_request(domain="health", sensitivity="confidential"),
+    )
+    assert sensitive.write_mode == "confirm_inline"
+    assert "sensitive_memory_requires_confirmation" in sensitive.reasons
+
+
 def test_read_only_agent_is_rejected() -> None:
     decision = evaluate_memory_commit_policy(
         identity=_identity("read_only_agent"),
@@ -91,6 +129,19 @@ def test_read_only_agent_is_rejected() -> None:
     assert decision.write_mode == "reject"
     assert decision.status == "rejected"
     assert "read_only_agent_cannot_write" in decision.reasons
+
+
+def test_read_only_agent_private_sensitivity_stays_policy_blocked() -> None:
+    # A self-declared agent_id without a permission_profile defaults to
+    # read_only_agent; private-sensitivity commits stay blocked on that path.
+    decision = evaluate_memory_commit_policy(
+        identity=_identity("read_only_agent"),
+        request=_request(),
+    )
+
+    assert decision.write_mode == "reject"
+    assert decision.status == "rejected"
+    assert "agent_policy_blocked" in decision.reasons
 
 
 def test_project_scoped_agent_can_commit_project_memory_in_scope() -> None:

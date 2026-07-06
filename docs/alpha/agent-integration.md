@@ -201,16 +201,18 @@ and returns one of four outcomes — `committed`, `confirmation_required`
 
 Identity requirements:
 
-- Commits without an agent identity are rejected with
-  `agent_identity_required`. Pass the identity fields above, or bind a key.
-- Only `trusted_local_agent` and `admin_agent` profiles can commit outside
-  the `project` domain; `project_scoped_agent` commits are limited to
-  project-domain memories within their project scope;
-  `memory_proposal_agent` and `read_only_agent` callers are routed to
-  review or rejected.
-- On HTTP, once any agent API key exists for the user, keyless commits are
-  rejected with `401`; callers must send `Authorization: Bearer
-  alice_sk_...`.
+- Commits without an agent identity run as the direct human/system
+  operator path (`permission_profile: user_or_system`): no agent profile
+  gates apply, but the shared safety checks (secret screening, explicit
+  intent, source review, confidence thresholds) still do.
+- With a declared agent identity, only `trusted_local_agent` and
+  `admin_agent` profiles can commit outside the `project` domain;
+  `project_scoped_agent` commits are limited to project-domain memories
+  within their project scope; `memory_proposal_agent` and
+  `read_only_agent` callers are routed to review or rejected.
+- On HTTP, once any agent API key exists for the user, commits that declare
+  an agent identity without a key are rejected with `401`; callers must
+  send `Authorization: Bearer alice_sk_...`.
 - On MCP, set `ALICE_AGENT_API_KEY` in the server environment to bind the
   server to a key; without it the MCP server runs as local operator
   tooling and payload identity is honored (audited as

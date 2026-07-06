@@ -1168,6 +1168,59 @@ def test_vnext_agent_endpoint_rejects_keyless_agent_call_when_keys_exist(monkeyp
     assert store.sources == {}
 
 
+def test_vnext_memory_commit_rejects_keyless_agent_call_when_keys_exist(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    user_id = uuid4()
+    create_agent_key(
+        store, user_id=user_id, agent_id="hermes", permission_profile="trusted_local_agent"
+    )
+
+    response = main_module.commit_vnext_memory(
+        main_module.VNextMemoryCommitRequest(
+            user_id=user_id,
+            title="Keyless agent commit",
+            canonical_text="Keyless agent commits stay rejected once keys exist.",
+            agent_id="hermes",
+        )
+    )
+
+    assert response.status_code == 401
+    assert "Authorization: Bearer alice_sk_" in json.loads(response.body)["detail"]
+    assert store.memories == []
+
+
+def test_vnext_memory_commit_without_identity_commits_as_direct_user(monkeypatch) -> None:
+    from alicebot_api.vnext_agent_keys import create_agent_key
+
+    store = FakeVNextStore(None)
+    _install_fake_vnext_store(monkeypatch, store)
+    monkeypatch.delenv("ALICE_EMBEDDINGS_BASE_URL", raising=False)
+    user_id = uuid4()
+    # Registered keys gate agent-identity calls, not the direct human path.
+    create_agent_key(
+        store, user_id=user_id, agent_id="hermes", permission_profile="trusted_local_agent"
+    )
+
+    response = main_module.commit_vnext_memory(
+        main_module.VNextMemoryCommitRequest(
+            user_id=user_id,
+            title="Direct user commit",
+            canonical_text="Direct human commits need no agent identity.",
+            confidence=0.95,
+        )
+    )
+
+    assert response.status_code == 201
+    payload = json.loads(response.body)
+    assert payload["status"] == "committed"
+    assert payload["write_mode"] == "commit"
+    assert payload["policy_decision"]["policy_decision"]["permission_profile"] == "user_or_system"
+    assert store.memories[0]["created_by_agent_id"] is None
+
+
 def test_vnext_agent_endpoint_rejects_payload_profile_escalation(monkeypatch) -> None:
     from alicebot_api.vnext_agent_keys import create_agent_key
 

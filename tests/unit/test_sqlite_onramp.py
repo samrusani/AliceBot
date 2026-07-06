@@ -879,15 +879,16 @@ def test_memory_commit_review_required_lands_in_review_queue(sqlite_context) -> 
     assert approved["memory"]["status"] == "active"
 
 
-def test_memory_commit_without_identity_is_rejected(sqlite_context) -> None:
-    rejected = call_mcp_tool(
+def test_memory_commit_without_identity_commits_as_direct_user(sqlite_context) -> None:
+    committed = call_mcp_tool(
         sqlite_context,
         name="alice_memory_commit",
-        arguments={"title": "No identity", "canonical_text": "Anonymous writes are rejected."},
+        arguments={"title": "No identity", "canonical_text": "Direct human writes need no agent identity."},
     )
-    assert rejected["status"] == "rejected"
-    assert rejected["write_mode"] == "reject"
-    assert "agent_identity_required" in rejected["reasons"]
+    assert committed["status"] == "committed"
+    assert committed["write_mode"] == "commit"
+    assert committed["policy_decision"]["policy_decision"]["permission_profile"] == "user_or_system"
+    assert committed["memory"].get("created_by_agent_id") is None
 
 
 def test_memory_commit_resolves_agent_identity_from_api_key(sqlite_context, monkeypatch) -> None:
