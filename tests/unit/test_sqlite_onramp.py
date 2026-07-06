@@ -157,11 +157,13 @@ def test_write_tools_work_on_fresh_sqlite_db_without_onramp_bootstrap(tmp_path, 
     assert captured["status"] == "imported"
     assert captured["candidate_memory_count"] == 1
 
-    # The retrieval trace labels the full-text stage honestly for SQLite.
+    # The retrieval trace labels the full-text stage honestly for SQLite
+    # (with or without the OR-fallback suffix; the captured text is still a
+    # candidate, so the strict pass can legitimately come up empty).
     recall = call_mcp_tool(
         context, name="alice_recall", arguments={"query": "bootstrap-free launch", "debug": True}
     )
-    assert recall["retrieval"]["stages"]["fts"]["source"] == "sqlite_fts"
+    assert recall["retrieval"]["stages"]["fts"]["source"].startswith("sqlite_fts")
 
 
 def test_capture_review_approve_recall_explain_flow(sqlite_context) -> None:
