@@ -474,6 +474,9 @@ def sqlite_user_connection(path: str | Path, user_id: UUID | str) -> Iterator[sq
 class SQLiteVNextStore:
     """SQLite-backed vNext repository facade for the second-brain kernel."""
 
+    #: Retrieval-trace label for the full-text stage (FTS5, not Postgres tsvector).
+    fts_stage_source = "sqlite_fts"
+
     def __init__(self, conn: sqlite3.Connection, user_id: UUID | str):
         if str(user_id).strip() == "":
             raise ContinuityStoreInvariantError("SQLiteVNextStore requires a non-empty user_id")

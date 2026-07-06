@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from io import BytesIO
 import json
+import sqlite3
 from uuid import UUID, uuid4
 
 import pytest
@@ -150,6 +151,35 @@ def test_call_mcp_tool_converts_postgres_check_violation(monkeypatch) -> None:
     monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_recall", raise_check_violation)
 
     with pytest.raises(MCPToolError, match="persisted schema constraint"):
+        call_mcp_tool(context, name="alice_recall", arguments={})
+
+
+def test_call_mcp_tool_maps_sqlite_integrity_errors_by_constraint_kind(monkeypatch) -> None:
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    def _install_raiser(message: str) -> None:
+        def raise_integrity_error(_context, _arguments):
+            raise sqlite3.IntegrityError(message)
+
+        monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_recall", raise_integrity_error)
+
+    # CHECK violations keep the enum-vocabulary guidance.
+    _install_raiser("CHECK constraint failed: memories.memory_type")
+    with pytest.raises(MCPToolError, match="schema-backed enum values"):
+        call_mcp_tool(context, name="alice_recall", arguments={})
+
+    # FOREIGN KEY violations point at the missing referenced row, not enum vocabulary.
+    _install_raiser("FOREIGN KEY constraint failed")
+    with pytest.raises(MCPToolError, match="alice-memory init") as excinfo:
+        call_mcp_tool(context, name="alice_recall", arguments={})
+    assert "enum values" not in str(excinfo.value)
+
+    # Anything else surfaces the SQLite message verbatim.
+    _install_raiser("UNIQUE constraint failed: users.email")
+    with pytest.raises(MCPToolError, match="UNIQUE constraint failed: users.email"):
         call_mcp_tool(context, name="alice_recall", arguments={})
 
 

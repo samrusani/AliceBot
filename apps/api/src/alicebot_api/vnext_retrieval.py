@@ -754,7 +754,9 @@ class VNextRetrievalService:
                 limit=limit,
                 **filters,
             )
-            return list(rows), "postgres_fts"
+            # Display-only trace label; SQLite stores override it via
+            # ``fts_stage_source`` so traces do not claim a Postgres stage.
+            return list(rows), str(getattr(self.store, "fts_stage_source", "postgres_fts"))
         rows = self.store.search_memories(
             query=query,
             domains=domains or None,

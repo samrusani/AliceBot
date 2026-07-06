@@ -106,7 +106,7 @@ from alicebot_api.contracts import (
 )
 from alicebot_api.config import get_settings
 from alicebot_api.db import user_connection
-from alicebot_api.sqlite_store import SQLiteVNextStore, sqlite_user_connection
+from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user, sqlite_user_connection
 from alicebot_api.store import ContinuityStore, JsonObject
 from alicebot_api.temporal_state import (
     TemporalStateValidationError,
@@ -238,6 +238,13 @@ _SQLITE_POSTGRES_ONLY_MESSAGE = (
     "this tool requires the Postgres backend; the SQLite on-ramp serves the core tools only"
 )
 
+# Mirrors the alice-memory on-ramp defaults (``onramp.DEFAULT_USER_EMAIL``);
+# the on-ramp imports this module, so importing it back would be a cycle.
+_SQLITE_DEFAULT_USER_EMAIL = "local@alice"
+_SQLITE_DEFAULT_USER_DISPLAY_NAME = (
+    _SQLITE_DEFAULT_USER_EMAIL.split("@", 1)[0].replace(".", " ").title() or None
+)
+
 
 def _is_sqlite_backend(context: MCPRuntimeContext) -> bool:
     return context.database_url.startswith("sqlite:")
@@ -276,6 +283,15 @@ def _vnext_store_context(context: MCPRuntimeContext):
     if _is_sqlite_backend(context):
         sqlite_path = _sqlite_path_from_url(context.database_url)
         with sqlite_user_connection(sqlite_path, context.user_id) as conn:
+            # Bootstrap the acting user row (idempotent) so a bare
+            # ``python -m alicebot_api.mcp_server`` launch against a fresh
+            # sqlite:/// database works without the alice-memory on-ramp.
+            ensure_sqlite_user(
+                conn,
+                context.user_id,
+                _SQLITE_DEFAULT_USER_EMAIL,
+                _SQLITE_DEFAULT_USER_DISPLAY_NAME,
+            )
             yield SQLiteVNextStore(conn, context.user_id)
         return
     with user_connection(context.database_url, context.user_id) as conn:
@@ -5636,11 +5652,24 @@ def call_mcp_tool(
         TemporalStateValidationError,
     ) as exc:
         raise MCPToolError(str(exc)) from exc
-    except (CheckViolation, sqlite3.IntegrityError) as exc:
+    except CheckViolation as exc:
         raise MCPToolError(
             "vNext request violates a persisted schema constraint; use schema-backed enum values "
             "for memory_type, domain, sensitivity, status, and action fields."
         ) from exc
+    except sqlite3.IntegrityError as exc:
+        message = str(exc)
+        if "CHECK constraint" in message:
+            raise MCPToolError(
+                "vNext request violates a persisted schema constraint; use schema-backed enum values "
+                "for memory_type, domain, sensitivity, status, and action fields."
+            ) from exc
+        if "FOREIGN KEY constraint failed" in message:
+            raise MCPToolError(
+                "a row this write references does not exist in the SQLite database (most often the "
+                "acting user row); bootstrap it with 'alice-memory init' or verify the referenced ids."
+            ) from exc
+        raise MCPToolError(message) from exc
     except (TypeError, ValueError) as exc:
         raise MCPToolError(str(exc)) from exc
 
