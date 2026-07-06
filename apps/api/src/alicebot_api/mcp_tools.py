@@ -775,10 +775,9 @@ def _resolve_review_apply_action(raw_action: str, *, allow_legacy: bool) -> str:
         return mapped
     if allow_legacy and normalized in CONTINUITY_CORRECTION_ACTIONS:
         return normalized
-    allowed = list(_REVIEW_APPLY_ACTION_CHOICES)
-    if allow_legacy:
-        allowed.extend(CONTINUITY_CORRECTION_ACTIONS)
-    raise MCPToolError(f"action must be one of: {', '.join(allowed)}")
+    # Advertise only the schema enum; legacy action names are still accepted
+    # above when allow_legacy is set, but are not part of the public surface.
+    raise MCPToolError(f"action must be one of: {', '.join(_REVIEW_APPLY_ACTION_CHOICES)}")
 
 
 def _build_recall_query(arguments: Mapping[str, object], *, limit: int) -> ContinuityRecallQueryInput:
