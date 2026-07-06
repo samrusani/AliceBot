@@ -427,8 +427,12 @@ def test_phase10_quiet_hours_disabled_notifications_and_stale_prompt_delivery(
             "timezone": "UTC",
             "daily_brief_window_start": "00:00",
             "quiet_hours_enabled": True,
-            "quiet_hours_start": "00:00",
-            "quiet_hours_end": "23:59",
+            # Anchor the window around "now" instead of the fixed 00:00-23:59:
+            # the quiet check's end is exclusive, so an all-day window leaves
+            # local minute 23:59 loud and the test flakes for one minute per
+            # day (observed in CI at the UTC midnight boundary).
+            "quiet_hours_start": (datetime.now(UTC) - timedelta(hours=2)).strftime("%H:%M"),
+            "quiet_hours_end": (datetime.now(UTC) + timedelta(hours=2)).strftime("%H:%M"),
         },
         headers=auth_header(session_token),
     )
