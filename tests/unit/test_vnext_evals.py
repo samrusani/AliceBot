@@ -409,12 +409,14 @@ def _assert_live_sqlite_suite_shape(report: dict[str, object]) -> dict[str, obje
     assert "paraphrase_recall_at_5" not in metrics["target_checks"]
 
     # FTS5 (porter + stopword-filtered MATCH) must recover every reworded
-    # lexical query; pure paraphrases share no vocabulary, so without an
-    # embedding provider their recall is honestly 0.0 -- not hidden.
+    # lexical query. Pure paraphrases share almost no vocabulary, so
+    # without an embedding provider only the OR-fallback's occasional
+    # shared-token hits land: recall stays low and honestly reported --
+    # never fabricated up to the hybrid targets.
     assert metrics["subsets"][SUBSET_LEXICAL_OVERLAP]["recall_at_5"] == 1.0
     assert metrics["target_checks"]["lexical_overlap_recall_at_5"] == "pass"
     assert metrics["target_checks"]["lexical_overlap_mrr"] == "pass"
-    assert metrics["subsets"][SUBSET_PARAPHRASE]["recall_at_5"] == 0.0
+    assert 0.0 < metrics["subsets"][SUBSET_PARAPHRASE]["recall_at_5"] < 0.5
 
     seeding = metrics["seeding"]
     assert seeding["seeded_memory_count"] == VNEXT_BENCHMARK_EXPECTED_COUNTS["memories"]
