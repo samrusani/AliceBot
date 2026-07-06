@@ -1622,14 +1622,27 @@ def test_alice_memory_commit_outcome_vocabulary(monkeypatch, core_surface, no_em
     store = FakeVNextMCPStore()
     _patch_vnext_store(monkeypatch, store)
 
+    direct = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={"title": "No identity", "canonical_text": "Direct human commits need no agent identity."},
+    )
+    assert direct["status"] == "committed"
+    assert direct["write_mode"] == "commit"
+    assert direct["policy_decision"]["policy_decision"]["permission_profile"] == "user_or_system"
+
     rejected = call_mcp_tool(
         _mcp_context(),
         name="alice_memory_commit",
-        arguments={"title": "No identity", "canonical_text": "Commits require an agent identity."},
+        arguments={
+            "agent_id": "unknown-agent",
+            "title": "Read-only agent",
+            "canonical_text": "Self-declared unknown agents still cannot write.",
+        },
     )
     assert rejected["status"] == "rejected"
     assert rejected["write_mode"] == "reject"
-    assert "agent_identity_required" in rejected["reasons"]
+    assert "read_only_agent_cannot_write" in rejected["reasons"]
 
     review = call_mcp_tool(
         _mcp_context(),

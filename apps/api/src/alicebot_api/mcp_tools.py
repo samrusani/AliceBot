@@ -3883,7 +3883,11 @@ _AGENT_IDENTITY_SCHEMA_PROPERTIES: dict[str, object] = {
     },
     "permission_profile": {
         "type": "string",
-        "description": "Named permission level for the agent, such as 'trusted_local_agent' or 'project_scoped_agent'.",
+        "description": (
+            "Named permission level for the agent, such as 'trusted_local_agent' or "
+            "'project_scoped_agent'. Unknown agents default to 'read_only_agent', which "
+            "cannot write memories."
+        ),
     },
     "trace_id": {
         "type": "string",
