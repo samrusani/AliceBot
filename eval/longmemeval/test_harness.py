@@ -27,7 +27,7 @@ for _path in (_EVAL_DIR, _API_SRC):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from longmemeval import adapter, chat, judge, runner  # noqa: E402
+from longmemeval import adapter, chat, compare_runs, judge, runner  # noqa: E402
 from longmemeval.dataset import (  # noqa: E402
     SYNTHETIC_FIXTURE_PATH,
     LongMemEvalDatasetError,
@@ -424,3 +424,299 @@ def test_runner_dry_run_skips_cleanly_without_dataset(tmp_path: Path, capsys: py
 def test_runner_scored_requires_model_config(tmp_path: Path) -> None:
     exit_code = runner.main(["--dataset-file", str(SYNTHETIC_FIXTURE_PATH), "--work-dir", str(tmp_path)])
     assert exit_code == runner.EXIT_CONFIG_ERROR
+
+
+# -- --question-ids slicing --------------------------------------------------------
+
+
+def test_load_question_ids_skips_comments_and_dedupes(tmp_path: Path) -> None:
+    ids_file = tmp_path / "slice.txt"
+    ids_file.write_text("# header\n\nq1\nq2\n  q1  \n# trailing comment\nq3\n", encoding="utf-8")
+    assert runner.load_question_ids(ids_file) == ("q1", "q2", "q3")
+    with pytest.raises(ValueError, match="does not exist"):
+        runner.load_question_ids(tmp_path / "missing.txt")
+    empty = tmp_path / "empty.txt"
+    empty.write_text("# only comments\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="no question ids"):
+        runner.load_question_ids(empty)
+
+
+def test_question_ids_mutually_exclusive_with_limit(tmp_path: Path) -> None:
+    ids_file = tmp_path / "slice.txt"
+    ids_file.write_text("q1\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        runner.build_arg_parser().parse_args(["--limit", "3", "--question-ids", str(ids_file)])
+
+
+def test_runner_question_ids_unknown_id_is_config_error(tmp_path: Path) -> None:
+    ids_file = tmp_path / "slice.txt"
+    ids_file.write_text("synthetic_1\nnot_a_real_id\n", encoding="utf-8")
+    exit_code = runner.main(
+        [
+            "--dry-run",
+            "--dataset-file",
+            str(SYNTHETIC_FIXTURE_PATH),
+            "--question-ids",
+            str(ids_file),
+            "--work-dir",
+            str(tmp_path / "work"),
+            "--checkpoint",
+            str(tmp_path / "checkpoint.jsonl"),
+            "--report",
+            str(tmp_path / "report.json"),
+        ]
+    )
+    assert exit_code == runner.EXIT_CONFIG_ERROR
+
+
+def test_fingerprint_records_question_subset(tmp_path: Path) -> None:
+    def config_with(question_ids: tuple[str, ...] | None) -> runner.RunnerConfig:
+        return runner.RunnerConfig(
+            variant="s",
+            dataset_path=SYNTHETIC_FIXTURE_PATH,
+            limit=None,
+            question_ids=question_ids,
+            question_ids_file="slice.txt" if question_ids else None,
+            resume=False,
+            dry_run=True,
+            cot=False,
+            workers=1,
+            max_items=8,
+            context_char_budget=12_000,
+            work_dir=tmp_path,
+            checkpoint_path=tmp_path / "c.jsonl",
+            report_path=tmp_path / "r.json",
+            keep_stores=False,
+        )
+
+    full = runner.config_fingerprint(config_with(None), model=None, judge=None)
+    sliced = runner.config_fingerprint(config_with(("synthetic_1",)), model=None, judge=None)
+    assert full["question_subset"] is None
+    assert sliced["question_subset"] == {
+        "file": "slice.txt",
+        "count": 1,
+        "ids_sha256_prefix": sliced["question_subset"]["ids_sha256_prefix"],  # type: ignore[index]
+    }
+    # A slice run can never masquerade as a full run: the digests differ.
+    assert full["digest"] != sliced["digest"]
+
+
+def test_runner_question_ids_filters_and_resumes(tmp_path: Path) -> None:
+    ids_file = tmp_path / "slice.txt"
+    ids_file.write_text("# one-question slice\nsynthetic_2_abs\n", encoding="utf-8")
+    checkpoint_path = tmp_path / "checkpoint.jsonl"
+    report_path = tmp_path / "report.json"
+    common = [
+        "--dry-run",
+        "--dataset-file",
+        str(SYNTHETIC_FIXTURE_PATH),
+        "--question-ids",
+        str(ids_file),
+        "--work-dir",
+        str(tmp_path / "work"),
+        "--checkpoint",
+        str(checkpoint_path),
+        "--report",
+        str(report_path),
+        "--workers",
+        "1",
+    ]
+    assert runner.main(common) == runner.EXIT_OK
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["totals"]["questions"] == 1
+    assert report["config"]["question_subset"]["count"] == 1
+    assert report["config"]["question_subset"]["file"] == "slice.txt"
+    records = runner.load_checkpoint(checkpoint_path)
+    assert set(records) == {"synthetic_2_abs"}
+
+    # Resume keys on question_id: the completed id is skipped, nothing re-runs.
+    assert runner.main([*common, "--resume"]) == runner.EXIT_OK
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["resumed_from_checkpoint"] == 1
+    assert report["totals"] == {"questions": 1, "ok": 1, "errors": 0, "correct": 0, "accuracy": None}
+
+    # Widening the slice re-runs only the new id.
+    ids_file.write_text("synthetic_2_abs\nsynthetic_1\n", encoding="utf-8")
+    assert runner.main([*common, "--resume"]) == runner.EXIT_OK
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["resumed_from_checkpoint"] == 1
+    assert report["totals"]["questions"] == 2
+    records = runner.load_checkpoint(checkpoint_path)
+    assert set(records) == {"synthetic_1", "synthetic_2_abs"}
+
+
+# -- compare_runs -------------------------------------------------------------------
+
+
+def test_exact_mcnemar_hand_computed() -> None:
+    # b=1, c=5: n=6 discordant, P(X<=1) = (C(6,0)+C(6,1))/2^6 = 7/64; p = 14/64.
+    assert compare_runs.exact_mcnemar_p(1, 5) == pytest.approx(14 / 64)
+    assert compare_runs.exact_mcnemar_p(5, 1) == pytest.approx(14 / 64)  # symmetric
+    # b=0, c=8: p = 2 * C(8,0)/2^8 = 2/256.
+    assert compare_runs.exact_mcnemar_p(0, 8) == pytest.approx(2 / 256)
+    # Balanced discordance saturates at 1.0 (2 * P(X<=3, n=6) = 84/64 -> capped).
+    assert compare_runs.exact_mcnemar_p(3, 3) == 1.0
+    assert compare_runs.exact_mcnemar_p(0, 0) == 1.0
+    with pytest.raises(ValueError):
+        compare_runs.exact_mcnemar_p(-1, 2)
+
+
+def _result_row(question_id: str, question_type: str, *, correct: bool | None) -> dict[str, object]:
+    return {
+        "question_id": question_id,
+        "question_type": question_type,
+        "is_abstention": question_id.endswith("_abs"),
+        "status": "ok",
+        "judge": {"correct": correct} if correct is not None else None,
+    }
+
+
+def test_dedupe_last_keeps_final_record_per_question_id() -> None:
+    rows = [
+        _result_row("q1", "multi-session", correct=False),
+        _result_row("q2", "multi-session", correct=True),
+        _result_row("q1", "multi-session", correct=True),  # re-run after resume: last wins
+        {"question_id": "", "judge": {"correct": True}},  # no usable id -> dropped
+    ]
+    deduped = compare_runs.dedupe_last(rows)
+    assert set(deduped) == {"q1", "q2"}
+    assert compare_runs.judged_correct(deduped["q1"]) is True
+
+
+def test_compare_records_flips_types_and_abstention() -> None:
+    baseline = compare_runs.dedupe_last(
+        [
+            _result_row("q1", "multi-session", correct=True),
+            _result_row("q2", "multi-session", correct=False),
+            _result_row("q3", "temporal-reasoning", correct=False),
+            _result_row("q4_abs", "knowledge-update", correct=False),
+            _result_row("q5", "knowledge-update", correct=True),
+            _result_row("q6", "multi-session", correct=True),  # judged only in baseline
+            _result_row("q7", "multi-session", correct=None),  # unjudged -> excluded
+        ]
+    )
+    candidate = compare_runs.dedupe_last(
+        [
+            _result_row("q1", "multi-session", correct=True),  # both right
+            _result_row("q2", "multi-session", correct=True),  # gained
+            _result_row("q3", "temporal-reasoning", correct=True),  # gained
+            _result_row("q4_abs", "knowledge-update", correct=True),  # gained (abstention)
+            _result_row("q5", "knowledge-update", correct=False),  # lost
+            _result_row("q7", "multi-session", correct=True),
+            _result_row("q8", "multi-session", correct=True),  # candidate-only
+        ]
+    )
+    summary = compare_runs.compare_records(baseline, candidate)
+    assert summary["n_compared"] == 5
+    assert summary["flips_gained"] == 3
+    assert summary["flips_lost"] == 1
+    assert summary["net"] == 2
+    assert summary["baseline_correct"] == 2
+    assert summary["candidate_correct"] == 4
+    assert summary["mcnemar_p"] == pytest.approx(compare_runs.exact_mcnemar_p(3, 1))
+    assert summary["per_type"]["multi-session"] == {
+        "n": 2,
+        "baseline_correct": 1,
+        "candidate_correct": 2,
+        "gained": 1,
+        "lost": 0,
+        "net": 1,
+        "baseline_accuracy": 0.5,
+        "candidate_accuracy": 1.0,
+    }
+    assert summary["abstention"] == {"n": 1, "baseline_correct": 0, "candidate_correct": 1, "delta": 1}
+
+
+def test_compare_runs_cli_table_and_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    baseline_path = tmp_path / "baseline.jsonl"
+    candidate_path = tmp_path / "candidate.jsonl"
+    baseline_rows = [
+        _result_row("q1", "multi-session", correct=False),
+        _result_row("q1", "multi-session", correct=True),  # dedupe keeps this one
+        _result_row("q2_abs", "temporal-reasoning", correct=False),
+    ]
+    candidate_rows = [
+        _result_row("q1", "multi-session", correct=True),
+        _result_row("q2_abs", "temporal-reasoning", correct=True),
+    ]
+    baseline_path.write_text("".join(json.dumps(row) + "\n" for row in baseline_rows), encoding="utf-8")
+    candidate_path.write_text("".join(json.dumps(row) + "\n" for row in candidate_rows), encoding="utf-8")
+
+    assert compare_runs.main([str(baseline_path), str(candidate_path)]) == compare_runs.EXIT_OK
+    table = capsys.readouterr().out
+    assert "compared 2 judged questions" in table
+    assert "net +1" in table
+    assert "abstention subset: n=1" in table
+
+    assert compare_runs.main([str(baseline_path), str(candidate_path), "--json"]) == compare_runs.EXIT_OK
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["n_compared"] == 2
+    assert summary["flips_gained"] == 1  # q1 dedupe-last means baseline was already right
+    assert summary["flips_lost"] == 0
+
+    assert compare_runs.main([str(tmp_path / "nope.jsonl"), str(candidate_path)]) == compare_runs.EXIT_CONFIG_ERROR
+
+
+# -- stage-1 slice selection ---------------------------------------------------------
+
+
+def _load_stage1_module():
+    import importlib.util
+
+    module_path = Path(__file__).resolve().parent / "slices" / "generate_stage1.py"
+    spec = importlib.util.spec_from_file_location("generate_stage1", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_stratified_picks_hand_computed() -> None:
+    stage1 = _load_stage1_module()
+    pool = [f"id{i:02d}" for i in range(10)]
+    # n=10, wanted=3 -> k=3 -> indices 0, 3, 6.
+    assert stage1.stratified_picks(pool, 3) == ["id00", "id03", "id06"]
+    # Input order must not matter: the pool is sorted first.
+    assert stage1.stratified_picks(list(reversed(pool)), 3) == ["id00", "id03", "id06"]
+    # n == wanted -> k=1 -> the whole sorted pool.
+    assert stage1.stratified_picks(["b", "a"], 2) == ["a", "b"]
+    with pytest.raises(ValueError, match="pool has 2 ids but 3 were requested"):
+        stage1.stratified_picks(["a", "b"], 3)
+
+
+def test_stage1_selection_deterministic_and_dedupes_abstention() -> None:
+    stage1 = _load_stage1_module()
+    quotas = (("multi-session", 2), ("temporal-reasoning", 1))
+    records = [
+        {"question_id": "m1", "question_type": "multi-session"},
+        {"question_id": "m2_abs", "question_type": "multi-session"},
+        {"question_id": "m3", "question_type": "multi-session"},
+        {"question_id": "m4", "question_type": "multi-session"},
+        {"question_id": "t1", "question_type": "temporal-reasoning"},
+        {"question_id": "t2_abs", "question_type": "temporal-reasoning"},
+    ]
+    first = stage1.select_stage1_ids(records, quotas=quotas)
+    second = stage1.select_stage1_ids(records, quotas=quotas)
+    assert first == second  # running selection twice yields identical lists
+    shuffled = stage1.select_stage1_ids(list(reversed(records)), quotas=quotas)
+    assert shuffled == first  # dataset order must not matter
+    # multi-session: sorted pool [m1, m2_abs, m3, m4], k=2 -> m1, m3.
+    # temporal: sorted pool [t1, t2_abs], k=2 -> t1. Then all _abs ids, deduped.
+    assert first == ("m1", "m3", "t1", "m2_abs", "t2_abs")
+    assert len(first) == len(set(first))
+
+
+def test_checked_in_stage1_slice_matches_dataset() -> None:
+    """Regenerating from the real dataset reproduces the checked-in slice exactly."""
+    stage1 = _load_stage1_module()
+    dataset_path = resolve_dataset_path("s")
+    if dataset_path is None:
+        pytest.skip("LongMemEval s dataset not fetched")
+    records = json.loads(dataset_path.read_text(encoding="utf-8"))
+    expected = stage1.render_slice_file(records, dataset_name=dataset_path.name)
+    checked_in = stage1.SLICE_PATH.read_text(encoding="utf-8")
+    assert checked_in == expected
+    ids = runner.load_question_ids(stage1.SLICE_PATH)
+    assert len(ids) == len(set(ids))
+    abstention_ids = {record["question_id"] for record in records if str(record["question_id"]).endswith("_abs")}
+    assert abstention_ids <= set(ids)  # every abstention question is in the slice

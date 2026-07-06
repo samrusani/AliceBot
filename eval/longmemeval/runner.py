@@ -74,6 +74,8 @@ class RunnerConfig:
     variant: str
     dataset_path: Path
     limit: int | None
+    question_ids: tuple[str, ...] | None
+    question_ids_file: str | None
     resume: bool
     dry_run: bool
     cot: bool
@@ -126,10 +128,43 @@ def config_fingerprint(
         "generation_temperature": GENERATION_TEMPERATURE,
         "max_items": config.max_items,
         "context_char_budget": config.context_char_budget,
+        # A slice run must never masquerade as a full run: the subset (file
+        # name, count, digest of the sorted ids) feeds the fingerprint digest.
+        "question_subset": None
+        if config.question_ids is None
+        else {
+            "file": config.question_ids_file,
+            "count": len(config.question_ids),
+            "ids_sha256_prefix": hashlib.sha256(
+                "\n".join(sorted(config.question_ids)).encode("utf-8")
+            ).hexdigest()[:16],
+        },
     }
     digest_source = json.dumps(fingerprint, sort_keys=True, ensure_ascii=True)
     fingerprint["digest"] = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:16]
     return fingerprint
+
+
+def load_question_ids(path: Path) -> tuple[str, ...]:
+    """Read a slice file: one question_id per line.
+
+    Blank lines and ``#`` comment lines are skipped; duplicates keep the
+    first occurrence. Raises ``ValueError`` for a missing or empty file.
+    """
+    if not path.is_file():
+        raise ValueError(f"question-ids file does not exist: {path}")
+    ids: list[str] = []
+    seen: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped not in seen:
+            seen.add(stripped)
+            ids.append(stripped)
+    if not ids:
+        raise ValueError(f"question-ids file contains no question ids: {path}")
+    return tuple(ids)
 
 
 # -- checkpointing -----------------------------------------------------------
@@ -378,7 +413,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--variant", choices=VARIANTS, default="s", help="dataset variant (default: s)")
     parser.add_argument("--dataset-file", type=Path, default=None, help="explicit dataset JSON path (overrides --variant lookup)")
     parser.add_argument("--data-dir", type=Path, default=None, help="dataset directory (default: eval/longmemeval/data)")
-    parser.add_argument("--limit", type=int, default=None, help="only run the first N questions")
+    subset = parser.add_mutually_exclusive_group()
+    subset.add_argument("--limit", type=int, default=None, help="only run the first N questions")
+    subset.add_argument(
+        "--question-ids",
+        type=Path,
+        default=None,
+        help="file with one question_id per line (blank lines and # comments skipped); "
+        "run only those questions — mutually exclusive with --limit",
+    )
     parser.add_argument("--resume", action="store_true", help="skip questions already completed in the checkpoint")
     parser.add_argument("--report", type=Path, default=None, help="report JSON path (default: eval/longmemeval/results/)")
     parser.add_argument("--checkpoint", type=Path, default=None, help="checkpoint JSONL path (default: eval/longmemeval/results/)")
@@ -397,7 +440,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_config(args: argparse.Namespace) -> RunnerConfig | None:
+def _resolve_config(args: argparse.Namespace, *, question_ids: tuple[str, ...] | None = None) -> RunnerConfig | None:
     if args.dataset_file is not None:
         dataset_path = args.dataset_file
         if not dataset_path.is_file():
@@ -417,6 +460,8 @@ def _resolve_config(args: argparse.Namespace) -> RunnerConfig | None:
         variant=args.variant,
         dataset_path=dataset_path,
         limit=args.limit,
+        question_ids=question_ids,
+        question_ids_file=args.question_ids.name if args.question_ids is not None else None,
         resume=args.resume,
         dry_run=args.dry_run,
         cot=args.cot,
@@ -434,7 +479,14 @@ def _resolve_config(args: argparse.Namespace) -> RunnerConfig | None:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
-    config = _resolve_config(args)
+    question_ids: tuple[str, ...] | None = None
+    if args.question_ids is not None:
+        try:
+            question_ids = load_question_ids(args.question_ids)
+        except ValueError as exc:
+            print(f"[runner] {exc}", file=sys.stderr)
+            return EXIT_CONFIG_ERROR
+    config = _resolve_config(args, question_ids=question_ids)
     if config is None:
         if args.dataset_file is not None:
             return EXIT_CONFIG_ERROR
@@ -462,13 +514,24 @@ def main(argv: list[str] | None = None) -> int:
         judge = None
 
     limit = config.limit
-    if config.dry_run and limit is None:
+    if config.dry_run and limit is None and config.question_ids is None:
         limit = 2
     try:
         questions = load_dataset(config.dataset_path, limit=limit)
     except LongMemEvalDatasetError as exc:
         print(f"[runner] {exc}", file=sys.stderr)
         return EXIT_CONFIG_ERROR
+    if config.question_ids is not None:
+        wanted = set(config.question_ids)
+        questions = tuple(question for question in questions if question.question_id in wanted)
+        missing = sorted(wanted - {question.question_id for question in questions})
+        if missing:
+            preview = ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else "")
+            print(
+                f"[runner] {len(missing)} question ids from {args.question_ids} are not in the dataset: {preview}",
+                file=sys.stderr,
+            )
+            return EXIT_CONFIG_ERROR
     if not questions:
         print("[runner] dataset contained no questions after --limit", file=sys.stderr)
         return EXIT_CONFIG_ERROR
@@ -494,8 +557,9 @@ def main(argv: list[str] | None = None) -> int:
 
     config.work_dir.mkdir(parents=True, exist_ok=True)
     writer = CheckpointWriter(config.checkpoint_path)
+    subset_note = f" subset={config.question_ids_file}({len(config.question_ids)})" if config.question_ids else ""
     print(
-        f"[runner] mode={config.mode} variant={config.variant} questions={len(questions)} "
+        f"[runner] mode={config.mode} variant={config.variant} questions={len(questions)}{subset_note} "
         f"pending={len(pending)} resumed={len(questions) - len(pending)} workers={config.workers} "
         f"fingerprint={fingerprint_digest}"
     )
@@ -583,6 +647,7 @@ __all__ = [
     "completed_question_ids",
     "config_fingerprint",
     "load_checkpoint",
+    "load_question_ids",
     "main",
     "run_question",
 ]
