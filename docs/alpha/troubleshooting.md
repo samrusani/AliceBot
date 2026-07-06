@@ -40,13 +40,13 @@ If `/vnext?mode=live` shows `LIVE API` and then `Unable to load live workspace: 
 Check the API directly:
 
 ```bash
-curl -i "http://127.0.0.1:8000/v0/vnext/workspace?user_id=${NEXT_PUBLIC_ALICEBOT_USER_ID:-local-alpha-user}"
+curl -i "http://127.0.0.1:8000/v0/vnext/workspace?user_id=${NEXT_PUBLIC_ALICEBOT_USER_ID:-00000000-0000-0000-0000-000000000001}"
 ```
 
 Check the browser preflight:
 
 ```bash
-curl -i -X OPTIONS "http://127.0.0.1:8000/v0/vnext/workspace?user_id=${NEXT_PUBLIC_ALICEBOT_USER_ID:-local-alpha-user}" \
+curl -i -X OPTIONS "http://127.0.0.1:8000/v0/vnext/workspace?user_id=${NEXT_PUBLIC_ALICEBOT_USER_ID:-00000000-0000-0000-0000-000000000001}" \
   -H "Origin: http://127.0.0.1:3000" \
   -H "Access-Control-Request-Method: GET"
 ```
@@ -65,7 +65,7 @@ NEXT_PUBLIC_ALICEBOT_API_BASE_URL=http://127.0.0.1:8000
 NEXT_PUBLIC_ALICEBOT_USER_ID=00000000-0000-0000-0000-000000000001
 ```
 
-Use the same user id as `ALICEBOT_AUTH_USER_ID`. If your manual seed really uses `local-alpha-user`, set `NEXT_PUBLIC_ALICEBOT_USER_ID=local-alpha-user`.
+Use the same user id as `ALICEBOT_AUTH_USER_ID`. The user id must be a valid UUID — the endpoint rejects non-UUID values such as `local-alpha-user`.
 
 After changing `CORS_ALLOWED_ORIGINS`, restart the API. After changing `NEXT_PUBLIC_*`, restart the web dev server or rebuild/restart the web service.
 

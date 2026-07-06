@@ -13,8 +13,8 @@ Agent developers — people building or operating AI agents who need durable, ex
 - Local-first: your data stays on your machine; models and embeddings are pluggable via OpenAI-compatible endpoints.
 
 ## Current Posture
-- `v0.6.0` is the tagged release: retrieval rebuild (full-text + pgvector fused with RRF), MCP consolidation to nine core tools, per-agent API keys, evals that execute the production pipeline, and single-path packaging — merged and verified (1,249 unit / 377 integration tests green).
-- Pre-1.0, single-user, self-hosted from a repo checkout. The PyPI name `alice-memory` is claimed with a placeholder; the packaged runtime ships next with the SQLite on-ramp.
+- `v0.9.0` is the tagged release: hybrid retrieval (full-text + pgvector fused with RRF), the eleven-tool core MCP surface with the agentic write protocol and complete Memory Operations Protocol, per-agent API keys, Context API v2, temporal graph memory + entity resolution, six live eval suites that execute the production pipeline, and a published **64.6% LongMemEval_s** result with per-question evidence.
+- Pre-1.0, single-user, self-hosted. `alice-memory` is published on PyPI; `uvx alice-memory mcp` serves the core tools against a local SQLite file with no Docker or Postgres.
 
 ## Non-Goals (Now)
 - Hosted service, SLA, or managed cloud.
