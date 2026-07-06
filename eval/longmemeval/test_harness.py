@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 
 import pytest
@@ -333,6 +334,109 @@ def test_aggregate_records_empty() -> None:
     summary = runner.aggregate_records([])
     assert summary["totals"] == {"questions": 0, "ok": 0, "errors": 0, "correct": 0, "accuracy": None}
     assert summary["retrieval"]["retrieval_seconds_p50"] is None
+
+
+# -- excerpt packing ---------------------------------------------------------------
+
+_PACKING_SESSIONS = {
+    "src-a": ("session_a", "2023/05/20 (Sat) 14:10"),
+    "src-b": ("session_b", "2023/05/01 (Mon) 09:00"),
+    "src-c": ("session_c", "2023/06/02 (Fri) 18:30"),
+}
+_EXCERPT_HEADER_PATTERN = r"\[Session (session_[a-c]) \| ([^|]+) \| excerpt \d+\]"
+
+
+class _StubChunkStore:
+    """Just enough store surface for ``_render_context_block``."""
+
+    def __init__(self, chunks_by_source: dict[str, list[str]]) -> None:
+        self._chunks_by_source = chunks_by_source
+
+    def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
+        return [
+            {"text": text, "chunk_index": index}
+            for index, text in enumerate(self._chunks_by_source.get(source_id, []))
+        ]
+
+    def get_source(self, source_id: str) -> dict[str, object] | None:
+        if source_id not in _PACKING_SESSIONS:
+            return None
+        session_id, date = _PACKING_SESSIONS[source_id]
+        return {"metadata_json": {"session_id": session_id, "session_date": date}}
+
+
+def _padded(text: str, length: int = 150) -> str:
+    return (text + " " + "lorem ipsum " * 30)[:length]
+
+
+def _packing_run() -> adapter.QuestionRun:
+    """Source A: 10 high-overlap chunks; sources B and C: one relevant chunk each."""
+    question = parse_question(
+        {
+            "question_id": "q_packing",
+            "question_type": "multi-session",
+            "question": "Did I adopt a golden retriever puppy from the shelter?",
+            "answer": "yes",
+            "question_date": "2023/07/01 (Sat) 10:00",
+            "haystack_dates": ["2023/05/20 (Sat) 14:10"],
+            "haystack_session_ids": ["session_a"],
+            "haystack_sessions": [[{"role": "user", "content": "hello"}]],
+            "answer_session_ids": ["session_a"],
+        }
+    )
+    store = _StubChunkStore(
+        {
+            "src-a": [
+                _padded(f"chunk {index}: adopt the golden retriever puppy near the shelter downtown")
+                for index in range(10)
+            ],
+            "src-b": [_padded("the golden retriever went to training class on Monday morning")],
+            "src-c": [_padded("the puppy came home from the shelter and slept all afternoon")],
+        }
+    )
+    return adapter.QuestionRun(question, store)  # type: ignore[arg-type]
+
+
+def _packing_pack() -> dict[str, object]:
+    return {
+        "relevant_memories": [],
+        "sources": [{"id": "src-a"}, {"id": "src-b"}, {"id": "src-c"}],
+    }
+
+
+def test_render_context_block_guarantees_each_source_an_excerpt() -> None:
+    run = _packing_run()
+    # Tight budget: roughly three excerpt entries. The old greedy-by-score
+    # packer would spend all of it on source A's high-overlap chunks.
+    block, excerpt_count = run._render_context_block(_packing_pack(), budget=700)
+    headers = re.findall(_EXCERPT_HEADER_PATTERN, block)
+    assert excerpt_count == len(headers) == 3
+    sessions = [session_id for session_id, _date in headers]
+    assert sessions.count("session_b") == 1
+    assert sessions.count("session_c") == 1
+    assert sessions.count("session_a") == 1
+    # Rendered oldest-session-first regardless of retrieval rank.
+    dates = [date.strip() for _session_id, date in headers]
+    assert dates == sorted(dates)
+    assert sessions == ["session_b", "session_a", "session_c"]
+
+
+def test_render_context_block_spends_leftover_budget_by_score() -> None:
+    run = _packing_run()
+    block, excerpt_count = run._render_context_block(_packing_pack(), budget=1_500)
+    headers = re.findall(_EXCERPT_HEADER_PATTERN, block)
+    assert excerpt_count == len(headers)
+    sessions = [session_id for session_id, _date in headers]
+    # B and C still hold their guaranteed excerpt; the leftover budget goes
+    # to A's next-best chunks (highest overlap globally).
+    assert sessions.count("session_b") == 1
+    assert sessions.count("session_c") == 1
+    assert sessions.count("session_a") >= 2
+    dates = [date.strip() for _session_id, date in headers]
+    assert dates == sorted(dates)
+    # Determinism: identical inputs render the identical block.
+    repeat_block, repeat_count = run._render_context_block(_packing_pack(), budget=1_500)
+    assert (repeat_block, repeat_count) == (block, excerpt_count)
 
 
 # -- end-to-end (real SQLite ingest + retrieval, no model) ---------------------------

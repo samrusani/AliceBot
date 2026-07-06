@@ -15,8 +15,10 @@ services), then:
    the benchmark question as the query (hybrid FTS5 + vector KNN + RRF, or
    FTS-only when no embedding provider is configured), and the pack is
    rendered into a compact context block: retrieved memories first, then
-   chunk excerpts of the retrieved source sessions ranked by query-term
-   overlap, under a character budget.
+   chunk excerpts of the retrieved source sessions under a character
+   budget — each source is guaranteed its best chunk (by query-term
+   overlap) before the leftover budget goes to the next-best chunks
+   globally, and the selected excerpts render oldest-session-first.
 
 The answer prompt is the official LongMemEval reading template with the
 history slot filled by Alice's context block instead of the full haystack.
@@ -294,7 +296,15 @@ class QuestionRun:
         return source_id, "undated"
 
     def _render_context_block(self, pack: dict[str, object], *, budget: int) -> tuple[str, int]:
-        """Compact prompt block: memory facts, then ranked session excerpts."""
+        """Compact prompt block: memory facts, then session excerpts.
+
+        Excerpt packing is two-pass so one wordy session cannot crowd out
+        the rest: pass 1 guarantees every retrieved source its single best
+        chunk (in source rank order), pass 2 spends the remaining budget on
+        the next-best chunks globally by lexical-overlap score. The selected
+        excerpts render in session-timestamp order (oldest first), each
+        prefixed with its session id and date.
+        """
         lines: list[str] = []
         used = 0
 
@@ -316,34 +326,61 @@ class QuestionRun:
             used = sum(len(line) + 1 for line in lines)
 
         terms = frozenset(query_terms(self.question.question))
-        scored_chunks: list[tuple[int, int, int, str, str, str]] = []
+        # One entry per chunk: (-score, source_rank, chunk_index, session_id, date, text).
+        chunks_by_source: list[list[tuple[int, int, int, str, str, str]]] = []
         sources = pack.get("sources") or []
         for source_rank, source in enumerate(sources):
             if not isinstance(source, dict):
                 continue
             source_id = str(source.get("id"))
             session_id, date = self._session_label(source_id)
+            source_chunks: list[tuple[int, int, int, str, str, str]] = []
             for chunk in self.store.list_source_chunks(source_id):
                 chunk_text = str(chunk.get("text") or "")
                 if chunk_text.strip() == "":
                     continue
                 score = _chunk_overlap_score(chunk_text, terms)
                 chunk_index = int(chunk.get("chunk_index") or 0)
-                scored_chunks.append((-score, source_rank, chunk_index, session_id, date, chunk_text))
-        scored_chunks.sort(key=lambda item: item[:3])
+                source_chunks.append((-score, source_rank, chunk_index, session_id, date, chunk_text))
+            source_chunks.sort(key=lambda item: (item[0], item[2]))  # best score first, then position
+            if source_chunks:
+                chunks_by_source.append(source_chunks)
 
-        excerpt_count = 0
-        excerpt_lines: list[str] = []
-        for _neg_score, _source_rank, chunk_index, session_id, date, chunk_text in scored_chunks:
+        def entry_length(entry: tuple[int, int, int, str, str, str]) -> int:
+            _neg_score, _source_rank, chunk_index, session_id, date, chunk_text = entry
             header = f"[Session {session_id} | {date} | excerpt {chunk_index + 1}]"
-            entry_length = len(header) + len(chunk_text) + 3
-            if used + entry_length > budget:
+            return len(header) + len(chunk_text) + 3
+
+        # Pass 1: every retrieved source gets its single best chunk (source
+        # rank order), so one wordy session cannot crowd out the rest.
+        selected: list[tuple[int, int, int, str, str, str]] = []
+        remaining: list[tuple[int, int, int, str, str, str]] = []
+        for source_chunks in chunks_by_source:
+            best = source_chunks[0]
+            cost = entry_length(best)
+            if used + cost <= budget:
+                selected.append(best)
+                used += cost
+                remaining.extend(source_chunks[1:])
+            else:
+                remaining.extend(source_chunks)
+        # Pass 2: spend what is left on the next-best chunks globally.
+        remaining.sort(key=lambda item: item[:3])
+        for entry in remaining:
+            cost = entry_length(entry)
+            if used + cost > budget:
                 continue
-            excerpt_lines.append(header)
+            selected.append(entry)
+            used += cost
+
+        # Render oldest-first so the excerpts read chronologically.
+        selected.sort(key=lambda item: (item[4], item[1], item[2]))
+        excerpt_count = len(selected)
+        excerpt_lines: list[str] = []
+        for _neg_score, _source_rank, chunk_index, session_id, date, chunk_text in selected:
+            excerpt_lines.append(f"[Session {session_id} | {date} | excerpt {chunk_index + 1}]")
             excerpt_lines.append(chunk_text)
             excerpt_lines.append("")
-            used += entry_length
-            excerpt_count += 1
         if excerpt_lines:
             if lines:
                 lines.append("")
