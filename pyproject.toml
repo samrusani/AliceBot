@@ -4,9 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alice-memory"
-version = "0.8.0"
+version = "0.9.0"
 description = "Alice: the continuity layer for AI agents. Local-first memory with provenance, open loops, resumption, and review-governed writes."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Sami Rusani" }]
 requires-python = ">=3.12"
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries",
+]
 dependencies = [
   "alembic>=1.14,<2.0",
   "fastapi>=0.115,<1.0",
@@ -16,6 +26,12 @@ dependencies = [
   "sqlalchemy>=2.0,<3.0",
   "uvicorn>=0.34,<1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/samrusani/AliceBot"
+Repository = "https://github.com/samrusani/AliceBot"
+Issues = "https://github.com/samrusani/AliceBot/issues"
+Changelog = "https://github.com/samrusani/AliceBot/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
