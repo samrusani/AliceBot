@@ -321,6 +321,41 @@ What unit tests still cannot tell you is how the Postgres backend or a
 configured embedding provider performs — for that, run the CLI against the
 real thing as above.
 
+## LongMemEval retrieval-coverage probe (`eval/longmemeval/coverage_probe.py`)
+
+A free, keyless gate for retrieval changes. It replays the LongMemEval
+harness's ingest + retrieval pipeline only (the same machinery as
+`runner.py --dry-run` — no chat model, no judge) and checks, per question,
+whether the *sessions* Alice retrieved include the dataset's ground-truth
+evidence sessions (`answer_session_ids`; evidence turns also carry
+`has_answer: true`). Retrieved sessions are collected from the context
+pack's `sources` plus the provenance (`metadata_json.source_id`) of its
+`relevant_memories`.
+
+```bash
+# full 500 questions, FTS-only (ALICE_EMBEDDINGS_* is scrubbed by default):
+.venv/bin/python eval/longmemeval/coverage_probe.py
+
+# slices: --limit N, --question-ids ids.txt (one id per line), --max-items K
+# opt-in vector stage (needs an embedding provider): --with-vectors
+```
+
+Outputs one JSONL row per question (`any_coverage` = at least one evidence
+session retrieved, `all_coverage` = every evidence session retrieved,
+`n_evidence`/`n_hit`, missed session ids) plus a `.summary.json` and a
+printed any%/all% table per question type. Questions with no evidence ids
+are reported with `null` coverage and excluded from the percentages
+(abstention questions in the real dataset *do* carry evidence ids and are
+scored; rows carry `is_abstention` for slicing).
+
+Per-question SQLite stores live under `--work-dir` (default
+`eval/longmemeval/work/coverage`, runner-compatible naming) and are kept
+with an `*.ingested.json` marker, so re-probing after a retrieval change
+skips ingest entirely and takes seconds instead of minutes. Same inputs
+produce the same numbers: ingest and FTS retrieval are deterministic, and
+the probe never reads `question_type` (or any benchmark label) on the
+retrieval path — labels are used for reporting only.
+
 ## Legacy baselines in `eval/baselines/` — read with caution
 
 These files are historical snapshots, **not benchmarks**:
