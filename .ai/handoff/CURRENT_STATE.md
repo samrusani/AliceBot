@@ -1,10 +1,18 @@
 # Current State
 
-Canonical handoff copy. A synced summary lives at the repo root [CURRENT_STATE.md](../../CURRENT_STATE.md).
+This file is a synced repo-root copy for planning visibility.
+Canonical handoff state lives at [.ai/handoff/CURRENT_STATE.md](.ai/handoff/CURRENT_STATE.md).
 
 ## Snapshot
-- `v0.8.0` is the latest release: the memory-frontier waves plus Alice's first published benchmark result.
+- `v0.9.0` is the latest release: the completed Memory Operations Protocol, Context API v2, temporal graph memory + entity resolution, and the full export/import round-trip, on top of the `v0.8.0` memory-frontier baseline.
 - Alice is positioned as the continuity layer for AI agents; agent developers are the customer. Collaborative posture: a layer, not a lock-in — designed to run alongside other memory tools.
+
+## What `v0.9.0` Adds
+- **Complete Memory Operations Protocol** — all ten verbs are real, including `merge` via consolidation-candidate acceptance, `expire`/`unexpire`, and true `redact` (trigger-guarded content expunging with a surviving proof trail); wired across MCP, HTTP, and CLI.
+- **Context API v2** — per-section token allocation, five packing strategies, deterministic depth tiers; the default agent loop centers one context call.
+- **Temporal graph memory + entity resolution** — the `vnext_entities` substrate with canonicalization, aliases, and append-only relationship history; deterministic entity extraction; entity-hop graph retrieval fused into RRF; belief-evolution timelines in `alice_explain`; two new eval suites (`entity_resolution`, `graph_hop_retrieval`) — six live suites total.
+- **Full export/import round-trip** — all nine record types, id/timestamp-exact, never overwrites, all-or-nothing.
+- **Scale envelope published** — `docs/benchmarks/scale/`: SQLite commits flat at 2.3ms through 100k memories; Postgres ~20ms commits, ~400ms recall at 100k.
 
 ## What `v0.8.0` Contains
 - **LongMemEval_s 64.6%** — official judge protocol, full per-question evidence and reproduction script in `docs/benchmarks/longmemeval/`; knowledge-update 74.4%; multi-session synthesis (45.1%) is the top roadmap item.
@@ -21,4 +29,4 @@ Canonical handoff copy. A synced summary lives at the repo root [CURRENT_STATE.m
 - Local-first, single-user; no hosted service; no OAuth connectors; no automatic capture from arbitrary conversation.
 
 ## Not Current State
-- No npm packages, no hosted offering, no SLA. `merge`/`expire` memory operations are planned, not shipped (consolidation produces merge candidates; acceptance flows are the review actions).
+- No npm packages, no hosted offering, no SLA.

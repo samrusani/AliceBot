@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from io import BytesIO
 import json
+import sqlite3
 from uuid import UUID, uuid4
 
 import pytest
@@ -150,6 +151,35 @@ def test_call_mcp_tool_converts_postgres_check_violation(monkeypatch) -> None:
     monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_recall", raise_check_violation)
 
     with pytest.raises(MCPToolError, match="persisted schema constraint"):
+        call_mcp_tool(context, name="alice_recall", arguments={})
+
+
+def test_call_mcp_tool_maps_sqlite_integrity_errors_by_constraint_kind(monkeypatch) -> None:
+    context = MCPRuntimeContext(
+        database_url="postgresql://localhost/alicebot",
+        user_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+
+    def _install_raiser(message: str) -> None:
+        def raise_integrity_error(_context, _arguments):
+            raise sqlite3.IntegrityError(message)
+
+        monkeypatch.setitem(mcp_tools_module._TOOL_HANDLERS, "alice_recall", raise_integrity_error)
+
+    # CHECK violations keep the enum-vocabulary guidance.
+    _install_raiser("CHECK constraint failed: memories.memory_type")
+    with pytest.raises(MCPToolError, match="schema-backed enum values"):
+        call_mcp_tool(context, name="alice_recall", arguments={})
+
+    # FOREIGN KEY violations point at the missing referenced row, not enum vocabulary.
+    _install_raiser("FOREIGN KEY constraint failed")
+    with pytest.raises(MCPToolError, match="alice-memory init") as excinfo:
+        call_mcp_tool(context, name="alice_recall", arguments={})
+    assert "enum values" not in str(excinfo.value)
+
+    # Anything else surfaces the SQLite message verbatim.
+    _install_raiser("UNIQUE constraint failed: users.email")
+    with pytest.raises(MCPToolError, match="UNIQUE constraint failed: users.email"):
         call_mcp_tool(context, name="alice_recall", arguments={})
 
 
@@ -1622,14 +1652,27 @@ def test_alice_memory_commit_outcome_vocabulary(monkeypatch, core_surface, no_em
     store = FakeVNextMCPStore()
     _patch_vnext_store(monkeypatch, store)
 
+    direct = call_mcp_tool(
+        _mcp_context(),
+        name="alice_memory_commit",
+        arguments={"title": "No identity", "canonical_text": "Direct human commits need no agent identity."},
+    )
+    assert direct["status"] == "committed"
+    assert direct["write_mode"] == "commit"
+    assert direct["policy_decision"]["policy_decision"]["permission_profile"] == "user_or_system"
+
     rejected = call_mcp_tool(
         _mcp_context(),
         name="alice_memory_commit",
-        arguments={"title": "No identity", "canonical_text": "Commits require an agent identity."},
+        arguments={
+            "agent_id": "unknown-agent",
+            "title": "Read-only agent",
+            "canonical_text": "Self-declared unknown agents still cannot write.",
+        },
     )
     assert rejected["status"] == "rejected"
     assert rejected["write_mode"] == "reject"
-    assert "agent_identity_required" in rejected["reasons"]
+    assert "read_only_agent_cannot_write" in rejected["reasons"]
 
     review = call_mcp_tool(
         _mcp_context(),
@@ -2193,3 +2236,17 @@ def test_agent_identity_with_key_env_rejects_agent_id_mismatch(monkeypatch) -> N
         mcp_tools_module._agent_identity_from_arguments(
             context, {"agent_id": "openclaw", "permission_profile": "trusted_local_agent"}
         )
+
+
+def test_alice_memory_correct_invalid_action_error_matches_schema_enum(core_surface) -> None:
+    schema = {tool["name"]: tool for tool in list_mcp_tools()}["alice_memory_correct"]
+    schema_enum = schema["inputSchema"]["properties"]["action"]["enum"]
+
+    with pytest.raises(MCPToolError) as excinfo:
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_correct",
+            arguments={"action": "not-an-action"},
+        )
+
+    assert str(excinfo.value) == f"action must be one of: {', '.join(schema_enum)}"

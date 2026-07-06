@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import re
+import sqlite3
+from uuid import uuid4
 
 import pytest
 
+from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
+from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
 from alicebot_api.vnext_retrieval import (
     BUDGET_STRATEGIES,
@@ -92,6 +96,7 @@ class InMemoryVNextRetrievalStore:
         self.source_search_domains: object = _UNSET
         self.open_loop_domains: object = _UNSET
         self.memory_search_kwargs: list[dict[str, object]] = []
+        self.fts_match_any_queries: list[str] = []
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
@@ -164,8 +169,11 @@ class InMemoryVNextRetrievalStore:
         created_by_agent_ids: tuple[str, ...] = (),
         run_id: str | None = None,
         include_expired: bool = False,
+        match_any: bool = False,
     ) -> list[dict[str, object]]:
         del sensitivity_allowed, include_expired
+        if match_any:
+            self.fts_match_any_queries.append(query)
         self.memory_search_domains = domains
         self.memory_search_kwargs.append(
             {
@@ -716,6 +724,123 @@ def test_context_pack_omits_filter_kwargs_when_unset_for_minimal_stores() -> Non
     )
 
     assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-1"]
+
+
+# -- FTS OR-fallback ---------------------------------------------------------------
+
+
+def _sqlite_retrieval_store() -> SQLiteVNextStore:
+    conn = sqlite3.connect(":memory:")
+    bootstrap_sqlite_schema(conn)
+    user_id = str(uuid4())
+    ensure_sqlite_user(conn, user_id, f"{user_id}@example.com", "Fallback Test")
+    return SQLiteVNextStore(conn, user_id)
+
+
+def _commit_announcement_decision(store: SQLiteVNextStore) -> dict[str, object]:
+    return store.create_memory(
+        {
+            "memory_key": "decision.alice-announcement",
+            "memory_type": "decision",
+            "title": "Alice public announcement timing",
+            "canonical_text": (
+                "Decision: Alice public announcement goes out Monday after the pre-launch audit passes."
+            ),
+            "status": "active",
+            "domain": "project",
+            "sensitivity": "private",
+            "value": {"text": "Alice public announcement goes out Monday."},
+        }
+    )
+
+
+def test_natural_language_question_falls_back_to_or_matching_on_sqlite() -> None:
+    # The no-embeddings default path: FTS5 ANDs "alice public announcement
+    # go" and the stored text says "goes", so the strict pass returns
+    # nothing. The OR-fallback must still recall the memory, and the trace
+    # must say so.
+    store = _sqlite_retrieval_store()
+    memory = _commit_announcement_decision(store)
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="When does the Alice public announcement go out?")
+    )
+
+    assert [item["id"] for item in pack["relevant_memories"]] == [memory["id"]]
+    assert pack["trace"]["stages"]["fts"] == {
+        "source": "sqlite_fts_or_fallback",
+        "candidate_count": 1,
+    }
+
+
+def test_keyword_query_that_and_matches_does_not_use_the_fallback_on_sqlite() -> None:
+    store = _sqlite_retrieval_store()
+    memory = _commit_announcement_decision(store)
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice announcement")
+    )
+
+    assert [item["id"] for item in pack["relevant_memories"]] == [memory["id"]]
+    assert pack["trace"]["stages"]["fts"] == {"source": "sqlite_fts", "candidate_count": 1}
+
+
+def test_single_token_miss_does_not_fire_the_or_fallback() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Unrelated note")], sources=[]
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="kubernetes")
+    )
+
+    assert pack["relevant_memories"] == []
+    assert pack["trace"]["stages"]["fts"] == {"source": "postgres_fts", "candidate_count": 0}
+    assert store.fts_match_any_queries == []
+
+
+def test_multi_token_miss_retries_once_with_match_any_and_reports_fallback_source() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Unrelated note")], sources=[]
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="kubernetes deployment pipeline")
+    )
+
+    assert store.fts_match_any_queries == ["kubernetes deployment pipeline"]
+    assert pack["trace"]["stages"]["fts"] == {
+        "source": "postgres_fts_or_fallback",
+        "candidate_count": 0,
+    }
+
+
+def test_or_fallback_degrades_cleanly_for_stores_without_match_any() -> None:
+    class LegacyStore(InMemoryVNextRetrievalStore):
+        def search_memories_fts(  # type: ignore[override]
+            self,
+            *,
+            query,
+            domains=None,
+            sensitivity_allowed=None,
+            limit=50,
+            memory_types=(),
+            projects=(),
+            created_by_agent_ids=(),
+            run_id=None,
+            include_expired=False,
+        ):
+            # Legacy signature without match_any.
+            return []
+
+    store = LegacyStore(memories=[], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="kubernetes deployment pipeline")
+    )
+
+    assert pack["relevant_memories"] == []
+    assert pack["trace"]["stages"]["fts"] == {"source": "postgres_fts", "candidate_count": 0}
 
 
 def test_context_pack_filters_memories_by_project_metadata() -> None:

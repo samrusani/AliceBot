@@ -2,7 +2,7 @@
 
 ## Supported Scope
 
-Alice is pre-1.0 software (`v0.5.1` is the latest tagged release). Security posture in this repo is scoped to the shipped local/runtime surfaces and deterministic verification paths on the current baseline.
+Alice is pre-1.0 software. Security fixes target the latest minor release series (currently `v0.9.x`); older tags are not maintained. Security posture in this repo is scoped to the shipped local/runtime surfaces and deterministic verification paths on the current baseline.
 
 ## Reporting a Vulnerability
 

@@ -10,9 +10,9 @@ Supported assumptions for this alpha:
 - local Postgres with `pgvector` on the same host, or an existing Postgres reached through `DATABASE_URL`
 - services bound to `127.0.0.1` by default
 
-This is the current headless install path for the Alice v0.6.0 line. Install from `--branch main`, or from the v0.6.0 release tag once it is published.
+This is the current headless install path for the Alice v0.9.x line. Install from `--branch main` or from the latest release tag (for example `v0.9.0`).
 
-Historical note: `v0.5.1-vnext-preview` and `v0.6.0-alpha-rc.2` are older milestones kept for audit trail and rollback evidence. Do not install them for new setups; they predate the v0.6.0 overhaul (hybrid retrieval, nine-tool MCP surface, per-agent API keys).
+Historical note: `v0.5.1-vnext-preview` and `v0.6.0-alpha-rc.2` are older milestones kept for audit trail and rollback evidence. Do not install them for new setups; they predate the v0.6.0 overhaul (hybrid retrieval, consolidated core MCP surface, per-agent API keys).
 
 ## Recommended Secure Access
 
@@ -38,7 +38,7 @@ less install-alice.sh
 bash install-alice.sh --branch main --install-dir ~/alicebot
 ```
 
-For an immutable install after a release tag is published, replace `--branch main` with `--tag <release-tag>` (for example `--tag v0.6.0`).
+For an immutable install after a release tag is published, replace `--branch main` with `--tag <release-tag>` (for example `--tag v0.9.0`).
 
 Use `--non-interactive` only after you have chosen a safe install directory and know whether the host should install local Postgres.
 
@@ -118,8 +118,31 @@ cp packaging/ubuntu/alicebot.env.example ~/.config/alicebot/.env
 less ~/.config/alicebot/.env
 ln -sfn ~/.config/alicebot/.env .env
 scripts/validate_env.sh ~/.config/alicebot/.env .env.lite apps/web/.env.local
-# Create the alicebot database/roles to match ~/.config/alicebot/.env before this step.
-sudo -u postgres psql -d alicebot -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+```
+
+Create the `alicebot` roles and database before migrating. The passwords you
+choose here must match the ones embedded in `DATABASE_ADMIN_URL`
+(`alicebot_admin`) and `DATABASE_URL` (`alicebot_app`) in
+`~/.config/alicebot/.env` (this mirrors what the installer's
+`prepare_database_from_env` step does automatically):
+
+```bash
+sudo -u postgres psql <<'SQL'
+CREATE ROLE alicebot_admin LOGIN PASSWORD 'change-me-admin';
+CREATE ROLE alicebot_app LOGIN PASSWORD 'change-me-app';
+CREATE DATABASE alicebot OWNER alicebot_admin;
+GRANT CONNECT ON DATABASE alicebot TO alicebot_app;
+\c alicebot
+CREATE EXTENSION IF NOT EXISTS vector;
+SQL
+```
+
+> **Warning:** `alembic upgrade head` hard-fails if a role named exactly
+> `alicebot_app` does not exist — the migrations `GRANT` to that role by
+> name. Do not rename it, and make sure both role passwords match the
+> credentials in `DATABASE_URL` / `DATABASE_ADMIN_URL` before migrating.
+
+```bash
 ./.venv/bin/python -m alembic -c apps/api/alembic.ini upgrade head
 set -a
 . ~/.config/alicebot/.env
@@ -139,7 +162,7 @@ SQL
 ./.venv/bin/alicebot vnext alpha check --headless --skip-smokes
 ```
 
-If you use existing Postgres, set `DATABASE_URL` and `DATABASE_ADMIN_URL` before migrations and confirm the database has `CREATE EXTENSION IF NOT EXISTS vector;` installed by a superuser. On Ubuntu 22.04, replace `postgresql-16-pgvector` with the package matching the installed server major version.
+If you use existing Postgres, set `DATABASE_URL` and `DATABASE_ADMIN_URL` before migrations, run the role/database bootstrap block above against that server (a role named exactly `alicebot_app` must exist or migrations fail), and confirm the database has `CREATE EXTENSION IF NOT EXISTS vector;` installed by a superuser. On Ubuntu 22.04, replace `postgresql-16-pgvector` with the package matching the installed server major version.
 
 ## Systemd Services
 

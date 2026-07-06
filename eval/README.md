@@ -23,10 +23,11 @@ the report status is `skipped`.
 > `vnext_eval_report_v0`, generated_at `2026-05-11T00:00:00Z`) is meaningless
 > and should be discarded.
 
-Four suites (`VNEXT_EVAL_SUITE_ORDER`): `retrieval_quality`,
-`correction_suppression`, `decision_recovery`, `provenance_explanation`.
+Six suites (`VNEXT_EVAL_SUITE_ORDER`): `retrieval_quality`,
+`correction_suppression`, `decision_recovery`, `provenance_explanation`,
+`entity_resolution`, `graph_hop_retrieval`.
 `--suite all` runs every one; each suite key is also individually
-addressable via `--suite <key>`. All four run against either backend and
+addressable via `--suite <key>`. All six run against either backend and
 each opens (and rolls back) its own transaction, so suites stay isolated
 from one another and leave no rows behind.
 
@@ -291,7 +292,8 @@ Notes:
   injection (`retrieval_fn` only drives `retrieval_quality` — the
   commit-flow suites need a real store and skip honestly without one).
 - Valid `--suite` values: `all`, `retrieval_quality`,
-  `correction_suppression`, `decision_recovery`, `provenance_explanation`.
+  `correction_suppression`, `decision_recovery`, `provenance_explanation`,
+  `entity_resolution`, `graph_hop_retrieval`.
   Anything else raises `unknown vNext eval suite`. (The `--suite` help
   string in `cli.py` may lag this list; `VNEXT_EVAL_SUITE_ORDER` in
   `vnext_evals.py` is the source of truth.)
@@ -309,7 +311,7 @@ services. They assert lexical recall@5 == 1.0 on FTS5 alone and paraphrase
 recall == 0.0 without embeddings (the honest degraded number).
 
 For the memory-quality suites the unit tests additionally execute the full
-commit/review/audit flows live against SQLite (all four suites end-to-end
+commit/review/audit flows live against SQLite (all suites end-to-end
 via `--suite all` semantics, plus a file-backed run asserting zero residual
 rows across `memories`, `sources`, `memory_revisions`, `provenance_links`,
 `event_log`), and prove genuine failability by breaking one production

@@ -43,7 +43,8 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path="CURRENT_STATE.md",
         required_markers=(
-            "`v0.8.0` is the latest release",
+            "`v0.9.0` is the latest release",
+            "## What `v0.9.0` Adds",
             "## What `v0.8.0` Contains",
             "## Boundaries That Hold",
         ),
@@ -51,7 +52,8 @@ CONTROL_DOC_TRUTH_RULES: tuple[ControlDocTruthRule, ...] = (
     ControlDocTruthRule(
         relative_path=".ai/handoff/CURRENT_STATE.md",
         required_markers=(
-            "`v0.8.0` is the latest release",
+            "`v0.9.0` is the latest release",
+            "## What `v0.9.0` Adds",
             "## What `v0.8.0` Contains",
             "## Boundaries That Hold",
         ),

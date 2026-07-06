@@ -108,6 +108,54 @@ def _search_patterns(query: str) -> list[str]:
     return patterns or ["%%"]
 
 
+# The snowball English stopword list -- the same list the Postgres
+# 'english' text-search configuration applies inside websearch_to_tsquery()
+# and to_tsquery(). Shared with sqlite_store (whose FTS5 MATCH builder
+# re-imports it -- FTS5 has no stopword support of its own) and with the
+# retrieval service's OR-fallback trigger, so all three agree on what
+# counts as a content-bearing token.
+FTS_QUERY_STOPWORDS = frozenset(
+    """
+    i me my myself we our ours ourselves you your yours yourself yourselves
+    he him his himself she her hers herself it its itself they them their
+    theirs themselves what which who whom this that these those am is are
+    was were be been being have has had having do does did doing a an the
+    and but if or because as until while of at by for with about against
+    between into through during before after above below to from up down in
+    out on off over under again further then once here there when where why
+    how all any both each few more most other some such no nor not only own
+    same so than too very s t can will just don should now
+    """.split()
+)
+
+
+def fts_fallback_tokens(query: str) -> list[str]:
+    """Sanitized non-stopword tokens for the OR-fallback FTS pass.
+
+    ``\\w+`` extraction strips every tsquery/FTS5 metacharacter (quotes,
+    ``& | ! ( ) : * -`` and friends), so no user input can inject query
+    syntax on either backend.
+    """
+    return [
+        token
+        for token in re.findall(r"\w+", str(query))
+        if token.casefold() not in FTS_QUERY_STOPWORDS
+    ]
+
+
+def _tsquery_any_expression(query: str) -> str | None:
+    """OR-of-lexemes tsquery text for the ``match_any`` fallback pass.
+
+    Each ``\\w+`` token is individually single-quoted so Postgres parses it
+    as one literal lexeme; ``to_tsquery('english', ...)`` then stems it the
+    same way the strict ``websearch_to_tsquery()`` pass does.
+    """
+    tokens = fts_fallback_tokens(query)
+    if not tokens:
+        return None
+    return " | ".join(f"'{token}'" for token in tokens)
+
+
 EVENT_LOG_COLUMNS = """
                   id,
                   user_id,
@@ -1421,14 +1469,27 @@ class PostgresVNextStore:
         created_by_agent_ids: tuple[str, ...] = (),
         run_id: str | None = None,
         include_expired: bool = False,
+        match_any: bool = False,
     ) -> list[VNextRow]:
         memory_type_list = list(memory_types) or None
         project_list = list(projects) or None
         created_by_list = list(created_by_agent_ids) or None
+        # Strict pass: websearch_to_tsquery ANDs every non-stopword term.
+        # match_any (the retrieval OR-fallback): a to_tsquery OR of the
+        # sanitized lexemes, so a natural-language question still reaches
+        # keyword-findable memories when the AND pass returns nothing.
+        if match_any:
+            tsquery_sql = "to_tsquery('english', %s)"
+            tsquery_text = _tsquery_any_expression(query)
+            if tsquery_text is None:
+                return []
+        else:
+            tsquery_sql = "websearch_to_tsquery('english', %s)"
+            tsquery_text = query
         return self._fetch_all(
             f"""
                 SELECT {MEMORY_COLUMNS},
-                  ts_rank(search_tsv, websearch_to_tsquery('english', %s)) AS fts_score
+                  ts_rank(search_tsv, {tsquery_sql}) AS fts_score
                 FROM memories
                 WHERE deleted_at IS NULL
                   AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}
@@ -1439,12 +1500,12 @@ class PostgresVNextStore:
                   AND (%s::text[] IS NULL OR created_by_agent_id = ANY(%s::text[]))
                   AND (%s::text IS NULL OR run_id = %s)
                   AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
-                  AND search_tsv @@ websearch_to_tsquery('english', %s)
+                  AND search_tsv @@ {tsquery_sql}
                 ORDER BY fts_score DESC, updated_at DESC, created_at DESC, id DESC
                 LIMIT %s
                 """,
             (
-                query,
+                tsquery_text,
                 domains,
                 domains,
                 sensitivity_allowed,
@@ -1458,7 +1519,7 @@ class PostgresVNextStore:
                 run_id,
                 run_id,
                 include_expired,
-                query,
+                tsquery_text,
                 limit,
             ),
         )

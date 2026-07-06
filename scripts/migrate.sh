@@ -16,8 +16,26 @@ fi
 
 if [ -f "${REPO_ROOT}/.env" ]; then
   "${REPO_ROOT}/scripts/validate_env.sh" "${REPO_ROOT}/.env"
+  # Fill only variables not already set so explicitly exported values
+  # (for example DATABASE_URL) keep precedence over .env defaults.
   set -a
-  . "${REPO_ROOT}/.env"
+  while IFS= read -r env_line || [ -n "${env_line}" ]; do
+    env_line="${env_line#"${env_line%%[![:space:]]*}"}"
+    case "${env_line}" in
+      ''|\#*) continue ;;
+    esac
+    env_line="${env_line#export }"
+    env_key="${env_line%%=*}"
+    case "${env_key}" in
+      *[!A-Za-z0-9_]*|'')
+        eval "${env_line}"
+        continue
+        ;;
+    esac
+    if [ -z "${!env_key+x}" ]; then
+      eval "${env_line}"
+    fi
+  done < "${REPO_ROOT}/.env"
   set +a
 fi
 

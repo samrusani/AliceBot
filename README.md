@@ -1,5 +1,7 @@
 # Alice
 
+<!-- mcp-name: io.github.samrusani/alice-memory -->
+
 **The continuity layer for AI agents.**
 
 [![LongMemEval](https://img.shields.io/badge/LongMemEval__s-64.6%25-6f42c1)](docs/benchmarks/longmemeval/README.md)
@@ -32,7 +34,33 @@ Corrections are first-class: when a memory is corrected or superseded, future re
 
 ## Quickstart
 
-Requirements: Python 3.12+, Node 20+, pnpm, Docker, Git.
+The fastest path is the packaged runtime from PyPI — Python 3.12+ and nothing else, no Docker, Node, or Postgres. It serves the eleven core MCP tools against a single local SQLite file:
+
+```bash
+uvx alice-memory mcp --data-dir ~/.alice
+# or: pip install alice-memory && alice-memory mcp --data-dir ~/.alice
+```
+
+MCP client config (Claude Desktop, IDEs) — note there is no `DATABASE_URL`:
+
+```json
+{
+  "mcpServers": {
+    "alice": {
+      "command": "uvx",
+      "args": ["alice-memory", "mcp", "--data-dir", "/ABSOLUTE/PATH/TO/.alice"]
+    }
+  }
+}
+```
+
+SQLite mode is the trial and single-agent path: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. Boundaries are listed in [known limitations](docs/alpha/known-limitations.md).
+
+> **Install note:** the PyPI package is [`alice-memory`](https://pypi.org/project/alice-memory/). The name `alice-core` on PyPI belongs to an unrelated project.
+
+### Full stack (Postgres + review console)
+
+For the full experience — web review console, scheduler, legacy surfaces — run from a repo checkout. Requirements: Python 3.12+, Node 20+, pnpm, Docker, Git.
 
 ```bash
 git clone https://github.com/samrusani/AliceBot.git
@@ -50,36 +78,11 @@ make dev
 
 Open the review console at `http://localhost:3000/vnext`. The detailed walkthrough — demo data, smoke checks, first memory — is in [docs/alpha/quickstart.md](docs/alpha/quickstart.md).
 
-> **Install note:** Alice currently runs from a repo checkout. The PyPI name [`alice-memory`](https://pypi.org/project/alice-memory/) is claimed with a placeholder release; the packaged runtime will ship under it. The name `alice-core` on PyPI belongs to an unrelated project.
-
-### Try it without Docker
-
-For a zero-infrastructure trial, Alice can run the eleven core MCP tools against a single local SQLite file — no Docker, Node, or Postgres. From a checkout:
-
-```bash
-pip install -e . && alice-memory mcp --data-dir ~/.alice
-```
-
-Once the package is published, `uvx alice-memory mcp --data-dir ~/.alice` replaces the checkout. MCP client config — note there is no `DATABASE_URL`:
-
-```json
-{
-  "mcpServers": {
-    "alice": {
-      "command": "/ABSOLUTE/PATH/TO/AliceBot/.venv/bin/alice-memory",
-      "args": ["mcp", "--data-dir", "/ABSOLUTE/PATH/TO/.alice"]
-    }
-  }
-}
-```
-
-SQLite mode is the trial and single-agent path: it serves the eleven core tools for one user, and memory review happens through `alice_memory_review` / `alice_memory_correct` instead of the web console. For the full experience — review console, scheduler, legacy surfaces — use the Postgres setup above. Boundaries are listed in [known limitations](docs/alpha/known-limitations.md).
-
 ## Connect an agent
 
 ### MCP
 
-Point any MCP-capable agent or IDE at the Alice server:
+Point any MCP-capable agent or IDE at the Alice server. For the packaged SQLite runtime, use the `uvx` config from the Quickstart above. For the full Postgres stack from a checkout:
 
 ```json
 {
@@ -110,6 +113,8 @@ The core MCP surface is eleven tools:
 - `alice_memory_correct` — propose a correction to an existing memory
 - `alice_memory_manage` — confirm, undo, or forget a committed memory, audit trail intact
 - `alice_explain` — provenance and trust explanation for a memory
+
+Calling directly from a human client (Claude Desktop, an IDE)? `alice_memory_commit` needs only `title` and `canonical_text` — no identity fields. Agent integrations declare `agent_id` and `agent_type`; see [docs/alpha/agent-integration.md](docs/alpha/agent-integration.md).
 
 The write verbs follow one contract — outcomes, audit guarantees, and honest boundaries per verb are documented in the [Memory Operations Protocol](docs/memory-operations-protocol.md). The legacy long-tail tool surface stays available behind `ALICE_MCP_LEGACY_TOOLS=1` for existing integrations.
 

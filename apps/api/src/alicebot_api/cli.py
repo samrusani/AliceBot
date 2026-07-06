@@ -17,6 +17,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 
+from alicebot_api import __version__
 from alicebot_api.cli_formatting import (
     format_artifact_detail_output,
     format_capture_output,
@@ -230,6 +231,7 @@ from alicebot_api.vnext_doctor import (
     local_live_cors_status,
 )
 from alicebot_api.vnext_evals import (
+    VNEXT_EVAL_SUITE_ORDER,
     run_vnext_evals,
     write_vnext_benchmark_corpus,
     write_vnext_eval_report,
@@ -461,7 +463,10 @@ def _add_continuity_brief_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _resolve_user_id(settings: Settings, user_id_flag: str | None) -> UUID:
     if user_id_flag is not None:
-        return _parse_uuid(user_id_flag)
+        try:
+            return UUID(user_id_flag)
+        except ValueError as exc:
+            raise ValueError(f"--user-id must be a UUID, got: {user_id_flag}") from exc
     if settings.auth_user_id != "":
         return UUID(settings.auth_user_id)
     return UUID(os.getenv("ALICEBOT_AUTH_USER_ID", DEFAULT_CLI_USER_ID))
@@ -470,6 +475,11 @@ def _resolve_user_id(settings: Settings, user_id_flag: str | None) -> UUID:
 def _build_context(args: argparse.Namespace) -> CLIContext:
     settings = get_settings()
     database_url = args.database_url if args.database_url is not None else settings.database_url
+    if database_url.startswith("sqlite:"):
+        raise ValueError(
+            "the 'alicebot' CLI requires a Postgres DATABASE_URL, got a SQLite URL. "
+            "For local SQLite memory, use the 'alice-memory' CLI instead."
+        )
     user_id = _resolve_user_id(settings, args.user_id)
     return CLIContext(settings=settings, database_url=database_url, user_id=user_id)
 
@@ -4533,6 +4543,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Deterministic local CLI for Alice continuity workflows.",
     )
     parser.add_argument(
+        "--version",
+        action="version",
+        version=f"alicebot {__version__}",
+    )
+    parser.add_argument(
         "--database-url",
         default=None,
         help="Override database URL. Defaults to settings/env DATABASE_URL.",
@@ -4611,7 +4626,11 @@ def build_parser() -> argparse.ArgumentParser:
     context_tree_parser.set_defaults(handler=_run_vnext_context_tree)
 
     daily_brief_parser = subparsers.add_parser("daily-brief", help="Generate a vNext daily brief artifact.")
-    daily_brief_parser.add_argument("--generate", action="store_true", help="Generate the daily brief now.")
+    daily_brief_parser.add_argument(
+        "--generate",
+        action="store_true",
+        help="Accepted for compatibility; the daily brief is always generated.",
+    )
     daily_brief_parser.add_argument("--generated-for", default=None, help="ISO date for the brief.")
     daily_brief_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
     daily_brief_parser.add_argument(
@@ -4641,7 +4660,11 @@ def build_parser() -> argparse.ArgumentParser:
         "weekly-synthesis",
         help="Generate a vNext weekly synthesis artifact.",
     )
-    weekly_synthesis_parser.add_argument("--generate", action="store_true", help="Generate the weekly synthesis now.")
+    weekly_synthesis_parser.add_argument(
+        "--generate",
+        action="store_true",
+        help="Accepted for compatibility; the weekly synthesis is always generated.",
+    )
     weekly_synthesis_parser.add_argument("--generated-for", default=None, help="ISO date inside the target week.")
     weekly_synthesis_parser.add_argument("--domain", action="append", default=[], help="Allowed domain. Repeatable.")
     weekly_synthesis_parser.add_argument(
@@ -6008,11 +6031,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vnext_eval_run_parser.add_argument(
         "--suite",
+        choices=("all", *VNEXT_EVAL_SUITE_ORDER),
         default="all",
         help=(
-            "Suite key to run: all, retrieval_quality, correction_suppression, "
-            "decision_recovery, or provenance_explanation. Live-store suites "
-            "require ALICEBOT_EVAL_DATABASE_URL and report skipped without it."
+            f"Suite key to run: all, {', '.join(VNEXT_EVAL_SUITE_ORDER)}. "
+            "Live-store suites require ALICEBOT_EVAL_DATABASE_URL and report "
+            "skipped without it."
         ),
     )
     vnext_eval_run_parser.add_argument(
@@ -6033,11 +6057,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vnext_eval_report_parser.add_argument(
         "--suite",
+        choices=("all", *VNEXT_EVAL_SUITE_ORDER),
         default="all",
         help=(
-            "Suite key to report: all, retrieval_quality, correction_suppression, "
-            "decision_recovery, or provenance_explanation. Live-store suites "
-            "require ALICEBOT_EVAL_DATABASE_URL and report skipped without it."
+            f"Suite key to report: all, {', '.join(VNEXT_EVAL_SUITE_ORDER)}. "
+            "Live-store suites require ALICEBOT_EVAL_DATABASE_URL and report "
+            "skipped without it."
         ),
     )
     vnext_eval_report_parser.add_argument(

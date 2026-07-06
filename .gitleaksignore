@@ -6,3 +6,6 @@ e08cc1e0945522df94adf765f6183bf39020939d:docs/alpha/agent-integration.md:curl-au
 # variable then named 'secret' (renamed to 'codename' in the follow-up
 # commit); proves redaction expunges content. Not a credential.
 c71d9b39dd429942eb345b33c9ef218a4b800440:tests/unit/test_sqlite_onramp.py:generic-api-key:556
+# Test idempotency key in a historical commit (quiet-hours-p10s4-delivery) —
+# generic-api-key false positive, not a credential.
+9740911507a220ab7115395d419df84d99056281:tests/integration/test_phase10_daily_brief_notifications_api.py:generic-api-key:441

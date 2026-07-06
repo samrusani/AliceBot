@@ -40,9 +40,11 @@ from alicebot_api.vnext_event_log import build_event_log_record
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import (
+    FTS_QUERY_STOPWORDS as _FTS_QUERY_STOPWORDS,
     REDACTED_JSON_VALUE,
     REDACTION_MARKER,
     _search_patterns,
+    fts_fallback_tokens,
     redacted_memory_metadata,
 )
 
@@ -298,26 +300,14 @@ _MEMORY_PROJECT_ID_SQL_TEMPLATE = (
     "COALESCE({prefix}project_id, json_extract({prefix}metadata_json, '$.project_id'))"
 )
 
-# The snowball English stopword list -- the same list the Postgres
-# 'english' text-search configuration applies inside
+# _FTS_QUERY_STOPWORDS (imported above): the snowball English stopword
+# list the Postgres 'english' text-search configuration applies inside
 # websearch_to_tsquery(). FTS5 has no stopword support of its own, so
 # AND-ing raw natural-language tokens ("what", "did", "the") would demand
 # words the stored text never contains and return nothing. Bare terms in
-# this set are dropped before the MATCH expression is built; quoted
-# phrases are preserved verbatim.
-_FTS_QUERY_STOPWORDS = frozenset(
-    """
-    i me my myself we our ours ourselves you your yours yourself yourselves
-    he him his himself she her hers herself it its itself they them their
-    theirs themselves what which who whom this that these those am is are
-    was were be been being have has had having do does did doing a an the
-    and but if or because as until while of at by for with about against
-    between into through during before after above below to from up down in
-    out on off over under again further then once here there when where why
-    how all any both each few more most other some such no nor not only own
-    same so than too very s t can will just don should now
-    """.split()
-)
+# that set are dropped before the MATCH expression is built; quoted
+# phrases are preserved verbatim. It lives in vnext_store so both backends
+# and the retrieval fallback trigger share one list.
 
 
 def _utc_now_iso() -> str:
@@ -402,6 +392,20 @@ def _fts_match_expression(query: str) -> str | None:
     return " AND ".join(parts)
 
 
+def _fts_match_any_expression(query: str) -> str | None:
+    """OR-of-terms FTS5 MATCH expression for the ``match_any`` fallback pass.
+
+    Same sanitization discipline as the strict path: only ``\\w+`` tokens
+    survive and each is individually double-quoted, so FTS5 metacharacters
+    cannot produce a parse error or operator injection; stopwords are
+    dropped so bare question words do not match everything.
+    """
+    tokens = fts_fallback_tokens(query)
+    if not tokens:
+        return None
+    return " OR ".join(f'"{token}"' for token in tokens)
+
+
 def _dict_row_factory(cursor: sqlite3.Cursor, row: tuple[object, ...]) -> dict[str, object]:
     return {description[0]: row[index] for index, description in enumerate(cursor.description)}
 
@@ -473,6 +477,9 @@ def sqlite_user_connection(path: str | Path, user_id: UUID | str) -> Iterator[sq
 
 class SQLiteVNextStore:
     """SQLite-backed vNext repository facade for the second-brain kernel."""
+
+    #: Retrieval-trace label for the full-text stage (FTS5, not Postgres tsvector).
+    fts_stage_source = "sqlite_fts"
 
     def __init__(self, conn: sqlite3.Connection, user_id: UUID | str):
         if str(user_id).strip() == "":
@@ -1246,8 +1253,13 @@ class SQLiteVNextStore:
         created_by_agent_ids: tuple[str, ...] = (),
         run_id: str | None = None,
         include_expired: bool = False,
+        match_any: bool = False,
     ) -> list[VNextRow]:
-        match_expression = _fts_match_expression(query)
+        # Strict pass ANDs every non-stopword term (websearch parity);
+        # match_any (the retrieval OR-fallback) ORs them instead so a
+        # natural-language question still reaches keyword-findable memories
+        # when the AND pass returns nothing.
+        match_expression = _fts_match_any_expression(query) if match_any else _fts_match_expression(query)
         if match_expression is None:
             return []
         domain_sql, domain_params = self._domain_clause(domains, prefix="m.")

@@ -61,6 +61,13 @@ python scripts/run_longmemeval.py --variant s --workers 8 --resume
 
 Roughly 2.5 hours and under $10 of API usage with this configuration.
 
+## Evidence file notes
+
+[per-question-results.jsonl](per-question-results.jsonl) contains 508 rows
+for 500 questions: self-healing resume passes re-judged 8 questions, and the
+duplicate rows are retained deliberately — the file is append-only evidence.
+The aggregate [report.json](report.json) counts unique `question_id`s.
+
 ## Honest caveats
 
 - **Run-to-run variance is real; treat single-run deltas under ~2 points as

@@ -1,8 +1,8 @@
 # Architecture
 
 ## Scope Boundary
-- **Shipped baseline:** `v0.5.1` is the latest tagged pre-1.0 public release; `v0.5.1-vnext-preview` packages the local-first vNext public preview.
-- **Current execution posture:** the product-overhaul work on `main` (hybrid retrieval, per-agent API keys, the nine-tool MCP core surface, and the rebuilt eval harness) builds on that baseline without changing the tag boundary.
+- **Shipped baseline:** `v0.9.0` is the latest tagged pre-1.0 public release; `v0.5.1-vnext-preview` packages the local-first vNext public preview.
+- **Current execution posture:** `main` tracks the `v0.9.0` release line (hybrid retrieval, the SQLite on-ramp, per-agent API keys, the eleven-tool MCP core surface, the entity substrate, and the rebuilt eval harness).
 
 ## Current System Overview
 Alice is the continuity layer for AI agents: a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, CLI, MCP, Hermes-integrated, and imported-workflow surfaces.
@@ -35,7 +35,7 @@ Alice is the continuity layer for AI agents: a modular continuity platform with 
 
 ### Integration Surfaces
 - CLI, MCP, Hermes bridge/provider flows, OpenClaw import/augmentation, deployment profiles such as Alice Lite, and generic external-builder reference examples.
-- The MCP server exposes nine core tools by default (`alice_capture`, `alice_recall`, `alice_resume`, `alice_context_pack`, `alice_open_loops`, `alice_recent_decisions`, `alice_memory_review`, `alice_memory_correct`, `alice_explain`); the 65-tool legacy surface stays available behind `ALICE_MCP_LEGACY_TOOLS=1`.
+- The MCP server exposes eleven core tools by default (`alice_capture`, `alice_recall`, `alice_resume`, `alice_context_pack`, `alice_open_loops`, `alice_recent_decisions`, `alice_memory_review`, `alice_memory_correct`, `alice_explain`, `alice_memory_commit`, `alice_memory_manage`); the 65-tool legacy surface stays available behind `ALICE_MCP_LEGACY_TOOLS=1`.
 - Agent HTTP calls authenticate with per-agent API keys (`alicebot agent keys create --agent-id <id> --profile <profile>`, sent as `Authorization: Bearer`); the key record overrides payload identity, payloads may only downgrade the profile, and keyless agent calls work only while zero active keys exist.
 
 ### vNext Preview Surfaces
@@ -61,7 +61,7 @@ Alice is the continuity layer for AI agents: a modular continuity platform with 
 - `entities`, `entity_edges`
 - `retrieval_runs`, `retrieval_candidates`
 - `eval_suites`, `eval_cases`, `eval_runs`, `eval_results`
-- the eval harness ships one live suite, `retrieval_quality` (see `eval/README.md`); live runs require `ALICEBOT_EVAL_DATABASE_URL` and are otherwise reported as skipped
+- the eval harness ships six live suites — `retrieval_quality`, `correction_suppression`, `decision_recovery`, `provenance_explanation`, `entity_resolution`, and `graph_hop_retrieval` (see `eval/README.md`); live runs require `ALICEBOT_EVAL_DATABASE_URL` and are otherwise reported as skipped
 
 ### Product / Runtime
 - `workspaces`, `workspace_members`, `auth_sessions`, `devices`
@@ -158,7 +158,7 @@ Alice is the continuity layer for AI agents: a modular continuity platform with 
 - docs verification is part of feature completion, not cleanup work
 
 ## Current Architectural Posture
-- `v0.5.1` is the active public release boundary.
+- `v0.9.0` is the active public release boundary.
 - `v0.5.1-vnext-preview` packages the local-first vNext public preview without changing the stable baseline boundary.
 - Alice is now a broader continuity platform with provider/runtime portability, model packs, runnable external-builder integrations, pilot launch/admin support, and safe local logging defaults.
 - The continuity substrate remains the same system of record; the delivered work packages that substrate into practical adoption paths without changing the core continuity semantics.
