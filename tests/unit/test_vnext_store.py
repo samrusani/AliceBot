@@ -151,6 +151,21 @@ def test_search_patterns_strip_quotes_and_add_keyword_fallbacks() -> None:
     assert "%cockpit%" in patterns
 
 
+def test_search_patterns_drop_the_full_snowball_stopword_list() -> None:
+    # Regression: the LIKE fallback used a private 11-word stopword set
+    # while claiming parity with the snowball FTS_QUERY_STOPWORDS list, so
+    # question words like "how"/"did"/"our" became %how% patterns that
+    # matched nearly every row. Both paths now share the snowball list.
+    patterns = _search_patterns("How did our announcement go out today")
+
+    assert patterns[0] == "%How did our announcement go out today%"
+    assert "%announcement%" in patterns
+    assert "%go%" in patterns
+    assert "%today%" in patterns
+    for stopword_pattern in ("%how%", "%did%", "%our%", "%out%"):
+        assert stopword_pattern not in patterns
+
+
 def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> None:
     cursor = RecordingCursor(
         fetchone_results=[],
@@ -876,6 +891,71 @@ def test_fts_search_pushes_down_memory_type_project_agent_run_and_expiry_filters
         "Alice provenance retrieval",
         25,
     )
+
+
+def test_search_source_chunks_builds_websearch_tsquery_over_chunk_text() -> None:
+    cursor = RecordingCursor(
+        fetchone_results=[],
+        fetchall_result=[{"id": "chunk-1", "source_id": "source-1", "fts_score": 0.42}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    rows = store.search_source_chunks(
+        query="golden retriever Biscuit",
+        domains=["project"],
+        sensitivity_allowed=["public", "private"],
+        limit=32,
+    )
+
+    assert rows[0]["source_id"] == "source-1"
+    query, params = cursor.executed[0]
+    assert "FROM source_chunks c" in query
+    assert "JOIN sources s ON s.id = c.source_id AND s.user_id = c.user_id" in query
+    assert "s.deleted_at IS NULL" in query
+    assert "s.domain = ANY" in query
+    assert "s.sensitivity = ANY" in query
+    assert "c.search_tsv @@ websearch_to_tsquery('english', %s)" in query
+    assert "ts_rank(c.search_tsv, websearch_to_tsquery('english', %s)) AS fts_score" in query
+    assert "ORDER BY fts_score DESC" in query
+    assert params == (
+        "golden retriever Biscuit",
+        ["project"],
+        ["project"],
+        ["public", "private"],
+        ["public", "private"],
+        "golden retriever Biscuit",
+        32,
+    )
+
+
+def test_search_source_chunks_match_any_ors_sanitized_lexemes() -> None:
+    cursor = RecordingCursor(
+        fetchone_results=[],
+        fetchall_result=[{"id": "chunk-1", "source_id": "source-1", "fts_score": 0.11}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.search_source_chunks(
+        query="When does the announcement & !audit go out?",
+        match_any=True,
+    )
+
+    query, params = cursor.executed[0]
+    assert "c.search_tsv @@ to_tsquery('english', %s)" in query
+    # Stopwords and tsquery metacharacters are stripped; each surviving
+    # token is individually quoted so nothing can inject query syntax.
+    assert params is not None
+    assert params[0] == "'announcement' | 'audit' | 'go'"
+
+
+def test_search_source_chunks_match_any_returns_empty_without_content_tokens() -> None:
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    # Stopword/metacharacter-only queries sanitize to no lexemes: no SQL runs.
+    assert store.search_source_chunks(query="&|!():*<->", match_any=True) == []
+    assert store.search_source_chunks(query="when was the", match_any=True) == []
+    assert cursor.executed == []
 
 
 def test_vector_search_orders_by_cosine_distance_and_skips_null_embeddings() -> None:

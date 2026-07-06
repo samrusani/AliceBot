@@ -856,6 +856,57 @@ class SQLiteVNextStore:
             (str(source_id), self.user_id),
         )
 
+    def search_source_chunks(
+        self,
+        *,
+        query: str,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 50,
+        match_any: bool = False,
+    ) -> list[VNextRow]:
+        """Content search over source_chunks.text; best chunk hit first.
+
+        Mirrors ``PostgresVNextStore.search_source_chunks``: rank comes
+        back as ``fts_score`` on each chunk row (row order IS the rank),
+        every row carries ``source_id``, and the domain/sensitivity gates
+        are applied on the joined parent source row, like
+        ``search_sources``. Strict pass ANDs every non-stopword term;
+        ``match_any`` (the retrieval OR-fallback) ORs them instead. Both
+        share ``search_memories_fts``'s sanitized MATCH builders, so FTS5
+        metacharacters cannot inject query syntax.
+        """
+        match_expression = _fts_match_any_expression(query) if match_any else _fts_match_expression(query)
+        if match_expression is None:
+            return []
+        domain_sql, domain_params = self._domain_clause(domains, prefix="s.")
+        sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed, prefix="s.")
+        prefixed_columns = ", ".join(f"c.{column}" for column in SOURCE_CHUNK_COLUMNS)
+        params: list[object] = [match_expression, self.user_id]
+        params.extend(domain_params)
+        params.extend(sensitivity_params)
+        params.append(limit)
+        try:
+            return self._fetch_all(
+                f"""
+                    SELECT {prefixed_columns},
+                      -bm25(source_chunks_fts) AS fts_score
+                    FROM source_chunks_fts
+                    JOIN source_chunks c ON c.rowid = source_chunks_fts.rowid
+                    JOIN sources s ON s.id = c.source_id AND s.user_id = c.user_id
+                    WHERE source_chunks_fts MATCH ?
+                      AND c.user_id = ?
+                      AND s.deleted_at IS NULL{domain_sql}{sensitivity_sql}
+                    ORDER BY fts_score DESC, c.created_at DESC, c.id DESC
+                    LIMIT ?
+                    """,
+                tuple(params),
+            )
+        except sqlite3.OperationalError as exc:  # pragma: no cover - sanitizer backstop
+            if "fts5" in str(exc).lower() or "syntax" in str(exc).lower():
+                return []
+            raise
+
     def search_sources(
         self,
         *,

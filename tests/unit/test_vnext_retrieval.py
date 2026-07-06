@@ -25,6 +25,7 @@ from alicebot_api.vnext_retrieval import (
     GRAPH_STAGE_ENABLED,
     RRF_K,
     SOURCES_STAGE_DISABLED_BY_FLAG,
+    SOURCE_CHUNK_STAGE_DISABLED_NO_STORE_SUPPORT,
     STAGE_DISABLED_MINIMAL,
     STALENESS_NOTE_AFTER_DAYS,
     SUPERSESSION_STAGE_ENABLED,
@@ -82,6 +83,7 @@ class InMemoryVNextRetrievalStore:
         seeded_events: list[dict[str, object]] | None = None,
         entities: list[dict[str, object]] | None = None,
         edges: list[dict[str, object]] | None = None,
+        source_chunks: list[dict[str, object]] | None = None,
     ) -> None:
         self.memories = memories
         self.sources = sources
@@ -91,12 +93,14 @@ class InMemoryVNextRetrievalStore:
         self.beliefs = beliefs
         self.entities = entities or []
         self.edges = edges or []
+        self.source_chunks = source_chunks or []
         self.events: list[dict[str, object]] = list(seeded_events or [])
         self.memory_search_domains: object = _UNSET
         self.source_search_domains: object = _UNSET
         self.open_loop_domains: object = _UNSET
         self.memory_search_kwargs: list[dict[str, object]] = []
         self.fts_match_any_queries: list[str] = []
+        self.chunk_match_any_queries: list[str] = []
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
@@ -257,6 +261,37 @@ class InMemoryVNextRetrievalStore:
         del query, sensitivity_allowed
         self.source_search_domains = domains
         return self.sources[:limit]
+
+    def get_source(self, source_id: str) -> dict[str, object] | None:
+        for row in self.sources:
+            if str(row.get("id")) == source_id:
+                return row
+        return None
+
+    def search_source_chunks(
+        self,
+        *,
+        query: str,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 50,
+        match_any: bool = False,
+    ) -> list[dict[str, object]]:
+        del domains, sensitivity_allowed
+        if match_any:
+            self.chunk_match_any_queries.append(query)
+        terms = [term.casefold() for term in re.findall(r"\w+", query)]
+        rows: list[dict[str, object]] = []
+        for chunk in self.source_chunks:
+            text = str(chunk.get("text") or "").casefold()
+            matched = (
+                any(term in text for term in terms)
+                if match_any
+                else terms and all(term in text for term in terms)
+            )
+            if matched:
+                rows.append(chunk)
+        return rows[:limit]
 
     def list_open_loops(
         self,
@@ -841,6 +876,427 @@ def test_or_fallback_degrades_cleanly_for_stores_without_match_any() -> None:
 
     assert pack["relevant_memories"] == []
     assert pack["trace"]["stages"]["fts"] == {"source": "postgres_fts", "candidate_count": 0}
+
+
+# -- fused source stage (chunk content + provenance + title/recency) ----------------
+
+
+def test_source_stage_fuses_chunk_content_provenance_and_title_recency() -> None:
+    source_title = {
+        "id": "source-title",
+        "source_type": "manual_text",
+        "title": "Migration cutover checklist",
+        "content_hash": "sha256:title",
+        "domain": "project",
+        "sensitivity": "private",
+    }
+    source_chunk = {
+        "id": "source-chunk",
+        "source_type": "chat_session",
+        "title": "Untitled session 41",
+        "content_hash": "sha256:chunk",
+        "domain": "project",
+        "sensitivity": "private",
+    }
+    source_prov = {
+        "id": "source-prov",
+        "source_type": "document",
+        "title": "Import 9f3a4c",
+        "content_hash": "sha256:prov",
+        "domain": "project",
+        "sensitivity": "private",
+    }
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Migration cutover decision: Friday night window.")],
+        sources=[source_title, source_chunk, source_prov],
+        source_chunks=[
+            {
+                "id": "chunk-1",
+                "source_id": "source-chunk",
+                "chunk_index": 0,
+                "text": "the migration cutover happens Friday night",
+            }
+        ],
+        provenance_links=[
+            {
+                "id": "link-1",
+                "target_type": "memory",
+                "target_id": "memory-1",
+                "source_id": "source-prov",
+                "quote": "Migration cutover decision: Friday night window.",
+                "evidence_role": "quoted_from",
+                "confidence": 0.9,
+            }
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="migration cutover Friday", domains=("project",))
+    )
+
+    # RRF: the content hit (chunk_fts rank 1 + title_recency rank 2) beats
+    # the provenance source (provenance rank 1 + title_recency rank 3),
+    # which beats the lexical-only row (title_recency rank 1 alone).
+    assert [item["id"] for item in pack["sources"]] == ["source-chunk", "source-prov", "source-title"]
+    # Strict chunk pass matched, so the one-shot OR retry never fired.
+    assert store.chunk_match_any_queries == []
+    assert pack["trace"]["stages"]["sources"] == {
+        "source": "rrf(chunk_fts+provenance+title_recency)",
+        "candidate_count": 3,
+        "chunk_fts": 1,
+        "provenance": 1,
+        "title_recency": 3,
+        "chunk_fts_source": "postgres_fts",
+    }
+    source_trace = {
+        record["target_id"]: record
+        for record in pack["trace"]["selected"]
+        if record["target_type"] == "source"
+    }
+    assert source_trace["source-chunk"]["stage_ranks"] == {"chunk_fts": 1, "title_recency": 2}
+    assert source_trace["source-prov"]["stage_ranks"] == {"provenance": 1, "title_recency": 3}
+    assert source_trace["source-title"]["stage_ranks"] == {"title_recency": 1}
+
+
+def test_provenance_fusion_pulls_source_with_no_lexical_match() -> None:
+    # The evidence source has no query-term overlap anywhere the lexical
+    # path looks (title/uri/metadata) and no matching chunk text; only the
+    # provenance link of the winning memory can pull it in.
+    class NoLexicalHitsStore(InMemoryVNextRetrievalStore):
+        def search_sources(self, **_kwargs) -> list[dict[str, object]]:  # type: ignore[override]
+            return []
+
+    store = NoLexicalHitsStore(
+        memories=[_memory_row("memory-1", "Quarterly board deck must use dark mode.")],
+        sources=[
+            {
+                "id": "source-evidence",
+                "source_type": "document",
+                "title": "Import 9f3a4c",
+                "content_hash": "sha256:evidence",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        ],
+        source_chunks=[
+            {
+                "id": "chunk-1",
+                "source_id": "source-evidence",
+                "chunk_index": 0,
+                "text": "lorem ipsum dolor sit amet",
+            }
+        ],
+        provenance_links=[
+            {
+                "id": "link-1",
+                "target_type": "memory",
+                "target_id": "memory-1",
+                "source_id": "source-evidence",
+                "quote": "Quarterly board deck must use dark mode.",
+                "evidence_role": "quoted_from",
+                "confidence": 0.9,
+            }
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="quarterly board deck dark mode", domains=("project",))
+    )
+
+    assert [item["id"] for item in pack["sources"]] == ["source-evidence"]
+    stage = pack["trace"]["stages"]["sources"]
+    assert stage["provenance"] == 1
+    assert stage["title_recency"] == 0
+    source_trace = [
+        record for record in pack["trace"]["selected"] if record["target_type"] == "source"
+    ]
+    assert source_trace[0]["stage_ranks"] == {"provenance": 1}
+
+
+def test_source_chunk_or_fallback_retries_once_and_reports_the_relaxed_pass() -> None:
+    source = {
+        "id": "source-1",
+        "source_type": "chat_session",
+        "title": "Untitled session 7",
+        "content_hash": "sha256:budget",
+        "domain": "project",
+        "sensitivity": "private",
+    }
+    store = InMemoryVNextRetrievalStore(
+        memories=[],
+        sources=[source],
+        source_chunks=[
+            {
+                "id": "chunk-1",
+                "source_id": "source-1",
+                "chunk_index": 0,
+                "text": "the annual budget review moved to Thursday",
+            }
+        ],
+    )
+
+    query = "when was the budget review moved?"
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query=query))
+
+    # Strict pass demands every token ("when" never appears); the one-shot
+    # OR retry recovers the source and the trace reports the relaxed pass.
+    assert store.chunk_match_any_queries == [query]
+    assert [item["id"] for item in pack["sources"]] == ["source-1"]
+    stage = pack["trace"]["stages"]["sources"]
+    assert stage["chunk_fts"] == 1
+    assert stage["chunk_fts_source"] == "postgres_fts_or_fallback"
+
+
+def test_source_stage_degrades_to_title_recency_for_stores_without_chunk_search() -> None:
+    class LegacyStore(InMemoryVNextRetrievalStore):
+        # Shadow the class attributes so getattr(...) is not callable,
+        # mirroring stores that predate the chunk-content substrate.
+        search_source_chunks = None  # type: ignore[assignment]
+        get_source = None  # type: ignore[assignment]
+
+    store = LegacyStore(
+        memories=[_memory_row("memory-1", "Alice legacy source stage check.")],
+        sources=[
+            {
+                "id": "source-1",
+                "source_type": "manual_text",
+                "title": "Alice legacy source",
+                "content_hash": "sha256:legacy",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice legacy source", domains=("project",))
+    )
+
+    # Old behavior preserved: the lexical list alone still populates the
+    # section, and the trace says which lists could not run.
+    assert [item["id"] for item in pack["sources"]] == ["source-1"]
+    assert pack["trace"]["stages"]["sources"] == {
+        "source": "rrf(title_recency)",
+        "candidate_count": 1,
+        "chunk_fts": 0,
+        "provenance": 0,
+        "title_recency": 1,
+        "chunk_fts_source": SOURCE_CHUNK_STAGE_DISABLED_NO_STORE_SUPPORT,
+    }
+
+
+def test_source_chunk_or_fallback_degrades_for_stores_without_match_any() -> None:
+    class LegacyChunkStore(InMemoryVNextRetrievalStore):
+        def search_source_chunks(  # type: ignore[override]
+            self,
+            *,
+            query,
+            domains=None,
+            sensitivity_allowed=None,
+            limit=50,
+        ):
+            # Legacy signature without match_any.
+            return []
+
+    store = LegacyChunkStore(
+        memories=[],
+        sources=[
+            {
+                "id": "source-1",
+                "source_type": "manual_text",
+                "title": "Fallback degradation source",
+                "content_hash": "sha256:degrade",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="kubernetes deployment pipeline")
+    )
+
+    # The TypeError from the retry is swallowed; the strict (empty) chunk
+    # result stands and the label does not claim a relaxed pass ran.
+    assert [item["id"] for item in pack["sources"]] == ["source-1"]
+    stage = pack["trace"]["stages"]["sources"]
+    assert stage["chunk_fts"] == 0
+    assert stage["chunk_fts_source"] == "postgres_fts"
+
+
+def test_source_content_beats_recency_on_sqlite() -> None:
+    # The rank-1 LongMemEval failure: the session that SAYS the thing was
+    # ingested months before lexically-similar-but-empty newer sessions.
+    # The content-blind title/recency path ranks the newer sessions first;
+    # the chunk-FTS list must pull the early session back to the top.
+    store = _sqlite_retrieval_store()
+    early = store.create_source(
+        {
+            "source_type": "chat_session",
+            "title": "Chat about the golden retriever",
+            "content_hash": "sha256:early",
+            "captured_at": "2026-01-05T00:00:00Z",
+        }
+    )
+    store.create_source_chunk(
+        {
+            "source_id": early["id"],
+            "chunk_index": 0,
+            "text": "[USER]: I adopted a golden retriever puppy named Biscuit last weekend.",
+        }
+    )
+    decoys = []
+    for index in range(6):
+        decoy = store.create_source(
+            {
+                "source_type": "chat_session",
+                "title": f"Golden hour photo walk {index}",
+                "content_hash": f"sha256:decoy-{index}",
+                "captured_at": f"2026-06-0{index + 1}T00:00:00Z",
+            }
+        )
+        store.create_source_chunk(
+            {
+                "source_id": decoy["id"],
+                "chunk_index": 0,
+                "text": "We compared camera lenses and tripods for the evening shoot.",
+            }
+        )
+        decoys.append(decoy)
+
+    # Control: the content-blind lexical list alone ranks every newer
+    # decoy above the session that contains the answer.
+    lexical = store.search_sources(query="golden retriever Biscuit")
+    assert lexical[0]["id"] != early["id"]
+    assert lexical[-1]["id"] == early["id"]
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="golden retriever Biscuit")
+    )
+
+    assert pack["sources"][0]["id"] == early["id"]
+    stage = pack["trace"]["stages"]["sources"]
+    assert stage["source"] == "rrf(chunk_fts+provenance+title_recency)"
+    assert stage["chunk_fts"] == 1
+    assert stage["chunk_fts_source"] == "sqlite_fts"
+    source_trace = {
+        record["target_id"]: record
+        for record in pack["trace"]["selected"]
+        if record["target_type"] == "source"
+    }
+    assert source_trace[str(early["id"])]["stage_ranks"]["chunk_fts"] == 1
+
+
+def test_source_content_or_fallback_beats_recency_on_sqlite() -> None:
+    # Same content-beats-recency shape through the OR-fallback: the strict
+    # chunk pass ANDs "alice public announcement go" and the stored text
+    # says "goes", so only the relaxed retry can reach the early session.
+    store = _sqlite_retrieval_store()
+    early = store.create_source(
+        {
+            "source_type": "chat_session",
+            "title": "Alice public announcement thread",
+            "content_hash": "sha256:early",
+            "captured_at": "2026-01-05T00:00:00Z",
+        }
+    )
+    store.create_source_chunk(
+        {
+            "source_id": early["id"],
+            "chunk_index": 0,
+            "text": "[USER]: The Alice public announcement goes out Monday after the pre-launch audit passes.",
+        }
+    )
+    for index in range(6):
+        decoy = store.create_source(
+            {
+                "source_type": "chat_session",
+                "title": f"Announcement drafts folder sync {index}",
+                "content_hash": f"sha256:decoy-{index}",
+                "captured_at": f"2026-06-0{index + 1}T00:00:00Z",
+            }
+        )
+        store.create_source_chunk(
+            {
+                "source_id": decoy["id"],
+                "chunk_index": 0,
+                "text": "We reorganized the shared folder permissions this morning.",
+            }
+        )
+
+    question = "When does the Alice public announcement go out?"
+    assert store.search_source_chunks(query=question) == []
+
+    pack = VNextRetrievalService(store).compile_context_pack(VNextRetrievalRequest(query=question))
+
+    assert pack["sources"][0]["id"] == early["id"]
+    stage = pack["trace"]["stages"]["sources"]
+    assert stage["chunk_fts"] == 1
+    assert stage["chunk_fts_source"] == "sqlite_fts_or_fallback"
+
+
+def test_provenance_fusion_pulls_source_with_no_lexical_match_on_sqlite() -> None:
+    store = _sqlite_retrieval_store()
+    evidence = store.create_source(
+        {
+            "source_type": "document",
+            "title": "Import 9f3a4c",
+            "content_hash": "sha256:evidence",
+            "captured_at": "2026-01-05T00:00:00Z",
+        }
+    )
+    store.create_source_chunk(
+        {"source_id": evidence["id"], "chunk_index": 0, "text": "lorem ipsum dolor sit amet"}
+    )
+    decoy = store.create_source(
+        {
+            "source_type": "document",
+            "title": "Quarterly newsletter archive",
+            "content_hash": "sha256:decoy",
+            "captured_at": "2026-06-01T00:00:00Z",
+        }
+    )
+    store.create_source_chunk(
+        {"source_id": decoy["id"], "chunk_index": 0, "text": "newsletter formatting notes"}
+    )
+    memory = store.create_memory(
+        {
+            "memory_key": "preference.board-deck",
+            "memory_type": "preference",
+            "title": "Board deck style",
+            "canonical_text": "Sam prefers the quarterly board deck in dark mode.",
+            "status": "active",
+            "domain": "project",
+            "sensitivity": "private",
+            "value": {"text": "dark mode board deck"},
+        }
+    )
+    store.create_provenance_link(
+        {
+            "target_type": "memory",
+            "target_id": memory["id"],
+            "source_id": evidence["id"],
+            "quote": "quarterly board deck in dark mode",
+            "evidence_role": "quoted_from",
+        }
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="quarterly board deck dark mode")
+    )
+
+    # The winning memory's provenance drags the lexically-invisible
+    # evidence source into the pack.
+    assert [item["id"] for item in pack["relevant_memories"]] == [memory["id"]]
+    assert str(evidence["id"]) in {str(item["id"]) for item in pack["sources"]}
+    stage = pack["trace"]["stages"]["sources"]
+    assert stage["provenance"] == 1
+    source_trace = {
+        record["target_id"]: record
+        for record in pack["trace"]["selected"]
+        if record["target_type"] == "source"
+    }
+    assert source_trace[str(evidence["id"])]["stage_ranks"]["provenance"] == 1
 
 
 def test_context_pack_filters_memories_by_project_metadata() -> None:
@@ -1688,7 +2144,7 @@ def test_minimal_depth_is_fts_only_with_honest_disabled_stage_statuses() -> None
     assert "entities" not in pack
     # No sources, no contradictions, no recent changes, no typed sections.
     assert pack["sources"] == []
-    assert stages["sources"] == {"source": "store_lexical", "candidate_count": 0, "status": STAGE_DISABLED_MINIMAL}
+    assert stages["sources"] == {"candidate_count": 0, "status": STAGE_DISABLED_MINIMAL}
     assert pack["contradicting_evidence"] == []
     assert stages["contradictions"] == {"status": STAGE_DISABLED_MINIMAL, "candidate_count": 0}
     assert "recent_changes" not in pack
@@ -1744,9 +2200,19 @@ def test_explicit_flags_override_the_minimal_tier_defaults() -> None:
     )
 
     # Caller wins: sources and contradictions come back on, everything else
-    # stays minimal (vector/graph still skipped).
+    # stays minimal (vector/graph still skipped). The fused stage record
+    # reports every list it ran, even when only title_recency had rows
+    # (the fake has no chunks; the chunk pass fell back to OR and still
+    # found nothing).
     assert [item["id"] for item in pack["sources"]] == ["source-1"]
-    assert pack["trace"]["stages"]["sources"] == {"source": "store_lexical", "candidate_count": 1}
+    assert pack["trace"]["stages"]["sources"] == {
+        "source": "rrf(chunk_fts+provenance+title_recency)",
+        "candidate_count": 1,
+        "chunk_fts": 0,
+        "provenance": 0,
+        "title_recency": 1,
+        "chunk_fts_source": "postgres_fts_or_fallback",
+    }
     assert pack["trace"]["stages"]["contradictions"]["status"] == CONTRADICTIONS_STAGE_ENABLED
     assert pack["trace"]["stages"]["vector"]["status"] == STAGE_DISABLED_MINIMAL
     assert pack["query_interpretation"]["requires_sources"] is True
