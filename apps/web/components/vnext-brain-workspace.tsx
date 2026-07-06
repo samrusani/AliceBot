@@ -4289,8 +4289,8 @@ export function VNextBrainWorkspace({
             </div>
           </div>
           <div className="cluster">
-            {workspace.doctor.recommended_fixes.filter(Boolean).map((fix) => (
-              <span key={String(fix)} className="meta-pill">{fix}</span>
+            {workspace.doctor.recommended_fixes.filter(Boolean).map((fix, index) => (
+              <span key={`${index}-${String(fix)}`} className="meta-pill">{fix}</span>
             ))}
           </div>
         </SectionCard>
