@@ -9,12 +9,29 @@ contract — outcomes, audit guarantees, and honest boundaries — see the
 ## Start the server
 
 ```bash
+uvx alice-memory mcp --data-dir ~/.alice   # packaged, SQLite, no Postgres needed
+# or, against the full stack from a checkout:
 alicebot-mcp
-# or, from an editable install:
 ./.venv/bin/python -m alicebot_api.mcp_server
 ```
 
-Claude Desktop / IDE config:
+Pointing `DATABASE_URL` at a `sqlite:///` file? The server bootstraps the
+user row automatically on first start — no seed step needed.
+
+Claude Desktop / IDE config for the packaged runtime:
+
+```json
+{
+  "mcpServers": {
+    "alice": {
+      "command": "uvx",
+      "args": ["alice-memory", "mcp", "--data-dir", "/ABSOLUTE/PATH/TO/.alice"]
+    }
+  }
+}
+```
+
+For the full Postgres stack from a checkout:
 
 ```json
 {
@@ -32,11 +49,10 @@ Claude Desktop / IDE config:
 }
 ```
 
-> **No Postgres yet?** `alice-memory mcp --data-dir ~/.alice` serves the
-> same eleven core tools against a local SQLite file — no `DATABASE_URL`
-> needed. Works from a repo checkout today (`pip install -e .`);
-> `uvx alice-memory` once the package is published. SQLite-mode boundaries
-> are listed in [known limitations](known-limitations.md).
+> **No Postgres?** The packaged runtime above serves the same eleven core
+> tools against a local SQLite file — no `DATABASE_URL` needed. Install it
+> with `uvx alice-memory` or `pip install alice-memory`. SQLite-mode
+> boundaries are listed in [known limitations](known-limitations.md).
 
 ## The eleven core tools
 
@@ -100,7 +116,9 @@ To run the MCP server under a specific agent identity, set
 `ALICE_AGENT_API_KEY` in the server env to a key created with
 `alicebot agent keys create` (see
 [agent-integration.md](agent-integration.md)). Without it, the server runs
-as local operator tooling.
+as local operator tooling. Key creation requires Postgres — in SQLite
+on-ramp mode, leave `ALICE_AGENT_API_KEY` unset; payload identity is
+honored and audited as `unauthenticated_local`.
 
 ## The debug flag
 
@@ -125,8 +143,21 @@ full-text search alone.
 
 ## Explicit memory commits
 
-Trusted agents write explicit "remember this" instructions through
-`alice_memory_commit`. Alice decides the outcome, never the agent:
+Explicit "remember this" instructions go through `alice_memory_commit`.
+Who is calling decides what to pass:
+
+- **Human, calling directly** (Claude Desktop, an IDE): just `title` and
+  `canonical_text` — no identity fields needed. The commit runs as the
+  local operator.
+- **Agent integrations**: declare identity — `agent_id` and `agent_type`,
+  plus a `permission_profile` (`read_only_agent`,
+  `project_scoped_agent`, `trusted_local_agent`, `memory_proposal_agent`,
+  `admin_agent`). Use `trusted_local_agent` for a local trusted assistant;
+  only `trusted_local_agent` and `admin_agent` can commit outside the
+  `project` domain, and `read_only_agent` callers cannot write. Full
+  profile semantics: [agent-integration.md](agent-integration.md).
+
+Alice decides the outcome, never the caller:
 
 - `committed` — direct active memory with provenance, event log, revision.
 - `confirmation_required` — sensitive or ambiguous memory waits for
@@ -148,12 +179,16 @@ for the full verb contract see the
 
 ## Legacy tool surface
 
-Earlier releases exposed a 74-tool surface. The long tail remains available
-behind an environment flag for integrations that depend on it:
+Earlier releases exposed a much larger surface. The long tail — 65 legacy
+tools, listed alongside the eleven core tools for 76 total — remains
+available behind an environment flag for integrations that depend on it:
 
 ```bash
 ALICE_MCP_LEGACY_TOOLS=1
 ```
+
+The legacy surface requires Postgres: on the SQLite backend the legacy
+tools are listed but their calls fail.
 
 With the flag set, `tools/list` includes the full long tail — for example
 `alice_vnext_ingest_agent_output` for structured agent-output ingestion,

@@ -38,7 +38,7 @@ one of four outcomes, decided by the memory commit policy engine:
 
 What routes where (from `evaluate_memory_commit_policy`):
 
-- No agent identity, blocked policy, or secret-looking content (API keys,
+- Blocked policy, a read-only caller, or secret-looking content (API keys,
   tokens, passwords) → `rejected`.
 - Confidence below 0.5, external source types (email, web pages, generated
   artifacts), non-explicit intent, or bulk source references → `review_required`.
@@ -68,12 +68,14 @@ references, so [audit](#audit) can answer "where did this come from?".
 ## Identity and authentication
 
 Every write verb accepts agent identity fields (`agent_id`, `agent_type`,
-`agent_run_id`, `task_id`, `project_scope`, `permission_profile`). Writes
-without an identity are rejected. When per-agent API keys exist,
-identity is resolved and enforced from the key record — on HTTP via
-`Authorization: Bearer alice_sk_...`, on MCP via `ALICE_AGENT_API_KEY` in
-the server environment. Claiming another agent's id or a higher permission
-profile is refused and logged. See
+`agent_run_id`, `task_id`, `project_scope`, `permission_profile`). Direct
+human/local calls (Claude Desktop, the CLI as yourself) may omit them
+entirely — the write runs as the local operator. Agent integrations
+declare identity, and `read_only_agent` callers cannot write. When
+per-agent API keys exist, identity is resolved and enforced from the key
+record — on HTTP via `Authorization: Bearer alice_sk_...`, on MCP via
+`ALICE_AGENT_API_KEY` in the server environment. Claiming another agent's
+id or a higher permission profile is refused and logged. See
 [agent-integration.md](alpha/agent-integration.md).
 
 ---
