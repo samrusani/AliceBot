@@ -28,7 +28,7 @@ for _path in (_EVAL_DIR, _API_SRC):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from longmemeval import adapter, chat, judge, runner  # noqa: E402
+from longmemeval import adapter, chat, coverage_probe, judge, runner  # noqa: E402
 from longmemeval.dataset import (  # noqa: E402
     SYNTHETIC_FIXTURE_PATH,
     LongMemEvalDatasetError,
@@ -517,6 +517,176 @@ def test_runner_dry_run_end_to_end(tmp_path: Path) -> None:
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["resumed_from_checkpoint"] == 2
     assert report["totals"]["ok"] == 2
+
+
+# -- coverage probe -------------------------------------------------------------------
+
+
+def _coverage_question(question_id: str, question_type: str, answer_session_ids: list[str]):
+    return parse_question(
+        {
+            "question_id": question_id,
+            "question_type": question_type,
+            "question": "What breed is the dog?",
+            "answer": "golden retriever",
+            "question_date": "2023/06/01 (Thu) 10:00",
+            "haystack_dates": ["2023/05/01 (Mon) 10:00"] * 3,
+            "haystack_session_ids": ["s1", "s2", "s3"],
+            "haystack_sessions": [[{"role": "user", "content": "hello"}]] * 3,
+            "answer_session_ids": answer_session_ids,
+        }
+    )
+
+
+def test_coverage_row_math() -> None:
+    question = _coverage_question("q_cov", "multi-session", ["s1", "s2"])
+    # All evidence retrieved (extra retrieved sessions do not hurt).
+    row = coverage_probe.coverage_row(question, {"s1", "s2", "s3"})
+    assert (row["n_evidence"], row["n_hit"]) == (2, 2)
+    assert row["any_coverage"] is True and row["all_coverage"] is True
+    assert row["missed_session_ids"] == []
+    # Partial: any but not all.
+    row = coverage_probe.coverage_row(question, {"s2", "s3"})
+    assert (row["n_evidence"], row["n_hit"]) == (2, 1)
+    assert row["any_coverage"] is True and row["all_coverage"] is False
+    assert row["missed_session_ids"] == ["s1"]
+    # Miss: neither.
+    row = coverage_probe.coverage_row(question, {"s3"})
+    assert row["n_hit"] == 0
+    assert row["any_coverage"] is False and row["all_coverage"] is False
+    # No evidence ids: coverage undefined, excluded from percentages.
+    row = coverage_probe.coverage_row(_coverage_question("q_abs", "multi-session", []), {"s1"})
+    assert row["any_coverage"] is None and row["all_coverage"] is None
+
+
+def test_summarize_rows_per_type_percentages() -> None:
+    q_all = _coverage_question("q1", "multi-session", ["s1", "s2"])
+    q_partial = _coverage_question("q2", "multi-session", ["s1", "s2"])
+    q_miss = _coverage_question("q3", "temporal-reasoning", ["s1"])
+    q_unscored = _coverage_question("q4", "temporal-reasoning", [])
+    rows = [
+        coverage_probe.coverage_row(q_all, {"s1", "s2"}),
+        coverage_probe.coverage_row(q_partial, {"s1"}),
+        coverage_probe.coverage_row(q_miss, {"s3"}),
+        coverage_probe.coverage_row(q_unscored, {"s3"}),
+    ]
+    summary = coverage_probe.summarize_rows(rows)
+    assert summary["overall"] == {"questions": 4, "scored": 3, "any_coverage": 0.6667, "all_coverage": 0.3333}
+    assert summary["per_type"]["multi-session"] == {
+        "questions": 2,
+        "scored": 2,
+        "any_coverage": 1.0,
+        "all_coverage": 0.5,
+    }
+    assert summary["per_type"]["temporal-reasoning"] == {
+        "questions": 2,
+        "scored": 1,
+        "any_coverage": 0.0,
+        "all_coverage": 0.0,
+    }
+    table = coverage_probe.format_summary_table(summary)
+    assert "multi-session" in table and "overall" in table
+
+
+def test_coverage_probe_end_to_end_and_store_reuse(tmp_path: Path) -> None:
+    work_dir = tmp_path / "stores"
+    out_path = tmp_path / "rows.jsonl"
+    exit_code = coverage_probe.main(
+        [
+            "--dataset-file",
+            str(SYNTHETIC_FIXTURE_PATH),
+            "--work-dir",
+            str(work_dir),
+            "--out",
+            str(out_path),
+            "--workers",
+            "1",
+        ]
+    )
+    assert exit_code == coverage_probe.EXIT_OK
+    rows = [json.loads(line) for line in out_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["question_id"] for row in rows] == ["synthetic_1", "synthetic_2_abs"]
+    first, second = rows
+    # synthetic_1's single evidence session (answer_synth_1) is retrieved.
+    assert first["n_evidence"] == 1 and first["n_hit"] == 1
+    assert first["any_coverage"] is True and first["all_coverage"] is True
+    assert first["reused_store"] is False
+    assert first["vector_stage"].startswith("disabled")  # keyless FTS-only by default
+    # The abstention fixture has no evidence ids: unscored.
+    assert second["any_coverage"] is None and second["all_coverage"] is None
+    summary = json.loads(out_path.with_suffix(".summary.json").read_text(encoding="utf-8"))
+    assert summary["overall"] == {"questions": 2, "scored": 1, "any_coverage": 1.0, "all_coverage": 1.0}
+    assert summary["vectors"] == "disabled"
+
+    # Rerun over the same work dir: ingest skipped, identical coverage.
+    rerun_path = tmp_path / "rows2.jsonl"
+    exit_code = coverage_probe.main(
+        [
+            "--dataset-file",
+            str(SYNTHETIC_FIXTURE_PATH),
+            "--work-dir",
+            str(work_dir),
+            "--out",
+            str(rerun_path),
+            "--workers",
+            "1",
+        ]
+    )
+    assert exit_code == coverage_probe.EXIT_OK
+    rerun_rows = [json.loads(line) for line in rerun_path.read_text(encoding="utf-8").splitlines()]
+    assert all(row["reused_store"] is True and row["ingest_seconds"] is None for row in rerun_rows)
+    volatile = ("reused_store", "ingest_seconds", "retrieval_seconds")
+    stable = [{key: value for key, value in row.items() if key not in volatile} for row in rows]
+    rerun_stable = [{key: value for key, value in row.items() if key not in volatile} for row in rerun_rows]
+    assert rerun_stable == stable  # determinism: same inputs, same coverage numbers
+
+
+def test_coverage_probe_question_ids_and_limit(tmp_path: Path) -> None:
+    ids_file = tmp_path / "ids.txt"
+    ids_file.write_text("synthetic_2_abs\n", encoding="utf-8")
+    out_path = tmp_path / "rows.jsonl"
+    exit_code = coverage_probe.main(
+        [
+            "--dataset-file",
+            str(SYNTHETIC_FIXTURE_PATH),
+            "--question-ids",
+            str(ids_file),
+            "--work-dir",
+            str(tmp_path / "stores"),
+            "--out",
+            str(out_path),
+            "--workers",
+            "1",
+        ]
+    )
+    assert exit_code == coverage_probe.EXIT_OK
+    rows = [json.loads(line) for line in out_path.read_text(encoding="utf-8").splitlines()]
+    assert [row["question_id"] for row in rows] == ["synthetic_2_abs"]
+
+    exit_code = coverage_probe.main(
+        [
+            "--dataset-file",
+            str(SYNTHETIC_FIXTURE_PATH),
+            "--limit",
+            "1",
+            "--work-dir",
+            str(tmp_path / "stores_limit"),
+            "--out",
+            str(tmp_path / "rows_limit.jsonl"),
+            "--workers",
+            "1",
+        ]
+    )
+    assert exit_code == coverage_probe.EXIT_OK
+    rows = [json.loads(line) for line in (tmp_path / "rows_limit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [row["question_id"] for row in rows] == ["synthetic_1"]
+
+
+def test_coverage_probe_missing_dataset(tmp_path: Path) -> None:
+    exit_code = coverage_probe.main(
+        ["--dataset-file", str(tmp_path / "missing.json"), "--work-dir", str(tmp_path / "stores")]
+    )
+    assert exit_code == coverage_probe.EXIT_CONFIG_ERROR
 
 
 def test_runner_dry_run_skips_cleanly_without_dataset(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
