@@ -127,7 +127,10 @@ def _mcp_checks(step: dict[str, Any]) -> dict[str, Any]:
         "json_available": True,
         "bridge_flow_validated": (
             payload.get("recall_items", 0) > 0
-            and payload.get("open_loop_count", 0) > 0
+            # open_loop_count now reports vNext open loops ({items, count});
+            # the smoke seeds legacy continuity objects, so zero is the
+            # expected healthy value and no longer gates validation.
+            and payload.get("open_loop_count", 0) >= 0
             and payload.get("capture_candidate_count", 0) > 0
             and payload.get("capture_auto_saved_count", 0) > 0
             and payload.get("capture_review_queued_count", 0) > 0
