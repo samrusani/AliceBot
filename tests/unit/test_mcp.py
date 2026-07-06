@@ -2193,3 +2193,17 @@ def test_agent_identity_with_key_env_rejects_agent_id_mismatch(monkeypatch) -> N
         mcp_tools_module._agent_identity_from_arguments(
             context, {"agent_id": "openclaw", "permission_profile": "trusted_local_agent"}
         )
+
+
+def test_alice_memory_correct_invalid_action_error_matches_schema_enum(core_surface) -> None:
+    schema = {tool["name"]: tool for tool in list_mcp_tools()}["alice_memory_correct"]
+    schema_enum = schema["inputSchema"]["properties"]["action"]["enum"]
+
+    with pytest.raises(MCPToolError) as excinfo:
+        call_mcp_tool(
+            _mcp_context(),
+            name="alice_memory_correct",
+            arguments={"action": "not-an-action"},
+        )
+
+    assert str(excinfo.value) == f"action must be one of: {', '.join(schema_enum)}"

@@ -1858,3 +1858,62 @@ def test_backfill_embeddings_cli_embeds_missing_memories_in_batches(monkeypatch)
         "00000000-0000-4000-8000-000000000001",
         "00000000-0000-4000-8000-000000000002",
     ]
+
+
+def test_main_rejects_sqlite_database_url_with_onramp_pointer(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "get_settings",
+        lambda: Settings(database_url="postgresql://db", auth_user_id=str(uuid4())),
+    )
+
+    exit_code = cli_module.main(["--database-url", "sqlite:///alice.db", "status"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "requires a Postgres DATABASE_URL" in captured.err
+    assert "alice-memory" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_main_rejects_non_uuid_user_id_without_traceback(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "get_settings",
+        lambda: Settings(database_url="postgresql://db", auth_user_id=str(uuid4())),
+    )
+
+    exit_code = cli_module.main(["--user-id", "not-a-uuid", "status"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "error: --user-id must be a UUID, got: not-a-uuid" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_version_flag_reports_distribution_version(capsys) -> None:
+    from alicebot_api import __version__
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli_module.main(["--version"])
+
+    captured = capsys.readouterr()
+    assert excinfo.value.code == 0
+    assert captured.out.strip() == f"alicebot {__version__}"
+
+
+def test_eval_suite_choices_derive_from_canonical_registry() -> None:
+    from alicebot_api.vnext_evals import VNEXT_EVAL_SUITE_ORDER
+
+    parser = cli_module.build_parser()
+
+    for subcommand in ("run", "report"):
+        args = parser.parse_args(["eval", subcommand, "--suite", "graph_hop_retrieval"])
+        assert args.suite == "graph_hop_retrieval"
+        for suite_key in VNEXT_EVAL_SUITE_ORDER:
+            parsed = parser.parse_args(["eval", subcommand, "--suite", suite_key])
+            assert parsed.suite == suite_key
+        with pytest.raises(SystemExit):
+            parser.parse_args(["eval", subcommand, "--suite", "not_a_suite"])
