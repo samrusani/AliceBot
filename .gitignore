@@ -4,6 +4,9 @@
 apps/web/.env.local
 apps/web/.env.local.*
 !apps/web/.env.local.example
+*.db
+*.sqlite
+*.sqlite3
 .pytest_cache/
 .venv/
 *.egg-info/
