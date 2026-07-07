@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Retrieval bug fix: the sources stage was content-blind (matched only titles/metadata with a broken stopword list, effectively returning the most-recent sessions); it is now RRF fusion over chunk-level full-text hits, provenance of winning memories, and title/recency — plus an FTS OR-fallback when strict AND finds nothing.
+- Excerpt packing guarantees each retrieved source its best chunk before spending the remaining budget, rendered in session-timestamp order.
+- LongMemEval_s: **79.4%** (397/500, single run 2026-07-07) vs the 64.6% baseline, paired on the same 500 questions (net +74, McNemar p = 3.26e-12); every question type improved, multi-session 45.1% → 58.6%. Config disclosed: official chain-of-thought reading template, 16 items / 24k-char context (was standard / 8 / 12k).
+- Known trade-off disclosed: the abstention subset regressed 25/30 → 22/30 — the CoT reading style makes the model more willing to answer when the memory lacks the fact.
+
 ## v0.9.0 — 2026-07-06
 
 - Completed the Memory Operations Protocol — all ten verbs are real: `merge` via consolidation-candidate acceptance that executes member supersessions in one audited action; `expire`/`unexpire` riding the read-path validity exclusion; and true `redact` — content expunged from memories, revisions, and event payloads through a narrowly trigger-guarded redaction mode (append-only stays the default posture; the audit skeleton and a redaction proof-trail survive; migration `20260706_0079`). All wired across MCP (`alice_memory_manage`), HTTP, and CLI with policy vocabulary (redact and consolidation-acceptance require human or admin).

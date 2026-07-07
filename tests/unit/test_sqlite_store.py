@@ -80,6 +80,7 @@ def test_bootstrap_sqlite_schema_is_idempotent() -> None:
         "agent_identities",
         "agent_api_keys",
         "memories_fts",
+        "source_chunks_fts",
     ):
         assert expected in tables
     conn.close()
@@ -173,6 +174,7 @@ def test_every_read_method_is_scoped_to_the_bound_user() -> None:
     assert alice.list_memories()
     assert alice.list_events()
     assert [row["id"] for row in alice.list_source_chunks(source["id"])] == [chunk["id"]]
+    assert [row["id"] for row in alice.search_source_chunks(query="chunk")] == [chunk["id"]]
 
     # Mallory must see none of it, on every read method.
     assert mallory.list_events() == []
@@ -181,6 +183,8 @@ def test_every_read_method_is_scoped_to_the_bound_user() -> None:
     assert mallory.get_source_by_content_hash("sha256:scoped") is None
     assert mallory.list_source_chunks(source["id"]) == []
     assert mallory.search_sources(query="spec") == []
+    assert mallory.search_source_chunks(query="chunk") == []
+    assert mallory.search_source_chunks(query="chunk", match_any=True) == []
     assert mallory.get_memory(memory["id"]) is None
     assert mallory.list_memories() == []
     assert mallory.list_memories(status="active") == []
@@ -662,6 +666,179 @@ def test_search_memories_fts_applies_domain_and_sensitivity_filters() -> None:
         sensitivity_allowed=["private"],
     )
     assert [row["id"] for row in rows] == [visible["id"]]
+    conn.close()
+
+
+# -- source-chunk FTS search ---------------------------------------------------------
+
+
+def test_search_source_chunks_matches_content_the_title_search_cannot_see() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    early = _create_source(store, title="Chat session 12", content_hash="sha256:early")
+    hit = store.create_source_chunk(
+        {
+            "source_id": early["id"],
+            "chunk_index": 0,
+            "text": "I adopted a golden retriever named Biscuit last weekend.",
+        }
+    )
+    recent = _create_source(store, title="Chat session 99", content_hash="sha256:recent")
+    store.create_source_chunk(
+        {"source_id": recent["id"], "chunk_index": 0, "text": "Spreadsheet formulas and pivot tables."}
+    )
+
+    # The content-blind search_sources cannot find the answer session...
+    assert store.search_sources(query="golden retriever Biscuit") == []
+    # ...the chunk search can, and every row carries source_id + fts_score.
+    rows = store.search_source_chunks(query="golden retriever Biscuit")
+    assert [row["id"] for row in rows] == [hit["id"]]
+    assert rows[0]["source_id"] == early["id"]
+    assert "fts_score" in rows[0]
+    conn.close()
+
+
+def test_search_source_chunks_ranks_best_hit_first_and_respects_limit() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    source = _create_source(store, content_hash="sha256:ranked")
+    strong = store.create_source_chunk(
+        {"source_id": source["id"], "chunk_index": 0, "text": "deployment deployment pipeline"}
+    )
+    store.create_source_chunk(
+        {
+            "source_id": source["id"],
+            "chunk_index": 1,
+            "text": "one deployment mention buried in a much longer paragraph about many unrelated things",
+        }
+    )
+
+    rows = store.search_source_chunks(query="deployment")
+    assert len(rows) == 2
+    assert rows[0]["id"] == strong["id"]
+    assert rows[0]["fts_score"] >= rows[-1]["fts_score"]
+
+    assert len(store.search_source_chunks(query="deployment", limit=1)) == 1
+    conn.close()
+
+
+def test_search_source_chunks_match_any_ors_terms_the_strict_pass_misses() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    source = _create_source(store, content_hash="sha256:fallback")
+    chunk = store.create_source_chunk(
+        {
+            "source_id": source["id"],
+            "chunk_index": 0,
+            "text": "Decision: Alice public announcement goes out Monday after the pre-launch audit passes.",
+        }
+    )
+
+    # Strict AND semantics demand every non-stopword term: "go" never
+    # appears (the text says "goes"), so the question returns nothing.
+    question = "When does the Alice public announcement go out?"
+    assert store.search_source_chunks(query=question) == []
+
+    rows = store.search_source_chunks(query=question, match_any=True)
+    assert [row["id"] for row in rows] == [chunk["id"]]
+
+    # Single-term queries behave identically under both modes.
+    strict = store.search_source_chunks(query="announcement")
+    relaxed = store.search_source_chunks(query="announcement", match_any=True)
+    assert [row["id"] for row in strict] == [row["id"] for row in relaxed] == [chunk["id"]]
+    conn.close()
+
+
+def test_search_source_chunks_is_safe_against_fts5_metacharacters() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    source = _create_source(store, content_hash="sha256:hostile")
+    chunk = store.create_source_chunk(
+        {"source_id": source["id"], "chunk_index": 0, "text": "deployment notes with NEAR misses"}
+    )
+
+    hostile_queries = [
+        'col:*(NEAR "unclosed AND ^',
+        "a AND OR NOT (",
+        '"unbalanced',
+        "title:deployment*",
+        "x ^ y NEAR/3 z",
+        "(((((",
+        "-deployment",
+    ]
+    for hostile in hostile_queries:
+        for match_any in (False, True):
+            rows = store.search_source_chunks(query=hostile, match_any=match_any)  # must not raise
+            assert isinstance(rows, list)
+
+    # Sanitized empty queries return no rows instead of erroring.
+    assert store.search_source_chunks(query="") == []
+    assert store.search_source_chunks(query="()^*:") == []
+    assert store.search_source_chunks(query="()^*:", match_any=True) == []
+
+    # A hostile query containing a real term still matches.
+    rows = store.search_source_chunks(query="deployment:*(")
+    assert [row["id"] for row in rows] == [chunk["id"]]
+    conn.close()
+
+
+def test_search_source_chunks_applies_parent_source_domain_sensitivity_and_deletion() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    visible = _create_source(store, content_hash="sha256:visible", domain="project", sensitivity="private")
+    store.create_source_chunk({"source_id": visible["id"], "chunk_index": 0, "text": "shared gate keyword"})
+    hidden = _create_source(store, content_hash="sha256:hidden", domain="health", sensitivity="sacred")
+    store.create_source_chunk({"source_id": hidden["id"], "chunk_index": 0, "text": "shared gate keyword"})
+
+    rows = store.search_source_chunks(
+        query="gate keyword",
+        domains=["project"],
+        sensitivity_allowed=["private"],
+    )
+    assert [row["source_id"] for row in rows] == [visible["id"]]
+
+    # Chunks of a soft-deleted source disappear from content search.
+    conn.execute(
+        "UPDATE sources SET deleted_at = '2026-07-01T00:00:00Z' WHERE id = ?",
+        (visible["id"],),
+    )
+    assert (
+        store.search_source_chunks(
+            query="gate keyword", domains=["project"], sensitivity_allowed=["private"]
+        )
+        == []
+    )
+    conn.close()
+
+
+def test_source_chunks_fts_backfills_existing_rows_when_index_first_appears(tmp_path: Path) -> None:
+    # Simulate a database file written before the source_chunks_fts table
+    # shipped: drop the index and its sync triggers, then re-bootstrap.
+    db_path = tmp_path / "alice.db"
+    conn = sqlite3.connect(str(db_path))
+    bootstrap_sqlite_schema(conn)
+    user_id = str(uuid4())
+    ensure_sqlite_user(conn, user_id, "backfill@example.com", "Backfill")
+    store = SQLiteVNextStore(conn, user_id)
+    source = _create_source(store, content_hash="sha256:backfill")
+    chunk = store.create_source_chunk(
+        {"source_id": source["id"], "chunk_index": 0, "text": "historic rows must stay searchable"}
+    )
+    for trigger in (
+        "source_chunks_fts_after_insert",
+        "source_chunks_fts_after_delete",
+        "source_chunks_fts_after_update",
+    ):
+        conn.execute(f"DROP TRIGGER {trigger}")
+    conn.execute("DROP TABLE source_chunks_fts")
+    conn.commit()
+    conn.close()
+
+    conn = sqlite3.connect(str(db_path))
+    bootstrap_sqlite_schema(conn)
+    store = SQLiteVNextStore(conn, user_id)
+    rows = store.search_source_chunks(query="historic searchable")
+    assert [row["id"] for row in rows] == [chunk["id"]]
     conn.close()
 
 

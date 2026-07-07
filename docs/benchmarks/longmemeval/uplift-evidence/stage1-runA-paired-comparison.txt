@@ -1,0 +1,15 @@
+compared 172 judged questions (baseline judged 500, candidate judged 172)
+accuracy: baseline 111/172 (0.6453) -> candidate 118/172 (0.686)
+flips: +16 gained (wrong->right), -9 lost (right->wrong), net +7
+McNemar exact two-sided p = 0.229523
+
+question_type                   n   base   cand gained  lost  net
+-----------------------------------------------------------------
+knowledge-update               25  0.800  0.800      2     2   +0
+multi-session                  60  0.517  0.483      4     6   -2
+single-session-assistant       15  0.867  1.000      2     0   +2
+single-session-preference      15  0.533  0.600      1     0   +1
+single-session-user            15  0.933  1.000      1     0   +1
+temporal-reasoning             42  0.595  0.714      6     1   +5
+
+abstention subset: n=30 baseline_correct=25 candidate_correct=25 delta=+0

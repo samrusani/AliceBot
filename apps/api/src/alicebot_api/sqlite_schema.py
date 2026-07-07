@@ -29,6 +29,13 @@ Conventions:
   AFTER INSERT/UPDATE/DELETE triggers. It uses the ``porter unicode61``
   tokenizer so inflected query terms match the way stemmed Postgres FTS
   (``websearch_to_tsquery('english', ...)``) does.
+- ``source_chunks_fts`` is the same construction over
+  source_chunks(text) (mirroring the Postgres ``search_tsv`` column from
+  migration ``20260707_0081``), so source retrieval can match captured
+  CONTENT instead of only title/uri/metadata. External-content FTS
+  tables created against a pre-existing database file start empty (the
+  sync triggers only see later writes), so bootstrap issues a one-shot
+  ``'rebuild'`` for any FTS table it just created.
 """
 
 from __future__ import annotations
@@ -934,12 +941,58 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
       VALUES (new.rowid, new.title, new.canonical_text, new.summary, new.memory_key);
     END
     """,
+    # External-content FTS5 index over source_chunks.text (mirrors the
+    # Postgres search_tsv column from migration 20260707_0081), synced by
+    # triggers, so source retrieval can find the session that SAYS the
+    # thing instead of only title/recency matches. Same porter stemmer as
+    # memories_fts for Postgres 'english' text-search parity.
+    """
+    CREATE VIRTUAL TABLE IF NOT EXISTS source_chunks_fts USING fts5(
+      text,
+      content='source_chunks',
+      tokenize='porter unicode61'
+    )
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS source_chunks_fts_after_insert
+    AFTER INSERT ON source_chunks
+    BEGIN
+      INSERT INTO source_chunks_fts(rowid, text)
+      VALUES (new.rowid, new.text);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS source_chunks_fts_after_delete
+    AFTER DELETE ON source_chunks
+    BEGIN
+      INSERT INTO source_chunks_fts(source_chunks_fts, rowid, text)
+      VALUES ('delete', old.rowid, old.text);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS source_chunks_fts_after_update
+    AFTER UPDATE ON source_chunks
+    BEGIN
+      INSERT INTO source_chunks_fts(source_chunks_fts, rowid, text)
+      VALUES ('delete', old.rowid, old.text);
+      INSERT INTO source_chunks_fts(rowid, text)
+      VALUES (new.rowid, new.text);
+    END
+    """,
 )
 
 
 # Full statement list, kept for introspection; bootstrap_sqlite_schema
 # interleaves the additive-column guard between the two halves.
 _SCHEMA_STATEMENTS: tuple[str, ...] = _TABLE_STATEMENTS + _INDEX_AND_TRIGGER_STATEMENTS
+
+# External-content FTS5 tables whose sync triggers only cover writes made
+# after the table exists. When bootstrap creates one of these against a
+# pre-existing database file that already holds content rows, the fresh
+# index would silently hide every earlier row from full-text search, so
+# bootstrap issues a one-shot FTS5 'rebuild' for exactly the tables it
+# just created (a rebuild of a brand-new empty database is a no-op).
+_EXTERNAL_CONTENT_FTS_TABLES: tuple[str, ...] = ("memories_fts", "source_chunks_fts")
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -974,6 +1027,23 @@ def _ensure_additive_columns(conn: sqlite3.Connection) -> None:
                 conn.execute(backfill)
 
 
+def _missing_fts_tables(conn: sqlite3.Connection) -> list[str]:
+    """FTS tables not present yet; tolerant of any installed row_factory."""
+    cursor = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ({})".format(
+            ", ".join("?" for _ in _EXTERNAL_CONTENT_FTS_TABLES)
+        ),
+        _EXTERNAL_CONTENT_FTS_TABLES,
+    )
+    present: set[str] = set()
+    for row in cursor.fetchall():
+        if isinstance(row, dict):
+            present.add(str(row["name"]))
+        else:
+            present.add(str(row[0]))
+    return [name for name in _EXTERNAL_CONTENT_FTS_TABLES if name not in present]
+
+
 def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
     """Create or upgrade the vNext SQLite schema. Safe to call repeatedly."""
     conn.execute("PRAGMA journal_mode=WAL")
@@ -988,8 +1058,13 @@ def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
     # a database file with redaction mode stuck open.
     conn.execute("INSERT OR IGNORE INTO redaction_mode (id, enabled) VALUES (1, 0)")
     conn.execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
+    created_fts_tables = _missing_fts_tables(conn)
     for statement in _INDEX_AND_TRIGGER_STATEMENTS:
         conn.execute(statement)
+    # One-shot backfill for FTS tables this bootstrap just created over
+    # pre-existing content rows; see _EXTERNAL_CONTENT_FTS_TABLES.
+    for name in created_fts_tables:
+        conn.execute(f"INSERT INTO {name}({name}) VALUES('rebuild')")
 
 
 __all__ = [

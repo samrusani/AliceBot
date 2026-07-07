@@ -141,6 +141,21 @@ CONTEXT_DEPTH_MINIMAL_MAX_ITEMS = 4
 STAGE_DISABLED_MINIMAL = "disabled: context_depth=minimal"
 # Honest stage status when the caller explicitly turned sources off.
 SOURCES_STAGE_DISABLED_BY_FLAG = "disabled: include_sources=false"
+# -- source stage ----------------------------------------------------------
+# The sources section is RRF fusion over up to three ranked lists (keys
+# below double as stage_ranks keys in the trace): sources ranked by their
+# best chunk-level content hit, provenance sources of the winning memory
+# hits in fused rank order, and the legacy title/recency lexical list.
+SOURCE_STAGE_CHUNK_FTS = "chunk_fts"
+SOURCE_STAGE_PROVENANCE = "provenance"
+SOURCE_STAGE_TITLE_RECENCY = "title_recency"
+# Honest chunk-list status for stores without search_source_chunks (or
+# without the get_source resolver the chunk/provenance lists need).
+SOURCE_CHUNK_STAGE_DISABLED_NO_STORE_SUPPORT = "disabled: store does not support source-chunk search"
+# Chunk rows fetched per source slot: several chunks of one source may
+# outrank the best chunk of another, so the chunk pass over-fetches
+# before deduplicating down to distinct parent sources.
+SOURCE_CHUNK_CANDIDATE_MULTIPLIER = 4
 # Supersession chain notes (high tier): walk supersedes/superseded_by
 # pointers at most this many hops in each direction, with a cycle guard.
 SUPERSESSION_CHAIN_HOP_LIMIT = 5
@@ -195,10 +210,12 @@ class VNextRetrievalStore(Protocol):
     queries the strict AND pass missed); stores that predate the kwarg
     simply never get the fallback.
     The same applies to ``list_events`` (recent_changes section),
-    ``list_beliefs`` (contradicting_evidence section), and the entity
+    ``list_beliefs`` (contradicting_evidence section), the entity
     substrate ``find_entities_by_names``/``get_memory`` (entity-hop graph
-    stage): stores without them yield empty sections / an honest disabled
-    stage status instead of failing.
+    stage), and ``search_source_chunks``/``get_source`` (the chunk-content
+    and provenance lists of the fused sources stage): stores without them
+    yield empty sections / an honest disabled stage status instead of
+    failing.
 
     ``memory_types``/``projects``/``created_by_agent_ids``/``run_id`` are
     only forwarded to the store when the request sets them, so minimal
@@ -916,6 +933,130 @@ class VNextRetrievalService:
         rows = [entry[3] for entry in ranked[:limit]]
         return rows, GRAPH_STAGE_ENABLED, matched_entities
 
+    def _source_stage_lists(
+        self,
+        *,
+        query: str,
+        domains: list[str],
+        sensitivity_allowed: list[str],
+        limit: int,
+        winning_memories: Sequence[JsonObject],
+    ) -> tuple[dict[str, Sequence[JsonObject]], JsonObject]:
+        """Ranked source lists for RRF fusion plus the honest stage record.
+
+        Up to three lists (see SOURCE_STAGE_* constants):
+
+        - ``chunk_fts``: parent sources of the best chunk-content hits, in
+          best-chunk order. When the strict pass finds nothing for a
+          multi-token query, retried once with ``match_any=True`` — the
+          same one-shot OR-fallback the memory FTS stage uses — and the
+          record's ``chunk_fts_source`` label reports the relaxed pass.
+        - ``provenance``: sources the winning memories' provenance links
+          point at, in fused memory-rank order, so evidence backing a
+          retrieved memory surfaces even with zero lexical overlap.
+        - ``title_recency``: the legacy ``search_sources`` lexical list
+          (title/author/uri/metadata LIKE, recency-ordered).
+
+        Lists whose store capability is missing (``search_source_chunks``
+        / ``get_source``) are skipped with an honest label instead of
+        failing, so minimal stores and test fakes keep working. The stage
+        record reports each list's candidate count under its stage key.
+        """
+        get_source = getattr(self.store, "get_source", None)
+        resolve_source = get_source if callable(get_source) else None
+
+        def _resolve_sources(source_ids: list[str]) -> list[JsonObject]:
+            rows: list[JsonObject] = []
+            for source_id in source_ids:
+                row = resolve_source(source_id) if resolve_source is not None else None
+                if row is not None:
+                    rows.append(row)
+            return rows
+
+        ranked_lists: dict[str, Sequence[JsonObject]] = {}
+
+        # (a) Content: sources ranked by their best chunk-FTS hit.
+        search_source_chunks = getattr(self.store, "search_source_chunks", None)
+        chunk_sources: list[JsonObject] = []
+        if callable(search_source_chunks) and resolve_source is not None:
+            chunk_fts_source = str(getattr(self.store, "fts_stage_source", "postgres_fts"))
+            chunk_rows = search_source_chunks(
+                query=query,
+                domains=domains or None,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=limit * SOURCE_CHUNK_CANDIDATE_MULTIPLIER,
+            )
+            if not chunk_rows and len(fts_fallback_tokens(query)) >= 2:
+                # Same one-shot OR retry as _memory_fts_rows, same honesty
+                # rule: the label reports the relaxed pass.
+                try:
+                    chunk_rows = search_source_chunks(
+                        query=query,
+                        domains=domains or None,
+                        sensitivity_allowed=sensitivity_allowed,
+                        limit=limit * SOURCE_CHUNK_CANDIDATE_MULTIPLIER,
+                        match_any=True,
+                    )
+                except TypeError:
+                    # Store predates the match_any kwarg; keep the strict
+                    # (empty) result rather than guessing.
+                    chunk_rows = []
+                else:
+                    chunk_fts_source = f"{chunk_fts_source}_or_fallback"
+            ordered_source_ids: list[str] = []
+            seen_source_ids: set[str] = set()
+            for row in chunk_rows:
+                source_id = row.get("source_id")
+                if source_id is None or str(source_id) in seen_source_ids:
+                    continue
+                seen_source_ids.add(str(source_id))
+                ordered_source_ids.append(str(source_id))
+            chunk_sources = _resolve_sources(ordered_source_ids[:limit])
+            ranked_lists[SOURCE_STAGE_CHUNK_FTS] = chunk_sources
+        else:
+            chunk_fts_source = SOURCE_CHUNK_STAGE_DISABLED_NO_STORE_SUPPORT
+
+        # (b) Provenance of the winning memory hits, in fused rank order.
+        provenance_sources: list[JsonObject] = []
+        if resolve_source is not None:
+            provenance_ids: list[str] = []
+            seen_provenance: set[str] = set()
+            for memory in winning_memories:
+                for link in self.store.list_provenance_links(
+                    target_type="memory", target_id=str(memory.get("id"))
+                ):
+                    source_id = link.get("source_id")
+                    if source_id is None or str(source_id) in seen_provenance:
+                        continue
+                    seen_provenance.add(str(source_id))
+                    provenance_ids.append(str(source_id))
+            provenance_sources = _resolve_sources(provenance_ids[:limit])
+            ranked_lists[SOURCE_STAGE_PROVENANCE] = provenance_sources
+
+        # (c) Legacy title/recency lexical list.
+        lexical_rows = list(
+            self.store.search_sources(
+                query=query,
+                domains=domains or None,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=limit,
+            )
+        )
+        ranked_lists[SOURCE_STAGE_TITLE_RECENCY] = lexical_rows
+
+        unique_candidate_ids = {
+            str(row.get("id")) for rows in ranked_lists.values() for row in rows
+        }
+        stage_record: JsonObject = {
+            "source": "rrf(" + "+".join(ranked_lists) + ")",
+            "candidate_count": len(unique_candidate_ids),
+            SOURCE_STAGE_CHUNK_FTS: len(chunk_sources),
+            SOURCE_STAGE_PROVENANCE: len(provenance_sources),
+            SOURCE_STAGE_TITLE_RECENCY: len(lexical_rows),
+            "chunk_fts_source": chunk_fts_source,
+        }
+        return ranked_lists, stage_record
+
     def compile_context_pack(self, request: VNextRetrievalRequest) -> JsonObject:
         if request.max_tokens is not None and request.max_tokens < 1:
             raise VNextRetrievalValidationError("max_tokens must be a positive integer when set")
@@ -982,27 +1123,8 @@ class VNextRetrievalService:
         if graph_stage == GRAPH_STAGE_ENABLED:
             memory_lists["graph"] = graph_rows
 
-        if sources_enabled:
-            source_rows = self.store.search_sources(
-                query=request.query,
-                domains=domains or None,
-                sensitivity_allowed=sensitivity_allowed,
-                limit=max(DEFAULT_SOURCE_LIMIT, max_items),
-            )
-            sources_stage_record: JsonObject = {"source": "store_lexical", "candidate_count": len(source_rows)}
-        else:
-            source_rows = []
-            sources_stage_status = (
-                SOURCES_STAGE_DISABLED_BY_FLAG if request.include_sources is False else STAGE_DISABLED_MINIMAL
-            )
-            sources_stage_record = {"source": "store_lexical", "candidate_count": 0, "status": sources_stage_status}
-        open_loop_rows = self.store.list_open_loops(
-            status="open",
-            domains=domains or None,
-            sensitivity_allowed=sensitivity_allowed,
-            limit=DEFAULT_OPEN_LOOP_LIMIT,
-        )
-
+        # Memories fuse before the source stage runs: the provenance list
+        # of the fused sources stage follows the winning memory hits.
         memory_candidates = _fused_candidates(
             memory_lists,
             target_type="memory",
@@ -1010,8 +1132,30 @@ class VNextRetrievalService:
             sensitivity_allowed=sensitivity_allowed,
             limit=max_items,
         )
+
+        if sources_enabled:
+            source_lists, sources_stage_record = self._source_stage_lists(
+                query=request.query,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                limit=max(DEFAULT_SOURCE_LIMIT, max_items),
+                winning_memories=[candidate.item for candidate in memory_candidates if candidate.selected],
+            )
+        else:
+            source_lists = {}
+            sources_stage_status = (
+                SOURCES_STAGE_DISABLED_BY_FLAG if request.include_sources is False else STAGE_DISABLED_MINIMAL
+            )
+            sources_stage_record = {"candidate_count": 0, "status": sources_stage_status}
+        open_loop_rows = self.store.list_open_loops(
+            status="open",
+            domains=domains or None,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=DEFAULT_OPEN_LOOP_LIMIT,
+        )
+
         source_candidates = _fused_candidates(
-            {"lexical": source_rows},
+            source_lists,
             target_type="source",
             domains=domains,
             sensitivity_allowed=sensitivity_allowed,
@@ -1468,6 +1612,11 @@ __all__ = [
     "SECTION_SOURCES",
     "SECTION_SUPPORTING_EVIDENCE",
     "SOURCES_STAGE_DISABLED_BY_FLAG",
+    "SOURCE_CHUNK_CANDIDATE_MULTIPLIER",
+    "SOURCE_CHUNK_STAGE_DISABLED_NO_STORE_SUPPORT",
+    "SOURCE_STAGE_CHUNK_FTS",
+    "SOURCE_STAGE_PROVENANCE",
+    "SOURCE_STAGE_TITLE_RECENCY",
     "STAGE_DISABLED_MINIMAL",
     "STALENESS_NOTE_AFTER_DAYS",
     "SUPERSESSION_CHAIN_HOP_LIMIT",
