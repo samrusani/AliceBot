@@ -12,7 +12,7 @@
 
 Alice is a local-first memory service that lets AI agents resume interrupted work, track open loops, recall decisions with provenance, and improve when corrected — instead of re-reading transcripts or trusting opaque summaries.
 
-It scores **79.4%** on [LongMemEval](docs/benchmarks/longmemeval/README.md), the long-term-memory benchmark — a single run, with one disclosed trade-off on the abstention subset — and the full per-question evidence, methodology, and reproduction script are committed to this repo so anyone can verify it. Open source, local-first, MIT-licensed.
+It scores **79.4%** on [LongMemEval](docs/benchmarks/longmemeval/README.md), a long-term-memory benchmark — a single run, with one disclosed trade-off on the abstention subset (25/30 → 22/30) — and the full per-question evidence, methodology, and reproduction script are committed to this repo so anyone can verify it. Open source, local-first, MIT-licensed.
 
 Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes land as policy-checked commits or reviewable proposals, and a local review console is where memory gets approved, corrected, or forgotten. That review boundary is a feature, not a limitation — it is what makes the memory trustworthy enough to act on.
 
@@ -20,7 +20,7 @@ Agents connect over MCP, HTTP API, or CLI. Humans stay in control: agent writes 
 
 Most agent memory tools — mem0, Zep, Letta, and similar — focus on extracting facts from conversations and retrieving them later. That solves recall, and they do it well. Alice focuses on continuity: it stores typed continuity objects (decisions, open loops, resumption briefs) alongside plain memories; every answer carries explainable provenance back to source evidence; and writes are review-governed, so an agent cannot silently promote a bad extraction into durable truth. If you mainly need conversational fact recall, those tools are solid choices. If your agents need to resume work, honor past decisions, and explain why they believe something, that is what Alice is built for.
 
-Alice is a layer, not a lock-in: it runs happily alongside other memory tools, and plenty of stacks will want both — a fact-extraction memory for conversational recall and Alice for governed continuity. On [LongMemEval](docs/benchmarks/longmemeval/README.md), Alice scores **79.4%** with the official judge protocol, with full methodology, per-question evidence, and the one known trade-off (a small abstention regression) disclosed in the repo. Knowledge-update questions score 89.7% — the correction and supersession machinery doing its job.
+Alice is a layer, not a lock-in: it runs happily alongside other memory tools, and plenty of stacks will want both — a fact-extraction memory for conversational recall and Alice for governed continuity.
 
 ## What Alice stores
 

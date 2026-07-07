@@ -187,15 +187,18 @@ def render_table(summary: dict[str, object]) -> str:
         f"flips: +{summary['flips_gained']} gained (wrong->right), -{summary['flips_lost']} lost (right->wrong), "
         f"net {summary['net']:+d}"
     )
-    lines.append(f"McNemar exact two-sided p = {summary['mcnemar_p']:.6f}")
+    p_value = summary["mcnemar_p"]
+    lines.append(
+        f"McNemar exact two-sided p = {p_value:.6f}" if p_value >= 1e-6 else f"McNemar exact two-sided p = {p_value:.3g}"
+    )
     lines.append("")
     header = f"{'question_type':28s} {'n':>4s} {'base':>6s} {'cand':>6s} {'gained':>6s} {'lost':>5s} {'net':>4s}"
     lines.append(header)
     lines.append("-" * len(header))
     for question_type, bucket in summary["per_type"].items():  # type: ignore[union-attr]
         lines.append(
-            f"{question_type:28s} {bucket['n']:>4d} {bucket['baseline_accuracy']:>6.3f} "
-            f"{bucket['candidate_accuracy']:>6.3f} {bucket['gained']:>6d} {bucket['lost']:>5d} {bucket['net']:>+4d}"
+            f"{question_type:28s} {bucket['n']:>4d} {bucket['baseline_correct'] / bucket['n']:>6.3f} "
+            f"{bucket['candidate_correct'] / bucket['n']:>6.3f} {bucket['gained']:>6d} {bucket['lost']:>5d} {bucket['net']:>+4d}"
         )
     abstention = summary["abstention"]
     lines.append("")

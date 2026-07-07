@@ -3,7 +3,7 @@
 **Overall accuracy: 79.4% (397/500) on LongMemEval_s** — run 2026-07-07 with
 GPT-4o generation and the benchmark's official judge protocol, up from the
 prior published run's 64.6% (323/500). Paired on the same 500 questions:
-+96 gained, −22 lost, net +74 (McNemar exact two-sided p < 1e-6). All 500
++96 gained, −22 lost, net +74 (McNemar exact two-sided p = 3.26e-12). All 500
 questions answered and judged; the complete per-question evidence is in
 [per-question-results-2026-07-07.jsonl](per-question-results-2026-07-07.jsonl),
 the aggregate report in [report-2026-07-07.json](report-2026-07-07.json), and
@@ -22,10 +22,10 @@ Non-abstention subset: **79.8%** (375/470). Abstention subset: 73.3% (22/30)
 | knowledge-update | 78 | 74.4% | 89.7% | +12 |
 | temporal-reasoning | 133 | 61.7% | 81.2% | +26 |
 | single-session-preference | 30 | 60.0% | 70.0% | +3 |
-| multi-session | 133 | 45.1% | 58.7% | +18 |
+| multi-session | 133 | 45.1% | 58.6% | +18 |
 | **Overall** | **500** | **64.6%** | **79.4%** | **+74** |
 
-Every category improved. Multi-session synthesis (58.7%) remains the weakest
+Every category improved. Multi-session synthesis (58.6%) remains the weakest
 category and the top roadmap item.
 
 ## Configuration: what differs between the two runs
@@ -58,7 +58,9 @@ rather than netted away: the +74 overall already includes this −3.
 
 ## What changed between the runs
 
-All of it is product code; none of it is benchmark-specific:
+Items 1–3 are product code changes with no benchmark-specific logic; items 4–5
+are run-configuration choices, disclosed here and recorded in the committed
+report config:
 
 1. **Bug fix — source search was content-blind.** The sources stage matched
    only titles and metadata, with a broken stopword list, so it effectively
@@ -77,10 +79,13 @@ Two cheaper measurements preceded the full run:
 
 - An offline evidence-coverage replay (free, FTS-only) of the retrieval
   changes alone lifted all-evidence coverage from 79.0% to 84.6% overall,
-  and multi-session from 62.4% to 74.4%.
+  and multi-session from 62.4% to 74.4% (rows and summaries committed under
+  [uplift-evidence/](uplift-evidence/)).
 - A stage-1 validation slice (172 fixed questions, paired): the
   retrieval-only change was net +7; the full configuration was net +18
-  (64.5% → 75.0% on the slice, p = 0.0029).
+  (64.5% → 75.0% on the slice, p = 0.0029). Both slice checkpoints and
+  their paired comparisons are committed under
+  [uplift-evidence/](uplift-evidence/).
 
 ## What was measured
 
@@ -100,7 +105,9 @@ The full Alice pipeline, per question, in an isolated store:
 ## Methodology notes
 
 - **Quota outage and resume.** The run hit an API quota outage mid-run: the
-  account ran dry at 2026-07-07T01:56 after 201 questions. It was topped up
+  account ran dry at 2026-07-07T01:56 after 201 questions (a smaller number
+  of transient `RemoteDisconnected` connection drops also occurred earlier
+  in the run and were retried the same way). It was topped up
   and the run resumed with `--resume`; resume passes only re-ran questions
   without a completed answer. The checkpoint file therefore holds 892 rows
   for 500 questions — error-retry entries are retained deliberately (the
@@ -109,7 +116,7 @@ The full Alice pipeline, per question, in an isolated store:
   `question_id`s.
 - **This is a single run.** The prior campaign established a three-run
   variance band of 63.0–64.6 on the old configuration; treat single-run
-  deltas of a point or two as noise. The paired +74 (p < 1e-6) is far
+  deltas of a point or two as noise. The paired +74 (p = 3.26e-12) is far
   outside that band, but the 79.4% headline itself has not yet been
   replicated.
 
@@ -195,11 +202,11 @@ Honest caveats from that campaign, kept as part of the record:
 
 ## What the breakdown says about Alice
 
-Knowledge-update (89.7%) validates the correction/supersession machinery:
+Knowledge-update (89.7%) is consistent with the correction/supersession machinery working as designed (no isolating ablation was run; the wider CoT context is a confound):
 when facts change across sessions, Alice's retrieval surfaces the current
 truth. Temporal-reasoning (81.2%) benefits from event-time capture plus the
 timestamp-ordered excerpt rendering. The clear frontier is still
-**multi-session synthesis (58.7%)** — questions whose answers must be
+**multi-session synthesis (58.6%)** — questions whose answers must be
 assembled from evidence scattered across many sessions. The retrieval-breadth
 fixes moved it from 45.1%, but it remains the weakest category; the
 query-shape-aware aggregation mode is the planned next step, and improving

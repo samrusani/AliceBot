@@ -11,7 +11,7 @@
 ## Next
 In rough priority order:
 
-1. **Multi-session synthesis** — still the weakest LongMemEval category and the top item: the retrieval-breadth fixes lifted it from 45.1% to 58.7%, but questions assembled from evidence scattered across many sessions remain the clear frontier. The query-shape-aware aggregation mode remains the planned next step; benchmark-driven iteration with the per-type breakdown as the scoreboard.
+1. **Multi-session synthesis** — still the weakest LongMemEval category and the top item: the retrieval-breadth fixes lifted it from 45.1% to 58.6%, but questions assembled from evidence scattered across many sessions remain the clear frontier. The query-shape-aware aggregation mode remains the planned next step; benchmark-driven iteration with the per-type breakdown as the scoreboard.
 2. **Dogfood daily** — run the stack against real agents with an embedding endpoint; calibrate the paraphrase target of the `retrieval_quality` benchmark; generate the usage telemetry that future ranking/policy improvements need.
 3. **Reference integrations** — deeper examples for popular agent frameworks on the core tool surface.
 4. **Hosted offering exploration** — the RLS posture and auth work make this plausible; still exploratory.

@@ -1,0 +1,53 @@
+{
+  "dataset_file": "longmemeval_s_cleaned.json",
+  "dataset_sha256_prefix": "d6f21ea9d60a0d56",
+  "errors": [],
+  "max_items": 8,
+  "overall": {
+    "all_coverage": 0.846,
+    "any_coverage": 0.972,
+    "questions": 500,
+    "scored": 500
+  },
+  "per_type": {
+    "knowledge-update": {
+      "all_coverage": 0.8974,
+      "any_coverage": 1.0,
+      "questions": 78,
+      "scored": 78
+    },
+    "multi-session": {
+      "all_coverage": 0.7444,
+      "any_coverage": 0.9774,
+      "questions": 133,
+      "scored": 133
+    },
+    "single-session-assistant": {
+      "all_coverage": 1.0,
+      "any_coverage": 1.0,
+      "questions": 56,
+      "scored": 56
+    },
+    "single-session-preference": {
+      "all_coverage": 0.8667,
+      "any_coverage": 0.8667,
+      "questions": 30,
+      "scored": 30
+    },
+    "single-session-user": {
+      "all_coverage": 1.0,
+      "any_coverage": 1.0,
+      "questions": 70,
+      "scored": 70
+    },
+    "temporal-reasoning": {
+      "all_coverage": 0.7669,
+      "any_coverage": 0.9474,
+      "questions": 133,
+      "scored": 133
+    }
+  },
+  "questions": 500,
+  "schema": "longmemeval_coverage_v1_summary",
+  "vectors": "disabled"
+}
