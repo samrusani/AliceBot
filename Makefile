@@ -8,6 +8,9 @@ ALICE_WEB_PORT ?= 3000
 .PHONY: setup migrate api dev runtime web-build doctor vnext scheduler alpha-check test-web test-python
 
 setup:
+	@python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' || \
+		{ echo "ERROR: Alice requires Python 3.12+ but python3 is $$(python3 -V 2>&1 | cut -d' ' -f2)." ; \
+		  echo "Point python3 at 3.12+ (e.g. 'uv python install 3.12' or your package manager) and re-run." ; exit 1; }
 	@test -f .env || cp .env.example .env
 	@test -f .env.lite || cp .env.lite.example .env.lite
 	@test -f $(WEB_DIR)/.env.local || cp $(WEB_DIR)/.env.local.example $(WEB_DIR)/.env.local
