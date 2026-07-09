@@ -25,17 +25,23 @@ Conventions:
   bootstrap also defensively resets it to 0. DELETEs are always
   rejected.
 - ``memories_fts`` is an external-content FTS5 index over
-  memories(title, canonical_text, summary, memory_key), kept in sync by
-  AFTER INSERT/UPDATE/DELETE triggers. It uses the ``porter unicode61``
-  tokenizer so inflected query terms match the way stemmed Postgres FTS
-  (``websearch_to_tsquery('english', ...)``) does.
+  memories(title, canonical_text, summary, memory_key, fact_keys), kept
+  in sync by AFTER INSERT/UPDATE/DELETE triggers. It uses the
+  ``porter unicode61`` tokenizer so inflected query terms match the way
+  stemmed Postgres FTS (``websearch_to_tsquery('english', ...)``) does.
+  ``fact_keys`` holds the derived retrieval keys from
+  ``alicebot_api.vnext_fact_keys`` (mirroring the Postgres ``'D'``
+  ``search_tsv`` weight from migration ``20260707_0082``).
 - ``source_chunks_fts`` is the same construction over
   source_chunks(text) (mirroring the Postgres ``search_tsv`` column from
   migration ``20260707_0081``), so source retrieval can match captured
   CONTENT instead of only title/uri/metadata. External-content FTS
   tables created against a pre-existing database file start empty (the
   sync triggers only see later writes), so bootstrap issues a one-shot
-  ``'rebuild'`` for any FTS table it just created.
+  ``'rebuild'`` for any FTS table it just created. A pre-existing FTS
+  table whose column set predates the current DDL (``CREATE VIRTUAL
+  TABLE IF NOT EXISTS`` never alters one) is dropped together with its
+  sync triggers and recreated the same way.
 """
 
 from __future__ import annotations
@@ -350,6 +356,7 @@ _TABLE_STATEMENTS: tuple[str, ...] = (
       superseded_by TEXT NULL,
       supersedes TEXT NULL,
       embedding BLOB NULL,
+      fact_keys TEXT NULL,
       created_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
       updated_at TEXT NOT NULL DEFAULT {_NOW_UTC_ISO_SQL},
       deleted_at TEXT NULL,
@@ -692,6 +699,9 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("memories", "run_id", "TEXT NULL"),
     ("memories", "superseded_by", "TEXT NULL"),
     ("memories", "supersedes", "TEXT NULL"),
+    # Derived retrieval keys (mirrors Postgres migration 20260707_0082):
+    # NULL = never derived (backfill target), '' = derived, nothing to add.
+    ("memories", "fact_keys", "TEXT NULL"),
     ("agent_api_keys", "project_scope", "TEXT NULL"),
 )
 
@@ -904,13 +914,17 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     # External-content FTS5 index over the same fields as the Postgres
     # search_tsv column (plus memory_key), synced by triggers. The porter
     # stemmer mirrors the 'english' text-search configuration Postgres FTS
-    # uses, so "approved" matches a query for "approve".
+    # uses, so "approved" matches a query for "approve". fact_keys carries
+    # the derived retrieval keys (alicebot_api.vnext_fact_keys), mirroring
+    # the Postgres 'D'-weighted search_tsv term from migration
+    # 20260707_0082.
     """
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       title,
       canonical_text,
       summary,
       memory_key,
+      fact_keys,
       content='memories',
       tokenize='porter unicode61'
     )
@@ -919,26 +933,26 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     CREATE TRIGGER IF NOT EXISTS memories_fts_after_insert
     AFTER INSERT ON memories
     BEGIN
-      INSERT INTO memories_fts(rowid, title, canonical_text, summary, memory_key)
-      VALUES (new.rowid, new.title, new.canonical_text, new.summary, new.memory_key);
+      INSERT INTO memories_fts(rowid, title, canonical_text, summary, memory_key, fact_keys)
+      VALUES (new.rowid, new.title, new.canonical_text, new.summary, new.memory_key, new.fact_keys);
     END
     """,
     """
     CREATE TRIGGER IF NOT EXISTS memories_fts_after_delete
     AFTER DELETE ON memories
     BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, title, canonical_text, summary, memory_key)
-      VALUES ('delete', old.rowid, old.title, old.canonical_text, old.summary, old.memory_key);
+      INSERT INTO memories_fts(memories_fts, rowid, title, canonical_text, summary, memory_key, fact_keys)
+      VALUES ('delete', old.rowid, old.title, old.canonical_text, old.summary, old.memory_key, old.fact_keys);
     END
     """,
     """
     CREATE TRIGGER IF NOT EXISTS memories_fts_after_update
     AFTER UPDATE ON memories
     BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, title, canonical_text, summary, memory_key)
-      VALUES ('delete', old.rowid, old.title, old.canonical_text, old.summary, old.memory_key);
-      INSERT INTO memories_fts(rowid, title, canonical_text, summary, memory_key)
-      VALUES (new.rowid, new.title, new.canonical_text, new.summary, new.memory_key);
+      INSERT INTO memories_fts(memories_fts, rowid, title, canonical_text, summary, memory_key, fact_keys)
+      VALUES ('delete', old.rowid, old.title, old.canonical_text, old.summary, old.memory_key, old.fact_keys);
+      INSERT INTO memories_fts(rowid, title, canonical_text, summary, memory_key, fact_keys)
+      VALUES (new.rowid, new.title, new.canonical_text, new.summary, new.memory_key, new.fact_keys);
     END
     """,
     # External-content FTS5 index over source_chunks.text (mirrors the
@@ -994,6 +1008,31 @@ _SCHEMA_STATEMENTS: tuple[str, ...] = _TABLE_STATEMENTS + _INDEX_AND_TRIGGER_STA
 # just created (a rebuild of a brand-new empty database is a no-op).
 _EXTERNAL_CONTENT_FTS_TABLES: tuple[str, ...] = ("memories_fts", "source_chunks_fts")
 
+# The column set each FTS table's current DDL declares. CREATE VIRTUAL
+# TABLE IF NOT EXISTS never alters an existing table, so a database file
+# written before a column shipped (e.g. memories_fts before fact_keys)
+# keeps the old shape -- and its old sync triggers would keep feeding the
+# old column list. Bootstrap detects the mismatch, drops the table AND
+# its triggers, and lets the normal create-plus-rebuild path recreate
+# both against the full current column set.
+_FTS_TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "memories_fts": ("title", "canonical_text", "summary", "memory_key", "fact_keys"),
+    "source_chunks_fts": ("text",),
+}
+
+_FTS_SYNC_TRIGGERS: dict[str, tuple[str, ...]] = {
+    "memories_fts": (
+        "memories_fts_after_insert",
+        "memories_fts_after_delete",
+        "memories_fts_after_update",
+    ),
+    "source_chunks_fts": (
+        "source_chunks_fts_after_insert",
+        "source_chunks_fts_after_delete",
+        "source_chunks_fts_after_update",
+    ),
+}
+
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     # Tolerate any row_factory the caller installed (tuples, sqlite3.Row,
@@ -1044,6 +1083,25 @@ def _missing_fts_tables(conn: sqlite3.Connection) -> list[str]:
     return [name for name in _EXTERNAL_CONTENT_FTS_TABLES if name not in present]
 
 
+def _drop_outdated_fts_tables(conn: sqlite3.Connection) -> None:
+    """Drop FTS tables (and their sync triggers) whose columns are stale.
+
+    Runs before ``_missing_fts_tables`` is consulted, so a dropped table
+    counts as "just created" and gets the one-shot ``'rebuild'`` that
+    re-indexes every pre-existing content row under the new column set.
+    """
+    missing = set(_missing_fts_tables(conn))
+    for name in _EXTERNAL_CONTENT_FTS_TABLES:
+        if name in missing:
+            continue
+        required = set(_FTS_TABLE_COLUMNS[name])
+        if required.issubset(_table_columns(conn, name)):
+            continue
+        for trigger in _FTS_SYNC_TRIGGERS[name]:
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute(f"DROP TABLE {name}")
+
+
 def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
     """Create or upgrade the vNext SQLite schema. Safe to call repeatedly."""
     conn.execute("PRAGMA journal_mode=WAL")
@@ -1058,6 +1116,9 @@ def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
     # a database file with redaction mode stuck open.
     conn.execute("INSERT OR IGNORE INTO redaction_mode (id, enabled) VALUES (1, 0)")
     conn.execute("UPDATE redaction_mode SET enabled = 0 WHERE id = 1")
+    # FTS tables with a stale column set are dropped (with their triggers)
+    # so the create-plus-rebuild path below re-indexes existing rows.
+    _drop_outdated_fts_tables(conn)
     created_fts_tables = _missing_fts_tables(conn)
     for statement in _INDEX_AND_TRIGGER_STATEMENTS:
         conn.execute(statement)
