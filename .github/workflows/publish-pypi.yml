@@ -35,7 +35,7 @@ jobs:
               sys.exit(f"wheel check failed: missing={missing} leaked={leaked}")
           print(f"wheel ok: {wheel} ({len(names)} files)")
           EOF
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
