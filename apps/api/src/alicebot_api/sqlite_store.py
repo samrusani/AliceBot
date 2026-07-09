@@ -311,7 +311,11 @@ _MEMORY_PROJECT_ID_SQL_TEMPLATE = (
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    # timespec pins the fractional part: isoformat() omits it entirely when
+    # microsecond == 0, and a '...59Z' string sorts lexicographically AFTER
+    # every '...59.000123Z' sibling, corrupting timestamp ordering for the
+    # ~1e-6 of writes that land on a whole second.
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _iso_or_none(value: object | None) -> str | None:
