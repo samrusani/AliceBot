@@ -48,6 +48,7 @@ from alicebot_api.vnext_embeddings import (
     get_embedding_provider,
 )
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_grounding import compute_query_grounding
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import fts_fallback_tokens
@@ -1805,6 +1806,23 @@ class VNextRetrievalService:
             "agent_identity": request.agent_identity,
             "policy_decision": request.policy_decision,
         })
+        # -- entity grounding (vnext_grounding integration; single block) ------
+        # Pack-level retrieval statistic: salient query entities with ZERO
+        # corpus support (entity substrate miss AND one-row FTS probe miss).
+        # Read-only, additive, and absent for every ungated query -- packs
+        # without unsupported entities are byte-identical to the old path.
+        # Skipped at minimal depth to preserve its cheapest-call promise.
+        if depth != CONTEXT_DEPTH_MINIMAL:
+            grounding = compute_query_grounding(
+                self.store,
+                request.query,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+            )
+            if grounding is not None:
+                pack["grounding"] = grounding
+                trace["grounding"] = dict(grounding)
+        # -- end entity grounding ----------------------------------------------
         append_event(
             self.store,
             event_type="retrieval.context_pack_compiled",

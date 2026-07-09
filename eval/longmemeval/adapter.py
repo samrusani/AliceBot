@@ -339,7 +339,7 @@ class QuestionRun:
         return source_id, "undated"
 
     def _render_context_block(self, pack: dict[str, object], *, budget: int) -> tuple[str, int]:
-        """Compact prompt block: memory facts, then session excerpts.
+        """Compact prompt block: memory facts, session excerpts, grounding notes.
 
         Fact lines append the pack's per-memory ``validity`` annotation when
         present (see ``_validity_suffix``): validity windows, supersession
@@ -371,6 +371,19 @@ class QuestionRun:
             lines.append("### Facts Alice remembers (with session dates):")
             lines.extend(fact_lines)
             used = sum(len(line) + 1 for line in lines)
+
+        # Grounding note (pack-level retrieval statistic from
+        # vnext_grounding): factual line(s) about salient query entities
+        # with zero corpus support. Rendered with the other
+        # retrieval-derived content below; the cost is reserved up front
+        # so the note always fits inside the budget.
+        grounding = pack.get("grounding") if isinstance(pack.get("grounding"), dict) else None
+        grounding_lines: list[str] = []
+        if grounding:
+            for name in grounding.get("unsupported_entities") or []:
+                grounding_lines.append(f'Note: no stored memories mention "{name}".')
+        if grounding_lines:
+            used += sum(len(line) + 1 for line in grounding_lines) + 1
 
         terms = frozenset(query_terms(self.question.question))
         # One entry per chunk: (-score, source_rank, chunk_index, session_id, date, text).
@@ -433,6 +446,13 @@ class QuestionRun:
                 lines.append("")
             lines.append("### Retrieved chat history excerpts:")
             lines.extend(excerpt_lines)
+
+        if grounding_lines:
+            # Retrieval statistic, not an instruction: it belongs with the
+            # retrieval output, after the excerpts it summarizes.
+            if lines:
+                lines.append("")
+            lines.extend(grounding_lines)
 
         return "\n".join(lines).strip(), excerpt_count
 
