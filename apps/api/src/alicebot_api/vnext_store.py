@@ -1772,6 +1772,43 @@ class PostgresVNextStore:
             (after_id, after_id, limit),
         )
 
+    def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> VNextRow | None:
+        """Store derived retrieval keys; the generated ``search_tsv`` column
+        (migration ``20260707_0082``) re-indexes them at 'D' weight.
+
+        ``None`` resets the row to the "never derived" state the backfill
+        pass scans for; ``""`` marks "derived, nothing to add". Mirrors
+        ``update_memory_embedding``: a plain indexing write, no revision.
+        """
+        if fact_keys is not None and not isinstance(fact_keys, str):
+            raise ContinuityStoreInvariantError("fact_keys must be a string or None")
+        normalized = re.sub(r"\s+", " ", fact_keys).strip() if isinstance(fact_keys, str) else None
+        return self._fetch_optional_one(
+            """
+                UPDATE memories
+                SET fact_keys = %s
+                WHERE id = %s::uuid
+                  AND deleted_at IS NULL
+                RETURNING id
+                """,
+            (normalized, memory_id),
+        )
+
+    def list_memories_missing_fact_keys(self, *, limit: int = 100, after_id: str | None = None) -> list[VNextRow]:
+        """Backfill pagination over rows whose fact_keys was never derived."""
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND fact_keys IS NULL
+                  AND (%s::uuid IS NULL OR id > %s::uuid)
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+            (after_id, after_id, limit),
+        )
+
     def get_memory_by_commit_digest(self, commit_digest: str) -> VNextRow | None:
         return self._fetch_optional_one(
             f"""
@@ -2025,9 +2062,10 @@ class PostgresVNextStore:
 
         Content columns (title, canonical_text, summary, trust_reason,
         value) become the redaction marker, metadata_json is scrubbed to
-        structural keys plus redacted_at, the embedding is cleared, and
-        the row is archived. Applies to already-archived (soft-deleted)
-        rows too -- that is the primary redaction target.
+        structural keys plus redacted_at, the content-derived columns
+        (embedding, fact_keys) are cleared, and the row is archived.
+        Applies to already-archived (soft-deleted) rows too -- that is
+        the primary redaction target.
         """
         current = self._fetch_optional_one(
             """
@@ -2055,6 +2093,7 @@ class PostgresVNextStore:
                         value = %s,
                         metadata_json = %s,
                         embedding_vector = NULL,
+                        fact_keys = NULL,
                         status = 'archived',
                         deleted_at = COALESCE(deleted_at, clock_timestamp()),
                         updated_at = clock_timestamp()
