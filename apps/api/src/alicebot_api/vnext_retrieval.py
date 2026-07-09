@@ -45,6 +45,7 @@ from alicebot_api.vnext_event_log import append_event
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import fts_fallback_tokens
+from alicebot_api.vnext_temporal_query import TemporalAnchor, parse_event_datetime, parse_temporal_anchor
 
 
 DEFAULT_CONTEXT_PACK_LIMIT = 8
@@ -185,6 +186,24 @@ MEMORY_ENTITY_EDGE_TYPES = ("mentions", "about")
 # 'accepted'): get_memory does not enforce the searchable-status discipline
 # the search_* SQL bakes in, so the graph stage re-applies it in Python.
 MEMORY_SEARCHABLE_STATUSES = ("active", "accepted")
+# Temporal-anchor stage: when parse_temporal_anchor finds a date-bearing
+# phrase in the query ("in March 2023", "two months ago"), memories whose
+# event window intersects the parsed [start, end) window join RRF as one
+# more ranked list ("temporal_anchor") next to fts/vector/graph — never a
+# hard filter, so a wrong parse cannot evict lexical/vector/graph hits.
+# The stage record (and the list) exist only when an anchor parses; the
+# anchor keys on generic query text alone.
+TEMPORAL_STAGE_ENABLED = "enabled"
+TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT = "disabled: store does not support time-window search"
+# The same anchor window re-ranks the fused sources stage: candidates the
+# chunk/provenance/lexical lists already surfaced whose event date falls
+# inside the window form a fourth ranked list (a rank boost, never a new
+# recall path). A source's event date is its source_created_at, then the
+# first parseable connector-stamped metadata date below, then captured_at
+# (write time, the least honest fallback) — mirroring the capture
+# service's source_created_at-then-captured_at event-time convention.
+SOURCE_STAGE_TEMPORAL = "temporal_anchor"
+SOURCE_EVENT_METADATA_KEYS = ("session_date", "event_date", "date")
 # Tiny stopword set for entity-name candidate generation: n-grams whose
 # first or last token is one of these never name an entity on their own.
 ENTITY_NAME_STOPWORDS = frozenset(
@@ -218,10 +237,11 @@ class VNextRetrievalStore(Protocol):
     The same applies to ``list_events`` (recent_changes section),
     ``list_beliefs`` (contradicting_evidence section), the entity
     substrate ``find_entities_by_names``/``get_memory`` (entity-hop graph
-    stage), and ``search_source_chunks``/``get_source`` (the chunk-content
-    and provenance lists of the fused sources stage): stores without them
-    yield empty sections / an honest disabled stage status instead of
-    failing.
+    stage), ``search_source_chunks``/``get_source`` (the chunk-content
+    and provenance lists of the fused sources stage), and
+    ``search_memories_by_time`` (the temporal-anchor stage for
+    date-bearing queries): stores without them yield empty sections / an
+    honest disabled stage status instead of failing.
 
     ``memory_types``/``projects``/``created_by_agent_ids``/``run_id`` are
     only forwarded to the store when the request sets them, so minimal
@@ -304,6 +324,10 @@ class VNextRetrievalRequest:
     policy_decision: JsonObject | None = None
     trace_id: str | None = None
     run_id: str | None = None
+    # The caller's "now" for resolving relative temporal phrases in the
+    # query ("last week", "two months ago"). None means the service uses
+    # the current UTC time; parsing itself never reads the wall clock.
+    reference_time: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -836,6 +860,28 @@ def _memory_reference(memory: JsonObject) -> JsonObject:
     }
 
 
+def _source_event_time(source: JsonObject) -> datetime | None:
+    """Best-effort event timestamp of a source row, or None.
+
+    Precedence: ``source_created_at`` (the source's own event time, when
+    the connector recorded one), then the first parseable
+    ``SOURCE_EVENT_METADATA_KEYS`` value in ``metadata_json`` (connectors
+    that only stamp dates into metadata, e.g. imported chat sessions),
+    then ``captured_at`` (ingest write time — the least honest signal,
+    kept last so imported historical sources are not dated "today").
+    """
+    event = parse_event_datetime(source.get("source_created_at"))
+    if event is not None:
+        return event
+    metadata = source.get("metadata_json")
+    if isinstance(metadata, Mapping):
+        for key in SOURCE_EVENT_METADATA_KEYS:
+            event = parse_event_datetime(metadata.get(key))
+            if event is not None:
+                return event
+    return parse_event_datetime(source.get("captured_at"))
+
+
 def _optional_search_filters(
     memory_types: tuple[str, ...],
     projects: tuple[str, ...],
@@ -1059,6 +1105,41 @@ class VNextRetrievalService:
         rows = [entry[3] for entry in ranked[:limit]]
         return rows, GRAPH_STAGE_ENABLED, matched_entities
 
+    def _memory_temporal_rows(
+        self,
+        *,
+        anchor: TemporalAnchor,
+        domains: list[str],
+        sensitivity_allowed: list[str],
+        limit: int,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
+    ) -> tuple[list[JsonObject], str]:
+        """Temporal-anchor stage: ``(rows, stage_status)``.
+
+        Memories whose event window intersects the parsed anchor window,
+        via the store's ``search_memories_by_time`` (proximity-to-center
+        order). Duck-typed like the other optional stages: stores without
+        the method degrade to an honest disabled status instead of
+        failing. The rows join RRF as one more ranked list, so the anchor
+        is a ranking signal, never a filter.
+        """
+        search_memories_by_time = getattr(self.store, "search_memories_by_time", None)
+        if not callable(search_memories_by_time):
+            return [], TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT
+        rows = search_memories_by_time(
+            window_start=anchor.window_start,
+            window_end=anchor.window_end,
+            window_center=anchor.window_center,
+            domains=domains or None,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=limit,
+            **_optional_search_filters(memory_types, projects, created_by_agent_ids, run_id),
+        )
+        return list(rows), TEMPORAL_STAGE_ENABLED
+
     def _source_stage_lists(
         self,
         *,
@@ -1067,6 +1148,7 @@ class VNextRetrievalService:
         sensitivity_allowed: list[str],
         limit: int,
         winning_memories: Sequence[JsonObject],
+        anchor: TemporalAnchor | None = None,
     ) -> tuple[dict[str, Sequence[JsonObject]], JsonObject]:
         """Ranked source lists for RRF fusion plus the honest stage record.
 
@@ -1082,6 +1164,11 @@ class VNextRetrievalService:
           retrieved memory surfaces even with zero lexical overlap.
         - ``title_recency``: the legacy ``search_sources`` lexical list
           (title/author/uri/metadata LIKE, recency-ordered).
+        - ``temporal_anchor`` (only when ``anchor`` is set): the sources
+          the other lists already surfaced whose event date (see
+          ``_source_event_time``) falls inside the anchor window, ordered
+          by proximity to the window center — a rank boost over existing
+          candidates, never a new recall path.
 
         Lists whose store capability is missing (``search_source_chunks``
         / ``get_source``) are skipped with an honest label instead of
@@ -1170,6 +1257,30 @@ class VNextRetrievalService:
         )
         ranked_lists[SOURCE_STAGE_TITLE_RECENCY] = lexical_rows
 
+        # (d) Temporal-anchor rank boost: re-rank the candidates the lists
+        # above already found by proximity to the anchor window's center.
+        # Only sources with a parseable event date inside the window join;
+        # everything stays fusion-honest (a wrong window cannot evict the
+        # content/provenance/lexical hits, only fail to boost).
+        temporal_sources: list[JsonObject] = []
+        if anchor is not None:
+            center = anchor.window_center
+            dated: list[tuple[float, str, JsonObject]] = []
+            seen_dated: set[str] = set()
+            for rows in (chunk_sources, provenance_sources, lexical_rows):
+                for row in rows:
+                    source_id = str(row.get("id"))
+                    if source_id in seen_dated:
+                        continue
+                    seen_dated.add(source_id)
+                    event = _source_event_time(row)
+                    if event is None or not (anchor.window_start <= event < anchor.window_end):
+                        continue
+                    dated.append((abs((event - center).total_seconds()), source_id, row))
+            dated.sort(key=lambda entry: (entry[0], entry[1]))
+            temporal_sources = [row for _distance, _source_id, row in dated]
+            ranked_lists[SOURCE_STAGE_TEMPORAL] = temporal_sources
+
         unique_candidate_ids = {
             str(row.get("id")) for rows in ranked_lists.values() for row in rows
         }
@@ -1181,6 +1292,8 @@ class VNextRetrievalService:
             SOURCE_STAGE_TITLE_RECENCY: len(lexical_rows),
             "chunk_fts_source": chunk_fts_source,
         }
+        if anchor is not None:
+            stage_record[SOURCE_STAGE_TEMPORAL] = len(temporal_sources)
         return ranked_lists, stage_record
 
     def compile_context_pack(self, request: VNextRetrievalRequest) -> JsonObject:
@@ -1206,6 +1319,15 @@ class VNextRetrievalService:
         if depth == CONTEXT_DEPTH_MINIMAL:
             max_items = min(CONTEXT_DEPTH_MINIMAL_MAX_ITEMS, max_items)
         memory_candidate_limit = max(max_items * 2, max_items)
+        # Temporal anchor from generic query text only. The reference time
+        # for relative phrases is the caller's now (request.reference_time)
+        # or the current UTC time; the parser itself never reads the clock.
+        anchor = parse_temporal_anchor(
+            request.query,
+            reference_time=(
+                request.reference_time if request.reference_time is not None else datetime.now(UTC)
+            ),
+        )
 
         fts_rows, fts_source = self._memory_fts_rows(
             query=request.query,
@@ -1243,11 +1365,39 @@ class VNextRetrievalService:
                 created_by_agent_ids=created_by_agent_ids,
                 run_id=filter_run_id,
             )
+        # Temporal-anchor stage: only exists when the query carried a
+        # parseable date phrase. One more RRF list (never a filter), plus
+        # an honest trace record; both are absent when no anchor parses.
+        temporal_rows: list[JsonObject] = []
+        temporal_stage_record: JsonObject | None = None
+        if anchor is not None:
+            if depth == CONTEXT_DEPTH_MINIMAL:
+                temporal_stage = STAGE_DISABLED_MINIMAL
+            else:
+                temporal_rows, temporal_stage = self._memory_temporal_rows(
+                    anchor=anchor,
+                    domains=domains,
+                    sensitivity_allowed=sensitivity_allowed,
+                    limit=memory_candidate_limit,
+                    memory_types=memory_types,
+                    projects=projects,
+                    created_by_agent_ids=created_by_agent_ids,
+                    run_id=filter_run_id,
+                )
+            temporal_stage_record = {
+                "source": "temporal_anchor",
+                "status": temporal_stage,
+                "window": [anchor.window_start.isoformat(), anchor.window_end.isoformat()],
+                "parsed_from": anchor.parsed_from,
+                "candidate_count": len(temporal_rows),
+            }
         memory_lists: dict[str, Sequence[JsonObject]] = {"fts": fts_rows}
         if vector_stage == VECTOR_STAGE_ENABLED:
             memory_lists["vector"] = vector_rows
         if graph_stage == GRAPH_STAGE_ENABLED:
             memory_lists["graph"] = graph_rows
+        if temporal_stage_record is not None and temporal_stage_record["status"] == TEMPORAL_STAGE_ENABLED:
+            memory_lists["temporal_anchor"] = temporal_rows
 
         # Memories fuse before the source stage runs: the provenance list
         # of the fused sources stage follows the winning memory hits.
@@ -1266,6 +1416,7 @@ class VNextRetrievalService:
                 sensitivity_allowed=sensitivity_allowed,
                 limit=max(DEFAULT_SOURCE_LIMIT, max_items),
                 winning_memories=[candidate.item for candidate in memory_candidates if candidate.selected],
+                anchor=anchor,
             )
         else:
             source_lists = {}
@@ -1435,6 +1586,8 @@ class VNextRetrievalService:
             "selected": selected_trace,
             "excluded_counts": excluded_counts,
         }
+        if temporal_stage_record is not None:
+            trace["stages"]["temporal_anchor"] = temporal_stage_record  # type: ignore[index]
         if supersession_context is not None:
             trace["stages"]["supersession"] = {  # type: ignore[index]
                 "status": SUPERSESSION_STAGE_ENABLED,
@@ -1760,13 +1913,17 @@ __all__ = [
     "SOURCES_STAGE_DISABLED_BY_FLAG",
     "SOURCE_CHUNK_CANDIDATE_MULTIPLIER",
     "SOURCE_CHUNK_STAGE_DISABLED_NO_STORE_SUPPORT",
+    "SOURCE_EVENT_METADATA_KEYS",
     "SOURCE_STAGE_CHUNK_FTS",
     "SOURCE_STAGE_PROVENANCE",
+    "SOURCE_STAGE_TEMPORAL",
     "SOURCE_STAGE_TITLE_RECENCY",
     "STAGE_DISABLED_MINIMAL",
     "STALENESS_NOTE_AFTER_DAYS",
     "SUPERSESSION_CHAIN_HOP_LIMIT",
     "SUPERSESSION_STAGE_ENABLED",
+    "TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT",
+    "TEMPORAL_STAGE_ENABLED",
     "TOKEN_ESTIMATE_CHARS_PER_TOKEN",
     "VALID_TO_UNBOUNDED_YEAR",
     "VECTOR_STAGE_DISABLED_NO_PROVIDER",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import json
 import sqlite3
 from pathlib import Path
@@ -1149,6 +1150,144 @@ def test_stale_status_is_valid_in_schema_but_excluded_from_search() -> None:
     assert [row["id"] for row in store.search_memories(query="staleness keyword")] == [active["id"]]
     assert [row["id"] for row in store.search_memories_fts(query="staleness")] == [active["id"]]
     assert [row["id"] for row in store.search_memories_vector(query_vector=[1.0, 0.0])] == [active["id"]]
+    conn.close()
+
+
+# -- time-window search ------------------------------------------------------
+
+
+def test_search_memories_by_time_matches_window_and_orders_by_proximity() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    # Window [2023-03-01, 2023-04-01); center 2023-03-16T12:00.
+    closest = _create_memory(store, canonical_text="march event closest", valid_from="2023-03-15T00:00:00Z")
+    near_end = _create_memory(store, canonical_text="march event near end", valid_from="2023-03-31T00:00:00Z")
+    at_start = _create_memory(store, canonical_text="march event at start", valid_from="2023-03-01T00:00:00Z")
+    _create_memory(store, canonical_text="may event outside", valid_from="2023-05-01T00:00:00Z")
+    # No valid_from: first_seen_at defaults to write time (now), outside.
+    _create_memory(store, canonical_text="undated event")
+    # Still-valid closed interval spanning the window joins via overlap;
+    # its event start is far from the center, so it ranks last.
+    spanning = _create_memory(
+        store,
+        canonical_text="long running fact",
+        valid_from="2022-01-01T00:00:00Z",
+        valid_to="2999-01-01T00:00:00Z",
+    )
+
+    rows = store.search_memories_by_time(
+        window_start=datetime(2023, 3, 1, tzinfo=UTC),
+        window_end=datetime(2023, 4, 1, tzinfo=UTC),
+    )
+    assert [row["id"] for row in rows] == [closest["id"], near_end["id"], at_start["id"], spanning["id"]]
+
+    # An explicit pivot (the closed edge of an open window) reorders by
+    # proximity to that edge instead of the midpoint.
+    pivoted = store.search_memories_by_time(
+        window_start=datetime(2023, 3, 1, tzinfo=UTC),
+        window_end=datetime(2023, 4, 1, tzinfo=UTC),
+        window_center=datetime(2023, 3, 1, tzinfo=UTC),
+    )
+    assert [row["id"] for row in pivoted] == [at_start["id"], closest["id"], near_end["id"], spanning["id"]]
+    conn.close()
+
+
+def test_search_memories_by_time_window_is_start_inclusive_end_exclusive() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    at_start = _create_memory(store, canonical_text="boundary start", valid_from="2023-03-01T00:00:00Z")
+    _create_memory(store, canonical_text="boundary end", valid_from="2023-04-01T00:00:00Z")
+
+    rows = store.search_memories_by_time(
+        window_start=datetime(2023, 3, 1, tzinfo=UTC),
+        window_end=datetime(2023, 4, 1, tzinfo=UTC),
+    )
+
+    assert [row["id"] for row in rows] == [at_start["id"]]
+    conn.close()
+
+
+def test_search_memories_by_time_falls_back_to_first_seen_at() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    observed = _create_memory(
+        store,
+        canonical_text="observed in march",
+        first_seen_at="2023-03-10T00:00:00Z",
+    )
+    _create_memory(store, canonical_text="observed elsewhere", first_seen_at="2022-01-01T00:00:00Z")
+
+    rows = store.search_memories_by_time(
+        window_start=datetime(2023, 3, 1, tzinfo=UTC),
+        window_end=datetime(2023, 4, 1, tzinfo=UTC),
+    )
+
+    assert [row["id"] for row in rows] == [observed["id"]]
+    conn.close()
+
+
+def test_search_memories_by_time_applies_scoping_filters_and_limit() -> None:
+    conn = _open_connection()
+    alice = _make_store(conn)
+    mallory = _make_store(conn)
+    kwargs = {"valid_from": "2023-03-15T00:00:00Z"}
+    matched = _create_memory(alice, canonical_text="scoped march decision", memory_type="decision", **kwargs)
+    _create_memory(alice, canonical_text="scoped march candidate", status="candidate", **kwargs)
+    _create_memory(alice, canonical_text="scoped march internal", sensitivity="internal", **kwargs)
+    _create_memory(alice, canonical_text="scoped march personal", domain="personal", **kwargs)
+
+    rows = alice.search_memories_by_time(
+        window_start=datetime(2023, 3, 1, tzinfo=UTC),
+        window_end=datetime(2023, 4, 1, tzinfo=UTC),
+        domains=["project"],
+        sensitivity_allowed=["private"],
+        memory_types=("decision",),
+    )
+    assert [row["id"] for row in rows] == [matched["id"]]
+
+    # Same window, bound to another user: nothing leaks.
+    assert (
+        mallory.search_memories_by_time(
+            window_start=datetime(2023, 3, 1, tzinfo=UTC),
+            window_end=datetime(2023, 4, 1, tzinfo=UTC),
+        )
+        == []
+    )
+
+    # Limit keeps the proximity order's head.
+    second = _create_memory(alice, canonical_text="scoped march later", valid_from="2023-03-01T00:00:00Z", memory_type="decision")
+    limited = alice.search_memories_by_time(
+        window_start=datetime(2023, 3, 1, tzinfo=UTC),
+        window_end=datetime(2023, 4, 1, tzinfo=UTC),
+        domains=["project"],
+        sensitivity_allowed=["private"],
+        memory_types=("decision",),
+        limit=1,
+    )
+    assert [row["id"] for row in limited] == [matched["id"]]
+    assert second["id"] not in {row["id"] for row in limited}
+    conn.close()
+
+
+def test_search_memories_by_time_expired_rows_need_include_expired() -> None:
+    conn = _open_connection()
+    store = _make_store(conn)
+    # True only historically: valid_to passed, so the default expiry gate
+    # hides it even though its window intersects the queried one.
+    expired = _create_memory(
+        store,
+        canonical_text="expired march fact",
+        valid_from="2023-03-10T00:00:00Z",
+        valid_to="2023-04-01T00:00:00Z",
+    )
+
+    window = {
+        "window_start": datetime(2023, 3, 1, tzinfo=UTC),
+        "window_end": datetime(2023, 4, 1, tzinfo=UTC),
+    }
+    assert store.search_memories_by_time(**window) == []
+    rows = store.search_memories_by_time(**window, include_expired=True)
+    assert [row["id"] for row in rows] == [expired["id"]]
     conn.close()
 
 

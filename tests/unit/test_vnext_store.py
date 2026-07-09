@@ -243,6 +243,91 @@ def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> 
     )
 
 
+def test_search_memories_by_time_builds_window_predicate_and_proximity_order() -> None:
+    cursor = RecordingCursor(
+        fetchone_results=[],
+        fetchall_result=[{"id": "memory-march", "valid_from": "2023-03-15T00:00:00Z"}],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+    window_start = datetime(2023, 3, 1, tzinfo=UTC)
+    window_end = datetime(2023, 4, 1, tzinfo=UTC)
+
+    rows = store.search_memories_by_time(
+        window_start=window_start,
+        window_end=window_end,
+        domains=["project"],
+        sensitivity_allowed=["public", "private"],
+        memory_types=("decision",),
+        limit=4,
+    )
+
+    assert rows[0]["id"] == "memory-march"
+    query, params = cursor.executed[0]
+    assert "FROM memories" in query
+    assert "deleted_at IS NULL" in query
+    assert "status IN ('active', 'accepted')" in query
+    # Event time: explicit validity start, then observation, then write time.
+    assert "COALESCE(valid_from, first_seen_at, created_at)" in query
+    assert "COALESCE(valid_from, first_seen_at, created_at) >= %s::timestamptz" in query
+    assert "COALESCE(valid_from, first_seen_at, created_at) < %s::timestamptz" in query
+    # Closed [valid_from, valid_to) validity intervals overlap the window too.
+    assert "valid_from IS NOT NULL" in query
+    assert "valid_to IS NOT NULL" in query
+    # Default expiry gate stays in force (include_expired=False).
+    assert "valid_to IS NULL OR valid_to >= clock_timestamp()" in query
+    # Proximity-to-center ordering with deterministic tie-breaks.
+    assert "ABS(EXTRACT(EPOCH FROM (COALESCE(valid_from, first_seen_at, created_at) - %s::timestamptz)))" in query
+    assert "updated_at DESC" in query
+    assert params is not None
+    assert params[0] == ["project"]  # domains
+    assert params[2] == ["public", "private"]  # sensitivity_allowed
+    assert params[4] == ["decision"]  # memory_types
+    assert params[6] is None  # projects
+    assert params[8] is None  # created_by_agent_ids
+    assert params[10] is None  # run_id
+    assert params[12] is False  # include_expired
+    assert params[13] == window_start
+    assert params[14] == window_end
+    assert params[15] == window_end  # interval-overlap clause
+    assert params[16] == window_start
+    assert params[17] == datetime(2023, 3, 16, 12, 0, tzinfo=UTC)  # window center
+    assert params[-1] == 4
+
+
+def test_search_memories_by_time_treats_naive_windows_as_utc() -> None:
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.search_memories_by_time(
+        window_start=datetime(2023, 3, 1),
+        window_end=datetime(2023, 4, 1),
+    )
+
+    _query, params = cursor.executed[0]
+    assert params is not None
+    assert params[13] == datetime(2023, 3, 1, tzinfo=UTC)
+    assert params[14] == datetime(2023, 4, 1, tzinfo=UTC)
+
+
+def test_search_memories_by_time_accepts_an_explicit_proximity_pivot() -> None:
+    # Open "before X"/"since X" windows pass their closed edge so ordering
+    # ranks events nearest the named boundary instead of a meaningless
+    # century-spanning midpoint.
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+    pivot = datetime(2023, 4, 1, tzinfo=UTC)
+
+    store.search_memories_by_time(
+        window_start=datetime(1900, 1, 1, tzinfo=UTC),
+        window_end=pivot,
+        window_center=pivot,
+    )
+
+    _query, params = cursor.executed[0]
+    assert params is not None
+    assert params[17] == pivot
+
+
 def test_list_artifacts_applies_type_domain_sensitivity_and_limit_filters() -> None:
     cursor = RecordingCursor(
         fetchone_results=[],
