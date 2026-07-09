@@ -171,6 +171,24 @@ def test_build_answer_prompt_placeholder_for_empty_context() -> None:
     assert adapter.EMPTY_CONTEXT_PLACEHOLDER in prompt
 
 
+def test_answer_prompt_templates_are_byte_identical_to_official() -> None:
+    # HONESTY GUARD: the official LongMemEval reading templates must never
+    # drift. Validity annotations render inside the history slot's fact
+    # lines only; the prompt text itself stays verbatim.
+    assert adapter.ANSWER_PROMPT_TEMPLATE == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer:"
+    )
+    assert adapter.ANSWER_PROMPT_TEMPLATE_COT == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history. "
+        "Answer the question step by step: first extract all the relevant information, "
+        "and then reason over the information to get the answer.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer (step by step):"
+    )
+
+
 # -- judge protocol --------------------------------------------------------------
 
 
@@ -439,6 +457,100 @@ def test_render_context_block_spends_leftover_budget_by_score() -> None:
     assert (repeat_block, repeat_count) == (block, excerpt_count)
 
 
+def test_render_context_block_appends_validity_annotations_to_fact_lines() -> None:
+    run = _packing_run()
+    pack = {
+        "relevant_memories": [
+            {
+                "canonical_text": "The user's favorite color is green.",
+                "metadata_json": {"source_id": "src-a"},
+                "validity": {
+                    "supersedes_memory_id": "mem-old",
+                    "corrected_at": "2023-08-01T00:00:00+00:00",
+                },
+            },
+            {
+                "canonical_text": "The user's favorite color is blue.",
+                "metadata_json": {"source_id": "src-b"},
+                "validity": {"superseded": True, "superseded_by_memory_id": "mem-new"},
+            },
+            {
+                "canonical_text": "The gym membership offer lasts the summer.",
+                "metadata_json": {"source_id": "src-c"},
+                "validity": {
+                    "valid_from": "2023-05-30T00:00:00+00:00",
+                    "valid_to": "2023-08-01T00:00:00+00:00",
+                },
+            },
+            {
+                "canonical_text": "The user lives in Denver.",
+                "metadata_json": {"source_id": "src-a"},
+            },
+        ],
+        "sources": [],
+    }
+
+    block, _excerpt_count = run._render_context_block(pack, budget=4_000)
+
+    lines = block.splitlines()
+    assert lines[0] == "### Facts Alice remembers (with session dates):"
+    assert lines[1].endswith("The user's favorite color is green. [updated 2023-08-01; supersedes an earlier value]")
+    assert lines[2].endswith("The user's favorite color is blue. [superseded by a newer entry]")
+    assert lines[3].endswith("The gym membership offer lasts the summer. [valid 2023-05-30 → 2023-08-01]")
+    # No annotation, no suffix: the plain fact line is byte-identical to the
+    # pre-validity rendering.
+    assert lines[4].endswith("The user lives in Denver.")
+
+
+def test_validity_suffix_is_empty_without_annotation() -> None:
+    assert adapter._validity_suffix({"canonical_text": "plain"}) == ""
+    assert adapter._validity_suffix({"validity": {}}) == ""
+    assert adapter._validity_suffix({"validity": "not-a-dict"}) == ""
+
+
+def test_validity_suffix_formats_each_annotation_shape_compactly() -> None:
+    assert adapter._validity_suffix(
+        {"validity": {"valid_to": "2023-08-01T00:00:00+00:00"}}
+    ) == " [valid until 2023-08-01]"
+    assert adapter._validity_suffix(
+        {"validity": {"valid_from": "2023-05-30T00:00:00+00:00"}}
+    ) == " [valid from 2023-05-30]"
+    # In-place correction: the shown text is current; the date says since when.
+    assert adapter._validity_suffix(
+        {"validity": {"corrected_at": "2023-08-01T00:00:00+00:00"}}
+    ) == " [corrected 2023-08-01]"
+    # A superseded row never renders as merely "corrected".
+    assert adapter._validity_suffix(
+        {
+            "validity": {
+                "superseded": True,
+                "superseded_by_memory_id": "mem-new",
+                "corrected_at": "2023-08-01T00:00:00+00:00",
+            }
+        }
+    ) == " [superseded by a newer entry]"
+    # Replacement rows fall back to their created_at for the update date.
+    assert adapter._validity_suffix(
+        {
+            "created_at": "2023-08-02T09:00:00Z",
+            "validity": {"supersedes_memory_id": "mem-old"},
+        }
+    ) == " [updated 2023-08-02; supersedes an earlier value]"
+    assert adapter._validity_suffix(
+        {"validity": {"supersedes_memory_id": "mem-old"}}
+    ) == " [supersedes an earlier value]"
+    # Window plus supersession state compose in one bracket.
+    assert adapter._validity_suffix(
+        {
+            "validity": {
+                "valid_from": "2023-05-30T00:00:00+00:00",
+                "valid_to": "2023-08-01T00:00:00+00:00",
+                "superseded": True,
+            }
+        }
+    ) == " [valid 2023-05-30 → 2023-08-01; superseded by a newer entry]"
+
+
 # -- end-to-end (real SQLite ingest + retrieval, no model) ---------------------------
 
 
@@ -457,6 +569,85 @@ def test_question_run_ingests_and_retrieves_evidence(tmp_path: Path) -> None:
     assert "2023/05/20 (Sat) 14:10" in outcome.context_block  # session date visible for temporal questions
     assert not outcome.vector_enabled  # no embedding provider configured in tests
     assert outcome.retrieval_seconds >= 0.0
+
+
+def test_knowledge_update_shaped_pack_renders_correction_above_annotated_stale_fact(
+    tmp_path: Path,
+) -> None:
+    """Knowledge-update shape through the real adapter and store.
+
+    Value A is committed, correction B supersedes it, but only the pointer
+    lands (A's status stays active -- the one-sided state the read path
+    cannot filter). The rendered facts section must put B above the
+    surviving A, annotate A as superseded, and leave the prompt templates
+    untouched.
+    """
+    question = parse_question(
+        {
+            "question_id": "q_knowledge_update_shape",
+            "question_type": "knowledge-update",
+            "question": "What is my favorite color?",
+            "answer": "green",
+            "question_date": "2023/09/01 (Fri) 10:00",
+            "haystack_dates": ["2023/05/01 (Mon) 10:00"],
+            "haystack_session_ids": ["s_color"],
+            "haystack_sessions": [[{"role": "user", "content": "hello there"}]],
+            "answer_session_ids": ["s_color"],
+        }
+    )
+    with adapter.question_run(question, tmp_path / "q.sqlite3") as run:
+        run.ingest()
+        stale = run.store.create_memory(
+            {
+                "memory_key": "preference.favorite-color",
+                "memory_type": "preference",
+                "title": "Favorite color",
+                "canonical_text": (
+                    "Favorite color: the user's favorite color is blue. "
+                    "Favorite color blue came up again while shopping."
+                ),
+                "status": "active",
+                "domain": "unknown",
+                "sensitivity": "internal",
+                "value": {"text": "favorite color blue"},
+            }
+        )
+        correction = run.store.create_memory(
+            {
+                "memory_key": "preference.favorite-color.corrected",
+                "memory_type": "preference",
+                "title": "Favorite color (corrected)",
+                "canonical_text": "Correction: the user's favorite color is green now.",
+                "status": "active",
+                "supersedes": str(stale["id"]),
+                "domain": "unknown",
+                "sensitivity": "internal",
+                "value": {"text": "favorite color green"},
+            }
+        )
+        run.store.update_memory(
+            memory_id=str(stale["id"]),
+            patch={"superseded_by": str(correction["id"])},
+            actor_type="system",
+        )
+        outcome = run.retrieve(max_items=8, context_char_budget=12_000)
+
+    fact_lines = [line for line in outcome.context_block.splitlines() if line.startswith("- [")]
+    green_index = next(i for i, line in enumerate(fact_lines) if "green" in line)
+    blue_index = next(i for i, line in enumerate(fact_lines) if "blue" in line)
+    assert green_index < blue_index
+    assert "supersedes an earlier value" in fact_lines[green_index]
+    assert fact_lines[blue_index].endswith("[superseded by a newer entry]")
+    # The history slot carries the annotations; the official template around
+    # it is still applied verbatim.
+    prompt = adapter.build_answer_prompt(
+        context_block=outcome.context_block,
+        question=question.question,
+        question_date=question.question_date,
+    )
+    assert prompt == adapter.ANSWER_PROMPT_TEMPLATE.format(
+        outcome.context_block, question.question_date, question.question
+    )
 
 
 def test_context_block_respects_char_budget(tmp_path: Path) -> None:

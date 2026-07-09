@@ -64,6 +64,12 @@ TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4
 # A memory whose last_confirmed_at is older than this many days gets a
 # "staleness" note attached in the context pack so agents can weigh it.
 STALENESS_NOTE_AFTER_DAYS = 90
+# valid_to values in year 9999+ are the far-future stand-in for "no expiry"
+# (vnext_memory_commit.VALID_TO_UNBOUNDED_SENTINEL, written when a
+# COALESCE-style update_memory cannot patch valid_to back to NULL; keep the
+# two in sync). An unbounded window carries no validity signal, so pack
+# "validity" annotations omit it.
+VALID_TO_UNBOUNDED_YEAR = 9999
 # Trace exclusion_reason for items selected by ranking but dropped by the
 # token budget packer.
 EXCLUSION_REASON_TOKEN_BUDGET = "token_budget"
@@ -668,6 +674,68 @@ def _staleness_note(memory: JsonObject, *, now: datetime) -> JsonObject | None:
     }
 
 
+def _last_corrected_at(memory: JsonObject) -> datetime | None:
+    """Newest ``corrected_at`` in the agentic in-place correction history.
+
+    The agentic correct flow (vnext_memory_commit) appends
+    ``{"corrected_at", "reason", "previous_text"}`` entries under
+    ``metadata_json.agentic_memory.corrections``; the row's canonical text
+    is already the corrected value, so the timestamp tells a reader when
+    the current wording took effect.
+    """
+    metadata = memory.get("metadata_json")
+    if not isinstance(metadata, Mapping):
+        return None
+    agentic = metadata.get("agentic_memory")
+    if not isinstance(agentic, Mapping):
+        return None
+    corrections = agentic.get("corrections")
+    if not isinstance(corrections, Sequence) or isinstance(corrections, (str, bytes)):
+        return None
+    moments = [
+        parsed
+        for entry in corrections
+        if isinstance(entry, Mapping)
+        if (parsed := _parse_timestamp(entry.get("corrected_at"))) is not None
+    ]
+    return max(moments, default=None)
+
+
+def _validity_annotation(memory: JsonObject, *, superseded_by_hint: str | None = None) -> JsonObject | None:
+    """Compact validity summary for rows carrying temporal/supersession signal.
+
+    Derived purely from values the row already carries -- the
+    ``valid_from``/``valid_to`` window columns, the supersession pointer
+    columns from migration 20260704_0077 (plus the row status those flows
+    set), and the in-place correction history read by
+    ``_last_corrected_at`` -- so annotating costs no extra store queries.
+    ``superseded_by_hint`` is a pack-local back-pointer: when a pack-mate's
+    ``supersedes`` names this row, the row is annotated as superseded even
+    if it never received the ``superseded_by`` column (one-sided patches).
+    Rows without any signal return ``None`` so plain memories keep their
+    exact shape, and the far-future unbounded ``valid_to`` sentinel (see
+    ``VALID_TO_UNBOUNDED_YEAR``) is treated as no signal.
+    """
+    validity: JsonObject = {}
+    valid_from = _parse_timestamp(memory.get("valid_from"))
+    if valid_from is not None:
+        validity["valid_from"] = valid_from.isoformat()
+    valid_to = _parse_timestamp(memory.get("valid_to"))
+    if valid_to is not None and valid_to.year < VALID_TO_UNBOUNDED_YEAR:
+        validity["valid_to"] = valid_to.isoformat()
+    superseded_by = memory.get("superseded_by") or superseded_by_hint
+    if superseded_by or str(memory.get("status")) == "superseded":
+        validity["superseded"] = True
+    if superseded_by:
+        validity["superseded_by_memory_id"] = str(superseded_by)
+    if memory.get("supersedes"):
+        validity["supersedes_memory_id"] = str(memory.get("supersedes"))
+    corrected_at = _last_corrected_at(memory)
+    if corrected_at is not None:
+        validity["corrected_at"] = corrected_at.isoformat()
+    return validity or None
+
+
 def _memory_recency(memory: JsonObject) -> datetime:
     """Best-effort recency timestamp for recent_first ordering."""
     for key in ("updated_at", "last_seen_at", "created_at", "first_seen_at"):
@@ -692,6 +760,64 @@ def _order_memories_for_strategy(memories: list[JsonObject], strategy: str) -> l
         rest = [item for item in memories if item.get("memory_type") not in FACTS_FIRST_MEMORY_TYPES]
         return [*facts, *rest]
     return list(memories)
+
+
+def _prefer_current_versions(memories: list[JsonObject]) -> tuple[list[JsonObject], int]:
+    """Demote-not-drop: move a replacement directly above its superseded ancestor.
+
+    The store search stages already exclude retired rows (status outside
+    active/accepted, closed validity windows), so both sides of a
+    supersession pair can only co-occur in a pack when the pointer state is
+    one-sided -- e.g. an ``update_memory`` patch set ``superseded_by``
+    without retiring the row, or only the replacement's ``supersedes``
+    pointer exists. Fused (RRF) order is preserved for every other item;
+    only the offending (ancestor, replacement) pair is reordered,
+    replacement first, and each replacement moves at most once so corrupt
+    pointer cycles terminate. Returns the reordered list plus the move
+    count reported in the pack trace as ``supersession_reorders``.
+    """
+    if len(memories) < 2:
+        return list(memories), 0
+    ids_in_list = {str(memory.get("id")) for memory in memories}
+    # ancestor id -> replacement id, from both pointer directions; a row's
+    # own superseded_by pointer wins over a pack-mate's supersedes claim.
+    successor_of: dict[str, str] = {}
+    for memory in memories:
+        memory_id = str(memory.get("id"))
+        supersedes = memory.get("supersedes")
+        if supersedes and str(supersedes) in ids_in_list and str(supersedes) != memory_id:
+            successor_of.setdefault(str(supersedes), memory_id)
+    for memory in memories:
+        memory_id = str(memory.get("id"))
+        superseded_by = memory.get("superseded_by")
+        if superseded_by and str(superseded_by) in ids_in_list and str(superseded_by) != memory_id:
+            successor_of[memory_id] = str(superseded_by)
+    if not successor_of:
+        return list(memories), 0
+    items = list(memories)
+    moved: set[str] = set()
+    reorders = 0
+    index = 0
+    while index < len(items):
+        ancestor_id = str(items[index].get("id"))
+        successor_id = successor_of.get(ancestor_id)
+        if successor_id is None or successor_id in moved:
+            index += 1
+            continue
+        successor_index = next(
+            (position for position, item in enumerate(items) if str(item.get("id")) == successor_id),
+            None,
+        )
+        if successor_index is None or successor_index <= index:
+            index += 1
+            continue
+        items.insert(index, items.pop(successor_index))
+        moved.add(successor_id)
+        reorders += 1
+        # Stay on this index: the replacement now sits here and may itself
+        # be a superseded ancestor of a later pack-mate (chains reorder
+        # newest-first in one pass).
+    return items, reorders
 
 
 def _memory_title(memory: JsonObject) -> str:
@@ -1171,6 +1297,10 @@ class VNextRetrievalService:
 
         ranked_memories = [_compact_item(candidate.item) for candidate in memory_candidates if candidate.selected]
         ordered_memories = _order_memories_for_strategy(ranked_memories, strategy)
+        # Current-version preference (demote-not-drop): when a supersession
+        # pair leaks into the same pack, the replacement packs directly
+        # above its superseded ancestor; every other item keeps its order.
+        ordered_memories, supersession_reorders = _prefer_current_versions(ordered_memories)
         ranked_sources = [_compact_item(candidate.item) for candidate in source_candidates if candidate.selected]
         ranked_open_loops = [_compact_item(candidate.item) for candidate in open_loop_candidates if candidate.selected]
 
@@ -1226,10 +1356,25 @@ class VNextRetrievalService:
         source_candidates = _apply_budget_exclusions(source_candidates, selected_sources)
 
         now = datetime.now(UTC)
+        # Pack-local back-pointers: a pack-mate's supersedes pointer marks
+        # its ancestor as superseded even when the ancestor row never
+        # received the superseded_by column (one-sided patches). First
+        # claim wins, mirroring _prefer_current_versions.
+        superseded_by_packmate: dict[str, str] = {}
+        for memory in selected_memories:
+            supersedes_pointer = memory.get("supersedes")
+            if supersedes_pointer:
+                superseded_by_packmate.setdefault(str(supersedes_pointer), str(memory.get("id")))
         for memory in selected_memories:
             staleness = _staleness_note(memory, now=now)
             if staleness is not None:
                 memory["staleness"] = staleness
+            validity = _validity_annotation(
+                memory,
+                superseded_by_hint=superseded_by_packmate.get(str(memory.get("id"))),
+            )
+            if validity is not None:
+                memory["validity"] = validity
 
         supersession_context: list[JsonObject] | None = None
         if depth == CONTEXT_DEPTH_HIGH:
@@ -1273,6 +1418,7 @@ class VNextRetrievalService:
             "context_depth": depth,
             "budget_strategy": strategy,
             "budget": budget.to_record(),
+            "supersession_reorders": supersession_reorders,
             "stages": {
                 "fts": {"source": fts_source, "candidate_count": len(fts_rows)},
                 "vector": {"status": vector_stage, "candidate_count": len(vector_rows)},
@@ -1622,6 +1768,7 @@ __all__ = [
     "SUPERSESSION_CHAIN_HOP_LIMIT",
     "SUPERSESSION_STAGE_ENABLED",
     "TOKEN_ESTIMATE_CHARS_PER_TOKEN",
+    "VALID_TO_UNBOUNDED_YEAR",
     "VECTOR_STAGE_DISABLED_NO_PROVIDER",
     "VECTOR_STAGE_DISABLED_NO_STORE_SUPPORT",
     "VECTOR_STAGE_ENABLED",

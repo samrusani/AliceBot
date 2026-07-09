@@ -169,6 +169,49 @@ def _chunk_overlap_score(chunk_text: str, terms: frozenset[str]) -> int:
     return len(terms & tokens)
 
 
+def _iso_date(value: object) -> str | None:
+    """``YYYY-MM-DD`` prefix of an ISO timestamp string, or None."""
+    text = str(value or "")
+    return text[:10] if len(text) >= 10 else None
+
+
+def _validity_suffix(memory: dict[str, object]) -> str:
+    """Compact suffix rendering a pack item's ``validity`` annotation.
+
+    Factual metadata only, quoted from the retrieval pack (validity window
+    dates, supersession state, correction timestamps) -- never instruction
+    text, so the official reading templates stay untouched. Memories
+    without the annotation render exactly as before (empty suffix).
+    """
+    validity = memory.get("validity")
+    if not isinstance(validity, dict):
+        return ""
+    parts: list[str] = []
+    valid_from = _iso_date(validity.get("valid_from"))
+    valid_to = _iso_date(validity.get("valid_to"))
+    if valid_from and valid_to:
+        parts.append(f"valid {valid_from} → {valid_to}")
+    elif valid_to:
+        parts.append(f"valid until {valid_to}")
+    elif valid_from:
+        parts.append(f"valid from {valid_from}")
+    corrected_at = _iso_date(validity.get("corrected_at"))
+    if validity.get("superseded"):
+        parts.append("superseded by a newer entry")
+    elif validity.get("supersedes_memory_id"):
+        updated_on = corrected_at or _iso_date(memory.get("created_at"))
+        parts.append(
+            f"updated {updated_on}; supersedes an earlier value"
+            if updated_on
+            else "supersedes an earlier value"
+        )
+    elif corrected_at:
+        parts.append(f"corrected {corrected_at}")
+    if not parts:
+        return ""
+    return f" [{'; '.join(parts)}]"
+
+
 class QuestionRun:
     """One LongMemEval question against one isolated Alice store."""
 
@@ -298,6 +341,10 @@ class QuestionRun:
     def _render_context_block(self, pack: dict[str, object], *, budget: int) -> tuple[str, int]:
         """Compact prompt block: memory facts, then session excerpts.
 
+        Fact lines append the pack's per-memory ``validity`` annotation when
+        present (see ``_validity_suffix``): validity windows, supersession
+        state, and correction dates, rendered as bracketed factual metadata.
+
         Excerpt packing is two-pass so one wordy session cannot crowd out
         the rest: pass 1 guarantees every retrieved source its single best
         chunk (in source rank order), pass 2 spends the remaining budget on
@@ -319,7 +366,7 @@ class QuestionRun:
             metadata = memory.get("metadata_json") if isinstance(memory.get("metadata_json"), dict) else {}
             source_id = str(metadata.get("source_id") or "")
             _session_id, date = self._session_label(source_id) if source_id else ("", "undated")
-            fact_lines.append(f"- [{date}] {text}")
+            fact_lines.append(f"- [{date}] {text}{_validity_suffix(memory)}")
         if fact_lines:
             lines.append("### Facts Alice remembers (with session dates):")
             lines.extend(fact_lines)

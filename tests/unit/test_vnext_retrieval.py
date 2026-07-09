@@ -2391,6 +2391,287 @@ def test_high_depth_supersession_chains_guard_against_cycles_and_cap_hops() -> N
     ]
 
 
+# -- validity annotations and current-version preference ----------------------------
+
+
+def test_pack_items_carry_validity_only_when_temporal_signal_exists() -> None:
+    plain = _memory_row("memory-plain", "Alice validity plain fact.")
+    windowed = _memory_row(
+        "memory-window",
+        "Alice validity gym membership offer.",
+        valid_from="2026-05-30T00:00:00Z",
+        valid_to="2026-08-01T00:00:00Z",
+    )
+    open_ended = _memory_row(
+        "memory-open",
+        "Alice validity new address fact.",
+        valid_from="2026-06-15T00:00:00Z",
+    )
+    sentinel = _memory_row(
+        "memory-sentinel",
+        "Alice validity unexpired fact.",
+        valid_to="9999-12-31T23:59:59Z",
+    )
+    corrected = _memory_row(
+        "memory-corrected",
+        "Alice validity corrected commute fact.",
+        metadata_json={
+            "agentic_memory": {
+                "lifecycle_status": "corrected",
+                "corrections": [
+                    {"corrected_at": "2026-06-01T00:00:00Z", "previous_text": "old"},
+                    {"corrected_at": "2026-07-01T00:00:00Z", "previous_text": "older"},
+                ],
+            }
+        },
+    )
+    store = InMemoryVNextRetrievalStore(
+        memories=[plain, windowed, open_ended, sentinel, corrected],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice validity")
+    )
+
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    # Schema stability: rows without temporal/supersession signal gain NO key.
+    assert "validity" not in by_id["memory-plain"]
+    assert by_id["memory-window"]["validity"] == {
+        "valid_from": "2026-05-30T00:00:00+00:00",
+        "valid_to": "2026-08-01T00:00:00+00:00",
+    }
+    # Unbounded windows omit valid_to entirely.
+    assert by_id["memory-open"]["validity"] == {"valid_from": "2026-06-15T00:00:00+00:00"}
+    # The far-future "no expiry" stand-in (year >= VALID_TO_UNBOUNDED_YEAR)
+    # is not a validity signal.
+    assert "validity" not in by_id["memory-sentinel"]
+    # In-place corrections surface the newest corrected_at.
+    assert by_id["memory-corrected"]["validity"] == {"corrected_at": "2026-07-01T00:00:00+00:00"}
+    assert pack["trace"]["supersession_reorders"] == 0
+
+
+def test_pack_ranks_replacement_above_superseded_ancestor_and_traces_the_reorder() -> None:
+    ancestor = _memory_row(
+        "memory-old-color",
+        "Alice preference check: favorite color is blue.",
+        superseded_by="memory-new-color",
+    )
+    bystander = _memory_row("memory-bystander", "Alice preference check unrelated note.")
+    replacement = _memory_row(
+        "memory-new-color",
+        "Alice preference check: favorite color is green.",
+        supersedes="memory-old-color",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[ancestor, bystander, replacement], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice preference check")
+    )
+
+    # Fused (FTS) order was ancestor, bystander, replacement; only the
+    # supersession pair is reordered -- the replacement moves directly
+    # above its ancestor, and the ancestor keeps its slot ahead of the
+    # bystander (demote-not-drop, nothing is removed).
+    assert [memory["id"] for memory in pack["relevant_memories"]] == [
+        "memory-new-color",
+        "memory-old-color",
+        "memory-bystander",
+    ]
+    assert pack["trace"]["supersession_reorders"] == 1
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    assert by_id["memory-old-color"]["validity"] == {
+        "superseded": True,
+        "superseded_by_memory_id": "memory-new-color",
+    }
+    assert by_id["memory-new-color"]["validity"] == {"supersedes_memory_id": "memory-old-color"}
+    assert "validity" not in by_id["memory-bystander"]
+    # The trace keeps the honest fused ranking; the reorder is reported
+    # only through the counter.
+    trace_ranks = {
+        record["target_id"]: record["rank"]
+        for record in pack["trace"]["selected"]
+        if record["target_type"] == "memory"
+    }
+    assert trace_ranks == {"memory-old-color": 1, "memory-bystander": 2, "memory-new-color": 3}
+
+
+def test_pack_annotates_one_sided_supersedes_pointer_via_packmate() -> None:
+    # The ancestor never received the superseded_by back-pointer; only the
+    # replacement's supersedes side exists. The pack-local hint still
+    # annotates the ancestor and the pair still reorders.
+    ancestor = _memory_row("memory-old-office", "Alice relocation office is in Austin.")
+    replacement = _memory_row(
+        "memory-new-office",
+        "Alice relocation office moved to Denver.",
+        supersedes="memory-old-office",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[ancestor, replacement], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice relocation office")
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == [
+        "memory-new-office",
+        "memory-old-office",
+    ]
+    assert pack["trace"]["supersession_reorders"] == 1
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    assert by_id["memory-old-office"]["validity"] == {
+        "superseded": True,
+        "superseded_by_memory_id": "memory-new-office",
+    }
+
+
+def test_pack_keeps_order_when_replacement_already_ranks_above_ancestor() -> None:
+    replacement = _memory_row(
+        "memory-new-plan",
+        "Alice rollout plan ships in September.",
+        supersedes="memory-old-plan",
+    )
+    ancestor = _memory_row(
+        "memory-old-plan",
+        "Alice rollout plan ships in July.",
+        superseded_by="memory-new-plan",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[replacement, ancestor], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice rollout plan")
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == [
+        "memory-new-plan",
+        "memory-old-plan",
+    ]
+    assert pack["trace"]["supersession_reorders"] == 0
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    assert by_id["memory-old-plan"]["validity"]["superseded"] is True
+
+
+def test_supersession_reorder_terminates_on_corrupt_pointer_cycles() -> None:
+    # Corrupt data: two rows claim to supersede each other. Each side moves
+    # at most once, so the reorder terminates deterministically instead of
+    # looping, and both rows are annotated as superseded.
+    cyclic_a = _memory_row("memory-a", "Alice cycle pair row alpha.", superseded_by="memory-b")
+    cyclic_b = _memory_row("memory-b", "Alice cycle pair row beta.", superseded_by="memory-a")
+    store = InMemoryVNextRetrievalStore(memories=[cyclic_a, cyclic_b], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice cycle pair")
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-a", "memory-b"]
+    assert pack["trace"]["supersession_reorders"] == 2
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    assert by_id["memory-a"]["validity"]["superseded"] is True
+    assert by_id["memory-b"]["validity"]["superseded"] is True
+
+
+def test_properly_superseded_row_is_already_excluded_from_packs_on_sqlite() -> None:
+    # The product supersede flows (review supersede-existing, agentic undo)
+    # retire the old row with status=superseded, and the search discipline
+    # (status IN ('active','accepted')) excludes it from every stage. The
+    # annotation work never needs to demote such rows -- they are absent --
+    # and the replacement still carries its supersedes pointer annotation.
+    store = _sqlite_retrieval_store()
+    old = store.create_memory(
+        {
+            "memory_key": "ku.gym.old",
+            "memory_type": "semantic",
+            "title": "Gym membership",
+            "canonical_text": "The gym membership is with FitLife near the old office.",
+            "status": "active",
+            "domain": "personal",
+            "sensitivity": "private",
+            "value": {"text": "gym membership FitLife"},
+        }
+    )
+    replacement = store.create_memory(
+        {
+            "memory_key": "ku.gym.new",
+            "memory_type": "semantic",
+            "title": "Gym membership (updated)",
+            "canonical_text": "The gym membership moved to PowerHouse.",
+            "status": "active",
+            "supersedes": str(old["id"]),
+            "domain": "personal",
+            "sensitivity": "private",
+            "value": {"text": "gym membership PowerHouse"},
+        }
+    )
+    store.update_memory(
+        memory_id=str(old["id"]),
+        patch={"status": "superseded", "superseded_by": str(replacement["id"])},
+        actor_type="user",
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="gym membership")
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == [str(replacement["id"])]
+    assert pack["relevant_memories"][0]["validity"] == {"supersedes_memory_id": str(old["id"])}
+    assert pack["trace"]["supersession_reorders"] == 0
+
+
+def test_knowledge_update_pack_prefers_correction_on_sqlite() -> None:
+    # Knowledge-update shape on the real store: value A is committed, a
+    # correction B supersedes it, but only the pointer lands (the row is
+    # never retired, so both versions stay searchable). The pack must put
+    # B above the surviving A and annotate A as superseded.
+    store = _sqlite_retrieval_store()
+    stale = store.create_memory(
+        {
+            "memory_key": "preference.favorite-color",
+            "memory_type": "preference",
+            "title": "Favorite color",
+            "canonical_text": (
+                "Favorite color: the user's favorite color is blue. "
+                "Favorite color blue came up again while shopping."
+            ),
+            "status": "active",
+            "domain": "personal",
+            "sensitivity": "private",
+            "value": {"text": "favorite color blue"},
+        }
+    )
+    correction = store.create_memory(
+        {
+            "memory_key": "preference.favorite-color.corrected",
+            "memory_type": "preference",
+            "title": "Favorite color (corrected)",
+            "canonical_text": "Correction: the user's favorite color is green now.",
+            "status": "active",
+            "supersedes": str(stale["id"]),
+            "domain": "personal",
+            "sensitivity": "private",
+            "value": {"text": "favorite color green"},
+        }
+    )
+    store.update_memory(
+        memory_id=str(stale["id"]),
+        patch={"superseded_by": str(correction["id"])},
+        actor_type="system",
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="What is the user's favorite color?")
+    )
+
+    ordered_ids = [memory["id"] for memory in pack["relevant_memories"]]
+    assert set(ordered_ids) == {str(stale["id"]), str(correction["id"])}
+    assert ordered_ids.index(str(correction["id"])) < ordered_ids.index(str(stale["id"]))
+    assert pack["trace"]["supersession_reorders"] == 1
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    assert by_id[str(stale["id"])]["validity"] == {
+        "superseded": True,
+        "superseded_by_memory_id": str(correction["id"]),
+    }
+    assert by_id[str(correction["id"])]["validity"] == {"supersedes_memory_id": str(stale["id"])}
+
+
 def test_context_depth_low_matches_default_behavior_regression_pin() -> None:
     def build_store() -> InMemoryVNextRetrievalStore:
         return InMemoryVNextRetrievalStore(
