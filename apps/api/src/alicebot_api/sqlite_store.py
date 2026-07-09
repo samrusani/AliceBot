@@ -1420,6 +1420,92 @@ class SQLiteVNextStore:
         )
         return scored[:limit]
 
+    def search_memories_by_time(
+        self,
+        *,
+        window_start: datetime,
+        window_end: datetime,
+        window_center: datetime | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 50,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
+        include_expired: bool = False,
+    ) -> list[VNextRow]:
+        """Memories whose event window intersects ``[window_start, window_end)``.
+
+        Event time is ``COALESCE(valid_from, first_seen_at, created_at)``:
+        ``valid_from`` is the explicit event-validity start when a writer
+        recorded one (the honest event signal); ``first_seen_at`` — when
+        the fact was first observed — is the fallback for rows without
+        one, and ``created_at`` (row write time) is the last resort for
+        legacy rows. A row matches when that event time falls inside the
+        window, or when a closed ``[valid_from, valid_to)`` validity
+        interval overlaps it. Results order by proximity of the event
+        time to ``window_center`` (default: the window midpoint; open
+        "before X"/"since X" windows pass their closed edge), so the
+        tightest temporal matches lead the RRF list. Same scoping
+        discipline as the sibling search methods (user scoping,
+        deleted/status gates, domain/sensitivity/scope filters); note the
+        default expiry gate still hides rows whose ``valid_to`` has
+        passed — pass ``include_expired=True`` to recall facts that were
+        only true historically.
+        """
+        start_iso = _iso_or_none(window_start)
+        end_iso = _iso_or_none(window_end)
+        if window_center is None:
+            window_center = window_start + (window_end - window_start) / 2
+        center_iso = _iso_or_none(window_center)
+        domain_sql, domain_params = self._domain_clause(domains)
+        sensitivity_sql, sensitivity_params = self._sensitivity_clause(sensitivity_allowed)
+        type_sql, type_params = self._memory_type_clause(memory_types)
+        project_sql, project_params = self._project_clause(projects)
+        created_by_sql, created_by_params = self._created_by_clause(created_by_agent_ids)
+        run_sql, run_params = self._run_clause(run_id)
+        expiry_sql, expiry_params = self._expiry_clause(include_expired)
+        # julianday() parses the store's ISO-8601 TEXT timestamps and
+        # returns NULL for anything unparseable, so malformed rows drop
+        # out of the window instead of raising.
+        event_time_sql = "julianday(COALESCE(valid_from, first_seen_at, created_at))"
+        params: list[object] = [self.user_id]
+        params.extend(domain_params)
+        params.extend(sensitivity_params)
+        params.extend(type_params)
+        params.extend(project_params)
+        params.extend(created_by_params)
+        params.extend(run_params)
+        params.extend(expiry_params)
+        params.extend([start_iso, end_iso, end_iso, start_iso, center_iso])
+        params.append(limit)
+        return self._fetch_all(
+            f"""
+                SELECT {", ".join(MEMORY_COLUMNS)}
+                FROM memories
+                WHERE user_id = ?
+                  AND deleted_at IS NULL
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}{domain_sql}{sensitivity_sql}{type_sql}{project_sql}{created_by_sql}{run_sql}{expiry_sql}
+                  AND (
+                    ({event_time_sql} >= julianday(?) AND {event_time_sql} < julianday(?))
+                    OR (
+                      valid_from IS NOT NULL
+                      AND valid_to IS NOT NULL
+                      AND julianday(valid_from) < julianday(?)
+                      AND julianday(valid_to) > julianday(?)
+                    )
+                  )
+                ORDER BY
+                  ABS({event_time_sql} - julianday(?)) ASC,
+                  updated_at DESC,
+                  created_at DESC,
+                  id DESC
+                LIMIT ?
+                """,
+            tuple(params),
+        )
+
     def update_memory_embedding(self, *, memory_id: str, vector: list[float]) -> VNextRow | None:
         if not vector:
             raise ContinuityStoreInvariantError("embedding vectors must not be empty")
