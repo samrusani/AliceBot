@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import itertools
+import json
 import re
 import sqlite3
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
+from alicebot_api import vnext_retrieval as vnext_retrieval_module
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
@@ -335,6 +338,9 @@ class InMemoryVNextRetrievalStore:
             if matched:
                 rows.append(chunk)
         return rows[:limit]
+
+    def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
+        return [chunk for chunk in self.source_chunks if str(chunk.get("source_id")) == str(source_id)]
 
     def list_open_loops(
         self,
@@ -2845,12 +2851,33 @@ def test_no_anchor_query_has_no_temporal_stage_and_no_store_call() -> None:
     # and the fused sources record keeps its pre-anchor shape.
     store = InMemoryVNextRetrievalStore(
         memories=[_memory_row("memory-1", "Kubernetes deployment pipeline notes")],
+# -- coverage mode (aggregation intent) ---------------------------------------
+
+
+def _coverage_dormant_store() -> InMemoryVNextRetrievalStore:
+    return InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row("memory-decision", "Meridian roadmap release decision.", memory_type="decision"),
+            _memory_row("memory-note", "Meridian roadmap plain note."),
+        ],
         sources=[
             {
                 "id": "source-1",
                 "source_type": "manual_text",
                 "title": "Kubernetes deployment runbook",
                 "content_hash": "sha256:k8s",
+                "title": "Meridian roadmap source",
+                "content_hash": "sha256:dormant-pin",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {},
+            }
+        ],
+        open_loops=[
+            {
+                "id": "loop-1",
+                "title": "Meridian roadmap follow-up",
+                "status": "open",
                 "domain": "project",
                 "sensitivity": "private",
             }
@@ -3035,3 +3062,241 @@ def test_before_today_window_excludes_rows_first_seen_today() -> None:
         record for record in pack["trace"]["selected"] if record["target_id"] == "memory-ingested-today"
     ]
     assert "temporal_anchor" not in today_record[0]["stage_ranks"]
+        provenance_links=[
+            {
+                "id": "link-1",
+                "target_type": "memory",
+                "target_id": "memory-decision",
+                "source_id": "source-1",
+                "source_chunk_id": "chunk-1",
+                "quote": "Meridian roadmap release decision.",
+                "evidence_role": "quoted_from",
+                "confidence": 0.9,
+            }
+        ],
+        source_chunks=[
+            {"id": "chunk-1", "source_id": "source-1", "text": "Meridian roadmap release decision recorded."}
+        ],
+    )
+
+
+def test_ungated_query_takes_the_byte_identical_coverage_free_path(monkeypatch) -> None:
+    """Regression guard: without aggregation intent, coverage mode must not exist.
+
+    Compiles the same non-aggregation request twice — once with the real
+    detector (which stays dormant) and once with the entire coverage
+    feature hard-disabled — with deterministic pack ids. The two packs
+    must serialize byte-identically, and no coverage vocabulary may leak
+    into the pack anywhere.
+    """
+    stores: list[InMemoryVNextRetrievalStore] = []
+
+    def compile_pack() -> dict[str, object]:
+        counter = itertools.count(1)
+        monkeypatch.setattr(vnext_retrieval_module, "uuid4", lambda: UUID(int=next(counter)))
+        store = _coverage_dormant_store()
+        stores.append(store)
+        return VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query="Meridian roadmap release status",
+                domains=("project",),
+                trace_id="trace-dormant-pin",
+            )
+        )
+
+    dormant_pack = compile_pack()
+    monkeypatch.setattr(
+        vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda query: None
+    )
+    hard_disabled_pack = compile_pack()
+
+    assert json.dumps(dormant_pack, sort_keys=True, default=str) == json.dumps(
+        hard_disabled_pack, sort_keys=True, default=str
+    )
+    assert "coverage" not in json.dumps(dormant_pack, default=str)
+    assert set(dormant_pack["trace"]["stages"].keys()) == {
+        "fts",
+        "vector",
+        "graph",
+        "sources",
+        "open_loops",
+        "contradictions",
+        "recent_changes",
+    }
+    # Identical store call shape: exactly one memory FTS pass, no clause
+    # sub-retrievals, on both runs.
+    assert [store.memory_search_kwargs for store in stores] == [
+        stores[0].memory_search_kwargs,
+        stores[0].memory_search_kwargs,
+    ]
+    assert len(stores[0].memory_search_kwargs) == 1
+
+
+def test_minimal_depth_keeps_coverage_mode_dormant_for_aggregation_queries() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-game", "Hosted board game night with friends.")],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="How many times did I host board game night?", context_depth="minimal")
+    )
+
+    assert "coverage" not in json.dumps(pack, default=str)
+    assert len(store.memory_search_kwargs) == 1
+
+
+_COVERAGE_DUPLICATE_TEXT = "friday board game night with the usual crowd we played catan and ate pizza"
+_COVERAGE_INSTANCE_TEXTS = {
+    "inst-1": "board game night we played azul with sam and casey at the river cafe",
+    "inst-2": "board game night we hosted wingspan for the neighbors on the porch",
+    "inst-3": "board game night with codenames and homemade tacos at dana's loft",
+    "inst-4": "board game night featuring terraforming mars and root with the club",
+    "inst-5": "board game night where gloomhaven ran long and we ordered dumplings",
+    "inst-6": "board game night trying splendor and ticket to ride with visiting cousins",
+}
+
+
+def _instance_diversity_store() -> InMemoryVNextRetrievalStore:
+    """Ten near-verbatim duplicate sessions outranking six distinct instances."""
+    sources: list[dict[str, object]] = []
+    source_chunks: list[dict[str, object]] = []
+
+    def add_source(source_id: str, text: str) -> None:
+        sources.append(
+            {
+                "id": source_id,
+                "source_type": "chat_session",
+                "title": f"Chat session {source_id}",
+                "content_hash": f"sha256:{source_id}",
+                "domain": "unknown",
+                "sensitivity": "internal",
+                "metadata_json": {"session_id": source_id},
+            }
+        )
+        source_chunks.append({"id": f"chunk-{source_id}", "source_id": source_id, "text": text})
+
+    for index in range(1, 11):
+        add_source(f"dupe-{index:02d}", _COVERAGE_DUPLICATE_TEXT)
+    for source_id, text in _COVERAGE_INSTANCE_TEXTS.items():
+        add_source(source_id, text)
+    return InMemoryVNextRetrievalStore(memories=[], sources=sources, source_chunks=source_chunks)
+
+
+def test_aggregation_intent_promotes_distinct_instances_over_near_duplicates(monkeypatch) -> None:
+    """The assigned scenario: 6 instances + 10 near-duplicate distractors.
+
+    Standard retrieval at the 8-slot source limit selects only duplicates;
+    under detected aggregation intent the deeper pool plus the diversity
+    demotion pass captures all six distinct instances.
+    """
+    query = "How many times did I host board game night?"
+    # max_items=16 keeps the source-stage pool deeper than the 8 selection
+    # slots (the source pool is max(8, max_items)); coverage mode itself
+    # never deepens the source pool.
+    request = VNextRetrievalRequest(query=query, max_items=16)
+
+    control_store = _instance_diversity_store()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda q: None
+        )
+        control_pack = VNextRetrievalService(control_store).compile_context_pack(request)
+    control_ids = [str(source["id"]) for source in control_pack["sources"]]
+    assert control_ids == [f"dupe-{index:02d}" for index in range(1, 9)]
+    assert "coverage" not in json.dumps(control_pack, default=str)
+
+    coverage_store = _instance_diversity_store()
+    pack = VNextRetrievalService(coverage_store).compile_context_pack(request)
+
+    selected_ids = [str(source["id"]) for source in pack["sources"]]
+    assert selected_ids == ["dupe-01", *_COVERAGE_INSTANCE_TEXTS, "dupe-02"]
+    assert pack["trace"]["stages"]["coverage_mode"] == {
+        "source": "coverage_mode",
+        "intent": "count",
+        "trigger": "how many",
+        "clauses": 1,
+        "clause_candidate_count": 0,
+        "diversity_status": "enabled",
+        "diversity_demotions": 9,
+        "memory_demotions": 0,
+        "source_demotions": 9,
+    }
+    # Single-clause aggregation: no clause sub-retrievals beyond the main
+    # FTS pass (strict miss + OR fallback on the empty memories fixture).
+    assert len(coverage_store.memory_search_kwargs) == len(control_store.memory_search_kwargs)
+    demoted = [
+        record
+        for record in pack["trace"]["selected"]
+        if record["target_type"] == "source" and record["target_id"].startswith("dupe-")
+    ]
+    assert {record["target_id"] for record in demoted} == {"dupe-01", "dupe-02"}
+
+
+def test_multi_clause_aggregation_backfills_clause_only_memory_into_freed_slots(monkeypatch) -> None:
+    """Clause sub-retrieval rows fill slots the group-diversity pass frees.
+
+    The clause-only memory never displaces a fused winner on score (that
+    configuration measurably regressed coverage); it enters the pool right
+    behind the winners and wins a slot only because a same-source repeat
+    was demoted.
+    """
+    query = "How many hours did I spend on hiking and swimming last month?"
+
+    def build_store() -> InMemoryVNextRetrievalStore:
+        # 24 fillers fill the deepened main pool (max_items=4 -> 4*2*3)
+        # so the swim memory is truncated out of the main FTS list; the
+        # first two fillers share a provenance source, freeing one slot
+        # under group diversity. Filler text matches the main query and
+        # clause 1 ("on" in "session") but never clause 2.
+        fillers = [
+            _memory_row(
+                f"memory-filler-{index:02d}",
+                f"Weekly bread baking session notes volume {index}.",
+                metadata_json={"source_id": "src-shared" if index <= 2 else f"src-{index:02d}"},
+            )
+            for index in range(1, 25)
+        ]
+        swim = _memory_row("memory-swim", "Swimming laps review.", metadata_json={"source_id": "src-swim"})
+        return InMemoryVNextRetrievalStore(memories=[*fillers, swim], sources=[])
+
+    control_store = build_store()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda q: None
+        )
+        control_pack = VNextRetrievalService(control_store).compile_context_pack(
+            VNextRetrievalRequest(query=query, max_items=4)
+        )
+    control_ids = [str(memory["id"]) for memory in control_pack["relevant_memories"]]
+    assert control_ids == ["memory-filler-01", "memory-filler-02", "memory-filler-03", "memory-filler-04"]
+    assert len(control_store.memory_search_kwargs) == 1
+
+    coverage_store = build_store()
+    pack = VNextRetrievalService(coverage_store).compile_context_pack(
+        VNextRetrievalRequest(query=query, max_items=4)
+    )
+
+    selected_ids = [str(memory["id"]) for memory in pack["relevant_memories"]]
+    # filler-02 (same source as filler-01) is demoted; the freed slot goes
+    # to the clause-2 backfill memory, not to filler-05.
+    assert selected_ids == ["memory-filler-01", "memory-filler-03", "memory-filler-04", "memory-swim"]
+    coverage_stage = pack["trace"]["stages"]["coverage_mode"]
+    assert coverage_stage["intent"] == "count"
+    assert coverage_stage["clauses"] == 2
+    assert coverage_stage["clause_candidate_count"] == 5  # 4 clause-1 rows + 1 clause-2 row
+    assert coverage_stage["memory_demotions"] == 1
+    assert coverage_stage["source_demotions"] == 0
+    assert coverage_stage["diversity_demotions"] == 1
+    swim_trace = [
+        record
+        for record in pack["trace"]["selected"]
+        if record["target_type"] == "memory" and record["target_id"] == "memory-swim"
+    ]
+    assert swim_trace[0]["stage_ranks"] == {"coverage_clause_2": 1}
+    assert swim_trace[0]["rrf_score"] == 0.0  # honest: backfill, not fused
+    # The demoted same-source repeat is reported honestly in the trace.
+    assert pack["trace"]["excluded_counts"]["coverage_redundant_demoted"] == 1
+    assert "memory-filler-02" not in selected_ids
+    # One main FTS pass plus one per clause.
+    assert len(coverage_store.memory_search_kwargs) == 3
