@@ -19,6 +19,10 @@ services), then:
    budget — each source is guaranteed its best chunk (by query-term
    overlap) before the leftover budget goes to the next-best chunks
    globally, and the selected excerpts render oldest-session-first.
+   When a session's best-matching *line* would be cut by the head-biased
+   chunk boundary (late chess moves, item 7 of a numbered list), the
+   source's guaranteed excerpt becomes a query-anchored window centered
+   on that line instead — same cost cap, so packing stays round-robin.
 
 The answer prompt is the official LongMemEval reading template with the
 history slot filled by Alice's context block instead of the full haystack.
@@ -210,6 +214,164 @@ def _validity_suffix(memory: dict[str, object]) -> str:
     if not parts:
         return ""
     return f" [{'; '.join(parts)}]"
+# -- query-anchored excerpt windows ------------------------------------------
+#
+# The head-biased failure mode: a source's best chunk (whole-chunk term
+# overlap) contains the query's best-matching line near its tail, and the
+# answer sits just past the chunk boundary ("28. Kg3" after "27. Kg2 Bd5+"),
+# or an enumerated list is cut mid-run before the asked-about item. All
+# triggers below are query-surface (query-term matches) or content-shape
+# (line-initial/inline numbering density) — no benchmark labels.
+
+_ANCHOR_MIN_SCORE = 3  # weighted line score required before anchoring may replace the head path
+_ANCHOR_EXTENSION_MAX_CHARS = 1_600  # cap on the keep-the-enumeration-intact continuation
+_ENUMERATED_LINE_HEAD_PATTERN = re.compile(r"^\s*\d{1,3}[.)]\s")
+_INLINE_ENUMERATION_PATTERN = re.compile(r"(?:^|\s)\d{1,3}\.(?=\s|$)")
+
+
+def _line_anchor_score(line: str, terms: frozenset[str]) -> int:
+    """Weighted query-term overlap for one line; distinctive terms count double.
+
+    Terms carrying a digit (move numbers, list ordinals, notation like
+    ``kg2``) or five-plus characters are worth 2, short stopwordy terms 1,
+    so "27. Kg2 Bd5+" outranks a chatty line matching "the ... move".
+    """
+    if not terms:
+        return 0
+    matched = terms & set(_WORD_PATTERN.findall(line.casefold()))
+    return sum(2 if len(term) >= 5 or any(ch.isdigit() for ch in term) else 1 for term in matched)
+
+
+def _has_enumeration_signal(line: str) -> bool:
+    """Content-shape check: line-initial numbering or dense inline numbering.
+
+    Catches numbered list items ("7. Transcriptionist") and wrapped move
+    records ("bxc3 exd4 9. cxd4 Bb4 10. Rb1 a5 ...") without reading any
+    benchmark metadata.
+    """
+    if _ENUMERATED_LINE_HEAD_PATTERN.match(line):
+        return True
+    return len(_INLINE_ENUMERATION_PATTERN.findall(line)) >= 2
+
+
+def _trim_line_around_matches(line: str, terms: frozenset[str], *, max_chars: int) -> str:
+    """Char window of an overlong line centered on its query-term matches."""
+    spans = [match.span() for match in _WORD_PATTERN.finditer(line.casefold()) if match.group(0) in terms]
+    if not spans:
+        return line[:max_chars]
+    center = (spans[0][0] + spans[-1][1]) // 2
+    start = max(0, min(center - max_chars // 2, len(line) - max_chars))
+    return line[start : start + max_chars]
+
+
+@dataclass(frozen=True, slots=True)
+class _AnchoredExcerpt:
+    chunk_index: int  # chunk containing the anchor line (used for the excerpt header)
+    text: str  # window text; costs no more than the baseline chunk it replaces
+    extension_text: str  # enumeration continuation ("" if none); spent from the second-pass pool
+    covered_chunk_indexes: frozenset[int]  # chunks the window overlaps (kept out of pass 2)
+    extension_chunk_indexes: frozenset[int]  # chunks the extension overlaps (excluded only if applied)
+
+
+def _query_anchored_excerpt(
+    ordered_chunks: list[tuple[int, str]],
+    terms: frozenset[str],
+    *,
+    baseline_chunk_index: int,
+    baseline_text: str,
+) -> _AnchoredExcerpt | None:
+    """Query-anchored window replacing a source's head-biased best chunk.
+
+    Returns ``None`` whenever anchoring is not clearly warranted, in which
+    case the caller keeps today's byte-identical best-chunk excerpt:
+    single-chunk sources (the whole session is already visible), no line
+    with a weighted score of at least ``_ANCHOR_MIN_SCORE``, or a match
+    inside the baseline chunk without enumeration shape nearby (ordinary
+    prose whose best chunk already shows the matched line).
+
+    The window is centered on the best-matching line over the session's
+    concatenated chunk stream (ties break to the earliest line), expands to
+    whichever side is lighter (ties extend downward, where answers to
+    "after X" questions live), and never exceeds the baseline entry's cost,
+    so pass-1 packing admits exactly the same sources as before. When the
+    window's lower edge cuts an enumerated run, the continuation through
+    the run (capped) is returned separately for the second-pass pool.
+    """
+    if len(ordered_chunks) < 2 or not terms:
+        return None
+    lines: list[tuple[int, str]] = []
+    for position, (chunk_index, text) in enumerate(ordered_chunks):
+        if position:
+            lines.append((chunk_index, ""))  # paragraph seam between adjacent chunks
+        for line in text.split("\n"):
+            lines.append((chunk_index, line))
+    best_index = -1
+    best_score = 0
+    for index, (_chunk_index, line) in enumerate(lines):
+        score = _line_anchor_score(line, terms)
+        if score > best_score:
+            best_index, best_score = index, score
+    if best_score < _ANCHOR_MIN_SCORE:
+        return None
+    anchor_chunk = lines[best_index][0]
+    enumerated_shape = any(
+        _has_enumeration_signal(lines[index][1])
+        for index in range(max(0, best_index - 3), min(len(lines), best_index + 4))
+    )
+    if anchor_chunk == baseline_chunk_index and not enumerated_shape:
+        return None
+    # Cost parity with the baseline entry: same header except the excerpt
+    # ordinal, so cap the window text to keep entry_length from growing.
+    cap = len(baseline_text) + len(str(baseline_chunk_index + 1)) - len(str(anchor_chunk + 1))
+    if cap <= 0:
+        return None
+    anchor_line = lines[best_index][1]
+    low = high = best_index
+    if len(anchor_line) > cap:
+        window_text = _trim_line_around_matches(anchor_line, terms, max_chars=cap)
+    else:
+        length = len(anchor_line)
+        above = below = 0
+        while True:
+            up_cost = len(lines[low - 1][1]) + 1 if low > 0 else None
+            down_cost = len(lines[high + 1][1]) + 1 if high + 1 < len(lines) else None
+            can_up = up_cost is not None and length + up_cost <= cap
+            can_down = down_cost is not None and length + down_cost <= cap
+            if can_down and (not can_up or below <= above):
+                high += 1
+                below += down_cost or 0
+                length += down_cost or 0
+            elif can_up:
+                low -= 1
+                above += up_cost or 0
+                length += up_cost or 0
+            else:
+                break
+        while low < best_index and lines[low][1] == "":
+            low += 1
+        while high > best_index and lines[high][1] == "":
+            high -= 1
+        window_text = "\n".join(line for _chunk_index, line in lines[low : high + 1])
+    extension_lines: list[tuple[int, str]] = []
+    if _has_enumeration_signal(lines[high][1]):
+        extension_length = 0
+        for chunk_index, line in lines[high + 1 :]:
+            if not _has_enumeration_signal(line):
+                break
+            if extension_length + len(line) + 1 > _ANCHOR_EXTENSION_MAX_CHARS:
+                break
+            extension_lines.append((chunk_index, line))
+            extension_length += len(line) + 1
+    extension_text = "\n".join(line for _chunk_index, line in extension_lines)
+    if window_text == baseline_text and extension_text == "":
+        return None  # anchoring would change nothing; keep the old path
+    return _AnchoredExcerpt(
+        chunk_index=anchor_chunk,
+        text=window_text,
+        extension_text=extension_text,
+        covered_chunk_indexes=frozenset(chunk_index for chunk_index, _line in lines[low : high + 1]),
+        extension_chunk_indexes=frozenset(chunk_index for chunk_index, _line in extension_lines),
+    )
 
 
 class QuestionRun:
@@ -347,10 +509,14 @@ class QuestionRun:
 
         Excerpt packing is two-pass so one wordy session cannot crowd out
         the rest: pass 1 guarantees every retrieved source its single best
-        chunk (in source rank order), pass 2 spends the remaining budget on
-        the next-best chunks globally by lexical-overlap score. The selected
-        excerpts render in session-timestamp order (oldest first), each
-        prefixed with its session id and date.
+        excerpt (in source rank order), pass 2 spends the remaining budget
+        on the next-best chunks globally by lexical-overlap score. A
+        source's guaranteed excerpt is its best chunk, unless a query
+        anchor fires (see ``_query_anchored_excerpt``): then it is a window
+        centered on the best-matching line at the same cost, and any
+        enumeration continuation is charged to the pass-2 pool. The
+        selected excerpts render in session-timestamp order (oldest
+        first), each prefixed with its session id and date.
         """
         lines: list[str] = []
         used = 0
@@ -388,6 +554,7 @@ class QuestionRun:
         terms = frozenset(query_terms(self.question.question))
         # One entry per chunk: (-score, source_rank, chunk_index, session_id, date, text).
         chunks_by_source: list[list[tuple[int, int, int, str, str, str]]] = []
+        ordered_chunks_by_source: list[list[tuple[int, str]]] = []  # (chunk_index, text) in session order
         sources = pack.get("sources") or []
         for source_rank, source in enumerate(sources):
             if not isinstance(source, dict):
@@ -395,6 +562,7 @@ class QuestionRun:
             source_id = str(source.get("id"))
             session_id, date = self._session_label(source_id)
             source_chunks: list[tuple[int, int, int, str, str, str]] = []
+            ordered_chunks: list[tuple[int, str]] = []
             for chunk in self.store.list_source_chunks(source_id):
                 chunk_text = str(chunk.get("text") or "")
                 if chunk_text.strip() == "":
@@ -402,29 +570,77 @@ class QuestionRun:
                 score = _chunk_overlap_score(chunk_text, terms)
                 chunk_index = int(chunk.get("chunk_index") or 0)
                 source_chunks.append((-score, source_rank, chunk_index, session_id, date, chunk_text))
+                ordered_chunks.append((chunk_index, chunk_text))
             source_chunks.sort(key=lambda item: (item[0], item[2]))  # best score first, then position
+            ordered_chunks.sort(key=lambda item: item[0])
             if source_chunks:
                 chunks_by_source.append(source_chunks)
+                ordered_chunks_by_source.append(ordered_chunks)
 
         def entry_length(entry: tuple[int, int, int, str, str, str]) -> int:
             _neg_score, _source_rank, chunk_index, session_id, date, chunk_text = entry
             header = f"[Session {session_id} | {date} | excerpt {chunk_index + 1}]"
             return len(header) + len(chunk_text) + 3
 
-        # Pass 1: every retrieved source gets its single best chunk (source
-        # rank order), so one wordy session cannot crowd out the rest.
+        # Pass 1: every retrieved source gets its single best excerpt (source
+        # rank order), so one wordy session cannot crowd out the rest. A
+        # query-anchored window is capped at the baseline chunk's cost, so
+        # admission decisions are identical either way; its enumeration
+        # extension waits for the leftover pool below.
         selected: list[tuple[int, int, int, str, str, str]] = []
-        remaining: list[tuple[int, int, int, str, str, str]] = []
-        for source_chunks in chunks_by_source:
+        # Per source: (chunk entries not yet shown, chunk indexes covered by an anchored window).
+        leftovers: list[tuple[list[tuple[int, int, int, str, str, str]], frozenset[int]]] = []
+        # (selected position, leftovers position, extension text, extension chunk indexes).
+        pending_extensions: list[tuple[int, int, str, frozenset[int]]] = []
+        for source_chunks, ordered_chunks in zip(chunks_by_source, ordered_chunks_by_source):
             best = source_chunks[0]
-            cost = entry_length(best)
+            anchored = _query_anchored_excerpt(
+                ordered_chunks, terms, baseline_chunk_index=best[2], baseline_text=best[5]
+            )
+            entry = best
+            if anchored is not None:
+                entry = (best[0], best[1], anchored.chunk_index, best[3], best[4], anchored.text)
+            cost = entry_length(entry)
             if used + cost <= budget:
-                selected.append(best)
+                selected.append(entry)
                 used += cost
-                remaining.extend(source_chunks[1:])
+                if anchored is None:
+                    leftovers.append((source_chunks[1:], frozenset()))
+                else:
+                    leftovers.append((source_chunks, anchored.covered_chunk_indexes))
+                    if anchored.extension_text:
+                        pending_extensions.append(
+                            (
+                                len(selected) - 1,
+                                len(leftovers) - 1,
+                                anchored.extension_text,
+                                anchored.extension_chunk_indexes,
+                            )
+                        )
             else:
-                remaining.extend(source_chunks)
-        # Pass 2: spend what is left on the next-best chunks globally.
+                leftovers.append((source_chunks, frozenset()))
+        # Enumeration extensions spend the leftover pool first (source rank
+        # order): a kept-intact list never evicts another source's
+        # guaranteed excerpt, only competes with pass-2 chunks.
+        for selected_position, leftover_position, extension_text, extension_chunk_indexes in pending_extensions:
+            extra = len(extension_text) + 1  # joined below the window with one newline
+            if used + extra > budget:
+                continue
+            neg_score, source_rank, chunk_index, session_id, date, window_text = selected[selected_position]
+            selected[selected_position] = (
+                neg_score,
+                source_rank,
+                chunk_index,
+                session_id,
+                date,
+                window_text + "\n" + extension_text,
+            )
+            used += extra
+            entries, covered = leftovers[leftover_position]
+            leftovers[leftover_position] = (entries, covered | extension_chunk_indexes)
+        # Pass 2: spend what is left on the next-best chunks globally,
+        # skipping chunks an anchored window (or applied extension) already shows.
+        remaining = [entry for entries, covered in leftovers for entry in entries if entry[2] not in covered]
         remaining.sort(key=lambda item: item[:3])
         for entry in remaining:
             cost = entry_length(entry)

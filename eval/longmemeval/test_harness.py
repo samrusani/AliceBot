@@ -590,6 +590,269 @@ def test_render_context_block_ignores_absent_or_malformed_grounding() -> None:
         _packing_pack() | {"grounding": "not-a-dict"}, budget=700
     )
     assert malformed == baseline
+# -- query-anchored excerpt windows ---------------------------------------------
+
+
+class _AnchorStubStore(_StubChunkStore):
+    """`_StubChunkStore` with a per-test session map instead of the shared one."""
+
+    def __init__(self, chunks_by_source: dict[str, list[str]], sessions: dict[str, tuple[str, str]]) -> None:
+        super().__init__(chunks_by_source)
+        self._sessions = sessions
+
+    def get_source(self, source_id: str) -> dict[str, object] | None:
+        if source_id not in self._sessions:
+            return None
+        session_id, date = self._sessions[source_id]
+        return {"metadata_json": {"session_id": session_id, "session_date": date}}
+
+
+def _anchoring_run(
+    question_text: str,
+    chunks_by_source: dict[str, list[str]],
+    sessions: dict[str, tuple[str, str]],
+) -> adapter.QuestionRun:
+    question = parse_question(
+        {
+            "question_id": "q_anchor",
+            "question_type": "multi-session",
+            "question": question_text,
+            "answer": "unused",
+            "question_date": "2023/07/01 (Sat) 10:00",
+            "haystack_dates": ["2023/05/21 (Sun) 13:30"],
+            "haystack_session_ids": ["session_stub"],
+            "haystack_sessions": [[{"role": "user", "content": "hello"}]],
+            "answer_session_ids": ["session_stub"],
+        }
+    )
+    return adapter.QuestionRun(question, _AnchorStubStore(chunks_by_source, sessions))  # type: ignore[arg-type]
+
+
+def _entry_cost(chunk_text: str, session_id: str, date: str, excerpt_ordinal: int) -> int:
+    header = f"[Session {session_id} | {date} | excerpt {excerpt_ordinal}]"
+    return len(header) + len(chunk_text) + 3
+
+
+_CHESS_DATE = "2023/05/21 (Sun) 13:30"
+_CHESS_QUESTION = "In our previous chess game, what was the move you made after 27. Kg2 Bd5+?"
+_CHESS_FILLER_MOVES = "\n".join(f"{number}. Qd{number % 8 + 1} Rf{number % 8 + 1}" for number in range(1, 27))
+_CHESS_CHUNK_0 = (
+    f"Chat session session_chess on {_CHESS_DATE}.\n"
+    "\n"
+    "[USER]: let's keep playing our chess game from last week\n"
+    "\n"
+    "[ASSISTANT]: Gladly! Here is the full record of our game so far:\n"
+    f"{_CHESS_FILLER_MOVES}\n"
+    "27. Kg2 Bd5+"
+)
+_CHESS_CHUNK_1 = (
+    "[ASSISTANT]: 28. Kg3 would be my reply here, stepping out of the check.\n"
+    "\n"
+    "[USER]: nice, that escapes the check cleanly and keeps the pawn shield together\n"
+    "\n"
+    "[ASSISTANT]: Exactly. From here I would look at rook activity on the open file next."
+)
+
+
+def _chess_run() -> adapter.QuestionRun:
+    return _anchoring_run(
+        _CHESS_QUESTION,
+        {"src-chess": [_CHESS_CHUNK_0, _CHESS_CHUNK_1]},
+        {"src-chess": ("session_chess", _CHESS_DATE)},
+    )
+
+
+def _chess_pack() -> dict[str, object]:
+    return {"relevant_memories": [], "sources": [{"id": "src-chess"}]}
+
+
+def test_anchored_excerpt_recovers_late_chess_move(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Long move record, query about a late move: the excerpt keeps the reply."""
+    run = _chess_run()
+    # Tight budget: exactly one guaranteed excerpt, no pass-2 room for chunk 1.
+    budget = _entry_cost(_CHESS_CHUNK_0, "session_chess", _CHESS_DATE, 1) + 60
+    block, excerpt_count = run._render_context_block(_chess_pack(), budget=budget)
+    assert excerpt_count == 1
+    assert "27. Kg2 Bd5+" in block  # the anchor line survives
+    assert "28. Kg3" in block  # the answer past the chunk boundary is now visible
+    # Determinism: identical inputs render the identical block.
+    assert run._render_context_block(_chess_pack(), budget=budget) == (block, excerpt_count)
+    # Control: the head-biased path (anchoring off) cuts the game at the boundary.
+    monkeypatch.setattr(adapter, "_query_anchored_excerpt", lambda *args, **kwargs: None)
+    head_block, head_count = run._render_context_block(_chess_pack(), budget=budget)
+    assert head_count == 1
+    assert "28. Kg3" not in head_block
+
+
+_LIST_DATE = "2023/05/26 (Fri) 12:40"
+_LIST_QUESTION = "What was the 7th job in the list of work from home jobs for seniors you provided?"
+_LIST_JOBS = (
+    "Customer service representative",
+    "Virtual assistant",
+    "Bookkeeper",
+    "Online tutor",
+    "Freelance writer",
+    "Survey taker",
+    "Transcriptionist",
+    "Data entry clerk",
+    "Social media manager",
+    "Proofreader",
+    "Resume writer",
+    "Online juror",
+)
+_LIST_CHUNK_0 = (
+    f"Chat session session_list on {_LIST_DATE}.\n"
+    "\n"
+    "[USER]: I retired last spring and I want something flexible to keep busy\n"
+    "\n"
+    "[ASSISTANT]: Congratulations! Staying engaged part-time is a great goal.\n"
+    "\n"
+    "[USER]: please list some work from home jobs for seniors"
+)
+_LIST_CHUNK_1 = (
+    "[ASSISTANT]: Here are some options:\n"
+    + "\n".join(f"{number}. {job}" for number, job in enumerate(_LIST_JOBS, start=1))
+    + "\n"
+    "\n"
+    "[USER]: thanks, that gives me plenty of ideas to explore this month"
+)
+
+
+def _list_run() -> adapter.QuestionRun:
+    return _anchoring_run(
+        _LIST_QUESTION,
+        {"src-list": [_LIST_CHUNK_0, _LIST_CHUNK_1]},
+        {"src-list": ("session_list", _LIST_DATE)},
+    )
+
+
+def _list_pack() -> dict[str, object]:
+    return {"relevant_memories": [], "sources": [{"id": "src-list"}]}
+
+
+def test_anchored_excerpt_keeps_buried_list_item(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer at item 7 of a 12-item assistant list: the enumeration stays intact."""
+    run = _list_run()
+    # Room for one guaranteed excerpt plus the enumeration extension, but not
+    # for chunk 1 as a whole pass-2 entry.
+    budget = _entry_cost(_LIST_CHUNK_0, "session_list", _LIST_DATE, 1) + 260
+    block, excerpt_count = run._render_context_block(_list_pack(), budget=budget)
+    assert excerpt_count == 1
+    assert "7. Transcriptionist" in block
+    assert run._render_context_block(_list_pack(), budget=budget) == (block, excerpt_count)
+    # Control: with anchoring off the head-biased excerpt never reaches item 7.
+    monkeypatch.setattr(adapter, "_query_anchored_excerpt", lambda *args, **kwargs: None)
+    head_block, _head_count = run._render_context_block(_list_pack(), budget=budget)
+    assert "7. Transcriptionist" not in head_block
+
+
+def test_head_matched_prose_takes_byte_identical_old_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prose whose match already sits in the best chunk is untouched by anchoring."""
+    run = _packing_run()
+    for budget in (700, 1_500, 12_000):
+        block, excerpt_count = run._render_context_block(_packing_pack(), budget=budget)
+        with monkeypatch.context() as patch:
+            patch.setattr(adapter, "_query_anchored_excerpt", lambda *args, **kwargs: None)
+            old_block, old_count = run._render_context_block(_packing_pack(), budget=budget)
+        assert (block, excerpt_count) == (old_block, old_count)
+
+
+def test_anchoring_preserves_round_robin_guarantee() -> None:
+    """An anchored window never costs more than the chunk it replaces, so the
+    marginal source keeps its guaranteed excerpt."""
+    sessions = {
+        "src-chess": ("session_chess", _CHESS_DATE),
+        "src-b": ("session_b", "2023/05/01 (Mon) 09:00"),
+        "src-c": ("session_c", "2023/06/02 (Fri) 18:30"),
+    }
+    filler_b = _padded("the golden retriever went to training class on Monday morning")
+    filler_c = _padded("the puppy came home from the shelter and slept all afternoon")
+    run = _anchoring_run(
+        _CHESS_QUESTION,
+        {"src-chess": [_CHESS_CHUNK_0, _CHESS_CHUNK_1], "src-b": [filler_b], "src-c": [filler_c]},
+        sessions,
+    )
+    pack = {"relevant_memories": [], "sources": [{"id": "src-chess"}, {"id": "src-b"}, {"id": "src-c"}]}
+    budget = (
+        _entry_cost(_CHESS_CHUNK_0, "session_chess", _CHESS_DATE, 1)
+        + _entry_cost(filler_b, "session_b", "2023/05/01 (Mon) 09:00", 1)
+        + _entry_cost(filler_c, "session_c", "2023/06/02 (Fri) 18:30", 1)
+        + 10
+    )
+    block, excerpt_count = run._render_context_block(pack, budget=budget)
+    assert excerpt_count >= 3
+    assert "28. Kg3" in block  # anchored source shows the answer window
+    for session_id in ("session_chess", "session_b", "session_c"):
+        assert f"[Session {session_id} " in block  # nobody got evicted
+
+
+def test_query_anchored_excerpt_gates() -> None:
+    terms = frozenset(["chess", "game", "move", "27", "kg2", "bd5", "the", "you"])
+    # Single-chunk sources always take the old path.
+    assert adapter._query_anchored_excerpt(
+        [(0, _CHESS_CHUNK_0)], terms, baseline_chunk_index=0, baseline_text=_CHESS_CHUNK_0
+    ) is None
+    # No query terms: nothing to anchor on.
+    assert adapter._query_anchored_excerpt(
+        [(0, _CHESS_CHUNK_0), (1, _CHESS_CHUNK_1)], frozenset(), baseline_chunk_index=0, baseline_text=_CHESS_CHUNK_0
+    ) is None
+    # Weak stopwordy matches stay below the anchor threshold.
+    weak_terms = frozenset(["the", "you"])
+    assert adapter._query_anchored_excerpt(
+        [(0, _CHESS_CHUNK_0), (1, _CHESS_CHUNK_1)],
+        weak_terms,
+        baseline_chunk_index=0,
+        baseline_text=_CHESS_CHUNK_0,
+    ) is None
+    # Prose match inside the baseline chunk with no enumeration nearby: old path.
+    prose_0 = "[USER]: my dentist appointment in Portland went smoothly yesterday afternoon\n\n[ASSISTANT]: Glad to hear the appointment went well."
+    prose_1 = "[USER]: and the follow-up is booked for next month\n\n[ASSISTANT]: Noted."
+    prose_terms = frozenset(["dentist", "appointment", "portland"])
+    assert adapter._query_anchored_excerpt(
+        [(0, prose_0), (1, prose_1)], prose_terms, baseline_chunk_index=0, baseline_text=prose_0
+    ) is None
+    # Fires when the best-matching line is outside the baseline best chunk.
+    anchored = adapter._query_anchored_excerpt(
+        [(0, prose_0), (1, prose_1)],
+        frozenset(["follow-up", "booked", "month"]),
+        baseline_chunk_index=0,
+        baseline_text=prose_0,
+    )
+    assert anchored is not None
+    assert "follow-up is booked" in anchored.text
+    assert len(anchored.text) <= len(prose_0)
+
+
+def test_enumeration_signal_shapes() -> None:
+    assert adapter._has_enumeration_signal("7. Transcriptionist")
+    assert adapter._has_enumeration_signal("27. Kg2 Bd5+")
+    assert adapter._has_enumeration_signal("bxc3 exd4 9. cxd4 Bb4 10. Rb1 a5")
+    assert not adapter._has_enumeration_signal("[ASSISTANT]: Glad to hear the appointment went well.")
+    assert not adapter._has_enumeration_signal("we met at 10.30 in the lobby")  # lone inline number
+    assert not adapter._has_enumeration_signal("")
+
+
+def test_line_anchor_score_weights_distinctive_terms() -> None:
+    terms = frozenset(["27", "kg2", "bd5", "move", "the", "previous"])
+    assert adapter._line_anchor_score("27. Kg2 Bd5+", terms) == 6  # digit-bearing terms count double
+    assert adapter._line_anchor_score("I will make the move now", terms) == 2  # move + the
+    assert adapter._line_anchor_score("no overlap here", frozenset()) == 0
+
+
+def test_reading_templates_byte_frozen() -> None:
+    """The official LongMemEval reading templates must never drift."""
+    assert adapter.ANSWER_PROMPT_TEMPLATE == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer:"
+    )
+    assert adapter.ANSWER_PROMPT_TEMPLATE_COT == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history. "
+        "Answer the question step by step: first extract all the relevant information, "
+        "and then reason over the information to get the answer.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer (step by step):"
+    )
 
 
 # -- end-to-end (real SQLite ingest + retrieval, no model) ---------------------------
