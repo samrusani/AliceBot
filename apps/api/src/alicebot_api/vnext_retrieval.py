@@ -34,6 +34,12 @@ from uuid import uuid4
 # so it calls the pure candidate finder directly instead of
 # generate_contradiction_report (which persists edges/artifacts/events).
 from alicebot_api import vnext_contradictions
+
+# Coverage mode (aggregation-shaped queries): pure detection, clause
+# decomposition, and source near-duplicate demotion helpers. Dormant unless
+# detect_aggregation_intent fires on the query surface — see the marked
+# "coverage mode" blocks in compile_context_pack.
+from alicebot_api import vnext_coverage_query
 from alicebot_api.vnext_entity_names import normalize_entity_name
 from alicebot_api.vnext_embeddings import (
     EmbeddingProvider,
@@ -1081,6 +1087,28 @@ class VNextRetrievalService:
             max_items = min(CONTEXT_DEPTH_MINIMAL_MAX_ITEMS, max_items)
         memory_candidate_limit = max(max_items * 2, max_items)
 
+        # ---- coverage mode (aggregation intent) begin --------------------
+        # Gated by the query surface ONLY (vnext_coverage_query.detect_
+        # aggregation_intent); when the gate stays None — every ordinary
+        # query — no coverage block in this method runs and the pack is
+        # byte-identical to the ungated pipeline. When it fires, the
+        # memory candidate POOL deepens here (selection slot counts never
+        # change) so the instance-diversity pass below has distinct
+        # instances to promote into the slots. The source pool is NOT
+        # deepened: measured on the free coverage probe, a deeper source
+        # pool lets tail items that appear in two ranked lists outscore
+        # single-list evidence and all-coverage regressed. minimal depth
+        # keeps its cheapest-useful-call promise: no detection, no
+        # coverage work.
+        coverage_intent = (
+            None
+            if depth == CONTEXT_DEPTH_MINIMAL
+            else vnext_coverage_query.detect_aggregation_intent(str(interpretation["query"]))
+        )
+        if coverage_intent is not None:
+            memory_candidate_limit *= vnext_coverage_query.COVERAGE_POOL_MULTIPLIER
+        # ---- coverage mode (aggregation intent) end ----------------------
+
         fts_rows, fts_source = self._memory_fts_rows(
             query=request.query,
             domains=domains,
@@ -1123,6 +1151,39 @@ class VNextRetrievalService:
         if graph_stage == GRAPH_STAGE_ENABLED:
             memory_lists["graph"] = graph_rows
 
+        # ---- coverage mode (aggregation intent) begin --------------------
+        # Multi-clause aggregations ("X and Y", comparative pairs) run
+        # capped FTS-only sub-retrievals per clause. The rows do NOT join
+        # the RRF score fight (measured on the free coverage probe, naive
+        # fused clause lists let generic clause fragments displace evidence
+        # — all-coverage regressed); instead they backfill below: clause
+        # rows enter the candidate pool right behind the fused winners, so
+        # they can only fill slots the diversity pass frees. Dormant unless
+        # the intent gate fired above.
+        coverage_clauses: list[str] = []
+        coverage_clause_lists: dict[str, list[JsonObject]] = {}
+        coverage_clause_candidate_count = 0
+        if coverage_intent is not None:
+            coverage_clauses = vnext_coverage_query.decompose_clauses(str(interpretation["query"]))
+            if len(coverage_clauses) >= 2:
+                for clause_index, clause in enumerate(coverage_clauses, start=1):
+                    clause_rows, _clause_fts_source = self._memory_fts_rows(
+                        query=clause,
+                        domains=domains,
+                        sensitivity_allowed=sensitivity_allowed,
+                        limit=min(max_items, vnext_coverage_query.COVERAGE_CLAUSE_FETCH_LIMIT),
+                        memory_types=memory_types,
+                        projects=projects,
+                        created_by_agent_ids=created_by_agent_ids,
+                        run_id=filter_run_id,
+                    )
+                    if clause_rows:
+                        coverage_clause_lists[vnext_coverage_query.clause_stage_name(clause_index)] = list(
+                            clause_rows
+                        )
+                        coverage_clause_candidate_count += len(clause_rows)
+        # ---- coverage mode (aggregation intent) end ----------------------
+
         # Memories fuse before the source stage runs: the provenance list
         # of the fused sources stage follows the winning memory hits.
         memory_candidates = _fused_candidates(
@@ -1133,13 +1194,85 @@ class VNextRetrievalService:
             limit=max_items,
         )
 
+        # The provenance list of the fused sources stage follows these
+        # winners; captured here, before any coverage-mode reordering, so
+        # the source stage sees the same winners with or without coverage.
+        provenance_memories = [candidate.item for candidate in memory_candidates if candidate.selected]
+
+        # ---- coverage mode (aggregation intent) begin --------------------
+        # (1) Clause backfill: sub-retrieval rows enter the candidate pool
+        #     immediately behind the fused winners (unselected), so each
+        #     clause's best instances are first in line for any slot the
+        #     diversity pass frees — without ever displacing a fused
+        #     winner on score.
+        # (2) Instance diversity over the memories: re-statements of an
+        #     already-kept memory's provenance source are demoted behind
+        #     memories from distinct sources, so an aggregation pack
+        #     carries every instance instead of one instance restated.
+        #     Group-key only — NO text-similarity demotion here, because
+        #     two instances of the same recurring fact captured from
+        #     different sources legitimately share text and are exactly
+        #     what aggregation questions need.
+        # The pass reorders pack slots only: provenance_memories above is
+        # captured pre-diversity, so the source stage stays decoupled and
+        # a demotion can never knock a session out of the pack's source
+        # slots. Every baseline-selected memory's source stays represented
+        # (first memory per source is never demoted), so the pack's
+        # session coverage is a superset of the ungated pack's. Dormant
+        # unless the gate fired.
+        coverage_memory_demotions = 0
+        if coverage_intent is not None:
+            if coverage_clause_lists:
+                seen_candidate_ids = {str(candidate.item.get("id")) for candidate in memory_candidates}
+                backfill_candidates: list[RetrievalCandidate] = []
+                for stage_name, stage_rank, row in vnext_coverage_query.interleave_clause_rows(
+                    coverage_clause_lists
+                ):
+                    row_id = str(row.get("id"))
+                    if row_id in seen_candidate_ids:
+                        continue
+                    if _allowed(row, domains=domains, sensitivity_allowed=sensitivity_allowed) is not None:
+                        continue
+                    seen_candidate_ids.add(row_id)
+                    backfill_candidates.append(
+                        RetrievalCandidate(
+                            item=row,
+                            target_type="memory",
+                            rank=0,  # reassigned below
+                            rrf_score=0.0,  # honest: not part of RRF fusion
+                            stage_ranks={stage_name: stage_rank},
+                            selected=False,
+                            exclusion_reason="trimmed_by_limit",
+                        )
+                    )
+                if backfill_candidates:
+                    winners = [candidate for candidate in memory_candidates if candidate.selected]
+                    rest = [candidate for candidate in memory_candidates if not candidate.selected]
+                    memory_candidates = [
+                        replace(candidate, rank=position)
+                        for position, candidate in enumerate(
+                            [*winners, *backfill_candidates, *rest], start=1
+                        )
+                    ]
+            # Window spans the whole deepened pool (baseline pool is
+            # 2 x slots, coverage deepens it x POOL_MULTIPLIER), so the
+            # walk can reach distinct-source instances however deep FTS
+            # ranked them; group-key checks are O(1) per candidate.
+            memory_candidates, coverage_memory_demotions = vnext_coverage_query.apply_instance_diversity(
+                memory_candidates,
+                group_key_for=vnext_coverage_query.memory_provenance_group_key,
+                limit=max_items,
+                consider_multiplier=2 * vnext_coverage_query.COVERAGE_POOL_MULTIPLIER,
+            )
+        # ---- coverage mode (aggregation intent) end ----------------------
+
         if sources_enabled:
             source_lists, sources_stage_record = self._source_stage_lists(
                 query=request.query,
                 domains=domains,
                 sensitivity_allowed=sensitivity_allowed,
                 limit=max(DEFAULT_SOURCE_LIMIT, max_items),
-                winning_memories=[candidate.item for candidate in memory_candidates if candidate.selected],
+                winning_memories=provenance_memories,
             )
         else:
             source_lists = {}
@@ -1161,6 +1294,33 @@ class VNextRetrievalService:
             sensitivity_allowed=sensitivity_allowed,
             limit=DEFAULT_SOURCE_LIMIT,
         )
+        # ---- coverage mode (aggregation intent) begin --------------------
+        # Instance-diversity pass over the fused sources: near-verbatim
+        # duplicate sources are demoted behind distinct same-topic
+        # instances so aggregation questions see every instance instead of
+        # the same content repeated. Dormant (coverage_record is None, no
+        # trace stage) unless the intent gate fired above.
+        coverage_record: JsonObject | None = None
+        if coverage_intent is not None:
+            coverage_text_for = vnext_coverage_query.source_chunk_text_provider(
+                getattr(self.store, "list_source_chunks", None)
+            )
+            coverage_source_demotions = 0
+            if coverage_text_for is not None:
+                source_candidates, coverage_source_demotions = vnext_coverage_query.apply_instance_diversity(
+                    source_candidates,
+                    text_for=coverage_text_for,
+                    limit=DEFAULT_SOURCE_LIMIT,
+                )
+            coverage_record = vnext_coverage_query.coverage_stage_record(
+                intent=coverage_intent,
+                clause_count=len(coverage_clauses),
+                clause_candidate_count=coverage_clause_candidate_count,
+                source_diversity_enabled=coverage_text_for is not None,
+                memory_demotions=coverage_memory_demotions,
+                source_demotions=coverage_source_demotions,
+            )
+        # ---- coverage mode (aggregation intent) end ----------------------
         open_loop_candidates = _fused_candidates(
             {"listing": open_loop_rows},
             target_type="open_loop",
@@ -1294,6 +1454,10 @@ class VNextRetrievalService:
                 "status": SUPERSESSION_STAGE_ENABLED,
                 "candidate_count": len(supersession_context),
             }
+        if coverage_record is not None:
+            # coverage mode (aggregation intent): absent when dormant so
+            # ungated traces stay byte-identical.
+            trace["stages"][vnext_coverage_query.COVERAGE_STAGE] = coverage_record  # type: ignore[index]
         pack: JsonObject = {
             "context_pack_id": context_pack_id,
             "query_interpretation": interpretation,
