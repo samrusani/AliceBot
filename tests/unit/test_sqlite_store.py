@@ -2399,3 +2399,22 @@ def test_latest_agentic_commit_memory_finds_newest_by_agent() -> None:
     assert store.latest_agentic_commit_memory(agent_id="unknown") is None
     # Cross-user isolation: another user's store sees nothing.
     assert mallory.latest_agentic_commit_memory() is None
+
+
+def test_utc_now_iso_always_carries_fractional_seconds(monkeypatch) -> None:
+    # A whole-second clock reading must not produce '...59Z': that string
+    # sorts lexicographically after every '...59.000123Z' sibling and
+    # corrupts timestamp ordering roughly once per million writes.
+    from datetime import datetime as real_datetime
+
+    from alicebot_api import sqlite_store
+
+    class WholeSecondDatetime:
+        @staticmethod
+        def now(tz):
+            return real_datetime(2026, 7, 7, 23, 59, 59, 0, tzinfo=tz)
+
+    monkeypatch.setattr(sqlite_store, "datetime", WholeSecondDatetime)
+    stamped = sqlite_store._utc_now_iso()
+    assert stamped == "2026-07-07T23:59:59.000000Z"
+    assert stamped < "2026-07-07T23:59:59.000001Z"
