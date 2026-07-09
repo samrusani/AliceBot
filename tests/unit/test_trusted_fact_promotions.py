@@ -238,3 +238,107 @@ def test_get_trusted_fact_pattern_raises_not_found_for_unknown_id() -> None:
             user_id=uuid4(),
             pattern_id=uuid4(),
         )
+
+
+def test_sync_orders_user_asserted_facts_above_assistant_estimates_in_a_slot() -> None:
+    store = TrustedFactPromotionStoreStub()
+    user_id = uuid4()
+    estimate_id = uuid4()
+    user_fact_id = uuid4()
+
+    store.memories = [
+        # Alphabetically-first key so only the provenance bias can move it last.
+        _memory(
+            memory_id=estimate_id,
+            user_id=user_id,
+            memory_key="user.trip.a_flight_estimate",
+            value={
+                "amount": "$200-300",
+                "provenance_role": "assistant",
+                "assertion_class": "assistant_estimate",
+            },
+            trust_class="deterministic",
+        ),
+        _memory(
+            memory_id=user_fact_id,
+            user_id=user_id,
+            memory_key="user.trip.flight_paid",
+            value={
+                "amount": "$150",
+                "provenance_role": "user",
+                "assertion_class": "user_asserted",
+            },
+            trust_class="deterministic",
+        ),
+    ]
+    store.revisions = {
+        estimate_id: [_revision(memory_id=estimate_id, memory_key="user.trip.a_flight_estimate", sequence_no=1)],
+        user_fact_id: [_revision(memory_id=user_fact_id, memory_key="user.trip.flight_paid", sequence_no=2)],
+    }
+
+    sync_trusted_fact_promotions(store, user_id=user_id)  # type: ignore[arg-type]
+
+    patterns = list_trusted_fact_patterns(
+        store,  # type: ignore[arg-type]
+        user_id=user_id,
+        request=TrustedFactPatternListQueryInput(limit=10),
+    )
+    assert patterns["summary"]["total_count"] == 1
+    pattern = patterns["items"][0]
+    # Bias, not suppression: both facts promote, the user-asserted one first.
+    assert pattern["fact_count"] == 2
+    assert pattern["source_fact_ids"] == [str(user_fact_id), str(estimate_id)]
+    assert [link["fact_id"] for link in pattern["evidence_chain"]] == [
+        str(user_fact_id),
+        str(estimate_id),
+    ]
+
+    playbooks = list_trusted_fact_playbooks(
+        store,  # type: ignore[arg-type]
+        user_id=user_id,
+        request=TrustedFactPlaybookListQueryInput(limit=10),
+    )
+    playbook = playbooks["items"][0]
+    assert [step["memory_key"] for step in playbook["steps"]] == [
+        "user.trip.flight_paid",
+        "user.trip.a_flight_estimate",
+    ]
+
+
+def test_sync_keeps_group_order_unchanged_without_provenance_values() -> None:
+    store = TrustedFactPromotionStoreStub()
+    user_id = uuid4()
+    first_id = uuid4()
+    second_id = uuid4()
+
+    store.memories = [
+        _memory(
+            memory_id=first_id,
+            user_id=user_id,
+            memory_key="user.preference.aisle",
+            value={"seat": "aisle"},
+            trust_class="deterministic",
+        ),
+        _memory(
+            memory_id=second_id,
+            user_id=user_id,
+            memory_key="user.preference.window",
+            value={"seat": "window"},
+            trust_class="human_curated",
+        ),
+    ]
+    store.revisions = {
+        first_id: [_revision(memory_id=first_id, memory_key="user.preference.aisle", sequence_no=1)],
+        second_id: [_revision(memory_id=second_id, memory_key="user.preference.window", sequence_no=2)],
+    }
+
+    sync_trusted_fact_promotions(store, user_id=user_id)  # type: ignore[arg-type]
+
+    patterns = list_trusted_fact_patterns(
+        store,  # type: ignore[arg-type]
+        user_id=user_id,
+        request=TrustedFactPatternListQueryInput(limit=10),
+    )
+    pattern = patterns["items"][0]
+    # Provenance-free values keep the legacy (memory_key, id) order.
+    assert pattern["source_fact_ids"] == [str(first_id), str(second_id)]

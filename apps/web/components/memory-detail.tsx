@@ -1,4 +1,5 @@
 import type { ApiSource, MemoryReviewRecord } from "../lib/api";
+import { memoryProvenanceLabel } from "../lib/memory-provenance";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
@@ -56,6 +57,9 @@ export function MemoryDetail({ memory, source, unavailableReason }: MemoryDetail
       <div className="detail-grid">
         <div className="detail-summary">
           <StatusBadge status={memory.status} />
+          {memoryProvenanceLabel(memory) ? (
+            <span className="meta-pill">{memoryProvenanceLabel(memory)}</span>
+          ) : null}
           <StatusBadge
             status={source ?? "unavailable"}
             label={

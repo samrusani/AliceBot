@@ -10,11 +10,15 @@ import pytest
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_capture import (
+    ASSISTANT_ESTIMATE_CONFIDENCE_FLOOR,
+    ASSISTANT_ESTIMATE_CONFIDENCE_PENALTY,
+    USER_ASSERTED_VALUE_CONFIDENCE,
     VNextCaptureService,
     VNextCaptureValidationError,
     chunk_text,
     content_hash_for_text,
     extract_candidate_memories,
+    order_candidates_for_promotion,
 )
 from alicebot_api.vnext_entities import ENTITY_MENTION_EDGE_TYPE
 
@@ -425,3 +429,142 @@ def test_existing_prefix_rules_are_untouched_by_new_rules() -> None:
         "semantic",
         "open_loop",
     ]
+
+
+# -- speaker provenance and promotion bias -------------------------------------------
+
+
+def test_user_asserted_value_line_captures_with_provenance() -> None:
+    candidate = _single_candidate("[USER]: I paid $50 for the taxi from the airport.")
+
+    assert candidate.memory_type == "semantic"
+    assert candidate.extraction_rule == "user_asserted_value"
+    assert candidate.text == "[USER]: I paid $50 for the taxi from the airport."
+    assert candidate.provenance_role == "user"
+    assert candidate.assertion_class == "user_asserted"
+    assert candidate.confidence == USER_ASSERTED_VALUE_CONFIDENCE
+
+
+def test_assistant_estimate_still_captures_and_is_not_suppressed() -> None:
+    candidate = _single_candidate(
+        "[ASSISTANT]: The taxi fare from the airport is usually about $180-270 depending on traffic."
+    )
+
+    assert candidate.memory_type == "semantic"
+    assert candidate.extraction_rule == "claim_sentence"
+    assert candidate.provenance_role == "assistant"
+    assert candidate.assertion_class == "assistant_estimate"
+    # Bias, not suppression: the confidence dips but stays above the floor.
+    assert candidate.confidence == pytest.approx(0.58 - ASSISTANT_ESTIMATE_CONFIDENCE_PENALTY)
+    assert candidate.confidence >= ASSISTANT_ESTIMATE_CONFIDENCE_FLOOR
+
+
+def test_untagged_lines_take_the_byte_identical_legacy_path() -> None:
+    tagged = _single_candidate("[USER]: My monthly rent is $1,850 for the new apartment.")
+    untagged = _single_candidate("The monthly rent is $1,850 for the new apartment downtown.")
+
+    assert tagged.provenance_role == "user"
+    assert untagged.provenance_role is None
+    assert untagged.assertion_class is None
+    assert untagged.extraction_rule == "claim_sentence"
+    assert untagged.confidence == 0.58  # legacy claim_sentence confidence, unchanged
+
+
+def test_untagged_user_style_sentence_without_speaker_tag_gets_no_new_rule() -> None:
+    # Same content shape as a user assertion but without a transcript tag:
+    # the new gated rule must NOT fire, so no candidate is produced (the
+    # legacy rules never matched "paid"-style sentences).
+    candidates = extract_candidate_memories(
+        [{"id": "chunk-0", "chunk_index": 0, "text": "I paid $50 for the taxi from the airport."}]
+    )
+
+    assert candidates == []
+
+
+def test_same_slot_promotion_bias_user_value_beats_assistant_estimate() -> None:
+    chunk_rows = [
+        {
+            "id": "chunk-0",
+            "chunk_index": 0,
+            "text": "\n".join(
+                [
+                    "[ASSISTANT]: A flight to Denver is typically around $200-300 for that route.",
+                    "[USER]: I paid $150 for my flight to Denver.",
+                ]
+            ),
+        }
+    ]
+
+    candidates = extract_candidate_memories(chunk_rows)
+    assert len(candidates) == 2
+    assistant_candidate, user_candidate = candidates
+    assert assistant_candidate.assertion_class == "assistant_estimate"
+    assert user_candidate.assertion_class == "user_asserted"
+
+    ordered = order_candidates_for_promotion(candidates)
+    assert [candidate.assertion_class for candidate in ordered] == [
+        "user_asserted",
+        "assistant_estimate",
+    ]
+    assert user_candidate.confidence > assistant_candidate.confidence
+
+
+def test_order_candidates_for_promotion_keeps_untagged_order_unchanged() -> None:
+    chunk_rows = [
+        {
+            "id": "chunk-0",
+            "chunk_index": 0,
+            "text": "\n".join(
+                [
+                    "Fact: The ingest worker restarts nightly at 02:00.",
+                    "Decision: Ship the staleness sweep this sprint.",
+                    "Question: Who owns the launch checklist?",
+                ]
+            ),
+        }
+    ]
+
+    candidates = extract_candidate_memories(chunk_rows)
+    assert order_candidates_for_promotion(candidates) == candidates
+
+
+def test_capture_stamps_provenance_metadata_only_for_tagged_candidates() -> None:
+    store = InMemoryVNextCaptureStore()
+    service = VNextCaptureService(store)
+
+    service.capture_text(
+        "[USER]: I paid $50 for the taxi from the airport.\n\n"
+        "Fact: Untagged content keeps its legacy metadata shape."
+    )
+
+    tagged = next(memory for memory in store.memories if memory["metadata_json"]["extraction_rule"] == "user_asserted_value")
+    untagged = next(memory for memory in store.memories if memory["metadata_json"]["extraction_rule"] == "prefixed_semantic")
+    assert tagged["metadata_json"]["provenance_role"] == "user"
+    assert tagged["metadata_json"]["assertion_class"] == "user_asserted"
+    assert "provenance_role" not in untagged["metadata_json"]
+    assert "assertion_class" not in untagged["metadata_json"]
+
+
+def test_assistant_derived_memory_still_promotes_and_recalls() -> None:
+    store = _sqlite_store()
+    service = VNextCaptureService(store)
+
+    service.capture_text(
+        "Chat session s1 on 2026/07/01.\n\n"
+        "[ASSISTANT]: The Kyoto shuttle fare is usually about $40 per ride in peak season."
+    )
+
+    candidates = store.list_memories(status="candidate")
+    assistant_memories = [
+        memory
+        for memory in candidates
+        if memory["metadata_json"].get("provenance_role") == "assistant"
+    ]
+    assert assistant_memories, "assistant-derived content must still capture"
+    for memory in candidates:
+        store.update_memory(memory_id=str(memory["id"]), patch={"status": "active"}, actor_type="system")
+
+    hits = store.search_memories_fts(query="Kyoto shuttle fare", limit=10)
+    assert any(
+        hit["metadata_json"].get("provenance_role") == "assistant" for hit in hits
+    ), "assistant-derived memories must remain recallable"
