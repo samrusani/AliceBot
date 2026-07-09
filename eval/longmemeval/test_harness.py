@@ -174,6 +174,23 @@ def test_build_answer_prompt_placeholder_for_empty_context() -> None:
 # -- judge protocol --------------------------------------------------------------
 
 
+def test_reading_templates_are_byte_frozen() -> None:
+    # The official LongMemEval reading templates are byte-frozen: context
+    # CONTENT may change (it is retrieval output), instruction text may not.
+    assert adapter.ANSWER_PROMPT_TEMPLATE == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer:"
+    )
+    assert adapter.ANSWER_PROMPT_TEMPLATE_COT == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history. "
+        "Answer the question step by step: first extract all the relevant information, "
+        "and then reason over the information to get the answer.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer (step by step):"
+    )
+
+
 def test_get_anscheck_prompt_selects_official_templates() -> None:
     base = judge.get_anscheck_prompt("multi-session", "Q", "A", "R")
     assert base.startswith("I will give you a question, a correct answer, and a response from a model.")
@@ -439,6 +456,32 @@ def test_render_context_block_spends_leftover_budget_by_score() -> None:
     assert (repeat_block, repeat_count) == (block, excerpt_count)
 
 
+def test_render_context_block_appends_grounding_note_within_budget() -> None:
+    run = _packing_run()
+    pack = _packing_pack() | {
+        "grounding": {"unsupported_entities": ["Marcus Chen", "Sapiens"], "checked": 3}
+    }
+    budget = 700
+    block, _excerpt_count = run._render_context_block(pack, budget=budget)
+    # A factual retrieval statistic, one line per unsupported entity,
+    # rendered after the excerpts it summarizes.
+    assert 'Note: no stored memories mention "Marcus Chen".' in block
+    assert block.rstrip().endswith('Note: no stored memories mention "Sapiens".')
+    assert block.index("### Retrieved chat history excerpts:") < block.index("Note: no stored")
+    # The note's cost is reserved up front, so the budget still holds.
+    assert len(block) <= budget
+
+
+def test_render_context_block_ignores_absent_or_malformed_grounding() -> None:
+    run = _packing_run()
+    baseline, _count = run._render_context_block(_packing_pack(), budget=700)
+    assert "no stored memories" not in baseline
+    malformed, _count = run._render_context_block(
+        _packing_pack() | {"grounding": "not-a-dict"}, budget=700
+    )
+    assert malformed == baseline
+
+
 # -- end-to-end (real SQLite ingest + retrieval, no model) ---------------------------
 
 
@@ -467,6 +510,42 @@ def test_context_block_respects_char_budget(tmp_path: Path) -> None:
         large = run.retrieve(max_items=8, context_char_budget=20_000)
     assert small.context_chars <= 600
     assert small.context_chars < large.context_chars
+
+
+def test_unseen_entity_question_gets_a_grounding_note(tmp_path: Path) -> None:
+    # The abstention-shaped scenario: the query names a person the store
+    # has never seen, so the block must carry the retrieval statistic.
+    question = parse_question(
+        {
+            "question_id": "q_grounding",
+            "question_type": "multi-session",
+            "question": "Did Marcus Chen recommend a fertilizer brand for my roses?",
+            "answer": "The user never mentioned Marcus Chen.",
+            "question_date": "2023/07/01 (Sat) 10:00",
+            "haystack_dates": ["2023/05/20 (Sat) 14:10"],
+            "haystack_session_ids": ["session_a"],
+            "haystack_sessions": [
+                [
+                    {"role": "user", "content": "My roses keep wilting in the afternoon heat."},
+                    {"role": "assistant", "content": "Try watering them at dawn and mulching the beds."},
+                ]
+            ],
+            "answer_session_ids": [],
+        }
+    )
+    with adapter.question_run(question, tmp_path / "q.sqlite3") as run:
+        run.ingest()
+        outcome = run.retrieve(max_items=8, context_char_budget=12_000)
+    assert 'Note: no stored memories mention "Marcus Chen".' in outcome.context_block
+
+
+def test_supported_entity_question_gets_no_grounding_note(tmp_path: Path) -> None:
+    # synthetic_1 asks about Biscuit, who IS in the haystack: no note.
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    with adapter.question_run(question, tmp_path / "q.sqlite3") as run:
+        run.ingest()
+        outcome = run.retrieve(max_items=8, context_char_budget=12_000)
+    assert "no stored memories" not in outcome.context_block
 
 
 def test_runner_dry_run_end_to_end(tmp_path: Path) -> None:
