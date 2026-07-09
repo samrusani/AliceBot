@@ -55,6 +55,12 @@ from longmemeval.dataset import (
     resolve_dataset_path,
 )
 from longmemeval.judge import judge_hypothesis
+from longmemeval.verification import (
+    apply_grounding_gate,
+    make_chat_client,
+    verifier_config_from_env,
+    verify_grounding,
+)
 
 
 RESULT_SCHEMA = "longmemeval_result_v1"
@@ -86,6 +92,9 @@ class RunnerConfig:
     checkpoint_path: Path
     report_path: Path
     keep_stores: bool
+    # Disclosed post-generation grounding gate (see longmemeval/verification.py);
+    # off by default and always visible in the config fingerprint.
+    verify_grounding: bool = False
 
     @property
     def mode(self) -> str:
@@ -109,6 +118,7 @@ def config_fingerprint(
     *,
     model: ChatModelConfig | None,
     judge: ChatModelConfig | None,
+    verifier: ChatModelConfig | None = None,
 ) -> dict[str, object]:
     """Everything needed to interpret a score; digest detects config drift."""
     embeddings_base_url = os.environ.get(EMBEDDINGS_BASE_URL_ENV, "").strip()
@@ -125,6 +135,10 @@ def config_fingerprint(
         "embeddings_enabled": bool(embeddings_base_url and embeddings_model),
         "embeddings_model": embeddings_model or None,
         "reading_style": "cot" if config.cot else "standard",
+        # The grounding gate can never run undisclosed: the flag (and the
+        # verifier model when enabled) always feed the fingerprint digest.
+        "verify_grounding": config.verify_grounding,
+        "verifier_model": verifier.redacted() if config.verify_grounding and verifier is not None else None,
         "generation_temperature": GENERATION_TEMPERATURE,
         "max_items": config.max_items,
         "context_char_budget": config.context_char_budget,
@@ -232,6 +246,7 @@ def run_question(
     model: ChatModelConfig | None,
     judge: ChatModelConfig | None,
     fingerprint_digest: str,
+    verifier: ChatModelConfig | None = None,
 ) -> dict[str, object]:
     record: dict[str, object] = {
         "schema": RESULT_SCHEMA,
@@ -273,7 +288,8 @@ def run_question(
                 temperature=GENERATION_TEMPERATURE,
                 max_tokens=ANSWER_MAX_TOKENS_COT if config.cot else ANSWER_MAX_TOKENS,
             )
-            record["hypothesis"] = completion.text.strip()
+            hypothesis = completion.text.strip()
+            record["hypothesis"] = hypothesis
             record["generation"] = {
                 "prompt_chars": len(prompt),
                 "prompt_tokens": completion.prompt_tokens,
@@ -281,12 +297,33 @@ def run_question(
                 "latency_seconds": round(completion.latency_seconds, 3),
                 "retries": completion.retries,
             }
+            # Disclosed grounding gate (--verify-grounding): a separate
+            # verification call — context + question + answer only, never the
+            # gold answer or question type — may replace the hypothesis with
+            # the abstention phrasing. It runs uniformly on every question,
+            # fails open on verifier errors, and the row keeps the original
+            # text plus the full verdict; the flag is in the fingerprint.
+            if config.verify_grounding:
+                assert verifier is not None  # validated in main()
+                verdict = verify_grounding(
+                    question=question.question,
+                    answer_text=hypothesis,
+                    context_block=outcome.context_block,
+                    chat_client=make_chat_client(verifier),
+                )
+                hypothesis, gate_applied = apply_grounding_gate(hypothesis, verdict)
+                record["grounding"] = {
+                    "verdict": verdict.to_record(),
+                    "gate_applied": gate_applied,
+                    "original_hypothesis": record["hypothesis"] if gate_applied else None,
+                }
+                record["hypothesis"] = hypothesis
             judge_result = judge_hypothesis(
                 judge,
                 question_type=question.question_type,
                 question=question.question,
                 gold_answer=question.answer,
-                hypothesis=completion.text.strip(),
+                hypothesis=hypothesis,
                 is_abstention=question.is_abstention,
             )
             record["judge"] = judge_result.to_record()
@@ -428,6 +465,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=2, help="parallel questions in flight (default: 2; keep small for rate limits)")
     parser.add_argument("--dry-run", action="store_true", help="ingest + retrieval only; no chat model, no judge")
     parser.add_argument("--cot", action="store_true", help="use the official chain-of-thought reading template")
+    parser.add_argument(
+        "--verify-grounding",
+        action="store_true",
+        help="disclosed post-generation grounding gate: a separate verification call "
+        "(context + question + answer only; never the gold answer) converts answers with "
+        "ungrounded load-bearing claims to the abstention phrasing; recorded in the fingerprint",
+    )
     parser.add_argument("--max-items", type=int, default=None, help=f"context-pack max_items (default: ${'{'}ALICE_LME_MAX_ITEMS{'}'} or {DEFAULT_MAX_ITEMS})")
     parser.add_argument(
         "--context-char-budget",
@@ -474,6 +518,7 @@ def _resolve_config(args: argparse.Namespace, *, question_ids: tuple[str, ...] |
         checkpoint_path=args.checkpoint or RESULTS_DIR / f"{stem}_checkpoint.jsonl",
         report_path=args.report or RESULTS_DIR / f"{stem}_report.json",
         keep_stores=args.keep_stores,
+        verify_grounding=args.verify_grounding,
     )
 
 
@@ -513,6 +558,17 @@ def main(argv: list[str] | None = None) -> int:
         model = None
         judge = None
 
+    verifier: ChatModelConfig | None = None
+    if config.verify_grounding and not config.dry_run:
+        verifier = verifier_config_from_env()
+        if verifier is None:
+            print(
+                "[runner] --verify-grounding needs a verifier model: set ALICE_LME_VERIFIER_BASE_URL "
+                "and ALICE_LME_VERIFIER_MODEL (each falls back to the ALICE_LME_MODEL_* values).",
+                file=sys.stderr,
+            )
+            return EXIT_CONFIG_ERROR
+
     limit = config.limit
     if config.dry_run and limit is None and config.question_ids is None:
         limit = 2
@@ -536,7 +592,7 @@ def main(argv: list[str] | None = None) -> int:
         print("[runner] dataset contained no questions after --limit", file=sys.stderr)
         return EXIT_CONFIG_ERROR
 
-    fingerprint = config_fingerprint(config, model=model, judge=judge)
+    fingerprint = config_fingerprint(config, model=model, judge=judge, verifier=verifier)
     fingerprint_digest = str(fingerprint["digest"])
 
     existing_records = load_checkpoint(config.checkpoint_path) if config.resume else {}
@@ -576,6 +632,7 @@ def main(argv: list[str] | None = None) -> int:
                     model=model,
                     judge=judge,
                     fingerprint_digest=fingerprint_digest,
+                    verifier=verifier,
                 ): question
                 for question in pending
             }

@@ -28,7 +28,7 @@ for _path in (_EVAL_DIR, _API_SRC):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from longmemeval import adapter, chat, compare_runs, coverage_probe, judge, runner  # noqa: E402
+from longmemeval import adapter, chat, compare_runs, coverage_probe, judge, runner, verification  # noqa: E402
 from longmemeval.dataset import (  # noqa: E402
     SYNTHETIC_FIXTURE_PATH,
     LongMemEvalDatasetError,
@@ -52,6 +52,9 @@ def _no_ambient_model_config(monkeypatch: pytest.MonkeyPatch) -> None:
         chat.JUDGE_BASE_URL_ENV,
         chat.JUDGE_NAME_ENV,
         chat.JUDGE_API_KEY_ENV,
+        verification.VERIFIER_BASE_URL_ENV,
+        verification.VERIFIER_NAME_ENV,
+        verification.VERIFIER_API_KEY_ENV,
         adapter.CONTEXT_CHAR_BUDGET_ENV,
         adapter.MAX_ITEMS_ENV,
     ):
@@ -994,3 +997,417 @@ def test_checked_in_stage1_slice_matches_dataset() -> None:
     assert len(ids) == len(set(ids))
     abstention_ids = {record["question_id"] for record in records if str(record["question_id"]).endswith("_abs")}
     assert abstention_ids <= set(ids)  # every abstention question is in the slice
+
+
+# -- grounding verification gate (--verify-grounding) --------------------------------
+
+
+class _MockVerifierClient:
+    """Chat-seam mock: captures every payload, replies with canned text or raises."""
+
+    def __init__(self, reply: str = "GROUNDED", error: Exception | None = None) -> None:
+        self.reply = reply
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> chat.ChatCompletionResult:
+        self.calls.append({"messages": list(messages), "temperature": temperature, "max_tokens": max_tokens})
+        if self.error is not None:
+            raise self.error
+        return chat.ChatCompletionResult(
+            text=self.reply, prompt_tokens=42, completion_tokens=7, latency_seconds=0.01
+        )
+
+
+def test_verify_grounding_grounded_answer_passes_through_byte_identical() -> None:
+    client = _MockVerifierClient(reply="GROUNDED")
+    answer = "Biscuit is a golden retriever.  "  # trailing spaces: byte-identity check
+    verdict = verification.verify_grounding(
+        question="What breed is the user's dog Biscuit?",
+        answer_text=answer,
+        context_block="[Session s1] My dog Biscuit is a golden retriever.",
+        chat_client=client,
+    )
+    assert verdict.grounded is True
+    assert verdict.error is None and verdict.parse_note is None
+    assert verdict.ungrounded_claims == ()
+    hypothesis, gate_applied = verification.apply_grounding_gate(answer, verdict)
+    assert gate_applied is False
+    assert hypothesis == answer  # byte-identical pass-through
+
+
+def test_verify_grounding_load_bearing_claim_gates_to_abstention() -> None:
+    client = _MockVerifierClient(reply="UNGROUNDED LOAD-BEARING: finished the marathon in 3:15")
+    answer = "You finished the marathon in 3:15."
+    verdict = verification.verify_grounding(
+        question="What was my marathon time?",
+        answer_text=answer,
+        context_block="[Session s1] I signed up for a marathon next spring.",
+        chat_client=client,
+    )
+    assert verdict.grounded is False
+    assert verdict.ungrounded_claims == (
+        verification.UngroundedClaim(text="finished the marathon in 3:15", load_bearing=True),
+    )
+    hypothesis, gate_applied = verification.apply_grounding_gate(answer, verdict)
+    assert gate_applied is True
+    assert hypothesis == verification.ABSTENTION_HYPOTHESIS
+    record = verdict.to_record()
+    assert record["grounded"] is False
+    assert record["ungrounded_claims"] == [{"text": "finished the marathon in 3:15", "load_bearing": True}]
+
+
+def test_verify_grounding_incidental_claims_never_gate() -> None:
+    client = _MockVerifierClient(reply="- UNGROUNDED INCIDENTAL: it was raining that day")
+    answer = "You adopted the puppy; it was raining that day."
+    verdict = verification.verify_grounding(
+        question="Did I adopt a puppy?",
+        answer_text=answer,
+        context_block="[Session s1] I adopted a puppy from the shelter.",
+        chat_client=client,
+    )
+    assert verdict.grounded is True  # only load-bearing claims gate
+    assert len(verdict.ungrounded_claims) == 1
+    assert verdict.ungrounded_claims[0].load_bearing is False
+    hypothesis, gate_applied = verification.apply_grounding_gate(answer, verdict)
+    assert (hypothesis, gate_applied) == (answer, False)
+
+
+def test_verify_grounding_error_fails_open() -> None:
+    client = _MockVerifierClient(error=chat.ChatCompletionError("HTTP 503 from https://v.example.test"))
+    answer = "You finished the marathon in 3:15."
+    verdict = verification.verify_grounding(
+        question="What was my marathon time?",
+        answer_text=answer,
+        context_block="context",
+        chat_client=client,
+    )
+    assert verdict.error is not None and "503" in verdict.error
+    assert verdict.grounded is True  # fail-open
+    assert verdict.gate_should_abstain is False
+    hypothesis, gate_applied = verification.apply_grounding_gate(answer, verdict)
+    assert (hypothesis, gate_applied) == (answer, False)  # original answer stands
+
+
+def test_verify_grounding_unparseable_reply_fails_open() -> None:
+    client = _MockVerifierClient(reply="Hmm, I am not sure how to check this.")
+    verdict = verification.verify_grounding(
+        question="q", answer_text="a", context_block="c", chat_client=client
+    )
+    assert verdict.grounded is True
+    assert verdict.error is None
+    assert verdict.parse_note is not None and "failing open" in verdict.parse_note
+
+
+def test_verifier_payload_contains_only_context_question_answer() -> None:
+    """The verifier is judge-neutral: it never sees the gold answer or labels."""
+    gold_answer = "GOLD-ANSWER-NEVER-SENT-TO-VERIFIER"
+    client = _MockVerifierClient(reply="GROUNDED")
+    verification.verify_grounding(
+        question="What breed is the dog?",
+        answer_text="A dalmatian.",
+        context_block="[Session s1] context text here",
+        chat_client=client,
+    )
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    (message,) = call["messages"]  # type: ignore[misc]
+    assert message["role"] == "user"
+    payload = message["content"]
+    # Exactly the disclosed template over the three permitted inputs, nothing else.
+    assert payload == verification.build_verifier_prompt(
+        question="What breed is the dog?",
+        answer_text="A dalmatian.",
+        context_block="[Session s1] context text here",
+    )
+    assert "What breed is the dog?" in payload
+    assert "A dalmatian." in payload
+    assert "[Session s1] context text here" in payload
+    assert gold_answer not in payload
+    assert "question_type" not in payload
+    assert call["temperature"] == verification.VERIFY_TEMPERATURE == 0.0
+    assert call["max_tokens"] == verification.VERIFY_MAX_TOKENS
+
+
+def test_verification_module_reads_no_benchmark_labels() -> None:
+    """Honesty guard: the verifier code cannot even name the benchmark labels."""
+    source = Path(verification.__file__).read_text(encoding="utf-8")
+    assert "question_type" not in source
+    assert "is_abstention" not in source
+    assert "gold_answer" not in source
+
+
+def test_abstention_hypothesis_matches_gold_abstention_style() -> None:
+    """The substituted phrasing mirrors the dataset's own gold abstention answers."""
+    # Gold *_abs answers open with "You did not mention this information." or
+    # "The information provided is not enough." — the gate's phrasing uses both.
+    assert verification.ABSTENTION_HYPOTHESIS.startswith("You did not mention this information.")
+    assert "not enough" in verification.ABSTENTION_HYPOTHESIS
+
+
+def test_verifier_config_from_env_falls_back_to_answer_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert verification.verifier_config_from_env() is None
+    monkeypatch.setenv(chat.MODEL_BASE_URL_ENV, "https://api.example.test/v1/")
+    monkeypatch.setenv(chat.MODEL_NAME_ENV, "answer-model")
+    config = verification.verifier_config_from_env()
+    assert config is not None and config.model == "answer-model"
+    monkeypatch.setenv(verification.VERIFIER_NAME_ENV, "verifier-model")
+    config = verification.verifier_config_from_env()
+    assert config is not None and config.model == "verifier-model"
+    assert config.base_url == "https://api.example.test/v1"
+
+
+def test_official_templates_byte_frozen() -> None:
+    """The official reading + judge templates must never change, byte for byte."""
+    import hashlib
+
+    def digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    assert digest(adapter.ANSWER_PROMPT_TEMPLATE) == (
+        "e427ff913456e51a132ec865b1b5038d562bdc36890976943ad421cc9b365c9d"
+    )
+    assert digest(adapter.ANSWER_PROMPT_TEMPLATE_COT) == (
+        "9e2b3110622929ab896696dd8937231c7436740ec3b9586f653f97346e19ab2c"
+    )
+    assert digest(judge._DEFAULT_TEMPLATE) == (
+        "fba020ba3d57982efdc9a937c1c01f897b789a608c7f88e60244121f6505e5bc"
+    )
+    assert digest(judge._TEMPORAL_TEMPLATE) == (
+        "8d33a5fdd83afeeb4592454a965eab43d1fcb2dedc042d1d3892f4254be6c273"
+    )
+    assert digest(judge._KNOWLEDGE_UPDATE_TEMPLATE) == (
+        "183a9b3a6197ec620940f610cdc1207201ec98c1113dd633ea685cfc322fafac"
+    )
+    assert digest(judge._PREFERENCE_TEMPLATE) == (
+        "061474d8ddbc19a220d06367a77ca1dbb049f4197a89e2cf8505dcf911bf4e25"
+    )
+    assert digest(judge._ABSTENTION_TEMPLATE) == (
+        "5c0b365a1e1d06db36377c735432b56e122ca3c428f89faf61d43a0d5a7e050b"
+    )
+    # The verifier prompt is a separate disclosed component, not a copy of any
+    # official template.
+    official = {
+        adapter.ANSWER_PROMPT_TEMPLATE,
+        adapter.ANSWER_PROMPT_TEMPLATE_COT,
+        judge._DEFAULT_TEMPLATE,
+        judge._TEMPORAL_TEMPLATE,
+        judge._KNOWLEDGE_UPDATE_TEMPLATE,
+        judge._PREFERENCE_TEMPLATE,
+        judge._ABSTENTION_TEMPLATE,
+    }
+    assert verification.VERIFIER_PROMPT_TEMPLATE not in official
+
+
+def _scored_config(tmp_path: Path, *, verify: bool) -> runner.RunnerConfig:
+    return runner.RunnerConfig(
+        variant="s",
+        dataset_path=SYNTHETIC_FIXTURE_PATH,
+        limit=None,
+        question_ids=None,
+        question_ids_file=None,
+        resume=False,
+        dry_run=False,
+        cot=False,
+        workers=1,
+        max_items=8,
+        context_char_budget=12_000,
+        work_dir=tmp_path / "work",
+        checkpoint_path=tmp_path / "c.jsonl",
+        report_path=tmp_path / "r.json",
+        keep_stores=False,
+        verify_grounding=verify,
+    )
+
+
+def test_fingerprint_discloses_verify_grounding(tmp_path: Path) -> None:
+    base = runner.config_fingerprint(_scored_config(tmp_path, verify=False), model=None, judge=None)
+    verifier = chat.ChatModelConfig(base_url="https://v.example.test/v1", model="verifier-model")
+    gated = runner.config_fingerprint(
+        _scored_config(tmp_path, verify=True), model=None, judge=None, verifier=verifier
+    )
+    assert base["verify_grounding"] is False
+    assert base["verifier_model"] is None
+    assert gated["verify_grounding"] is True
+    assert gated["verifier_model"] == {
+        "base_url": "https://v.example.test/v1",
+        "model": "verifier-model",
+        "api_key_configured": False,
+    }
+    # A gated run can never masquerade as an ungated one: the digests differ.
+    assert base["digest"] != gated["digest"]
+
+
+def test_verify_grounding_cli_flag_defaults_off() -> None:
+    args = runner.build_arg_parser().parse_args([])
+    assert args.verify_grounding is False
+    args = runner.build_arg_parser().parse_args(["--verify-grounding"])
+    assert args.verify_grounding is True
+
+
+def _stub_generation(text: str):
+    def fake_chat_completion(config, messages, *, temperature=0.0, max_tokens=None):
+        return chat.ChatCompletionResult(
+            text=text, prompt_tokens=100, completion_tokens=20, latency_seconds=0.01
+        )
+
+    return fake_chat_completion
+
+
+def _stub_judge(judged_hypotheses: list[str]):
+    def fake_judge(config, *, question_type, question, gold_answer, hypothesis, is_abstention):
+        judged_hypotheses.append(hypothesis)
+        return judge.JudgeResult(correct=True, raw_response="yes")
+
+    return fake_judge
+
+
+_UNUSED_MODEL = chat.ChatModelConfig(base_url="https://unused.example.test/v1", model="answer-model")
+_UNUSED_VERIFIER = chat.ChatModelConfig(base_url="https://unused.example.test/v1", model="verifier-model")
+
+
+def test_run_question_grounding_gate_converts_fabrication_to_abstention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    config = _scored_config(tmp_path, verify=True)
+    config.work_dir.mkdir(parents=True)
+    fabricated = "Biscuit is a poodle."
+    verifier_payloads: list[str] = []
+
+    def fake_verifier_call(cfg, messages, *, temperature=0.0, max_tokens=None):
+        verifier_payloads.append(messages[0]["content"])
+        return chat.ChatCompletionResult(
+            text="UNGROUNDED LOAD-BEARING: poodle",
+            prompt_tokens=50,
+            completion_tokens=6,
+            latency_seconds=0.01,
+        )
+
+    judged: list[str] = []
+    monkeypatch.setattr(runner, "chat_completion", _stub_generation(fabricated))
+    monkeypatch.setattr(verification, "chat_completion", fake_verifier_call)
+    monkeypatch.setattr(runner, "judge_hypothesis", _stub_judge(judged))
+
+    record = runner.run_question(
+        question,
+        config,
+        model=_UNUSED_MODEL,
+        judge=_UNUSED_MODEL,
+        fingerprint_digest="test",
+        verifier=_UNUSED_VERIFIER,
+    )
+    assert record["status"] == "ok", record["error"]
+    # Both texts recorded: the abstention hypothesis and the original answer.
+    assert record["hypothesis"] == verification.ABSTENTION_HYPOTHESIS
+    grounding = record["grounding"]
+    assert grounding["gate_applied"] is True
+    assert grounding["original_hypothesis"] == fabricated
+    assert grounding["verdict"]["grounded"] is False
+    assert grounding["verdict"]["ungrounded_claims"] == [{"text": "poodle", "load_bearing": True}]
+    # The judge scored the gated hypothesis, not the fabricated one.
+    assert judged == [verification.ABSTENTION_HYPOTHESIS]
+    # The verifier saw the answer under test and the question — nothing else
+    # benchmark-shaped (labels never enter the payload).
+    assert len(verifier_payloads) == 1
+    assert fabricated in verifier_payloads[0]
+    assert question.question in verifier_payloads[0]
+    assert "question_type" not in verifier_payloads[0]
+
+
+def test_run_question_grounded_answer_unchanged_and_judged_as_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    config = _scored_config(tmp_path, verify=True)
+    config.work_dir.mkdir(parents=True)
+    grounded_answer = "Biscuit is a golden retriever."
+
+    def fake_verifier_call(cfg, messages, *, temperature=0.0, max_tokens=None):
+        return chat.ChatCompletionResult(
+            text="GROUNDED", prompt_tokens=50, completion_tokens=1, latency_seconds=0.01
+        )
+
+    judged: list[str] = []
+    monkeypatch.setattr(runner, "chat_completion", _stub_generation(grounded_answer))
+    monkeypatch.setattr(verification, "chat_completion", fake_verifier_call)
+    monkeypatch.setattr(runner, "judge_hypothesis", _stub_judge(judged))
+
+    record = runner.run_question(
+        question,
+        config,
+        model=_UNUSED_MODEL,
+        judge=_UNUSED_MODEL,
+        fingerprint_digest="test",
+        verifier=_UNUSED_VERIFIER,
+    )
+    assert record["status"] == "ok", record["error"]
+    assert record["hypothesis"] == grounded_answer  # byte-identical
+    assert record["grounding"]["gate_applied"] is False
+    assert record["grounding"]["original_hypothesis"] is None
+    assert record["grounding"]["verdict"]["grounded"] is True
+    assert judged == [grounded_answer]
+
+
+def test_run_question_verifier_error_fails_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    config = _scored_config(tmp_path, verify=True)
+    config.work_dir.mkdir(parents=True)
+    answer = "Biscuit is a golden retriever."
+
+    def failing_verifier_call(cfg, messages, *, temperature=0.0, max_tokens=None):
+        raise chat.ChatCompletionError("HTTP 503 from verifier")
+
+    judged: list[str] = []
+    monkeypatch.setattr(runner, "chat_completion", _stub_generation(answer))
+    monkeypatch.setattr(verification, "chat_completion", failing_verifier_call)
+    monkeypatch.setattr(runner, "judge_hypothesis", _stub_judge(judged))
+
+    record = runner.run_question(
+        question,
+        config,
+        model=_UNUSED_MODEL,
+        judge=_UNUSED_MODEL,
+        fingerprint_digest="test",
+        verifier=_UNUSED_VERIFIER,
+    )
+    # The run never crashes: the original answer stands, the error is recorded.
+    assert record["status"] == "ok", record["error"]
+    assert record["hypothesis"] == answer
+    assert record["grounding"]["gate_applied"] is False
+    assert record["grounding"]["verdict"]["error"] is not None
+    assert "503" in record["grounding"]["verdict"]["error"]
+    assert judged == [answer]
+
+
+def test_run_question_without_flag_has_no_grounding_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    config = _scored_config(tmp_path, verify=False)
+    config.work_dir.mkdir(parents=True)
+    answer = "Biscuit is a golden retriever."
+
+    def unexpected_verifier_call(cfg, messages, *, temperature=0.0, max_tokens=None):  # pragma: no cover
+        raise AssertionError("verifier must not be called without --verify-grounding")
+
+    judged: list[str] = []
+    monkeypatch.setattr(runner, "chat_completion", _stub_generation(answer))
+    monkeypatch.setattr(verification, "chat_completion", unexpected_verifier_call)
+    monkeypatch.setattr(runner, "judge_hypothesis", _stub_judge(judged))
+
+    record = runner.run_question(
+        question, config, model=_UNUSED_MODEL, judge=_UNUSED_MODEL, fingerprint_digest="test"
+    )
+    assert record["status"] == "ok", record["error"]
+    assert record["hypothesis"] == answer
+    assert "grounding" not in record
+    assert judged == [answer]
