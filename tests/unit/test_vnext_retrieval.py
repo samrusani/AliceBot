@@ -2804,53 +2804,6 @@ def test_context_depth_low_matches_default_behavior_regression_pin() -> None:
     assert default_pack["context_depth"] == "low"
 
 
-# -- temporal-anchor stage ---------------------------------------------------------
-
-
-def test_temporal_anchor_surfaces_right_dated_memory_over_stronger_lexical_hit() -> None:
-    # Lexically the wrong-dated memory wins FTS rank 1; the temporal list
-    # votes for the right-dated one and RRF flips the final order.
-    wrong_dated = _memory_row(
-        "memory-wrong-date",
-        "Museum visit museum gallery exhibition museum tour",
-        valid_from="2022-08-01T00:00:00Z",
-    )
-    right_dated = _memory_row(
-        "memory-right-date",
-        "Museum visit with a friend downtown",
-        valid_from="2023-03-15T00:00:00Z",
-    )
-    store = InMemoryVNextRetrievalStore(memories=[wrong_dated, right_dated], sources=[])
-
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Which museum did I visit in March 2023?", max_items=1)
-    )
-
-    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-right-date"]
-    stage = pack["trace"]["stages"]["temporal_anchor"]
-    assert stage == {
-        "source": "temporal_anchor",
-        "status": TEMPORAL_STAGE_ENABLED,
-        "window": ["2023-03-01T00:00:00+00:00", "2023-04-01T00:00:00+00:00"],
-        "parsed_from": "March 2023",
-        "candidate_count": 1,
-    }
-    selected = [record for record in pack["trace"]["selected"] if record["target_id"] == "memory-right-date"]
-    assert selected[0]["stage_ranks"]["temporal_anchor"] == 1
-    assert store.time_search_calls == [
-        {
-            "window_start": datetime(2023, 3, 1, tzinfo=UTC),
-            "window_end": datetime(2023, 4, 1, tzinfo=UTC),
-        }
-    ]
-
-
-def test_no_anchor_query_has_no_temporal_stage_and_no_store_call() -> None:
-    # Regression guard: date-free queries must behave exactly as before —
-    # no temporal trace stage, no stage_ranks entry, no store round-trip,
-    # and the fused sources record keeps its pre-anchor shape.
-    store = InMemoryVNextRetrievalStore(
-        memories=[_memory_row("memory-1", "Kubernetes deployment pipeline notes")],
 # -- coverage mode (aggregation intent) ---------------------------------------
 
 
@@ -2864,8 +2817,6 @@ def _coverage_dormant_store() -> InMemoryVNextRetrievalStore:
             {
                 "id": "source-1",
                 "source_type": "manual_text",
-                "title": "Kubernetes deployment runbook",
-                "content_hash": "sha256:k8s",
                 "title": "Meridian roadmap source",
                 "content_hash": "sha256:dormant-pin",
                 "domain": "project",
@@ -2882,186 +2833,6 @@ def _coverage_dormant_store() -> InMemoryVNextRetrievalStore:
                 "sensitivity": "private",
             }
         ],
-    )
-
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="kubernetes deployment pipeline")
-    )
-
-    assert "temporal_anchor" not in pack["trace"]["stages"]
-    assert store.time_search_calls == []
-    for record in pack["trace"]["selected"]:
-        assert "temporal_anchor" not in record["stage_ranks"]
-    assert SOURCE_STAGE_TEMPORAL not in pack["trace"]["stages"]["sources"]
-    assert pack["trace"]["stages"]["sources"]["source"] == "rrf(chunk_fts+provenance+title_recency)"
-
-
-def test_wrong_temporal_window_cannot_evict_strong_lexical_hits() -> None:
-    # The query's date phrase points at a window that only matches an
-    # unrelated memory. Fusion keeps the anchor a ranking vote: the strong
-    # lexical+vector hit still wins the single slot, and with two slots
-    # the unrelated row merely joins below it.
-    strong = _memory_row("memory-strong", "Vendor contract decision signed with Acme")
-    wrong_window = _memory_row(
-        "memory-wrong-window",
-        "Completely unrelated pottery class note",
-        valid_from="2023-03-10T00:00:00Z",
-    )
-    provider = StubEmbeddingProvider()
-
-    def build_store() -> InMemoryVNextRetrievalStore:
-        return InMemoryVNextRetrievalStore(
-            memories=[strong, wrong_window],
-            sources=[],
-            vector_memories=[strong],
-        )
-
-    single = VNextRetrievalService(build_store(), embedding_provider=provider).compile_context_pack(
-        VNextRetrievalRequest(query="What vendor contract decision did we sign in March 2023?", max_items=1)
-    )
-    assert [memory["id"] for memory in single["relevant_memories"]] == ["memory-strong"]
-    trimmed = [record for record in single["trace"]["selected"] if record["target_id"] == "memory-wrong-window"]
-    assert trimmed == []  # ranked but not selected
-
-    both = VNextRetrievalService(build_store(), embedding_provider=provider).compile_context_pack(
-        VNextRetrievalRequest(query="What vendor contract decision did we sign in March 2023?", max_items=2)
-    )
-    assert [memory["id"] for memory in both["relevant_memories"]] == [
-        "memory-strong",
-        "memory-wrong-window",
-    ]
-
-
-def test_temporal_anchor_boosts_right_dated_source_in_fused_sources_stage() -> None:
-    # Both sources surface lexically (wrong-dated first); the anchor
-    # re-ranks the candidates the other lists already found — the
-    # connector-stamped metadata date inside the window wins the boost.
-    source_wrong = {
-        "id": "source-wrong-date",
-        "source_type": "chat_session",
-        "title": "Museum outing chat",
-        "content_hash": "sha256:wrong",
-        "domain": "project",
-        "sensitivity": "private",
-        "metadata_json": {"session_id": "s1", "session_date": "2022/08/01 (Mon) 09:00"},
-    }
-    source_right = {
-        "id": "source-right-date",
-        "source_type": "chat_session",
-        "title": "Museum outing chat",
-        "content_hash": "sha256:right",
-        "domain": "project",
-        "sensitivity": "private",
-        "metadata_json": {"session_id": "s2", "session_date": "2023/03/20 (Mon) 10:00"},
-    }
-    store = InMemoryVNextRetrievalStore(memories=[], sources=[source_wrong, source_right])
-
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Which museum did I visit in March 2023?")
-    )
-
-    assert [source["id"] for source in pack["sources"]][:2] == ["source-right-date", "source-wrong-date"]
-    sources_record = pack["trace"]["stages"]["sources"]
-    assert sources_record[SOURCE_STAGE_TEMPORAL] == 1
-    assert sources_record["source"] == "rrf(chunk_fts+provenance+title_recency+temporal_anchor)"
-
-
-def test_temporal_stage_degrades_honestly_for_stores_without_time_search() -> None:
-    class NoTimeSearchStore(InMemoryVNextRetrievalStore):
-        search_memories_by_time = None  # store predates the method
-
-    store = NoTimeSearchStore(
-        memories=[_memory_row("memory-1", "Museum visit with a friend downtown")],
-        sources=[],
-    )
-
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Which museum did I visit in March 2023?")
-    )
-
-    stage = pack["trace"]["stages"]["temporal_anchor"]
-    assert stage["status"] == TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT
-    assert stage["candidate_count"] == 0
-    # Recall itself is unaffected: the FTS stage still answers.
-    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-1"]
-    for record in pack["trace"]["selected"]:
-        assert "temporal_anchor" not in record["stage_ranks"]
-
-
-def test_minimal_depth_skips_the_temporal_stage_with_honest_status() -> None:
-    store = InMemoryVNextRetrievalStore(
-        memories=[_memory_row("memory-1", "Museum visit downtown", valid_from="2023-03-15T00:00:00Z")],
-        sources=[],
-    )
-
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(query="Which museum did I visit in March 2023?", context_depth="minimal")
-    )
-
-    stage = pack["trace"]["stages"]["temporal_anchor"]
-    assert stage["status"] == STAGE_DISABLED_MINIMAL
-    assert stage["candidate_count"] == 0
-    assert store.time_search_calls == []
-
-
-def test_reference_time_resolves_relative_phrases_deterministically() -> None:
-    # "last week" against the caller-provided reference (a Tuesday) is the
-    # previous ISO week; the dated memory surfaces through the temporal
-    # list alone (zero lexical overlap with the query).
-    dated = _memory_row(
-        "memory-vendor-call",
-        "Vendor kickoff call summary",
-        valid_from="2023-04-12T00:00:00Z",
-    )
-    store = InMemoryVNextRetrievalStore(memories=[dated], sources=[])
-
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(
-            query="what happened last week",
-            reference_time=datetime(2023, 4, 18, 3, 31, tzinfo=UTC),
-        )
-    )
-
-    stage = pack["trace"]["stages"]["temporal_anchor"]
-    assert stage["window"] == ["2023-04-10T00:00:00+00:00", "2023-04-17T00:00:00+00:00"]
-    assert stage["parsed_from"] == "last week"
-    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-vendor-call"]
-
-
-def test_before_today_window_excludes_rows_first_seen_today() -> None:
-    # "before today" is an open window ending at today's start, so rows
-    # whose only event signal is a same-day ingest timestamp cannot ride
-    # the temporal list into fusion (regression: the phrase must not parse
-    # as the "today" window itself).
-    ingested_today = _memory_row(
-        "memory-ingested-today",
-        "Airline booking note",
-        first_seen_at="2023-04-18T03:00:00Z",
-    )
-    older = _memory_row(
-        "memory-older",
-        "Airline booking confirmation from spring",
-        first_seen_at="2023-04-02T09:00:00Z",
-    )
-    store = InMemoryVNextRetrievalStore(memories=[ingested_today, older], sources=[])
-
-    pack = VNextRetrievalService(store).compile_context_pack(
-        VNextRetrievalRequest(
-            query="Which airline did I book before today?",
-            reference_time=datetime(2023, 4, 18, 3, 31, tzinfo=UTC),
-        )
-    )
-
-    stage = pack["trace"]["stages"]["temporal_anchor"]
-    assert stage["parsed_from"] == "before today"
-    assert stage["window"][1] == "2023-04-18T00:00:00+00:00"
-    assert stage["candidate_count"] == 1
-    older_record = [record for record in pack["trace"]["selected"] if record["target_id"] == "memory-older"]
-    assert older_record[0]["stage_ranks"]["temporal_anchor"] == 1
-    today_record = [
-        record for record in pack["trace"]["selected"] if record["target_id"] == "memory-ingested-today"
-    ]
-    assert "temporal_anchor" not in today_record[0]["stage_ranks"]
         provenance_links=[
             {
                 "id": "link-1",
@@ -3300,3 +3071,242 @@ def test_multi_clause_aggregation_backfills_clause_only_memory_into_freed_slots(
     assert "memory-filler-02" not in selected_ids
     # One main FTS pass plus one per clause.
     assert len(coverage_store.memory_search_kwargs) == 3
+
+
+# -- temporal-anchor stage ---------------------------------------------------------
+
+
+def test_temporal_anchor_surfaces_right_dated_memory_over_stronger_lexical_hit() -> None:
+    # Lexically the wrong-dated memory wins FTS rank 1; the temporal list
+    # votes for the right-dated one and RRF flips the final order.
+    wrong_dated = _memory_row(
+        "memory-wrong-date",
+        "Museum visit museum gallery exhibition museum tour",
+        valid_from="2022-08-01T00:00:00Z",
+    )
+    right_dated = _memory_row(
+        "memory-right-date",
+        "Museum visit with a friend downtown",
+        valid_from="2023-03-15T00:00:00Z",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[wrong_dated, right_dated], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Which museum did I visit in March 2023?", max_items=1)
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-right-date"]
+    stage = pack["trace"]["stages"]["temporal_anchor"]
+    assert stage == {
+        "source": "temporal_anchor",
+        "status": TEMPORAL_STAGE_ENABLED,
+        "window": ["2023-03-01T00:00:00+00:00", "2023-04-01T00:00:00+00:00"],
+        "parsed_from": "March 2023",
+        "candidate_count": 1,
+    }
+    selected = [record for record in pack["trace"]["selected"] if record["target_id"] == "memory-right-date"]
+    assert selected[0]["stage_ranks"]["temporal_anchor"] == 1
+    assert store.time_search_calls == [
+        {
+            "window_start": datetime(2023, 3, 1, tzinfo=UTC),
+            "window_end": datetime(2023, 4, 1, tzinfo=UTC),
+        }
+    ]
+
+
+def test_no_anchor_query_has_no_temporal_stage_and_no_store_call() -> None:
+    # Regression guard: date-free queries must behave exactly as before —
+    # no temporal trace stage, no stage_ranks entry, no store round-trip,
+    # and the fused sources record keeps its pre-anchor shape.
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Kubernetes deployment pipeline notes")],
+        sources=[
+            {
+                "id": "source-1",
+                "source_type": "manual_text",
+                "title": "Kubernetes deployment runbook",
+                "content_hash": "sha256:k8s",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="kubernetes deployment pipeline")
+    )
+
+    assert "temporal_anchor" not in pack["trace"]["stages"]
+    assert store.time_search_calls == []
+    for record in pack["trace"]["selected"]:
+        assert "temporal_anchor" not in record["stage_ranks"]
+    assert SOURCE_STAGE_TEMPORAL not in pack["trace"]["stages"]["sources"]
+    assert pack["trace"]["stages"]["sources"]["source"] == "rrf(chunk_fts+provenance+title_recency)"
+
+
+def test_wrong_temporal_window_cannot_evict_strong_lexical_hits() -> None:
+    # The query's date phrase points at a window that only matches an
+    # unrelated memory. Fusion keeps the anchor a ranking vote: the strong
+    # lexical+vector hit still wins the single slot, and with two slots
+    # the unrelated row merely joins below it.
+    strong = _memory_row("memory-strong", "Vendor contract decision signed with Acme")
+    wrong_window = _memory_row(
+        "memory-wrong-window",
+        "Completely unrelated pottery class note",
+        valid_from="2023-03-10T00:00:00Z",
+    )
+    provider = StubEmbeddingProvider()
+
+    def build_store() -> InMemoryVNextRetrievalStore:
+        return InMemoryVNextRetrievalStore(
+            memories=[strong, wrong_window],
+            sources=[],
+            vector_memories=[strong],
+        )
+
+    single = VNextRetrievalService(build_store(), embedding_provider=provider).compile_context_pack(
+        VNextRetrievalRequest(query="What vendor contract decision did we sign in March 2023?", max_items=1)
+    )
+    assert [memory["id"] for memory in single["relevant_memories"]] == ["memory-strong"]
+    trimmed = [record for record in single["trace"]["selected"] if record["target_id"] == "memory-wrong-window"]
+    assert trimmed == []  # ranked but not selected
+
+    both = VNextRetrievalService(build_store(), embedding_provider=provider).compile_context_pack(
+        VNextRetrievalRequest(query="What vendor contract decision did we sign in March 2023?", max_items=2)
+    )
+    assert [memory["id"] for memory in both["relevant_memories"]] == [
+        "memory-strong",
+        "memory-wrong-window",
+    ]
+
+
+def test_temporal_anchor_boosts_right_dated_source_in_fused_sources_stage() -> None:
+    # Both sources surface lexically (wrong-dated first); the anchor
+    # re-ranks the candidates the other lists already found — the
+    # connector-stamped metadata date inside the window wins the boost.
+    source_wrong = {
+        "id": "source-wrong-date",
+        "source_type": "chat_session",
+        "title": "Museum outing chat",
+        "content_hash": "sha256:wrong",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"session_id": "s1", "session_date": "2022/08/01 (Mon) 09:00"},
+    }
+    source_right = {
+        "id": "source-right-date",
+        "source_type": "chat_session",
+        "title": "Museum outing chat",
+        "content_hash": "sha256:right",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"session_id": "s2", "session_date": "2023/03/20 (Mon) 10:00"},
+    }
+    store = InMemoryVNextRetrievalStore(memories=[], sources=[source_wrong, source_right])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Which museum did I visit in March 2023?")
+    )
+
+    assert [source["id"] for source in pack["sources"]][:2] == ["source-right-date", "source-wrong-date"]
+    sources_record = pack["trace"]["stages"]["sources"]
+    assert sources_record[SOURCE_STAGE_TEMPORAL] == 1
+    assert sources_record["source"] == "rrf(chunk_fts+provenance+title_recency+temporal_anchor)"
+
+
+def test_temporal_stage_degrades_honestly_for_stores_without_time_search() -> None:
+    class NoTimeSearchStore(InMemoryVNextRetrievalStore):
+        search_memories_by_time = None  # store predates the method
+
+    store = NoTimeSearchStore(
+        memories=[_memory_row("memory-1", "Museum visit with a friend downtown")],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Which museum did I visit in March 2023?")
+    )
+
+    stage = pack["trace"]["stages"]["temporal_anchor"]
+    assert stage["status"] == TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT
+    assert stage["candidate_count"] == 0
+    # Recall itself is unaffected: the FTS stage still answers.
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-1"]
+    for record in pack["trace"]["selected"]:
+        assert "temporal_anchor" not in record["stage_ranks"]
+
+
+def test_minimal_depth_skips_the_temporal_stage_with_honest_status() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Museum visit downtown", valid_from="2023-03-15T00:00:00Z")],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Which museum did I visit in March 2023?", context_depth="minimal")
+    )
+
+    stage = pack["trace"]["stages"]["temporal_anchor"]
+    assert stage["status"] == STAGE_DISABLED_MINIMAL
+    assert stage["candidate_count"] == 0
+    assert store.time_search_calls == []
+
+
+def test_reference_time_resolves_relative_phrases_deterministically() -> None:
+    # "last week" against the caller-provided reference (a Tuesday) is the
+    # previous ISO week; the dated memory surfaces through the temporal
+    # list alone (zero lexical overlap with the query).
+    dated = _memory_row(
+        "memory-vendor-call",
+        "Vendor kickoff call summary",
+        valid_from="2023-04-12T00:00:00Z",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[dated], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="what happened last week",
+            reference_time=datetime(2023, 4, 18, 3, 31, tzinfo=UTC),
+        )
+    )
+
+    stage = pack["trace"]["stages"]["temporal_anchor"]
+    assert stage["window"] == ["2023-04-10T00:00:00+00:00", "2023-04-17T00:00:00+00:00"]
+    assert stage["parsed_from"] == "last week"
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-vendor-call"]
+
+
+def test_before_today_window_excludes_rows_first_seen_today() -> None:
+    # "before today" is an open window ending at today's start, so rows
+    # whose only event signal is a same-day ingest timestamp cannot ride
+    # the temporal list into fusion (regression: the phrase must not parse
+    # as the "today" window itself).
+    ingested_today = _memory_row(
+        "memory-ingested-today",
+        "Airline booking note",
+        first_seen_at="2023-04-18T03:00:00Z",
+    )
+    older = _memory_row(
+        "memory-older",
+        "Airline booking confirmation from spring",
+        first_seen_at="2023-04-02T09:00:00Z",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[ingested_today, older], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="Which airline did I book before today?",
+            reference_time=datetime(2023, 4, 18, 3, 31, tzinfo=UTC),
+        )
+    )
+
+    stage = pack["trace"]["stages"]["temporal_anchor"]
+    assert stage["parsed_from"] == "before today"
+    assert stage["window"][1] == "2023-04-18T00:00:00+00:00"
+    assert stage["candidate_count"] == 1
+    older_record = [record for record in pack["trace"]["selected"] if record["target_id"] == "memory-older"]
+    assert older_record[0]["stage_ranks"]["temporal_anchor"] == 1
+    today_record = [
+        record for record in pack["trace"]["selected"] if record["target_id"] == "memory-ingested-today"
+    ]
+    assert "temporal_anchor" not in today_record[0]["stage_ranks"]

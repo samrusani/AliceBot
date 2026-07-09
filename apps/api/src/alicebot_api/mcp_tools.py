@@ -1858,6 +1858,12 @@ def _sqlite_memory_correct(context: MCPRuntimeContext, arguments: Mapping[str, o
             # Acceptance is the promotion into trusted memory, so it is also
             # the entity-linking moment; proposal-time candidates never link.
             _link_accepted_memory_entities(store, updated)
+            # Same moment for derived retrieval keys: deterministic tier
+            # only (use_env_provider=False), so review actions never make
+            # a synchronous model call; failures never fail the review.
+            from alicebot_api.vnext_fact_keys import attach_memory_fact_keys
+
+            attach_memory_fact_keys(store, updated, use_env_provider=False, actor_type="user")
         elif resolved_action == "delete":
             updated = store.update_memory(
                 memory_id=memory_id,

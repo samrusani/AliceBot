@@ -47,6 +47,8 @@ from alicebot_api.vnext_retrieval import (
     VNextRetrievalService,
     query_terms,
 )
+from alicebot_api.vnext_fact_keys import attach_memory_fact_keys
+from alicebot_api.vnext_temporal_query import parse_event_datetime
 
 from longmemeval.dataset import LongMemEvalQuestion, SessionTurn
 
@@ -441,11 +443,15 @@ class QuestionRun:
         """
         promoted = 0
         for memory in self.store.list_memories(status="candidate"):
-            self.store.update_memory(
+            updated = self.store.update_memory(
                 memory_id=str(memory["id"]),
                 patch={"status": "active"},
                 actor_type="system",
             )
+            # Promotion is also the derived-retrieval-key moment (mirrors
+            # the product review-accept path); deterministic tier only so
+            # keyless ingest never makes a model call.
+            attach_memory_fact_keys(self.store, updated, use_env_provider=False)
             promoted += 1
         return promoted
 
@@ -465,6 +471,12 @@ class QuestionRun:
             max_items=resolved_max_items,
             include_sources=True,
             actor_type="system",
+            # The question's own date is official benchmark input (the
+            # reading template already presents it to the answering model);
+            # passing it as the anchor clock lets relative phrases like
+            # "two weeks ago" resolve against the conversation's timeline
+            # instead of the wall clock.
+            reference_time=parse_event_datetime(self.question.question_date),
         )
         started = time.monotonic()
         pack = service.compile_context_pack(request)
