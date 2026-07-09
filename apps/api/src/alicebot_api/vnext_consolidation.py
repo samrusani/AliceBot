@@ -9,7 +9,12 @@ Pipeline (all review-only, nothing is promoted or superseded automatically):
    stats, provenance, and per-member ``proposed_supersede`` markers.
 3. Detect reinforced preferences: preference/routine clusters whose members
    span >= 3 distinct sources or days.
-4. Emit a ``memory_consolidation`` report artifact with real sections.
+4. Propose roll-up cards (``vnext_rollups``): deterministic same-entity /
+   lexical-topic groups become one aggregation card per topic, created as
+   review-gated candidates exactly like the merge/dedup proposals. Accepting
+   a roll-up supersedes NOTHING (members stay individually recallable);
+   accepting a roll-up *revision* retires only the previous card.
+5. Emit a ``memory_consolidation`` report artifact with real sections.
 
 Embedding access path
 ---------------------
@@ -56,6 +61,7 @@ from alicebot_api.vnext_model_intelligence import (
     resolve_model_route,
 )
 from alicebot_api.vnext_repositories import JsonObject
+from alicebot_api.vnext_rollups import RollupOptions, RollupOutcome, VNextRollupService
 
 
 logger = logging.getLogger(__name__)
@@ -133,6 +139,9 @@ class MemoryConsolidationRequest:
     max_embedded_memories: int = MAX_EMBEDDED_MEMORIES_HARD_CAP
     min_cluster_size: int = DEFAULT_MIN_CLUSTER_SIZE
     max_clusters: int = DEFAULT_MAX_CLUSTERS
+    # Roll-up pass toggle; knobs come from metadata_json["rollup_options"]
+    # (see vnext_rollups.RollupOptions). Disclosed in the artifact metadata.
+    propose_rollups: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -633,6 +642,9 @@ class VNextConsolidationService:
         request = request or MemoryConsolidationRequest()
         _validate_request(request)
         options = _clustering_options(request)
+        # Parsed before any write so invalid roll-up options fail the run
+        # exactly like invalid clustering options do.
+        rollup_options = RollupOptions.from_metadata(request.metadata_json) if request.propose_rollups else None
         domains = _allowed_domains(request)
         sensitivity = _allowed_sensitivity(request)
 
@@ -713,6 +725,29 @@ class VNextConsolidationService:
 
         reinforced = self._reinforced_preferences(clustering.clusters)
 
+        # Roll-up pass: same-topic aggregation cards, review-gated like the
+        # merge/dedup proposals above. Runs only in this scheduled workflow
+        # (never on the memory commit path) and never mutates existing rows.
+        rollups: RollupOutcome | None = None
+        if rollup_options is not None:
+            rollups = VNextRollupService(self.store, merge_provider=self.merge_provider).propose_rollups(
+                domains=domains,
+                sensitivity_allowed=sensitivity,
+                options=rollup_options,
+                create_candidate_memories=request.create_candidate_memories,
+                generated_by=request.generated_by,
+                trace_id=request.trace_id,
+                generation_mode=request.generation_mode,
+                route=route,
+                model_temperature=request.model_temperature,
+                # Near-duplicate clusters belong to the dedup/merge proposals
+                # above; the roll-up pass must not re-propose those groups.
+                exclude_member_id_sets=[
+                    {str(row.get("id")) for row in members} for members in clustering.clusters
+                ],
+            )
+            candidate_ids.extend(rollups.candidate_ids)
+
         cluster_membership = [
             sorted(str(row.get("id")) for row in members) for members in clustering.clusters
         ]
@@ -731,6 +766,7 @@ class VNextConsolidationService:
             clustering=clustering,
             proposals=proposals,
             reinforced=reinforced,
+            rollups=rollups,
             skipped=skipped,
             events_count=len(events),
             artifacts_count=len(artifacts),
@@ -782,12 +818,14 @@ class VNextConsolidationService:
                 "reinforced_preferences": reinforced,
                 "skipped": skipped,
             },
+            "rollups": {"enabled": True, **rollups.to_metadata()} if rollups is not None else {"enabled": False},
             "input_counts": {
                 "active_memories": clustering.active_count,
                 "embedded_memories": clustering.embedded_count,
                 "clusters": len(clustering.clusters),
                 "proposals": len(proposals),
                 "reinforced_preferences": len(reinforced),
+                "rollup_proposals": len(rollups.proposals) if rollups is not None else 0,
                 "artifacts": len(artifacts),
                 "events": len(events),
                 "ratings": len(ratings),
@@ -846,6 +884,7 @@ class VNextConsolidationService:
             payload={
                 "consolidation_digest": run_digest,
                 "candidate_memory_ids": candidate_ids,
+                "rollup_candidate_ids": rollups.candidate_ids if rollups is not None else [],
                 "input_counts": metadata["input_counts"],
                 "skipped": skipped,
             },
@@ -863,6 +902,7 @@ class VNextConsolidationService:
         clustering: _ClusteringOutcome,
         proposals: list[JsonObject],
         reinforced: list[JsonObject],
+        rollups: RollupOutcome | None,
         skipped: list[str],
         events_count: int,
         artifacts_count: int,
@@ -899,6 +939,12 @@ class VNextConsolidationService:
             for note in reinforced
         ] or ["- No reinforced preferences were detected."]
 
+        rollup_lines = (
+            rollups.markdown_lines()
+            if rollups is not None
+            else ["- Roll-up proposals were disabled for this run (propose_rollups=false)."]
+        )
+
         skipped_lines = [f"- {reason}" for reason in skipped]
         if clustering.bounded:
             skipped_lines.append(
@@ -926,6 +972,7 @@ class VNextConsolidationService:
                 f"- Clusters found: {len(clustering.clusters)}",
                 f"- Proposals: {len(proposals)}",
                 f"- Reinforced preferences: {len(reinforced)}",
+                f"- Roll-up proposals: {len(rollups.proposals) if rollups is not None else 0}",
                 f"- Context scanned: {artifacts_count} artifacts, {events_count} events, {ratings_count} ratings",
                 "",
                 "## Near-Duplicate Clusters",
@@ -937,6 +984,9 @@ class VNextConsolidationService:
                 "## Reinforced Preferences",
                 *reinforced_lines,
                 "",
+                "## Roll-up Proposals",
+                *rollup_lines,
+                "",
                 "## Skipped / Bounds",
                 *skipped_lines,
                 "",
@@ -946,6 +996,8 @@ class VNextConsolidationService:
                 "- Accepting a candidate (memory commit service: accept_consolidation_candidate) promotes it",
                 "  and supersedes the members marked `proposed_supersede`; consolidation itself never",
                 "  supersedes automatically.",
+                "- Roll-up cards propose superseding NOTHING (a revision retires only the previous card);",
+                "  members always stay active and individually recallable.",
             ]
         )
 

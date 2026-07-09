@@ -520,6 +520,55 @@ def test_create_candidate_memories_false_lists_proposals_without_writes() -> Non
     assert proposals[0]["candidate_memory_id"] is None
 
 
+def test_rollup_pass_skips_groups_covered_by_near_duplicate_clusters() -> None:
+    """The latte trio clusters as near-duplicates, so the roll-up pass must
+    leave it to the dedup proposal instead of double-proposing a card."""
+    store = FakeConsolidationStore()
+    mapping: dict[str, list[float]] = {}
+    _seed_six_memories(store, mapping)
+    artifact = _service(store, mapping).generate_memory_consolidation(MemoryConsolidationRequest())
+
+    rollups = artifact["metadata_json"]["rollups"]
+    assert rollups["enabled"] is True
+    assert rollups["proposals"] == []
+    assert any("covered_by_near_duplicate_cluster" in reason for reason in rollups["skipped"])
+    rollup_candidates = [
+        row
+        for row in store.list_memories(status="candidate")
+        if isinstance(row.get("metadata_json"), dict)
+        and row["metadata_json"].get("candidate_kind") == "memory_rollup"
+    ]
+    assert rollup_candidates == []
+    assert "## Roll-up Proposals" in artifact["content_markdown"]
+
+
+def test_propose_rollups_false_discloses_disabled_state() -> None:
+    store = FakeConsolidationStore()
+    mapping: dict[str, list[float]] = {}
+    _seed_six_memories(store, mapping)
+    artifact = _service(store, mapping).generate_memory_consolidation(
+        MemoryConsolidationRequest(propose_rollups=False)
+    )
+    assert artifact["metadata_json"]["rollups"] == {"enabled": False}
+    assert artifact["metadata_json"]["input_counts"]["rollup_proposals"] == 0
+    assert "propose_rollups=false" in artifact["content_markdown"]
+
+
+def test_invalid_rollup_options_fail_before_any_writes() -> None:
+    from alicebot_api.vnext_rollups import VNextRollupValidationError
+
+    store = FakeConsolidationStore()
+    mapping: dict[str, list[float]] = {}
+    _seed_six_memories(store, mapping)
+    memory_count = len(store.memories)
+    with pytest.raises(VNextRollupValidationError):
+        _service(store, mapping).generate_memory_consolidation(
+            MemoryConsolidationRequest(metadata_json={"rollup_options": {"min_members": 1}})
+        )
+    assert len(store.memories) == memory_count
+    assert store.artifacts == []
+
+
 def test_scheduler_call_shape_still_constructs() -> None:
     # Mirrors the kwargs vnext_scheduler passes; must keep constructing unchanged.
     request = MemoryConsolidationRequest(
