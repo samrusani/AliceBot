@@ -52,6 +52,35 @@ Groups whose member texts are near-identical (high mean pairwise token
 Jaccard) are left to the near-duplicate dedup/merge pipeline — a roll-up
 aggregates DISTINCT instances of one topic, it does not dedupe copies.
 
+Label hygiene and the group-utility gate
+----------------------------------------
+A group only becomes a proposal if a human would recognize its card as a
+topic that aggregates something. Everything below is deterministic and
+store-local (measured from the grouped rows, never from a benchmark
+label or an ambient corpus):
+
+- structural label hygiene: pronoun/contraction labels ("I'm", "I've"),
+  single letters, and labels made only of function words never label a
+  card; entity labels that are broken subspans of a longer title ("Us
+  Part II" inside "The Last of Us Part II") are repaired by expanding
+  them to the dominant full span found in the member texts.
+- frequency-derived generic anchors: a stem that appears in a large
+  fraction of the store's *sessions* is conversational plumbing ("need",
+  "great", "help"), not a topic, no matter the language. The threshold
+  is measured per store (session dispersion), so nothing here hardcodes
+  an English vocabulary beyond the small structural lists above, and
+  small stores (below the stats floor) skip the frequency test entirely.
+- group-utility gate: a proposal needs >= 3 members AND an aggregation
+  signal (>= 2 distinct instance values — amounts or in-text dates — or
+  >= 3 distinct sessions), a label whose content words appear in a
+  majority of member texts, and a label that is specific for the store.
+  Groups failing the gate are DROPPED (they do not claim members and do
+  not consume ``max_rollups`` slots), with one aggregate skip line
+  documenting the counts per reason.
+- ranking: surviving groups are proposed best-first by aggregation
+  utility (distinct values x distinct sessions x label specificity), so
+  the ``max_rollups`` cap keeps the strongest topics, not the first.
+
 The optional model seam (``generation_mode="model_backed"`` through the
 existing routing seam in ``vnext_model_intelligence``) only refines the
 card's one-line summary; the deterministic instance list is always
@@ -114,20 +143,86 @@ DUPLICATE_GROUP_JACCARD_THRESHOLD = 0.75
 # consolidation-merge grounding guard).
 ROLLUP_SUMMARY_GROUNDING_MIN_OVERLAP = 0.5
 
+# -- group-utility gate thresholds ---------------------------------------------
+
+# A roll-up aggregates; below three instances there is nothing to
+# aggregate, whatever ``min_members`` is configured to.
+MIN_AGGREGATION_MEMBERS = 3
+
+# Aggregation signal: the group carries at least this many distinct
+# instance values (currency/unit amounts or in-text dates) ...
+MIN_DISTINCT_INSTANCE_VALUES = 2
+# ... OR spans at least this many distinct sessions/days.
+MIN_DISTINCT_SESSIONS = 3
+
+# Every content word of a card's label must appear in at least this
+# fraction of the member texts — the label has to describe the group.
+LABEL_COHERENCE_MIN_FRACTION = 0.5
+
+# Frequency-derived generic-anchor detection (store-local, no hardcoded
+# vocabulary): a stem that appears in at least this fraction of the
+# store's distinct sessions is conversational plumbing, not a topic.
+# Calibrated on real conversational stores, where plumbing stems
+# ("need", "great", "help", "i'm") disperse across 32%-84% of sessions
+# while genuine topics ("workshops", "games", "plants") stay under ~30%
+# even when their raw memory counts are higher.
+GENERIC_ANCHOR_SESSION_DISPERSION = 0.30
+
+# Dispersion statistics are meaningless on tiny corpora: below these
+# floors no stem is ever frequency-blocked (structural hygiene still
+# applies). Small personal stores therefore keep full grouping power.
+GENERIC_ANCHOR_MIN_ROWS = 30
+GENERIC_ANCHOR_MIN_SESSIONS = 10
+
 # Topic tokens that are conversational plumbing rather than topics; the
-# speaker tags cover LongMemEval-style "[USER]: ..." transcripts.
+# speaker tags cover LongMemEval-style "[USER]: ..." transcripts, and
+# "ai" covers assistant self-reference ("As an AI ...") — in a store
+# built from assistant chats that token labels boilerplate, not a topic
+# (specific AI subjects still surface through their own entity/anchor
+# labels: product names, "machine learning", model names, ...).
 _TOPIC_TOKEN_BLOCKLIST = frozenset(
     {
         "user", "assistant", "alice", "memory", "memories", "session",
         "chat", "remember", "today", "yesterday", "tomorrow", "really",
         "recently", "think", "thanks", "thank", "please", "would", "like",
         "want", "wanted", "going", "got", "get", "also", "one", "two",
-        "new", "time", "lot", "bit",
+        "new", "time", "lot", "bit", "yes", "yeah", "okay", "ok", "ai",
     }
+)
+
+# Closed-class contraction heads: a label token like "i'm"/"you'd" whose
+# head is one of these is a pronoun contraction, never a topic. Structural
+# (grammar, not vocabulary), so it applies at any store size.
+_PRONOUN_CONTRACTION_HEADS = frozenset(
+    {"i", "you", "he", "she", "it", "we", "they", "that", "there", "this",
+     "who", "what", "let", "here"}
+)
+
+# Lowercase connectors that may sit INSIDE a capitalized title span
+# ("The Last of Us Part II", "Lord of the Rings"); used when repairing
+# entity labels that extraction truncated at such a connector.
+_TITLE_CONNECTOR_TOKENS = frozenset(
+    {"of", "the", "and", "for", "de", "la", "le", "du", "da", "di", "del",
+     "van", "von", "&"}
+)
+
+# Month names count as in-text date values for the aggregation-signal
+# test; only capitalized surfaces are counted so modal "may" stays out.
+_MONTH_TOKENS = frozenset(
+    {"january", "february", "march", "april", "may", "june", "july",
+     "august", "september", "october", "november", "december"}
 )
 
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9'-]*")
 _SURFACE_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9'-]*")
+# Word tokens with positions, for the label-repair span walk.
+_WORD_WITH_POS_RE = re.compile(r"[A-Za-z0-9][\w'’&-]*")
+# Numeric calendar dates ("2023-05-10", "05/10", "5/10/2023").
+_DATE_MENTION_RE = re.compile(
+    r"(?<![\d/-])(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}/\d{1,2}(?:/\d{2,4})?)(?![\d/-])"
+)
+# Sentence-ish boundaries for label-proximate value counting.
+_SENTENCE_SPLIT_RE = re.compile(r"[.!?\n;•|]+")
 # Quantities worth carrying per instance: currency-prefixed numbers and
 # numbers followed by a small unit vocabulary. Bare numbers are too noisy.
 _AMOUNT_RE = re.compile(
@@ -211,6 +306,11 @@ class _RollupGroup:
     group_kind: str  # "entity" | "topic"
     label: str
     members: tuple[JsonObject, ...]
+    utility: _GroupUtility
+    # Runner-up surface forms of the label stems ("plants" next to
+    # "plant"); rendered on the card head so exact-token retrieval matches
+    # whichever inflection the query uses.
+    label_variants: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -225,6 +325,7 @@ class RollupOutcome:
     candidate_ids: list[str] = field(default_factory=list)
     groupable_count: int = 0
     bounded: bool = False
+    quality_gate: JsonObject = field(default_factory=dict)
 
     def to_metadata(self) -> JsonObject:
         return {
@@ -235,6 +336,7 @@ class RollupOutcome:
             "groups": list(self.groups),
             "proposals": list(self.proposals),
             "skipped": list(self.skipped),
+            "quality_gate": dict(self.quality_gate),
         }
 
     def markdown_lines(self) -> list[str]:
@@ -309,18 +411,38 @@ def _topic_tokens(text: str) -> set[str]:
     return tokens
 
 
-def _surface_form(members: tuple[JsonObject, ...], anchor: str) -> str:
-    """Most frequent original surface form whose light stem equals
-    ``anchor`` (ties break alphabetically) — labels show real words."""
+def _surface_counts(members: tuple[JsonObject, ...], anchor: str) -> Counter[str]:
     counts: Counter[str] = Counter()
     for member in members:
         for raw in _SURFACE_TOKEN_RE.findall(_member_text(member)):
             lowered = raw.casefold()
             if _light_stem(lowered) == anchor:
                 counts[lowered] += 1
+    return counts
+
+
+def _surface_form(members: tuple[JsonObject, ...], anchor: str) -> str:
+    """Most frequent original surface form whose light stem equals
+    ``anchor`` (ties break alphabetically) — labels show real words."""
+    counts = _surface_counts(members, anchor)
     if not counts:
         return anchor
     return min(counts, key=lambda token: (-counts[token], token))
+
+
+def _surface_variants(members: tuple[JsonObject, ...], anchors: list[str], label: str) -> tuple[str, ...]:
+    """Runner-up surface forms of the label's stems ("plants" next to
+    "plant"), so the card also carries the inflection the members — and an
+    aggregation query — actually use. At most one variant per stem."""
+    label_tokens = set(_TOKEN_RE.findall(label.casefold()))
+    variants: list[str] = []
+    for anchor in anchors:
+        counts = _surface_counts(members, anchor)
+        for surface in sorted(counts, key=lambda token: (-counts[token], token)):
+            if surface not in label_tokens and surface not in variants:
+                variants.append(surface)
+                break
+    return tuple(variants)
 
 
 def _mean_pairwise_jaccard(token_sets: list[set[str]]) -> float:
@@ -395,6 +517,307 @@ def _strip_speaker_tag(text: str) -> str:
     return _SPEAKER_TAG_RE.sub("", text, count=1).strip()
 
 
+# -- label hygiene & the group-utility gate --------------------------------------
+
+
+def _stats_tokens(text: str) -> set[str]:
+    """Stemmed content tokens for corpus statistics and coherence checks.
+
+    Wider than ``_topic_tokens`` (length >= 2, so acronym entity labels
+    like "AI" resolve to a measured stem) but the same stopword filter,
+    so plumbing stems and topic stems live in one vocabulary."""
+    tokens: set[str] = set()
+    for raw in _TOKEN_RE.findall(text.casefold()):
+        if len(raw) < 2 or not any(char.isalpha() for char in raw):
+            continue
+        if raw in FTS_QUERY_STOPWORDS or raw in _TOPIC_TOKEN_BLOCKLIST:
+            continue
+        tokens.add(_light_stem(raw))
+    return tokens
+
+
+def _member_session_key(row: JsonObject) -> str | None:
+    """Best-effort per-member occasion key: source/session provenance when
+    the store carries it, else the member's content/event date. Only
+    DISTINCTNESS matters (the gate and the dispersion statistics count
+    occasions); the key never reaches a card."""
+    metadata = row.get("metadata_json")
+    if isinstance(metadata, dict):
+        for key in ("source_id", "session_id", "session_date"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return f"{key}:{value.strip()}"
+    member_date = _member_date(row)
+    return f"date:{member_date}" if member_date else None
+
+
+def _member_instance_values(text: str) -> frozenset[str]:
+    """Distinct aggregation values carried by one member text: unit/currency
+    amounts plus in-text dates (numeric or capitalized month names)."""
+    values: set[str] = set()
+    for amount in _member_amounts(text, limit=8):
+        values.add(" ".join(amount.casefold().split()))
+    for match in _DATE_MENTION_RE.finditer(text):
+        values.add(match.group(1))
+    for token in _SURFACE_TOKEN_RE.findall(text):
+        if token[0].isupper() and token.casefold() in _MONTH_TOKENS:
+            values.add(token.casefold())
+    return frozenset(values)
+
+
+@dataclass(frozen=True, slots=True)
+class _RowProfile:
+    stems: frozenset[str]
+    session_key: str | None
+    # (sentence stems, sentence values) per sentence, so a group can count
+    # the values that sit in the SAME sentence as one of its label stems —
+    # a card about hours played aggregates the amounts attached to playing,
+    # not every number a long member text happens to mention elsewhere.
+    sentences: tuple[tuple[frozenset[str], frozenset[str]], ...]
+
+
+def _row_profiles(rows: list[JsonObject]) -> dict[str, _RowProfile]:
+    profiles: dict[str, _RowProfile] = {}
+    for row in rows:
+        text = _strip_speaker_tag(_member_text(row))
+        sentences: list[tuple[frozenset[str], frozenset[str]]] = []
+        for sentence in _SENTENCE_SPLIT_RE.split(text):
+            if not sentence.strip():
+                continue
+            values = _member_instance_values(sentence)
+            if values:
+                sentences.append((frozenset(_stats_tokens(sentence)), values))
+        profiles[str(row.get("id"))] = _RowProfile(
+            stems=frozenset(_stats_tokens(text)),
+            session_key=_member_session_key(row),
+            sentences=tuple(sentences),
+        )
+    return profiles
+
+
+class _CorpusStats:
+    """Store-local session-dispersion statistics for anchor stems.
+
+    ``dispersion(stem)`` is the fraction of the store's distinct sessions
+    whose memories contain the stem. Conversational plumbing ("need",
+    "great", "i'm") disperses across most sessions; genuine topics
+    concentrate in a few. Below the row/session floors the statistics are
+    disabled and nothing is frequency-blocked."""
+
+    __slots__ = ("enabled", "session_count", "_stem_session_counts")
+
+    def __init__(self, profiles: dict[str, _RowProfile]) -> None:
+        stem_sessions: dict[str, set[str]] = {}
+        sessions: set[str] = set()
+        for profile in profiles.values():
+            if profile.session_key is None:
+                continue
+            sessions.add(profile.session_key)
+            for stem in profile.stems:
+                stem_sessions.setdefault(stem, set()).add(profile.session_key)
+        self.session_count = len(sessions)
+        self.enabled = (
+            len(profiles) >= GENERIC_ANCHOR_MIN_ROWS
+            and self.session_count >= GENERIC_ANCHOR_MIN_SESSIONS
+        )
+        self._stem_session_counts = (
+            {stem: len(keys) for stem, keys in stem_sessions.items()} if self.enabled else {}
+        )
+
+    def dispersion(self, stem: str) -> float:
+        if not self.enabled or self.session_count == 0:
+            return 0.0
+        return self._stem_session_counts.get(stem, 0) / self.session_count
+
+    def is_generic(self, stem: str) -> bool:
+        return self.dispersion(stem) >= GENERIC_ANCHOR_SESSION_DISPERSION
+
+
+def _label_content_tokens(label: str) -> list[str]:
+    """Casefolded content tokens of a label: pronoun contractions, single
+    letters, stopwords, and bare numbers do not count as content."""
+    content: list[str] = []
+    for token in _TOKEN_RE.findall(label.replace("’", "'").casefold()):
+        head = token.split("'", 1)[0]
+        if "'" in token and head in _PRONOUN_CONTRACTION_HEADS:
+            continue
+        if token in _PRONOUN_CONTRACTION_HEADS:
+            continue
+        if len(token) < 2 or not any(char.isalpha() for char in token):
+            continue
+        if token in FTS_QUERY_STOPWORDS or token in _TOPIC_TOKEN_BLOCKLIST:
+            continue
+        content.append(token)
+    return content
+
+
+def _label_junk_reason(label: str, stats: _CorpusStats) -> str | None:
+    """Why the label can never head a card, or None if it is presentable."""
+    content = _label_content_tokens(label)
+    if not content:
+        return "label_without_content_words"
+    stems = [_light_stem(token) for token in content]
+    if stats.enabled and min(stats.dispersion(stem) for stem in stems) >= GENERIC_ANCHOR_SESSION_DISPERSION:
+        return "label_generic_for_store"
+    return None
+
+
+def _label_specificity(label: str, stats: _CorpusStats) -> float:
+    """1 - session dispersion of the label's most specific content stem
+    (1.0 when statistics are disabled or the label has no measured stem)."""
+    stems = [_light_stem(token) for token in _label_content_tokens(label)]
+    if not stems:
+        return 0.0
+    return 1.0 - min(stats.dispersion(stem) for stem in stems)
+
+
+def _natural_surface_order(members: tuple[JsonObject, ...], surfaces: list[str]) -> list[str]:
+    """Order a two-word topic label the way the member texts say it
+    ("credit card", not "card credit"); ties keep the support order."""
+    if len(surfaces) != 2:
+        return surfaces
+    first, second = surfaces
+    forward = backward = 0
+    for member in members[:JACCARD_SAMPLE_MEMBERS]:
+        text = " ".join(_member_text(member).casefold().split())
+        forward += text.count(f"{first} {second}")
+        backward += text.count(f"{second} {first}")
+    if backward > forward:
+        return [second, first]
+    return surfaces
+
+
+def _label_coherence(label: str, member_profiles: list[_RowProfile]) -> float:
+    """Minimum member-coverage across the label's content stems: every
+    content word of the label must describe most of the group."""
+    stems = [_light_stem(token) for token in _label_content_tokens(label)]
+    if not stems or not member_profiles:
+        return 0.0
+    coverage = []
+    for stem in stems:
+        hits = sum(1 for profile in member_profiles if stem in profile.stems)
+        coverage.append(hits / len(member_profiles))
+    return min(coverage)
+
+
+def _expanded_entity_label(label: str, members: tuple[JsonObject, ...]) -> str:
+    """Repair entity labels that are broken subspans of a longer title.
+
+    Extraction can truncate "The Last of Us Part II" to "Us Part II" (the
+    lowercase connector splits the capitalized span). Walking each label
+    occurrence leftward through capitalized words and title connectors in
+    the member texts recovers the full span; when a strict majority of
+    occurrences sit inside such a longer span, the label becomes the most
+    common expansion. Deterministic; bounded by the same member sample the
+    duplicate-group guard uses."""
+    label_tokens = label.split()
+    if not label_tokens:
+        return label
+    expansions: Counter[str] = Counter()
+    occurrences = 0
+    for member in members[:JACCARD_SAMPLE_MEMBERS]:
+        text = _strip_speaker_tag(_member_text(member))
+        tokens = [(match.group(), match.start(), match.end()) for match in _WORD_WITH_POS_RE.finditer(text)]
+        for index in range(len(tokens) - len(label_tokens) + 1):
+            window = tokens[index : index + len(label_tokens)]
+            if [token[0] for token in window] != label_tokens:
+                continue
+            if any(
+                text[window[position][2] : window[position + 1][1]].strip()
+                for position in range(len(window) - 1)
+            ):
+                continue  # punctuation inside the window: not this span
+            occurrences += 1
+            start = index
+            while start > 0:
+                previous = tokens[start - 1]
+                if text[previous[2] : tokens[start][1]].strip():
+                    break  # sentence punctuation between words: stop
+                word = previous[0]
+                if word[0].isupper() and word.casefold() not in _PRONOUN_CONTRACTION_HEADS:
+                    start -= 1
+                    continue
+                if word.casefold() in _TITLE_CONNECTOR_TOKENS and start - 1 > 0:
+                    before = tokens[start - 2]
+                    if (
+                        not text[before[2] : previous[1]].strip()
+                        and before[0][0].isupper()
+                        and before[0].casefold() not in _PRONOUN_CONTRACTION_HEADS
+                    ):
+                        start -= 2
+                        continue
+                break
+            if start < index:
+                expansions[" ".join(token[0] for token in tokens[start : index + len(label_tokens)])] += 1
+    if occurrences and sum(expansions.values()) * 2 > occurrences:
+        return min(expansions, key=lambda name: (-expansions[name], name))
+    return label
+
+
+@dataclass(frozen=True, slots=True)
+class _GroupUtility:
+    distinct_values: int
+    distinct_sessions: int
+    label_specificity: float
+    label_coherence: float
+    score: float
+
+    def to_record(self) -> JsonObject:
+        return {
+            "distinct_values": self.distinct_values,
+            "distinct_sessions": self.distinct_sessions,
+            "label_specificity": round(self.label_specificity, 4),
+            "label_coherence": round(self.label_coherence, 4),
+            "score": round(self.score, 4),
+        }
+
+
+def _group_utility(
+    label: str,
+    members: tuple[JsonObject, ...] | list[JsonObject],
+    profiles: dict[str, _RowProfile],
+    stats: _CorpusStats,
+) -> tuple[_GroupUtility, str | None]:
+    """(utility, failure_reason). The gate a group must pass to become a
+    proposal: an aggregation signal (label-proximate distinct values or
+    distinct sessions) plus a coherent, store-specific label.
+
+    Values only count when they share a sentence with one of the label's
+    content stems: a card about hours played aggregates the amounts
+    attached to playing, not every number its member texts mention."""
+    label_stems = frozenset(_light_stem(token) for token in _label_content_tokens(label))
+    member_profiles = [
+        profiles[str(member.get("id"))] for member in members if str(member.get("id")) in profiles
+    ]
+    values: set[str] = set()
+    sessions: set[str] = set()
+    for profile in member_profiles:
+        for sentence_stems, sentence_values in profile.sentences:
+            if label_stems & sentence_stems:
+                values.update(sentence_values)
+        if profile.session_key is not None:
+            sessions.add(profile.session_key)
+    specificity = _label_specificity(label, stats)
+    coherence = _label_coherence(label, member_profiles)
+    utility = _GroupUtility(
+        distinct_values=len(values),
+        distinct_sessions=len(sessions),
+        label_specificity=specificity,
+        label_coherence=coherence,
+        score=max(1, len(values)) * max(1, len(sessions)) * specificity,
+    )
+    if len(members) < MIN_AGGREGATION_MEMBERS:
+        return utility, "below_min_aggregation_members"
+    if (
+        utility.distinct_values < MIN_DISTINCT_INSTANCE_VALUES
+        and utility.distinct_sessions < MIN_DISTINCT_SESSIONS
+    ):
+        return utility, "no_aggregation_signal"
+    if coherence < LABEL_COHERENCE_MIN_FRACTION:
+        return utility, "label_not_coherent_with_members"
+    return utility, None
+
+
 def _instance_label(row: JsonObject, *, exclude_normalized: str | None = None) -> str:
     """Entity surface when extraction finds one, else the member title,
     else the truncated text — short, deterministic, display-safe.
@@ -430,6 +853,34 @@ def _instance_record(row: JsonObject, *, exclude_normalized: str | None = None) 
     if role is not None:
         record["role"] = role
     return record
+
+
+def _amount_unit(amount: str) -> str | None:
+    """Unit carried by one amount surface: leading currency symbol or the
+    trailing unit word ("30 hours" -> "hours", "$40" -> "$")."""
+    amount = amount.strip()
+    if amount[:1] in "$€£":
+        return amount[:1]
+    match = re.search(r"([a-z%]+)\s*$", amount.casefold())
+    return match.group(1) if match else None
+
+
+def _dominant_amount_unit(instances: list[JsonObject]) -> str | None:
+    """Most common unit across the instances' amounts, when at least two
+    instances carry it (ties break alphabetically) — a card that mostly
+    lists hours is titled as an hours aggregation."""
+    counts: Counter[str] = Counter()
+    for instance in instances:
+        amounts = instance.get("amounts")
+        if not isinstance(amounts, list):
+            continue
+        units = {unit for amount in amounts if (unit := _amount_unit(str(amount))) is not None}
+        for unit in units:
+            counts[unit] += 1
+    if not counts:
+        return None
+    unit = min(counts, key=lambda name: (-counts[name], name))
+    return unit if counts[unit] >= 2 else None
 
 
 def _render_instance(instance: JsonObject) -> str:
@@ -685,12 +1136,30 @@ class VNextRollupService:
         *,
         options: RollupOptions,
         exclude_member_id_sets: list[set[str]],
-    ) -> tuple[list[_RollupGroup], list[str]]:
+    ) -> tuple[list[_RollupGroup], list[str], JsonObject]:
         skipped: list[str] = []
         claimed: set[str] = set()
         groups: list[_RollupGroup] = []
+        dropped: Counter[str] = Counter()
+        dropped_examples: list[str] = []
 
-        def _admit(key: str, kind: str, label: str, members: list[JsonObject]) -> None:
+        profiles = _row_profiles(rows)
+        stats = _CorpusStats(profiles)
+
+        def _drop(key: str, reason: str) -> None:
+            # Gate-dropped groups do NOT claim members and are reported as
+            # one aggregate skip line (not one line per junk anchor).
+            dropped[reason] += 1
+            if len(dropped_examples) < 6:
+                dropped_examples.append(f"{key} ({reason})")
+
+        def _admit(
+            key: str,
+            kind: str,
+            label: str,
+            members: list[JsonObject],
+            label_variants: tuple[str, ...] = (),
+        ) -> None:
             if len(members) > MAX_ROLLUP_GROUP_MEMBERS:
                 skipped.append(f"group_too_large: {key} (members={len(members)})")
                 return
@@ -710,9 +1179,26 @@ class VNextRollupService:
                     f"(mean_jaccard={jaccard:.2f}, members={len(members)})"
                 )
                 return
+            # Label hygiene, then the group-utility gate; failing groups are
+            # dropped and their members stay available to later groups.
+            junk_reason = _label_junk_reason(label, stats)
+            if junk_reason is not None:
+                _drop(key, junk_reason)
+                return
+            utility, gate_reason = _group_utility(label, members, profiles, stats)
+            if gate_reason is not None:
+                _drop(key, gate_reason)
+                return
             claimed.update(member_ids)
             groups.append(
-                _RollupGroup(rollup_key=key, group_kind=kind, label=label, members=_sorted_members(members))
+                _RollupGroup(
+                    rollup_key=key,
+                    group_kind=kind,
+                    label=label,
+                    members=_sorted_members(members),
+                    utility=utility,
+                    label_variants=label_variants,
+                )
             )
 
         # One extraction pass per row; both grouping passes reuse it.
@@ -737,7 +1223,10 @@ class VNextRollupService:
             members = [row for row in entity_members[key] if str(row.get("id")) not in claimed]
             if len(members) < options.min_members:
                 continue
-            _admit(f"entity:{key}", "entity", entity_display[key], members)
+            # Repair labels extraction truncated at a lowercase title
+            # connector ("Us Part II" -> "The Last of Us Part II").
+            label = _expanded_entity_label(entity_display[key], tuple(members))
+            _admit(f"entity:{key}", "entity", label, members)
 
         # Pass 2 — lexical-topic anchors over members no entity group claimed.
         remaining = [row for row in rows if str(row.get("id")) not in claimed]
@@ -746,18 +1235,50 @@ class VNextRollupService:
             for token in sorted(_topic_tokens(_member_text(row))):
                 anchor_members.setdefault(token, []).append(row)
         for anchor in sorted(anchor_members, key=lambda token: (-len(anchor_members[token]), token)):
+            if stats.is_generic(anchor):
+                # Frequency-derived: an anchor dispersed across most of the
+                # store's sessions is plumbing, not a topic. Checked before
+                # claiming so real topics keep these members.
+                if len(anchor_members[anchor]) >= options.min_members:
+                    _drop(f"topic:{anchor}", "anchor_generic_for_store")
+                continue
             members = [row for row in anchor_members[anchor] if str(row.get("id")) not in claimed]
             if len(members) < options.min_members:
                 continue
             # Label: up to two topic stems shared by EVERY member (surface
             # forms), so the card carries the words an aggregation query
             # would use ("hours played"), not just the single anchor.
-            shared = set.intersection(*(_topic_tokens(_member_text(member)) for member in members))
+            shared = {
+                stem
+                for stem in set.intersection(*(_topic_tokens(_member_text(member)) for member in members))
+                if not stats.is_generic(stem)
+            }
             ordered = sorted(shared, key=lambda token: (-len(anchor_members.get(token, ())), token)) or [anchor]
-            label = " ".join(_surface_form(tuple(members), stem) for stem in ordered[:2])
-            _admit(f"topic:{anchor}", "topic", label, members)
+            surfaces = [_surface_form(tuple(members), stem) for stem in ordered[:2]]
+            label = " ".join(_natural_surface_order(tuple(members), surfaces))
+            variants = _surface_variants(tuple(members), ordered[:2], label)
+            _admit(f"topic:{anchor}", "topic", label, members, label_variants=variants)
 
-        return groups, skipped
+        # Rank by aggregation utility so max_rollups keeps the best groups,
+        # not the first-admitted ones. Deterministic tie-breaks.
+        groups.sort(key=lambda group: (-group.utility.score, -len(group.members), group.rollup_key))
+
+        gate_record: JsonObject = {
+            "anchor_stats_enabled": stats.enabled,
+            "session_count": stats.session_count,
+            "generic_anchor_session_dispersion": GENERIC_ANCHOR_SESSION_DISPERSION,
+            "min_aggregation_members": MIN_AGGREGATION_MEMBERS,
+            "dropped_group_count": sum(dropped.values()),
+            "dropped_by_reason": {reason: dropped[reason] for reason in sorted(dropped)},
+        }
+        if dropped:
+            reasons = ", ".join(f"{reason}={count}" for reason, count in sorted(dropped.items()))
+            examples = "; ".join(dropped_examples)
+            skipped.append(
+                f"quality_gate_dropped: {sum(dropped.values())} group(s) not proposed "
+                f"({reasons}); e.g. {examples}"
+            )
+        return groups, skipped, gate_record
 
     # -- accepted / pending state -------------------------------------------------
 
@@ -793,10 +1314,21 @@ class VNextRollupService:
         model_summary: str | None,
     ) -> tuple[str, str, str]:
         """(title, canonical_text, summary) — deterministic; the optional
-        model summary is appended as a clearly-labelled extra sentence."""
+        model summary is appended as a clearly-labelled extra sentence.
+
+        The title reads like a topic: label plus the dominant value unit
+        carried by the instances ("hours played — 5 instances, amounts in
+        hours"), derived deterministically from the instance amounts."""
         rendered = "; ".join(_render_instance(instance) for instance in instances)
-        title = f"Roll-up: {group.label} ({len(instances)} instances in total)"
-        canonical_text = f"{group.label} — {len(instances)} instances in total: {rendered}."
+        unit = _dominant_amount_unit(instances)
+        if unit is not None:
+            title = f"Roll-up: {group.label} — {len(instances)} instances, amounts in {unit}"
+        else:
+            title = f"Roll-up: {group.label} ({len(instances)} instances in total)"
+        head = group.label
+        if group.label_variants:
+            head = f"{group.label} (also: {', '.join(group.label_variants)})"
+        canonical_text = f"{head} — {len(instances)} instances in total: {rendered}."
         if model_summary:
             canonical_text = f"{canonical_text} Summary: {model_summary}"
         summary = canonical_text[:280]
@@ -939,10 +1471,11 @@ class VNextRollupService:
             outcome.skipped.append("fewer_memories_than_min_members")
             return outcome
 
-        groups, group_skips = self._group_members(
+        groups, group_skips, gate_record = self._group_members(
             rows, options=options, exclude_member_id_sets=exclude_member_id_sets or []
         )
         outcome.skipped.extend(group_skips)
+        outcome.quality_gate = gate_record
         if len(groups) > options.max_rollups:
             outcome.skipped.append(
                 f"rollup_bound: {len(groups) - options.max_rollups} groups beyond "
@@ -961,6 +1494,7 @@ class VNextRollupService:
                 "label": group.label,
                 "member_ids": member_ids,
                 "rollup_digest": rollup_digest,
+                "aggregation": group.utility.to_record(),
             }
 
             accepted_card = accepted.get(group.rollup_key)
@@ -1064,6 +1598,13 @@ __all__ = [
     "DEFAULT_MAX_ROLLUPS",
     "DEFAULT_ROLLUP_MIN_MEMBERS",
     "DUPLICATE_GROUP_JACCARD_THRESHOLD",
+    "GENERIC_ANCHOR_MIN_ROWS",
+    "GENERIC_ANCHOR_MIN_SESSIONS",
+    "GENERIC_ANCHOR_SESSION_DISPERSION",
+    "LABEL_COHERENCE_MIN_FRACTION",
+    "MIN_AGGREGATION_MEMBERS",
+    "MIN_DISTINCT_INSTANCE_VALUES",
+    "MIN_DISTINCT_SESSIONS",
     "ROLLUP_CANDIDATE_KIND",
     "ROLLUP_PROPOSAL_KIND",
     "RollupOptions",
