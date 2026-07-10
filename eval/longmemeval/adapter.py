@@ -471,8 +471,29 @@ class QuestionRun:
 
     # -- ingest ------------------------------------------------------------
 
-    def ingest(self, *, accept_rollups: bool = False) -> IngestStats:
+    def ingest(self, *, accept_rollups: bool = False, reuse_store: bool = False) -> IngestStats:
         started = time.monotonic()
+        if reuse_store:
+            # Marker-verified reuse (runner --reuse-stores): the sessions are
+            # already captured and promoted in this store, so session capture
+            # is skipped entirely. Promotion is a no-op on a promoted store
+            # and roll-up acceptance is idempotent, so both still run below —
+            # keeping the --accept-rollups fingerprint truthful on reuse.
+            rollup_stats = (
+                self._consolidate_and_accept_rollups()
+                if accept_rollups
+                else None
+            )
+            return IngestStats(
+                session_count=len(self.question.haystack_session_ids),
+                source_count=0,
+                duplicate_count=0,
+                chunk_count=0,
+                candidate_memory_count=0,
+                promoted_memory_count=0,
+                ingest_seconds=time.monotonic() - started,
+                rollups=rollup_stats,
+            )
         capture = VNextCaptureService(self.store, actor_type="system")
         source_count = 0
         duplicate_count = 0
