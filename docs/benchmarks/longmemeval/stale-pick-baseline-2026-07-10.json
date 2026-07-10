@@ -1,0 +1,65 @@
+{
+  "chains_extractable": 59,
+  "chains_total": 72,
+  "question_types": [
+    "knowledge-update"
+  ],
+  "runs": [
+    {
+      "classified": 59,
+      "considered": 72,
+      "gold": 46,
+      "gold_and_judged_wrong": 2,
+      "judged": 59,
+      "label": "2026-07-05-baseline-64.6",
+      "no_chain": 13,
+      "other": 4,
+      "schema": "longmemeval_stale_pick_v1",
+      "stale": 9,
+      "stale_and_judged_correct": 0,
+      "stale_pick_rate": 0.1525
+    },
+    {
+      "classified": 59,
+      "considered": 72,
+      "gold": 54,
+      "gold_and_judged_wrong": 2,
+      "judged": 59,
+      "label": "2026-07-07-published-79.4",
+      "no_chain": 13,
+      "other": 3,
+      "schema": "longmemeval_stale_pick_v1",
+      "stale": 2,
+      "stale_and_judged_correct": 0,
+      "stale_pick_rate": 0.0339
+    },
+    {
+      "classified": 16,
+      "considered": 19,
+      "gold": 13,
+      "gold_and_judged_wrong": 0,
+      "judged": 16,
+      "label": "stage1-runA-retrieval-only",
+      "no_chain": 3,
+      "other": 1,
+      "schema": "longmemeval_stale_pick_v1",
+      "stale": 2,
+      "stale_and_judged_correct": 0,
+      "stale_pick_rate": 0.125
+    },
+    {
+      "classified": 16,
+      "considered": 19,
+      "gold": 15,
+      "gold_and_judged_wrong": 0,
+      "judged": 16,
+      "label": "stage1-runB-full-config",
+      "no_chain": 3,
+      "other": 0,
+      "schema": "longmemeval_stale_pick_v1",
+      "stale": 1,
+      "stale_and_judged_correct": 0,
+      "stale_pick_rate": 0.0625
+    }
+  ]
+}
