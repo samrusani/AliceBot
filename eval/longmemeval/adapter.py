@@ -42,6 +42,7 @@ from uuid import UUID
 
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user, sqlite_user_connection
 from alicebot_api.vnext_capture import SourceCaptureInput, VNextCaptureService
+from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
 from alicebot_api.vnext_retrieval import (
     VECTOR_STAGE_ENABLED,
     VNextRetrievalRequest,
@@ -49,6 +50,7 @@ from alicebot_api.vnext_retrieval import (
     query_terms,
 )
 from alicebot_api.vnext_fact_keys import attach_memory_fact_keys
+from alicebot_api.vnext_rollups import RollupOptions, VNextRollupService
 from alicebot_api.vnext_temporal_query import parse_event_datetime
 
 from longmemeval.dataset import LongMemEvalQuestion, SessionTurn
@@ -66,6 +68,15 @@ DEFAULT_CONTEXT_CHAR_BUDGET = 12_000
 DEFAULT_MAX_ITEMS = 8
 
 EMPTY_CONTEXT_PLACEHOLDER = "(no relevant chat history was retrieved)"
+
+# Review-accept reason recorded on every roll-up acceptance the harness
+# performs (--accept-rollups); it lands verbatim in the acceptance metadata,
+# the promotion revision, and the agent.memory_consolidation_accepted event,
+# so accepted-by-the-harness cards are always distinguishable offline.
+ROLLUP_ACCEPTANCE_REASON = (
+    "LongMemEval harness --accept-rollups: review-accepted consolidation roll-up proposal "
+    "(models the product's human review workflow)."
+)
 
 # Official LongMemEval reading templates (src/generation/run_generation.py in
 # xiaowu0162/LongMemEval), verbatim; the history slot receives Alice's
@@ -89,6 +100,34 @@ _WORD_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]+")
 
 
 @dataclass(frozen=True, slots=True)
+class RollupAcceptanceStats:
+    """One post-ingest consolidation roll-up pass + review acceptance.
+
+    Produced only when the disclosed ``--accept-rollups`` step ran, and then
+    serialized into the checkpoint row's ``ingest.rollups`` block, so every
+    scored run carries per-store visibility of how many cards were proposed
+    and accepted (and which memory rows they are).
+    """
+
+    groupable_memory_count: int
+    proposal_count: int
+    accepted_count: int
+    accepted_memory_ids: tuple[str, ...]
+    skipped: tuple[str, ...]
+    rollup_seconds: float
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "groupable_memory_count": self.groupable_memory_count,
+            "proposal_count": self.proposal_count,
+            "accepted_count": self.accepted_count,
+            "accepted_memory_ids": list(self.accepted_memory_ids),
+            "skipped": list(self.skipped),
+            "rollup_seconds": round(self.rollup_seconds, 3),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class IngestStats:
     session_count: int
     source_count: int
@@ -97,9 +136,13 @@ class IngestStats:
     candidate_memory_count: int
     promoted_memory_count: int
     ingest_seconds: float
+    # None whenever the --accept-rollups step did not run, and then the
+    # record below is byte-identical to the pre-roll-up schema (no new key),
+    # so off-flag checkpoint rows do not drift.
+    rollups: RollupAcceptanceStats | None = None
 
     def to_record(self) -> dict[str, object]:
-        return {
+        record: dict[str, object] = {
             "session_count": self.session_count,
             "source_count": self.source_count,
             "duplicate_count": self.duplicate_count,
@@ -108,6 +151,9 @@ class IngestStats:
             "promoted_memory_count": self.promoted_memory_count,
             "ingest_seconds": round(self.ingest_seconds, 3),
         }
+        if self.rollups is not None:
+            record["rollups"] = self.rollups.to_record()
+        return record
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,7 +471,7 @@ class QuestionRun:
 
     # -- ingest ------------------------------------------------------------
 
-    def ingest(self) -> IngestStats:
+    def ingest(self, *, accept_rollups: bool = False) -> IngestStats:
         started = time.monotonic()
         capture = VNextCaptureService(self.store, actor_type="system")
         source_count = 0
@@ -461,7 +507,8 @@ class QuestionRun:
                 candidate_count += result.candidate_memory_count
             if result.source_id is not None and result.source_id not in self._source_sessions:
                 self._source_sessions[result.source_id] = (session_id, date)
-        promoted = self._promote_candidate_memories()
+        promoted = self._promote_candidate_memories(stamp_session_dates=accept_rollups)
+        rollups = self._consolidate_and_accept_rollups() if accept_rollups else None
         return IngestStats(
             session_count=session_count,
             source_count=source_count,
@@ -470,21 +517,48 @@ class QuestionRun:
             candidate_memory_count=candidate_count,
             promoted_memory_count=promoted,
             ingest_seconds=time.monotonic() - started,
+            rollups=rollups,
         )
 
-    def _promote_candidate_memories(self) -> int:
+    def _session_date_for_memory(self, memory: dict[str, object]) -> str | None:
+        metadata = memory.get("metadata_json")
+        source_id = str(metadata.get("source_id") or "") if isinstance(metadata, dict) else ""
+        if not source_id:
+            return None
+        session_id, date = self._session_label(source_id)
+        return date if session_id and date != "undated" else None
+
+    def _promote_candidate_memories(self, *, stamp_session_dates: bool = False) -> int:
         """Accept capture candidates so Alice's search stages can see them.
 
         Mirrors the store-level review-accept patch (``status: active``) used
         by the product's review flow; without it, ``search_memories*`` only
         matches pre-existing active/accepted rows and the memory stages would
         run empty for every question.
+
+        ``stamp_session_dates`` (only set by the disclosed --accept-rollups
+        step) additionally records each memory's originating session date in
+        ``metadata_json.session_date`` — the per-instance date hook the
+        roll-up pass documents (``vnext_rollups._member_date``). In the
+        product, memories are created in real time so their ``created_at``
+        IS the content date; benchmark replay compresses years of sessions
+        into one ingest moment, so without the stamp every roll-up instance
+        would carry today's date instead of its session's. The stamp is
+        provenance the ingest already wrote on the source row's metadata;
+        no benchmark label is involved. Off flag, the promotion patch is
+        byte-identical to the pre-roll-up harness (``{"status": "active"}``).
         """
         promoted = 0
         for memory in self.store.list_memories(status="candidate"):
+            patch: dict[str, object] = {"status": "active"}
+            if stamp_session_dates:
+                session_date = self._session_date_for_memory(memory)
+                metadata = memory.get("metadata_json")
+                if session_date is not None and isinstance(metadata, dict):
+                    patch["metadata_json"] = {**metadata, "session_date": session_date}
             updated = self.store.update_memory(
                 memory_id=str(memory["id"]),
-                patch={"status": "active"},
+                patch=patch,
                 actor_type="system",
             )
             # Promotion is also the derived-retrieval-key moment (mirrors
@@ -493,6 +567,78 @@ class QuestionRun:
             attach_memory_fact_keys(self.store, updated, use_env_provider=False)
             promoted += 1
         return promoted
+
+    def _consolidate_and_accept_rollups(self) -> RollupAcceptanceStats:
+        """Run the consolidation roll-up pass, then review-accept every card.
+
+        This models the product's intended human workflow (the user accepts
+        the review proposals the consolidation run produced), the same way
+        the harness already mirrors review-accept promotion for candidate
+        memories in ``_promote_candidate_memories``. Two real product code
+        paths, no store-level shortcuts:
+
+        * Proposal — the roll-up portion of the scheduled consolidation
+          workflow. ``VNextConsolidationService.generate_memory_consolidation``
+          invokes ``VNextRollupService.propose_rollups`` (see
+          apps/api/src/alicebot_api/vnext_consolidation.py); the harness
+          calls that same service entry point with the scheduled workflow's
+          argument shape: deterministic generation (no model call), default
+          ``RollupOptions``, default sensitivity scope, candidate creation
+          on. The full ``generate_memory_consolidation`` wrapper cannot run
+          against the per-question SQLite on-ramp store because it also
+          writes the consolidation report artifact (``create_artifact``), a
+          surface ``SQLiteVNextStore`` does not implement; the roll-up pass
+          itself is store-complete. The near-duplicate exclusion the
+          wrapper derives from embedding-based clustering is empty here for
+          the same reason keyless replay is FTS-only: ``_cluster_memories``
+          skips with ``no_embedding_provider_configured``, so the scheduled
+          pass would also pass no clusters; the roll-up pass's own pairwise
+          Jaccard duplicate-group guard still applies.
+        * Acceptance — every proposed card goes through
+          ``VNextMemoryCommitService.accept_consolidation_candidate``, the
+          exact service call the review console's
+          ``POST /v0/vnext/memories/accept-consolidation`` endpoint
+          (apps/api/src/alicebot_api/main.py), the ``alicebot vnext
+          memories accept-consolidation`` CLI (cli.py), and the MCP review
+          tool (mcp_tools.py) all delegate to, with ``identity=None`` — the
+          human-reviewer shape. Acceptance therefore does everything the
+          product does: policy events, promotion to ``active``,
+          best-effort embedding, entity linking, the ``promoted`` revision,
+          and the ``agent.memory_consolidation_accepted`` event.
+
+        Members are never superseded (first-time roll-up proposals carry an
+        empty ``proposed_supersede``), so every individual memory stays
+        active and recallable exactly as before; the cards are additive.
+        """
+        started = time.monotonic()
+        outcome = VNextRollupService(self.store).propose_rollups(
+            domains=None,
+            sensitivity_allowed=["public", "internal", "private", "unknown"],
+            options=RollupOptions(),
+            create_candidate_memories=True,
+            generated_by="system",
+            trace_id=None,
+            generation_mode="deterministic",
+            exclude_member_id_sets=[],
+        )
+        commit = VNextMemoryCommitService(self.store)  # duck-typed store, like the CLI on-ramp
+        accepted_ids: list[str] = []
+        for candidate_id in outcome.candidate_ids:
+            payload = commit.accept_consolidation_candidate(
+                candidate_id,
+                reason=ROLLUP_ACCEPTANCE_REASON,
+                identity=None,
+            )
+            if payload.get("status") == "accepted":
+                accepted_ids.append(candidate_id)
+        return RollupAcceptanceStats(
+            groupable_memory_count=outcome.groupable_count,
+            proposal_count=len(outcome.proposals),
+            accepted_count=len(accepted_ids),
+            accepted_memory_ids=tuple(accepted_ids),
+            skipped=tuple(str(reason) for reason in outcome.skipped),
+            rollup_seconds=time.monotonic() - started,
+        )
 
     # -- retrieval ----------------------------------------------------------
 
@@ -775,7 +921,9 @@ __all__ = [
     "LME_USER_ID",
     "MAX_ITEMS_ENV",
     "QuestionRun",
+    "ROLLUP_ACCEPTANCE_REASON",
     "RetrievalOutcome",
+    "RollupAcceptanceStats",
     "build_answer_prompt",
     "collapse_intra_turn_blank_lines",
     "context_char_budget_from_env",

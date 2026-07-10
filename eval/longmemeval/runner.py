@@ -95,6 +95,12 @@ class RunnerConfig:
     # Disclosed post-generation grounding gate (see longmemeval/verification.py);
     # off by default and always visible in the config fingerprint.
     verify_grounding: bool = False
+    # Disclosed post-ingest consolidation step (see adapter.py,
+    # QuestionRun._consolidate_and_accept_rollups): propose roll-up cards via
+    # the product's consolidation pass and review-accept them through the
+    # real acceptance path. Off by default so the default replay stays
+    # byte-identical to published runs; always in the config fingerprint.
+    accept_rollups: bool = False
 
     @property
     def mode(self) -> str:
@@ -139,6 +145,10 @@ def config_fingerprint(
         # verifier model when enabled) always feed the fingerprint digest.
         "verify_grounding": config.verify_grounding,
         "verifier_model": verifier.redacted() if config.verify_grounding and verifier is not None else None,
+        # Roll-up acceptance can never run undisclosed either: the flag feeds
+        # the digest, and per-store proposed/accepted counts land in each
+        # checkpoint row's ingest.rollups block.
+        "accept_rollups": config.accept_rollups,
         "generation_temperature": GENERATION_TEMPERATURE,
         "max_items": config.max_items,
         "context_char_budget": config.context_char_budget,
@@ -266,7 +276,7 @@ def run_question(
     try:
         _cleanup_store(db_path)
         with question_run(question, db_path) as run:
-            ingest_stats = run.ingest()
+            ingest_stats = run.ingest(accept_rollups=config.accept_rollups)
             outcome = run.retrieve(
                 max_items=config.max_items,
                 context_char_budget=config.context_char_budget,
@@ -472,6 +482,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "(context + question + answer only; never the gold answer) converts answers with "
         "ungrounded load-bearing claims to the abstention phrasing; recorded in the fingerprint",
     )
+    parser.add_argument(
+        "--accept-rollups",
+        action="store_true",
+        help="disclosed post-ingest consolidation step: run the product's roll-up "
+        "consolidation pass after candidate promotion and review-accept the proposed "
+        "cards through the real acceptance path (accept_consolidation_candidate), "
+        "modeling the product's human review workflow; recorded in the fingerprint "
+        "and per-store counts in each checkpoint row's ingest.rollups block",
+    )
     parser.add_argument("--max-items", type=int, default=None, help=f"context-pack max_items (default: ${'{'}ALICE_LME_MAX_ITEMS{'}'} or {DEFAULT_MAX_ITEMS})")
     parser.add_argument(
         "--context-char-budget",
@@ -519,6 +538,7 @@ def _resolve_config(args: argparse.Namespace, *, question_ids: tuple[str, ...] |
         report_path=args.report or RESULTS_DIR / f"{stem}_report.json",
         keep_stores=args.keep_stores,
         verify_grounding=args.verify_grounding,
+        accept_rollups=args.accept_rollups,
     )
 
 
