@@ -110,6 +110,12 @@ class RunnerConfig:
     # config fingerprint so no run can hide its format.
     pack_format: str = DEFAULT_PACK_FORMAT
     # ---- pack-format (structured JSON packs) integration end ------------
+    # Reuse per-question stores previously ingested by the coverage probe or
+    # a --keep-stores run (probe-style ``*.ingested.json`` markers, dataset
+    # hash checked). Skips session capture only; promotion and roll-up
+    # acceptance still run (both idempotent). Always in the fingerprint and
+    # per-row ``ingest.reused_store`` so reuse can never be silent.
+    reuse_stores: bool = False
 
     @property
     def mode(self) -> str:
@@ -161,6 +167,9 @@ def config_fingerprint(
         # Pack format (prose | json) always feeds the digest: a JSON-pack
         # run can never masquerade as a prose run or vice versa.
         "pack_format": config.pack_format,
+        # Store reuse always feeds the digest too (and lands per-row as
+        # ingest.reused_store), so ingest reuse can never be silent.
+        "reuse_stores": config.reuse_stores,
         "generation_temperature": GENERATION_TEMPERATURE,
         "max_items": config.max_items,
         "context_char_budget": config.context_char_budget,
@@ -261,6 +270,25 @@ def _cleanup_store(db_path: Path) -> None:
         Path(str(db_path) + suffix).unlink(missing_ok=True)
 
 
+def _reuse_marker_matches(marker_path: Path, question: LongMemEvalQuestion, *, fingerprint_digest, config: RunnerConfig) -> bool:
+    """Probe-compatible ingest-marker check for --reuse-stores.
+
+    The marker was written only after a clean, committed ingest (by the
+    coverage probe or an earlier --keep-stores run); the dataset hash guards
+    against reusing stores built from a different dataset revision.
+    """
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(marker, dict)
+        and marker.get("question_id") == question.question_id
+        and marker.get("dataset_sha256_prefix") == _sha256_prefix(config.dataset_path)
+        and marker.get("session_count") == len(question.haystack_session_ids)
+    )
+
+
 def run_question(
     question: LongMemEvalQuestion,
     config: RunnerConfig,
@@ -286,9 +314,16 @@ def run_question(
     }
     db_path = _db_path_for(config, question.question_id)
     try:
-        _cleanup_store(db_path)
+        marker_path = Path(str(db_path) + ".ingested.json")
+        reuse = (
+            config.reuse_stores
+            and db_path.is_file()
+            and _reuse_marker_matches(marker_path, question, fingerprint_digest=None, config=config)
+        )
+        if not reuse:
+            _cleanup_store(db_path)
         with question_run(question, db_path) as run:
-            ingest_stats = run.ingest(accept_rollups=config.accept_rollups)
+            ingest_stats = run.ingest(accept_rollups=config.accept_rollups, reuse_store=reuse)
             outcome = run.retrieve(
                 max_items=config.max_items,
                 context_char_budget=config.context_char_budget,
@@ -521,6 +556,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--work-dir", type=Path, default=WORK_DIR, help="scratch dir for per-question SQLite stores")
     parser.add_argument("--keep-stores", action="store_true", help="keep per-question SQLite files for inspection")
+    parser.add_argument(
+        "--reuse-stores",
+        action="store_true",
+        help="reuse marker-verified ingested stores in --work-dir (skips session capture; promotion and roll-up acceptance still run; disclosed in the fingerprint and per-row ingest.reused_store)",
+    )
     return parser
 
 
@@ -558,6 +598,7 @@ def _resolve_config(args: argparse.Namespace, *, question_ids: tuple[str, ...] |
         checkpoint_path=args.checkpoint or RESULTS_DIR / f"{stem}_checkpoint.jsonl",
         report_path=args.report or RESULTS_DIR / f"{stem}_report.json",
         keep_stores=args.keep_stores,
+        reuse_stores=args.reuse_stores,
         verify_grounding=args.verify_grounding,
         accept_rollups=args.accept_rollups,
         pack_format=args.pack_format,
