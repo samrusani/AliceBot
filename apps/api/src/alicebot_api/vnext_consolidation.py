@@ -730,7 +730,15 @@ class VNextConsolidationService:
         # (never on the memory commit path) and never mutates existing rows.
         rollups: RollupOutcome | None = None
         if rollup_options is not None:
-            rollups = VNextRollupService(self.store, merge_provider=self.merge_provider).propose_rollups(
+            # lme5/semantic-grouping integration: the roll-up pass reuses
+            # this service's already-resolved embedding provider so its
+            # semantic tier and the clustering above always see the same
+            # seam (both dormant when no provider is configured).
+            rollups = VNextRollupService(
+                self.store,
+                merge_provider=self.merge_provider,
+                embedding_provider=self.embedding_provider,
+            ).propose_rollups(
                 domains=domains,
                 sensitivity_allowed=sensitivity,
                 options=rollup_options,

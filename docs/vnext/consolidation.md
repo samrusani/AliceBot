@@ -67,6 +67,19 @@ Without a provider (or on a store without vector search) the run still
 produces the report artifact, with an explicit skip reason and **zero**
 candidates — there is no keyword-scan fallback and no placeholder candidate.
 
+The roll-up pass's **semantic grouping tier** (`vnext_rollups`) shares this
+exact access pattern and the same provider instance: when embeddings are
+configured, memories that the deterministic entity/lexical roll-up passes
+left unclaimed are agglomerated by pairwise cosine at one conservatively
+swept threshold (chosen by a silhouette-style criterion, disclosed in the
+outcome metadata as `rollups.semantic_grouping`), so aggregation topics whose
+instances share no anchor token ("kitchen items replaced" =
+faucet/toaster/shelves) can still form one review-gated card. Every semantic
+cluster passes the same roll-up utility gate, with mean pairwise similarity
+standing in for the label-stem coherence test. Without a provider the tier
+is dormant and the roll-up outputs are byte-identical to the
+lexical/entity-only behavior.
+
 ## Review-first guarantees
 
 - Every proposal is a **candidate** memory (`status="candidate"`) and the
