@@ -11,8 +11,10 @@ Everything here is deterministic and READ-ONLY (no store writes, no
 events, no model calls). The honesty constraints are load-bearing:
 
 - Salience is decided from the QUERY SURFACE ONLY (capitalized spans,
-  quoted titles, domains, @handles, mid-sentence capitalized tokens).
-  Nothing downstream may key off benchmark labels or query metadata.
+  quoted titles, domains, @handles, mid-sentence capitalized tokens,
+  and attribute-qualified lowercase compounds like "30-gallon tank" or
+  "my snake plant"). Nothing downstream may key off benchmark labels
+  or query metadata.
 - The claim "no stored memories mention X" is only made when EVERY
   available check misses: the entity substrate (names AND aliases via
   ``find_entities_by_names``) and cheap one-row FTS existence probes
@@ -110,6 +112,73 @@ _HONORIFIC_TOKENS = frozenset({"mr", "mrs", "ms", "dr", "prof", "professor"})
 # Possessive suffix on a capitalized token ("Emma's recipes"): the name
 # is "Emma", never "Emma's".
 _POSSESSIVE_SUFFIX_RE = re.compile(r"['’]s$")
+
+# -- lowercase attribute-qualified nouns (round-3 loss forensics) -------------
+#
+# A query can name a specific THING without any capital letter when the
+# noun carries an explicit qualifier: "my 30-gallon tank", "my snake
+# plant", "my soccer team". Bare lowercase nouns are NEVER salient;
+# conservatism lives in three stacked gates:
+#
+#   1. an explicit qualifier SHAPE — a measured quantity ("30-gallon")
+#      or a possessive determiner plus a noun modifier ("my snake ..."),
+#   2. a small curated HEAD-NOUN lexicon (kept-thing and activity-group
+#      heads), so ordinary object talk ("my credit card", "my phone
+#      number") can never fire,
+#   3. modifier hygiene — generic adjectives ("new", "favorite",
+#      "work"), blocklisted words, and digit-led modifiers never qualify
+#      the possessive shape.
+#
+# Both rules admit the full compound surface ("30-gallon tank", "snake
+# plant"), so the FTS probe ORs every token variant: any corpus mention
+# of "tank(s)", "plant(s)", "snakes", ... counts as support and the
+# note stays suppressed — the safe direction.
+
+# Physical measurement units only. Time units (day, week, minute) are
+# deliberately absent: "5-day trip" qualifies an EVENT, not a thing.
+_MEASURE_UNITS = (
+    "gallon", "litre", "liter", "quart", "pint",
+    "ounce", "oz", "pound", "lb", "gram", "kilogram", "kg",
+    "inch", "foot", "meter", "metre", "acre",
+    "watt", "volt", "amp",
+)
+_QUANTIFIED_NOUN_RE = re.compile(
+    r"\b\d+(?:\.\d+)?[- ](?:" + "|".join(_MEASURE_UNITS) + r")s?[- ]([a-z][a-z-]{2,})\b"
+)
+
+# Possessive-compound heads: kept things (a specific plant/tank in the
+# user's life) and activity groups ("my soccer team", "my book club").
+# Curated and short on purpose; growing it requires a false-positive
+# table entry per addition (see test_vnext_grounding.py).
+_COMPOUND_HEAD_NOUNS = frozenset(
+    {
+        "plant", "plants", "tree", "trees",
+        "tank", "tanks", "aquarium", "terrarium",
+        "team", "teams", "practice", "league", "club", "clubs",
+        "lesson", "lessons", "class", "classes",
+    }
+)
+
+# Modifiers that describe rather than name: possessive compounds built
+# on these are ordinary object talk ("my new team", "my work club"),
+# never a specific named thing.
+_GENERIC_COMPOUND_MODIFIERS = frozenset(
+    {
+        "new", "old", "own", "first", "last", "next", "previous",
+        "current", "former", "favorite", "favourite", "usual",
+        "regular", "recent", "little", "big", "small", "large",
+        "best", "worst", "whole", "entire", "main", "other",
+        "second", "third", "local", "nearby", "long", "short",
+        "early", "late", "morning", "evening", "afternoon",
+        "weekly", "daily", "monthly", "weekend",
+        "work", "home", "school", "office", "company", "family",
+        "dream", "future", "online", "virtual",
+    }
+)
+
+_POSSESSIVE_COMPOUND_RE = re.compile(
+    r"\b(?:[Mm]y|[Oo]ur)\s+([a-z][a-z-]{2,})\s+([a-z]+)\b"
+)
 
 
 def _overlaps(covered: list[tuple[int, int]], start: int, end: int) -> bool:
@@ -218,6 +287,41 @@ def salient_query_entities(query: str) -> tuple[str, ...]:
             continue
         admit(match.start(), surface)
 
+    # 5. Quantity-qualified lowercase nouns ("my 30-gallon tank"): a
+    #    measured quantity is a naming qualifier, so the full compound
+    #    is salient. Physical units only; time-qualified events never
+    #    fire (see the lexicon comment above).
+    for match in _QUANTIFIED_NOUN_RE.finditer(query):
+        if _overlaps(covered, match.start(), match.end()):
+            continue
+        head = match.group(1).casefold()
+        if head in ENTITY_EXTRACTION_BLOCKLIST or head in _GENERIC_COMPOUND_MODIFIERS:
+            continue
+        covered.append(match.span())
+        admit(match.start(), match.group())
+
+    # 6. Possessive noun-noun compounds ("my snake plant", "my soccer
+    #    team"): possessive determiner + specific modifier + curated
+    #    head. All three gates must pass; "my hamster" (no modifier),
+    #    "my credit card" (head not curated), and "my work team"
+    #    (generic modifier) never fire.
+    for match in _POSSESSIVE_COMPOUND_RE.finditer(query):
+        if _overlaps(covered, match.start(), match.end()):
+            continue
+        modifier = match.group(1).casefold()
+        head = match.group(2).casefold()
+        if head not in _COMPOUND_HEAD_NOUNS:
+            continue
+        if (
+            modifier in ENTITY_EXTRACTION_BLOCKLIST
+            or modifier in _GENERIC_COMPOUND_MODIFIERS
+            or modifier in _QUERY_LEADING_STOPWORDS
+            or modifier in _COMPOUND_HEAD_NOUNS
+        ):
+            continue
+        covered.append(match.span())
+        admit(match.start(), f"{match.group(1)} {match.group(2)}")
+
     found.sort(key=lambda item: item[0])
     return tuple(surface for _position, _normalized, surface in found[:MAX_GROUNDING_ENTITIES])
 
@@ -241,7 +345,17 @@ def _probe_query_variants(name: str) -> str:
             seen.add(token)
             tokens.append(token)
 
-    for token in _PROBE_TOKEN_RE.findall(name):
+    raw_tokens = _PROBE_TOKEN_RE.findall(name)
+    # Pure-number tokens are dropped when the name has word tokens: a
+    # bare "30" on an unrelated receipt is not a mention of the
+    # "30-gallon tank", and letting it count as support would silently
+    # suppress a truthful note. The word tokens still OR together in
+    # the safe direction (any hit suppresses the note). All-number
+    # names keep their digits -- they are the only probe surface.
+    has_word_token = any(not token.isdigit() for token in raw_tokens)
+    for token in raw_tokens:
+        if has_word_token and token.isdigit():
+            continue
         add(token)
         if len(token) < _VARIANT_MIN_TOKEN_CHARS:
             continue
