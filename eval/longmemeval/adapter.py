@@ -26,6 +26,9 @@ services), then:
 
 The answer prompt is the official LongMemEval reading template with the
 history slot filled by Alice's context block instead of the full haystack.
+The context block renders as prose (default, byte-stable) or as a compact
+structured JSON document (``pack_format="json"``; see
+:mod:`longmemeval.pack_formats`) — same selected content either way.
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Iterator
+from typing import Callable, Iterator
 from uuid import UUID
 
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user, sqlite_user_connection
@@ -54,6 +57,16 @@ from alicebot_api.vnext_rollups import RollupOptions, VNextRollupService
 from alicebot_api.vnext_temporal_query import parse_event_datetime
 
 from longmemeval.dataset import LongMemEvalQuestion, SessionTurn
+from longmemeval.pack_formats import (
+    DEFAULT_PACK_FORMAT,
+    PACK_FORMATS,
+    PACK_FORMAT_JSON,
+    assemble_document,
+    compact_json,
+    document_envelope,
+    excerpt_record,
+    memory_record,
+)
 
 
 LME_USER_ID = UUID("22222222-2222-4222-8222-222222222222")
@@ -175,9 +188,14 @@ class RetrievalOutcome:
     source_session_ids: tuple[str, ...] = ()
     memory_ids: tuple[str, ...] = ()
     context_sha256: str = ""
+    # How the context block was rendered ("prose" | "json"). The default
+    # keeps off-flag checkpoint rows byte-identical to the pre-JSON schema
+    # (no new key), mirroring the IngestStats.rollups precedent; a JSON run
+    # always discloses itself here AND in the config fingerprint.
+    pack_format: str = DEFAULT_PACK_FORMAT
 
     def to_record(self) -> dict[str, object]:
-        return {
+        record = {
             "context_chars": self.context_chars,
             "approx_context_tokens": self.approx_context_tokens,
             "memory_count": self.memory_count,
@@ -193,6 +211,9 @@ class RetrievalOutcome:
                 "context_sha256": self.context_sha256,
             },
         }
+        if self.pack_format != DEFAULT_PACK_FORMAT:
+            record["pack_format"] = self.pack_format
+        return record
 
 
 def collapse_intra_turn_blank_lines(content: str) -> str:
@@ -275,6 +296,24 @@ def _validity_suffix(memory: dict[str, object]) -> str:
     if not parts:
         return ""
     return f" [{'; '.join(parts)}]"
+
+
+def _prose_entry_length(entry: tuple[int, int, int, str, str, str]) -> int:
+    """Rendered cost of one prose excerpt entry (header + text + separators)."""
+    _neg_score, _source_rank, chunk_index, session_id, date, chunk_text = entry
+    header = f"[Session {session_id} | {date} | excerpt {chunk_index + 1}]"
+    return len(header) + len(chunk_text) + 3
+
+
+def _json_excerpt_record(entry: tuple[int, int, int, str, str, str]) -> dict[str, object]:
+    """One ``session_excerpts[]`` record from a selection entry."""
+    _neg_score, _source_rank, chunk_index, session_id, date, chunk_text = entry
+    return excerpt_record(session_id=session_id, date=date, excerpt_index=chunk_index + 1, excerpt=chunk_text)
+
+
+def _json_entry_cost(entry: tuple[int, int, int, str, str, str]) -> int:
+    """Serialized cost of one JSON excerpt entry (record + one separator comma)."""
+    return len(compact_json(_json_excerpt_record(entry))) + 1
 # -- query-anchored excerpt windows ------------------------------------------
 #
 # The head-biased failure mode: a source's best chunk (whole-chunk term
@@ -647,7 +686,10 @@ class QuestionRun:
         *,
         max_items: int | None = None,
         context_char_budget: int | None = None,
+        pack_format: str = DEFAULT_PACK_FORMAT,
     ) -> RetrievalOutcome:
+        if pack_format not in PACK_FORMATS:
+            raise ValueError(f"pack_format must be one of {PACK_FORMATS}, got {pack_format!r}")
         resolved_max_items = max_items if max_items is not None else max_items_from_env()
         budget = context_char_budget if context_char_budget is not None else context_char_budget_from_env()
         service = VNextRetrievalService(self.store)
@@ -666,7 +708,10 @@ class QuestionRun:
         started = time.monotonic()
         pack = service.compile_context_pack(request)
         retrieval_seconds = time.monotonic() - started
-        context_block, excerpt_count = self._render_context_block(pack, budget=budget)
+        if pack_format == PACK_FORMAT_JSON:
+            context_block, excerpt_count = self._render_context_json(pack, budget=budget)
+        else:
+            context_block, excerpt_count = self._render_context_block(pack, budget=budget)
         memories = pack.get("relevant_memories") or []
         sources = pack.get("sources") or []
         trace = pack.get("trace") if isinstance(pack.get("trace"), dict) else {}
@@ -696,6 +741,7 @@ class QuestionRun:
             source_session_ids=source_session_ids,
             memory_ids=memory_ids,
             context_sha256=hashlib.sha256(context_block.encode("utf-8")).hexdigest(),
+            pack_format=pack_format,
         )
 
     def _session_label(self, source_id: str) -> tuple[str, str]:
@@ -761,6 +807,47 @@ class QuestionRun:
         if grounding_lines:
             used += sum(len(line) + 1 for line in grounding_lines) + 1
 
+        selected = self._select_excerpts(pack, budget=budget, used=used, entry_cost=_prose_entry_length)
+        excerpt_count = len(selected)
+        excerpt_lines: list[str] = []
+        for _neg_score, _source_rank, chunk_index, session_id, date, chunk_text in selected:
+            excerpt_lines.append(f"[Session {session_id} | {date} | excerpt {chunk_index + 1}]")
+            excerpt_lines.append(chunk_text)
+            excerpt_lines.append("")
+        if excerpt_lines:
+            if lines:
+                lines.append("")
+            lines.append("### Retrieved chat history excerpts:")
+            lines.extend(excerpt_lines)
+
+        if grounding_lines:
+            # Retrieval statistic, not an instruction: it belongs with the
+            # retrieval output, after the excerpts it summarizes.
+            if lines:
+                lines.append("")
+            lines.extend(grounding_lines)
+
+        return "\n".join(lines).strip(), excerpt_count
+
+    def _select_excerpts(
+        self,
+        pack: dict[str, object],
+        *,
+        budget: int,
+        used: int,
+        entry_cost: Callable[[tuple[int, int, int, str, str, str]], int],
+    ) -> list[tuple[int, int, int, str, str, str]]:
+        """Shared two-pass excerpt selection under a rendered-length budget.
+
+        Format-agnostic: ``entry_cost`` prices one excerpt entry in the
+        caller's serialization (prose header+text or compact-JSON record),
+        and ``used`` is the budget the caller already spent on its
+        memories/notes/envelope. Everything else — per-source pass-1
+        guarantees, query anchoring, enumeration extensions charged as a
+        cost DELTA of the grown entry, global pass-2 by score, and the
+        oldest-session-first final order — is identical across formats, so
+        format stays the only variable between prose and JSON packs.
+        """
         terms = frozenset(query_terms(self.question.question))
         # One entry per chunk: (-score, source_rank, chunk_index, session_id, date, text).
         chunks_by_source: list[list[tuple[int, int, int, str, str, str]]] = []
@@ -787,11 +874,6 @@ class QuestionRun:
                 chunks_by_source.append(source_chunks)
                 ordered_chunks_by_source.append(ordered_chunks)
 
-        def entry_length(entry: tuple[int, int, int, str, str, str]) -> int:
-            _neg_score, _source_rank, chunk_index, session_id, date, chunk_text = entry
-            header = f"[Session {session_id} | {date} | excerpt {chunk_index + 1}]"
-            return len(header) + len(chunk_text) + 3
-
         # Pass 1: every retrieved source gets its single best excerpt (source
         # rank order), so one wordy session cannot crowd out the rest. A
         # query-anchored window is capped at the baseline chunk's cost, so
@@ -810,7 +892,7 @@ class QuestionRun:
             entry = best
             if anchored is not None:
                 entry = (best[0], best[1], anchored.chunk_index, best[3], best[4], anchored.text)
-            cost = entry_length(entry)
+            cost = entry_cost(entry)
             if used + cost <= budget:
                 selected.append(entry)
                 used += cost
@@ -844,11 +926,9 @@ class QuestionRun:
         # order): a kept-intact list never evicts another source's
         # guaranteed excerpt, only competes with pass-2 chunks.
         for selected_position, leftover_position, extension_text, extension_chunk_indexes, joins_above in pending_extensions:
-            extra = len(extension_text) + 1  # joined to the window with one newline
-            if used + extra > budget:
-                continue
-            neg_score, source_rank, chunk_index, session_id, date, window_text = selected[selected_position]
-            selected[selected_position] = (
+            current = selected[selected_position]
+            neg_score, source_rank, chunk_index, session_id, date, window_text = current
+            grown = (
                 neg_score,
                 source_rank,
                 chunk_index,
@@ -856,6 +936,13 @@ class QuestionRun:
                 date,
                 extension_text + "\n" + window_text if joins_above else window_text + "\n" + extension_text,
             )
+            # Joined to the window with one newline; charged as the entry's
+            # cost DELTA so serializations with escaping stay budget-exact
+            # (prose: exactly len(extension_text) + 1, as before).
+            extra = entry_cost(grown) - entry_cost(current)
+            if used + extra > budget:
+                continue
+            selected[selected_position] = grown
             used += extra
             entries, covered = leftovers[leftover_position]
             leftovers[leftover_position] = (entries, covered | extension_chunk_indexes)
@@ -864,7 +951,7 @@ class QuestionRun:
         remaining = [entry for entries, covered in leftovers for entry in entries if entry[2] not in covered]
         remaining.sort(key=lambda item: item[:3])
         for entry in remaining:
-            cost = entry_length(entry)
+            cost = entry_cost(entry)
             if used + cost > budget:
                 continue
             selected.append(entry)
@@ -872,26 +959,49 @@ class QuestionRun:
 
         # Render oldest-first so the excerpts read chronologically.
         selected.sort(key=lambda item: (item[4], item[1], item[2]))
-        excerpt_count = len(selected)
-        excerpt_lines: list[str] = []
-        for _neg_score, _source_rank, chunk_index, session_id, date, chunk_text in selected:
-            excerpt_lines.append(f"[Session {session_id} | {date} | excerpt {chunk_index + 1}]")
-            excerpt_lines.append(chunk_text)
-            excerpt_lines.append("")
-        if excerpt_lines:
-            if lines:
-                lines.append("")
-            lines.append("### Retrieved chat history excerpts:")
-            lines.extend(excerpt_lines)
+        return selected
 
-        if grounding_lines:
-            # Retrieval statistic, not an instruction: it belongs with the
-            # retrieval output, after the excerpts it summarizes.
-            if lines:
-                lines.append("")
-            lines.extend(grounding_lines)
+    def _render_context_json(self, pack: dict[str, object], *, budget: int) -> tuple[str, int]:
+        """Compact-JSON context document (``--pack-format json``).
 
-        return "\n".join(lines).strip(), excerpt_count
+        Same content pipeline as :meth:`_render_context_block` — identical
+        memory extraction (text fallback chain, session-date lookup),
+        identical grounding notes, and the shared :meth:`_select_excerpts`
+        two-pass packing — serialized as the structured document described
+        in :mod:`longmemeval.pack_formats`. The budget applies to the
+        SERIALIZED length: the envelope and memory/notes sections are
+        charged up front and each excerpt record is priced by its compact
+        serialization, so ``len(document) <= budget`` whenever the fixed
+        sections fit (the same regime prose operates under). An entirely
+        empty pack renders ``""`` so the empty-context placeholder path is
+        shared with prose.
+        """
+        memories = pack.get("relevant_memories") or []
+        memory_records: list[dict[str, object]] = []
+        for memory in memories:
+            if not isinstance(memory, dict):
+                continue
+            text = str(memory.get("canonical_text") or memory.get("summary") or memory.get("title") or "").strip()
+            if text == "":
+                continue
+            metadata = memory.get("metadata_json") if isinstance(memory.get("metadata_json"), dict) else {}
+            source_id = str(metadata.get("source_id") or "")
+            _session_id, date = self._session_label(source_id) if source_id else ("", "undated")
+            memory_records.append(memory_record(memory, claim=text, date=date))
+
+        grounding = pack.get("grounding") if isinstance(pack.get("grounding"), dict) else None
+        grounding_notes: list[str] = []
+        if grounding:
+            for name in grounding.get("unsupported_entities") or []:
+                grounding_notes.append(f'Note: no stored memories mention "{name}".')
+
+        prefix, suffix = document_envelope(memory_records, grounding_notes)
+        used = len(prefix) + len(suffix)
+        selected = self._select_excerpts(pack, budget=budget, used=used, entry_cost=_json_entry_cost)
+        if not memory_records and not selected and not grounding_notes:
+            return "", 0
+        excerpt_jsons = [compact_json(_json_excerpt_record(entry)) for entry in selected]
+        return assemble_document(prefix, excerpt_jsons, suffix), len(selected)
 
 
 @contextmanager
