@@ -2340,3 +2340,216 @@ def test_run_question_without_flag_has_no_grounding_record(
     assert record["hypothesis"] == answer
     assert "grounding" not in record
     assert judged == [answer]
+
+
+# ===========================================================================
+# INTEGRATION BLOCK (lme6/honesty-kit): judge-free stale-pick metric.
+# Owns tests for eval/longmemeval/stale_pick.py only; keep additions for
+# other features out of this block.
+# ===========================================================================
+
+from longmemeval import stale_pick  # noqa: E402
+
+
+def _stale_pick_question(
+    *,
+    question_id: str = "ku_demo_1",
+    question: str = "What was my personal best time in the charity 5K run?",
+    answer: str = "25 minutes and 50 seconds (or 25:50)",
+    old_turn: str = "I recently set a personal best time in a charity 5K run with a time of 27:12.",
+    new_turn: str = "I'm hoping to beat my personal best time of 25:50 this year.",
+) -> dict[str, object]:
+    return {
+        "question_id": question_id,
+        "question_type": "knowledge-update",
+        "question": question,
+        "answer": answer,
+        "question_date": "2023/06/25 (Sun) 13:22",
+        "haystack_dates": ["2023/04/23 (Sun) 08:57", "2023/05/20 (Sat) 10:00", "2023/06/01 (Thu) 09:00"],
+        "haystack_session_ids": ["filler_1", "answer_old", "answer_new"],
+        "haystack_sessions": [
+            [{"role": "user", "content": "Tell me about sourdough starters."}],
+            [{"role": "user", "content": old_turn, "has_answer": True}],
+            [{"role": "user", "content": new_turn, "has_answer": True}],
+        ],
+        "answer_session_ids": ["answer_old", "answer_new"],
+    }
+
+
+def test_stale_pick_value_extraction_families() -> None:
+    values = stale_pick.extract_values(
+        "I ran 25:50, spent $400,000 (about $12k more), read 220 pages, own four bikes, "
+        "class is on Friday, the tournament is May 6th, logged on 2023/05/28, "
+        "and worked 10-12 hours since 2023."
+    )
+    canonicals = {value.canonical for value in values}
+    assert "pair:25:50" in canonicals
+    assert "money:400000" in canonicals
+    assert "money:12000" in canonicals  # $12k expands
+    assert "num:220" in canonicals
+    assert "num:4" in canonicals  # word number
+    assert "day:fri" in canonicals
+    assert "date:5:6" in canonicals  # May 6th
+    assert "date:5:28" in canonicals  # 2023/05/28 claimed as a date...
+    assert "num:2023" not in canonicals  # ...and bare years are suppressed
+    assert {"range:10:12", "num:10", "num:12"} <= canonicals
+    # Verbal duration normalizes to the same canonical as mm:ss.
+    verbal = stale_pick.extract_values("It took 25 minutes and 50 seconds.")
+    assert "pair:25:50" in {value.canonical for value in verbal}
+
+
+def test_stale_pick_entity_extraction_keeps_leading_proper_nouns() -> None:
+    gold, phrase = stale_pick.extract_gold_values("Kansas City Masterpiece")
+    assert [value.canonical for value in gold] == ["ent:kansas city masterpiece"]
+    assert phrase == ()
+    # Sentence-initial connectives are not entities; mid-sentence brands are.
+    values = stale_pick.extract_values("Therefore, I switched to Sweet Baby Ray's sauce.")
+    canonicals = {value.canonical for value in values}
+    assert "ent:sweet baby ray's" in canonicals
+    assert "ent:therefore" not in canonicals
+
+
+def test_stale_pick_chain_extraction_from_evidence_turns() -> None:
+    question = parse_question(_stale_pick_question())
+    chain = stale_pick.build_update_chain(question)
+    assert chain.extractable
+    assert {value.canonical for value in chain.gold_values} == {"pair:25:50"}
+    assert {value.canonical for value in chain.stale_values} == {"pair:27:12"}
+
+
+def test_stale_pick_classification_table() -> None:
+    chain = stale_pick.build_update_chain(parse_question(_stale_pick_question()))
+    table = [
+        # (hypothesis, expected) — incl. unit variants and paraphrase.
+        ("Your personal best time was 25:50.", stale_pick.GOLD),
+        ("Your personal best is 25 minutes and 50 seconds.", stale_pick.GOLD),  # unit variant
+        ("Your personal best time was 27:12.", stale_pick.STALE),
+        ("It took you 27 minutes and 12 seconds.", stale_pick.STALE),  # unit variant
+        ("Your personal best time was 30:00.", stale_pick.OTHER),
+        ("I do not have that information.", stale_pick.OTHER),
+        # Conclusion-first: mentioning the old value on the way to the new
+        # one is GOLD (mirrors the official knowledge-update judge intent)...
+        ("You first ran 27:12, then improved. Your best is now 25:50.", stale_pick.GOLD),
+        # ...same-sentence mentions of both resolve to GOLD...
+        ("You improved from 27:12 to 25:50.", stale_pick.GOLD),
+        # ...but narrating the gold value and CONCLUDING with the stale one
+        # is a stale pick, even though the gold value appears somewhere.
+        ("The history mentions 25:50 in one session. Therefore your best time is 27:12.", stale_pick.STALE),
+    ]
+    for hypothesis, expected in table:
+        assert stale_pick.classify_hypothesis(hypothesis, chain) == expected, hypothesis
+
+
+def test_stale_pick_word_number_paraphrase_and_no_chain() -> None:
+    counting = parse_question(
+        _stale_pick_question(
+            question_id="ku_demo_2",
+            question="How many bikes do I currently own?",
+            answer="four",
+            old_turn="I have 3 bikes in my garage right now.",
+            new_turn="I just bought another one, so I now own 4 bikes.",
+        )
+    )
+    chain = stale_pick.build_update_chain(counting)
+    assert chain.extractable
+    assert stale_pick.classify_hypothesis("You currently own 4 bikes.", chain) == stale_pick.GOLD
+    assert stale_pick.classify_hypothesis("You own four bikes.", chain) == stale_pick.GOLD
+    assert stale_pick.classify_hypothesis("You own 3 bikes.", chain) == stale_pick.STALE
+    # Yes/no answers yield no typed values and no phrase -> chain is not
+    # extractable, and classification reports NO_CHAIN rather than guessing.
+    yes_no = parse_question(
+        _stale_pick_question(
+            question_id="ku_demo_3",
+            question="Do I still go to the gym?",
+            answer="Yes",
+            old_turn="I stopped going to the gym last month.",
+            new_turn="I started going to the gym again this week.",
+        )
+    )
+    no_chain = stale_pick.build_update_chain(yes_no)
+    assert not no_chain.extractable
+    assert stale_pick.classify_hypothesis("Yes, you go to the gym.", no_chain) == stale_pick.NO_CHAIN
+
+
+def test_stale_pick_cli_replay_deterministic(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                _stale_pick_question(),
+                _stale_pick_question(
+                    question_id="ku_demo_2",
+                    question="How many bikes do I currently own?",
+                    answer="four",
+                    old_turn="I have 3 bikes in my garage right now.",
+                    new_turn="I just bought another one, so I now own 4 bikes.",
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    checkpoint_path = tmp_path / "checkpoint.jsonl"
+    rows = [
+        {
+            "question_id": "ku_demo_1",
+            "status": "ok",
+            "hypothesis": "Your personal best time in the charity 5K run was 27:12.",
+            "judge": {"correct": False},
+        },
+        {
+            "question_id": "ku_demo_2",
+            "status": "ok",
+            "hypothesis": "You currently own 4 bikes.",
+            "judge": {"correct": True},
+        },
+    ]
+    checkpoint_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    outputs: list[str] = []
+    payloads: list[bytes] = []
+    for attempt in ("first", "second"):
+        json_path = tmp_path / f"report-{attempt}.json"
+        exit_code = stale_pick.main(
+            [
+                "--dataset", str(dataset_path),
+                "--checkpoint", str(checkpoint_path),
+                "--label", "demo-run",
+                "--json", str(json_path),
+                "--per-question",
+            ]
+        )
+        assert exit_code == 0
+        outputs.append(capsys.readouterr().out)
+        payloads.append(json_path.read_bytes())
+
+    assert outputs[0] == outputs[1]  # byte-stable stdout across replays
+    assert payloads[0] == payloads[1]  # byte-stable JSON across replays
+
+    report = json.loads(payloads[0])
+    (run,) = report["runs"]
+    assert run["classified"] == 2
+    assert run["gold"] == 1
+    assert run["stale"] == 1
+    assert run["stale_pick_rate"] == 0.5
+    assert run["stale_and_judged_correct"] == 0
+    verdicts = {row["question_id"]: row["verdict"] for row in run["per_question"]}
+    assert verdicts == {"ku_demo_1": "stale", "ku_demo_2": "gold"}
+
+
+def test_stale_pick_module_is_posthoc_only() -> None:
+    """The metric must never leak into the product or generation path."""
+    api_src = Path(__file__).resolve().parent.parent.parent / "apps" / "api" / "src"
+    offenders = [
+        path
+        for path in api_src.rglob("*.py")
+        if "stale_pick" in path.read_text(encoding="utf-8", errors="ignore")
+    ]
+    assert offenders == [], f"product code must not reference stale_pick: {offenders}"
+    harness_dir = Path(__file__).resolve().parent
+    for name in ("runner.py", "adapter.py", "verification.py", "chat.py", "judge.py"):
+        text = (harness_dir / name).read_text(encoding="utf-8")
+        assert "stale_pick" not in text, f"{name} must not import the post-hoc metric"
+
+# ===========================================================================
+# END INTEGRATION BLOCK (lme6/honesty-kit)
+# ===========================================================================
