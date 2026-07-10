@@ -1118,8 +1118,14 @@ def _handle_alice_recall(context: MCPRuntimeContext, arguments: Mapping[str, obj
         # graph stage. Only present when the query matched entities.
         payload["entities"] = matched_entities
     if debug:
+        from alicebot_api.vnext_retrieval import TIE_BREAK_CONTENT_STABLE
+
         payload["retrieval"] = {
-            "fusion": {"algorithm": "reciprocal_rank_fusion", "k": RRF_K},
+            "fusion": {
+                "algorithm": "reciprocal_rank_fusion",
+                "k": RRF_K,
+                "tie_break": TIE_BREAK_CONTENT_STABLE,
+            },
             "vector_stage": vector_stage,
             "context_depth": context_depth,
             "budget_strategy": budget_strategy,
