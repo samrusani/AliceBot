@@ -23,6 +23,10 @@ from alicebot_api.vnext_rollups import (
     RollupOptions,
     VNextRollupService,
     VNextRollupValidationError,
+    _CorpusStats,
+    _instance_label,
+    _instance_record,
+    _label_junk_reason,
 )
 
 
@@ -318,6 +322,410 @@ def test_max_rollups_bound_is_reported() -> None:
     )
     assert len(outcome.proposals) == 1
     assert any("rollup_bound" in reason for reason in outcome.skipped)
+
+
+# -- label hygiene & group-utility gate ------------------------------------------------
+
+
+def _seed_texts(store, specs: tuple[tuple[str, str | None], ...], *, prefix: str = "memory.gate") -> None:
+    for index, (text, session_date) in enumerate(specs):
+        metadata: JsonObject = {}
+        if session_date is not None:
+            metadata["session_date"] = session_date
+        store.create_memory(
+            {
+                "memory_key": f"{prefix}-{index}",
+                "value": {"text": text},
+                "status": "active",
+                "memory_type": "episode",
+                "title": text[:80],
+                "canonical_text": text,
+                "summary": text[:80],
+                "domain": "personal",
+                "sensitivity": "internal",
+                "metadata_json": metadata,
+            }
+        )
+
+
+JUNK_TRIO = (
+    ("I'm excited about the violet harbor", None),
+    ("I'm tired after the granite summit", None),
+    ("I'm curious about the copper lantern", None),
+)
+
+
+def test_pronoun_contraction_labels_never_head_cards() -> None:
+    """Members sharing only \"I'm\" produce no card: the label has no
+    content words, so the group is dropped instead of proposed."""
+    store = FakeRollupStore()
+    _seed_texts(store, JUNK_TRIO)
+    outcome = VNextRollupService(store).propose_rollups()
+    assert outcome.proposals == []
+    assert _rollup_candidates(store) == []
+    gate_lines = [reason for reason in outcome.skipped if reason.startswith("quality_gate_dropped")]
+    assert gate_lines and "label_without_content_words" in gate_lines[0]
+    assert outcome.quality_gate["dropped_by_reason"]["label_without_content_words"] >= 1
+
+
+def test_frequency_generic_anchor_is_not_a_topic() -> None:
+    """Store-measured generic anchors: a stem dispersed across most
+    sessions ('need') cannot anchor a topic, while a concentrated topic
+    ('hiked') still can — no hardcoded vocabulary involved."""
+    store = FakeRollupStore()
+    filler = tuple(
+        (f"need marker{index:02d}a marker{index:02d}b", f"2023-03-{(index % 12) + 1:02d}")
+        for index in range(36)
+    )
+    hikes = tuple(
+        (f"Hiked {distance} km along the {name} trail", f"2023-04-{day:02d}")
+        for distance, name, day in (
+            (5, "juniper", 2),
+            (8, "basalt", 9),
+            (11, "willow", 16),
+            (13, "mesa", 23),
+        )
+    )
+    _seed_texts(store, filler + hikes)
+    outcome = VNextRollupService(store).propose_rollups()
+
+    assert outcome.quality_gate["anchor_stats_enabled"] is True
+    assert len(outcome.proposals) == 1
+    proposal = outcome.proposals[0]
+    assert "hiked" in proposal["label"].casefold()
+    assert proposal["aggregation"]["distinct_values"] >= 4
+    assert proposal["aggregation"]["distinct_sessions"] >= 4
+    # The plumbing anchor was dropped BEFORE claiming members, in the
+    # aggregate skip line, not proposed and not one-line-per-anchor.
+    assert outcome.quality_gate["dropped_by_reason"]["anchor_generic_for_store"] >= 1
+    assert not any("need" == proposal["label"].casefold() for proposal in outcome.proposals)
+
+
+def test_broken_subspan_entity_label_is_repaired() -> None:
+    """Extraction truncates 'The Last of Us Part II' to 'Us Part II' (the
+    lowercase connector splits the span); the card label is repaired to the
+    dominant full span while the grouping key stays stable."""
+    store = FakeRollupStore()
+    _seed_texts(
+        store,
+        (
+            ("I finished The Last of Us Part II after 30 hours", "2023-05-10"),
+            ("Replaying The Last of Us Part II took 12 hours", "2023-05-18"),
+            ("The Last of Us Part II photo mode ate 3 hours", "2023-06-02"),
+            ("Speedran The Last of Us Part II in 9 hours", "2023-06-11"),
+        ),
+    )
+    outcome = VNextRollupService(store).propose_rollups()
+    assert len(outcome.proposals) == 1
+    proposal = outcome.proposals[0]
+    assert proposal["rollup_key"] == "entity:us part ii"  # grouping unchanged
+    assert proposal["label"] == "The Last of Us Part II"  # display repaired
+    card = _rollup_candidates(store)[0]
+    assert "The Last of Us Part II" in card["title"]
+
+
+def test_groups_without_aggregation_signal_are_dropped() -> None:
+    """Three same-entity mentions with no amounts, dates, or session spread
+    aggregate nothing; the group is dropped, not proposed."""
+    store = FakeRollupStore()
+    _seed_texts(
+        store,
+        (
+            ("Quartz Peak has a nice lodge", None),
+            ("The lodge at Quartz Peak seems busy", None),
+            ("Thinking about the Quartz Peak lodge", None),
+        ),
+    )
+    outcome = VNextRollupService(store).propose_rollups()
+    assert outcome.proposals == []
+    assert _rollup_candidates(store) == []
+    assert outcome.quality_gate["dropped_by_reason"]["no_aggregation_signal"] >= 1
+
+
+def test_ranking_prefers_higher_aggregation_utility() -> None:
+    """max_rollups keeps the strongest aggregation, not the first-formed
+    group: five games across five sessions beat three ferry receipts in one."""
+    store = FakeRollupStore()
+    _seed_game_memories(store)
+    _seed_texts(
+        store,
+        (
+            ("Paid $40 for the ferry pass", None),
+            ("Paid $25 for the ferry pass upgrade", None),
+            ("Paid $40 ferry pass renewal fee", None),
+        ),
+    )
+    outcome = VNextRollupService(store).propose_rollups(
+        options=RollupOptions.from_metadata({"rollup_options": {"max_rollups": 1}})
+    )
+    assert len(outcome.proposals) == 1
+    label = outcome.proposals[0]["label"].casefold()
+    assert "played" in label or "hours" in label
+    assert any("rollup_bound" in reason for reason in outcome.skipped)
+
+
+def test_title_reads_like_a_topic_with_dominant_unit() -> None:
+    store = FakeRollupStore()
+    _seed_game_memories(store)
+    outcome = VNextRollupService(store).propose_rollups()
+    card = _rollup_candidates(store)[0]
+    assert "amounts in hours" in card["title"]
+    aggregation = outcome.proposals[0]["aggregation"]
+    assert aggregation["distinct_values"] == 5
+    assert aggregation["distinct_sessions"] == 5
+    assert aggregation["score"] > 0
+    assert aggregation["label_coherence"] == 1.0
+
+
+# -- label heads: closed-class words and bare verbs --------------------------------
+
+
+LABEL_HEAD_CASES = (
+    # Closed-class heads are junk no matter how strong the value signal:
+    # the verifier's residue cards ("even — 15 instances, amounts in $")
+    # all carried amounts.
+    ("even", 5, "label_head_closed_class"),
+    ("still", 5, "label_head_closed_class"),
+    ("right", 5, "label_head_closed_class"),
+    ("towards", 5, "label_head_closed_class"),
+    ("typically", 5, "label_head_closed_class"),
+    # Light-verb heads are junk without a noun, amounts or not: light
+    # verbs attract incidental quantities ("add ... for 10 minutes").
+    ("add", 5, "label_head_light_verb"),
+    ("used", 5, "label_head_light_verb"),
+    ("incorporate", 5, "label_head_light_verb"),
+    # Other bare verb heads are acceptable exactly when the group
+    # aggregates values ("bought $120/$450" aggregates purchases; a bare
+    # verb with only session spread is plumbing).
+    ("bought", 3, None),
+    ("bought", 0, "label_bare_verb_without_values"),
+    ("hiked", 2, None),
+    ("hiked", 0, "label_bare_verb_without_values"),
+    # A verb the deterministic machinery cannot mark (irregular past,
+    # not curated) stays content-bearing.
+    ("flew", 0, None),
+    # A noun anywhere in the label carries the topic.
+    ("miles ran", 0, None),
+    ("decided meridian", 0, None),
+    ("finished reading", 0, None),  # gerunds act as nouns
+    ("hours played", 0, None),
+    # Plain noun labels are never head-junk.
+    ("workshops", 0, None),
+    ("model kits", 0, None),
+)
+
+
+@pytest.mark.parametrize(
+    "label,amounts,expected", LABEL_HEAD_CASES, ids=[f"{c[0]}-{c[1]}" for c in LABEL_HEAD_CASES]
+)
+def test_label_head_junk_rules(label, amounts, expected) -> None:
+    """Table-driven head hygiene: a card label's head token must be
+    content-bearing (no closed-class words, no light verbs without a
+    noun, no bare verbs without a value-based aggregation signal)."""
+    stats = _CorpusStats({})  # below the stats floor: structural rules only
+    assert _label_junk_reason(label, stats, label_amount_count=amounts) == expected
+
+
+def test_closed_class_head_never_labels_card_even_with_amounts() -> None:
+    """Members sharing only a preposition ('towards') with dollar amounts
+    in every text: real aggregation signal, but a closed-class head can
+    never name a topic — the group is dropped, not proposed."""
+    store = FakeRollupStore()
+    _seed_texts(
+        store,
+        (
+            ("Saved $40 towards a harbor kayak", "2026-03-02"),
+            ("Chipped $25 towards the granite lodge", "2026-03-09"),
+            ("Banked $60 towards the copper lantern", "2026-03-16"),
+        ),
+    )
+    outcome = VNextRollupService(store).propose_rollups()
+    assert outcome.proposals == []
+    assert _rollup_candidates(store) == []
+    assert outcome.quality_gate["dropped_by_reason"]["label_head_closed_class"] >= 1
+
+
+def test_light_verb_head_never_labels_card_even_with_amounts() -> None:
+    """Members sharing only a light verb ('used') with amounts: light
+    verbs attract incidental quantities, so the value signal does not
+    rescue the head — the group is dropped."""
+    store = FakeRollupStore()
+    _seed_texts(
+        store,
+        (
+            ("Used the harbor pass, $12 fare", "2026-03-02"),
+            ("Used the granite entrance, $15 fee", "2026-03-09"),
+            ("Used the copper gate, $18 toll", "2026-03-16"),
+        ),
+    )
+    outcome = VNextRollupService(store).propose_rollups()
+    assert outcome.proposals == []
+    assert _rollup_candidates(store) == []
+    assert outcome.quality_gate["dropped_by_reason"]["label_head_light_verb"] >= 1
+
+
+def test_bare_transaction_verb_needs_value_signal() -> None:
+    """Both sides of the bare-verb rule on real stores: 'bought' with
+    only session spread is plumbing (dropped); 'bought' aggregating
+    distinct prices is a purchases card (proposed)."""
+    plain = FakeRollupStore()
+    _seed_texts(
+        plain,
+        (
+            ("Bought a harbor kayak pass", "2026-03-02"),
+            ("Bought the granite lodge voucher", "2026-03-09"),
+            ("Bought a copper lantern kit", "2026-03-16"),
+        ),
+    )
+    without_values = VNextRollupService(plain).propose_rollups()
+    assert without_values.proposals == []
+    assert (
+        without_values.quality_gate["dropped_by_reason"]["label_bare_verb_without_values"] >= 1
+    )
+
+    priced = FakeRollupStore()
+    _seed_texts(
+        priced,
+        (
+            ("Bought a harbor kayak pass for $40", "2026-03-02"),
+            ("Bought the granite lodge voucher for $25", "2026-03-09"),
+            ("Bought a copper lantern kit for $60", "2026-03-16"),
+        ),
+    )
+    with_values = VNextRollupService(priced).propose_rollups()
+    assert len(with_values.proposals) == 1
+    proposal = with_values.proposals[0]
+    assert "bought" in proposal["label"].casefold()
+    assert proposal["aggregation"]["distinct_amounts"] >= 2
+
+
+# -- instance-line hygiene ---------------------------------------------------------
+
+
+def test_instance_labels_get_subspan_repair() -> None:
+    """The card-label subspan repair also applies inside instance lines:
+    'Us Part II' renders as 'The Last of Us Part II' next to its value
+    and date."""
+    store = FakeRollupStore()
+    _seed_game_memories(store)
+    VNextRollupService(store).propose_rollups()
+    card = _rollup_candidates(store)[0]
+    labels = [instance["label"] for instance in card["value"]["rollup"]["instances"]]
+    assert "The Last of Us Part II" in labels
+    assert "Us Part II" not in labels
+    assert "The Last of Us Part II (30 hours; 2023-05-10" in card["canonical_text"]
+
+
+def test_fragment_instance_label_filters_to_neutral_noun() -> None:
+    """An instance whose extracted label is a pronoun/closed-class
+    fragment ('Since I'm') keeps its value+date line under a neutral
+    content-bearing label instead."""
+    row: JsonObject = {
+        "id": "frag-1",
+        "title": "Since I'm in Denver, the pottery workshop cost $40",
+        "canonical_text": "Since I'm in Denver, the pottery workshop cost $40",
+        "metadata_json": {"session_date": "2026-03-02"},
+    }
+    label = _instance_label(row)
+    assert label
+    lowered = label.casefold()
+    assert not lowered.startswith("since")
+    assert "i'm" not in lowered
+    record = _instance_record(row)
+    assert record["label"] == label
+    assert record["amounts"] == ["$40"]  # the value line survives the filter
+    assert record["date"] == "2026-03-02"
+
+
+def test_pronoun_contraction_instance_label_is_filtered() -> None:
+    """A bare pronoun-contraction candidate ('I'm') never labels an
+    instance line."""
+    row: JsonObject = {
+        "id": "frag-2",
+        "title": "I'm logging 3 hours at the granite summit",
+        "canonical_text": "I'm logging 3 hours at the granite summit",
+        "metadata_json": {},
+    }
+    label = _instance_label(row)
+    assert label
+    assert not label.casefold().startswith(("i'", "i’"))
+
+
+PRODUCT_STORE_FIXTURES = (
+    (
+        "workouts",
+        (
+            ("Ran 3 miles around Lakeview loop", "2026-03-02"),
+            ("Ran 5 miles along the river path", "2026-03-09"),
+            ("Ran 4 miles at the track", "2026-03-16"),
+            ("Ran 6 miles on the canyon trail", "2026-03-23"),
+        )
+        + JUNK_TRIO,
+        ("mile", "ran"),
+    ),
+    (
+        "project_decisions",
+        (
+            ("Decided to adopt the Meridian rollout plan for launch", "2026-01-05"),
+            ("Decided to delay the Meridian rollout by two weeks", "2026-01-12"),
+            ("Decided the Meridian rollout needs a canary stage", "2026-01-19"),
+        ),
+        ("meridian", "rollout", "decided"),
+    ),
+    (
+        "shopping",
+        (
+            ("Bought a Herman Miller chair for $450", "2026-02-01"),
+            ("Bought new running shoes for $120", "2026-02-08"),
+            ("Bought a standing desk mat for $60", "2026-02-15"),
+        ),
+        ("bought",),
+    ),
+    (
+        "reading_list",
+        (
+            ("Finished reading Project Hail Mary in March", "2026-03-05"),
+            ("Finished reading The Martian in April", "2026-04-02"),
+            ("Finished reading Recursion in May", "2026-05-07"),
+        ),
+        ("reading", "finished"),
+    ),
+    (
+        "travel",
+        (
+            ("Flew to Lisbon for the spring conference", "2026-04-10"),
+            ("Flew to Oslo for the design retreat", "2026-05-20"),
+            ("Flew to Kyoto for the autumn workshop", "2026-10-15"),
+        ),
+        ("flew",),
+    ),
+)
+
+
+@pytest.mark.parametrize("name,specs,expected_label_words", PRODUCT_STORE_FIXTURES, ids=[f[0] for f in PRODUCT_STORE_FIXTURES])
+def test_product_shaped_stores_produce_topical_cards(name, specs, expected_label_words) -> None:
+    """Non-benchmark product stores: every proposed card passes the utility
+    gate and its label reads like a topic (contains the fixture's topical
+    words, never a pronoun contraction or function-word label)."""
+    store = FakeRollupStore()
+    _seed_texts(store, specs, prefix=f"memory.{name}")
+    outcome = VNextRollupService(store).propose_rollups()
+
+    assert outcome.proposals, f"{name}: expected at least one topical card"
+    labels = [proposal["label"] for proposal in outcome.proposals]
+    assert any(
+        any(word in label.casefold() for word in expected_label_words) for label in labels
+    ), f"{name}: no topical label in {labels}"
+    for proposal in outcome.proposals:
+        label = proposal["label"].casefold()
+        # Structural hygiene: no pronoun-contraction or single-letter labels.
+        assert not label.startswith(("i'", "you'", "it'", "that'", "there'"))
+        assert len(label) >= 2
+        aggregation = proposal["aggregation"]
+        assert (
+            aggregation["distinct_values"] >= 2 or aggregation["distinct_sessions"] >= 3
+        ), f"{name}: proposal without aggregation signal: {proposal}"
+        assert aggregation["label_coherence"] >= 0.5
 
 
 # -- model refinement (existing provider seam, deterministic fallback) ---------------

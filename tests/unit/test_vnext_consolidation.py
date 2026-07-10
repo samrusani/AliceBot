@@ -542,6 +542,48 @@ def test_rollup_pass_skips_groups_covered_by_near_duplicate_clusters() -> None:
     assert "## Roll-up Proposals" in artifact["content_markdown"]
 
 
+def test_rollup_quality_gate_drops_junk_groups_and_is_disclosed() -> None:
+    """Pronoun-contraction groups never reach the review console through the
+    scheduled consolidation workflow; the artifact discloses the gate."""
+    store = FakeConsolidationStore()
+    specs = (
+        ("I played The Last of Us Part II for 30 hours", "2023-05-10"),
+        ("I played Assassin's Creed Odyssey for 70 hours", "2023-05-18"),
+        ("I played Hollow Knight for 25 hours", "2023-06-02"),
+        ("I played Stardew Valley for 85 hours", "2023-06-20"),
+        ("I'm excited about the violet harbor", None),
+        ("I'm tired after the granite summit", None),
+        ("I'm curious about the copper lantern", None),
+    )
+    for index, (text, session_date) in enumerate(specs):
+        metadata: JsonObject = {"session_date": session_date} if session_date else {}
+        store.create_memory(
+            {
+                "memory_key": f"memory.gate-{index}",
+                "value": {"text": text},
+                "status": "active",
+                "memory_type": "episode",
+                "title": text[:80],
+                "canonical_text": text,
+                "summary": text[:80],
+                "domain": "personal",
+                "sensitivity": "internal",
+                "metadata_json": metadata,
+            }
+        )
+    artifact = VNextConsolidationService(store, embedding_provider=None).generate_memory_consolidation(
+        MemoryConsolidationRequest()
+    )
+
+    rollups = artifact["metadata_json"]["rollups"]
+    assert rollups["enabled"] is True
+    labels = [proposal["label"].casefold() for proposal in rollups["proposals"]]
+    assert labels and all(not label.startswith("i'") for label in labels)
+    assert rollups["quality_gate"]["dropped_group_count"] >= 1
+    assert "label_without_content_words" in rollups["quality_gate"]["dropped_by_reason"]
+    assert any(reason.startswith("quality_gate_dropped") for reason in rollups["skipped"])
+
+
 def test_propose_rollups_false_discloses_disabled_state() -> None:
     store = FakeConsolidationStore()
     mapping: dict[str, list[float]] = {}
