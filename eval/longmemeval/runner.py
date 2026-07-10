@@ -55,6 +55,7 @@ from longmemeval.dataset import (
     resolve_dataset_path,
 )
 from longmemeval.judge import judge_hypothesis
+from longmemeval.pack_formats import DEFAULT_PACK_FORMAT, PACK_FORMATS
 from longmemeval.verification import (
     apply_grounding_gate,
     make_chat_client,
@@ -101,6 +102,14 @@ class RunnerConfig:
     # real acceptance path. Off by default so the default replay stays
     # byte-identical to published runs; always in the config fingerprint.
     accept_rollups: bool = False
+    # ---- pack-format (structured JSON packs) integration begin ----------
+    # How the retrieved context is rendered into the reading template's
+    # history slot: "prose" (default, byte-identical to published runs) or
+    # "json" (the same content as a compact structured document — the
+    # LongMemEval authors' best-performing reading format). Always in the
+    # config fingerprint so no run can hide its format.
+    pack_format: str = DEFAULT_PACK_FORMAT
+    # ---- pack-format (structured JSON packs) integration end ------------
 
     @property
     def mode(self) -> str:
@@ -149,6 +158,9 @@ def config_fingerprint(
         # the digest, and per-store proposed/accepted counts land in each
         # checkpoint row's ingest.rollups block.
         "accept_rollups": config.accept_rollups,
+        # Pack format (prose | json) always feeds the digest: a JSON-pack
+        # run can never masquerade as a prose run or vice versa.
+        "pack_format": config.pack_format,
         "generation_temperature": GENERATION_TEMPERATURE,
         "max_items": config.max_items,
         "context_char_budget": config.context_char_budget,
@@ -280,6 +292,7 @@ def run_question(
             outcome = run.retrieve(
                 max_items=config.max_items,
                 context_char_budget=config.context_char_budget,
+                pack_format=config.pack_format,
             )
         record["ingest"] = ingest_stats.to_record()
         record["retrieval"] = outcome.to_record()
@@ -491,6 +504,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "modeling the product's human review workflow; recorded in the fingerprint "
         "and per-store counts in each checkpoint row's ingest.rollups block",
     )
+    parser.add_argument(
+        "--pack-format",
+        choices=PACK_FORMATS,
+        default=DEFAULT_PACK_FORMAT,
+        help="context rendering for the reading template's history slot: 'prose' "
+        "(default; byte-identical to published runs) or 'json' (same retrieved "
+        "content as a compact structured document); recorded in the fingerprint",
+    )
     parser.add_argument("--max-items", type=int, default=None, help=f"context-pack max_items (default: ${'{'}ALICE_LME_MAX_ITEMS{'}'} or {DEFAULT_MAX_ITEMS})")
     parser.add_argument(
         "--context-char-budget",
@@ -539,6 +560,7 @@ def _resolve_config(args: argparse.Namespace, *, question_ids: tuple[str, ...] |
         keep_stores=args.keep_stores,
         verify_grounding=args.verify_grounding,
         accept_rollups=args.accept_rollups,
+        pack_format=args.pack_format,
     )
 
 
