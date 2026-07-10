@@ -42,6 +42,11 @@ from uuid import UUID
 
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user, sqlite_user_connection
 from alicebot_api.vnext_capture import SourceCaptureInput, VNextCaptureService
+# Currency chains: renders the pack's per-memory currency annotation
+# ("[SUPERSEDED as of <date>]"/"[CURRENT as of <date>]") on fact lines;
+# empty suffix for memories without the annotation (see the marked block
+# in _render_context_block).
+from alicebot_api.vnext_currency import currency_label_suffix
 from alicebot_api.vnext_memory_commit import VNextMemoryCommitService
 from alicebot_api.vnext_retrieval import (
     VECTOR_STAGE_ENABLED,
@@ -742,7 +747,13 @@ class QuestionRun:
             metadata = memory.get("metadata_json") if isinstance(memory.get("metadata_json"), dict) else {}
             source_id = str(metadata.get("source_id") or "")
             _session_id, date = self._session_label(source_id) if source_id else ("", "undated")
-            fact_lines.append(f"- [{date}] {text}{_validity_suffix(memory)}")
+            # ---- currency chains begin: chain members carry a factual
+            # "[SUPERSEDED as of <date>]"/"[CURRENT as of <date>]" suffix
+            # quoted from the pack annotation; the pack already renders a
+            # chain as one contiguous oldest-first block with the CURRENT
+            # entry last. Non-members get "" — lines byte-identical. ------
+            fact_lines.append(f"- [{date}] {text}{_validity_suffix(memory)}{currency_label_suffix(memory)}")
+            # ---- currency chains end --------------------------------------
         if fact_lines:
             lines.append("### Facts Alice remembers (with session dates):")
             lines.extend(fact_lines)

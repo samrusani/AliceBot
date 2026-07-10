@@ -54,6 +54,15 @@ from alicebot_api import vnext_contradictions
 # compile_context_pack.
 from alicebot_api import vnext_coverage_query
 
+# Currency chains (read-time same-slot update chains): pure grouping of
+# the packed memories by derived fact key + supersession edges + event
+# dates, so a stale value renders labeled SUPERSEDED below its CURRENT
+# replacement. Dormant — memories untouched, no trace stage, packs
+# byte-identical — unless the pack actually contains a confirmable
+# same-slot group; see the marked "currency chains" blocks in
+# compile_context_pack.
+from alicebot_api import vnext_currency
+
 # Reranker (disclosed precision stage): provider-side listwise relevance
 # scoring between fusion and the budget packer. Dormant — zero provider
 # calls, fused order stands, no trace stage — unless the ALICE_RERANKER_*
@@ -1927,6 +1936,41 @@ class VNextRetrievalService:
             if validity is not None:
                 memory["validity"] = validity
 
+        # ---- currency chains (read-time update chains) begin --------------
+        # Same-slot update chains over the PACKED memories: rows sharing a
+        # derived fact key, confirmed by supersession edges or same
+        # unit/currency-class values plus a shared topic token, regroup
+        # into one contiguous block ordered oldest first with the CURRENT
+        # value last and every entry annotated (memory["currency"]).
+        # Selection, budget, and every non-member row are untouched;
+        # ambiguous groups emit no chain and are only counted. Dormant —
+        # selected_memories unchanged (same list object), no annotations,
+        # no trace stage below — for every pack without a confirmable
+        # same-key group, and always at minimal depth (whose
+        # cheapest-useful-call promise excludes the provenance-source date
+        # lookups this stage may need).
+        currency_record: JsonObject | None = None
+        if depth != CONTEXT_DEPTH_MINIMAL and len(selected_memories) >= 2:
+            currency_source_cache: dict[str, JsonObject | None] = {}
+            currency_get_source = getattr(self.store, "get_source", None)
+
+            def _currency_source(source_id: str) -> JsonObject | None:
+                if source_id not in currency_source_cache:
+                    currency_source_cache[source_id] = (
+                        currency_get_source(source_id) if callable(currency_get_source) else None
+                    )
+                return currency_source_cache[source_id]
+
+            currency_result = vnext_currency.build_currency_chains(
+                selected_memories, source_lookup=_currency_source
+            )
+            if currency_result.considered:
+                selected_memories = vnext_currency.apply_currency_chains(
+                    selected_memories, currency_result
+                )
+                currency_record = vnext_currency.currency_stage_record(currency_result)
+        # ---- currency chains (read-time update chains) end ----------------
+
         supersession_context: list[JsonObject] | None = None
         if depth == CONTEXT_DEPTH_HIGH:
             supersession_context = self._supersession_context(selected_memories)
@@ -2008,6 +2052,11 @@ class VNextRetrievalService:
             # Absent when unconfigured so dormant traces stay byte-identical.
             trace["stages"][vnext_reranker.RERANKER_STAGE] = reranker_record  # type: ignore[index]
         # ---- reranker (disclosed precision stage) end ---------------------
+        # ---- currency chains (read-time update chains) begin --------------
+        if currency_record is not None:
+            # Absent when dormant so ungated traces stay byte-identical.
+            trace["stages"][vnext_currency.CURRENCY_STAGE] = currency_record  # type: ignore[index]
+        # ---- currency chains (read-time update chains) end ----------------
         pack: JsonObject = {
             "context_pack_id": context_pack_id,
             "query_interpretation": interpretation,
