@@ -23,7 +23,10 @@ Questions without evidence ids (e.g. synthetic abstention fixtures) get
 
 Embeddings are DISABLED by default (the ``ALICE_EMBEDDINGS_*`` variables are
 scrubbed from the environment) so the probe is deterministic and needs no
-API key; pass ``--with-vectors`` to keep the ambient embedding config.
+API key; pass ``--with-vectors`` to keep the ambient embedding config. The
+reranker stage (``ALICE_RERANKER_*``, see ``vnext_reranker``) is scrubbed
+the same way for the same reason; pass ``--with-reranker`` to keep the
+ambient reranker config (requires a live scoring endpoint).
 
 Store reuse: per-question SQLite stores use the runner's naming scheme
 inside ``--work-dir`` and are kept, with a ``*.ingested.json`` marker
@@ -54,6 +57,15 @@ from alicebot_api.vnext_embeddings import (
     EMBEDDINGS_BASE_URL_ENV,
     EMBEDDINGS_MODEL_ENV,
 )
+
+# ---- reranker (disclosed precision stage) begin ---------------------------
+from alicebot_api.vnext_reranker import (
+    RERANKER_API_KEY_ENV,
+    RERANKER_BASE_URL_ENV,
+    RERANKER_MODEL_ENV,
+)
+
+# ---- reranker (disclosed precision stage) end -----------------------------
 from alicebot_api.vnext_retrieval import VNextRetrievalRequest, VNextRetrievalService
 
 from longmemeval.adapter import max_items_from_env, question_run
@@ -77,12 +89,28 @@ EXIT_RUN_FAILURES = 1
 EXIT_CONFIG_ERROR = 2
 
 _EMBEDDINGS_ENV_VARS = (EMBEDDINGS_BASE_URL_ENV, EMBEDDINGS_MODEL_ENV, EMBEDDINGS_API_KEY_ENV)
+# ---- reranker (disclosed precision stage) begin ---------------------------
+_RERANKER_ENV_VARS = (RERANKER_BASE_URL_ENV, RERANKER_MODEL_ENV, RERANKER_API_KEY_ENV)
+# ---- reranker (disclosed precision stage) end -----------------------------
 
 
 def disable_embeddings_env() -> None:
     """Scrub embedding provider config so retrieval runs FTS-only (keyless)."""
     for name in _EMBEDDINGS_ENV_VARS:
         os.environ.pop(name, None)
+
+
+# ---- reranker (disclosed precision stage) begin ---------------------------
+def disable_reranker_env() -> None:
+    """Scrub reranker config so the probe keeps its keyless-determinism promise.
+
+    An ambient ``ALICE_RERANKER_*`` config would otherwise silently turn a
+    provider-side scoring stage on inside the free probe, making baseline
+    comparisons nondeterministic. ``--with-reranker`` opts in explicitly.
+    """
+    for name in _RERANKER_ENV_VARS:
+        os.environ.pop(name, None)
+# ---- reranker (disclosed precision stage) end -----------------------------
 
 
 # -- coverage math ---------------------------------------------------------
@@ -302,6 +330,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="keep ambient ALICE_EMBEDDINGS_* config (default: scrubbed, FTS-only)",
     )
+    # ---- reranker (disclosed precision stage) begin -----------------------
+    parser.add_argument(
+        "--with-reranker",
+        action="store_true",
+        help="keep ambient ALICE_RERANKER_* config (default: scrubbed, fusion order only)",
+    )
+    # ---- reranker (disclosed precision stage) end -------------------------
     return parser
 
 
@@ -318,6 +353,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     if not args.with_vectors:
         disable_embeddings_env()
+    # ---- reranker (disclosed precision stage) begin -----------------------
+    if not args.with_reranker:
+        disable_reranker_env()
+    # ---- reranker (disclosed precision stage) end -------------------------
 
     dataset_path = args.dataset_file if args.dataset_file is not None else resolve_dataset_path("s")
     if dataset_path is None or not dataset_path.is_file():
@@ -427,6 +466,7 @@ __all__ = [
     "build_arg_parser",
     "coverage_row",
     "disable_embeddings_env",
+    "disable_reranker_env",
     "format_summary_table",
     "main",
     "probe_question",

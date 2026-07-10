@@ -12,6 +12,14 @@ disclosed in the trace as ``fusion.tie_break``) so re-ingesting the same
 content — new uuids, same rows — reproduces the same pack composition;
 the id remains the final total-order key.
 
+One disclosed, opt-in exception to the no-model-call rule: the reranker
+stage (``vnext_reranker``), provider-side listwise RELEVANCE SCORING —
+never synthesis — over the fused candidate pools, between fusion and the
+budget packer. It is dormant (zero calls, fused order stands, packs
+byte-identical) unless ``ALICE_RERANKER_BASE_URL``/``ALICE_RERANKER_MODEL``
+are configured, fails open to fused order on any provider failure, and is
+disclosed in the trace under ``stages.reranker`` whenever configured.
+
 Budget strategies (``VNextRetrievalRequest.budget_strategy``) change the
 greedy packer's section order; ``recent_first`` and ``facts_first``
 additionally reorder the memories list before packing. Depth tiers
@@ -44,6 +52,14 @@ from alicebot_api import vnext_contradictions
 # detect_aggregation_intent fires on the query surface — see the marked
 # "coverage mode" blocks in compile_context_pack.
 from alicebot_api import vnext_coverage_query
+
+# Reranker (disclosed precision stage): provider-side listwise relevance
+# scoring between fusion and the budget packer. Dormant — zero provider
+# calls, fused order stands, no trace stage — unless the ALICE_RERANKER_*
+# env vars are configured or a provider is injected; see the marked
+# "reranker" blocks in VNextRetrievalService.
+from alicebot_api import vnext_reranker
+from alicebot_api.vnext_reranker import RerankProvider, get_reranker_provider
 from alicebot_api.vnext_entity_names import normalize_entity_name
 from alicebot_api.vnext_embeddings import (
     EmbeddingProvider,
@@ -1055,9 +1071,17 @@ class VNextRetrievalService:
         store: VNextRetrievalStore,
         *,
         embedding_provider: EmbeddingProvider | None = None,
+        reranker_provider: RerankProvider | None = None,
     ) -> None:
         self.store = store
         self.embedding_provider = embedding_provider if embedding_provider is not None else get_embedding_provider()
+        # ---- reranker (disclosed precision stage) begin -------------------
+        # None (no env config, no injected provider) keeps the rerank stage
+        # dormant: the marked block in compile_context_pack never runs.
+        self.reranker_provider = (
+            reranker_provider if reranker_provider is not None else get_reranker_provider()
+        )
+        # ---- reranker (disclosed precision stage) end ---------------------
 
     def _memory_fts_rows(
         self,
@@ -1735,6 +1759,56 @@ class VNextRetrievalService:
                 source_demotions=coverage_source_demotions,
             )
         # ---- coverage mode (aggregation intent) end ----------------------
+
+        # ---- reranker (disclosed precision stage) begin -------------------
+        # Provider-side listwise relevance scoring over the fused candidate
+        # pools — post-fusion, post-coverage, PRE-budget. Dormant unless a
+        # reranker endpoint is configured (self.reranker_provider is None):
+        # this block then never runs — zero provider calls, fused order
+        # stands, no reranker trace stage, packs byte-identical to the
+        # fusion-only path. When configured, the top
+        # RERANK_MEMORY_CANDIDATE_CAP fused memory candidates and top
+        # RERANK_SOURCE_CANDIDATE_CAP fused source candidates are scored
+        # with the frozen generic relevance prompt (sha-pinned) and
+        # reordered by score; equal scores fall through the content-stable
+        # cascade. Slot counts are preserved — the reranked order fills
+        # exactly as many selection slots as fusion did, and the token
+        # budget packer below still decides what survives max_tokens.
+        # Provider failure fails open to fused order (recorded in the stage
+        # record). The provenance seeds of the source stage stay the fused
+        # winners (captured above), keeping the source stage decoupled from
+        # rerank order the same way it is decoupled from coverage order.
+        # minimal depth skips the stage (honest disabled record) to keep
+        # its cheapest-useful-call promise.
+        reranker_record: JsonObject | None = None
+        if self.reranker_provider is not None:
+            if depth == CONTEXT_DEPTH_MINIMAL:
+                reranker_record = vnext_reranker.disabled_stage_record(
+                    provider=self.reranker_provider, status=STAGE_DISABLED_MINIMAL
+                )
+            else:
+                rerank_query = str(interpretation["query"])
+                memory_candidates, memory_rerank_outcome = vnext_reranker.rerank_fused_candidates(
+                    memory_candidates,
+                    query=rerank_query,
+                    provider=self.reranker_provider,
+                    limit=max_items,
+                    max_candidates=vnext_reranker.RERANK_MEMORY_CANDIDATE_CAP,
+                )
+                source_candidates, source_rerank_outcome = vnext_reranker.rerank_fused_candidates(
+                    source_candidates,
+                    query=rerank_query,
+                    provider=self.reranker_provider,
+                    limit=DEFAULT_SOURCE_LIMIT,
+                    max_candidates=vnext_reranker.RERANK_SOURCE_CANDIDATE_CAP,
+                )
+                reranker_record = vnext_reranker.reranker_stage_record(
+                    provider=self.reranker_provider,
+                    memories=memory_rerank_outcome,
+                    sources=source_rerank_outcome,
+                )
+        # ---- reranker (disclosed precision stage) end ---------------------
+
         open_loop_candidates = _fused_candidates(
             {"listing": open_loop_rows},
             target_type="open_loop",
@@ -1900,6 +1974,11 @@ class VNextRetrievalService:
             # coverage mode (aggregation intent): absent when dormant so
             # ungated traces stay byte-identical.
             trace["stages"][vnext_coverage_query.COVERAGE_STAGE] = coverage_record  # type: ignore[index]
+        # ---- reranker (disclosed precision stage) begin -------------------
+        if reranker_record is not None:
+            # Absent when unconfigured so dormant traces stay byte-identical.
+            trace["stages"][vnext_reranker.RERANKER_STAGE] = reranker_record  # type: ignore[index]
+        # ---- reranker (disclosed precision stage) end ---------------------
         pack: JsonObject = {
             "context_pack_id": context_pack_id,
             "query_interpretation": interpretation,
