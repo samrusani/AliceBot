@@ -151,6 +151,7 @@ def test_coverage_stage_record_reports_intent_clauses_and_demotions() -> None:
         source_diversity_enabled=True,
         memory_demotions=2,
         source_demotions=1,
+        card_promotions=1,
     )
 
     assert record == {
@@ -163,6 +164,7 @@ def test_coverage_stage_record_reports_intent_clauses_and_demotions() -> None:
         "diversity_demotions": 3,
         "memory_demotions": 2,
         "source_demotions": 1,
+        "card_promotions": 1,
     }
 
     disabled = coverage_stage_record(
@@ -174,6 +176,7 @@ def test_coverage_stage_record_reports_intent_clauses_and_demotions() -> None:
         source_demotions=0,
     )
     assert disabled["diversity_status"] == "disabled: store does not support source chunks"
+    assert disabled["card_promotions"] == 0  # default: no cards promoted
 
 
 # -- source instance diversity ------------------------------------------------
@@ -525,3 +528,396 @@ def test_interleave_clause_rows_handles_empty_input() -> None:
     from alicebot_api.vnext_coverage_query import interleave_clause_rows
 
     assert interleave_clause_rows({}) == []
+
+
+# -- accepted roll-up card promotion -------------------------------------------
+
+
+def _memory_candidate(
+    memory_id: str,
+    rank: int,
+    *,
+    selected: bool,
+    exclusion_reason: str | None = None,
+    item: dict[str, object] | None = None,
+) -> RetrievalCandidate:
+    row: dict[str, object] = {"id": memory_id, "canonical_text": f"memory text {memory_id}"}
+    if item:
+        row.update(item)
+    return RetrievalCandidate(
+        item=row,
+        target_type="memory",
+        rank=rank,
+        rrf_score=1.0 / (60 + rank),
+        stage_ranks={"fts": rank},
+        selected=selected,
+        exclusion_reason=exclusion_reason,
+    )
+
+
+def _accepted_card_item(
+    card_id: str,
+    member_ids: list[str],
+    *,
+    accepted: bool = True,
+    proposal_kind: str = "rollup",
+) -> dict[str, object]:
+    """The exact metadata shape vnext_rollups writes and
+    accept_consolidation_candidate stamps on acceptance."""
+    consolidation: dict[str, object] = {
+        "proposal_kind": proposal_kind,
+        "cluster_member_ids": list(member_ids),
+        "proposed_supersede": [],
+        "survivor_memory_id": None,
+    }
+    if accepted:
+        consolidation["accepted"] = {
+            "accepted_at": "2026-07-01T00:00:00+00:00",
+            "actor_type": "user",
+            "accepted_by": None,
+            "reason": "test acceptance",
+            "superseded_member_ids": [],
+            "skipped_members": [],
+        }
+    return {
+        "id": card_id,
+        "canonical_text": f"Roll-up card {card_id}: pre-aggregated instances",
+        "metadata_json": {"candidate_kind": "memory_rollup", "consolidation": consolidation},
+    }
+
+
+def test_rollup_proposal_kind_literal_matches_vnext_rollups() -> None:
+    # vnext_coverage_query keeps a local literal so the retrieval hot path
+    # does not import vnext_rollups' model-provider seam; this pin fails
+    # if the two constants ever drift.
+    from alicebot_api import vnext_rollups
+    from alicebot_api.vnext_coverage_query import ROLLUP_PROPOSAL_KIND
+
+    assert ROLLUP_PROPOSAL_KIND == vnext_rollups.ROLLUP_PROPOSAL_KIND
+
+
+def test_accepted_rollup_member_ids_requires_the_full_acceptance_shape() -> None:
+    from alicebot_api.vnext_coverage_query import accepted_rollup_member_ids
+
+    accepted = _accepted_card_item("card-1", ["m-1", "m-2", "m-2", "card-1", "m-3"])
+    # Deduplicated, order-preserving, and never the card's own id.
+    assert accepted_rollup_member_ids(accepted) == ("m-1", "m-2", "m-3")
+
+    unaccepted = _accepted_card_item("card-1", ["m-1"], accepted=False)
+    assert accepted_rollup_member_ids(unaccepted) == ()
+    merge_kind = _accepted_card_item("card-1", ["m-1"], proposal_kind="merge")
+    assert accepted_rollup_member_ids(merge_kind) == ()
+    assert accepted_rollup_member_ids({"id": "m-plain", "canonical_text": "no metadata"}) == ()
+    assert accepted_rollup_member_ids({"id": "m-1", "metadata_json": {"consolidation": "bogus"}}) == ()
+    no_members = _accepted_card_item("card-1", [])
+    assert accepted_rollup_member_ids(no_members) == ()
+    malformed_members = _accepted_card_item("card-1", ["m-1"])
+    malformed_members["metadata_json"]["consolidation"]["cluster_member_ids"] = "m-1"  # type: ignore[index]
+    assert accepted_rollup_member_ids(malformed_members) == ()
+
+
+def _card_promotion_fixture() -> list[RetrievalCandidate]:
+    """Four member slots, the accepted card buried behind two fillers.
+
+    Pool order (0-based): m-1..m-4 selected, m-5 and m-6 trimmed, the card
+    trimmed last. Members m-2 and m-4 hold slots (the receipts pile-up),
+    m-5 co-occurs unslotted, m-absent is not a candidate; the best slotted
+    member is m-2 at pool position 1.
+    """
+    return [
+        _memory_candidate("m-1", 1, selected=True),
+        _memory_candidate("m-2", 2, selected=True),
+        _memory_candidate("m-3", 3, selected=True),
+        _memory_candidate("m-4", 4, selected=True),
+        _memory_candidate("m-5", 5, selected=False, exclusion_reason="trimmed_by_limit"),
+        _memory_candidate("m-6", 6, selected=False, exclusion_reason="trimmed_by_limit"),
+        _memory_candidate(
+            "card-1",
+            7,
+            selected=False,
+            exclusion_reason="trimmed_by_limit",
+            item=_accepted_card_item("card-1", ["m-2", "m-4", "m-5", "m-absent"]),
+        ),
+    ]
+
+
+def test_accepted_card_promotes_to_its_best_members_rank() -> None:
+    from alicebot_api.vnext_coverage_query import promote_rollup_cards
+
+    candidates = _card_promotion_fixture()
+
+    rebuilt, promotions = promote_rollup_cards(candidates)
+
+    assert promotions == 1
+    ordered_ids = [str(candidate.item["id"]) for candidate in rebuilt]
+    # The card takes m-2's rank; every member stays in the pool below it
+    # (demote-not-drop), so only the last slot holder loses selection.
+    assert ordered_ids == ["m-1", "card-1", "m-2", "m-3", "m-4", "m-5", "m-6"]
+    assert [candidate.rank for candidate in rebuilt] == [1, 2, 3, 4, 5, 6, 7]
+    assert [str(candidate.item["id"]) for candidate in rebuilt if candidate.selected] == [
+        "m-1",
+        "card-1",
+        "m-2",
+        "m-3",
+    ]
+    displaced = {str(candidate.item["id"]): candidate for candidate in rebuilt}["m-4"]
+    assert displaced.selected is False
+    assert displaced.exclusion_reason == "trimmed_by_limit"
+    promoted = {str(candidate.item["id"]): candidate for candidate in rebuilt}["card-1"]
+    assert promoted.selected is True
+    assert promoted.exclusion_reason is None
+    # Membership never changes: same candidate pool, order and flags only.
+    assert {str(candidate.item["id"]) for candidate in rebuilt} == {
+        str(candidate.item["id"]) for candidate in candidates
+    }
+
+
+def test_promotion_is_identity_when_no_cards_are_candidates() -> None:
+    from alicebot_api.vnext_coverage_query import promote_rollup_cards
+
+    candidates = _card_promotion_fixture()[:-1]  # drop the card
+
+    rebuilt, promotions = promote_rollup_cards(candidates)
+
+    assert promotions == 0
+    assert all(left is right for left, right in zip(rebuilt, candidates))
+
+
+def test_promotion_is_identity_when_no_member_co_occurs() -> None:
+    from alicebot_api.vnext_coverage_query import promote_rollup_cards
+
+    candidates = [
+        _memory_candidate("other-1", 1, selected=True),
+        _memory_candidate("other-2", 2, selected=True),
+        _memory_candidate(
+            "card-1",
+            3,
+            selected=False,
+            exclusion_reason="trimmed_by_limit",
+            item=_accepted_card_item("card-1", ["m-absent-1", "m-absent-2"]),
+        ),
+    ]
+
+    rebuilt, promotions = promote_rollup_cards(candidates)
+
+    assert promotions == 0
+    assert all(left is right for left, right in zip(rebuilt, candidates))
+
+
+def test_promotion_is_identity_when_the_card_already_outranks_its_members() -> None:
+    from alicebot_api.vnext_coverage_query import promote_rollup_cards
+
+    # Both members hold slots (the gate passes) but the card already sits
+    # above them — nothing to repair.
+    candidates = [
+        _memory_candidate(
+            "card-1", 1, selected=True, item=_accepted_card_item("card-1", ["m-1", "m-2"])
+        ),
+        _memory_candidate("m-1", 2, selected=True),
+        _memory_candidate("m-2", 3, selected=True),
+    ]
+
+    rebuilt, promotions = promote_rollup_cards(candidates)
+
+    assert promotions == 0
+    assert all(left is right for left, right in zip(rebuilt, candidates))
+
+
+def test_promotion_is_identity_when_members_hold_no_selection_slot() -> None:
+    from alicebot_api.vnext_coverage_query import promote_rollup_cards
+
+    # Card and members co-occur, but all sit in the unselected tail: the
+    # promotion could not change the pack, so the pass stays dormant.
+    candidates = [
+        _memory_candidate("other-1", 1, selected=True),
+        _memory_candidate("other-2", 2, selected=True),
+        _memory_candidate("m-1", 3, selected=False, exclusion_reason="trimmed_by_limit"),
+        _memory_candidate("m-2", 4, selected=False, exclusion_reason="trimmed_by_limit"),
+        _memory_candidate(
+            "card-1",
+            5,
+            selected=False,
+            exclusion_reason="trimmed_by_limit",
+            item=_accepted_card_item("card-1", ["m-1", "m-2"]),
+        ),
+    ]
+
+    rebuilt, promotions = promote_rollup_cards(candidates)
+
+    assert promotions == 0
+    assert all(left is right for left, right in zip(rebuilt, candidates))
+
+
+def test_promotion_requires_a_plural_of_slotted_members() -> None:
+    from alicebot_api.vnext_coverage_query import COVERAGE_MIN_SLOTTED_MEMBERS, promote_rollup_cards
+
+    assert COVERAGE_MIN_SLOTTED_MEMBERS == 2
+    # One slotted member is an ordinary hit, not the receipts pile-up this
+    # pass repairs: the card stays put and no tail slot is spent.
+    candidates = [
+        _memory_candidate("m-1", 1, selected=True),
+        _memory_candidate("other-1", 2, selected=True),
+        _memory_candidate("m-2", 3, selected=False, exclusion_reason="trimmed_by_limit"),
+        _memory_candidate(
+            "card-1",
+            4,
+            selected=False,
+            exclusion_reason="trimmed_by_limit",
+            item=_accepted_card_item("card-1", ["m-1", "m-2"]),
+        ),
+    ]
+
+    rebuilt, promotions = promote_rollup_cards(candidates)
+
+    assert promotions == 0
+    assert all(left is right for left, right in zip(rebuilt, candidates))
+
+
+def test_unaccepted_and_non_rollup_cards_never_promote() -> None:
+    from alicebot_api.vnext_coverage_query import promote_rollup_cards
+
+    # Both cards see a genuine receipts pile-up (two slotted members) but
+    # fail the shape gate: no acceptance stamp / not a roll-up proposal.
+    candidates = [
+        _memory_candidate("m-1", 1, selected=True),
+        _memory_candidate("m-2", 2, selected=True),
+        _memory_candidate(
+            "card-pending",
+            3,
+            selected=False,
+            exclusion_reason="trimmed_by_limit",
+            item=_accepted_card_item("card-pending", ["m-1", "m-2"], accepted=False),
+        ),
+        _memory_candidate(
+            "card-merge",
+            4,
+            selected=False,
+            exclusion_reason="trimmed_by_limit",
+            item=_accepted_card_item("card-merge", ["m-1", "m-2"], proposal_kind="merge"),
+        ),
+    ]
+
+    rebuilt, promotions = promote_rollup_cards(candidates)
+
+    assert promotions == 0
+    assert all(left is right for left, right in zip(rebuilt, candidates))
+
+
+def test_at_most_two_cards_promote_per_pack() -> None:
+    from alicebot_api.vnext_coverage_query import COVERAGE_MAX_CARD_PROMOTIONS, promote_rollup_cards
+
+    assert COVERAGE_MAX_CARD_PROMOTIONS == 2
+    # Three accepted cards over the same receipts pile-up, each still
+    # holding a valid promotion when its turn would come — the cap alone
+    # stops the third (no card-flooding on a query grazing many topics).
+    candidates = [
+        _memory_candidate("m-1", 1, selected=True),
+        _memory_candidate("m-2", 2, selected=True),
+        _memory_candidate("m-3", 3, selected=True),
+        _memory_candidate("m-4", 4, selected=True),
+        _memory_candidate(
+            "card-a",
+            5,
+            selected=False,
+            exclusion_reason="trimmed_by_limit",
+            item=_accepted_card_item("card-a", ["m-1", "m-2"]),
+        ),
+        _memory_candidate(
+            "card-b",
+            6,
+            selected=False,
+            exclusion_reason="trimmed_by_limit",
+            item=_accepted_card_item("card-b", ["m-1", "m-2"]),
+        ),
+        _memory_candidate(
+            "card-c",
+            7,
+            selected=False,
+            exclusion_reason="trimmed_by_limit",
+            item=_accepted_card_item("card-c", ["m-1", "m-2"]),
+        ),
+    ]
+
+    rebuilt, promotions = promote_rollup_cards(candidates)
+
+    assert promotions == 2
+    ordered_ids = [str(candidate.item["id"]) for candidate in rebuilt]
+    # Fused card order breaks the tie (card-a, then card-b). After both
+    # promotions card-c's members m-1 and m-2 STILL hold slots, so only
+    # the cap keeps card-c where fusion put it.
+    assert ordered_ids == ["card-a", "card-b", "m-1", "m-2", "m-3", "m-4", "card-c"]
+    assert [str(candidate.item["id"]) for candidate in rebuilt if candidate.selected] == [
+        "card-a",
+        "card-b",
+        "m-1",
+        "m-2",
+    ]
+    card_c = {str(candidate.item["id"]): candidate for candidate in rebuilt}["card-c"]
+    assert card_c.selected is False
+    assert card_c.exclusion_reason == "trimmed_by_limit"
+
+
+def test_promotion_never_moves_or_readmits_policy_excluded_candidates() -> None:
+    from alicebot_api.vnext_coverage_query import promote_rollup_cards
+
+    # Policy-excluded members are invisible to the promotion walk...
+    invisible = [
+        _memory_candidate("other-1", 1, selected=True),
+        _memory_candidate("m-1", 2, selected=False, exclusion_reason="domain_filtered"),
+        _memory_candidate("m-2", 3, selected=False, exclusion_reason="domain_filtered"),
+        _memory_candidate(
+            "card-1",
+            4,
+            selected=False,
+            exclusion_reason="trimmed_by_limit",
+            item=_accepted_card_item("card-1", ["m-1", "m-2"]),
+        ),
+    ]
+    rebuilt, promotions = promote_rollup_cards(invisible)
+    assert promotions == 0
+    assert all(left is right for left, right in zip(rebuilt, invisible))
+
+    # ... and when a promotion fires, policy-excluded candidates re-rank
+    # after the pool, keep their reason, and are never selected.
+    candidates = [
+        *_card_promotion_fixture(),
+        _memory_candidate("m-blocked", 8, selected=False, exclusion_reason="sensitivity_filtered"),
+    ]
+    rebuilt, promotions = promote_rollup_cards(candidates)
+    assert promotions == 1
+    blocked = rebuilt[-1]
+    assert str(blocked.item["id"]) == "m-blocked"
+    assert blocked.selected is False
+    assert blocked.exclusion_reason == "sensitivity_filtered"
+    assert blocked.rank == len(rebuilt)
+
+
+def test_promotion_preserves_diversity_demotions_below_the_slots() -> None:
+    from alicebot_api.vnext_coverage_query import promote_rollup_cards
+
+    candidates = [
+        _memory_candidate("m-1", 1, selected=True),
+        _memory_candidate("m-2", 2, selected=True),
+        _memory_candidate(
+            "m-dupe", 3, selected=False, exclusion_reason=EXCLUSION_REASON_COVERAGE_REDUNDANT
+        ),
+        _memory_candidate(
+            "card-1",
+            4,
+            selected=False,
+            exclusion_reason="trimmed_by_limit",
+            item=_accepted_card_item("card-1", ["m-1", "m-2"]),
+        ),
+    ]
+
+    rebuilt, promotions = promote_rollup_cards(candidates)
+
+    assert promotions == 1
+    assert [str(candidate.item["id"]) for candidate in rebuilt] == ["card-1", "m-1", "m-2", "m-dupe"]
+    assert [str(candidate.item["id"]) for candidate in rebuilt if candidate.selected] == ["card-1", "m-1"]
+    demoted = rebuilt[-1]
+    # The diversity pass's honest demotion reason survives the reorder.
+    assert demoted.exclusion_reason == EXCLUSION_REASON_COVERAGE_REDUNDANT
+    displaced = rebuilt[-2]
+    assert str(displaced.item["id"]) == "m-2"
+    assert displaced.exclusion_reason == "trimmed_by_limit"

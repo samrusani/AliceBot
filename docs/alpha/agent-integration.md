@@ -104,6 +104,37 @@ tool arguments land in the same release — check the server's `tools/list`
 response (the source of truth for input schemas) before passing them, and
 keep tool payloads generic otherwise.
 
+### Retrieval configuration (env)
+
+Two optional provider seams upgrade retrieval quality when configured in
+the server environment (MCP server env, HTTP server env, or shell for the
+CLI). Both are OFF by default, degrade honestly, and disclose themselves in
+the pack's retrieval trace; unset means the corresponding stage does not
+run at all and makes zero network calls.
+
+| Env vars | Stage | When unset | When set |
+| --- | --- | --- | --- |
+| `ALICE_EMBEDDINGS_BASE_URL`, `ALICE_EMBEDDINGS_MODEL`, optional `ALICE_EMBEDDINGS_API_KEY` | Vector search (hybrid recall) | Full-text-only retrieval; trace `vector_stage` says `disabled: no embedding provider configured`. | Query and memory embeddings via any OpenAI-compatible `/embeddings` endpoint (Ollama, LM Studio, vLLM, OpenAI); vector results join rank fusion. |
+| `ALICE_RERANKER_BASE_URL`, `ALICE_RERANKER_MODEL`, optional `ALICE_RERANKER_API_KEY` | Rerank (precision) | Dormant: fused order stands, zero provider calls, no `reranker` trace stage — packs are byte-identical to the fusion-only path. | Provider-side listwise relevance scoring of the fused candidate head (up to 48 memories + 24 sources per pack) via any OpenAI-compatible `/chat/completions` endpoint, reordering candidates before slots and token budget are spent. |
+
+Reranker guarantees, in the order they matter:
+
+- **Reorders, never shrinks.** The same number of memory/source slots is
+  filled after reranking; `max_items` and the token-budget packer still
+  decide what survives. Domain/sensitivity-excluded items are never
+  re-admitted regardless of score.
+- **Fail-open.** If the scoring endpoint errors or returns garbage, the
+  pack keeps the fused order and the trace records the failure
+  (`fail_open: …`) — retrieval never breaks because a reranker is down.
+- **Disclosed.** When configured, the trace carries
+  `stages.reranker` with the provider, model, prompt sha, candidates
+  scored, whether anything actually reordered, latency, and token usage.
+  The scoring prompt is a frozen, generic relevance prompt (no query-type
+  or benchmark vocabulary), sha-pinned in the test suite.
+- **`minimal` depth skips it** (honest `disabled: context_depth=minimal`
+  status) to keep the cheapest-useful-call promise; equal scores resolve
+  through the same content-stable tie-break as fusion.
+
 The full verb contract — remember, recall, correct, confirm, undo, forget,
 audit — with outcomes and audit guarantees per verb is documented in the
 [Memory Operations Protocol](../memory-operations-protocol.md).

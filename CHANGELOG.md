@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Semantic roll-up grouping: when embeddings are configured, a third grouping tier clusters anchor-less same-topic memories (single-linkage cosine with a deterministic silhouette-chosen threshold) through the same utility gate — "faucet, toaster, shelves" becomes one "kitchen" card; fully dormant without a provider (byte-identical, tested on real stores).
+- Aggregation queries now rank accepted roll-up cards above their own member memories (gated on aggregation intent, ≥2 slotted members, 2-card cap, members retained as receipts below; disclosed as card_promotions in traces).
+- Disclosed reranker stage (`ALICE_RERANKER_*` env): provider-side listwise precision scoring of the fused candidate head before slot spend; reorders but never shrinks, fails open to fusion order, dormant unconfigured, generic sha-pinned scoring prompt.
+
 - Roll-up proposal quality overhaul: structural label hygiene (pronoun/contraction/closed-class/light-verb heads never title cards), store-measured generic-anchor detection (frequency-derived per store, no hardcoded topic list), broken-subspan label repair ("Us Part II" → "The Last of Us Part II") applied to card titles and instance lines, a group-utility gate (groups must aggregate distinct values or sessions with a coherent, specific label — failures are dropped, not proposed), utility-ranked proposals under the cap, and topic-shaped card titles with dominant value units. Measured on aggregation-heavy stores: junk-label rate 34% → 0%, instance-line defects 13% → 0%, with review proposals now reading as human-recognizable topics.
 
 - Deterministic retrieval ordering: every equal-score tie (RRF fusion, graph and temporal stages, FTS/vector stage runs) now resolves through a content-stable cascade (event date, content length, text, capture fingerprint) instead of falling through to row ids — re-ingesting the same content yields byte-identical packs (two-seed divergence 7/40 → 0/40); disclosed as `fusion.tie_break: content_stable_v1` in retrieval traces.
