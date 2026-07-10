@@ -102,4 +102,35 @@ describe("MemoryList", () => {
       "/memories?memory=memory-1",
     );
   });
+
+  it("shows a provenance chip only when the speaker role is known", () => {
+    render(
+      <MemoryList
+        memories={[
+          {
+            ...baseMemories[0],
+            id: "memory-user",
+            memory_key: "user.trip.flight_paid",
+            value: { amount: "$150", provenance_role: "user" },
+          },
+          {
+            ...baseMemories[1],
+            id: "memory-assistant",
+            memory_key: "user.trip.flight_estimate",
+            value: { amount: "$200-300", provenance_role: "assistant" },
+          },
+          baseMemories[0],
+        ]}
+        selectedMemoryId="memory-user"
+        summary={null}
+        source="live"
+        filter="active"
+      />,
+    );
+
+    expect(screen.getByText("You said")).toBeInTheDocument();
+    expect(screen.getByText("Assistant suggested")).toBeInTheDocument();
+    // The provenance-free memory renders without any provenance chip.
+    expect(screen.getAllByText(/You said|Assistant suggested/)).toHaveLength(2);
+  });
 });

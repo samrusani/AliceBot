@@ -15,6 +15,7 @@ using the checked-in two-question synthetic fixture.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -28,7 +29,7 @@ for _path in (_EVAL_DIR, _API_SRC):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from longmemeval import adapter, chat, compare_runs, coverage_probe, judge, runner  # noqa: E402
+from longmemeval import adapter, chat, compare_runs, coverage_probe, judge, runner, verification  # noqa: E402
 from longmemeval.dataset import (  # noqa: E402
     SYNTHETIC_FIXTURE_PATH,
     LongMemEvalDatasetError,
@@ -52,6 +53,9 @@ def _no_ambient_model_config(monkeypatch: pytest.MonkeyPatch) -> None:
         chat.JUDGE_BASE_URL_ENV,
         chat.JUDGE_NAME_ENV,
         chat.JUDGE_API_KEY_ENV,
+        verification.VERIFIER_BASE_URL_ENV,
+        verification.VERIFIER_NAME_ENV,
+        verification.VERIFIER_API_KEY_ENV,
         adapter.CONTEXT_CHAR_BUDGET_ENV,
         adapter.MAX_ITEMS_ENV,
     ):
@@ -171,7 +175,42 @@ def test_build_answer_prompt_placeholder_for_empty_context() -> None:
     assert adapter.EMPTY_CONTEXT_PLACEHOLDER in prompt
 
 
+def test_answer_prompt_templates_are_byte_identical_to_official() -> None:
+    # HONESTY GUARD: the official LongMemEval reading templates must never
+    # drift. Validity annotations render inside the history slot's fact
+    # lines only; the prompt text itself stays verbatim.
+    assert adapter.ANSWER_PROMPT_TEMPLATE == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer:"
+    )
+    assert adapter.ANSWER_PROMPT_TEMPLATE_COT == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history. "
+        "Answer the question step by step: first extract all the relevant information, "
+        "and then reason over the information to get the answer.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer (step by step):"
+    )
+
+
 # -- judge protocol --------------------------------------------------------------
+
+
+def test_reading_templates_are_byte_frozen() -> None:
+    # The official LongMemEval reading templates are byte-frozen: context
+    # CONTENT may change (it is retrieval output), instruction text may not.
+    assert adapter.ANSWER_PROMPT_TEMPLATE == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer:"
+    )
+    assert adapter.ANSWER_PROMPT_TEMPLATE_COT == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history. "
+        "Answer the question step by step: first extract all the relevant information, "
+        "and then reason over the information to get the answer.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer (step by step):"
+    )
 
 
 def test_get_anscheck_prompt_selects_official_templates() -> None:
@@ -439,6 +478,479 @@ def test_render_context_block_spends_leftover_budget_by_score() -> None:
     assert (repeat_block, repeat_count) == (block, excerpt_count)
 
 
+def test_render_context_block_appends_validity_annotations_to_fact_lines() -> None:
+    run = _packing_run()
+    pack = {
+        "relevant_memories": [
+            {
+                "canonical_text": "The user's favorite color is green.",
+                "metadata_json": {"source_id": "src-a"},
+                "validity": {
+                    "supersedes_memory_id": "mem-old",
+                    "corrected_at": "2023-08-01T00:00:00+00:00",
+                },
+            },
+            {
+                "canonical_text": "The user's favorite color is blue.",
+                "metadata_json": {"source_id": "src-b"},
+                "validity": {"superseded": True, "superseded_by_memory_id": "mem-new"},
+            },
+            {
+                "canonical_text": "The gym membership offer lasts the summer.",
+                "metadata_json": {"source_id": "src-c"},
+                "validity": {
+                    "valid_from": "2023-05-30T00:00:00+00:00",
+                    "valid_to": "2023-08-01T00:00:00+00:00",
+                },
+            },
+            {
+                "canonical_text": "The user lives in Denver.",
+                "metadata_json": {"source_id": "src-a"},
+            },
+        ],
+        "sources": [],
+    }
+
+    block, _excerpt_count = run._render_context_block(pack, budget=4_000)
+
+    lines = block.splitlines()
+    assert lines[0] == "### Facts Alice remembers (with session dates):"
+    assert lines[1].endswith("The user's favorite color is green. [updated 2023-08-01; supersedes an earlier value]")
+    assert lines[2].endswith("The user's favorite color is blue. [superseded by a newer entry]")
+    assert lines[3].endswith("The gym membership offer lasts the summer. [valid 2023-05-30 → 2023-08-01]")
+    # No annotation, no suffix: the plain fact line is byte-identical to the
+    # pre-validity rendering.
+    assert lines[4].endswith("The user lives in Denver.")
+
+
+def test_validity_suffix_is_empty_without_annotation() -> None:
+    assert adapter._validity_suffix({"canonical_text": "plain"}) == ""
+    assert adapter._validity_suffix({"validity": {}}) == ""
+    assert adapter._validity_suffix({"validity": "not-a-dict"}) == ""
+
+
+def test_validity_suffix_formats_each_annotation_shape_compactly() -> None:
+    assert adapter._validity_suffix(
+        {"validity": {"valid_to": "2023-08-01T00:00:00+00:00"}}
+    ) == " [valid until 2023-08-01]"
+    assert adapter._validity_suffix(
+        {"validity": {"valid_from": "2023-05-30T00:00:00+00:00"}}
+    ) == " [valid from 2023-05-30]"
+    # In-place correction: the shown text is current; the date says since when.
+    assert adapter._validity_suffix(
+        {"validity": {"corrected_at": "2023-08-01T00:00:00+00:00"}}
+    ) == " [corrected 2023-08-01]"
+    # A superseded row never renders as merely "corrected".
+    assert adapter._validity_suffix(
+        {
+            "validity": {
+                "superseded": True,
+                "superseded_by_memory_id": "mem-new",
+                "corrected_at": "2023-08-01T00:00:00+00:00",
+            }
+        }
+    ) == " [superseded by a newer entry]"
+    # Replacement rows fall back to their created_at for the update date.
+    assert adapter._validity_suffix(
+        {
+            "created_at": "2023-08-02T09:00:00Z",
+            "validity": {"supersedes_memory_id": "mem-old"},
+        }
+    ) == " [updated 2023-08-02; supersedes an earlier value]"
+    assert adapter._validity_suffix(
+        {"validity": {"supersedes_memory_id": "mem-old"}}
+    ) == " [supersedes an earlier value]"
+    # Window plus supersession state compose in one bracket.
+    assert adapter._validity_suffix(
+        {
+            "validity": {
+                "valid_from": "2023-05-30T00:00:00+00:00",
+                "valid_to": "2023-08-01T00:00:00+00:00",
+                "superseded": True,
+            }
+        }
+    ) == " [valid 2023-05-30 → 2023-08-01; superseded by a newer entry]"
+def test_render_context_block_appends_grounding_note_within_budget() -> None:
+    run = _packing_run()
+    pack = _packing_pack() | {
+        "grounding": {"unsupported_entities": ["Marcus Chen", "Sapiens"], "checked": 3}
+    }
+    budget = 700
+    block, _excerpt_count = run._render_context_block(pack, budget=budget)
+    # A factual retrieval statistic, one line per unsupported entity,
+    # rendered after the excerpts it summarizes.
+    assert 'Note: no stored memories mention "Marcus Chen".' in block
+    assert block.rstrip().endswith('Note: no stored memories mention "Sapiens".')
+    assert block.index("### Retrieved chat history excerpts:") < block.index("Note: no stored")
+    # The note's cost is reserved up front, so the budget still holds.
+    assert len(block) <= budget
+
+
+def test_render_context_block_ignores_absent_or_malformed_grounding() -> None:
+    run = _packing_run()
+    baseline, _count = run._render_context_block(_packing_pack(), budget=700)
+    assert "no stored memories" not in baseline
+    malformed, _count = run._render_context_block(
+        _packing_pack() | {"grounding": "not-a-dict"}, budget=700
+    )
+    assert malformed == baseline
+# -- query-anchored excerpt windows ---------------------------------------------
+
+
+class _AnchorStubStore(_StubChunkStore):
+    """`_StubChunkStore` with a per-test session map instead of the shared one."""
+
+    def __init__(self, chunks_by_source: dict[str, list[str]], sessions: dict[str, tuple[str, str]]) -> None:
+        super().__init__(chunks_by_source)
+        self._sessions = sessions
+
+    def get_source(self, source_id: str) -> dict[str, object] | None:
+        if source_id not in self._sessions:
+            return None
+        session_id, date = self._sessions[source_id]
+        return {"metadata_json": {"session_id": session_id, "session_date": date}}
+
+
+def _anchoring_run(
+    question_text: str,
+    chunks_by_source: dict[str, list[str]],
+    sessions: dict[str, tuple[str, str]],
+) -> adapter.QuestionRun:
+    question = parse_question(
+        {
+            "question_id": "q_anchor",
+            "question_type": "multi-session",
+            "question": question_text,
+            "answer": "unused",
+            "question_date": "2023/07/01 (Sat) 10:00",
+            "haystack_dates": ["2023/05/21 (Sun) 13:30"],
+            "haystack_session_ids": ["session_stub"],
+            "haystack_sessions": [[{"role": "user", "content": "hello"}]],
+            "answer_session_ids": ["session_stub"],
+        }
+    )
+    return adapter.QuestionRun(question, _AnchorStubStore(chunks_by_source, sessions))  # type: ignore[arg-type]
+
+
+def _entry_cost(chunk_text: str, session_id: str, date: str, excerpt_ordinal: int) -> int:
+    header = f"[Session {session_id} | {date} | excerpt {excerpt_ordinal}]"
+    return len(header) + len(chunk_text) + 3
+
+
+_CHESS_DATE = "2023/05/21 (Sun) 13:30"
+_CHESS_QUESTION = "In our previous chess game, what was the move you made after 27. Kg2 Bd5+?"
+_CHESS_FILLER_MOVES = "\n".join(f"{number}. Qd{number % 8 + 1} Rf{number % 8 + 1}" for number in range(1, 27))
+_CHESS_CHUNK_0 = (
+    f"Chat session session_chess on {_CHESS_DATE}.\n"
+    "\n"
+    "[USER]: let's keep playing our chess game from last week\n"
+    "\n"
+    "[ASSISTANT]: Gladly! Here is the full record of our game so far:\n"
+    f"{_CHESS_FILLER_MOVES}\n"
+    "27. Kg2 Bd5+"
+)
+_CHESS_CHUNK_1 = (
+    "[ASSISTANT]: 28. Kg3 would be my reply here, stepping out of the check.\n"
+    "\n"
+    "[USER]: nice, that escapes the check cleanly and keeps the pawn shield together\n"
+    "\n"
+    "[ASSISTANT]: Exactly. From here I would look at rook activity on the open file next."
+)
+
+
+def _chess_run() -> adapter.QuestionRun:
+    return _anchoring_run(
+        _CHESS_QUESTION,
+        {"src-chess": [_CHESS_CHUNK_0, _CHESS_CHUNK_1]},
+        {"src-chess": ("session_chess", _CHESS_DATE)},
+    )
+
+
+def _chess_pack() -> dict[str, object]:
+    return {"relevant_memories": [], "sources": [{"id": "src-chess"}]}
+
+
+def test_anchored_excerpt_recovers_late_chess_move(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Long move record, query about a late move: the excerpt keeps the reply."""
+    run = _chess_run()
+    # Tight budget: exactly one guaranteed excerpt, no pass-2 room for chunk 1.
+    budget = _entry_cost(_CHESS_CHUNK_0, "session_chess", _CHESS_DATE, 1) + 60
+    block, excerpt_count = run._render_context_block(_chess_pack(), budget=budget)
+    assert excerpt_count == 1
+    assert "27. Kg2 Bd5+" in block  # the anchor line survives
+    assert "28. Kg3" in block  # the answer past the chunk boundary is now visible
+    # Determinism: identical inputs render the identical block.
+    assert run._render_context_block(_chess_pack(), budget=budget) == (block, excerpt_count)
+    # Control: the head-biased path (anchoring off) cuts the game at the boundary.
+    monkeypatch.setattr(adapter, "_query_anchored_excerpt", lambda *args, **kwargs: None)
+    head_block, head_count = run._render_context_block(_chess_pack(), budget=budget)
+    assert head_count == 1
+    assert "28. Kg3" not in head_block
+
+
+_LIST_DATE = "2023/05/26 (Fri) 12:40"
+_LIST_QUESTION = "What was the 7th job in the list of work from home jobs for seniors you provided?"
+_LIST_JOBS = (
+    "Customer service representative",
+    "Virtual assistant",
+    "Bookkeeper",
+    "Online tutor",
+    "Freelance writer",
+    "Survey taker",
+    "Transcriptionist",
+    "Data entry clerk",
+    "Social media manager",
+    "Proofreader",
+    "Resume writer",
+    "Online juror",
+)
+_LIST_CHUNK_0 = (
+    f"Chat session session_list on {_LIST_DATE}.\n"
+    "\n"
+    "[USER]: I retired last spring and I want something flexible to keep busy\n"
+    "\n"
+    "[ASSISTANT]: Congratulations! Staying engaged part-time is a great goal.\n"
+    "\n"
+    "[USER]: please list some work from home jobs for seniors"
+)
+_LIST_CHUNK_1 = (
+    "[ASSISTANT]: Here are some options:\n"
+    + "\n".join(f"{number}. {job}" for number, job in enumerate(_LIST_JOBS, start=1))
+    + "\n"
+    "\n"
+    "[USER]: thanks, that gives me plenty of ideas to explore this month"
+)
+
+
+def _list_run() -> adapter.QuestionRun:
+    return _anchoring_run(
+        _LIST_QUESTION,
+        {"src-list": [_LIST_CHUNK_0, _LIST_CHUNK_1]},
+        {"src-list": ("session_list", _LIST_DATE)},
+    )
+
+
+def _list_pack() -> dict[str, object]:
+    return {"relevant_memories": [], "sources": [{"id": "src-list"}]}
+
+
+def test_anchored_excerpt_keeps_buried_list_item(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer at item 7 of a 12-item assistant list: the enumeration stays intact."""
+    run = _list_run()
+    # Room for one guaranteed excerpt plus the enumeration extension, but not
+    # for chunk 1 as a whole pass-2 entry.
+    budget = _entry_cost(_LIST_CHUNK_0, "session_list", _LIST_DATE, 1) + 260
+    block, excerpt_count = run._render_context_block(_list_pack(), budget=budget)
+    assert excerpt_count == 1
+    assert "7. Transcriptionist" in block
+    assert run._render_context_block(_list_pack(), budget=budget) == (block, excerpt_count)
+    # Control: with anchoring off the head-biased excerpt never reaches item 7.
+    monkeypatch.setattr(adapter, "_query_anchored_excerpt", lambda *args, **kwargs: None)
+    head_block, _head_count = run._render_context_block(_list_pack(), budget=budget)
+    assert "7. Transcriptionist" not in head_block
+
+
+def test_head_matched_prose_takes_byte_identical_old_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prose whose match already sits in the best chunk is untouched by anchoring."""
+    run = _packing_run()
+    for budget in (700, 1_500, 12_000):
+        block, excerpt_count = run._render_context_block(_packing_pack(), budget=budget)
+        with monkeypatch.context() as patch:
+            patch.setattr(adapter, "_query_anchored_excerpt", lambda *args, **kwargs: None)
+            old_block, old_count = run._render_context_block(_packing_pack(), budget=budget)
+        assert (block, excerpt_count) == (old_block, old_count)
+
+
+def test_anchoring_preserves_round_robin_guarantee() -> None:
+    """An anchored window never costs more than the chunk it replaces, so the
+    marginal source keeps its guaranteed excerpt."""
+    sessions = {
+        "src-chess": ("session_chess", _CHESS_DATE),
+        "src-b": ("session_b", "2023/05/01 (Mon) 09:00"),
+        "src-c": ("session_c", "2023/06/02 (Fri) 18:30"),
+    }
+    filler_b = _padded("the golden retriever went to training class on Monday morning")
+    filler_c = _padded("the puppy came home from the shelter and slept all afternoon")
+    run = _anchoring_run(
+        _CHESS_QUESTION,
+        {"src-chess": [_CHESS_CHUNK_0, _CHESS_CHUNK_1], "src-b": [filler_b], "src-c": [filler_c]},
+        sessions,
+    )
+    pack = {"relevant_memories": [], "sources": [{"id": "src-chess"}, {"id": "src-b"}, {"id": "src-c"}]}
+    budget = (
+        _entry_cost(_CHESS_CHUNK_0, "session_chess", _CHESS_DATE, 1)
+        + _entry_cost(filler_b, "session_b", "2023/05/01 (Mon) 09:00", 1)
+        + _entry_cost(filler_c, "session_c", "2023/06/02 (Fri) 18:30", 1)
+        + 10
+    )
+    block, excerpt_count = run._render_context_block(pack, budget=budget)
+    assert excerpt_count >= 3
+    assert "28. Kg3" in block  # anchored source shows the answer window
+    for session_id in ("session_chess", "session_b", "session_c"):
+        assert f"[Session {session_id} " in block  # nobody got evicted
+
+
+def test_query_anchored_excerpt_gates() -> None:
+    terms = frozenset(["chess", "game", "move", "27", "kg2", "bd5", "the", "you"])
+    # Single-chunk sources always take the old path.
+    assert adapter._query_anchored_excerpt(
+        [(0, _CHESS_CHUNK_0)], terms, baseline_chunk_index=0, baseline_text=_CHESS_CHUNK_0
+    ) is None
+    # No query terms: nothing to anchor on.
+    assert adapter._query_anchored_excerpt(
+        [(0, _CHESS_CHUNK_0), (1, _CHESS_CHUNK_1)], frozenset(), baseline_chunk_index=0, baseline_text=_CHESS_CHUNK_0
+    ) is None
+    # Weak stopwordy matches stay below the anchor threshold.
+    weak_terms = frozenset(["the", "you"])
+    assert adapter._query_anchored_excerpt(
+        [(0, _CHESS_CHUNK_0), (1, _CHESS_CHUNK_1)],
+        weak_terms,
+        baseline_chunk_index=0,
+        baseline_text=_CHESS_CHUNK_0,
+    ) is None
+    # Prose match inside the baseline chunk with no enumeration nearby: old path.
+    prose_0 = "[USER]: my dentist appointment in Portland went smoothly yesterday afternoon\n\n[ASSISTANT]: Glad to hear the appointment went well."
+    prose_1 = "[USER]: and the follow-up is booked for next month\n\n[ASSISTANT]: Noted."
+    prose_terms = frozenset(["dentist", "appointment", "portland"])
+    assert adapter._query_anchored_excerpt(
+        [(0, prose_0), (1, prose_1)], prose_terms, baseline_chunk_index=0, baseline_text=prose_0
+    ) is None
+    # Prose match OUTSIDE the baseline chunk: also the old path now. Moving
+    # the excerpt onto a prose line displaces the head chunk that carries
+    # the surrounding answer context (the proven down-flip shape), so every
+    # anchor move requires enumeration shape near the matched line.
+    assert adapter._query_anchored_excerpt(
+        [(0, prose_0), (1, prose_1)],
+        frozenset(["follow-up", "booked", "month"]),
+        baseline_chunk_index=0,
+        baseline_text=prose_0,
+    ) is None
+    # A cross-chunk anchor WITH enumeration shape nearby still fires.
+    anchored = adapter._query_anchored_excerpt(
+        [(0, _CHESS_CHUNK_0), (1, _CHESS_CHUNK_1)],
+        frozenset(["28", "kg3"]),
+        baseline_chunk_index=0,
+        baseline_text=_CHESS_CHUNK_0,
+    )
+    assert anchored is not None
+    assert "28. Kg3" in anchored.text
+
+
+def test_prose_anchor_move_keeps_head_chunk_byte_identical(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gate-hole regression: a cross-chunk PROSE match must not displace the
+    head-biased best chunk (the proven down-flip shape: the head chunk held
+    the answer and a chatty prose line elsewhere pulled the window away)."""
+    chunk_0 = _padded(
+        "[USER]: how do I pay for the metro downtown, do they take a transit card at the station"
+    )
+    chunk_1 = _padded(
+        "[USER]: by the way the weather was lovely when I rode the metro downtown yesterday afternoon"
+    )
+    run = _anchoring_run(
+        "How do I pay for the metro downtown with a transit card?",
+        {"src-metro": [chunk_0, chunk_1]},
+        {"src-metro": ("session_metro", "2023/05/21 (Sun) 13:30")},
+    )
+    pack = {"relevant_memories": [], "sources": [{"id": "src-metro"}]}
+    for budget in (400, 700, 12_000):
+        block, excerpt_count = run._render_context_block(pack, budget=budget)
+        with monkeypatch.context() as patch:
+            patch.setattr(adapter, "_query_anchored_excerpt", lambda *args, **kwargs: None)
+            old_block, old_count = run._render_context_block(pack, budget=budget)
+        assert (block, excerpt_count) == (old_block, old_count)
+
+
+_REMEDY_DATE = "2023/05/28 (Sun) 09:15"
+_REMEDY_QUESTION = "Which natural remedy for my dark skin spots do I wash off after 10 minutes?"
+_REMEDY_CHUNK_0 = (
+    "[USER]: I have dark spots on my skin.\n"
+    "[ASSISTANT]: Sure, here is the natural remedy list for dark spots again."
+)
+_REMEDY_ITEMS = (
+    "1. Lemon juice: dab a little onto each mark with cotton.",
+    "2. Honey mask: leave it in place while you relax.",
+    "3. Tomato: rub a slice on the spots and wash off after 10 minutes.",
+    "4. Aloe vera gel: smooth over everything at bedtime.",
+)
+_REMEDY_CHUNK_1 = "[ASSISTANT]: Here are the remedies:\n" + "\n".join(_REMEDY_ITEMS)
+
+
+def test_upward_extension_recovers_enumerated_run_above_the_window() -> None:
+    """The window's TOP edge cutting a numbered list walks upward through the
+    run (capped), so items 1..k-1 come back alongside the anchored item."""
+    terms = frozenset(["spots", "wash", "off", "after", "10", "minutes", "dark", "skin"])
+    anchored = adapter._query_anchored_excerpt(
+        [(0, _REMEDY_CHUNK_0), (1, _REMEDY_CHUNK_1)],
+        terms,
+        baseline_chunk_index=0,
+        baseline_text=_REMEDY_CHUNK_0,
+    )
+    assert anchored is not None
+    assert "3. Tomato" in anchored.text  # the anchor item itself
+    assert "wash off after 10 minutes" in anchored.text
+    assert anchored.upward_extension_text.startswith("1. Lemon juice")
+    assert "2. Honey mask" in anchored.upward_extension_text
+    assert anchored.upward_extension_chunk_indexes == frozenset({1})
+    # The upward continuation stops where the enumeration shape stops.
+    assert "[ASSISTANT]" not in anchored.upward_extension_text
+    assert len(anchored.upward_extension_text) <= adapter._ANCHOR_EXTENSION_MAX_CHARS
+
+
+def test_render_applies_upward_extension_above_the_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _anchoring_run(
+        _REMEDY_QUESTION,
+        {"src-remedy": [_REMEDY_CHUNK_0, _REMEDY_CHUNK_1]},
+        {"src-remedy": ("session_remedy", _REMEDY_DATE)},
+    )
+    pack = {"relevant_memories": [], "sources": [{"id": "src-remedy"}]}
+    budget = _entry_cost(_REMEDY_CHUNK_0, "session_remedy", _REMEDY_DATE, 1) + 260
+    block, excerpt_count = run._render_context_block(pack, budget=budget)
+    assert excerpt_count == 1
+    assert "3. Tomato" in block
+    assert "wash off after 10 minutes" in block
+    assert "1. Lemon juice" in block
+    # Recovered run renders in reading order: item 1 above the anchor item.
+    assert block.index("1. Lemon juice") < block.index("3. Tomato")
+    # Determinism: identical inputs render the identical block.
+    assert run._render_context_block(pack, budget=budget) == (block, excerpt_count)
+    # Control: with anchoring off the head-biased excerpt never shows item 3.
+    monkeypatch.setattr(adapter, "_query_anchored_excerpt", lambda *args, **kwargs: None)
+    head_block, _head_count = run._render_context_block(pack, budget=budget)
+    assert "3. Tomato" not in head_block
+
+
+def test_enumeration_signal_shapes() -> None:
+    assert adapter._has_enumeration_signal("7. Transcriptionist")
+    assert adapter._has_enumeration_signal("27. Kg2 Bd5+")
+    assert adapter._has_enumeration_signal("bxc3 exd4 9. cxd4 Bb4 10. Rb1 a5")
+    assert not adapter._has_enumeration_signal("[ASSISTANT]: Glad to hear the appointment went well.")
+    assert not adapter._has_enumeration_signal("we met at 10.30 in the lobby")  # lone inline number
+    assert not adapter._has_enumeration_signal("")
+
+
+def test_line_anchor_score_weights_distinctive_terms() -> None:
+    terms = frozenset(["27", "kg2", "bd5", "move", "the", "previous"])
+    assert adapter._line_anchor_score("27. Kg2 Bd5+", terms) == 6  # digit-bearing terms count double
+    assert adapter._line_anchor_score("I will make the move now", terms) == 2  # move + the
+    assert adapter._line_anchor_score("no overlap here", frozenset()) == 0
+
+
+def test_reading_templates_byte_frozen() -> None:
+    """The official LongMemEval reading templates must never drift."""
+    assert adapter.ANSWER_PROMPT_TEMPLATE == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer:"
+    )
+    assert adapter.ANSWER_PROMPT_TEMPLATE_COT == (
+        "I will give you several history chats between you and a user. "
+        "Please answer the question based on the relevant chat history. "
+        "Answer the question step by step: first extract all the relevant information, "
+        "and then reason over the information to get the answer.\n\n\n"
+        "History Chats:\n\n{}\n\nCurrent Date: {}\nQuestion: {}\nAnswer (step by step):"
+    )
+
+
 # -- end-to-end (real SQLite ingest + retrieval, no model) ---------------------------
 
 
@@ -459,6 +971,110 @@ def test_question_run_ingests_and_retrieves_evidence(tmp_path: Path) -> None:
     assert outcome.retrieval_seconds >= 0.0
 
 
+def test_retrieval_outcome_record_carries_pack_provenance(tmp_path: Path) -> None:
+    """Checkpoint rows must make flips offline-attributable: retrieved source
+    session ids, selected memory ids, and a digest of the exact rendered
+    context block — ids + hash only, never the context text itself."""
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    with adapter.question_run(question, tmp_path / "q.sqlite3") as run:
+        run.ingest()
+        outcome = run.retrieve(max_items=8, context_char_budget=12_000)
+
+    record = outcome.to_record()
+    provenance = record["provenance"]
+    assert isinstance(provenance, dict)
+    assert provenance["context_sha256"] == hashlib.sha256(outcome.context_block.encode("utf-8")).hexdigest()
+    assert outcome.context_block not in json.dumps(record)  # compact: hash, not text
+    session_ids = provenance["source_session_ids"]
+    assert isinstance(session_ids, list) and session_ids
+    haystack_sessions = set(question.haystack_session_ids)
+    assert all(session_id in haystack_sessions for session_id in session_ids)
+    assert len(session_ids) == record["source_count"]
+    memory_ids = provenance["memory_ids"]
+    assert isinstance(memory_ids, list)
+    assert len(memory_ids) == record["memory_count"]
+    assert all(isinstance(memory_id, str) and memory_id for memory_id in memory_ids)
+
+
+def test_knowledge_update_shaped_pack_renders_correction_above_annotated_stale_fact(
+    tmp_path: Path,
+) -> None:
+    """Knowledge-update shape through the real adapter and store.
+
+    Value A is committed, correction B supersedes it, but only the pointer
+    lands (A's status stays active -- the one-sided state the read path
+    cannot filter). The rendered facts section must put B above the
+    surviving A, annotate A as superseded, and leave the prompt templates
+    untouched.
+    """
+    question = parse_question(
+        {
+            "question_id": "q_knowledge_update_shape",
+            "question_type": "knowledge-update",
+            "question": "What is my favorite color?",
+            "answer": "green",
+            "question_date": "2023/09/01 (Fri) 10:00",
+            "haystack_dates": ["2023/05/01 (Mon) 10:00"],
+            "haystack_session_ids": ["s_color"],
+            "haystack_sessions": [[{"role": "user", "content": "hello there"}]],
+            "answer_session_ids": ["s_color"],
+        }
+    )
+    with adapter.question_run(question, tmp_path / "q.sqlite3") as run:
+        run.ingest()
+        stale = run.store.create_memory(
+            {
+                "memory_key": "preference.favorite-color",
+                "memory_type": "preference",
+                "title": "Favorite color",
+                "canonical_text": (
+                    "Favorite color: the user's favorite color is blue. "
+                    "Favorite color blue came up again while shopping."
+                ),
+                "status": "active",
+                "domain": "unknown",
+                "sensitivity": "internal",
+                "value": {"text": "favorite color blue"},
+            }
+        )
+        correction = run.store.create_memory(
+            {
+                "memory_key": "preference.favorite-color.corrected",
+                "memory_type": "preference",
+                "title": "Favorite color (corrected)",
+                "canonical_text": "Correction: the user's favorite color is green now.",
+                "status": "active",
+                "supersedes": str(stale["id"]),
+                "domain": "unknown",
+                "sensitivity": "internal",
+                "value": {"text": "favorite color green"},
+            }
+        )
+        run.store.update_memory(
+            memory_id=str(stale["id"]),
+            patch={"superseded_by": str(correction["id"])},
+            actor_type="system",
+        )
+        outcome = run.retrieve(max_items=8, context_char_budget=12_000)
+
+    fact_lines = [line for line in outcome.context_block.splitlines() if line.startswith("- [")]
+    green_index = next(i for i, line in enumerate(fact_lines) if "green" in line)
+    blue_index = next(i for i, line in enumerate(fact_lines) if "blue" in line)
+    assert green_index < blue_index
+    assert "supersedes an earlier value" in fact_lines[green_index]
+    assert fact_lines[blue_index].endswith("[superseded by a newer entry]")
+    # The history slot carries the annotations; the official template around
+    # it is still applied verbatim.
+    prompt = adapter.build_answer_prompt(
+        context_block=outcome.context_block,
+        question=question.question,
+        question_date=question.question_date,
+    )
+    assert prompt == adapter.ANSWER_PROMPT_TEMPLATE.format(
+        outcome.context_block, question.question_date, question.question
+    )
+
+
 def test_context_block_respects_char_budget(tmp_path: Path) -> None:
     question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
     with adapter.question_run(question, tmp_path / "q.sqlite3") as run:
@@ -467,6 +1083,42 @@ def test_context_block_respects_char_budget(tmp_path: Path) -> None:
         large = run.retrieve(max_items=8, context_char_budget=20_000)
     assert small.context_chars <= 600
     assert small.context_chars < large.context_chars
+
+
+def test_unseen_entity_question_gets_a_grounding_note(tmp_path: Path) -> None:
+    # The abstention-shaped scenario: the query names a person the store
+    # has never seen, so the block must carry the retrieval statistic.
+    question = parse_question(
+        {
+            "question_id": "q_grounding",
+            "question_type": "multi-session",
+            "question": "Did Marcus Chen recommend a fertilizer brand for my roses?",
+            "answer": "The user never mentioned Marcus Chen.",
+            "question_date": "2023/07/01 (Sat) 10:00",
+            "haystack_dates": ["2023/05/20 (Sat) 14:10"],
+            "haystack_session_ids": ["session_a"],
+            "haystack_sessions": [
+                [
+                    {"role": "user", "content": "My roses keep wilting in the afternoon heat."},
+                    {"role": "assistant", "content": "Try watering them at dawn and mulching the beds."},
+                ]
+            ],
+            "answer_session_ids": [],
+        }
+    )
+    with adapter.question_run(question, tmp_path / "q.sqlite3") as run:
+        run.ingest()
+        outcome = run.retrieve(max_items=8, context_char_budget=12_000)
+    assert 'Note: no stored memories mention "Marcus Chen".' in outcome.context_block
+
+
+def test_supported_entity_question_gets_no_grounding_note(tmp_path: Path) -> None:
+    # synthetic_1 asks about Biscuit, who IS in the haystack: no note.
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    with adapter.question_run(question, tmp_path / "q.sqlite3") as run:
+        run.ingest()
+        outcome = run.retrieve(max_items=8, context_char_budget=12_000)
+    assert "no stored memories" not in outcome.context_block
 
 
 def test_runner_dry_run_end_to_end(tmp_path: Path) -> None:
@@ -496,6 +1148,14 @@ def test_runner_dry_run_end_to_end(tmp_path: Path) -> None:
     records = runner.load_checkpoint(checkpoint_path)
     assert records["synthetic_1"]["retrieval"]["context_chars"] > 0
     assert records["synthetic_2_abs"]["retrieval"]["context_chars"] > 0
+    # Pack provenance lands in every checkpoint row (ids + hash, no text),
+    # so paired flips between runs stay attributable offline.
+    for question_id in ("synthetic_1", "synthetic_2_abs"):
+        provenance = records[question_id]["retrieval"]["provenance"]
+        assert sorted(provenance) == ["context_sha256", "memory_ids", "source_session_ids"]
+        assert re.fullmatch(r"[0-9a-f]{64}", provenance["context_sha256"])
+        assert isinstance(provenance["source_session_ids"], list)
+        assert isinstance(provenance["memory_ids"], list)
     assert not list((tmp_path / "work").glob("*.sqlite3"))  # scratch stores cleaned up
 
     # Resume: nothing pending, still exits 0 and reports both records.
@@ -994,3 +1654,417 @@ def test_checked_in_stage1_slice_matches_dataset() -> None:
     assert len(ids) == len(set(ids))
     abstention_ids = {record["question_id"] for record in records if str(record["question_id"]).endswith("_abs")}
     assert abstention_ids <= set(ids)  # every abstention question is in the slice
+
+
+# -- grounding verification gate (--verify-grounding) --------------------------------
+
+
+class _MockVerifierClient:
+    """Chat-seam mock: captures every payload, replies with canned text or raises."""
+
+    def __init__(self, reply: str = "GROUNDED", error: Exception | None = None) -> None:
+        self.reply = reply
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+
+    def __call__(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> chat.ChatCompletionResult:
+        self.calls.append({"messages": list(messages), "temperature": temperature, "max_tokens": max_tokens})
+        if self.error is not None:
+            raise self.error
+        return chat.ChatCompletionResult(
+            text=self.reply, prompt_tokens=42, completion_tokens=7, latency_seconds=0.01
+        )
+
+
+def test_verify_grounding_grounded_answer_passes_through_byte_identical() -> None:
+    client = _MockVerifierClient(reply="GROUNDED")
+    answer = "Biscuit is a golden retriever.  "  # trailing spaces: byte-identity check
+    verdict = verification.verify_grounding(
+        question="What breed is the user's dog Biscuit?",
+        answer_text=answer,
+        context_block="[Session s1] My dog Biscuit is a golden retriever.",
+        chat_client=client,
+    )
+    assert verdict.grounded is True
+    assert verdict.error is None and verdict.parse_note is None
+    assert verdict.ungrounded_claims == ()
+    hypothesis, gate_applied = verification.apply_grounding_gate(answer, verdict)
+    assert gate_applied is False
+    assert hypothesis == answer  # byte-identical pass-through
+
+
+def test_verify_grounding_load_bearing_claim_gates_to_abstention() -> None:
+    client = _MockVerifierClient(reply="UNGROUNDED LOAD-BEARING: finished the marathon in 3:15")
+    answer = "You finished the marathon in 3:15."
+    verdict = verification.verify_grounding(
+        question="What was my marathon time?",
+        answer_text=answer,
+        context_block="[Session s1] I signed up for a marathon next spring.",
+        chat_client=client,
+    )
+    assert verdict.grounded is False
+    assert verdict.ungrounded_claims == (
+        verification.UngroundedClaim(text="finished the marathon in 3:15", load_bearing=True),
+    )
+    hypothesis, gate_applied = verification.apply_grounding_gate(answer, verdict)
+    assert gate_applied is True
+    assert hypothesis == verification.ABSTENTION_HYPOTHESIS
+    record = verdict.to_record()
+    assert record["grounded"] is False
+    assert record["ungrounded_claims"] == [{"text": "finished the marathon in 3:15", "load_bearing": True}]
+
+
+def test_verify_grounding_incidental_claims_never_gate() -> None:
+    client = _MockVerifierClient(reply="- UNGROUNDED INCIDENTAL: it was raining that day")
+    answer = "You adopted the puppy; it was raining that day."
+    verdict = verification.verify_grounding(
+        question="Did I adopt a puppy?",
+        answer_text=answer,
+        context_block="[Session s1] I adopted a puppy from the shelter.",
+        chat_client=client,
+    )
+    assert verdict.grounded is True  # only load-bearing claims gate
+    assert len(verdict.ungrounded_claims) == 1
+    assert verdict.ungrounded_claims[0].load_bearing is False
+    hypothesis, gate_applied = verification.apply_grounding_gate(answer, verdict)
+    assert (hypothesis, gate_applied) == (answer, False)
+
+
+def test_verify_grounding_error_fails_open() -> None:
+    client = _MockVerifierClient(error=chat.ChatCompletionError("HTTP 503 from https://v.example.test"))
+    answer = "You finished the marathon in 3:15."
+    verdict = verification.verify_grounding(
+        question="What was my marathon time?",
+        answer_text=answer,
+        context_block="context",
+        chat_client=client,
+    )
+    assert verdict.error is not None and "503" in verdict.error
+    assert verdict.grounded is True  # fail-open
+    assert verdict.gate_should_abstain is False
+    hypothesis, gate_applied = verification.apply_grounding_gate(answer, verdict)
+    assert (hypothesis, gate_applied) == (answer, False)  # original answer stands
+
+
+def test_verify_grounding_unparseable_reply_fails_open() -> None:
+    client = _MockVerifierClient(reply="Hmm, I am not sure how to check this.")
+    verdict = verification.verify_grounding(
+        question="q", answer_text="a", context_block="c", chat_client=client
+    )
+    assert verdict.grounded is True
+    assert verdict.error is None
+    assert verdict.parse_note is not None and "failing open" in verdict.parse_note
+
+
+def test_verifier_payload_contains_only_context_question_answer() -> None:
+    """The verifier is judge-neutral: it never sees the gold answer or labels."""
+    gold_answer = "GOLD-ANSWER-NEVER-SENT-TO-VERIFIER"
+    client = _MockVerifierClient(reply="GROUNDED")
+    verification.verify_grounding(
+        question="What breed is the dog?",
+        answer_text="A dalmatian.",
+        context_block="[Session s1] context text here",
+        chat_client=client,
+    )
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    (message,) = call["messages"]  # type: ignore[misc]
+    assert message["role"] == "user"
+    payload = message["content"]
+    # Exactly the disclosed template over the three permitted inputs, nothing else.
+    assert payload == verification.build_verifier_prompt(
+        question="What breed is the dog?",
+        answer_text="A dalmatian.",
+        context_block="[Session s1] context text here",
+    )
+    assert "What breed is the dog?" in payload
+    assert "A dalmatian." in payload
+    assert "[Session s1] context text here" in payload
+    assert gold_answer not in payload
+    assert "question_type" not in payload
+    assert call["temperature"] == verification.VERIFY_TEMPERATURE == 0.0
+    assert call["max_tokens"] == verification.VERIFY_MAX_TOKENS
+
+
+def test_verification_module_reads_no_benchmark_labels() -> None:
+    """Honesty guard: the verifier code cannot even name the benchmark labels."""
+    source = Path(verification.__file__).read_text(encoding="utf-8")
+    assert "question_type" not in source
+    assert "is_abstention" not in source
+    assert "gold_answer" not in source
+
+
+def test_abstention_hypothesis_matches_gold_abstention_style() -> None:
+    """The substituted phrasing mirrors the dataset's own gold abstention answers."""
+    # Gold *_abs answers open with "You did not mention this information." or
+    # "The information provided is not enough." — the gate's phrasing uses both.
+    assert verification.ABSTENTION_HYPOTHESIS.startswith("You did not mention this information.")
+    assert "not enough" in verification.ABSTENTION_HYPOTHESIS
+
+
+def test_verifier_config_from_env_falls_back_to_answer_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert verification.verifier_config_from_env() is None
+    monkeypatch.setenv(chat.MODEL_BASE_URL_ENV, "https://api.example.test/v1/")
+    monkeypatch.setenv(chat.MODEL_NAME_ENV, "answer-model")
+    config = verification.verifier_config_from_env()
+    assert config is not None and config.model == "answer-model"
+    monkeypatch.setenv(verification.VERIFIER_NAME_ENV, "verifier-model")
+    config = verification.verifier_config_from_env()
+    assert config is not None and config.model == "verifier-model"
+    assert config.base_url == "https://api.example.test/v1"
+
+
+def test_official_templates_byte_frozen() -> None:
+    """The official reading + judge templates must never change, byte for byte."""
+    import hashlib
+
+    def digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    assert digest(adapter.ANSWER_PROMPT_TEMPLATE) == (
+        "e427ff913456e51a132ec865b1b5038d562bdc36890976943ad421cc9b365c9d"
+    )
+    assert digest(adapter.ANSWER_PROMPT_TEMPLATE_COT) == (
+        "9e2b3110622929ab896696dd8937231c7436740ec3b9586f653f97346e19ab2c"
+    )
+    assert digest(judge._DEFAULT_TEMPLATE) == (
+        "fba020ba3d57982efdc9a937c1c01f897b789a608c7f88e60244121f6505e5bc"
+    )
+    assert digest(judge._TEMPORAL_TEMPLATE) == (
+        "8d33a5fdd83afeeb4592454a965eab43d1fcb2dedc042d1d3892f4254be6c273"
+    )
+    assert digest(judge._KNOWLEDGE_UPDATE_TEMPLATE) == (
+        "183a9b3a6197ec620940f610cdc1207201ec98c1113dd633ea685cfc322fafac"
+    )
+    assert digest(judge._PREFERENCE_TEMPLATE) == (
+        "061474d8ddbc19a220d06367a77ca1dbb049f4197a89e2cf8505dcf911bf4e25"
+    )
+    assert digest(judge._ABSTENTION_TEMPLATE) == (
+        "5c0b365a1e1d06db36377c735432b56e122ca3c428f89faf61d43a0d5a7e050b"
+    )
+    # The verifier prompt is a separate disclosed component, not a copy of any
+    # official template.
+    official = {
+        adapter.ANSWER_PROMPT_TEMPLATE,
+        adapter.ANSWER_PROMPT_TEMPLATE_COT,
+        judge._DEFAULT_TEMPLATE,
+        judge._TEMPORAL_TEMPLATE,
+        judge._KNOWLEDGE_UPDATE_TEMPLATE,
+        judge._PREFERENCE_TEMPLATE,
+        judge._ABSTENTION_TEMPLATE,
+    }
+    assert verification.VERIFIER_PROMPT_TEMPLATE not in official
+
+
+def _scored_config(tmp_path: Path, *, verify: bool) -> runner.RunnerConfig:
+    return runner.RunnerConfig(
+        variant="s",
+        dataset_path=SYNTHETIC_FIXTURE_PATH,
+        limit=None,
+        question_ids=None,
+        question_ids_file=None,
+        resume=False,
+        dry_run=False,
+        cot=False,
+        workers=1,
+        max_items=8,
+        context_char_budget=12_000,
+        work_dir=tmp_path / "work",
+        checkpoint_path=tmp_path / "c.jsonl",
+        report_path=tmp_path / "r.json",
+        keep_stores=False,
+        verify_grounding=verify,
+    )
+
+
+def test_fingerprint_discloses_verify_grounding(tmp_path: Path) -> None:
+    base = runner.config_fingerprint(_scored_config(tmp_path, verify=False), model=None, judge=None)
+    verifier = chat.ChatModelConfig(base_url="https://v.example.test/v1", model="verifier-model")
+    gated = runner.config_fingerprint(
+        _scored_config(tmp_path, verify=True), model=None, judge=None, verifier=verifier
+    )
+    assert base["verify_grounding"] is False
+    assert base["verifier_model"] is None
+    assert gated["verify_grounding"] is True
+    assert gated["verifier_model"] == {
+        "base_url": "https://v.example.test/v1",
+        "model": "verifier-model",
+        "api_key_configured": False,
+    }
+    # A gated run can never masquerade as an ungated one: the digests differ.
+    assert base["digest"] != gated["digest"]
+
+
+def test_verify_grounding_cli_flag_defaults_off() -> None:
+    args = runner.build_arg_parser().parse_args([])
+    assert args.verify_grounding is False
+    args = runner.build_arg_parser().parse_args(["--verify-grounding"])
+    assert args.verify_grounding is True
+
+
+def _stub_generation(text: str):
+    def fake_chat_completion(config, messages, *, temperature=0.0, max_tokens=None):
+        return chat.ChatCompletionResult(
+            text=text, prompt_tokens=100, completion_tokens=20, latency_seconds=0.01
+        )
+
+    return fake_chat_completion
+
+
+def _stub_judge(judged_hypotheses: list[str]):
+    def fake_judge(config, *, question_type, question, gold_answer, hypothesis, is_abstention):
+        judged_hypotheses.append(hypothesis)
+        return judge.JudgeResult(correct=True, raw_response="yes")
+
+    return fake_judge
+
+
+_UNUSED_MODEL = chat.ChatModelConfig(base_url="https://unused.example.test/v1", model="answer-model")
+_UNUSED_VERIFIER = chat.ChatModelConfig(base_url="https://unused.example.test/v1", model="verifier-model")
+
+
+def test_run_question_grounding_gate_converts_fabrication_to_abstention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    config = _scored_config(tmp_path, verify=True)
+    config.work_dir.mkdir(parents=True)
+    fabricated = "Biscuit is a poodle."
+    verifier_payloads: list[str] = []
+
+    def fake_verifier_call(cfg, messages, *, temperature=0.0, max_tokens=None):
+        verifier_payloads.append(messages[0]["content"])
+        return chat.ChatCompletionResult(
+            text="UNGROUNDED LOAD-BEARING: poodle",
+            prompt_tokens=50,
+            completion_tokens=6,
+            latency_seconds=0.01,
+        )
+
+    judged: list[str] = []
+    monkeypatch.setattr(runner, "chat_completion", _stub_generation(fabricated))
+    monkeypatch.setattr(verification, "chat_completion", fake_verifier_call)
+    monkeypatch.setattr(runner, "judge_hypothesis", _stub_judge(judged))
+
+    record = runner.run_question(
+        question,
+        config,
+        model=_UNUSED_MODEL,
+        judge=_UNUSED_MODEL,
+        fingerprint_digest="test",
+        verifier=_UNUSED_VERIFIER,
+    )
+    assert record["status"] == "ok", record["error"]
+    # Both texts recorded: the abstention hypothesis and the original answer.
+    assert record["hypothesis"] == verification.ABSTENTION_HYPOTHESIS
+    grounding = record["grounding"]
+    assert grounding["gate_applied"] is True
+    assert grounding["original_hypothesis"] == fabricated
+    assert grounding["verdict"]["grounded"] is False
+    assert grounding["verdict"]["ungrounded_claims"] == [{"text": "poodle", "load_bearing": True}]
+    # The judge scored the gated hypothesis, not the fabricated one.
+    assert judged == [verification.ABSTENTION_HYPOTHESIS]
+    # The verifier saw the answer under test and the question — nothing else
+    # benchmark-shaped (labels never enter the payload).
+    assert len(verifier_payloads) == 1
+    assert fabricated in verifier_payloads[0]
+    assert question.question in verifier_payloads[0]
+    assert "question_type" not in verifier_payloads[0]
+
+
+def test_run_question_grounded_answer_unchanged_and_judged_as_is(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    config = _scored_config(tmp_path, verify=True)
+    config.work_dir.mkdir(parents=True)
+    grounded_answer = "Biscuit is a golden retriever."
+
+    def fake_verifier_call(cfg, messages, *, temperature=0.0, max_tokens=None):
+        return chat.ChatCompletionResult(
+            text="GROUNDED", prompt_tokens=50, completion_tokens=1, latency_seconds=0.01
+        )
+
+    judged: list[str] = []
+    monkeypatch.setattr(runner, "chat_completion", _stub_generation(grounded_answer))
+    monkeypatch.setattr(verification, "chat_completion", fake_verifier_call)
+    monkeypatch.setattr(runner, "judge_hypothesis", _stub_judge(judged))
+
+    record = runner.run_question(
+        question,
+        config,
+        model=_UNUSED_MODEL,
+        judge=_UNUSED_MODEL,
+        fingerprint_digest="test",
+        verifier=_UNUSED_VERIFIER,
+    )
+    assert record["status"] == "ok", record["error"]
+    assert record["hypothesis"] == grounded_answer  # byte-identical
+    assert record["grounding"]["gate_applied"] is False
+    assert record["grounding"]["original_hypothesis"] is None
+    assert record["grounding"]["verdict"]["grounded"] is True
+    assert judged == [grounded_answer]
+
+
+def test_run_question_verifier_error_fails_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    config = _scored_config(tmp_path, verify=True)
+    config.work_dir.mkdir(parents=True)
+    answer = "Biscuit is a golden retriever."
+
+    def failing_verifier_call(cfg, messages, *, temperature=0.0, max_tokens=None):
+        raise chat.ChatCompletionError("HTTP 503 from verifier")
+
+    judged: list[str] = []
+    monkeypatch.setattr(runner, "chat_completion", _stub_generation(answer))
+    monkeypatch.setattr(verification, "chat_completion", failing_verifier_call)
+    monkeypatch.setattr(runner, "judge_hypothesis", _stub_judge(judged))
+
+    record = runner.run_question(
+        question,
+        config,
+        model=_UNUSED_MODEL,
+        judge=_UNUSED_MODEL,
+        fingerprint_digest="test",
+        verifier=_UNUSED_VERIFIER,
+    )
+    # The run never crashes: the original answer stands, the error is recorded.
+    assert record["status"] == "ok", record["error"]
+    assert record["hypothesis"] == answer
+    assert record["grounding"]["gate_applied"] is False
+    assert record["grounding"]["verdict"]["error"] is not None
+    assert "503" in record["grounding"]["verdict"]["error"]
+    assert judged == [answer]
+
+
+def test_run_question_without_flag_has_no_grounding_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    config = _scored_config(tmp_path, verify=False)
+    config.work_dir.mkdir(parents=True)
+    answer = "Biscuit is a golden retriever."
+
+    def unexpected_verifier_call(cfg, messages, *, temperature=0.0, max_tokens=None):  # pragma: no cover
+        raise AssertionError("verifier must not be called without --verify-grounding")
+
+    judged: list[str] = []
+    monkeypatch.setattr(runner, "chat_completion", _stub_generation(answer))
+    monkeypatch.setattr(verification, "chat_completion", unexpected_verifier_call)
+    monkeypatch.setattr(runner, "judge_hypothesis", _stub_judge(judged))
+
+    record = runner.run_question(
+        question, config, model=_UNUSED_MODEL, judge=_UNUSED_MODEL, fingerprint_digest="test"
+    )
+    assert record["status"] == "ok", record["error"]
+    assert record["hypothesis"] == answer
+    assert "grounding" not in record
+    assert judged == [answer]

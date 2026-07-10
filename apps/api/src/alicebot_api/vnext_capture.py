@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 import json
@@ -8,6 +8,14 @@ from pathlib import Path
 import re
 from typing import Protocol
 
+from alicebot_api.memory_provenance import (
+    ASSERTION_CLASS_USER_ASSERTED,
+    PROVENANCE_ROLE_USER,
+    classify_assertion,
+    derive_speaker_role,
+    order_by_provenance,
+    provenance_promotion_rank,
+)
 from alicebot_api.vnext_embeddings import attach_memory_embedding
 from alicebot_api.vnext_entities import (
     ENTITY_EXTRACTION_SKIP_SENSITIVITIES,
@@ -48,6 +56,12 @@ class CaptureCandidate:
     source_chunk_index: int
     confidence: float
     extraction_rule: str
+    # Speaker provenance, derived only from a leading "[USER]:" /
+    # "[ASSISTANT]:" transcript tag in the line itself (content shape, never
+    # external labels). None for untagged content, which keeps the exact
+    # pre-provenance candidate shape.
+    provenance_role: str | None = None
+    assertion_class: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,7 +237,81 @@ def _strip_markdown_prefix(line: str) -> str:
     return stripped.strip()
 
 
+USER_ASSERTED_VALUE_CONFIDENCE = 0.72
+USER_ASSERTED_VALUE_RULE = "user_asserted_value"
+
+
+def _annotate_candidate_provenance(candidate: CaptureCandidate) -> CaptureCandidate:
+    """Attach speaker provenance to a speaker-tagged candidate.
+
+    Gated on a leading speaker tag in the candidate text: untagged content
+    derives no role and is returned unchanged (byte-identical old path).
+    Provenance biases promotion ORDER only (``order_candidates_for_promotion``);
+    it never adjusts confidence -- pack ranking does not read confidence, so
+    a confidence delta here would be config implying nonexistent behavior.
+    """
+    role = derive_speaker_role(candidate.text)
+    if role is None:
+        return candidate
+    return replace(
+        candidate,
+        provenance_role=role,
+        assertion_class=classify_assertion(candidate.text, role),
+    )
+
+
+def candidate_promotion_rank(candidate: CaptureCandidate) -> int:
+    """Promotion-rank ordinal for a capture candidate (lower wins ties)."""
+    return provenance_promotion_rank(
+        provenance_role=candidate.provenance_role,
+        assertion_class=candidate.assertion_class,
+    )
+
+
+def order_candidates_for_promotion(candidates: list[CaptureCandidate]) -> list[CaptureCandidate]:
+    """Same-slot promotion bias: user-asserted values outrank assistant estimates.
+
+    Stable ordering by provenance rank only — candidate lists without any
+    speaker-tagged content come back in their original order unchanged.
+    """
+    return order_by_provenance(candidates, rank_of=candidate_promotion_rank)
+
+
 def _candidate_from_line(line: str, *, source_chunk_id: str, source_chunk_index: int) -> CaptureCandidate | None:
+    candidate = _base_candidate_from_line(
+        line,
+        source_chunk_id=source_chunk_id,
+        source_chunk_index=source_chunk_index,
+    )
+    if candidate is not None:
+        return _annotate_candidate_provenance(candidate)
+
+    # New (gated) rule: a speaker-tagged USER line asserting a concrete
+    # value in the first person ("[USER]: I paid $50 for the taxi") becomes
+    # a semantic candidate even though it matches no legacy rule. Untagged
+    # lines never reach this branch with a role, so the legacy behavior is
+    # byte-identical for them.
+    normalized = _strip_markdown_prefix(line)
+    if not normalized:
+        return None
+    role = derive_speaker_role(normalized)
+    if role != PROVENANCE_ROLE_USER:
+        return None
+    if classify_assertion(normalized, role) != ASSERTION_CLASS_USER_ASSERTED:
+        return None
+    return CaptureCandidate(
+        text=normalized,
+        memory_type="semantic",
+        source_chunk_id=source_chunk_id,
+        source_chunk_index=source_chunk_index,
+        confidence=USER_ASSERTED_VALUE_CONFIDENCE,
+        extraction_rule=USER_ASSERTED_VALUE_RULE,
+        provenance_role=role,
+        assertion_class=ASSERTION_CLASS_USER_ASSERTED,
+    )
+
+
+def _base_candidate_from_line(line: str, *, source_chunk_id: str, source_chunk_index: int) -> CaptureCandidate | None:
     normalized = _strip_markdown_prefix(line)
     if not normalized or normalized == "---":
         return None
@@ -545,9 +633,19 @@ class VNextCaptureService:
                 payload={"content_hash": content_hash, "chunk_count": len(chunk_rows)},
             )
 
-            candidates = extract_candidate_memories(chunk_rows)
+            candidates = self._drop_cross_batch_user_asserted_duplicates(extract_candidate_memories(chunk_rows))
             memory_rows: list[JsonObject] = []
             for candidate in candidates:
+                # Speaker provenance is only stamped when a role was derived,
+                # so provenance-free captures keep byte-identical metadata.
+                provenance_metadata: JsonObject = (
+                    {
+                        "provenance_role": candidate.provenance_role,
+                        "assertion_class": candidate.assertion_class,
+                    }
+                    if candidate.provenance_role is not None
+                    else {}
+                )
                 memory = self.store.create_memory(
                     {
                         "memory_key": _memory_key(content_hash=content_hash, candidate=candidate),
@@ -571,6 +669,7 @@ class VNextCaptureService:
                             "source_chunk_index": candidate.source_chunk_index,
                             "extraction_rule": candidate.extraction_rule,
                             "capture_content_hash": content_hash,
+                            **provenance_metadata,
                             "generated_by": self.actor_type,
                             "agent_identity": self.agent_identity,
                             "agent_id": self.actor_id if self.actor_type == "agent" else None,
@@ -635,6 +734,37 @@ class VNextCaptureService:
                 metadata=source_input.metadata_json,
             )
             raise
+
+    def _drop_cross_batch_user_asserted_duplicates(
+        self, candidates: list[CaptureCandidate]
+    ) -> list[CaptureCandidate]:
+        """Dedupe user-asserted-value promotions against the whole store.
+
+        ``extract_candidate_memories`` dedupes within one capture batch
+        only, so a user restating the same value line in a later session
+        used to mint a second memory with identical canonical text (proven
+        cross-batch duplicate: one Omega-watch assertion captured twice
+        from two sessions). Scoped to the ``user_asserted_value`` rule so
+        every legacy rule keeps its batch-local behavior byte-identical;
+        stores without ``list_memories`` skip the check.
+        """
+        if not any(candidate.extraction_rule == USER_ASSERTED_VALUE_RULE for candidate in candidates):
+            return candidates
+        list_memories = getattr(self.store, "list_memories", None)
+        if not callable(list_memories):
+            return candidates
+        existing_texts = {
+            str(row.get("canonical_text") or "").casefold()
+            for row in list_memories()
+            if isinstance(row, dict)
+        }
+        existing_texts.discard("")
+        return [
+            candidate
+            for candidate in candidates
+            if candidate.extraction_rule != USER_ASSERTED_VALUE_RULE
+            or candidate.text.casefold() not in existing_texts
+        ]
 
     def _link_captured_entities(
         self,
@@ -820,11 +950,15 @@ __all__ = [
     "CaptureCandidate",
     "CaptureResult",
     "SourceCaptureInput",
+    "USER_ASSERTED_VALUE_CONFIDENCE",
+    "USER_ASSERTED_VALUE_RULE",
     "VNextCaptureService",
     "VNextCaptureStore",
     "VNextCaptureValidationError",
+    "candidate_promotion_rank",
     "chunk_text",
     "content_hash_for_text",
     "extract_candidate_memories",
     "normalize_text",
+    "order_candidates_for_promotion",
 ]

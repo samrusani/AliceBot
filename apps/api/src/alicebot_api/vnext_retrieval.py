@@ -34,6 +34,12 @@ from uuid import uuid4
 # so it calls the pure candidate finder directly instead of
 # generate_contradiction_report (which persists edges/artifacts/events).
 from alicebot_api import vnext_contradictions
+
+# Coverage mode (aggregation-shaped queries): pure detection, clause
+# decomposition, and source near-duplicate demotion helpers. Dormant unless
+# detect_aggregation_intent fires on the query surface — see the marked
+# "coverage mode" blocks in compile_context_pack.
+from alicebot_api import vnext_coverage_query
 from alicebot_api.vnext_entity_names import normalize_entity_name
 from alicebot_api.vnext_embeddings import (
     EmbeddingProvider,
@@ -42,9 +48,11 @@ from alicebot_api.vnext_embeddings import (
     get_embedding_provider,
 )
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_grounding import compute_query_grounding
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import fts_fallback_tokens
+from alicebot_api.vnext_temporal_query import TemporalAnchor, parse_event_datetime, parse_temporal_anchor
 
 
 DEFAULT_CONTEXT_PACK_LIMIT = 8
@@ -64,6 +72,12 @@ TOKEN_ESTIMATE_CHARS_PER_TOKEN = 4
 # A memory whose last_confirmed_at is older than this many days gets a
 # "staleness" note attached in the context pack so agents can weigh it.
 STALENESS_NOTE_AFTER_DAYS = 90
+# valid_to values in year 9999+ are the far-future stand-in for "no expiry"
+# (vnext_memory_commit.VALID_TO_UNBOUNDED_SENTINEL, written when a
+# COALESCE-style update_memory cannot patch valid_to back to NULL; keep the
+# two in sync). An unbounded window carries no validity signal, so pack
+# "validity" annotations omit it.
+VALID_TO_UNBOUNDED_YEAR = 9999
 # Trace exclusion_reason for items selected by ranking but dropped by the
 # token budget packer.
 EXCLUSION_REASON_TOKEN_BUDGET = "token_budget"
@@ -179,6 +193,24 @@ MEMORY_ENTITY_EDGE_TYPES = ("mentions", "about")
 # 'accepted'): get_memory does not enforce the searchable-status discipline
 # the search_* SQL bakes in, so the graph stage re-applies it in Python.
 MEMORY_SEARCHABLE_STATUSES = ("active", "accepted")
+# Temporal-anchor stage: when parse_temporal_anchor finds a date-bearing
+# phrase in the query ("in March 2023", "two months ago"), memories whose
+# event window intersects the parsed [start, end) window join RRF as one
+# more ranked list ("temporal_anchor") next to fts/vector/graph — never a
+# hard filter, so a wrong parse cannot evict lexical/vector/graph hits.
+# The stage record (and the list) exist only when an anchor parses; the
+# anchor keys on generic query text alone.
+TEMPORAL_STAGE_ENABLED = "enabled"
+TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT = "disabled: store does not support time-window search"
+# The same anchor window re-ranks the fused sources stage: candidates the
+# chunk/provenance/lexical lists already surfaced whose event date falls
+# inside the window form a fourth ranked list (a rank boost, never a new
+# recall path). A source's event date is its source_created_at, then the
+# first parseable connector-stamped metadata date below, then captured_at
+# (write time, the least honest fallback) — mirroring the capture
+# service's source_created_at-then-captured_at event-time convention.
+SOURCE_STAGE_TEMPORAL = "temporal_anchor"
+SOURCE_EVENT_METADATA_KEYS = ("session_date", "event_date", "date")
 # Tiny stopword set for entity-name candidate generation: n-grams whose
 # first or last token is one of these never name an entity on their own.
 ENTITY_NAME_STOPWORDS = frozenset(
@@ -212,10 +244,11 @@ class VNextRetrievalStore(Protocol):
     The same applies to ``list_events`` (recent_changes section),
     ``list_beliefs`` (contradicting_evidence section), the entity
     substrate ``find_entities_by_names``/``get_memory`` (entity-hop graph
-    stage), and ``search_source_chunks``/``get_source`` (the chunk-content
-    and provenance lists of the fused sources stage): stores without them
-    yield empty sections / an honest disabled stage status instead of
-    failing.
+    stage), ``search_source_chunks``/``get_source`` (the chunk-content
+    and provenance lists of the fused sources stage), and
+    ``search_memories_by_time`` (the temporal-anchor stage for
+    date-bearing queries): stores without them yield empty sections / an
+    honest disabled stage status instead of failing.
 
     ``memory_types``/``projects``/``created_by_agent_ids``/``run_id`` are
     only forwarded to the store when the request sets them, so minimal
@@ -298,6 +331,10 @@ class VNextRetrievalRequest:
     policy_decision: JsonObject | None = None
     trace_id: str | None = None
     run_id: str | None = None
+    # The caller's "now" for resolving relative temporal phrases in the
+    # query ("last week", "two months ago"). None means the service uses
+    # the current UTC time; parsing itself never reads the wall clock.
+    reference_time: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -668,6 +705,68 @@ def _staleness_note(memory: JsonObject, *, now: datetime) -> JsonObject | None:
     }
 
 
+def _last_corrected_at(memory: JsonObject) -> datetime | None:
+    """Newest ``corrected_at`` in the agentic in-place correction history.
+
+    The agentic correct flow (vnext_memory_commit) appends
+    ``{"corrected_at", "reason", "previous_text"}`` entries under
+    ``metadata_json.agentic_memory.corrections``; the row's canonical text
+    is already the corrected value, so the timestamp tells a reader when
+    the current wording took effect.
+    """
+    metadata = memory.get("metadata_json")
+    if not isinstance(metadata, Mapping):
+        return None
+    agentic = metadata.get("agentic_memory")
+    if not isinstance(agentic, Mapping):
+        return None
+    corrections = agentic.get("corrections")
+    if not isinstance(corrections, Sequence) or isinstance(corrections, (str, bytes)):
+        return None
+    moments = [
+        parsed
+        for entry in corrections
+        if isinstance(entry, Mapping)
+        if (parsed := _parse_timestamp(entry.get("corrected_at"))) is not None
+    ]
+    return max(moments, default=None)
+
+
+def _validity_annotation(memory: JsonObject, *, superseded_by_hint: str | None = None) -> JsonObject | None:
+    """Compact validity summary for rows carrying temporal/supersession signal.
+
+    Derived purely from values the row already carries -- the
+    ``valid_from``/``valid_to`` window columns, the supersession pointer
+    columns from migration 20260704_0077 (plus the row status those flows
+    set), and the in-place correction history read by
+    ``_last_corrected_at`` -- so annotating costs no extra store queries.
+    ``superseded_by_hint`` is a pack-local back-pointer: when a pack-mate's
+    ``supersedes`` names this row, the row is annotated as superseded even
+    if it never received the ``superseded_by`` column (one-sided patches).
+    Rows without any signal return ``None`` so plain memories keep their
+    exact shape, and the far-future unbounded ``valid_to`` sentinel (see
+    ``VALID_TO_UNBOUNDED_YEAR``) is treated as no signal.
+    """
+    validity: JsonObject = {}
+    valid_from = _parse_timestamp(memory.get("valid_from"))
+    if valid_from is not None:
+        validity["valid_from"] = valid_from.isoformat()
+    valid_to = _parse_timestamp(memory.get("valid_to"))
+    if valid_to is not None and valid_to.year < VALID_TO_UNBOUNDED_YEAR:
+        validity["valid_to"] = valid_to.isoformat()
+    superseded_by = memory.get("superseded_by") or superseded_by_hint
+    if superseded_by or str(memory.get("status")) == "superseded":
+        validity["superseded"] = True
+    if superseded_by:
+        validity["superseded_by_memory_id"] = str(superseded_by)
+    if memory.get("supersedes"):
+        validity["supersedes_memory_id"] = str(memory.get("supersedes"))
+    corrected_at = _last_corrected_at(memory)
+    if corrected_at is not None:
+        validity["corrected_at"] = corrected_at.isoformat()
+    return validity or None
+
+
 def _memory_recency(memory: JsonObject) -> datetime:
     """Best-effort recency timestamp for recent_first ordering."""
     for key in ("updated_at", "last_seen_at", "created_at", "first_seen_at"):
@@ -694,6 +793,64 @@ def _order_memories_for_strategy(memories: list[JsonObject], strategy: str) -> l
     return list(memories)
 
 
+def _prefer_current_versions(memories: list[JsonObject]) -> tuple[list[JsonObject], int]:
+    """Demote-not-drop: move a replacement directly above its superseded ancestor.
+
+    The store search stages already exclude retired rows (status outside
+    active/accepted, closed validity windows), so both sides of a
+    supersession pair can only co-occur in a pack when the pointer state is
+    one-sided -- e.g. an ``update_memory`` patch set ``superseded_by``
+    without retiring the row, or only the replacement's ``supersedes``
+    pointer exists. Fused (RRF) order is preserved for every other item;
+    only the offending (ancestor, replacement) pair is reordered,
+    replacement first, and each replacement moves at most once so corrupt
+    pointer cycles terminate. Returns the reordered list plus the move
+    count reported in the pack trace as ``supersession_reorders``.
+    """
+    if len(memories) < 2:
+        return list(memories), 0
+    ids_in_list = {str(memory.get("id")) for memory in memories}
+    # ancestor id -> replacement id, from both pointer directions; a row's
+    # own superseded_by pointer wins over a pack-mate's supersedes claim.
+    successor_of: dict[str, str] = {}
+    for memory in memories:
+        memory_id = str(memory.get("id"))
+        supersedes = memory.get("supersedes")
+        if supersedes and str(supersedes) in ids_in_list and str(supersedes) != memory_id:
+            successor_of.setdefault(str(supersedes), memory_id)
+    for memory in memories:
+        memory_id = str(memory.get("id"))
+        superseded_by = memory.get("superseded_by")
+        if superseded_by and str(superseded_by) in ids_in_list and str(superseded_by) != memory_id:
+            successor_of[memory_id] = str(superseded_by)
+    if not successor_of:
+        return list(memories), 0
+    items = list(memories)
+    moved: set[str] = set()
+    reorders = 0
+    index = 0
+    while index < len(items):
+        ancestor_id = str(items[index].get("id"))
+        successor_id = successor_of.get(ancestor_id)
+        if successor_id is None or successor_id in moved:
+            index += 1
+            continue
+        successor_index = next(
+            (position for position, item in enumerate(items) if str(item.get("id")) == successor_id),
+            None,
+        )
+        if successor_index is None or successor_index <= index:
+            index += 1
+            continue
+        items.insert(index, items.pop(successor_index))
+        moved.add(successor_id)
+        reorders += 1
+        # Stay on this index: the replacement now sits here and may itself
+        # be a superseded ancestor of a later pack-mate (chains reorder
+        # newest-first in one pass).
+    return items, reorders
+
+
 def _memory_title(memory: JsonObject) -> str:
     for key in ("title", "canonical_text", "summary", "memory_key"):
         value = memory.get(key)
@@ -708,6 +865,28 @@ def _memory_reference(memory: JsonObject) -> JsonObject:
         "title": _memory_title(memory),
         "memory_type": memory.get("memory_type"),
     }
+
+
+def _source_event_time(source: JsonObject) -> datetime | None:
+    """Best-effort event timestamp of a source row, or None.
+
+    Precedence: ``source_created_at`` (the source's own event time, when
+    the connector recorded one), then the first parseable
+    ``SOURCE_EVENT_METADATA_KEYS`` value in ``metadata_json`` (connectors
+    that only stamp dates into metadata, e.g. imported chat sessions),
+    then ``captured_at`` (ingest write time — the least honest signal,
+    kept last so imported historical sources are not dated "today").
+    """
+    event = parse_event_datetime(source.get("source_created_at"))
+    if event is not None:
+        return event
+    metadata = source.get("metadata_json")
+    if isinstance(metadata, Mapping):
+        for key in SOURCE_EVENT_METADATA_KEYS:
+            event = parse_event_datetime(metadata.get(key))
+            if event is not None:
+                return event
+    return parse_event_datetime(source.get("captured_at"))
 
 
 def _optional_search_filters(
@@ -933,6 +1112,41 @@ class VNextRetrievalService:
         rows = [entry[3] for entry in ranked[:limit]]
         return rows, GRAPH_STAGE_ENABLED, matched_entities
 
+    def _memory_temporal_rows(
+        self,
+        *,
+        anchor: TemporalAnchor,
+        domains: list[str],
+        sensitivity_allowed: list[str],
+        limit: int,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
+    ) -> tuple[list[JsonObject], str]:
+        """Temporal-anchor stage: ``(rows, stage_status)``.
+
+        Memories whose event window intersects the parsed anchor window,
+        via the store's ``search_memories_by_time`` (proximity-to-center
+        order). Duck-typed like the other optional stages: stores without
+        the method degrade to an honest disabled status instead of
+        failing. The rows join RRF as one more ranked list, so the anchor
+        is a ranking signal, never a filter.
+        """
+        search_memories_by_time = getattr(self.store, "search_memories_by_time", None)
+        if not callable(search_memories_by_time):
+            return [], TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT
+        rows = search_memories_by_time(
+            window_start=anchor.window_start,
+            window_end=anchor.window_end,
+            window_center=anchor.window_center,
+            domains=domains or None,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=limit,
+            **_optional_search_filters(memory_types, projects, created_by_agent_ids, run_id),
+        )
+        return list(rows), TEMPORAL_STAGE_ENABLED
+
     def _source_stage_lists(
         self,
         *,
@@ -941,6 +1155,7 @@ class VNextRetrievalService:
         sensitivity_allowed: list[str],
         limit: int,
         winning_memories: Sequence[JsonObject],
+        anchor: TemporalAnchor | None = None,
     ) -> tuple[dict[str, Sequence[JsonObject]], JsonObject]:
         """Ranked source lists for RRF fusion plus the honest stage record.
 
@@ -956,6 +1171,11 @@ class VNextRetrievalService:
           retrieved memory surfaces even with zero lexical overlap.
         - ``title_recency``: the legacy ``search_sources`` lexical list
           (title/author/uri/metadata LIKE, recency-ordered).
+        - ``temporal_anchor`` (only when ``anchor`` is set): the sources
+          the other lists already surfaced whose event date (see
+          ``_source_event_time``) falls inside the anchor window, ordered
+          by proximity to the window center — a rank boost over existing
+          candidates, never a new recall path.
 
         Lists whose store capability is missing (``search_source_chunks``
         / ``get_source``) are skipped with an honest label instead of
@@ -1044,6 +1264,30 @@ class VNextRetrievalService:
         )
         ranked_lists[SOURCE_STAGE_TITLE_RECENCY] = lexical_rows
 
+        # (d) Temporal-anchor rank boost: re-rank the candidates the lists
+        # above already found by proximity to the anchor window's center.
+        # Only sources with a parseable event date inside the window join;
+        # everything stays fusion-honest (a wrong window cannot evict the
+        # content/provenance/lexical hits, only fail to boost).
+        temporal_sources: list[JsonObject] = []
+        if anchor is not None:
+            center = anchor.window_center
+            dated: list[tuple[float, str, JsonObject]] = []
+            seen_dated: set[str] = set()
+            for rows in (chunk_sources, provenance_sources, lexical_rows):
+                for row in rows:
+                    source_id = str(row.get("id"))
+                    if source_id in seen_dated:
+                        continue
+                    seen_dated.add(source_id)
+                    event = _source_event_time(row)
+                    if event is None or not (anchor.window_start <= event < anchor.window_end):
+                        continue
+                    dated.append((abs((event - center).total_seconds()), source_id, row))
+            dated.sort(key=lambda entry: (entry[0], entry[1]))
+            temporal_sources = [row for _distance, _source_id, row in dated]
+            ranked_lists[SOURCE_STAGE_TEMPORAL] = temporal_sources
+
         unique_candidate_ids = {
             str(row.get("id")) for rows in ranked_lists.values() for row in rows
         }
@@ -1055,6 +1299,8 @@ class VNextRetrievalService:
             SOURCE_STAGE_TITLE_RECENCY: len(lexical_rows),
             "chunk_fts_source": chunk_fts_source,
         }
+        if anchor is not None:
+            stage_record[SOURCE_STAGE_TEMPORAL] = len(temporal_sources)
         return ranked_lists, stage_record
 
     def compile_context_pack(self, request: VNextRetrievalRequest) -> JsonObject:
@@ -1080,6 +1326,37 @@ class VNextRetrievalService:
         if depth == CONTEXT_DEPTH_MINIMAL:
             max_items = min(CONTEXT_DEPTH_MINIMAL_MAX_ITEMS, max_items)
         memory_candidate_limit = max(max_items * 2, max_items)
+        # Temporal anchor from generic query text only. The reference time
+        # for relative phrases is the caller's now (request.reference_time)
+        # or the current UTC time; the parser itself never reads the clock.
+        anchor = parse_temporal_anchor(
+            request.query,
+            reference_time=(
+                request.reference_time if request.reference_time is not None else datetime.now(UTC)
+            ),
+        )
+
+        # ---- coverage mode (aggregation intent) begin --------------------
+        # Gated by the query surface ONLY (vnext_coverage_query.detect_
+        # aggregation_intent); when the gate stays None — every ordinary
+        # query — no coverage block in this method runs and the pack is
+        # byte-identical to the ungated pipeline. When it fires, the
+        # memory candidate POOL deepens here (selection slot counts never
+        # change) so the instance-diversity pass below has distinct
+        # instances to promote into the slots. The source pool is NOT
+        # deepened: measured on the free coverage probe, a deeper source
+        # pool lets tail items that appear in two ranked lists outscore
+        # single-list evidence and all-coverage regressed. minimal depth
+        # keeps its cheapest-useful-call promise: no detection, no
+        # coverage work.
+        coverage_intent = (
+            None
+            if depth == CONTEXT_DEPTH_MINIMAL
+            else vnext_coverage_query.detect_aggregation_intent(str(interpretation["query"]))
+        )
+        if coverage_intent is not None:
+            memory_candidate_limit *= vnext_coverage_query.COVERAGE_POOL_MULTIPLIER
+        # ---- coverage mode (aggregation intent) end ----------------------
 
         fts_rows, fts_source = self._memory_fts_rows(
             query=request.query,
@@ -1117,11 +1394,72 @@ class VNextRetrievalService:
                 created_by_agent_ids=created_by_agent_ids,
                 run_id=filter_run_id,
             )
+        # Temporal-anchor stage: only exists when the query carried a
+        # parseable date phrase. One more RRF list (never a filter), plus
+        # an honest trace record; both are absent when no anchor parses.
+        temporal_rows: list[JsonObject] = []
+        temporal_stage_record: JsonObject | None = None
+        if anchor is not None:
+            if depth == CONTEXT_DEPTH_MINIMAL:
+                temporal_stage = STAGE_DISABLED_MINIMAL
+            else:
+                temporal_rows, temporal_stage = self._memory_temporal_rows(
+                    anchor=anchor,
+                    domains=domains,
+                    sensitivity_allowed=sensitivity_allowed,
+                    limit=memory_candidate_limit,
+                    memory_types=memory_types,
+                    projects=projects,
+                    created_by_agent_ids=created_by_agent_ids,
+                    run_id=filter_run_id,
+                )
+            temporal_stage_record = {
+                "source": "temporal_anchor",
+                "status": temporal_stage,
+                "window": [anchor.window_start.isoformat(), anchor.window_end.isoformat()],
+                "parsed_from": anchor.parsed_from,
+                "candidate_count": len(temporal_rows),
+            }
         memory_lists: dict[str, Sequence[JsonObject]] = {"fts": fts_rows}
         if vector_stage == VECTOR_STAGE_ENABLED:
             memory_lists["vector"] = vector_rows
         if graph_stage == GRAPH_STAGE_ENABLED:
             memory_lists["graph"] = graph_rows
+        if temporal_stage_record is not None and temporal_stage_record["status"] == TEMPORAL_STAGE_ENABLED:
+            memory_lists["temporal_anchor"] = temporal_rows
+
+        # ---- coverage mode (aggregation intent) begin --------------------
+        # Multi-clause aggregations ("X and Y", comparative pairs) run
+        # capped FTS-only sub-retrievals per clause. The rows do NOT join
+        # the RRF score fight (measured on the free coverage probe, naive
+        # fused clause lists let generic clause fragments displace evidence
+        # — all-coverage regressed); instead they backfill below: clause
+        # rows enter the candidate pool right behind the fused winners, so
+        # they can only fill slots the diversity pass frees. Dormant unless
+        # the intent gate fired above.
+        coverage_clauses: list[str] = []
+        coverage_clause_lists: dict[str, list[JsonObject]] = {}
+        coverage_clause_candidate_count = 0
+        if coverage_intent is not None:
+            coverage_clauses = vnext_coverage_query.decompose_clauses(str(interpretation["query"]))
+            if len(coverage_clauses) >= 2:
+                for clause_index, clause in enumerate(coverage_clauses, start=1):
+                    clause_rows, _clause_fts_source = self._memory_fts_rows(
+                        query=clause,
+                        domains=domains,
+                        sensitivity_allowed=sensitivity_allowed,
+                        limit=min(max_items, vnext_coverage_query.COVERAGE_CLAUSE_FETCH_LIMIT),
+                        memory_types=memory_types,
+                        projects=projects,
+                        created_by_agent_ids=created_by_agent_ids,
+                        run_id=filter_run_id,
+                    )
+                    if clause_rows:
+                        coverage_clause_lists[vnext_coverage_query.clause_stage_name(clause_index)] = list(
+                            clause_rows
+                        )
+                        coverage_clause_candidate_count += len(clause_rows)
+        # ---- coverage mode (aggregation intent) end ----------------------
 
         # Memories fuse before the source stage runs: the provenance list
         # of the fused sources stage follows the winning memory hits.
@@ -1133,13 +1471,86 @@ class VNextRetrievalService:
             limit=max_items,
         )
 
+        # The provenance list of the fused sources stage follows these
+        # winners; captured here, before any coverage-mode reordering, so
+        # the source stage sees the same winners with or without coverage.
+        provenance_memories = [candidate.item for candidate in memory_candidates if candidate.selected]
+
+        # ---- coverage mode (aggregation intent) begin --------------------
+        # (1) Clause backfill: sub-retrieval rows enter the candidate pool
+        #     immediately behind the fused winners (unselected), so each
+        #     clause's best instances are first in line for any slot the
+        #     diversity pass frees — without ever displacing a fused
+        #     winner on score.
+        # (2) Instance diversity over the memories: re-statements of an
+        #     already-kept memory's provenance source are demoted behind
+        #     memories from distinct sources, so an aggregation pack
+        #     carries every instance instead of one instance restated.
+        #     Group-key only — NO text-similarity demotion here, because
+        #     two instances of the same recurring fact captured from
+        #     different sources legitimately share text and are exactly
+        #     what aggregation questions need.
+        # The pass reorders pack slots only: provenance_memories above is
+        # captured pre-diversity, so the source stage stays decoupled and
+        # a demotion can never knock a session out of the pack's source
+        # slots. Every baseline-selected memory's source stays represented
+        # (first memory per source is never demoted), so the pack's
+        # session coverage is a superset of the ungated pack's. Dormant
+        # unless the gate fired.
+        coverage_memory_demotions = 0
+        if coverage_intent is not None:
+            if coverage_clause_lists:
+                seen_candidate_ids = {str(candidate.item.get("id")) for candidate in memory_candidates}
+                backfill_candidates: list[RetrievalCandidate] = []
+                for stage_name, stage_rank, row in vnext_coverage_query.interleave_clause_rows(
+                    coverage_clause_lists
+                ):
+                    row_id = str(row.get("id"))
+                    if row_id in seen_candidate_ids:
+                        continue
+                    if _allowed(row, domains=domains, sensitivity_allowed=sensitivity_allowed) is not None:
+                        continue
+                    seen_candidate_ids.add(row_id)
+                    backfill_candidates.append(
+                        RetrievalCandidate(
+                            item=row,
+                            target_type="memory",
+                            rank=0,  # reassigned below
+                            rrf_score=0.0,  # honest: not part of RRF fusion
+                            stage_ranks={stage_name: stage_rank},
+                            selected=False,
+                            exclusion_reason="trimmed_by_limit",
+                        )
+                    )
+                if backfill_candidates:
+                    winners = [candidate for candidate in memory_candidates if candidate.selected]
+                    rest = [candidate for candidate in memory_candidates if not candidate.selected]
+                    memory_candidates = [
+                        replace(candidate, rank=position)
+                        for position, candidate in enumerate(
+                            [*winners, *backfill_candidates, *rest], start=1
+                        )
+                    ]
+            # Window spans the whole deepened pool (baseline pool is
+            # 2 x slots, coverage deepens it x POOL_MULTIPLIER), so the
+            # walk can reach distinct-source instances however deep FTS
+            # ranked them; group-key checks are O(1) per candidate.
+            memory_candidates, coverage_memory_demotions = vnext_coverage_query.apply_instance_diversity(
+                memory_candidates,
+                group_key_for=vnext_coverage_query.memory_provenance_group_key,
+                limit=max_items,
+                consider_multiplier=2 * vnext_coverage_query.COVERAGE_POOL_MULTIPLIER,
+            )
+        # ---- coverage mode (aggregation intent) end ----------------------
+
         if sources_enabled:
             source_lists, sources_stage_record = self._source_stage_lists(
                 query=request.query,
                 domains=domains,
                 sensitivity_allowed=sensitivity_allowed,
                 limit=max(DEFAULT_SOURCE_LIMIT, max_items),
-                winning_memories=[candidate.item for candidate in memory_candidates if candidate.selected],
+                winning_memories=provenance_memories,
+                anchor=anchor,
             )
         else:
             source_lists = {}
@@ -1161,6 +1572,33 @@ class VNextRetrievalService:
             sensitivity_allowed=sensitivity_allowed,
             limit=DEFAULT_SOURCE_LIMIT,
         )
+        # ---- coverage mode (aggregation intent) begin --------------------
+        # Instance-diversity pass over the fused sources: near-verbatim
+        # duplicate sources are demoted behind distinct same-topic
+        # instances so aggregation questions see every instance instead of
+        # the same content repeated. Dormant (coverage_record is None, no
+        # trace stage) unless the intent gate fired above.
+        coverage_record: JsonObject | None = None
+        if coverage_intent is not None:
+            coverage_text_for = vnext_coverage_query.source_chunk_text_provider(
+                getattr(self.store, "list_source_chunks", None)
+            )
+            coverage_source_demotions = 0
+            if coverage_text_for is not None:
+                source_candidates, coverage_source_demotions = vnext_coverage_query.apply_instance_diversity(
+                    source_candidates,
+                    text_for=coverage_text_for,
+                    limit=DEFAULT_SOURCE_LIMIT,
+                )
+            coverage_record = vnext_coverage_query.coverage_stage_record(
+                intent=coverage_intent,
+                clause_count=len(coverage_clauses),
+                clause_candidate_count=coverage_clause_candidate_count,
+                source_diversity_enabled=coverage_text_for is not None,
+                memory_demotions=coverage_memory_demotions,
+                source_demotions=coverage_source_demotions,
+            )
+        # ---- coverage mode (aggregation intent) end ----------------------
         open_loop_candidates = _fused_candidates(
             {"listing": open_loop_rows},
             target_type="open_loop",
@@ -1171,6 +1609,10 @@ class VNextRetrievalService:
 
         ranked_memories = [_compact_item(candidate.item) for candidate in memory_candidates if candidate.selected]
         ordered_memories = _order_memories_for_strategy(ranked_memories, strategy)
+        # Current-version preference (demote-not-drop): when a supersession
+        # pair leaks into the same pack, the replacement packs directly
+        # above its superseded ancestor; every other item keeps its order.
+        ordered_memories, supersession_reorders = _prefer_current_versions(ordered_memories)
         ranked_sources = [_compact_item(candidate.item) for candidate in source_candidates if candidate.selected]
         ranked_open_loops = [_compact_item(candidate.item) for candidate in open_loop_candidates if candidate.selected]
 
@@ -1226,10 +1668,25 @@ class VNextRetrievalService:
         source_candidates = _apply_budget_exclusions(source_candidates, selected_sources)
 
         now = datetime.now(UTC)
+        # Pack-local back-pointers: a pack-mate's supersedes pointer marks
+        # its ancestor as superseded even when the ancestor row never
+        # received the superseded_by column (one-sided patches). First
+        # claim wins, mirroring _prefer_current_versions.
+        superseded_by_packmate: dict[str, str] = {}
+        for memory in selected_memories:
+            supersedes_pointer = memory.get("supersedes")
+            if supersedes_pointer:
+                superseded_by_packmate.setdefault(str(supersedes_pointer), str(memory.get("id")))
         for memory in selected_memories:
             staleness = _staleness_note(memory, now=now)
             if staleness is not None:
                 memory["staleness"] = staleness
+            validity = _validity_annotation(
+                memory,
+                superseded_by_hint=superseded_by_packmate.get(str(memory.get("id"))),
+            )
+            if validity is not None:
+                memory["validity"] = validity
 
         supersession_context: list[JsonObject] | None = None
         if depth == CONTEXT_DEPTH_HIGH:
@@ -1273,6 +1730,7 @@ class VNextRetrievalService:
             "context_depth": depth,
             "budget_strategy": strategy,
             "budget": budget.to_record(),
+            "supersession_reorders": supersession_reorders,
             "stages": {
                 "fts": {"source": fts_source, "candidate_count": len(fts_rows)},
                 "vector": {"status": vector_stage, "candidate_count": len(vector_rows)},
@@ -1289,11 +1747,17 @@ class VNextRetrievalService:
             "selected": selected_trace,
             "excluded_counts": excluded_counts,
         }
+        if temporal_stage_record is not None:
+            trace["stages"]["temporal_anchor"] = temporal_stage_record  # type: ignore[index]
         if supersession_context is not None:
             trace["stages"]["supersession"] = {  # type: ignore[index]
                 "status": SUPERSESSION_STAGE_ENABLED,
                 "candidate_count": len(supersession_context),
             }
+        if coverage_record is not None:
+            # coverage mode (aggregation intent): absent when dormant so
+            # ungated traces stay byte-identical.
+            trace["stages"][vnext_coverage_query.COVERAGE_STAGE] = coverage_record  # type: ignore[index]
         pack: JsonObject = {
             "context_pack_id": context_pack_id,
             "query_interpretation": interpretation,
@@ -1342,6 +1806,23 @@ class VNextRetrievalService:
             "agent_identity": request.agent_identity,
             "policy_decision": request.policy_decision,
         })
+        # -- entity grounding (vnext_grounding integration; single block) ------
+        # Pack-level retrieval statistic: salient query entities with ZERO
+        # corpus support (entity substrate miss AND one-row FTS probe miss).
+        # Read-only, additive, and absent for every ungated query -- packs
+        # without unsupported entities are byte-identical to the old path.
+        # Skipped at minimal depth to preserve its cheapest-call promise.
+        if depth != CONTEXT_DEPTH_MINIMAL:
+            grounding = compute_query_grounding(
+                self.store,
+                request.query,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+            )
+            if grounding is not None:
+                pack["grounding"] = grounding
+                trace["grounding"] = dict(grounding)
+        # -- end entity grounding ----------------------------------------------
         append_event(
             self.store,
             event_type="retrieval.context_pack_compiled",
@@ -1614,14 +2095,19 @@ __all__ = [
     "SOURCES_STAGE_DISABLED_BY_FLAG",
     "SOURCE_CHUNK_CANDIDATE_MULTIPLIER",
     "SOURCE_CHUNK_STAGE_DISABLED_NO_STORE_SUPPORT",
+    "SOURCE_EVENT_METADATA_KEYS",
     "SOURCE_STAGE_CHUNK_FTS",
     "SOURCE_STAGE_PROVENANCE",
+    "SOURCE_STAGE_TEMPORAL",
     "SOURCE_STAGE_TITLE_RECENCY",
     "STAGE_DISABLED_MINIMAL",
     "STALENESS_NOTE_AFTER_DAYS",
     "SUPERSESSION_CHAIN_HOP_LIMIT",
     "SUPERSESSION_STAGE_ENABLED",
+    "TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT",
+    "TEMPORAL_STAGE_ENABLED",
     "TOKEN_ESTIMATE_CHARS_PER_TOKEN",
+    "VALID_TO_UNBOUNDED_YEAR",
     "VECTOR_STAGE_DISABLED_NO_PROVIDER",
     "VECTOR_STAGE_DISABLED_NO_STORE_SUPPORT",
     "VECTOR_STAGE_ENABLED",

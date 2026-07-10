@@ -6,6 +6,7 @@ import type {
   MemoryReviewQueuePriorityMode,
   MemoryReviewRecord,
 } from "../lib/api";
+import { memoryProvenanceLabel } from "../lib/memory-provenance";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
@@ -152,6 +153,9 @@ export function MemoryList({
               <div className="list-row__meta">
                 <span className="meta-pill mono">{memory.id}</span>
                 <span className="meta-pill">{memory.source_event_ids.length} source events</span>
+                {memoryProvenanceLabel(memory) ? (
+                  <span className="meta-pill">{memoryProvenanceLabel(memory)}</span>
+                ) : null}
               </div>
             </Link>
           ))}

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+import itertools
+import json
 import re
 import sqlite3
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
+from alicebot_api import vnext_retrieval as vnext_retrieval_module
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
@@ -26,9 +29,12 @@ from alicebot_api.vnext_retrieval import (
     RRF_K,
     SOURCES_STAGE_DISABLED_BY_FLAG,
     SOURCE_CHUNK_STAGE_DISABLED_NO_STORE_SUPPORT,
+    SOURCE_STAGE_TEMPORAL,
     STAGE_DISABLED_MINIMAL,
     STALENESS_NOTE_AFTER_DAYS,
     SUPERSESSION_STAGE_ENABLED,
+    TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT,
+    TEMPORAL_STAGE_ENABLED,
     VECTOR_STAGE_DISABLED_NO_PROVIDER,
     VECTOR_STAGE_ENABLED,
     VNextRetrievalRequest,
@@ -101,6 +107,7 @@ class InMemoryVNextRetrievalStore:
         self.memory_search_kwargs: list[dict[str, object]] = []
         self.fts_match_any_queries: list[str] = []
         self.chunk_match_any_queries: list[str] = []
+        self.time_search_calls: list[dict[str, object]] = []
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
         self.events.append(event)
@@ -223,6 +230,45 @@ class InMemoryVNextRetrievalStore:
         )
         return rows[:limit]
 
+    def search_memories_by_time(
+        self,
+        *,
+        window_start: datetime,
+        window_end: datetime,
+        window_center: datetime | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 50,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
+        include_expired: bool = False,
+    ) -> list[dict[str, object]]:
+        del domains, sensitivity_allowed, include_expired
+        self.time_search_calls.append({"window_start": window_start, "window_end": window_end})
+        center = window_center if window_center is not None else window_start + (window_end - window_start) / 2
+        dated: list[tuple[float, str, dict[str, object]]] = []
+        for row in self.memories:
+            raw = row.get("valid_from") or row.get("first_seen_at") or row.get("created_at")
+            if not isinstance(raw, str):
+                continue
+            event = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if event.tzinfo is None:
+                event = event.replace(tzinfo=UTC)
+            if not (window_start <= event < window_end):
+                continue
+            dated.append((abs((event - center).total_seconds()), str(row.get("id")), row))
+        dated.sort(key=lambda entry: (entry[0], entry[1]))
+        rows = self._apply_filters(
+            [row for _distance, _row_id, row in dated],
+            memory_types=memory_types,
+            projects=projects,
+            created_by_agent_ids=created_by_agent_ids,
+            run_id=run_id,
+        )
+        return rows[:limit]
+
     def list_events(
         self,
         *,
@@ -292,6 +338,9 @@ class InMemoryVNextRetrievalStore:
             if matched:
                 rows.append(chunk)
         return rows[:limit]
+
+    def list_source_chunks(self, source_id: str) -> list[dict[str, object]]:
+        return [chunk for chunk in self.source_chunks if str(chunk.get("source_id")) == str(source_id)]
 
     def list_open_loops(
         self,
@@ -2391,6 +2440,287 @@ def test_high_depth_supersession_chains_guard_against_cycles_and_cap_hops() -> N
     ]
 
 
+# -- validity annotations and current-version preference ----------------------------
+
+
+def test_pack_items_carry_validity_only_when_temporal_signal_exists() -> None:
+    plain = _memory_row("memory-plain", "Alice validity plain fact.")
+    windowed = _memory_row(
+        "memory-window",
+        "Alice validity gym membership offer.",
+        valid_from="2026-05-30T00:00:00Z",
+        valid_to="2026-08-01T00:00:00Z",
+    )
+    open_ended = _memory_row(
+        "memory-open",
+        "Alice validity new address fact.",
+        valid_from="2026-06-15T00:00:00Z",
+    )
+    sentinel = _memory_row(
+        "memory-sentinel",
+        "Alice validity unexpired fact.",
+        valid_to="9999-12-31T23:59:59Z",
+    )
+    corrected = _memory_row(
+        "memory-corrected",
+        "Alice validity corrected commute fact.",
+        metadata_json={
+            "agentic_memory": {
+                "lifecycle_status": "corrected",
+                "corrections": [
+                    {"corrected_at": "2026-06-01T00:00:00Z", "previous_text": "old"},
+                    {"corrected_at": "2026-07-01T00:00:00Z", "previous_text": "older"},
+                ],
+            }
+        },
+    )
+    store = InMemoryVNextRetrievalStore(
+        memories=[plain, windowed, open_ended, sentinel, corrected],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice validity")
+    )
+
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    # Schema stability: rows without temporal/supersession signal gain NO key.
+    assert "validity" not in by_id["memory-plain"]
+    assert by_id["memory-window"]["validity"] == {
+        "valid_from": "2026-05-30T00:00:00+00:00",
+        "valid_to": "2026-08-01T00:00:00+00:00",
+    }
+    # Unbounded windows omit valid_to entirely.
+    assert by_id["memory-open"]["validity"] == {"valid_from": "2026-06-15T00:00:00+00:00"}
+    # The far-future "no expiry" stand-in (year >= VALID_TO_UNBOUNDED_YEAR)
+    # is not a validity signal.
+    assert "validity" not in by_id["memory-sentinel"]
+    # In-place corrections surface the newest corrected_at.
+    assert by_id["memory-corrected"]["validity"] == {"corrected_at": "2026-07-01T00:00:00+00:00"}
+    assert pack["trace"]["supersession_reorders"] == 0
+
+
+def test_pack_ranks_replacement_above_superseded_ancestor_and_traces_the_reorder() -> None:
+    ancestor = _memory_row(
+        "memory-old-color",
+        "Alice preference check: favorite color is blue.",
+        superseded_by="memory-new-color",
+    )
+    bystander = _memory_row("memory-bystander", "Alice preference check unrelated note.")
+    replacement = _memory_row(
+        "memory-new-color",
+        "Alice preference check: favorite color is green.",
+        supersedes="memory-old-color",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[ancestor, bystander, replacement], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice preference check")
+    )
+
+    # Fused (FTS) order was ancestor, bystander, replacement; only the
+    # supersession pair is reordered -- the replacement moves directly
+    # above its ancestor, and the ancestor keeps its slot ahead of the
+    # bystander (demote-not-drop, nothing is removed).
+    assert [memory["id"] for memory in pack["relevant_memories"]] == [
+        "memory-new-color",
+        "memory-old-color",
+        "memory-bystander",
+    ]
+    assert pack["trace"]["supersession_reorders"] == 1
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    assert by_id["memory-old-color"]["validity"] == {
+        "superseded": True,
+        "superseded_by_memory_id": "memory-new-color",
+    }
+    assert by_id["memory-new-color"]["validity"] == {"supersedes_memory_id": "memory-old-color"}
+    assert "validity" not in by_id["memory-bystander"]
+    # The trace keeps the honest fused ranking; the reorder is reported
+    # only through the counter.
+    trace_ranks = {
+        record["target_id"]: record["rank"]
+        for record in pack["trace"]["selected"]
+        if record["target_type"] == "memory"
+    }
+    assert trace_ranks == {"memory-old-color": 1, "memory-bystander": 2, "memory-new-color": 3}
+
+
+def test_pack_annotates_one_sided_supersedes_pointer_via_packmate() -> None:
+    # The ancestor never received the superseded_by back-pointer; only the
+    # replacement's supersedes side exists. The pack-local hint still
+    # annotates the ancestor and the pair still reorders.
+    ancestor = _memory_row("memory-old-office", "Alice relocation office is in Austin.")
+    replacement = _memory_row(
+        "memory-new-office",
+        "Alice relocation office moved to Denver.",
+        supersedes="memory-old-office",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[ancestor, replacement], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice relocation office")
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == [
+        "memory-new-office",
+        "memory-old-office",
+    ]
+    assert pack["trace"]["supersession_reorders"] == 1
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    assert by_id["memory-old-office"]["validity"] == {
+        "superseded": True,
+        "superseded_by_memory_id": "memory-new-office",
+    }
+
+
+def test_pack_keeps_order_when_replacement_already_ranks_above_ancestor() -> None:
+    replacement = _memory_row(
+        "memory-new-plan",
+        "Alice rollout plan ships in September.",
+        supersedes="memory-old-plan",
+    )
+    ancestor = _memory_row(
+        "memory-old-plan",
+        "Alice rollout plan ships in July.",
+        superseded_by="memory-new-plan",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[replacement, ancestor], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice rollout plan")
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == [
+        "memory-new-plan",
+        "memory-old-plan",
+    ]
+    assert pack["trace"]["supersession_reorders"] == 0
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    assert by_id["memory-old-plan"]["validity"]["superseded"] is True
+
+
+def test_supersession_reorder_terminates_on_corrupt_pointer_cycles() -> None:
+    # Corrupt data: two rows claim to supersede each other. Each side moves
+    # at most once, so the reorder terminates deterministically instead of
+    # looping, and both rows are annotated as superseded.
+    cyclic_a = _memory_row("memory-a", "Alice cycle pair row alpha.", superseded_by="memory-b")
+    cyclic_b = _memory_row("memory-b", "Alice cycle pair row beta.", superseded_by="memory-a")
+    store = InMemoryVNextRetrievalStore(memories=[cyclic_a, cyclic_b], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Alice cycle pair")
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-a", "memory-b"]
+    assert pack["trace"]["supersession_reorders"] == 2
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    assert by_id["memory-a"]["validity"]["superseded"] is True
+    assert by_id["memory-b"]["validity"]["superseded"] is True
+
+
+def test_properly_superseded_row_is_already_excluded_from_packs_on_sqlite() -> None:
+    # The product supersede flows (review supersede-existing, agentic undo)
+    # retire the old row with status=superseded, and the search discipline
+    # (status IN ('active','accepted')) excludes it from every stage. The
+    # annotation work never needs to demote such rows -- they are absent --
+    # and the replacement still carries its supersedes pointer annotation.
+    store = _sqlite_retrieval_store()
+    old = store.create_memory(
+        {
+            "memory_key": "ku.gym.old",
+            "memory_type": "semantic",
+            "title": "Gym membership",
+            "canonical_text": "The gym membership is with FitLife near the old office.",
+            "status": "active",
+            "domain": "personal",
+            "sensitivity": "private",
+            "value": {"text": "gym membership FitLife"},
+        }
+    )
+    replacement = store.create_memory(
+        {
+            "memory_key": "ku.gym.new",
+            "memory_type": "semantic",
+            "title": "Gym membership (updated)",
+            "canonical_text": "The gym membership moved to PowerHouse.",
+            "status": "active",
+            "supersedes": str(old["id"]),
+            "domain": "personal",
+            "sensitivity": "private",
+            "value": {"text": "gym membership PowerHouse"},
+        }
+    )
+    store.update_memory(
+        memory_id=str(old["id"]),
+        patch={"status": "superseded", "superseded_by": str(replacement["id"])},
+        actor_type="user",
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="gym membership")
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == [str(replacement["id"])]
+    assert pack["relevant_memories"][0]["validity"] == {"supersedes_memory_id": str(old["id"])}
+    assert pack["trace"]["supersession_reorders"] == 0
+
+
+def test_knowledge_update_pack_prefers_correction_on_sqlite() -> None:
+    # Knowledge-update shape on the real store: value A is committed, a
+    # correction B supersedes it, but only the pointer lands (the row is
+    # never retired, so both versions stay searchable). The pack must put
+    # B above the surviving A and annotate A as superseded.
+    store = _sqlite_retrieval_store()
+    stale = store.create_memory(
+        {
+            "memory_key": "preference.favorite-color",
+            "memory_type": "preference",
+            "title": "Favorite color",
+            "canonical_text": (
+                "Favorite color: the user's favorite color is blue. "
+                "Favorite color blue came up again while shopping."
+            ),
+            "status": "active",
+            "domain": "personal",
+            "sensitivity": "private",
+            "value": {"text": "favorite color blue"},
+        }
+    )
+    correction = store.create_memory(
+        {
+            "memory_key": "preference.favorite-color.corrected",
+            "memory_type": "preference",
+            "title": "Favorite color (corrected)",
+            "canonical_text": "Correction: the user's favorite color is green now.",
+            "status": "active",
+            "supersedes": str(stale["id"]),
+            "domain": "personal",
+            "sensitivity": "private",
+            "value": {"text": "favorite color green"},
+        }
+    )
+    store.update_memory(
+        memory_id=str(stale["id"]),
+        patch={"superseded_by": str(correction["id"])},
+        actor_type="system",
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="What is the user's favorite color?")
+    )
+
+    ordered_ids = [memory["id"] for memory in pack["relevant_memories"]]
+    assert set(ordered_ids) == {str(stale["id"]), str(correction["id"])}
+    assert ordered_ids.index(str(correction["id"])) < ordered_ids.index(str(stale["id"]))
+    assert pack["trace"]["supersession_reorders"] == 1
+    by_id = {memory["id"]: memory for memory in pack["relevant_memories"]}
+    assert by_id[str(stale["id"])]["validity"] == {
+        "superseded": True,
+        "superseded_by_memory_id": str(correction["id"]),
+    }
+    assert by_id[str(correction["id"])]["validity"] == {"supersedes_memory_id": str(stale["id"])}
+
+
 def test_context_depth_low_matches_default_behavior_regression_pin() -> None:
     def build_store() -> InMemoryVNextRetrievalStore:
         return InMemoryVNextRetrievalStore(
@@ -2472,3 +2802,511 @@ def test_context_depth_low_matches_default_behavior_regression_pin() -> None:
     low_pack.pop("context_pack_id")
     assert low_pack == default_pack
     assert default_pack["context_depth"] == "low"
+
+
+# -- coverage mode (aggregation intent) ---------------------------------------
+
+
+def _coverage_dormant_store() -> InMemoryVNextRetrievalStore:
+    return InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row("memory-decision", "Meridian roadmap release decision.", memory_type="decision"),
+            _memory_row("memory-note", "Meridian roadmap plain note."),
+        ],
+        sources=[
+            {
+                "id": "source-1",
+                "source_type": "manual_text",
+                "title": "Meridian roadmap source",
+                "content_hash": "sha256:dormant-pin",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {},
+            }
+        ],
+        open_loops=[
+            {
+                "id": "loop-1",
+                "title": "Meridian roadmap follow-up",
+                "status": "open",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        ],
+        provenance_links=[
+            {
+                "id": "link-1",
+                "target_type": "memory",
+                "target_id": "memory-decision",
+                "source_id": "source-1",
+                "source_chunk_id": "chunk-1",
+                "quote": "Meridian roadmap release decision.",
+                "evidence_role": "quoted_from",
+                "confidence": 0.9,
+            }
+        ],
+        source_chunks=[
+            {"id": "chunk-1", "source_id": "source-1", "text": "Meridian roadmap release decision recorded."}
+        ],
+    )
+
+
+def test_ungated_query_takes_the_byte_identical_coverage_free_path(monkeypatch) -> None:
+    """Regression guard: without aggregation intent, coverage mode must not exist.
+
+    Compiles the same non-aggregation request twice — once with the real
+    detector (which stays dormant) and once with the entire coverage
+    feature hard-disabled — with deterministic pack ids. The two packs
+    must serialize byte-identically, and no coverage vocabulary may leak
+    into the pack anywhere.
+    """
+    stores: list[InMemoryVNextRetrievalStore] = []
+
+    def compile_pack() -> dict[str, object]:
+        counter = itertools.count(1)
+        monkeypatch.setattr(vnext_retrieval_module, "uuid4", lambda: UUID(int=next(counter)))
+        store = _coverage_dormant_store()
+        stores.append(store)
+        return VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query="Meridian roadmap release status",
+                domains=("project",),
+                trace_id="trace-dormant-pin",
+            )
+        )
+
+    dormant_pack = compile_pack()
+    monkeypatch.setattr(
+        vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda query: None
+    )
+    hard_disabled_pack = compile_pack()
+
+    assert json.dumps(dormant_pack, sort_keys=True, default=str) == json.dumps(
+        hard_disabled_pack, sort_keys=True, default=str
+    )
+    assert "coverage" not in json.dumps(dormant_pack, default=str)
+    assert set(dormant_pack["trace"]["stages"].keys()) == {
+        "fts",
+        "vector",
+        "graph",
+        "sources",
+        "open_loops",
+        "contradictions",
+        "recent_changes",
+    }
+    # Identical store call shape: exactly one memory FTS pass, no clause
+    # sub-retrievals, on both runs.
+    assert [store.memory_search_kwargs for store in stores] == [
+        stores[0].memory_search_kwargs,
+        stores[0].memory_search_kwargs,
+    ]
+    assert len(stores[0].memory_search_kwargs) == 1
+
+
+def test_minimal_depth_keeps_coverage_mode_dormant_for_aggregation_queries() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-game", "Hosted board game night with friends.")],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="How many times did I host board game night?", context_depth="minimal")
+    )
+
+    assert "coverage" not in json.dumps(pack, default=str)
+    assert len(store.memory_search_kwargs) == 1
+
+
+_COVERAGE_DUPLICATE_TEXT = "friday board game night with the usual crowd we played catan and ate pizza"
+_COVERAGE_INSTANCE_TEXTS = {
+    "inst-1": "board game night we played azul with sam and casey at the river cafe",
+    "inst-2": "board game night we hosted wingspan for the neighbors on the porch",
+    "inst-3": "board game night with codenames and homemade tacos at dana's loft",
+    "inst-4": "board game night featuring terraforming mars and root with the club",
+    "inst-5": "board game night where gloomhaven ran long and we ordered dumplings",
+    "inst-6": "board game night trying splendor and ticket to ride with visiting cousins",
+}
+
+
+def _instance_diversity_store() -> InMemoryVNextRetrievalStore:
+    """Ten near-verbatim duplicate sessions outranking six distinct instances."""
+    sources: list[dict[str, object]] = []
+    source_chunks: list[dict[str, object]] = []
+
+    def add_source(source_id: str, text: str) -> None:
+        sources.append(
+            {
+                "id": source_id,
+                "source_type": "chat_session",
+                "title": f"Chat session {source_id}",
+                "content_hash": f"sha256:{source_id}",
+                "domain": "unknown",
+                "sensitivity": "internal",
+                "metadata_json": {"session_id": source_id},
+            }
+        )
+        source_chunks.append({"id": f"chunk-{source_id}", "source_id": source_id, "text": text})
+
+    for index in range(1, 11):
+        add_source(f"dupe-{index:02d}", _COVERAGE_DUPLICATE_TEXT)
+    for source_id, text in _COVERAGE_INSTANCE_TEXTS.items():
+        add_source(source_id, text)
+    return InMemoryVNextRetrievalStore(memories=[], sources=sources, source_chunks=source_chunks)
+
+
+def test_aggregation_intent_promotes_distinct_instances_over_near_duplicates(monkeypatch) -> None:
+    """The assigned scenario: 6 instances + 10 near-duplicate distractors.
+
+    Standard retrieval at the 8-slot source limit selects only duplicates;
+    under detected aggregation intent the deeper pool plus the diversity
+    demotion pass captures all six distinct instances.
+    """
+    query = "How many times did I host board game night?"
+    # max_items=16 keeps the source-stage pool deeper than the 8 selection
+    # slots (the source pool is max(8, max_items)); coverage mode itself
+    # never deepens the source pool.
+    request = VNextRetrievalRequest(query=query, max_items=16)
+
+    control_store = _instance_diversity_store()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda q: None
+        )
+        control_pack = VNextRetrievalService(control_store).compile_context_pack(request)
+    control_ids = [str(source["id"]) for source in control_pack["sources"]]
+    assert control_ids == [f"dupe-{index:02d}" for index in range(1, 9)]
+    assert "coverage" not in json.dumps(control_pack, default=str)
+
+    coverage_store = _instance_diversity_store()
+    pack = VNextRetrievalService(coverage_store).compile_context_pack(request)
+
+    selected_ids = [str(source["id"]) for source in pack["sources"]]
+    assert selected_ids == ["dupe-01", *_COVERAGE_INSTANCE_TEXTS, "dupe-02"]
+    assert pack["trace"]["stages"]["coverage_mode"] == {
+        "source": "coverage_mode",
+        "intent": "count",
+        "trigger": "how many",
+        "clauses": 1,
+        "clause_candidate_count": 0,
+        "diversity_status": "enabled",
+        "diversity_demotions": 9,
+        "memory_demotions": 0,
+        "source_demotions": 9,
+    }
+    # Single-clause aggregation: no clause sub-retrievals beyond the main
+    # FTS pass (strict miss + OR fallback on the empty memories fixture).
+    assert len(coverage_store.memory_search_kwargs) == len(control_store.memory_search_kwargs)
+    demoted = [
+        record
+        for record in pack["trace"]["selected"]
+        if record["target_type"] == "source" and record["target_id"].startswith("dupe-")
+    ]
+    assert {record["target_id"] for record in demoted} == {"dupe-01", "dupe-02"}
+
+
+def test_multi_clause_aggregation_backfills_clause_only_memory_into_freed_slots(monkeypatch) -> None:
+    """Clause sub-retrieval rows fill slots the group-diversity pass frees.
+
+    The clause-only memory never displaces a fused winner on score (that
+    configuration measurably regressed coverage); it enters the pool right
+    behind the winners and wins a slot only because a same-source repeat
+    was demoted.
+    """
+    query = "How many hours did I spend on hiking and swimming last month?"
+
+    def build_store() -> InMemoryVNextRetrievalStore:
+        # 24 fillers fill the deepened main pool (max_items=4 -> 4*2*3)
+        # so the swim memory is truncated out of the main FTS list; the
+        # first two fillers share a provenance source, freeing one slot
+        # under group diversity. Filler text matches the main query and
+        # clause 1 ("on" in "session") but never clause 2.
+        fillers = [
+            _memory_row(
+                f"memory-filler-{index:02d}",
+                f"Weekly bread baking session notes volume {index}.",
+                metadata_json={"source_id": "src-shared" if index <= 2 else f"src-{index:02d}"},
+            )
+            for index in range(1, 25)
+        ]
+        swim = _memory_row("memory-swim", "Swimming laps review.", metadata_json={"source_id": "src-swim"})
+        return InMemoryVNextRetrievalStore(memories=[*fillers, swim], sources=[])
+
+    control_store = build_store()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            vnext_retrieval_module.vnext_coverage_query, "detect_aggregation_intent", lambda q: None
+        )
+        control_pack = VNextRetrievalService(control_store).compile_context_pack(
+            VNextRetrievalRequest(query=query, max_items=4)
+        )
+    control_ids = [str(memory["id"]) for memory in control_pack["relevant_memories"]]
+    assert control_ids == ["memory-filler-01", "memory-filler-02", "memory-filler-03", "memory-filler-04"]
+    assert len(control_store.memory_search_kwargs) == 1
+
+    coverage_store = build_store()
+    pack = VNextRetrievalService(coverage_store).compile_context_pack(
+        VNextRetrievalRequest(query=query, max_items=4)
+    )
+
+    selected_ids = [str(memory["id"]) for memory in pack["relevant_memories"]]
+    # filler-02 (same source as filler-01) is demoted; the freed slot goes
+    # to the clause-2 backfill memory, not to filler-05.
+    assert selected_ids == ["memory-filler-01", "memory-filler-03", "memory-filler-04", "memory-swim"]
+    coverage_stage = pack["trace"]["stages"]["coverage_mode"]
+    assert coverage_stage["intent"] == "count"
+    assert coverage_stage["clauses"] == 2
+    assert coverage_stage["clause_candidate_count"] == 5  # 4 clause-1 rows + 1 clause-2 row
+    assert coverage_stage["memory_demotions"] == 1
+    assert coverage_stage["source_demotions"] == 0
+    assert coverage_stage["diversity_demotions"] == 1
+    swim_trace = [
+        record
+        for record in pack["trace"]["selected"]
+        if record["target_type"] == "memory" and record["target_id"] == "memory-swim"
+    ]
+    assert swim_trace[0]["stage_ranks"] == {"coverage_clause_2": 1}
+    assert swim_trace[0]["rrf_score"] == 0.0  # honest: backfill, not fused
+    # The demoted same-source repeat is reported honestly in the trace.
+    assert pack["trace"]["excluded_counts"]["coverage_redundant_demoted"] == 1
+    assert "memory-filler-02" not in selected_ids
+    # One main FTS pass plus one per clause.
+    assert len(coverage_store.memory_search_kwargs) == 3
+
+
+# -- temporal-anchor stage ---------------------------------------------------------
+
+
+def test_temporal_anchor_surfaces_right_dated_memory_over_stronger_lexical_hit() -> None:
+    # Lexically the wrong-dated memory wins FTS rank 1; the temporal list
+    # votes for the right-dated one and RRF flips the final order.
+    wrong_dated = _memory_row(
+        "memory-wrong-date",
+        "Museum visit museum gallery exhibition museum tour",
+        valid_from="2022-08-01T00:00:00Z",
+    )
+    right_dated = _memory_row(
+        "memory-right-date",
+        "Museum visit with a friend downtown",
+        valid_from="2023-03-15T00:00:00Z",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[wrong_dated, right_dated], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Which museum did I visit in March 2023?", max_items=1)
+    )
+
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-right-date"]
+    stage = pack["trace"]["stages"]["temporal_anchor"]
+    assert stage == {
+        "source": "temporal_anchor",
+        "status": TEMPORAL_STAGE_ENABLED,
+        "window": ["2023-03-01T00:00:00+00:00", "2023-04-01T00:00:00+00:00"],
+        "parsed_from": "March 2023",
+        "candidate_count": 1,
+    }
+    selected = [record for record in pack["trace"]["selected"] if record["target_id"] == "memory-right-date"]
+    assert selected[0]["stage_ranks"]["temporal_anchor"] == 1
+    assert store.time_search_calls == [
+        {
+            "window_start": datetime(2023, 3, 1, tzinfo=UTC),
+            "window_end": datetime(2023, 4, 1, tzinfo=UTC),
+        }
+    ]
+
+
+def test_no_anchor_query_has_no_temporal_stage_and_no_store_call() -> None:
+    # Regression guard: date-free queries must behave exactly as before —
+    # no temporal trace stage, no stage_ranks entry, no store round-trip,
+    # and the fused sources record keeps its pre-anchor shape.
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Kubernetes deployment pipeline notes")],
+        sources=[
+            {
+                "id": "source-1",
+                "source_type": "manual_text",
+                "title": "Kubernetes deployment runbook",
+                "content_hash": "sha256:k8s",
+                "domain": "project",
+                "sensitivity": "private",
+            }
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="kubernetes deployment pipeline")
+    )
+
+    assert "temporal_anchor" not in pack["trace"]["stages"]
+    assert store.time_search_calls == []
+    for record in pack["trace"]["selected"]:
+        assert "temporal_anchor" not in record["stage_ranks"]
+    assert SOURCE_STAGE_TEMPORAL not in pack["trace"]["stages"]["sources"]
+    assert pack["trace"]["stages"]["sources"]["source"] == "rrf(chunk_fts+provenance+title_recency)"
+
+
+def test_wrong_temporal_window_cannot_evict_strong_lexical_hits() -> None:
+    # The query's date phrase points at a window that only matches an
+    # unrelated memory. Fusion keeps the anchor a ranking vote: the strong
+    # lexical+vector hit still wins the single slot, and with two slots
+    # the unrelated row merely joins below it.
+    strong = _memory_row("memory-strong", "Vendor contract decision signed with Acme")
+    wrong_window = _memory_row(
+        "memory-wrong-window",
+        "Completely unrelated pottery class note",
+        valid_from="2023-03-10T00:00:00Z",
+    )
+    provider = StubEmbeddingProvider()
+
+    def build_store() -> InMemoryVNextRetrievalStore:
+        return InMemoryVNextRetrievalStore(
+            memories=[strong, wrong_window],
+            sources=[],
+            vector_memories=[strong],
+        )
+
+    single = VNextRetrievalService(build_store(), embedding_provider=provider).compile_context_pack(
+        VNextRetrievalRequest(query="What vendor contract decision did we sign in March 2023?", max_items=1)
+    )
+    assert [memory["id"] for memory in single["relevant_memories"]] == ["memory-strong"]
+    trimmed = [record for record in single["trace"]["selected"] if record["target_id"] == "memory-wrong-window"]
+    assert trimmed == []  # ranked but not selected
+
+    both = VNextRetrievalService(build_store(), embedding_provider=provider).compile_context_pack(
+        VNextRetrievalRequest(query="What vendor contract decision did we sign in March 2023?", max_items=2)
+    )
+    assert [memory["id"] for memory in both["relevant_memories"]] == [
+        "memory-strong",
+        "memory-wrong-window",
+    ]
+
+
+def test_temporal_anchor_boosts_right_dated_source_in_fused_sources_stage() -> None:
+    # Both sources surface lexically (wrong-dated first); the anchor
+    # re-ranks the candidates the other lists already found — the
+    # connector-stamped metadata date inside the window wins the boost.
+    source_wrong = {
+        "id": "source-wrong-date",
+        "source_type": "chat_session",
+        "title": "Museum outing chat",
+        "content_hash": "sha256:wrong",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"session_id": "s1", "session_date": "2022/08/01 (Mon) 09:00"},
+    }
+    source_right = {
+        "id": "source-right-date",
+        "source_type": "chat_session",
+        "title": "Museum outing chat",
+        "content_hash": "sha256:right",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"session_id": "s2", "session_date": "2023/03/20 (Mon) 10:00"},
+    }
+    store = InMemoryVNextRetrievalStore(memories=[], sources=[source_wrong, source_right])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Which museum did I visit in March 2023?")
+    )
+
+    assert [source["id"] for source in pack["sources"]][:2] == ["source-right-date", "source-wrong-date"]
+    sources_record = pack["trace"]["stages"]["sources"]
+    assert sources_record[SOURCE_STAGE_TEMPORAL] == 1
+    assert sources_record["source"] == "rrf(chunk_fts+provenance+title_recency+temporal_anchor)"
+
+
+def test_temporal_stage_degrades_honestly_for_stores_without_time_search() -> None:
+    class NoTimeSearchStore(InMemoryVNextRetrievalStore):
+        search_memories_by_time = None  # store predates the method
+
+    store = NoTimeSearchStore(
+        memories=[_memory_row("memory-1", "Museum visit with a friend downtown")],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Which museum did I visit in March 2023?")
+    )
+
+    stage = pack["trace"]["stages"]["temporal_anchor"]
+    assert stage["status"] == TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT
+    assert stage["candidate_count"] == 0
+    # Recall itself is unaffected: the FTS stage still answers.
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-1"]
+    for record in pack["trace"]["selected"]:
+        assert "temporal_anchor" not in record["stage_ranks"]
+
+
+def test_minimal_depth_skips_the_temporal_stage_with_honest_status() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[_memory_row("memory-1", "Museum visit downtown", valid_from="2023-03-15T00:00:00Z")],
+        sources=[],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="Which museum did I visit in March 2023?", context_depth="minimal")
+    )
+
+    stage = pack["trace"]["stages"]["temporal_anchor"]
+    assert stage["status"] == STAGE_DISABLED_MINIMAL
+    assert stage["candidate_count"] == 0
+    assert store.time_search_calls == []
+
+
+def test_reference_time_resolves_relative_phrases_deterministically() -> None:
+    # "last week" against the caller-provided reference (a Tuesday) is the
+    # previous ISO week; the dated memory surfaces through the temporal
+    # list alone (zero lexical overlap with the query).
+    dated = _memory_row(
+        "memory-vendor-call",
+        "Vendor kickoff call summary",
+        valid_from="2023-04-12T00:00:00Z",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[dated], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="what happened last week",
+            reference_time=datetime(2023, 4, 18, 3, 31, tzinfo=UTC),
+        )
+    )
+
+    stage = pack["trace"]["stages"]["temporal_anchor"]
+    assert stage["window"] == ["2023-04-10T00:00:00+00:00", "2023-04-17T00:00:00+00:00"]
+    assert stage["parsed_from"] == "last week"
+    assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-vendor-call"]
+
+
+def test_before_today_window_excludes_rows_first_seen_today() -> None:
+    # "before today" is an open window ending at today's start, so rows
+    # whose only event signal is a same-day ingest timestamp cannot ride
+    # the temporal list into fusion (regression: the phrase must not parse
+    # as the "today" window itself).
+    ingested_today = _memory_row(
+        "memory-ingested-today",
+        "Airline booking note",
+        first_seen_at="2023-04-18T03:00:00Z",
+    )
+    older = _memory_row(
+        "memory-older",
+        "Airline booking confirmation from spring",
+        first_seen_at="2023-04-02T09:00:00Z",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[ingested_today, older], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="Which airline did I book before today?",
+            reference_time=datetime(2023, 4, 18, 3, 31, tzinfo=UTC),
+        )
+    )
+
+    stage = pack["trace"]["stages"]["temporal_anchor"]
+    assert stage["parsed_from"] == "before today"
+    assert stage["window"][1] == "2023-04-18T00:00:00+00:00"
+    assert stage["candidate_count"] == 1
+    older_record = [record for record in pack["trace"]["selected"] if record["target_id"] == "memory-older"]
+    assert older_record[0]["stage_ranks"]["temporal_anchor"] == 1
+    today_record = [
+        record for record in pack["trace"]["selected"] if record["target_id"] == "memory-ingested-today"
+    ]
+    assert "temporal_anchor" not in today_record[0]["stage_ranks"]

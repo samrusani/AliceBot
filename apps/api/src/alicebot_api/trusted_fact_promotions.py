@@ -23,6 +23,7 @@ from alicebot_api.contracts import (
     TrustedFactPlaybookStepRecord,
     isoformat_or_none,
 )
+from alicebot_api.memory_provenance import order_by_provenance, provenance_promotion_rank
 from alicebot_api.store import (
     ContinuityStore,
     FactPatternRow,
@@ -70,6 +71,31 @@ def _is_promotable_trusted_fact(memory: MemoryRow) -> bool:
     if _fact_is_single_source_model_output(memory):
         return False
     return True
+
+
+def _memory_provenance_rank(memory: MemoryRow) -> int:
+    """Promotion rank from speaker provenance carried in the fact value.
+
+    Facts whose value records ``provenance_role``/``assertion_class`` (set
+    by capture paths that see speaker-tagged conversational turns) are
+    biased so user-asserted values outrank assistant estimates within a
+    pattern group. Facts without provenance keys rank neutral, keeping the
+    pre-existing group order byte-identical for provenance-free stores.
+    """
+    value = memory["value"]
+    if not isinstance(value, dict):
+        return provenance_promotion_rank(provenance_role=None, assertion_class=None)
+    provenance_role = value.get("provenance_role")
+    assertion_class = value.get("assertion_class")
+    return provenance_promotion_rank(
+        provenance_role=provenance_role if isinstance(provenance_role, str) else None,
+        assertion_class=assertion_class if isinstance(assertion_class, str) else None,
+    )
+
+
+def _order_group_by_provenance(grouped_memories: list[MemoryRow]) -> list[MemoryRow]:
+    """Stable same-slot bias: user-asserted facts first, assistant estimates last."""
+    return order_by_provenance(grouped_memories, rank_of=_memory_provenance_rank)
 
 
 def _namespace_key(memory_key: str) -> str:
@@ -208,6 +234,12 @@ def sync_trusted_fact_promotions(
     for (memory_type, namespace_key), grouped_memories in sorted(grouped.items()):
         if not grouped_memories:
             continue
+
+        # Same-slot provenance bias: within one pattern group, user-asserted
+        # facts order ahead of neutral facts and assistant estimates order
+        # last. Groups without provenance-carrying values keep the existing
+        # (memory_key, id) order unchanged.
+        grouped_memories = _order_group_by_provenance(grouped_memories)
 
         group_user_id = grouped_memories[0]["user_id"]
         pattern_key = f"{memory_type}:{namespace_key}"

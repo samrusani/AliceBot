@@ -1648,6 +1648,104 @@ class PostgresVNextStore:
             ),
         )
 
+    def search_memories_by_time(
+        self,
+        *,
+        window_start: datetime,
+        window_end: datetime,
+        window_center: datetime | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int = 50,
+        memory_types: tuple[str, ...] = (),
+        projects: tuple[str, ...] = (),
+        created_by_agent_ids: tuple[str, ...] = (),
+        run_id: str | None = None,
+        include_expired: bool = False,
+    ) -> list[VNextRow]:
+        """Memories whose event window intersects ``[window_start, window_end)``.
+
+        Event time is ``COALESCE(valid_from, first_seen_at, created_at)``:
+        ``valid_from`` is the explicit event-validity start when a writer
+        recorded one (the honest event signal); ``first_seen_at`` — when
+        the fact was first observed — is the fallback for rows without
+        one, and ``created_at`` (row write time) is the last resort for
+        legacy rows. A row matches when that event time falls inside the
+        window, or when a closed ``[valid_from, valid_to)`` validity
+        interval overlaps it. Results order by proximity of the event
+        time to ``window_center`` (default: the window midpoint; open
+        "before X"/"since X" windows pass their closed edge), so the
+        tightest temporal matches lead the RRF list. Same scoping
+        discipline as the sibling search methods (deleted/status gates,
+        domain/sensitivity/scope filters); note the default expiry gate
+        still hides rows whose ``valid_to`` has passed — pass
+        ``include_expired=True`` to recall facts that were only true
+        historically.
+        """
+        if window_start.tzinfo is None:
+            window_start = window_start.replace(tzinfo=UTC)
+        if window_end.tzinfo is None:
+            window_end = window_end.replace(tzinfo=UTC)
+        if window_center is None:
+            window_center = window_start + (window_end - window_start) / 2
+        elif window_center.tzinfo is None:
+            window_center = window_center.replace(tzinfo=UTC)
+        memory_type_list = list(memory_types) or None
+        project_list = list(projects) or None
+        created_by_list = list(created_by_agent_ids) or None
+        event_time_sql = "COALESCE(valid_from, first_seen_at, created_at)"
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND status IN {_MEMORY_SEARCHABLE_STATUSES_SQL}
+                  AND (%s::text[] IS NULL OR domain = ANY(%s::text[]) OR domain = 'unknown')
+                  AND (%s::text[] IS NULL OR sensitivity = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR memory_type = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR {_MEMORY_PROJECT_ID_SQL} = ANY(%s::text[]))
+                  AND (%s::text[] IS NULL OR created_by_agent_id = ANY(%s::text[]))
+                  AND (%s::text IS NULL OR run_id = %s)
+                  AND (%s::boolean OR valid_to IS NULL OR valid_to >= clock_timestamp())
+                  AND (
+                    ({event_time_sql} >= %s::timestamptz AND {event_time_sql} < %s::timestamptz)
+                    OR (
+                      valid_from IS NOT NULL
+                      AND valid_to IS NOT NULL
+                      AND valid_from < %s::timestamptz
+                      AND valid_to > %s::timestamptz
+                    )
+                  )
+                ORDER BY
+                  ABS(EXTRACT(EPOCH FROM ({event_time_sql} - %s::timestamptz))) ASC,
+                  updated_at DESC,
+                  created_at DESC,
+                  id DESC
+                LIMIT %s
+                """,
+            (
+                domains,
+                domains,
+                sensitivity_allowed,
+                sensitivity_allowed,
+                memory_type_list,
+                memory_type_list,
+                project_list,
+                project_list,
+                created_by_list,
+                created_by_list,
+                run_id,
+                run_id,
+                include_expired,
+                window_start,
+                window_end,
+                window_end,
+                window_start,
+                window_center,
+                limit,
+            ),
+        )
+
     def update_memory_embedding(self, *, memory_id: str, vector: list[float]) -> VNextRow | None:
         return self._fetch_optional_one(
             """
@@ -1667,6 +1765,43 @@ class PostgresVNextStore:
                 FROM memories
                 WHERE deleted_at IS NULL
                   AND embedding_vector IS NULL
+                  AND (%s::uuid IS NULL OR id > %s::uuid)
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+            (after_id, after_id, limit),
+        )
+
+    def update_memory_fact_keys(self, *, memory_id: str, fact_keys: str | None) -> VNextRow | None:
+        """Store derived retrieval keys; the generated ``search_tsv`` column
+        (migration ``20260707_0082``) re-indexes them at 'D' weight.
+
+        ``None`` resets the row to the "never derived" state the backfill
+        pass scans for; ``""`` marks "derived, nothing to add". Mirrors
+        ``update_memory_embedding``: a plain indexing write, no revision.
+        """
+        if fact_keys is not None and not isinstance(fact_keys, str):
+            raise ContinuityStoreInvariantError("fact_keys must be a string or None")
+        normalized = re.sub(r"\s+", " ", fact_keys).strip() if isinstance(fact_keys, str) else None
+        return self._fetch_optional_one(
+            """
+                UPDATE memories
+                SET fact_keys = %s
+                WHERE id = %s::uuid
+                  AND deleted_at IS NULL
+                RETURNING id
+                """,
+            (normalized, memory_id),
+        )
+
+    def list_memories_missing_fact_keys(self, *, limit: int = 100, after_id: str | None = None) -> list[VNextRow]:
+        """Backfill pagination over rows whose fact_keys was never derived."""
+        return self._fetch_all(
+            f"""
+                SELECT {MEMORY_COLUMNS}
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND fact_keys IS NULL
                   AND (%s::uuid IS NULL OR id > %s::uuid)
                 ORDER BY id ASC
                 LIMIT %s
@@ -1927,9 +2062,10 @@ class PostgresVNextStore:
 
         Content columns (title, canonical_text, summary, trust_reason,
         value) become the redaction marker, metadata_json is scrubbed to
-        structural keys plus redacted_at, the embedding is cleared, and
-        the row is archived. Applies to already-archived (soft-deleted)
-        rows too -- that is the primary redaction target.
+        structural keys plus redacted_at, the content-derived columns
+        (embedding, fact_keys) are cleared, and the row is archived.
+        Applies to already-archived (soft-deleted) rows too -- that is
+        the primary redaction target.
         """
         current = self._fetch_optional_one(
             """
@@ -1957,6 +2093,7 @@ class PostgresVNextStore:
                         value = %s,
                         metadata_json = %s,
                         embedding_vector = NULL,
+                        fact_keys = NULL,
                         status = 'archived',
                         deleted_at = COALESCE(deleted_at, clock_timestamp()),
                         updated_at = clock_timestamp()

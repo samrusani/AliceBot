@@ -50,6 +50,7 @@ import {
   updateVNextConnectorConfig,
   upsertVNextBrainCharter,
 } from "../lib/api";
+import { memoryProvenanceLabel } from "../lib/memory-provenance";
 import { EmptyState } from "./empty-state";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
@@ -2969,6 +2970,9 @@ export function VNextBrainWorkspace({
                   <span className="list-row__meta">
                     <span className="meta-pill">Domain: {domainLabel(asDomain(item.domain))}</span>
                     <span className="meta-pill">Sensitivity: {sensitivityLabel(asSensitivity(item.sensitivity))}</span>
+                    {memoryProvenanceLabel(item) ? (
+                      <span className="meta-pill">{memoryProvenanceLabel(item)}</span>
+                    ) : null}
                   </span>
                 </button>
               ))

@@ -20,6 +20,7 @@ from alicebot_api.vnext_entities import (
     store_supports_entity_linking,
 )
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_fact_keys import attach_memory_fact_keys
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import PostgresVNextStore, VNextRow
@@ -1543,6 +1544,13 @@ class VNextMemoryCommitService:
             actor_type=actor_type,
             actor_id=actor_id,
             trace_id=request.trace_id or decision.policy_decision.trace_id,
+        )
+        # Fact-key integration point (vnext_fact_keys): derived retrieval
+        # keys ride the same best-effort post-create hook as embeddings.
+        # use_env_provider=False keeps the commit path deterministic-tier
+        # only -- commits never make a synchronous model call.
+        attach_memory_fact_keys(
+            self.store, memory, use_env_provider=False, actor_type=actor_type, actor_id=actor_id
         )
         self._append_revision(
             memory=memory,
