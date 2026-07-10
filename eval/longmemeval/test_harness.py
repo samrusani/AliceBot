@@ -1169,6 +1169,38 @@ def test_fingerprint_records_accept_rollups_flag(tmp_path: Path) -> None:
     assert args.accept_rollups is False
 
 
+def test_fingerprint_records_reuse_stores_flag(tmp_path: Path) -> None:
+    def config_with(reuse_stores: bool) -> runner.RunnerConfig:
+        return runner.RunnerConfig(
+            variant="s",
+            dataset_path=SYNTHETIC_FIXTURE_PATH,
+            limit=None,
+            question_ids=None,
+            question_ids_file=None,
+            resume=False,
+            dry_run=True,
+            cot=False,
+            workers=1,
+            max_items=8,
+            context_char_budget=12_000,
+            work_dir=tmp_path,
+            checkpoint_path=tmp_path / "c.jsonl",
+            report_path=tmp_path / "r.json",
+            keep_stores=False,
+            reuse_stores=reuse_stores,
+        )
+
+    off = runner.config_fingerprint(config_with(False), model=None, judge=None)
+    on = runner.config_fingerprint(config_with(True), model=None, judge=None)
+    assert off["reuse_stores"] is False
+    assert on["reuse_stores"] is True
+    # Store reuse can never run undisclosed: the flag feeds the digest.
+    assert off["digest"] != on["digest"]
+    # And the CLI default is off, so the default replay path is unchanged.
+    args = runner.build_arg_parser().parse_args([])
+    assert args.reuse_stores is False
+
+
 def test_runner_dry_run_with_accept_rollups_records_ingest_stats(tmp_path: Path) -> None:
     checkpoint_path = tmp_path / "checkpoint.jsonl"
     report_path = tmp_path / "report.json"

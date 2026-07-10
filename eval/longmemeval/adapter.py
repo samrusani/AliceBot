@@ -1106,8 +1106,12 @@ class QuestionRun:
                 continue
             metadata = memory.get("metadata_json") if isinstance(memory.get("metadata_json"), dict) else {}
             source_id = str(metadata.get("source_id") or "")
-            _session_id, date = self._session_label(source_id) if source_id else ("", "undated")
-            memory_records.append(memory_record(memory, claim=text, date=date))
+            _session_id, session_date = self._session_label(source_id) if source_id else ("", "undated")
+            # Same ISO-normalized date string the prose fact line renders
+            # (machine-readable time; see _iso_fact_date), so the two
+            # formats carry byte-identical memory dates. The record's
+            # date_iso field is derived from it just the same.
+            memory_records.append(memory_record(memory, claim=text, date=_iso_fact_date(session_date)))
 
         grounding = pack.get("grounding") if isinstance(pack.get("grounding"), dict) else None
         grounding_notes: list[str] = []

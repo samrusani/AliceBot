@@ -84,13 +84,20 @@ Things we built or measured that did **not** work, with the numbers:
   arithmetic, and counting — not missing evidence.
 - **Round-5 pack/retrieval variants were flat to sharply negative.** Four
   scored arms on the paired 172-question slice landed at net −14, −11, 0,
-  and +3 (the arm carrying an LLM reranking stage was the −11; the
-  loose-clustering arm netted 0 while still losing 3 knowledge-update
-  questions). **Every** arm lost knowledge-update net flips (−9, −8, −4,
-  −3), and their measured stale-pick rates (see §5) were 25.0%, 31.3%,
-  12.5%, 12.5% against the published run's 3.4%. Those checkpoints are
-  retained working artifacts; the committed runs in §5 reproduce the same
-  metric from in-repo files alone.
+  and +3. The −14 arm (checkpoint `lme5s`, round 5's first slice) ran
+  vectors + the LLM reranker + review-accepted loose-clustering roll-up
+  cards rendered into the pack; the −11 arm (`lme5s2`) was the same
+  configuration with the cards rejected in review — isolating the **LLM
+  reranking stage itself as the −11**, and the loose-clustering roll-up
+  cards' pack rendering as the remaining **−3** (the run-C-era
+  rollup-cards-in-pack finding from that first slice). The net-0 arm
+  (`lme5s3`) was the **clean vectors-only control** — no reranker, cards
+  rejected — not a clustering variant. **Every** arm lost
+  knowledge-update net flips (−9, −8, −4, −3), and their measured
+  stale-pick rates (see §5) were 25.0%, 31.3%, 12.5%, 12.5% against the
+  published run's 3.4%. Those checkpoints are retained working artifacts;
+  the committed runs in §5 reproduce the same metric from in-repo files
+  alone.
 
 ## 5. The stale-pick metric (judge-free)
 

@@ -238,7 +238,9 @@ def test_memory_record_carries_provenance_and_annotations() -> None:
     assert memories[0] == {
         "id": "mem-1",
         "claim": "The user adopted a golden retriever puppy.",
-        "date": "2023/05/20 (Sat) 14:10",
+        # The prose fact line's ISO-normalized date (see _iso_fact_date),
+        # byte-identical across formats since the date-precompute merge.
+        "date": "2023-05-20 (Sat) 14:10",
         "date_iso": "2023-05-20",
         "provenance_role": "user",
     }
@@ -269,6 +271,34 @@ def test_memory_record_passthrough_of_sibling_fields() -> None:
     }
     bare = pack_formats.memory_record({"id": "mem-y", "validity": {}}, claim="c", date="2023/01/02 (Mon) 08:00")
     assert bare == {"id": "mem-y", "claim": "c", "date": "2023/01/02 (Mon) 08:00", "date_iso": "2023-01-02"}
+
+
+def test_derived_timeline_lands_in_json_as_top_level_field() -> None:
+    derived_lines = [
+        "[derived] 2023-05-20 (session date) was 42 days before the question date.",
+        "[derived] 2 dated items span 13 days (2023-05-20 to 2023-06-02).",
+    ]
+    run = _run()
+    pack = _pack()
+    pack["derived_values"] = {"reference_time": "2023-07-01T10:00:00+00:00", "lines": derived_lines}
+
+    prose_block, _ = run._render_context_block(pack, budget=5_000)
+    json_block, _ = run._render_context_json(pack, budget=5_000)
+    document = json.loads(json_block)
+
+    # The same bounded "[derived]" lines in both formats: prose under its
+    # section header, JSON as the top-level derived_timeline array.
+    assert document["derived_timeline"] == derived_lines
+    assert adapter.DERIVED_SECTION_HEADER in prose_block
+    for line in derived_lines:
+        assert line in prose_block
+
+    # Uncharged in JSON exactly like prose: excerpt admission is identical
+    # with or without the block.
+    without = json.loads(run._render_context_json(_pack(), budget=5_000)[0])
+    assert document["session_excerpts"] == without["session_excerpts"]
+    # And absent derived values leave the document shape untouched.
+    assert "derived_timeline" not in without
 
 
 def test_iso_date_prefix_shapes() -> None:

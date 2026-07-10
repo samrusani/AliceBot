@@ -27,9 +27,12 @@ Format contract (``PACK_FORMAT_JSON``)::
                                   # date arithmetic (see append_derived_timeline)
     }
 
-* ``date`` is the raw session date exactly as prose shows it (LongMemEval's
-  ``2023/05/28 (Sun) 20:27`` shape keeps the weekday and time); ``date_iso``
-  is its normalized ``YYYY-MM-DD`` prefix, omitted when not parseable.
+* ``date`` is the session date exactly as prose shows it: memory records
+  carry the prose fact line's ISO-normalized form (``2023-05-28 (Sun)
+  20:27`` — weekday and time kept), excerpt records the raw LongMemEval
+  ``2023/05/28 (Sun) 20:27`` shape of the prose excerpt header;
+  ``date_iso`` is the normalized ``YYYY-MM-DD`` prefix either way, omitted
+  when not parseable.
 * ``validity`` / ``currency`` are pass-throughs of the same pack-item
   annotations the prose fact lines render; absent annotations are omitted
   cleanly, so the schema is stable whether or not sibling branches that
