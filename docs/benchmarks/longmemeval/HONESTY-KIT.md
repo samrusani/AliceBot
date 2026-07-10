@@ -172,3 +172,23 @@ answer path; `test_stale_pick_module_is_posthoc_only` pins that.
   reading templates stay byte-frozen; config widenings are disclosed in the
   run fingerprint; negative results stay in this document. If a future run
   cannot honor one of these, the run does not get published.
+
+
+## Protocol sensitivity: our answers under three grading regimes
+
+To quantify how much of a score is protocol rather than performance, we replayed
+the published run's 500 cached answers (no new generation) through three grading
+regimes. Replay costs under $1 and the script is committed.
+
+| Grading protocol | Score |
+|---|---|
+| Official: `gpt-4o-2024-08-06`, the benchmark's question-specific prompts | **79.4%** (397/500) |
+| Grader-model swap: GPT-4.1, official prompts | 76.8% (384/500) |
+| Generic lenient prompt ("conveys the right information"), GPT-4.1 | 79.2% (396/500) |
+
+Two findings. First, our result is protocol-robust: a ±2.6-point band across
+graders and prompts — honest answers barely care who grades them. Second, the
+official prompts are not the lenient option: swapping in a newer grader model
+under the official prompts made the score go *down*. Numbers published without
+the official judge protocol, per-question evidence, or a reproduction script are
+not comparable to numbers published with them — in either direction.
