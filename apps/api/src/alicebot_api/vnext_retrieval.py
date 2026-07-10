@@ -6,7 +6,11 @@ budget strategies only reorder which sections/items are offered to that
 packer, and depth tiers only switch stages and sections on or off. NO
 depth tier, strategy, or section performs LLM synthesis, summarization,
 or any other model call — the pack is a pure function of stored rows
-plus the request (house no-fake-intelligence rule).
+plus the request (house no-fake-intelligence rule). Equal-score ordering
+ties resolve through a content-stable cascade (``content_stable_tiebreak``,
+disclosed in the trace as ``fusion.tie_break``) so re-ingesting the same
+content — new uuids, same rows — reproduces the same pack composition;
+the id remains the final total-order key.
 
 Budget strategies (``VNextRetrievalRequest.budget_strategy``) change the
 greedy packer's section order; ``recent_first`` and ``facts_first``
@@ -559,6 +563,124 @@ def _graph_memory_admissible(
     return True
 
 
+# -- content-stable tie-breaks -------------------------------------------------
+# Equal-score ordering decisions (equal RRF fused scores, equal graph-stage
+# timestamps, equal temporal-boost distances) used to fall straight through
+# to the row id — a uuid minted at ingest. Within one store that is
+# deterministic, but across two ingests of the SAME content the uuids
+# differ, so every such tie was a coin flip re-rolled per ingest (measured
+# as pure pack churn between identical-config benchmark runs). The cascade
+# below decides those ties on row CONTENT instead: older event/session date
+# first, then longer content, then the content text, then a content
+# fingerprint; the id stays as the FINAL key — the total-order guarantee —
+# but no longer casts the deciding vote between near-equals. Every key is a
+# pure function of values the row already carries: no randomness, no store
+# lookups, no clock reads. Deliberately NO write-clock fallbacks
+# (created_at/first_seen_at/captured_at): a wall-clock key that collides in
+# one ingest but not another would re-introduce seed-dependent ordering.
+TIE_BREAK_CONTENT_STABLE = "content_stable_v1"
+# Rows with no parseable content event signal sort after any dated row.
+_TIEBREAK_UNDATED = datetime(9999, 12, 31, tzinfo=UTC)
+# Content-honest event signals only: explicit validity start (memories),
+# the source's own creation time, then connector-stamped metadata dates —
+# the same signals search_memories_by_time and _source_event_time trust,
+# minus their write-time fallbacks (see the seed-dependence note above).
+_TIEBREAK_EVENT_KEYS = ("valid_from", "source_created_at")
+_TIEBREAK_TEXT_KEYS = ("canonical_text", "text", "summary", "title")
+
+
+def _tiebreak_event_time(item: JsonObject) -> datetime | None:
+    """Content-stamped event/session time of a row, or None."""
+    for key in _TIEBREAK_EVENT_KEYS:
+        parsed = parse_event_datetime(item.get(key))
+        if parsed is not None:
+            return parsed
+    metadata = item.get("metadata_json")
+    if isinstance(metadata, Mapping):
+        for key in SOURCE_EVENT_METADATA_KEYS:
+            parsed = parse_event_datetime(metadata.get(key))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _tiebreak_content_text(item: JsonObject) -> str:
+    for key in _TIEBREAK_TEXT_KEYS:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _tiebreak_content_fingerprint(item: JsonObject) -> str:
+    """Stable content-derived discriminator for rows whose text also ties.
+
+    Sources carry ``content_hash`` (digest of the captured content); capture-
+    written memories carry the originating capture's digest and chunk index
+    in metadata. Two rows with identical text extracted from different
+    captures stay distinguishable by content, not by uuid.
+    """
+    content_hash = item.get("content_hash")
+    if isinstance(content_hash, str) and content_hash:
+        return content_hash
+    metadata = item.get("metadata_json")
+    if isinstance(metadata, Mapping):
+        capture_hash = metadata.get("capture_content_hash")
+        if isinstance(capture_hash, str) and capture_hash:
+            return f"{capture_hash}:{metadata.get('source_chunk_index')}"
+    return ""
+
+
+def content_stable_tiebreak(item: JsonObject) -> tuple[datetime, int, str, str]:
+    """Content-stable sort key for equal-score ties (ascending sorts first).
+
+    Cascade: older content-stamped event/session date first (undated rows
+    last), longer content first, then the content text itself, then the
+    content fingerprint. Callers append the id as the final key.
+    """
+    text = _tiebreak_content_text(item)
+    return (
+        _tiebreak_event_time(item) or _TIEBREAK_UNDATED,
+        -len(text),
+        text,
+        _tiebreak_content_fingerprint(item),
+    )
+
+
+def _stabilize_scored_rows(
+    rows: Sequence[JsonObject],
+    *,
+    score_key: str = "fts_score",
+    descending: bool = True,
+) -> list[JsonObject]:
+    """Reorder equal-score runs of a scored stage list content-stably.
+
+    The stores' FTS stages order by ``fts_score DESC`` and then write-clock
+    columns with the row id as the last key, so rows with EQUAL scores
+    (identical term statistics — restated facts, near-duplicate turns) can
+    arrive in ingest-dependent order: their relative rank re-rolls per
+    ingest even though the content is identical. The Postgres vector stage
+    is worse — ``ORDER BY embedding_vector <=> query`` alone, so equal
+    distances get undefined database order within a single store. Distinct
+    scores keep the store's order exactly (``descending`` says which way the
+    stage ranks); equal scores fall through the content-stable cascade with
+    the id as the final total-order key. Lists where any row lacks a
+    numeric score are returned unchanged — an unknown store contract keeps
+    its own order.
+    """
+    if not all(isinstance(row.get(score_key), (int, float)) for row in rows):
+        return list(rows)
+    sign = -1.0 if descending else 1.0
+    return sorted(
+        rows,
+        key=lambda row: (
+            sign * float(row[score_key]),  # type: ignore[arg-type]
+            *content_stable_tiebreak(row),
+            str(row.get("id")),
+        ),
+    )
+
+
 def reciprocal_rank_fusion(
     ranked_lists: Mapping[str, Sequence[JsonObject]],
     *,
@@ -568,7 +690,8 @@ def reciprocal_rank_fusion(
 
     Each item scores ``sum(1 / (k + rank))`` over the stages it appears in.
     Returns ``(item, rrf_score, stage_ranks)`` tuples ordered by descending
-    score with a deterministic id tie-break.
+    score; equal scores fall through the content-stable cascade
+    (``content_stable_tiebreak``) with the id as the final total-order key.
     """
     if k < 1:
         raise VNextRetrievalValidationError("reciprocal rank fusion k must be at least 1")
@@ -582,7 +705,10 @@ def reciprocal_rank_fusion(
                 items[item_id] = row
             scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank)
             stage_ranks.setdefault(item_id, {})[stage] = rank
-    ordered_ids = sorted(items, key=lambda item_id: (-scores[item_id], item_id))
+    ordered_ids = sorted(
+        items,
+        key=lambda item_id: (-scores[item_id], *content_stable_tiebreak(items[item_id]), item_id),
+    )
     return [(items[item_id], scores[item_id], stage_ranks[item_id]) for item_id in ordered_ids]
 
 
@@ -982,8 +1108,8 @@ class VNextRetrievalService:
                     # Store predates the match_any kwarg; keep the strict
                     # (empty) result rather than guessing.
                     return [], fts_source
-                return list(rows), f"{fts_source}_or_fallback"
-            return list(rows), fts_source
+                return _stabilize_scored_rows(rows), f"{fts_source}_or_fallback"
+            return _stabilize_scored_rows(rows), fts_source
         rows = self.store.search_memories(
             query=query,
             domains=domains or None,
@@ -1021,7 +1147,9 @@ class VNextRetrievalService:
             )
         except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
             return [], f"disabled: query embedding failed ({exc})"
-        return list(rows), VECTOR_STAGE_ENABLED
+        # Ascending stage: smaller distance ranks first. Equal distances
+        # (identical texts embed identically) stabilize content-first.
+        return _stabilize_scored_rows(rows, score_key="vector_distance", descending=False), VECTOR_STAGE_ENABLED
 
     def _memory_graph_rows(
         self,
@@ -1106,8 +1234,9 @@ class VNextRetrievalService:
             )
             ranked.append((observed_at, recency, str(row.get("id")), row))
         # Deterministic order: edge observed_at DESC, memory recency DESC,
-        # id ASC on ties (id-ascending pre-sort survives the stable sort).
-        ranked.sort(key=lambda entry: entry[2])
+        # then the content-stable cascade with id ASC as the final key (the
+        # ascending pre-sort survives the stable reverse timestamp sort).
+        ranked.sort(key=lambda entry: (*content_stable_tiebreak(entry[3]), entry[2]))
         ranked.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
         rows = [entry[3] for entry in ranked[:limit]]
         return rows, GRAPH_STAGE_ENABLED, matched_entities
@@ -1223,6 +1352,10 @@ class VNextRetrievalService:
                     chunk_rows = []
                 else:
                     chunk_fts_source = f"{chunk_fts_source}_or_fallback"
+            # Equal-score chunk runs decide WHICH parent source enters the
+            # deduplicated chunk list first; stabilize them content-first so
+            # the list is ingest-invariant (distinct scores keep store order).
+            chunk_rows = _stabilize_scored_rows(chunk_rows)
             ordered_source_ids: list[str] = []
             seen_source_ids: set[str] = set()
             for row in chunk_rows:
@@ -1284,7 +1417,10 @@ class VNextRetrievalService:
                     if event is None or not (anchor.window_start <= event < anchor.window_end):
                         continue
                     dated.append((abs((event - center).total_seconds()), source_id, row))
-            dated.sort(key=lambda entry: (entry[0], entry[1]))
+            # Distance ties are the norm here (day-resolution session dates
+            # share a window distance), so they fall through the
+            # content-stable cascade before the id total-order key.
+            dated.sort(key=lambda entry: (entry[0], *content_stable_tiebreak(entry[2]), entry[1]))
             temporal_sources = [row for _distance, _source_id, row in dated]
             ranked_lists[SOURCE_STAGE_TEMPORAL] = temporal_sources
 
@@ -1725,7 +1861,13 @@ class VNextRetrievalService:
                 "created_by_agent_ids": list(created_by_agent_ids),
                 "run_id": filter_run_id,
             },
-            "fusion": {"algorithm": "reciprocal_rank_fusion", "k": RRF_K},
+            "fusion": {
+                "algorithm": "reciprocal_rank_fusion",
+                "k": RRF_K,
+                # Honest disclosure: equal-score ties resolve on row content
+                # (see content_stable_tiebreak), no longer on the raw id.
+                "tie_break": TIE_BREAK_CONTENT_STABLE,
+            },
             "vector_stage": vector_stage,
             "context_depth": depth,
             "budget_strategy": strategy,
@@ -2106,6 +2248,7 @@ __all__ = [
     "SUPERSESSION_STAGE_ENABLED",
     "TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT",
     "TEMPORAL_STAGE_ENABLED",
+    "TIE_BREAK_CONTENT_STABLE",
     "TOKEN_ESTIMATE_CHARS_PER_TOKEN",
     "VALID_TO_UNBOUNDED_YEAR",
     "VECTOR_STAGE_DISABLED_NO_PROVIDER",
@@ -2116,6 +2259,7 @@ __all__ = [
     "VNextRetrievalStore",
     "VNextRetrievalValidationError",
     "classify_query",
+    "content_stable_tiebreak",
     "entity_name_candidates",
     "estimate_item_tokens",
     "normalize_query",

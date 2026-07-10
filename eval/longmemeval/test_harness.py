@@ -996,6 +996,27 @@ def test_retrieval_outcome_record_carries_pack_provenance(tmp_path: Path) -> Non
     assert all(isinstance(memory_id, str) and memory_id for memory_id in memory_ids)
 
 
+def test_two_seed_ingest_renders_byte_identical_context(tmp_path: Path) -> None:
+    """Churn hardening: re-ingesting the same haystack (fresh uuids, fresh
+    write clocks) must reproduce the retrieved context block byte for byte.
+    The rendering is uuid-free (session labels + dates + content only) and
+    the retrieval tie cascade is content-stable, so pack composition is a
+    pure function of the ingested content — the paired-run coin flips the
+    loss forensics traced to id tie-breaks cannot re-roll."""
+    for index, question in enumerate(load_dataset(SYNTHETIC_FIXTURE_PATH)):
+        outcomes = []
+        for seed in ("seed_a", "seed_b"):
+            with adapter.question_run(question, tmp_path / f"q{index}_{seed}.sqlite3") as run:
+                run.ingest()
+                outcomes.append(run.retrieve(max_items=8, context_char_budget=12_000))
+        first, second = outcomes
+        assert first.source_session_ids == second.source_session_ids
+        assert first.context_sha256 == second.context_sha256
+        assert first.context_block == second.context_block
+        assert first.memory_count == second.memory_count
+        assert first.excerpt_count == second.excerpt_count
+
+
 def test_knowledge_update_shaped_pack_renders_correction_above_annotated_stale_fact(
     tmp_path: Path,
 ) -> None:
