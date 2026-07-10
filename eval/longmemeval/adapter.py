@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import date
 import hashlib
 import os
 from pathlib import Path
@@ -73,6 +74,19 @@ DEFAULT_CONTEXT_CHAR_BUDGET = 12_000
 DEFAULT_MAX_ITEMS = 8
 
 EMPTY_CONTEXT_PLACEHOLDER = "(no relevant chat history was retrieved)"
+
+# -- temporal precompute (derived date values) --------------------------------
+# Section header + hard char cap for the pack's "[derived]" date-arithmetic
+# lines (pack["derived_values"], computed by the retrieval service from the
+# selected items' event dates and the request's reference_time). The section
+# is rendered UNCHARGED against the excerpt char budget: reserving for it
+# would evict excerpt content on nearly every question (measured packs run
+# at ~100% of budget), turning a presentation feature into a retrieval
+# regression. Growth is therefore additive and hard-bounded: the service
+# caps the block at DERIVED_TIMELINE_MAX_LINES lines and this cap bounds the
+# rendered section's characters (whole lines only, never truncated mid-line).
+DERIVED_SECTION_HEADER = "### Derived date arithmetic (precomputed):"
+DERIVED_SECTION_MAX_CHARS = 1_600
 
 # Review-accept reason recorded on every roll-up acceptance the harness
 # performs (--accept-rollups); it lands verbatim in the acceptance metadata,
@@ -243,6 +257,31 @@ def _iso_date(value: object) -> str | None:
     """``YYYY-MM-DD`` prefix of an ISO timestamp string, or None."""
     text = str(value or "")
     return text[:10] if len(text) >= 10 else None
+
+
+# Connector-style session-date prefix ("2023/05/30 (Tue) 02:01"); the tail
+# (day-of-week, clock time) is kept verbatim by _iso_fact_date.
+_FACT_DATE_PREFIX_PATTERN = re.compile(r"^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(.*)$", re.DOTALL)
+
+
+def _iso_fact_date(raw_date: str) -> str:
+    """ISO-8601 normalization of a fact line's session-date prefix.
+
+    ``2023/05/30 (Tue) 02:01`` -> ``2023-05-30 (Tue) 02:01``: the leading
+    calendar date becomes machine-readable ISO-8601 (dashes, zero-padded)
+    while the day-of-week and clock time are kept byte-for-byte. Strings
+    that do not lead with a valid calendar date ("undated") pass through
+    unchanged, so nothing is ever invented.
+    """
+    match = _FACT_DATE_PREFIX_PATTERN.match(raw_date)
+    if match is None:
+        return raw_date
+    year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+    try:
+        normalized = date(year, month, day)
+    except ValueError:
+        return raw_date
+    return f"{normalized.isoformat()}{match.group(4)}"
 
 
 def _validity_suffix(memory: dict[str, object]) -> str:
@@ -746,13 +785,17 @@ class QuestionRun:
                 continue
             metadata = memory.get("metadata_json") if isinstance(memory.get("metadata_json"), dict) else {}
             source_id = str(metadata.get("source_id") or "")
-            _session_id, date = self._session_label(source_id) if source_id else ("", "undated")
+            _session_id, session_date = self._session_label(source_id) if source_id else ("", "undated")
+            # Fact-line date prefix: ISO-8601 date, day-of-week kept
+            # (machine-readable time; see _iso_fact_date).
             # ---- currency chains begin: chain members carry a factual
             # "[SUPERSEDED as of <date>]"/"[CURRENT as of <date>]" suffix
             # quoted from the pack annotation; the pack already renders a
             # chain as one contiguous oldest-first block with the CURRENT
             # entry last. Non-members get "" — lines byte-identical. ------
-            fact_lines.append(f"- [{date}] {text}{_validity_suffix(memory)}{currency_label_suffix(memory)}")
+            fact_lines.append(
+                f"- [{_iso_fact_date(session_date)}] {text}{_validity_suffix(memory)}{currency_label_suffix(memory)}"
+            )
             # ---- currency chains end --------------------------------------
         if fact_lines:
             lines.append("### Facts Alice remembers (with session dates):")
@@ -895,6 +938,33 @@ class QuestionRun:
             lines.append("### Retrieved chat history excerpts:")
             lines.extend(excerpt_lines)
 
+        # ---- temporal precompute (derived date values) begin ----------------
+        # Factual "[derived]" lines quoted from the retrieval pack — the
+        # date arithmetic the service precomputed from the selected items'
+        # timestamps (deltas to the reference date, chronological ordinals,
+        # span). Content, not instructions: the official reading templates
+        # stay byte-frozen. Rendered after the excerpts they summarize;
+        # additive and hard-bounded (see DERIVED_SECTION_MAX_CHARS above);
+        # absent packs (no reference_time, no dated items) render
+        # byte-identically to the pre-feature block.
+        derived = pack.get("derived_values") if isinstance(pack.get("derived_values"), dict) else None
+        derived_lines: list[str] = []
+        if derived is not None:
+            raw_lines = derived.get("lines")
+            derived_chars = 0
+            for raw_line in raw_lines if isinstance(raw_lines, list) else []:
+                line = str(raw_line)
+                if derived_chars + len(line) + 1 > DERIVED_SECTION_MAX_CHARS:
+                    break
+                derived_lines.append(line)
+                derived_chars += len(line) + 1
+        if derived_lines:
+            if lines:
+                lines.append("")
+            lines.append(DERIVED_SECTION_HEADER)
+            lines.extend(derived_lines)
+        # ---- temporal precompute (derived date values) end ------------------
+
         if grounding_lines:
             # Retrieval statistic, not an instruction: it belongs with the
             # retrieval output, after the excerpts it summarizes.
@@ -926,6 +996,8 @@ __all__ = [
     "CONTEXT_CHAR_BUDGET_ENV",
     "DEFAULT_CONTEXT_CHAR_BUDGET",
     "DEFAULT_MAX_ITEMS",
+    "DERIVED_SECTION_HEADER",
+    "DERIVED_SECTION_MAX_CHARS",
     "EMPTY_CONTEXT_PLACEHOLDER",
     "IngestStats",
     "LME_USER_EMAIL",

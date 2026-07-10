@@ -82,7 +82,12 @@ from alicebot_api.vnext_grounding import compute_query_grounding
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import fts_fallback_tokens
-from alicebot_api.vnext_temporal_query import TemporalAnchor, parse_event_datetime, parse_temporal_anchor
+from alicebot_api.vnext_temporal_query import (
+    TemporalAnchor,
+    derived_timeline_lines,
+    parse_event_datetime,
+    parse_temporal_anchor,
+)
 
 
 DEFAULT_CONTEXT_PACK_LIMIT = 8
@@ -2122,6 +2127,85 @@ class VNextRetrievalService:
                 pack["grounding"] = grounding
                 trace["grounding"] = dict(grounding)
         # -- end entity grounding ----------------------------------------------
+        # ---- temporal precompute (machine-readable time + derived values) begin
+        # Date questions fail on ARITHMETIC, not recall: the dated evidence
+        # is in the pack, but the reader still has to compute deltas,
+        # orderings, and spans from raw timestamps. Two additive,
+        # deterministic presentation moves over the ALREADY-SELECTED items
+        # (selection, ordering, and budget above are untouched):
+        #
+        # (1) Every selected memory/source with a resolvable event date gets
+        #     a machine-readable ISO-8601 ``event_time``. Sources use
+        #     ``_source_event_time`` (the temporal stage's event semantic).
+        #     Memories use their content-honest signals (``valid_from``,
+        #     connector-stamped metadata dates via ``_tiebreak_event_time``)
+        #     and then — at non-minimal depth only, keeping minimal's
+        #     cheapest-call promise of zero extra store reads — fall back to
+        #     their provenance source's event time (``metadata_json.
+        #     source_id`` -> ``get_source``, cached per compile, duck-typed
+        #     like every optional stage). Deliberately NO write-clock
+        #     fallback for memory rows themselves: an imported/replayed
+        #     memory must not present ingest day as its event date.
+        # (2) When the caller supplied ``reference_time`` (the caller's
+        #     "now"; the service NEVER substitutes the wall clock here, so
+        #     identical inputs keep producing byte-identical derived
+        #     values), a bounded derived-values block precomputes the date
+        #     arithmetic for the dated items — delta to the reference,
+        #     chronological ordinal, span — every line marked "[derived]"
+        #     (``vnext_temporal_query.derived_timeline_lines``, at most
+        #     ``DERIVED_TIMELINE_MAX_LINES`` lines). Question-agnostic: it
+        #     fires for ANY dated items, never on question shapes. Dormant
+        #     (no pack key, no trace stage, byte-identical pack) when
+        #     ``reference_time`` is absent.
+        temporal_get_source = (
+            getattr(self.store, "get_source", None) if depth != CONTEXT_DEPTH_MINIMAL else None
+        )
+        temporal_source_dates: dict[str, datetime | None] = {}
+        temporal_anchored_items = 0
+        temporal_dated_events: list[datetime] = []
+
+        def _memory_event_time(memory: JsonObject) -> datetime | None:
+            event = _tiebreak_event_time(memory)
+            if event is not None or temporal_get_source is None:
+                return event
+            metadata = memory.get("metadata_json")
+            source_id = str(metadata.get("source_id") or "") if isinstance(metadata, Mapping) else ""
+            if not source_id:
+                return None
+            if source_id not in temporal_source_dates:
+                source_row = temporal_get_source(source_id)
+                temporal_source_dates[source_id] = (
+                    _source_event_time(source_row) if isinstance(source_row, Mapping) else None
+                )
+            return temporal_source_dates[source_id]
+
+        for pack_item, event_time in (
+            *((item, _memory_event_time(item)) for item in selected_memories),
+            *((item, _source_event_time(item)) for item in selected_sources),
+        ):
+            if event_time is None:
+                continue
+            pack_item["event_time"] = event_time.isoformat()
+            temporal_anchored_items += 1
+            temporal_dated_events.append(event_time)
+        if request.reference_time is not None:
+            derived_lines = derived_timeline_lines(
+                temporal_dated_events,
+                reference_time=request.reference_time,
+            )
+            if derived_lines:
+                pack["derived_values"] = {
+                    # parse_event_datetime is the UTC normalizer the stamps
+                    # above already trust; reference_time is a datetime, so
+                    # this is a pure aware/naive->UTC conversion.
+                    "reference_time": parse_event_datetime(request.reference_time).isoformat(),  # type: ignore[union-attr]
+                    "lines": derived_lines,
+                }
+            trace["stages"]["temporal_precompute"] = {  # type: ignore[index]
+                "anchored_items": temporal_anchored_items,
+                "derived_lines": len(derived_lines),
+            }
+        # ---- temporal precompute (machine-readable time + derived values) end
         append_event(
             self.store,
             event_type="retrieval.context_pack_compiled",

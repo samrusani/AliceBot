@@ -1353,7 +1353,17 @@ def test_context_block_respects_char_budget(tmp_path: Path) -> None:
         run.ingest()
         small = run.retrieve(max_items=8, context_char_budget=600)
         large = run.retrieve(max_items=8, context_char_budget=20_000)
-    assert small.context_chars <= 600
+    # temporal precompute (derived date values): the "[derived]" section is
+    # additive and UNCHARGED — reserving for it would evict excerpt content
+    # on every date-bearing question — with its own hard char cap. The
+    # budget contract is therefore: everything before the derived section
+    # honors the char budget exactly, and the whole block may exceed it by
+    # at most the capped section (header + separators + capped lines).
+    body = small.context_block.partition(adapter.DERIVED_SECTION_HEADER)[0].rstrip("\n")
+    assert len(body) <= 600
+    assert small.context_chars <= (
+        600 + len(adapter.DERIVED_SECTION_HEADER) + adapter.DERIVED_SECTION_MAX_CHARS + 4
+    )
     assert small.context_chars < large.context_chars
 
 
