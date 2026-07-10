@@ -9,7 +9,6 @@ import re
 from typing import Protocol
 
 from alicebot_api.memory_provenance import (
-    ASSERTION_CLASS_ASSISTANT_ESTIMATE,
     ASSERTION_CLASS_USER_ASSERTED,
     PROVENANCE_ROLE_USER,
     classify_assertion,
@@ -238,35 +237,26 @@ def _strip_markdown_prefix(line: str) -> str:
     return stripped.strip()
 
 
-# Confidence bias for speaker-classified assertions (bias, not suppression:
-# assistant estimates keep a healthy floor and still capture/promote).
-USER_ASSERTED_CONFIDENCE_BOOST = 0.08
-USER_ASSERTED_CONFIDENCE_CAP = 0.95
-ASSISTANT_ESTIMATE_CONFIDENCE_PENALTY = 0.06
-ASSISTANT_ESTIMATE_CONFIDENCE_FLOOR = 0.30
 USER_ASSERTED_VALUE_CONFIDENCE = 0.72
+USER_ASSERTED_VALUE_RULE = "user_asserted_value"
 
 
 def _annotate_candidate_provenance(candidate: CaptureCandidate) -> CaptureCandidate:
-    """Attach speaker provenance and apply the assertion-class confidence bias.
+    """Attach speaker provenance to a speaker-tagged candidate.
 
     Gated on a leading speaker tag in the candidate text: untagged content
     derives no role and is returned unchanged (byte-identical old path).
+    Provenance biases promotion ORDER only (``order_candidates_for_promotion``);
+    it never adjusts confidence -- pack ranking does not read confidence, so
+    a confidence delta here would be config implying nonexistent behavior.
     """
     role = derive_speaker_role(candidate.text)
     if role is None:
         return candidate
-    assertion_class = classify_assertion(candidate.text, role)
-    confidence = candidate.confidence
-    if assertion_class == ASSERTION_CLASS_USER_ASSERTED:
-        confidence = min(USER_ASSERTED_CONFIDENCE_CAP, confidence + USER_ASSERTED_CONFIDENCE_BOOST)
-    elif assertion_class == ASSERTION_CLASS_ASSISTANT_ESTIMATE:
-        confidence = max(ASSISTANT_ESTIMATE_CONFIDENCE_FLOOR, confidence - ASSISTANT_ESTIMATE_CONFIDENCE_PENALTY)
     return replace(
         candidate,
-        confidence=round(confidence, 4),
         provenance_role=role,
-        assertion_class=assertion_class,
+        assertion_class=classify_assertion(candidate.text, role),
     )
 
 
@@ -315,7 +305,7 @@ def _candidate_from_line(line: str, *, source_chunk_id: str, source_chunk_index:
         source_chunk_id=source_chunk_id,
         source_chunk_index=source_chunk_index,
         confidence=USER_ASSERTED_VALUE_CONFIDENCE,
-        extraction_rule="user_asserted_value",
+        extraction_rule=USER_ASSERTED_VALUE_RULE,
         provenance_role=role,
         assertion_class=ASSERTION_CLASS_USER_ASSERTED,
     )
@@ -643,7 +633,7 @@ class VNextCaptureService:
                 payload={"content_hash": content_hash, "chunk_count": len(chunk_rows)},
             )
 
-            candidates = extract_candidate_memories(chunk_rows)
+            candidates = self._drop_cross_batch_user_asserted_duplicates(extract_candidate_memories(chunk_rows))
             memory_rows: list[JsonObject] = []
             for candidate in candidates:
                 # Speaker provenance is only stamped when a role was derived,
@@ -744,6 +734,37 @@ class VNextCaptureService:
                 metadata=source_input.metadata_json,
             )
             raise
+
+    def _drop_cross_batch_user_asserted_duplicates(
+        self, candidates: list[CaptureCandidate]
+    ) -> list[CaptureCandidate]:
+        """Dedupe user-asserted-value promotions against the whole store.
+
+        ``extract_candidate_memories`` dedupes within one capture batch
+        only, so a user restating the same value line in a later session
+        used to mint a second memory with identical canonical text (proven
+        cross-batch duplicate: one Omega-watch assertion captured twice
+        from two sessions). Scoped to the ``user_asserted_value`` rule so
+        every legacy rule keeps its batch-local behavior byte-identical;
+        stores without ``list_memories`` skip the check.
+        """
+        if not any(candidate.extraction_rule == USER_ASSERTED_VALUE_RULE for candidate in candidates):
+            return candidates
+        list_memories = getattr(self.store, "list_memories", None)
+        if not callable(list_memories):
+            return candidates
+        existing_texts = {
+            str(row.get("canonical_text") or "").casefold()
+            for row in list_memories()
+            if isinstance(row, dict)
+        }
+        existing_texts.discard("")
+        return [
+            candidate
+            for candidate in candidates
+            if candidate.extraction_rule != USER_ASSERTED_VALUE_RULE
+            or candidate.text.casefold() not in existing_texts
+        ]
 
     def _link_captured_entities(
         self,
@@ -925,15 +946,12 @@ class VNextCaptureService:
 
 
 __all__ = [
-    "ASSISTANT_ESTIMATE_CONFIDENCE_FLOOR",
-    "ASSISTANT_ESTIMATE_CONFIDENCE_PENALTY",
     "BatchImportResult",
     "CaptureCandidate",
     "CaptureResult",
     "SourceCaptureInput",
-    "USER_ASSERTED_CONFIDENCE_BOOST",
-    "USER_ASSERTED_CONFIDENCE_CAP",
     "USER_ASSERTED_VALUE_CONFIDENCE",
+    "USER_ASSERTED_VALUE_RULE",
     "VNextCaptureService",
     "VNextCaptureStore",
     "VNextCaptureValidationError",

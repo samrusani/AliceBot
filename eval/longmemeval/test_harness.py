@@ -15,6 +15,7 @@ using the checked-in two-question synthetic fixture.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -814,16 +815,108 @@ def test_query_anchored_excerpt_gates() -> None:
     assert adapter._query_anchored_excerpt(
         [(0, prose_0), (1, prose_1)], prose_terms, baseline_chunk_index=0, baseline_text=prose_0
     ) is None
-    # Fires when the best-matching line is outside the baseline best chunk.
-    anchored = adapter._query_anchored_excerpt(
+    # Prose match OUTSIDE the baseline chunk: also the old path now. Moving
+    # the excerpt onto a prose line displaces the head chunk that carries
+    # the surrounding answer context (the proven down-flip shape), so every
+    # anchor move requires enumeration shape near the matched line.
+    assert adapter._query_anchored_excerpt(
         [(0, prose_0), (1, prose_1)],
         frozenset(["follow-up", "booked", "month"]),
         baseline_chunk_index=0,
         baseline_text=prose_0,
+    ) is None
+    # A cross-chunk anchor WITH enumeration shape nearby still fires.
+    anchored = adapter._query_anchored_excerpt(
+        [(0, _CHESS_CHUNK_0), (1, _CHESS_CHUNK_1)],
+        frozenset(["28", "kg3"]),
+        baseline_chunk_index=0,
+        baseline_text=_CHESS_CHUNK_0,
     )
     assert anchored is not None
-    assert "follow-up is booked" in anchored.text
-    assert len(anchored.text) <= len(prose_0)
+    assert "28. Kg3" in anchored.text
+
+
+def test_prose_anchor_move_keeps_head_chunk_byte_identical(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gate-hole regression: a cross-chunk PROSE match must not displace the
+    head-biased best chunk (the proven down-flip shape: the head chunk held
+    the answer and a chatty prose line elsewhere pulled the window away)."""
+    chunk_0 = _padded(
+        "[USER]: how do I pay for the metro downtown, do they take a transit card at the station"
+    )
+    chunk_1 = _padded(
+        "[USER]: by the way the weather was lovely when I rode the metro downtown yesterday afternoon"
+    )
+    run = _anchoring_run(
+        "How do I pay for the metro downtown with a transit card?",
+        {"src-metro": [chunk_0, chunk_1]},
+        {"src-metro": ("session_metro", "2023/05/21 (Sun) 13:30")},
+    )
+    pack = {"relevant_memories": [], "sources": [{"id": "src-metro"}]}
+    for budget in (400, 700, 12_000):
+        block, excerpt_count = run._render_context_block(pack, budget=budget)
+        with monkeypatch.context() as patch:
+            patch.setattr(adapter, "_query_anchored_excerpt", lambda *args, **kwargs: None)
+            old_block, old_count = run._render_context_block(pack, budget=budget)
+        assert (block, excerpt_count) == (old_block, old_count)
+
+
+_REMEDY_DATE = "2023/05/28 (Sun) 09:15"
+_REMEDY_QUESTION = "Which natural remedy for my dark skin spots do I wash off after 10 minutes?"
+_REMEDY_CHUNK_0 = (
+    "[USER]: I have dark spots on my skin.\n"
+    "[ASSISTANT]: Sure, here is the natural remedy list for dark spots again."
+)
+_REMEDY_ITEMS = (
+    "1. Lemon juice: dab a little onto each mark with cotton.",
+    "2. Honey mask: leave it in place while you relax.",
+    "3. Tomato: rub a slice on the spots and wash off after 10 minutes.",
+    "4. Aloe vera gel: smooth over everything at bedtime.",
+)
+_REMEDY_CHUNK_1 = "[ASSISTANT]: Here are the remedies:\n" + "\n".join(_REMEDY_ITEMS)
+
+
+def test_upward_extension_recovers_enumerated_run_above_the_window() -> None:
+    """The window's TOP edge cutting a numbered list walks upward through the
+    run (capped), so items 1..k-1 come back alongside the anchored item."""
+    terms = frozenset(["spots", "wash", "off", "after", "10", "minutes", "dark", "skin"])
+    anchored = adapter._query_anchored_excerpt(
+        [(0, _REMEDY_CHUNK_0), (1, _REMEDY_CHUNK_1)],
+        terms,
+        baseline_chunk_index=0,
+        baseline_text=_REMEDY_CHUNK_0,
+    )
+    assert anchored is not None
+    assert "3. Tomato" in anchored.text  # the anchor item itself
+    assert "wash off after 10 minutes" in anchored.text
+    assert anchored.upward_extension_text.startswith("1. Lemon juice")
+    assert "2. Honey mask" in anchored.upward_extension_text
+    assert anchored.upward_extension_chunk_indexes == frozenset({1})
+    # The upward continuation stops where the enumeration shape stops.
+    assert "[ASSISTANT]" not in anchored.upward_extension_text
+    assert len(anchored.upward_extension_text) <= adapter._ANCHOR_EXTENSION_MAX_CHARS
+
+
+def test_render_applies_upward_extension_above_the_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _anchoring_run(
+        _REMEDY_QUESTION,
+        {"src-remedy": [_REMEDY_CHUNK_0, _REMEDY_CHUNK_1]},
+        {"src-remedy": ("session_remedy", _REMEDY_DATE)},
+    )
+    pack = {"relevant_memories": [], "sources": [{"id": "src-remedy"}]}
+    budget = _entry_cost(_REMEDY_CHUNK_0, "session_remedy", _REMEDY_DATE, 1) + 260
+    block, excerpt_count = run._render_context_block(pack, budget=budget)
+    assert excerpt_count == 1
+    assert "3. Tomato" in block
+    assert "wash off after 10 minutes" in block
+    assert "1. Lemon juice" in block
+    # Recovered run renders in reading order: item 1 above the anchor item.
+    assert block.index("1. Lemon juice") < block.index("3. Tomato")
+    # Determinism: identical inputs render the identical block.
+    assert run._render_context_block(pack, budget=budget) == (block, excerpt_count)
+    # Control: with anchoring off the head-biased excerpt never shows item 3.
+    monkeypatch.setattr(adapter, "_query_anchored_excerpt", lambda *args, **kwargs: None)
+    head_block, _head_count = run._render_context_block(pack, budget=budget)
+    assert "3. Tomato" not in head_block
 
 
 def test_enumeration_signal_shapes() -> None:
@@ -876,6 +969,31 @@ def test_question_run_ingests_and_retrieves_evidence(tmp_path: Path) -> None:
     assert "2023/05/20 (Sat) 14:10" in outcome.context_block  # session date visible for temporal questions
     assert not outcome.vector_enabled  # no embedding provider configured in tests
     assert outcome.retrieval_seconds >= 0.0
+
+
+def test_retrieval_outcome_record_carries_pack_provenance(tmp_path: Path) -> None:
+    """Checkpoint rows must make flips offline-attributable: retrieved source
+    session ids, selected memory ids, and a digest of the exact rendered
+    context block — ids + hash only, never the context text itself."""
+    question = load_dataset(SYNTHETIC_FIXTURE_PATH)[0]
+    with adapter.question_run(question, tmp_path / "q.sqlite3") as run:
+        run.ingest()
+        outcome = run.retrieve(max_items=8, context_char_budget=12_000)
+
+    record = outcome.to_record()
+    provenance = record["provenance"]
+    assert isinstance(provenance, dict)
+    assert provenance["context_sha256"] == hashlib.sha256(outcome.context_block.encode("utf-8")).hexdigest()
+    assert outcome.context_block not in json.dumps(record)  # compact: hash, not text
+    session_ids = provenance["source_session_ids"]
+    assert isinstance(session_ids, list) and session_ids
+    haystack_sessions = set(question.haystack_session_ids)
+    assert all(session_id in haystack_sessions for session_id in session_ids)
+    assert len(session_ids) == record["source_count"]
+    memory_ids = provenance["memory_ids"]
+    assert isinstance(memory_ids, list)
+    assert len(memory_ids) == record["memory_count"]
+    assert all(isinstance(memory_id, str) and memory_id for memory_id in memory_ids)
 
 
 def test_knowledge_update_shaped_pack_renders_correction_above_annotated_stale_fact(
@@ -1030,6 +1148,14 @@ def test_runner_dry_run_end_to_end(tmp_path: Path) -> None:
     records = runner.load_checkpoint(checkpoint_path)
     assert records["synthetic_1"]["retrieval"]["context_chars"] > 0
     assert records["synthetic_2_abs"]["retrieval"]["context_chars"] > 0
+    # Pack provenance lands in every checkpoint row (ids + hash, no text),
+    # so paired flips between runs stay attributable offline.
+    for question_id in ("synthetic_1", "synthetic_2_abs"):
+        provenance = records[question_id]["retrieval"]["provenance"]
+        assert sorted(provenance) == ["context_sha256", "memory_ids", "source_session_ids"]
+        assert re.fullmatch(r"[0-9a-f]{64}", provenance["context_sha256"])
+        assert isinstance(provenance["source_session_ids"], list)
+        assert isinstance(provenance["memory_ids"], list)
     assert not list((tmp_path / "work").glob("*.sqlite3"))  # scratch stores cleaned up
 
     # Resume: nothing pending, still exits 0 and reports both records.

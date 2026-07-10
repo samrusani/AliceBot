@@ -103,6 +103,76 @@ def test_unit_percent_and_value_attribute_phrasings() -> None:
     assert "placement top half" in keys
 
 
+def test_value_provenance_attributes_never_become_fact_keys() -> None:
+    """Captured memories carry ``value.source_id``/``value.source_chunk_id``
+    plumbing; indexing "source chunk id <uuid>" into FTS puts identical
+    uuid tokens on every captured row (897/897 on the benchmark), so
+    provenance attributes and identifier-shaped values must be skipped."""
+    memory = _memory(
+        value={
+            "text": "The Bike-a-Thon raised $5,000 for the hospital.",
+            "source_id": "0a34ad58-1a2b-4c3d-8e4f-556677889900",
+            "source_chunk_id": "75832dbd-9f8e-4d7c-8b6a-112233445566",
+        },
+    )
+    keys = derive_deterministic_fact_keys(memory)
+    joined = " ".join(keys).lower()
+    assert "source id" not in joined
+    assert "source chunk id" not in joined
+    assert "0a34ad58" not in joined
+    assert "75832dbd" not in joined
+    # Real derivations from the text fields still come through.
+    assert any("charity" in key for key in keys)
+
+
+def test_id_named_value_attributes_are_excluded_by_name() -> None:
+    memory = _memory(
+        value={
+            "text": "Finished the race.",
+            "ticket_id": "ABC-123",
+            "order_ids": "17, 18",
+            "thread_id": 42,
+        },
+    )
+    keys = derive_deterministic_fact_keys(memory)
+    joined = " ".join(keys).lower()
+    for fragment in ("ticket", "order", "thread"):
+        assert fragment not in joined
+
+
+def test_identifier_shaped_string_values_are_excluded_by_pattern() -> None:
+    uuid_value = "5c02b1de-93f8-4a5a-a111-222222222222"
+    hex_value = "abcdef0123456789"
+    memory = _memory(
+        value={
+            "text": "Finished the race.",
+            "badge": uuid_value,  # innocuous name, identifier-shaped value
+            "checksum": hex_value,
+            "placement": "top half",  # real attribute survives
+        },
+    )
+    keys = derive_deterministic_fact_keys(memory)
+    joined = " ".join(keys).lower()
+    assert uuid_value not in joined
+    assert hex_value not in joined
+    assert "placement top half" in keys
+
+
+def test_short_or_wordy_values_are_not_mistaken_for_identifiers() -> None:
+    memory = _memory(
+        value={
+            "text": "Finished the race.",
+            "cafe": "deadbeef",  # 8 hex chars: below the identifier length bar
+            "grade": "ab",
+            "seat": "14a",
+        },
+    )
+    keys = derive_deterministic_fact_keys(memory)
+    assert "cafe deadbeef" in keys
+    assert "grade ab" in keys
+    assert "seat 14a" in keys
+
+
 def test_memory_key_words_only_from_human_authored_keys() -> None:
     human = derive_deterministic_fact_keys(
         {"memory_key": "profile.vehicle.primary", "canonical_text": "Sam drives a blue Outback."}

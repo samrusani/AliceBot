@@ -318,17 +318,46 @@ def _memory_key_words(memory: Mapping[str, object]) -> str:
     return " ".join(dict.fromkeys(segment.lower() for segment in segments))
 
 
+# Provenance/identifier ``value`` attributes are plumbing, not retrieval
+# phrasings: indexing "source chunk id <uuid>" into FTS puts identical
+# high-idf uuid tokens on every captured memory, drowning real matches.
+_VALUE_ATTRIBUTE_NAME_EXCLUSIONS = frozenset({"text", "intent", "source_refs", "source_id", "source_chunk_id"})
+_IDENTIFIER_ATTRIBUTE_SUFFIXES = ("_id", "_ids")
+# A uuid (with hyphens) or a bare hex identifier: 12+ chars drawn only from
+# [0-9a-f] is never natural-language vocabulary worth indexing.
+_IDENTIFIER_VALUE_PATTERN = re.compile(
+    r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{12,})$",
+    re.IGNORECASE,
+)
+
+
+def _is_identifier_attribute(name: str) -> bool:
+    return name in _VALUE_ATTRIBUTE_NAME_EXCLUSIONS or name.endswith(_IDENTIFIER_ATTRIBUTE_SUFFIXES)
+
+
+def _is_identifier_value(raw: object) -> bool:
+    return isinstance(raw, str) and _IDENTIFIER_VALUE_PATTERN.match(raw.strip()) is not None
+
+
 def _value_attribute_keys(memory: Mapping[str, object]) -> list[str]:
-    """Shallow ``value`` attribute pairs, e.g. ``{"total": "$5,000"}``."""
+    """Shallow ``value`` attribute pairs, e.g. ``{"total": "$5,000"}``.
+
+    Skips provenance/identifier attributes (``source_id``,
+    ``source_chunk_id``, anything ending in ``_id``/``_ids``) and any
+    string value shaped like a uuid/hex identifier -- those are row
+    plumbing, not phrasings a person would search by.
+    """
     value = memory.get("value")
     if not isinstance(value, Mapping):
         return []
     keys: list[str] = []
     for name in sorted(str(key) for key in value.keys()):
-        if name in {"text", "intent", "source_refs"}:
+        if _is_identifier_attribute(name):
             continue
         raw = value.get(name)
         if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+            continue
+        if _is_identifier_value(raw):
             continue
         attribute = " ".join(part for part in re.split(r"[_\-]+", name) if part).strip()
         rendered = f"{attribute} {raw}".strip()

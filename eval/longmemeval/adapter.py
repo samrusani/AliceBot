@@ -32,6 +32,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -121,6 +122,13 @@ class RetrievalOutcome:
     vector_enabled: bool
     warnings: tuple[str, ...]
     retrieval_seconds: float
+    # Pack provenance, persisted in checkpoint rows so any later paired flip
+    # is attributable offline: which sessions the source stage retrieved,
+    # which memory rows the pack selected, and a digest of the exact
+    # rendered context block (ids + hash only -- never the context text).
+    source_session_ids: tuple[str, ...] = ()
+    memory_ids: tuple[str, ...] = ()
+    context_sha256: str = ""
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -133,6 +141,11 @@ class RetrievalOutcome:
             "vector_enabled": self.vector_enabled,
             "warnings": list(self.warnings),
             "retrieval_seconds": round(self.retrieval_seconds, 3),
+            "provenance": {
+                "source_session_ids": list(self.source_session_ids),
+                "memory_ids": list(self.memory_ids),
+                "context_sha256": self.context_sha256,
+            },
         }
 
 
@@ -270,9 +283,11 @@ def _trim_line_around_matches(line: str, terms: frozenset[str], *, max_chars: in
 class _AnchoredExcerpt:
     chunk_index: int  # chunk containing the anchor line (used for the excerpt header)
     text: str  # window text; costs no more than the baseline chunk it replaces
-    extension_text: str  # enumeration continuation ("" if none); spent from the second-pass pool
+    extension_text: str  # downward enumeration continuation ("" if none); spent from the second-pass pool
+    upward_extension_text: str  # upward enumeration continuation ("" if none); same pool
     covered_chunk_indexes: frozenset[int]  # chunks the window overlaps (kept out of pass 2)
-    extension_chunk_indexes: frozenset[int]  # chunks the extension overlaps (excluded only if applied)
+    extension_chunk_indexes: frozenset[int]  # chunks the downward extension overlaps (excluded only if applied)
+    upward_extension_chunk_indexes: frozenset[int]  # chunks the upward extension overlaps (excluded only if applied)
 
 
 def _query_anchored_excerpt(
@@ -287,9 +302,13 @@ def _query_anchored_excerpt(
     Returns ``None`` whenever anchoring is not clearly warranted, in which
     case the caller keeps today's byte-identical best-chunk excerpt:
     single-chunk sources (the whole session is already visible), no line
-    with a weighted score of at least ``_ANCHOR_MIN_SCORE``, or a match
-    inside the baseline chunk without enumeration shape nearby (ordinary
-    prose whose best chunk already shows the matched line).
+    with a weighted score of at least ``_ANCHOR_MIN_SCORE``, or no
+    enumeration shape near the matched line. Ordinary prose never anchors —
+    not even when the best-matching line sits outside the baseline chunk —
+    because a prose anchor move displaces the head-biased best chunk that
+    usually carries the surrounding answer context; only enumerated runs
+    (move records, numbered lists) have the cut-mid-run failure mode this
+    window exists to fix.
 
     The window is centered on the best-matching line over the session's
     concatenated chunk stream (ties break to the earliest line), expands to
@@ -297,7 +316,9 @@ def _query_anchored_excerpt(
     "after X" questions live), and never exceeds the baseline entry's cost,
     so pass-1 packing admits exactly the same sources as before. When the
     window's lower edge cuts an enumerated run, the continuation through
-    the run (capped) is returned separately for the second-pass pool.
+    the run (capped) is returned separately for the second-pass pool; when
+    the window's upper edge cuts an enumerated run, the lines above it are
+    returned the same way (list items 1..k-1 when the window starts at k).
     """
     if len(ordered_chunks) < 2 or not terms:
         return None
@@ -320,7 +341,7 @@ def _query_anchored_excerpt(
         _has_enumeration_signal(lines[index][1])
         for index in range(max(0, best_index - 3), min(len(lines), best_index + 4))
     )
-    if anchor_chunk == baseline_chunk_index and not enumerated_shape:
+    if not enumerated_shape:
         return None
     # Cost parity with the baseline entry: same header except the excerpt
     # ordinal, so cap the window text to keep entry_length from growing.
@@ -365,14 +386,32 @@ def _query_anchored_excerpt(
             extension_lines.append((chunk_index, line))
             extension_length += len(line) + 1
     extension_text = "\n".join(line for _chunk_index, line in extension_lines)
-    if window_text == baseline_text and extension_text == "":
+    # Symmetric upward continuation: the window's TOP edge cutting an
+    # enumerated run loses items 1..k-1 ("3. Tomato ..." without steps 1-2),
+    # so walk upward while the shape holds, under the same cap, also spent
+    # from the second-pass pool (never displacing pass-1 guarantees).
+    upward_lines: list[tuple[int, str]] = []
+    if low > 0 and _has_enumeration_signal(lines[low][1]):
+        upward_length = 0
+        for chunk_index, line in lines[low - 1 :: -1]:
+            if not _has_enumeration_signal(line):
+                break
+            if upward_length + len(line) + 1 > _ANCHOR_EXTENSION_MAX_CHARS:
+                break
+            upward_lines.append((chunk_index, line))
+            upward_length += len(line) + 1
+    upward_lines.reverse()
+    upward_extension_text = "\n".join(line for _chunk_index, line in upward_lines)
+    if window_text == baseline_text and extension_text == "" and upward_extension_text == "":
         return None  # anchoring would change nothing; keep the old path
     return _AnchoredExcerpt(
         chunk_index=anchor_chunk,
         text=window_text,
         extension_text=extension_text,
+        upward_extension_text=upward_extension_text,
         covered_chunk_indexes=frozenset(chunk_index for chunk_index, _line in lines[low : high + 1]),
         extension_chunk_indexes=frozenset(chunk_index for chunk_index, _line in extension_lines),
+        upward_extension_chunk_indexes=frozenset(chunk_index for chunk_index, _line in upward_lines),
     )
 
 
@@ -487,6 +526,16 @@ class QuestionRun:
         trace = pack.get("trace") if isinstance(pack.get("trace"), dict) else {}
         vector_stage = str(trace.get("vector_stage", "unknown"))
         warnings = pack.get("warnings") or []
+        source_session_ids = tuple(
+            self._session_label(str(source.get("id")))[0]
+            for source in sources
+            if isinstance(source, dict) and source.get("id")
+        )
+        memory_ids = tuple(
+            str(memory.get("id"))
+            for memory in memories
+            if isinstance(memory, dict) and memory.get("id")
+        )
         return RetrievalOutcome(
             context_block=context_block,
             context_chars=len(context_block),
@@ -498,6 +547,9 @@ class QuestionRun:
             vector_enabled=vector_stage == VECTOR_STAGE_ENABLED,
             warnings=tuple(str(warning) for warning in warnings),
             retrieval_seconds=retrieval_seconds,
+            source_session_ids=source_session_ids,
+            memory_ids=memory_ids,
+            context_sha256=hashlib.sha256(context_block.encode("utf-8")).hexdigest(),
         )
 
     def _session_label(self, source_id: str) -> tuple[str, str]:
@@ -602,8 +654,8 @@ class QuestionRun:
         selected: list[tuple[int, int, int, str, str, str]] = []
         # Per source: (chunk entries not yet shown, chunk indexes covered by an anchored window).
         leftovers: list[tuple[list[tuple[int, int, int, str, str, str]], frozenset[int]]] = []
-        # (selected position, leftovers position, extension text, extension chunk indexes).
-        pending_extensions: list[tuple[int, int, str, frozenset[int]]] = []
+        # (selected position, leftovers position, extension text, extension chunk indexes, joins above window).
+        pending_extensions: list[tuple[int, int, str, frozenset[int], bool]] = []
         for source_chunks, ordered_chunks in zip(chunks_by_source, ordered_chunks_by_source):
             best = source_chunks[0]
             anchored = _query_anchored_excerpt(
@@ -627,6 +679,17 @@ class QuestionRun:
                                 len(leftovers) - 1,
                                 anchored.extension_text,
                                 anchored.extension_chunk_indexes,
+                                False,
+                            )
+                        )
+                    if anchored.upward_extension_text:
+                        pending_extensions.append(
+                            (
+                                len(selected) - 1,
+                                len(leftovers) - 1,
+                                anchored.upward_extension_text,
+                                anchored.upward_extension_chunk_indexes,
+                                True,
                             )
                         )
             else:
@@ -634,8 +697,8 @@ class QuestionRun:
         # Enumeration extensions spend the leftover pool first (source rank
         # order): a kept-intact list never evicts another source's
         # guaranteed excerpt, only competes with pass-2 chunks.
-        for selected_position, leftover_position, extension_text, extension_chunk_indexes in pending_extensions:
-            extra = len(extension_text) + 1  # joined below the window with one newline
+        for selected_position, leftover_position, extension_text, extension_chunk_indexes, joins_above in pending_extensions:
+            extra = len(extension_text) + 1  # joined to the window with one newline
             if used + extra > budget:
                 continue
             neg_score, source_rank, chunk_index, session_id, date, window_text = selected[selected_position]
@@ -645,7 +708,7 @@ class QuestionRun:
                 chunk_index,
                 session_id,
                 date,
-                window_text + "\n" + extension_text,
+                extension_text + "\n" + window_text if joins_above else window_text + "\n" + extension_text,
             )
             used += extra
             entries, covered = leftovers[leftover_position]

@@ -269,18 +269,28 @@ def memory_signature_text(memory: JsonObject) -> str:
 
 
 def memory_provenance_group_key(memory: JsonObject) -> object:
-    """Provenance group for a memory: the source it was extracted from.
+    """Provenance group for a memory: the source CHUNK it was extracted from.
 
-    Memories captured from one source re-state that source's content; for
-    aggregation queries a second memory from an already-represented source
-    adds no new instance, so it yields its slot to a distinct source.
+    Memories captured from one chunk re-state that chunk's content, so for
+    aggregation queries a second memory from an already-represented chunk
+    adds no new instance and yields its slot. Different chunks of one
+    source stay distinct: separate turns of a session are separate facts
+    ("hybrid bike" and "four bikes" from one evidence session), not
+    restatements, so grouping on the bare source id would demote exactly
+    the instances aggregation questions need. Memories without a chunk id
+    in ``metadata_json`` fall back to grouping on the source id alone;
     ``None`` (no provenance metadata) never groups.
     """
     metadata = memory.get("metadata_json")
     if not isinstance(metadata, dict):
         return None
     source_id = metadata.get("source_id")
-    return str(source_id) if isinstance(source_id, str) and source_id else None
+    if not (isinstance(source_id, str) and source_id):
+        return None
+    source_chunk_id = metadata.get("source_chunk_id")
+    if isinstance(source_chunk_id, str) and source_chunk_id:
+        return (str(source_id), str(source_chunk_id))
+    return str(source_id)
 
 
 def source_chunk_text_provider(

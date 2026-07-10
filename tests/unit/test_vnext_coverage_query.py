@@ -15,6 +15,7 @@ from alicebot_api.vnext_coverage_query import (
     coverage_stage_record,
     decompose_clauses,
     detect_aggregation_intent,
+    memory_provenance_group_key,
     source_chunk_text_provider,
 )
 from alicebot_api.vnext_retrieval import RetrievalCandidate
@@ -391,6 +392,78 @@ def test_group_key_demotes_same_source_restatements() -> None:
     }
     assert demoted_reasons["mem-a2"] == EXCLUSION_REASON_COVERAGE_REDUNDANT
     assert demoted_reasons["mem-a3"] == EXCLUSION_REASON_COVERAGE_REDUNDANT
+
+
+def test_memory_provenance_group_key_is_source_and_chunk() -> None:
+    """Different chunks (turns) of one source are distinct facts, not
+    restatements: they must land in different groups so the diversity pass
+    never demotes a second turn of the evidence session."""
+    same_source_chunk_a = {"metadata_json": {"source_id": "src-1", "source_chunk_id": "chunk-a"}}
+    same_source_chunk_b = {"metadata_json": {"source_id": "src-1", "source_chunk_id": "chunk-b"}}
+    restatement_of_a = {"metadata_json": {"source_id": "src-1", "source_chunk_id": "chunk-a"}}
+
+    key_a = memory_provenance_group_key(same_source_chunk_a)
+    key_b = memory_provenance_group_key(same_source_chunk_b)
+    assert key_a == ("src-1", "chunk-a")
+    assert key_b == ("src-1", "chunk-b")
+    assert key_a != key_b
+    assert memory_provenance_group_key(restatement_of_a) == key_a
+
+
+def test_memory_provenance_group_key_falls_back_to_source_id_without_chunk() -> None:
+    assert memory_provenance_group_key({"metadata_json": {"source_id": "src-1"}}) == "src-1"
+    assert memory_provenance_group_key({"metadata_json": {"source_id": "src-1", "source_chunk_id": ""}}) == "src-1"
+    assert memory_provenance_group_key({"metadata_json": {"source_id": "src-1", "source_chunk_id": None}}) == "src-1"
+
+
+def test_memory_provenance_group_key_missing_provenance_never_groups() -> None:
+    assert memory_provenance_group_key({}) is None
+    assert memory_provenance_group_key({"metadata_json": "not-a-dict"}) is None
+    assert memory_provenance_group_key({"metadata_json": {}}) is None
+    assert memory_provenance_group_key({"metadata_json": {"source_id": ""}}) is None
+    # A chunk id without a source id is not enough provenance to group on.
+    assert memory_provenance_group_key({"metadata_json": {"source_chunk_id": "chunk-a"}}) is None
+
+
+def test_diversity_with_chunk_key_keeps_other_turns_of_the_evidence_session() -> None:
+    """Regression for the bare-source-id key: memories from DIFFERENT chunks
+    of one session must all stay selected (each turn is its own instance)."""
+    candidates = []
+    for rank, (memory_id, source_id, chunk_id) in enumerate(
+        (
+            ("mem-bike1", "src-evidence", "chunk-1"),
+            ("mem-bike2", "src-evidence", "chunk-2"),  # "hybrid bike" turn
+            ("mem-bike3", "src-evidence", "chunk-3"),  # "four bikes" turn
+            ("mem-restate", "src-evidence", "chunk-1"),  # true restatement of chunk-1
+            ("mem-other", "src-other", "chunk-9"),
+        ),
+        start=1,
+    ):
+        candidates.append(
+            RetrievalCandidate(
+                item={
+                    "id": memory_id,
+                    "canonical_text": f"note {memory_id}",
+                    "metadata_json": {"source_id": source_id, "source_chunk_id": chunk_id},
+                },
+                target_type="memory",
+                rank=rank,
+                rrf_score=1.0 / (60 + rank),
+                stage_ranks={"fts": rank},
+                selected=rank <= 4,
+                exclusion_reason=None if rank <= 4 else "trimmed_by_limit",
+            )
+        )
+
+    rebuilt, demotions = apply_instance_diversity(
+        candidates,
+        group_key_for=memory_provenance_group_key,
+        limit=4,
+    )
+
+    assert demotions == 1  # only the chunk-1 restatement yields its slot
+    selected = [str(candidate.item["id"]) for candidate in rebuilt if candidate.selected]
+    assert selected == ["mem-bike1", "mem-bike2", "mem-bike3", "mem-other"]
 
 
 def test_missing_group_keys_never_group() -> None:

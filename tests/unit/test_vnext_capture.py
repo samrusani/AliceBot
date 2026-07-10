@@ -10,9 +10,8 @@ import pytest
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_capture import (
-    ASSISTANT_ESTIMATE_CONFIDENCE_FLOOR,
-    ASSISTANT_ESTIMATE_CONFIDENCE_PENALTY,
     USER_ASSERTED_VALUE_CONFIDENCE,
+    USER_ASSERTED_VALUE_RULE,
     VNextCaptureService,
     VNextCaptureValidationError,
     chunk_text,
@@ -445,7 +444,7 @@ def test_user_asserted_value_line_captures_with_provenance() -> None:
     assert candidate.confidence == USER_ASSERTED_VALUE_CONFIDENCE
 
 
-def test_assistant_estimate_still_captures_and_is_not_suppressed() -> None:
+def test_assistant_estimate_still_captures_with_unchanged_legacy_confidence() -> None:
     candidate = _single_candidate(
         "[ASSISTANT]: The taxi fare from the airport is usually about $180-270 depending on traffic."
     )
@@ -454,9 +453,10 @@ def test_assistant_estimate_still_captures_and_is_not_suppressed() -> None:
     assert candidate.extraction_rule == "claim_sentence"
     assert candidate.provenance_role == "assistant"
     assert candidate.assertion_class == "assistant_estimate"
-    # Bias, not suppression: the confidence dips but stays above the floor.
-    assert candidate.confidence == pytest.approx(0.58 - ASSISTANT_ESTIMATE_CONFIDENCE_PENALTY)
-    assert candidate.confidence >= ASSISTANT_ESTIMATE_CONFIDENCE_FLOOR
+    # Provenance biases promotion ORDER only; confidence deltas were removed
+    # because pack ranking never reads confidence (config must not imply
+    # behavior that does not exist). Legacy claim_sentence confidence stands.
+    assert candidate.confidence == pytest.approx(0.58)
 
 
 def test_untagged_lines_take_the_byte_identical_legacy_path() -> None:
@@ -568,3 +568,59 @@ def test_assistant_derived_memory_still_promotes_and_recalls() -> None:
     assert any(
         hit["metadata_json"].get("provenance_role") == "assistant" for hit in hits
     ), "assistant-derived memories must remain recallable"
+
+
+# -- cross-batch dedupe of user-asserted-value promotions ----------------------------
+
+
+_OMEGA_LINE = "[USER]: I paid $3,200 for my Omega Seamaster watch last spring."
+
+
+def test_user_asserted_value_dedupes_against_existing_store_memories() -> None:
+    """The same user-asserted value line in a LATER session must not mint a
+    second memory with identical canonical text (cross-batch duplicate)."""
+    store = _sqlite_store()
+    service = VNextCaptureService(store)
+
+    first = service.capture_text(f"Chat session s1 on 2026/07/01.\n\n{_OMEGA_LINE}")
+    second = service.capture_text(
+        f"Chat session s9 on 2026/07/08.\n\n{_OMEGA_LINE}\n\n"
+        "[USER]: I also paid $40 for the strap replacement yesterday."
+    )
+
+    assert first.status == "imported" and second.status == "imported"
+    omega_memories = [
+        memory for memory in store.list_memories() if "Omega Seamaster" in str(memory.get("canonical_text"))
+    ]
+    assert len(omega_memories) == 1
+    # The novel user-asserted line in the second session still captures.
+    strap_memories = [
+        memory for memory in store.list_memories() if "strap replacement" in str(memory.get("canonical_text"))
+    ]
+    assert len(strap_memories) == 1
+
+
+def test_cross_batch_dedupe_is_scoped_to_user_asserted_value_rule() -> None:
+    """Legacy rules keep their batch-local dedupe behavior byte-identical:
+    a prefixed fact repeated across two captures still creates two rows."""
+    store = _sqlite_store()
+    service = VNextCaptureService(store)
+
+    service.capture_text("Note one.\n\nFact: The ingest worker restarts nightly at 02:00.")
+    service.capture_text("Note two.\n\nFact: The ingest worker restarts nightly at 02:00.")
+
+    repeated = [
+        memory for memory in store.list_memories() if "restarts nightly" in str(memory.get("canonical_text"))
+    ]
+    assert len(repeated) == 2
+
+
+def test_cross_batch_dedupe_degrades_when_store_lacks_list_memories() -> None:
+    """Minimal stores without ``list_memories`` skip the check instead of failing."""
+    store = InMemoryVNextCaptureStore()
+    service = VNextCaptureService(store)
+
+    first = service.capture_text(f"Chat session s1 on 2026/07/01.\n\n{_OMEGA_LINE}")
+    second = service.capture_text(f"Chat session s9 on 2026/07/08.\n\n{_OMEGA_LINE}\n\nExtra line.")
+
+    assert first.status == "imported" and second.status == "imported"
