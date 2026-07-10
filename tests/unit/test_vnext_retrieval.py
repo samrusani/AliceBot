@@ -2997,6 +2997,7 @@ def test_aggregation_intent_promotes_distinct_instances_over_near_duplicates(mon
         "diversity_demotions": 9,
         "memory_demotions": 0,
         "source_demotions": 9,
+        "card_promotions": 0,
     }
     # Single-clause aggregation: no clause sub-retrievals beyond the main
     # FTS pass (strict miss + OR fallback on the empty memories fixture).
@@ -3076,6 +3077,177 @@ def test_multi_clause_aggregation_backfills_clause_only_memory_into_freed_slots(
     assert "memory-filler-02" not in selected_ids
     # One main FTS pass plus one per clause.
     assert len(coverage_store.memory_search_kwargs) == 3
+
+
+# -- coverage mode: accepted roll-up card ranking -------------------------------
+
+
+def _accepted_rollup_card_row(card_id: str, text: str, member_ids: list[str]) -> dict[str, object]:
+    """A memory row shaped exactly like an accepted roll-up card: the
+    metadata vnext_rollups writes at proposal time plus the acceptance
+    stamp accept_consolidation_candidate adds."""
+    return _memory_row(
+        card_id,
+        text,
+        metadata_json={
+            "candidate_kind": "memory_rollup",
+            "consolidation": {
+                "proposal_kind": "rollup",
+                "cluster_member_ids": list(member_ids),
+                "proposed_supersede": [],
+                "survivor_memory_id": None,
+                "accepted": {
+                    "accepted_at": "2026-07-01T00:00:00+00:00",
+                    "actor_type": "user",
+                    "accepted_by": None,
+                    "reason": "roll-up card covers the topic",
+                    "superseded_member_ids": [],
+                    "skipped_members": [],
+                },
+            },
+        },
+    )
+
+
+_ROLLUP_MEMBER_GAMES = ("azul", "wingspan", "codenames", "root", "gloomhaven")
+
+
+def _rollup_card_store() -> InMemoryVNextRetrievalStore:
+    """Five member instances outranking their own accepted roll-up card.
+
+    The fake FTS returns rows in fixture order, so the members eat the
+    fused ranks and the card fuses last — the round-4-measured failure
+    shape (topical cards ranked below their receipts).
+    """
+    members = [
+        _memory_row(f"memory-game-{index}", f"Board game night instance {index}: played {game}.")
+        for index, game in enumerate(_ROLLUP_MEMBER_GAMES, start=1)
+    ]
+    card = _accepted_rollup_card_row(
+        "memory-rollup-card",
+        "Roll-up: board game night — 5 instances: azul; wingspan; codenames; root; gloomhaven.",
+        [f"memory-game-{index}" for index in range(1, len(_ROLLUP_MEMBER_GAMES) + 1)],
+    )
+    return InMemoryVNextRetrievalStore(memories=[*members, card], sources=[])
+
+
+def test_aggregation_intent_promotes_accepted_rollup_card_above_its_members(monkeypatch) -> None:
+    """The round-5 scenario: the card is the aggregate answer, members the
+    receipts — under aggregation intent the card must outrank them."""
+    request = VNextRetrievalRequest(query="How many times did I host board game night?", max_items=4)
+
+    control_store = _rollup_card_store()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            vnext_retrieval_module.vnext_coverage_query,
+            "promote_rollup_cards",
+            lambda candidates, **kwargs: (list(candidates), 0),
+        )
+        control_pack = VNextRetrievalService(control_store).compile_context_pack(request)
+    control_ids = [str(memory["id"]) for memory in control_pack["relevant_memories"]]
+    # Without the promotion the members eat every slot and the card never packs.
+    assert control_ids == [f"memory-game-{index}" for index in range(1, 5)]
+
+    pack = VNextRetrievalService(_rollup_card_store()).compile_context_pack(request)
+
+    selected_ids = [str(memory["id"]) for memory in pack["relevant_memories"]]
+    # The card takes its best member's rank; the members stay directly
+    # below it as receipts (demote-not-drop: only the last slot holder
+    # loses selection).
+    assert selected_ids == ["memory-rollup-card", "memory-game-1", "memory-game-2", "memory-game-3"]
+    coverage_stage = pack["trace"]["stages"]["coverage_mode"]
+    assert coverage_stage["card_promotions"] == 1
+    assert coverage_stage["memory_demotions"] == 0
+    card_trace = [
+        record
+        for record in pack["trace"]["selected"]
+        if record["target_type"] == "memory" and record["target_id"] == "memory-rollup-card"
+    ]
+    assert card_trace[0]["rank"] == 1
+    assert card_trace[0]["selected"] is True
+    # The displaced members are demoted, never dropped: they stay in the
+    # candidate pool as honest trimmed_by_limit exclusions.
+    assert pack["trace"]["excluded_counts"]["trimmed_by_limit"] == 2
+    assert "coverage_redundant_demoted" not in pack["trace"]["excluded_counts"]
+
+
+def test_non_aggregation_query_keeps_rollup_card_ranking_dormant(monkeypatch) -> None:
+    """Byte-identity dormancy: without aggregation intent the promotion
+    pass must not run at all, even with an accepted card in the store."""
+    stores: list[InMemoryVNextRetrievalStore] = []
+
+    def compile_pack() -> dict[str, object]:
+        counter = itertools.count(1)
+        monkeypatch.setattr(vnext_retrieval_module, "uuid4", lambda: UUID(int=next(counter)))
+        store = _rollup_card_store()
+        stores.append(store)
+        return VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(
+                query="What did we play at board game night?",
+                max_items=4,
+                trace_id="trace-card-dormant-pin",
+            )
+        )
+
+    dormant_pack = compile_pack()
+
+    def _promotion_bomb(candidates: object, **kwargs: object) -> object:
+        raise AssertionError("promote_rollup_cards must stay dormant without aggregation intent")
+
+    monkeypatch.setattr(
+        vnext_retrieval_module.vnext_coverage_query, "promote_rollup_cards", _promotion_bomb
+    )
+    hard_disabled_pack = compile_pack()
+
+    assert json.dumps(dormant_pack, sort_keys=True, default=str) == json.dumps(
+        hard_disabled_pack, sort_keys=True, default=str
+    )
+    assert "coverage" not in json.dumps(dormant_pack, default=str)
+    # Fusion order stands untouched: the members outrank the card.
+    assert [str(memory["id"]) for memory in dormant_pack["relevant_memories"]] == [
+        f"memory-game-{index}" for index in range(1, 5)
+    ]
+
+
+def test_aggregation_intent_without_cards_leaves_ordering_unchanged(monkeypatch) -> None:
+    """No-cards dormancy: intent fires, but with no accepted card among the
+    candidates the pack is byte-identical to a promotion-disabled run and
+    the trace reports zero promotions."""
+
+    def build_store() -> InMemoryVNextRetrievalStore:
+        members = [
+            _memory_row(f"memory-game-{index}", f"Board game night instance {index}: played {game}.")
+            for index, game in enumerate(_ROLLUP_MEMBER_GAMES, start=1)
+        ]
+        return InMemoryVNextRetrievalStore(memories=members, sources=[])
+
+    request = VNextRetrievalRequest(
+        query="How many times did I host board game night?",
+        max_items=4,
+        trace_id="trace-no-cards-pin",
+    )
+
+    def compile_pack(store: InMemoryVNextRetrievalStore) -> dict[str, object]:
+        counter = itertools.count(1)
+        monkeypatch.setattr(vnext_retrieval_module, "uuid4", lambda: UUID(int=next(counter)))
+        return VNextRetrievalService(store).compile_context_pack(request)
+
+    live_pack = compile_pack(build_store())
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            vnext_retrieval_module.vnext_coverage_query,
+            "promote_rollup_cards",
+            lambda candidates, **kwargs: (list(candidates), 0),
+        )
+        disabled_pack = compile_pack(build_store())
+
+    assert json.dumps(live_pack, sort_keys=True, default=str) == json.dumps(
+        disabled_pack, sort_keys=True, default=str
+    )
+    assert live_pack["trace"]["stages"]["coverage_mode"]["card_promotions"] == 0
+    assert [str(memory["id"]) for memory in live_pack["relevant_memories"]] == [
+        f"memory-game-{index}" for index in range(1, 5)
+    ]
 
 
 # -- temporal-anchor stage ---------------------------------------------------------

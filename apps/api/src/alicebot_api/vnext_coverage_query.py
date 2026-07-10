@@ -33,6 +33,21 @@ pure pieces ``VNextRetrievalService`` composes into "coverage mode":
    the first candidate of every group is never demoted, the selected
    set's provenance coverage is always a superset of the undiversified
    selection's.
+4. ``promote_rollup_cards`` — a post-fusion promotion pass for ACCEPTED
+   roll-up cards (``metadata_json.consolidation`` with
+   ``proposal_kind="rollup"`` plus the acceptance stamp
+   ``accept_consolidation_candidate`` writes). A card pre-aggregates its
+   member instances, so under aggregation intent the card is the
+   aggregate answer and its members are the receipts — but RRF ranks the
+   card below its own members (every member matches the query about as
+   well, and there are more of them), so the receipts eat the selection
+   slots and the card never packs. When at least
+   ``COVERAGE_MIN_SLOTTED_MEMBERS`` of a card's members hold selection
+   slots (the receipts pile-up is real), the card is promoted to the
+   best member's rank; members stay in the pool directly below it
+   (demote-not-drop). At most ``COVERAGE_MAX_CARD_PROMOTIONS`` cards
+   promote per pack, and the input is returned untouched when no
+   promotion applies.
 
 Everything here is deterministic string/set arithmetic: no model calls,
 no store writes, no benchmark awareness (house no-fake-intelligence and
@@ -88,6 +103,22 @@ DIVERSITY_SIGNATURE_MAX_CHARS = 4000
 # out of the selection slots (near-verbatim duplicate or a re-statement of
 # an already-kept candidate's provenance group).
 EXCLUSION_REASON_COVERAGE_REDUNDANT = "coverage_redundant_demoted"
+# At most this many accepted roll-up cards are promoted per pack; a query
+# whose words graze several roll-up topics must not have its slots flooded
+# by cards. Chosen to cover the two-topic comparative shape ("X vs Y").
+COVERAGE_MAX_CARD_PROMOTIONS = 2
+# A card only promotes when at least this many of its members hold
+# selection slots. One slotted member is an ordinary hit; the inversion
+# this pass repairs — the card's own receipts eating the slots — requires
+# a plural. Measured on the free 15-store probe, single-slotted-member
+# promotions never surfaced an evidence-bearing card and once displaced
+# the sole carrier of an evidence session.
+COVERAGE_MIN_SLOTTED_MEMBERS = 2
+# metadata_json.consolidation.proposal_kind marking a roll-up card. Kept as
+# a local literal (mirroring vnext_memory_commit's convention) so the
+# retrieval hot path does not import vnext_rollups' model-provider seam;
+# pinned to vnext_rollups.ROLLUP_PROPOSAL_KIND by a unit test.
+ROLLUP_PROPOSAL_KIND = "rollup"
 # Honest diversity_status values for the coverage-mode stage record.
 DIVERSITY_ENABLED = "enabled"
 DIVERSITY_DISABLED_NO_STORE_SUPPORT = "disabled: store does not support source chunks"
@@ -244,6 +275,7 @@ def coverage_stage_record(
     source_diversity_enabled: bool,
     memory_demotions: int,
     source_demotions: int,
+    card_promotions: int = 0,
 ) -> JsonObject:
     """Honest trace record for the coverage-mode stage (absent when dormant)."""
     return {
@@ -256,6 +288,7 @@ def coverage_stage_record(
         "diversity_demotions": memory_demotions + source_demotions,
         "memory_demotions": memory_demotions,
         "source_demotions": source_demotions,
+        "card_promotions": card_promotions,
     }
 
 
@@ -447,6 +480,150 @@ def apply_instance_diversity(
     return rebuilt, len(demoted)
 
 
+# Every exclusion_reason the ranking passes themselves assign; candidates
+# carrying one of these keep their pool position for the card-promotion
+# walk (a true policy exclusion — domain/sensitivity — never re-ranks
+# ahead of them and is never re-admitted).
+_RANKING_EXCLUSION_REASONS = (*_REORDERABLE_EXCLUSION_REASONS, EXCLUSION_REASON_COVERAGE_REDUNDANT)
+
+
+def accepted_rollup_member_ids(memory: JsonObject) -> tuple[str, ...]:
+    """Member memory ids when ``memory`` is an ACCEPTED roll-up card, else ``()``.
+
+    The shape is the one ``vnext_rollups`` writes at card creation and
+    ``accept_consolidation_candidate`` (vnext_memory_commit) stamps on
+    acceptance: ``metadata_json.consolidation`` carrying
+    ``proposal_kind="rollup"``, ``cluster_member_ids`` (the instance
+    memories), and — only once a reviewer accepted — an ``accepted``
+    mapping. Unaccepted cards (still ``candidate``/``needs_review``) have
+    no ``accepted`` stamp and are never promoted.
+    """
+    metadata = memory.get("metadata_json")
+    if not isinstance(metadata, dict):
+        return ()
+    consolidation = metadata.get("consolidation")
+    if not isinstance(consolidation, dict):
+        return ()
+    if str(consolidation.get("proposal_kind") or "") != ROLLUP_PROPOSAL_KIND:
+        return ()
+    if not isinstance(consolidation.get("accepted"), dict):
+        return ()
+    member_ids_raw = consolidation.get("cluster_member_ids")
+    if not isinstance(member_ids_raw, (list, tuple)):
+        return ()
+    self_id = str(memory.get("id"))
+    return tuple(
+        dict.fromkeys(
+            str(value) for value in member_ids_raw if value is not None and str(value) != self_id
+        )
+    )
+
+
+def promote_rollup_cards(
+    candidates: Sequence[Any],
+    *,
+    max_promotions: int = COVERAGE_MAX_CARD_PROMOTIONS,
+    min_slotted_members: int = COVERAGE_MIN_SLOTTED_MEMBERS,
+) -> tuple[list[Any], int]:
+    """Promote accepted roll-up cards above their own member memories.
+
+    ``candidates`` are fused-order ``RetrievalCandidate``-shaped dataclass
+    instances (same contract as ``apply_instance_diversity``; rebuilt via
+    ``dataclasses.replace``). A card is promoted when the inversion this
+    pass repairs is actually present: at least ``min_slotted_members`` of
+    its members hold selection slots (the card's own receipts are eating
+    the pack) and the best-ranked one outranks the card. The card moves to
+    exactly that member's rank and everything from there down shifts one
+    place, so the members stay in the pool directly below the card as
+    receipts (demote-not-drop; only the last slot holder loses selection).
+    A card already ranked above all of its pool members is left alone, and
+    a single slotted member — an ordinary hit, not a receipts pile-up —
+    never triggers a promotion.
+
+    At most ``max_promotions`` cards promote (strongest-member card first,
+    fused card order as the tie-break), so a query grazing several roll-up
+    topics is not flooded by cards. Policy-excluded candidates
+    (domain/sensitivity) never move and are never re-admitted. Returns
+    ``(candidates, promotion_count)``; the input list is returned untouched
+    — same objects, same ranks, same selection — whenever no promotion
+    applies, keeping the no-cards and no-co-occurrence paths byte-identical.
+    """
+    if max_promotions < 1 or not candidates:
+        return list(candidates), 0
+    pool: list[Any] = []
+    policy_excluded: list[Any] = []
+    for candidate in candidates:
+        if candidate.exclusion_reason in _RANKING_EXCLUSION_REASONS:
+            pool.append(candidate)
+        else:
+            policy_excluded.append(candidate)
+    slot_count = sum(1 for candidate in pool if candidate.selected)
+    if slot_count == 0 or len(pool) < 2:
+        return list(candidates), 0
+    members_of: dict[int, tuple[str, ...]] = {}
+    for candidate in pool:
+        item = candidate.item
+        if not isinstance(item, dict):
+            continue
+        member_ids = accepted_rollup_member_ids(item)
+        if member_ids:
+            members_of[id(candidate)] = member_ids
+    if not members_of:
+        return list(candidates), 0
+
+    promotions = 0
+    while promotions < max_promotions:
+        position_of = {
+            str(candidate.item.get("id")): position
+            for position, candidate in enumerate(pool)
+            if isinstance(candidate.item, dict)
+        }
+        best_move: tuple[int, int] | None = None  # (member position, card position)
+        for card_position, candidate in enumerate(pool):
+            member_ids = members_of.get(id(candidate))
+            if member_ids is None:
+                continue
+            slotted_positions = [
+                position_of[member_id]
+                for member_id in member_ids
+                if member_id in position_of and position_of[member_id] < slot_count
+            ]
+            # The inversion gate: promote only when the card's receipts are
+            # actually piling up in the slots. A lone slotted member is an
+            # ordinary hit; buried card/member pairs cannot change the pack.
+            if len(slotted_positions) < max(1, min_slotted_members):
+                continue
+            target = min(slotted_positions)
+            if target >= card_position:
+                continue
+            move = (target, card_position)
+            if best_move is None or move < best_move:
+                best_move = move
+        if best_move is None:
+            break
+        target, card_position = best_move
+        pool.insert(target, pool.pop(card_position))
+        promotions += 1
+    if promotions == 0:
+        return list(candidates), 0
+
+    rebuilt: list[Any] = []
+    for position, candidate in enumerate([*pool, *policy_excluded], start=1):
+        # A promoted card only ever moves UP, so no candidate below the
+        # slot boundary (including diversity-demoted ones) can shift into
+        # selection; the first ``slot_count`` positions hold exactly the
+        # previous slot winners minus the one the card displaced.
+        selected = candidate.exclusion_reason in _RANKING_EXCLUSION_REASONS and position <= slot_count
+        if selected:
+            exclusion_reason = None
+        elif candidate.exclusion_reason is None:
+            exclusion_reason = "trimmed_by_limit"
+        else:
+            exclusion_reason = candidate.exclusion_reason
+        rebuilt.append(replace(candidate, rank=position, selected=selected, exclusion_reason=exclusion_reason))
+    return rebuilt, promotions
+
+
 __all__ = [
     "AGGREGATION_KINDS",
     "AGGREGATION_KIND_COMPARATIVE",
@@ -457,7 +634,9 @@ __all__ = [
     "AggregationIntent",
     "COVERAGE_CLAUSE_FETCH_LIMIT",
     "COVERAGE_CLAUSE_STAGE_PREFIX",
+    "COVERAGE_MAX_CARD_PROMOTIONS",
     "COVERAGE_MAX_CLAUSES",
+    "COVERAGE_MIN_SLOTTED_MEMBERS",
     "COVERAGE_POOL_MULTIPLIER",
     "COVERAGE_STAGE",
     "DIVERSITY_CANDIDATE_MULTIPLIER",
@@ -466,6 +645,8 @@ __all__ = [
     "DIVERSITY_SIGNATURE_MAX_CHARS",
     "EXCLUSION_REASON_COVERAGE_REDUNDANT",
     "NEAR_DUPLICATE_JACCARD",
+    "ROLLUP_PROPOSAL_KIND",
+    "accepted_rollup_member_ids",
     "apply_instance_diversity",
     "clause_stage_name",
     "coverage_stage_record",
@@ -474,5 +655,6 @@ __all__ = [
     "interleave_clause_rows",
     "memory_provenance_group_key",
     "memory_signature_text",
+    "promote_rollup_cards",
     "source_chunk_text_provider",
 ]
