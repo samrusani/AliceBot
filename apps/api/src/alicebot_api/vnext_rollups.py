@@ -61,9 +61,18 @@ label or an ambient corpus):
 
 - structural label hygiene: pronoun/contraction labels ("I'm", "I've"),
   single letters, and labels made only of function words never label a
-  card; entity labels that are broken subspans of a longer title ("Us
-  Part II" inside "The Last of Us Part II") are repaired by expanding
-  them to the dominant full span found in the member texts.
+  card; a label's head token must be content-bearing — closed-class
+  heads (adverbs/prepositions/conjunctions: "even", "still", "right",
+  "towards") and light-verb heads without a noun ("add", "used",
+  "incorporate") never head a card, and any other bare verb head needs
+  a value-based aggregation signal (>= 2 distinct label-proximate
+  amounts: "bought $120/$450" aggregates purchases; a bare verb with
+  only session spread is plumbing). Entity labels that are broken
+  subspans of a longer title ("Us Part II" inside "The Last of Us Part
+  II") are repaired by expanding them to the dominant full span found
+  in the member texts. Instance labels inside the card body get the
+  same subspan repair and pronoun/fragment filtering, falling back to
+  a neutral dominant-noun label so the value+date line is never lost.
 - frequency-derived generic anchors: a stem that appears in a large
   fraction of the store's *sessions* is conversational plumbing ("need",
   "great", "help"), not a topic, no matter the language. The threshold
@@ -186,7 +195,7 @@ _TOPIC_TOKEN_BLOCKLIST = frozenset(
         "chat", "remember", "today", "yesterday", "tomorrow", "really",
         "recently", "think", "thanks", "thank", "please", "would", "like",
         "want", "wanted", "going", "got", "get", "also", "one", "two",
-        "new", "time", "lot", "bit", "yes", "yeah", "okay", "ok", "ai",
+        "new", "time", "day", "lot", "bit", "yes", "yeah", "okay", "ok", "ai",
     }
 )
 
@@ -197,6 +206,77 @@ _PRONOUN_CONTRACTION_HEADS = frozenset(
     {"i", "you", "he", "she", "it", "we", "they", "that", "there", "this",
      "who", "what", "let", "here"}
 )
+
+# Closed-class label heads: adverbs, prepositions, conjunctions, and
+# discourse particles that slip past ``FTS_QUERY_STOPWORDS`` (which only
+# covers query plumbing). Function words are a finite class — unlike
+# topic vocabulary this list can be curated once — and none of them can
+# name what a card aggregates ("Roll-up: even — 15 instances"), however
+# strong the group's value signal is. Structural, so it applies at any
+# store size.
+_CLOSED_CLASS_LABEL_HEADS = frozenset(
+    {
+        # adverbs / discourse particles
+        "even", "still", "right", "already", "almost", "always", "anyway",
+        "aside", "away", "back", "certainly", "currently", "definitely",
+        "especially", "eventually", "finally", "furthermore", "generally",
+        "however", "indeed", "instead", "later", "maybe", "meanwhile",
+        "moreover", "never", "often", "otherwise", "perhaps", "probably",
+        "quite", "rather", "somehow", "sometimes", "somewhat", "soon",
+        "specifically", "together", "typically", "usually",
+        # prepositions not already in the query stopword list
+        "across", "along", "among", "amongst", "around", "behind", "beneath",
+        "beside", "besides", "beyond", "despite", "except", "inside", "near",
+        "onto", "outside", "past", "since", "throughout", "till", "toward",
+        "towards", "underneath", "until", "unto", "upon", "via", "within",
+        "without",
+        # conjunctions
+        "although", "though", "unless", "whereas", "whether", "yet",
+    }
+)
+
+# Light / grammaticalized verb forms: verbs so bleached ("add", "used",
+# "incorporate", "got", "made") that a card headed by one aggregates
+# nothing a human would recognize, EVEN when its instances carry amounts
+# ("Roll-up: add — 16 instances, amounts in minutes" was cooking-step
+# plumbing, not an aggregation topic). Like the closed-class list this is
+# a small curated set of function-word-adjacent forms, not an open topic
+# vocabulary. A light-verb head is only acceptable when a noun in the
+# label carries the topic ("add" alone never; "decided meridian" fine).
+_LIGHT_VERB_FORMS = frozenset(
+    {
+        "add", "adds", "use", "uses", "used", "incorporate", "incorporates",
+        "get", "gets", "gotten", "make", "makes", "made", "take", "takes",
+        "took", "taken", "put", "puts", "give", "gives", "gave", "given",
+        "go", "goes", "went", "gone", "come", "comes", "came", "keep",
+        "keeps", "kept", "bring", "brings", "brought", "need", "needs",
+        "know", "knows", "knew", "known", "say", "says", "said", "tell",
+        "tells", "told", "see", "sees", "seen", "find", "finds",
+        "think", "thinks", "thought",
+    }
+)
+
+# Transaction verbs whose bare form only means something as an
+# aggregation over amounts: "bought $120 / $450" aggregates purchases,
+# but "bought" with nothing to sum is plumbing. Irregular pasts listed
+# explicitly because the ``-ed`` morphology test below cannot see them.
+# Deliberately NOT a general verb list: contentful activity verbs
+# ("flew", "hiked" via -ed) name a topic by themselves and are handled
+# by the same value test only when morphology already marks them.
+_TRANSACTION_VERB_FORMS = frozenset(
+    {"bought", "sold", "paid", "spent"}
+)
+
+
+def _is_verb_form(token: str) -> bool:
+    """Verb-shaped label token, detected without NLP: curated light-verb
+    and transaction-verb forms plus the regular past/participle ``-ed``
+    morphology (``-eed`` nouns like "speed"/"seed" excluded). ``-ing``
+    forms are deliberately NOT verb-shaped: as label tokens gerunds act
+    as nouns ("reading", "playing")."""
+    if token in _LIGHT_VERB_FORMS or token in _TRANSACTION_VERB_FORMS:
+        return True
+    return len(token) >= 4 and token.endswith("ed") and not token.endswith("eed")
 
 # Lowercase connectors that may sit INSIDE a capitalized title span
 # ("The Last of Us Part II", "Lord of the Rings"); used when repairing
@@ -569,24 +649,31 @@ def _member_instance_values(text: str) -> frozenset[str]:
 class _RowProfile:
     stems: frozenset[str]
     session_key: str | None
-    # (sentence stems, sentence values) per sentence, so a group can count
-    # the values that sit in the SAME sentence as one of its label stems —
-    # a card about hours played aggregates the amounts attached to playing,
-    # not every number a long member text happens to mention elsewhere.
-    sentences: tuple[tuple[frozenset[str], frozenset[str]], ...]
+    # (sentence stems, sentence values, sentence amounts) per sentence, so
+    # a group can count the values that sit in the SAME sentence as one of
+    # its label stems — a card about hours played aggregates the amounts
+    # attached to playing, not every number a long member text happens to
+    # mention elsewhere. Amounts (currency/unit quantities) are carried
+    # separately from the wider value set (which adds in-text dates)
+    # because the bare-verb label rule keys on amounts specifically.
+    sentences: tuple[tuple[frozenset[str], frozenset[str], frozenset[str]], ...]
 
 
 def _row_profiles(rows: list[JsonObject]) -> dict[str, _RowProfile]:
     profiles: dict[str, _RowProfile] = {}
     for row in rows:
         text = _strip_speaker_tag(_member_text(row))
-        sentences: list[tuple[frozenset[str], frozenset[str]]] = []
+        sentences: list[tuple[frozenset[str], frozenset[str], frozenset[str]]] = []
         for sentence in _SENTENCE_SPLIT_RE.split(text):
             if not sentence.strip():
                 continue
             values = _member_instance_values(sentence)
             if values:
-                sentences.append((frozenset(_stats_tokens(sentence)), values))
+                amounts = frozenset(
+                    " ".join(amount.casefold().split())
+                    for amount in _member_amounts(sentence, limit=8)
+                )
+                sentences.append((frozenset(_stats_tokens(sentence)), values, amounts))
         profiles[str(row.get("id"))] = _RowProfile(
             stems=frozenset(_stats_tokens(text)),
             session_key=_member_session_key(row),
@@ -651,11 +738,50 @@ def _label_content_tokens(label: str) -> list[str]:
     return content
 
 
-def _label_junk_reason(label: str, stats: _CorpusStats) -> str | None:
-    """Why the label can never head a card, or None if it is presentable."""
+def _label_junk_reason(
+    label: str,
+    stats: _CorpusStats,
+    *,
+    label_amount_count: int | None = None,
+) -> str | None:
+    """Why the label can never head a card, or None if it is presentable.
+
+    The head (first content token) must be content-bearing:
+
+    - a closed-class head (adverb/preposition/conjunction: "even",
+      "still", "right", "towards") never labels a card, whatever the
+      group's value signal;
+    - a light-verb head ("add", "used", "incorporate") needs a noun in
+      the label to carry the topic — amounts do not rescue it, because
+      light verbs attract incidental quantities ("add ... 10 minutes");
+    - any other verb-shaped head (regular ``-ed`` forms, transaction
+      verbs like "bought") without an accompanying noun is acceptable
+      only when the group aggregates values: at least
+      ``MIN_DISTINCT_INSTANCE_VALUES`` distinct label-proximate amounts
+      ("bought $120/$450" aggregates purchases; a bare verb with only
+      session-dispersion signal is plumbing). ``label_amount_count`` is
+      that measured count; ``None`` (label-only callers with no group in
+      hand) skips the value-dependent rule.
+    """
     content = _label_content_tokens(label)
     if not content:
         return "label_without_content_words"
+    head = content[0]
+    if head in _CLOSED_CLASS_LABEL_HEADS:
+        return "label_head_closed_class"
+    if _is_verb_form(head):
+        has_noun = any(
+            token not in _CLOSED_CLASS_LABEL_HEADS and not _is_verb_form(token)
+            for token in content[1:]
+        )
+        if not has_noun:
+            if head in _LIGHT_VERB_FORMS:
+                return "label_head_light_verb"
+            if (
+                label_amount_count is not None
+                and label_amount_count < MIN_DISTINCT_INSTANCE_VALUES
+            ):
+                return "label_bare_verb_without_values"
     stems = [_light_stem(token) for token in content]
     if stats.enabled and min(stats.dispersion(stem) for stem in stems) >= GENERIC_ANCHOR_SESSION_DISPERSION:
         return "label_generic_for_store"
@@ -729,21 +855,26 @@ def _expanded_entity_label(label: str, members: tuple[JsonObject, ...]) -> str:
                 continue  # punctuation inside the window: not this span
             occurrences += 1
             start = index
+
+            def _title_word(word: str) -> bool:
+                # A capitalized word can extend the span, but pronoun
+                # contractions ("I'm thinking ...") are sentence subjects,
+                # not truncated title material: compare the head before
+                # the apostrophe, not just the whole token.
+                head = word.casefold().replace("’", "'").split("'", 1)[0]
+                return word[0].isupper() and head not in _PRONOUN_CONTRACTION_HEADS
+
             while start > 0:
                 previous = tokens[start - 1]
                 if text[previous[2] : tokens[start][1]].strip():
                     break  # sentence punctuation between words: stop
                 word = previous[0]
-                if word[0].isupper() and word.casefold() not in _PRONOUN_CONTRACTION_HEADS:
+                if _title_word(word):
                     start -= 1
                     continue
                 if word.casefold() in _TITLE_CONNECTOR_TOKENS and start - 1 > 0:
                     before = tokens[start - 2]
-                    if (
-                        not text[before[2] : previous[1]].strip()
-                        and before[0][0].isupper()
-                        and before[0].casefold() not in _PRONOUN_CONTRACTION_HEADS
-                    ):
+                    if not text[before[2] : previous[1]].strip() and _title_word(before[0]):
                         start -= 2
                         continue
                 break
@@ -757,6 +888,10 @@ def _expanded_entity_label(label: str, members: tuple[JsonObject, ...]) -> str:
 @dataclass(frozen=True, slots=True)
 class _GroupUtility:
     distinct_values: int
+    # Label-proximate currency/unit amounts only (a subset of
+    # ``distinct_values``, which also counts in-text dates); the
+    # bare-verb label rule keys on this.
+    distinct_amounts: int
     distinct_sessions: int
     label_specificity: float
     label_coherence: float
@@ -765,6 +900,7 @@ class _GroupUtility:
     def to_record(self) -> JsonObject:
         return {
             "distinct_values": self.distinct_values,
+            "distinct_amounts": self.distinct_amounts,
             "distinct_sessions": self.distinct_sessions,
             "label_specificity": round(self.label_specificity, 4),
             "label_coherence": round(self.label_coherence, 4),
@@ -790,17 +926,20 @@ def _group_utility(
         profiles[str(member.get("id"))] for member in members if str(member.get("id")) in profiles
     ]
     values: set[str] = set()
+    amounts: set[str] = set()
     sessions: set[str] = set()
     for profile in member_profiles:
-        for sentence_stems, sentence_values in profile.sentences:
+        for sentence_stems, sentence_values, sentence_amounts in profile.sentences:
             if label_stems & sentence_stems:
                 values.update(sentence_values)
+                amounts.update(sentence_amounts)
         if profile.session_key is not None:
             sessions.add(profile.session_key)
     specificity = _label_specificity(label, stats)
     coherence = _label_coherence(label, member_profiles)
     utility = _GroupUtility(
         distinct_values=len(values),
+        distinct_amounts=len(amounts),
         distinct_sessions=len(sessions),
         label_specificity=specificity,
         label_coherence=coherence,
@@ -818,9 +957,64 @@ def _group_utility(
     return utility, None
 
 
+def _instance_label_junk_reason(label: str) -> str | None:
+    """Structural-only junk test for instance labels (no store statistics):
+    labels with no content words ("I'm", "I've"), closed-class heads, and
+    mid-sentence fragment openers — a label whose first token is a pronoun
+    contraction or closed-class word ("Since I'm ...", "I'm logging ...")
+    is a truncation artifact, not a name. The same filters card labels
+    get, minus the group-dependent rules."""
+    content = _label_content_tokens(label)
+    if not content:
+        return "label_without_content_words"
+    raw_tokens = _TOKEN_RE.findall(label.replace("’", "'").casefold())
+    first = raw_tokens[0] if raw_tokens else ""
+    if first in _PRONOUN_CONTRACTION_HEADS or first.split("'", 1)[0] in _PRONOUN_CONTRACTION_HEADS:
+        return "label_pronoun_fragment"
+    if first in _CLOSED_CLASS_LABEL_HEADS or content[0] in _CLOSED_CLASS_LABEL_HEADS:
+        return "label_head_closed_class"
+    return None
+
+
+def _dominant_noun_label(text: str) -> str | None:
+    """Neutral display label for an instance whose extracted labels all
+    filtered out: the text's most frequent content-bearing, non-verb
+    surface token (ties break alphabetically on the casefolded token;
+    the first-seen surface form is displayed). Deterministic."""
+    counts: Counter[str] = Counter()
+    surfaces: dict[str, str] = {}
+    for raw in _SURFACE_TOKEN_RE.findall(text):
+        token = raw.casefold().replace("’", "'")
+        head = token.split("'", 1)[0]
+        if "'" in token and head in _PRONOUN_CONTRACTION_HEADS:
+            continue
+        if token in _PRONOUN_CONTRACTION_HEADS:
+            continue
+        if len(token) < 3 or not any(char.isalpha() for char in token):
+            continue
+        if token in FTS_QUERY_STOPWORDS or token in _TOPIC_TOKEN_BLOCKLIST:
+            continue
+        if token in _CLOSED_CLASS_LABEL_HEADS or _is_verb_form(token):
+            continue
+        counts[token] += 1
+        surfaces.setdefault(token, raw)
+    if not counts:
+        return None
+    best = min(counts, key=lambda token: (-counts[token], token))
+    return surfaces[best]
+
+
 def _instance_label(row: JsonObject, *, exclude_normalized: str | None = None) -> str:
-    """Entity surface when extraction finds one, else the member title,
-    else the truncated text — short, deterministic, display-safe.
+    """Entity surface when extraction finds a presentable one, else the
+    member title, else a neutral noun label, else the truncated text —
+    short, deterministic, display-safe.
+
+    Instance labels get the same hygiene the card label gets: broken
+    subspans are repaired against the member's own text ("Us Part II" ->
+    "The Last of Us Part II") and pronoun-contraction / closed-class-head
+    fragments ("I'm", "Since I'm") are filtered; a member whose labels all
+    filter out keeps its value+date line under a neutral label derived
+    from its dominant noun token.
 
     ``exclude_normalized`` skips the group's own entity so an entity-group
     card labels each instance by its distinguishing content, not by the
@@ -831,12 +1025,21 @@ def _instance_label(row: JsonObject, *, exclude_normalized: str | None = None) -
         for candidate in extract_entity_candidates(text)
         if candidate.normalized != exclude_normalized
     ]
-    if candidates:
-        best = max(candidates, key=lambda candidate: (candidate.confidence, candidate.occurrences))
-        return best.name
+    for candidate in sorted(
+        candidates,
+        key=lambda candidate: (-candidate.confidence, -candidate.occurrences, candidate.name),
+    ):
+        label = _expanded_entity_label(candidate.name, (row,))
+        if _instance_label_junk_reason(label) is None:
+            return label
     title = row.get("title")
     if isinstance(title, str) and title.strip():
-        return _strip_speaker_tag(" ".join(title.split()))[:80]
+        cleaned = _strip_speaker_tag(" ".join(title.split()))[:80]
+        if cleaned and _instance_label_junk_reason(cleaned) is None:
+            return cleaned
+    neutral = _dominant_noun_label(text)
+    if neutral is not None:
+        return neutral
     return text[:80]
 
 
@@ -1180,12 +1383,16 @@ class VNextRollupService:
                 )
                 return
             # Label hygiene, then the group-utility gate; failing groups are
-            # dropped and their members stay available to later groups.
-            junk_reason = _label_junk_reason(label, stats)
+            # dropped and their members stay available to later groups. The
+            # utility is measured first because the bare-verb label rule
+            # needs the group's label-proximate amount count.
+            utility, gate_reason = _group_utility(label, members, profiles, stats)
+            junk_reason = _label_junk_reason(
+                label, stats, label_amount_count=utility.distinct_amounts
+            )
             if junk_reason is not None:
                 _drop(key, junk_reason)
                 return
-            utility, gate_reason = _group_utility(label, members, profiles, stats)
             if gate_reason is not None:
                 _drop(key, gate_reason)
                 return
@@ -1248,10 +1455,12 @@ class VNextRollupService:
             # Label: up to two topic stems shared by EVERY member (surface
             # forms), so the card carries the words an aggregation query
             # would use ("hours played"), not just the single anchor.
+            # Closed-class words never carry a topic, so they are not
+            # label material ("hiked trail", never "along hiked").
             shared = {
                 stem
                 for stem in set.intersection(*(_topic_tokens(_member_text(member)) for member in members))
-                if not stats.is_generic(stem)
+                if not stats.is_generic(stem) and stem not in _CLOSED_CLASS_LABEL_HEADS
             }
             ordered = sorted(shared, key=lambda token: (-len(anchor_members.get(token, ())), token)) or [anchor]
             surfaces = [_surface_form(tuple(members), stem) for stem in ordered[:2]]

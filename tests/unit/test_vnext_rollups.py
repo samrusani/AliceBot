@@ -23,6 +23,10 @@ from alicebot_api.vnext_rollups import (
     RollupOptions,
     VNextRollupService,
     VNextRollupValidationError,
+    _CorpusStats,
+    _instance_label,
+    _instance_record,
+    _label_junk_reason,
 )
 
 
@@ -471,6 +475,180 @@ def test_title_reads_like_a_topic_with_dominant_unit() -> None:
     assert aggregation["distinct_sessions"] == 5
     assert aggregation["score"] > 0
     assert aggregation["label_coherence"] == 1.0
+
+
+# -- label heads: closed-class words and bare verbs --------------------------------
+
+
+LABEL_HEAD_CASES = (
+    # Closed-class heads are junk no matter how strong the value signal:
+    # the verifier's residue cards ("even — 15 instances, amounts in $")
+    # all carried amounts.
+    ("even", 5, "label_head_closed_class"),
+    ("still", 5, "label_head_closed_class"),
+    ("right", 5, "label_head_closed_class"),
+    ("towards", 5, "label_head_closed_class"),
+    ("typically", 5, "label_head_closed_class"),
+    # Light-verb heads are junk without a noun, amounts or not: light
+    # verbs attract incidental quantities ("add ... for 10 minutes").
+    ("add", 5, "label_head_light_verb"),
+    ("used", 5, "label_head_light_verb"),
+    ("incorporate", 5, "label_head_light_verb"),
+    # Other bare verb heads are acceptable exactly when the group
+    # aggregates values ("bought $120/$450" aggregates purchases; a bare
+    # verb with only session spread is plumbing).
+    ("bought", 3, None),
+    ("bought", 0, "label_bare_verb_without_values"),
+    ("hiked", 2, None),
+    ("hiked", 0, "label_bare_verb_without_values"),
+    # A verb the deterministic machinery cannot mark (irregular past,
+    # not curated) stays content-bearing.
+    ("flew", 0, None),
+    # A noun anywhere in the label carries the topic.
+    ("miles ran", 0, None),
+    ("decided meridian", 0, None),
+    ("finished reading", 0, None),  # gerunds act as nouns
+    ("hours played", 0, None),
+    # Plain noun labels are never head-junk.
+    ("workshops", 0, None),
+    ("model kits", 0, None),
+)
+
+
+@pytest.mark.parametrize(
+    "label,amounts,expected", LABEL_HEAD_CASES, ids=[f"{c[0]}-{c[1]}" for c in LABEL_HEAD_CASES]
+)
+def test_label_head_junk_rules(label, amounts, expected) -> None:
+    """Table-driven head hygiene: a card label's head token must be
+    content-bearing (no closed-class words, no light verbs without a
+    noun, no bare verbs without a value-based aggregation signal)."""
+    stats = _CorpusStats({})  # below the stats floor: structural rules only
+    assert _label_junk_reason(label, stats, label_amount_count=amounts) == expected
+
+
+def test_closed_class_head_never_labels_card_even_with_amounts() -> None:
+    """Members sharing only a preposition ('towards') with dollar amounts
+    in every text: real aggregation signal, but a closed-class head can
+    never name a topic — the group is dropped, not proposed."""
+    store = FakeRollupStore()
+    _seed_texts(
+        store,
+        (
+            ("Saved $40 towards a harbor kayak", "2026-03-02"),
+            ("Chipped $25 towards the granite lodge", "2026-03-09"),
+            ("Banked $60 towards the copper lantern", "2026-03-16"),
+        ),
+    )
+    outcome = VNextRollupService(store).propose_rollups()
+    assert outcome.proposals == []
+    assert _rollup_candidates(store) == []
+    assert outcome.quality_gate["dropped_by_reason"]["label_head_closed_class"] >= 1
+
+
+def test_light_verb_head_never_labels_card_even_with_amounts() -> None:
+    """Members sharing only a light verb ('used') with amounts: light
+    verbs attract incidental quantities, so the value signal does not
+    rescue the head — the group is dropped."""
+    store = FakeRollupStore()
+    _seed_texts(
+        store,
+        (
+            ("Used the harbor pass, $12 fare", "2026-03-02"),
+            ("Used the granite entrance, $15 fee", "2026-03-09"),
+            ("Used the copper gate, $18 toll", "2026-03-16"),
+        ),
+    )
+    outcome = VNextRollupService(store).propose_rollups()
+    assert outcome.proposals == []
+    assert _rollup_candidates(store) == []
+    assert outcome.quality_gate["dropped_by_reason"]["label_head_light_verb"] >= 1
+
+
+def test_bare_transaction_verb_needs_value_signal() -> None:
+    """Both sides of the bare-verb rule on real stores: 'bought' with
+    only session spread is plumbing (dropped); 'bought' aggregating
+    distinct prices is a purchases card (proposed)."""
+    plain = FakeRollupStore()
+    _seed_texts(
+        plain,
+        (
+            ("Bought a harbor kayak pass", "2026-03-02"),
+            ("Bought the granite lodge voucher", "2026-03-09"),
+            ("Bought a copper lantern kit", "2026-03-16"),
+        ),
+    )
+    without_values = VNextRollupService(plain).propose_rollups()
+    assert without_values.proposals == []
+    assert (
+        without_values.quality_gate["dropped_by_reason"]["label_bare_verb_without_values"] >= 1
+    )
+
+    priced = FakeRollupStore()
+    _seed_texts(
+        priced,
+        (
+            ("Bought a harbor kayak pass for $40", "2026-03-02"),
+            ("Bought the granite lodge voucher for $25", "2026-03-09"),
+            ("Bought a copper lantern kit for $60", "2026-03-16"),
+        ),
+    )
+    with_values = VNextRollupService(priced).propose_rollups()
+    assert len(with_values.proposals) == 1
+    proposal = with_values.proposals[0]
+    assert "bought" in proposal["label"].casefold()
+    assert proposal["aggregation"]["distinct_amounts"] >= 2
+
+
+# -- instance-line hygiene ---------------------------------------------------------
+
+
+def test_instance_labels_get_subspan_repair() -> None:
+    """The card-label subspan repair also applies inside instance lines:
+    'Us Part II' renders as 'The Last of Us Part II' next to its value
+    and date."""
+    store = FakeRollupStore()
+    _seed_game_memories(store)
+    VNextRollupService(store).propose_rollups()
+    card = _rollup_candidates(store)[0]
+    labels = [instance["label"] for instance in card["value"]["rollup"]["instances"]]
+    assert "The Last of Us Part II" in labels
+    assert "Us Part II" not in labels
+    assert "The Last of Us Part II (30 hours; 2023-05-10" in card["canonical_text"]
+
+
+def test_fragment_instance_label_filters_to_neutral_noun() -> None:
+    """An instance whose extracted label is a pronoun/closed-class
+    fragment ('Since I'm') keeps its value+date line under a neutral
+    content-bearing label instead."""
+    row: JsonObject = {
+        "id": "frag-1",
+        "title": "Since I'm in Denver, the pottery workshop cost $40",
+        "canonical_text": "Since I'm in Denver, the pottery workshop cost $40",
+        "metadata_json": {"session_date": "2026-03-02"},
+    }
+    label = _instance_label(row)
+    assert label
+    lowered = label.casefold()
+    assert not lowered.startswith("since")
+    assert "i'm" not in lowered
+    record = _instance_record(row)
+    assert record["label"] == label
+    assert record["amounts"] == ["$40"]  # the value line survives the filter
+    assert record["date"] == "2026-03-02"
+
+
+def test_pronoun_contraction_instance_label_is_filtered() -> None:
+    """A bare pronoun-contraction candidate ('I'm') never labels an
+    instance line."""
+    row: JsonObject = {
+        "id": "frag-2",
+        "title": "I'm logging 3 hours at the granite summit",
+        "canonical_text": "I'm logging 3 hours at the granite summit",
+        "metadata_json": {},
+    }
+    label = _instance_label(row)
+    assert label
+    assert not label.casefold().startswith(("i'", "i’"))
 
 
 PRODUCT_STORE_FIXTURES = (
