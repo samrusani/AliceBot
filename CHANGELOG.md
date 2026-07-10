@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Currency chains: packs render same-slot update sequences as explicit chains — stale values labeled `[SUPERSEDED as of <date>]`, the current value labeled and positioned last — built from supersession edges and value-shape matching with collision-safe gates (ambiguous groups emit nothing, disclosed in traces); approved supersessions now stamp the retired row's `valid_to`.
+- Temporal precompute: dated pack items carry ISO-8601 timestamps and a bounded `[derived]` block precomputes date deltas, durations, and ordinals against the request's reference time — readers copy arithmetic instead of computing it.
+- `--pack-format=json`: an optional structured-record context format (same content as prose, fingerprint-disclosed) following the benchmark authors' reading-format ablation; prose remains the byte-identical default.
+- Judge-free stale-pick metric (`eval/longmemeval/stale_pick.py`): programmatic detection of superseded-value answers, replayable over any checkpoint; plus the published honesty kit (docs/benchmarks/longmemeval/HONESTY-KIT.md) — judge protocol, config fingerprints, our negative results as first-class findings, and a reproduction pledge.
+- Benchmark measurement (disclosed, no claim changes): seven paired configurations across retrieval, reader, and pack presentation all measure within ±4 flips of the published 79.4% baseline on the 172-question slice — evidence coverage is saturated at 95.3% and the frozen-protocol reader is the binding constraint. Published number unchanged.
+
 - Semantic roll-up grouping: when embeddings are configured, a third grouping tier clusters anchor-less same-topic memories (single-linkage cosine with a deterministic silhouette-chosen threshold) through the same utility gate — "faucet, toaster, shelves" becomes one "kitchen" card; fully dormant without a provider (byte-identical, tested on real stores).
 - Aggregation queries now rank accepted roll-up cards above their own member memories (gated on aggregation intent, ≥2 slotted members, 2-card cap, members retained as receipts below; disclosed as card_promotions in traces).
 - Disclosed reranker stage (`ALICE_RERANKER_*` env): provider-side listwise precision scoring of the fused candidate head before slot spend; reorders but never shrinks, fails open to fusion order, dormant unconfigured, generic sha-pinned scoring prompt.
