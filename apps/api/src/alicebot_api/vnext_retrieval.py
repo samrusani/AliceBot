@@ -40,9 +40,10 @@ from uuid import uuid4
 from alicebot_api import vnext_contradictions
 
 # Coverage mode (aggregation-shaped queries): pure detection, clause
-# decomposition, and source near-duplicate demotion helpers. Dormant unless
-# detect_aggregation_intent fires on the query surface — see the marked
-# "coverage mode" blocks in compile_context_pack.
+# decomposition, source near-duplicate demotion, and accepted roll-up card
+# promotion helpers. Dormant unless detect_aggregation_intent fires on the
+# query surface — see the marked "coverage mode" blocks in
+# compile_context_pack.
 from alicebot_api import vnext_coverage_query
 from alicebot_api.vnext_entity_names import normalize_entity_name
 from alicebot_api.vnext_embeddings import (
@@ -1679,6 +1680,32 @@ class VNextRetrievalService:
             )
         # ---- coverage mode (aggregation intent) end ----------------------
 
+        # ---- coverage mode (roll-up card ranking) begin -------------------
+        # An ACCEPTED roll-up card pre-aggregates its member instances, so
+        # for an aggregation query the card is the aggregate answer and the
+        # members are its receipts — yet RRF ranks the card below its own
+        # members (each member matches the query about as well and there
+        # are more of them), so the receipts eat the selection slots and
+        # the card never packs. When >= COVERAGE_MIN_SLOTTED_MEMBERS of a
+        # card's members hold selection slots (the receipts pile-up is
+        # real; a lone slotted member is an ordinary hit and, measured on
+        # the free probe, promoting on one only spent tail slots), the
+        # card is promoted to the best member's rank; members stay in the
+        # pool directly below it (demote-not-drop — only the last slot
+        # holder loses selection). Runs AFTER the diversity pass so the
+        # promoted order is final, and at most
+        # COVERAGE_MAX_CARD_PROMOTIONS cards promote per pack. Dormant
+        # (memory_candidates untouched, byte-identical pack) unless the
+        # intent gate fired above AND an accepted card co-occurs with
+        # enough slot-holding members; disclosed as card_promotions on the
+        # coverage_mode trace stage.
+        coverage_card_promotions = 0
+        if coverage_intent is not None:
+            memory_candidates, coverage_card_promotions = vnext_coverage_query.promote_rollup_cards(
+                memory_candidates
+            )
+        # ---- coverage mode (roll-up card ranking) end ---------------------
+
         if sources_enabled:
             source_lists, sources_stage_record = self._source_stage_lists(
                 query=request.query,
@@ -1733,6 +1760,8 @@ class VNextRetrievalService:
                 source_diversity_enabled=coverage_text_for is not None,
                 memory_demotions=coverage_memory_demotions,
                 source_demotions=coverage_source_demotions,
+                # roll-up card ranking (see the marked block above).
+                card_promotions=coverage_card_promotions,
             )
         # ---- coverage mode (aggregation intent) end ----------------------
         open_loop_candidates = _fused_candidates(
