@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Time-aware retrieval: temporal anchors parsed from the query ("two weeks ago", "in March 2023", "between X and Y") join RRF fusion as one more ranked list against event dates — never a hard filter, dormant on date-free queries, honest `temporal_anchor` trace stage.
+- Coverage mode for aggregation-shaped recall ("how many…", "list every…"): query-surface intent gate, capped clause decomposition, and instance-diversity fusion keyed on `(source_id, source_chunk_id)` so distinct instances fill the slots; dormant path byte-identical.
+- Consolidation roll-up cards: the merge engine proposes review-gated cards that pre-aggregate same-topic instances with per-instance dates, values, and speaker provenance; accepted cards are first-class recallable memories, members stay individually recallable, nothing auto-promotes, zero added commit-path work.
+- Fact-augmented retrieval keys (migration `20260707_0082`): derived category/attribute keys indexed at low weight on both backends so category-phrased queries match instance memories; deterministic tier always on, optional model tier behind the provider seam; identifier-shaped attributes excluded from derivation.
+- Entity-grounding honesty note: context packs state "no stored memories mention X" when a salient query entity has zero corpus support — a retrieval statistic, only present when true.
+- Supersession validity annotations: pack items carry compact validity metadata (valid-from/to, superseded-by, corrected-at) and the current version of a corrected fact always ranks above its superseded ancestor.
+- Speaker-provenance capture: memories record USER vs ASSISTANT origin; user-asserted values win promotion-rank tie-breaks; memory cards label "you said" vs "assistant suggested"; cross-batch duplicate promotions deduped.
+- Query-anchored excerpts in the benchmark packer: excerpt windows center on the query's best-matching line (gated on enumeration shape, with upward+downward run extensions) instead of chunk heads.
+- Disclosed post-generation grounding gate for the benchmark harness (`--verify-grounding`, off by default, fingerprint-stamped): a separate judge-neutral pass converts answers whose load-bearing claims lack context support into abstentions; fail-open, both texts recorded.
+- Benchmark checkpoint rows now record pack provenance (retrieved session ids, memory ids, context digest) so paired flips are attributable offline.
+- Published LongMemEval result unchanged at 79.4%: the paired 172-question slice measures this release at parity (+1 net, p=1.0) with per-type movement (temporal +2, multi-session +1, abstention +1, knowledge-update/preference −1 each); the round-2 features ship for their product value with no new benchmark claim.
+
 ## v0.9.1 — 2026-07-07
 
 - Retrieval bug fix: the sources stage was content-blind (matched only titles/metadata with a broken stopword list, effectively returning the most-recent sessions); it is now RRF fusion over chunk-level full-text hits, provenance of winning memories, and title/recency — plus an FTS OR-fallback when strict AND finds nothing.
