@@ -1611,6 +1611,40 @@ def test_alice_context_pack_surfaces_the_token_report(monkeypatch, core_surface)
     assert flat["token_report"] == report
 
 
+def test_alice_context_pack_forwards_the_grounding_statistic(monkeypatch, core_surface) -> None:
+    # pack["grounding"] exists only when a salient query entity has zero
+    # corpus support; the compact view must forward it, and its absence
+    # must leave the response schema untouched (ungated byte-identical).
+    base_pack = {
+        "context_pack_id": "pack-1",
+        "query_interpretation": {"query": "Did Zorblatt Nine ship?", "query_type": "recall"},
+        "relevant_memories": [],
+        "open_loops": [],
+        "sources": [],
+        "trace_id": "trace-1",
+    }
+
+    def gated_pack(_context, _arguments):
+        return {
+            **base_pack,
+            "grounding": {"unsupported_entities": ["Zorblatt Nine"], "checked": 1},
+        }
+
+    monkeypatch.setattr(mcp_tools_module, "_vnext_context_pack_payload", gated_pack)
+    gated = call_mcp_tool(
+        _mcp_context(), name="alice_context_pack", arguments={"query": "Did Zorblatt Nine ship?"}
+    )
+    assert gated["grounding"] == {"unsupported_entities": ["Zorblatt Nine"], "checked": 1}
+
+    monkeypatch.setattr(
+        mcp_tools_module, "_vnext_context_pack_payload", lambda _c, _a: dict(base_pack)
+    )
+    ungated = call_mcp_tool(
+        _mcp_context(), name="alice_context_pack", arguments={"query": "Did Zorblatt Nine ship?"}
+    )
+    assert "grounding" not in ungated
+
+
 def _trusted_identity_arguments() -> dict[str, object]:
     return {
         "agent_id": "hermes",

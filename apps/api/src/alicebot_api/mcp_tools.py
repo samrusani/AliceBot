@@ -2506,6 +2506,16 @@ def _handle_alice_context_pack(context: MCPRuntimeContext, arguments: Mapping[st
     recent_changes = pack.get("recent_changes")
     if isinstance(recent_changes, list) and recent_changes:
         payload["recent_changes"] = recent_changes
+    # -- entity grounding passthrough (vnext_grounding; single block) -------
+    # pack["grounding"] exists only when a salient query entity has ZERO
+    # corpus support (see vnext_grounding); the compact view must not
+    # silently drop it or the honesty statistic never reaches the tool
+    # caller. Absent for every ungated query, so ordinary responses are
+    # byte-identical.
+    grounding = pack.get("grounding")
+    if isinstance(grounding, Mapping) and grounding:
+        payload["grounding"] = dict(grounding)
+    # -- end entity grounding passthrough ------------------------------------
     if debug:
         payload["query_interpretation"] = dict(interpretation)
         payload["trace"] = pack.get("trace")

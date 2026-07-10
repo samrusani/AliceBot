@@ -127,6 +127,56 @@ honored and audited as `unauthenticated_local`.
 the retrieval trace — which stages ran, candidate counts, and whether
 vector search was active or degraded to full-text (and why).
 
+## Grounding
+
+`alice_context_pack` reports when the query names something the stored
+corpus has never seen. If a salient query entity — a capitalized name
+("Marcus Chen"), a quoted title ("Sapiens"), a domain, an @handle, or an
+attribute-qualified thing ("my 30-gallon tank", "my snake plant", "my
+soccer team") — has **zero** corpus support, the response carries a
+`grounding` field:
+
+```json
+"grounding": {"unsupported_entities": ["Zorblatt Nine"], "checked": 2}
+```
+
+The check is deliberately conservative, in both directions:
+
+- Salience comes from the query surface only. Generic nouns, acronyms,
+  sentence-initial capitals, and bare lowercase nouns ("my hamster") are
+  never checked; lowercase things need an explicit qualifier (a measured
+  quantity or a possessive noun-noun compound with a curated head noun).
+- "Unsupported" is only claimed when every available check misses: the
+  entity table (names and aliases) plus cheap one-row full-text probes
+  over source chunks and memories, where **any** token variant counts as
+  support ("Hawaiian" supports "Hawaii"; "tank" alone supports
+  "30-gallon tank"). Bare numbers never fabricate support: "30" on an
+  unrelated receipt is not a mention of the 30-gallon tank.
+
+The field is absent for every ordinary query — fully supported entities,
+no salient entities, or a store that cannot be checked all leave the
+response unchanged. It never filters or blocks retrieval; it is a
+statistic the caller can use to avoid synthesizing answers about things
+memory has never seen. With `"debug": true` the same record also appears
+in the retrieval trace. It is skipped at `context_depth: "minimal"` to
+keep that tier's cheapest-call promise. `alice_recall` does not compute
+it (recall does not compile a context pack).
+
+**Answer verification (opt-in library seam, not a tool).** For
+integrators who generate answers from a context pack,
+`alicebot_api.vnext_answer_verification` provides
+`verify_answer_grounding(answer_text, pack, chat_config)`: it asks a
+model of your choosing (any `BrainModelProvider`-shaped object with
+`.chat(prompt=..., temperature=...)`, or a bare `callable(prompt) ->
+str`) to list concrete claims in the answer that the pack does not
+support, and returns a verdict object. Nothing in the API or MCP server
+calls it — no behavior changes unless your answering loop invokes it.
+The verdict is fail-open (provider errors and unparseable replies leave
+the answer untouched) and self-disclosing (`to_record()` carries the
+prompt-template fingerprint and the verifier provider/model).
+`apply_answer_grounding_gate(answer_text, verdict)` then withholds the
+answer only on a clean verdict with a load-bearing unsupported claim.
+
 ## Embeddings
 
 Semantic search activates when an OpenAI-compatible embeddings endpoint is

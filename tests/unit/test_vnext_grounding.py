@@ -105,6 +105,62 @@ def test_domain_and_dedupe_and_appearance_order() -> None:
     assert names == ("Marcus Chen", "type3.capital", "Lisbon")
 
 
+# -- salience: attribute-qualified lowercase compounds (round 3) ---------------------
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        # quantifier-qualified: a measured quantity names a specific thing
+        ("How many fish are there in my 30-gallon tank?", ("30-gallon tank",)),
+        ("Is the 10 gallon aquarium cycling yet?", ("10 gallon aquarium",)),
+        ("Where did I put the 5-pound dumbbell?", ("5-pound dumbbell",)),
+        # possessive noun-noun compounds with curated heads
+        ("How often do I water my snake plant?", ("snake plant",)),
+        ("When is my soccer team playing next?", ("soccer team",)),
+        ("Did I skip my karate practice last week?", ("karate practice",)),
+        ("Has our book club picked the next read?", ("book club",)),
+        ("When does my pottery class meet?", ("pottery class",)),
+    ],
+)
+def test_qualified_lowercase_compounds_are_salient(query: str, expected: tuple[str, ...]) -> None:
+    assert salient_query_entities(query) == expected
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # bare lowercase nouns: no qualifier shape, never salient
+        "What is the name of my hamster?",
+        "the fish tank at the office needs cleaning",
+        "did I clean the tank yesterday?",
+        # possessive + generic object talk: head not in the curated lexicon
+        "Did my credit card payment go through?",
+        "What is my phone number?",
+        "Where did I buy my new tennis racket from?",
+        "what did I write in my journal entry?",
+        # generic/descriptive modifiers never qualify
+        "How is my work team doing?",
+        "my favorite team lost again",
+        "when does my new class start?",
+        "is my old plant still alive?",
+        "did my first practice go okay?",
+        "our local club meets on Mondays",
+        # time-quantified events are not things ("5-day trip")
+        "How many shirts did I pack for my 5-day trip?",
+        "I went on a 30-minute walk before lunch.",
+        # unit words without the full quantity-unit-noun shape
+        "How many miles per gallon was my car getting?",
+        "I bought a gallon of milk and a pound of coffee.",
+        # blocklisted or stopword modifiers can never qualify
+        "what about my may lessons?",
+        "did my the team win?",
+    ],
+)
+def test_generic_lowercase_nouns_are_never_salient(query: str) -> None:
+    assert salient_query_entities(query) == ()
+
+
 def test_salient_entities_are_capped() -> None:
     query = (
         "Did Alice Chen, Bob Marley, Carol Danvers, Dave Grohl, "
@@ -217,6 +273,33 @@ def test_morphological_variant_counts_as_support_on_sqlite(conn) -> None:
     assert corpus_support(("Hawaiian",), reverse) == {"Hawaiian": True}
 
 
+def test_pure_number_tokens_never_fabricate_support_on_sqlite(conn) -> None:
+    # "30" on an unrelated receipt is not a mention of the 30-gallon
+    # tank; a bare-number hit must not silently suppress a truthful note.
+    store = _store(conn)
+    _seed_chunk(store, "the receipt total was 30 dollars at the market")
+    assert corpus_support(("30-gallon tank",), store) == {"30-gallon tank": False}
+
+
+def test_word_tokens_of_a_quantified_compound_still_count_as_support(conn) -> None:
+    # Any word-token variant hit suppresses the note -- the safe direction.
+    store = _store(conn)
+    _seed_chunk(store, "cleaned the tank filter after feeding the fish")
+    assert corpus_support(("30-gallon tank",), store) == {"30-gallon tank": True}
+
+    unit_only = _store(conn)
+    _seed_chunk(unit_only, "bought two gallons of water for the trip")
+    assert corpus_support(("30-gallon tank",), unit_only) == {"30-gallon tank": True}
+
+
+def test_all_number_names_keep_their_digit_probe_surface(conn) -> None:
+    # A purely numeric name has no word tokens; its digits remain the
+    # only probe surface, so a corpus mention still counts as support.
+    store = _store(conn)
+    _seed_chunk(store, "the 991 arrived at the dealership on Friday")
+    assert corpus_support(("991",), store) == {"991": True}
+
+
 def test_corpus_support_empty_and_uncheckable_inputs(conn) -> None:
     assert corpus_support((), _store(conn)) == {}
     # A bare object exposes no probe surface: "cannot check", never a claim.
@@ -325,6 +408,22 @@ def test_grounding_payload_lists_only_unsupported_entities(conn) -> None:
         store, 'Did Marcus Chen recommend "Sapiens" to me?'
     )
     assert grounding == {"unsupported_entities": ["Marcus Chen"], "checked": 2}
+
+
+def test_grounding_fires_for_qualified_lowercase_compound(conn) -> None:
+    store = _store(conn)
+    _seed_chunk(store, "the receipt total was 30 dollars at the market")
+    grounding = compute_query_grounding(
+        store, "How many fish are there in my 30-gallon tank?"
+    )
+    assert grounding == {"unsupported_entities": ["30-gallon tank"], "checked": 1}
+
+    supported = _store(conn)
+    _seed_chunk(supported, "set up the new tank for the goldfish")
+    assert (
+        compute_query_grounding(supported, "How many fish are there in my 30-gallon tank?")
+        is None
+    )
 
 
 # -- context pack integration (gated; ungated path byte-identical) -------------------
