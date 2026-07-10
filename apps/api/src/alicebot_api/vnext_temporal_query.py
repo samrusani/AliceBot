@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 import re
+from typing import Sequence
 
 
 # Bounds for the open side of "before X" / "since X" windows. Wide enough
@@ -454,6 +455,199 @@ def _relative_window(text: str, reference: datetime) -> TemporalAnchor | None:
     return None
 
 
+# -- precomputed date arithmetic (pack presentation) --------------------------
+#
+# Temporal questions fail on ARITHMETIC, not recall: the dated evidence is
+# retrieved, but the reader still has to compute "how many days/weeks/months
+# earlier", orderings, and spans from raw timestamps — the measured frontier
+# failure mode. The pure functions below precompute those values so a pack
+# can present them as clearly-marked "[derived]" lines the reader only needs
+# to copy. Everything is stdlib calendar arithmetic over UTC dates:
+# deterministic, timezone-honest (aware inputs convert to UTC, naive inputs
+# are treated as UTC — matching ``parse_event_datetime``), no LLM, no clock
+# reads, no store access, no benchmark metadata.
+
+DERIVED_LINE_MARKER = "[derived]"
+# Hard bound on a derived-values block: one reference line, at most one span
+# line, the rest per-day delta lines. Keeps pack growth small and reported.
+DERIVED_TIMELINE_MAX_LINES = 12
+
+_DAY_ABBREVIATIONS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+# Below this many days the plain day count is already the copyable answer;
+# from here to _MONTHS_BREAKDOWN_MIN_DAYS a weeks+days breakdown is added;
+# past it a calendar years/months/days breakdown (month-end clamped).
+_WEEKS_BREAKDOWN_MIN_DAYS = 7
+_MONTHS_BREAKDOWN_MIN_DAYS = 60
+
+
+def _utc_day(value: datetime) -> date:
+    """UTC calendar day of an aware or naive (treated as UTC) datetime."""
+    return _utc(value).date()
+
+
+def iso_day_with_weekday(value: datetime) -> str:
+    """``2023-05-30 (Tue)``: the ISO-8601 UTC date plus its day-of-week."""
+    day = _utc_day(value)
+    return f"{day.isoformat()} ({_DAY_ABBREVIATIONS[day.weekday()]})"
+
+
+def _days_in_month(year: int, month: int) -> int:
+    if month == 12:
+        return 31
+    return (date(year, month + 1, 1) - date(year, month, 1)).days
+
+
+def _add_months(day: date, months: int) -> date:
+    """``day`` shifted by whole calendar months, clamping at month ends."""
+    index = day.year * 12 + (day.month - 1) + months
+    year, month = index // 12, index % 12 + 1
+    return date(year, month, min(day.day, _days_in_month(year, month)))
+
+
+def _calendar_breakdown(earlier: date, later: date) -> str:
+    """``7 months 4 days`` / ``1 year 2 months`` between two dates.
+
+    Whole calendar months are walked from the earlier date (month-end
+    dates clamp, so Jan 31 + 1 month lands on Feb 28/29), then the day
+    remainder is exact. Zero components are omitted; ``""`` when the dates
+    are less than one month apart.
+    """
+    months = (later.year - earlier.year) * 12 + (later.month - earlier.month)
+    if _add_months(earlier, months) > later:
+        months -= 1
+    if months <= 0:
+        return ""
+    remainder = (later - _add_months(earlier, months)).days
+    years, months = divmod(months, 12)
+    parts: list[str] = []
+    if years:
+        parts.append(f"{years} year" + ("s" if years != 1 else ""))
+    if months:
+        parts.append(f"{months} month" + ("s" if months != 1 else ""))
+    if remainder:
+        parts.append(f"{remainder} day" + ("s" if remainder != 1 else ""))
+    return " ".join(parts)
+
+
+def _humanized_day_span(earlier: date, later: date) -> str:
+    """``218 days (7 months 4 days)``: exact day count + copyable breakdown."""
+    days = (later - earlier).days
+    label = f"{days} day" + ("s" if days != 1 else "")
+    if days < _WEEKS_BREAKDOWN_MIN_DAYS:
+        return label
+    if days < _MONTHS_BREAKDOWN_MIN_DAYS:
+        weeks, remainder = divmod(days, 7)
+        breakdown = f"{weeks} week" + ("s" if weeks != 1 else "")
+        if remainder:
+            breakdown += f" {remainder} day" + ("s" if remainder != 1 else "")
+        return f"{label} ({breakdown})"
+    breakdown = _calendar_breakdown(earlier, later)
+    if breakdown == "":  # unreachable for >= 60 days; defensive fallback
+        return label
+    return f"{label} ({breakdown})"
+
+
+def delta_to_reference(event: datetime, reference: datetime) -> str:
+    """Humanized + machine-form delta between an event and a reference date.
+
+    ``218 days (7 months 4 days) earlier; 2023-05-30 -> 2024-01-03``:
+    "earlier"/"later" states the event's relation to the reference, and the
+    arrow pair is always chronological (earlier date -> later date), so the
+    machine form can be copied without re-deriving direction. Same UTC
+    calendar day returns ``same day (2023-05-30)``. Day counts are calendar
+    (UTC date difference), the granularity date questions are asked at.
+    """
+    event_day, reference_day = _utc_day(event), _utc_day(reference)
+    if event_day == reference_day:
+        return f"same day ({event_day.isoformat()})"
+    relation = "earlier" if event_day < reference_day else "later"
+    earlier, later = min(event_day, reference_day), max(event_day, reference_day)
+    span = _humanized_day_span(earlier, later)
+    return f"{span} {relation}; {earlier.isoformat()} -> {later.isoformat()}"
+
+
+def duration_between(a: datetime, b: datetime) -> str:
+    """Order-insensitive duration: ``159 days (5 months 8 days); 2023-01-02 -> 2023-06-10``."""
+    first, second = _utc_day(a), _utc_day(b)
+    if first == second:
+        return f"same day ({first.isoformat()})"
+    earlier, later = min(first, second), max(first, second)
+    return f"{_humanized_day_span(earlier, later)}; {earlier.isoformat()} -> {later.isoformat()}"
+
+
+def ordinal_position(event: datetime, series: Sequence[datetime]) -> tuple[int, int]:
+    """1-based chronological position of ``event`` among a series, by UTC day.
+
+    Returns ``(position, total)`` over the DISTINCT UTC calendar days in
+    ``series`` (same-day entries collapse — restatements of one session are
+    one dated day). Raises ``ValueError`` when the event's day is not in
+    the series, so callers cannot silently claim an ordinal for a date the
+    series never contained.
+    """
+    days = sorted({_utc_day(item) for item in series})
+    event_day = _utc_day(event)
+    try:
+        return days.index(event_day) + 1, len(days)
+    except ValueError:
+        raise ValueError(f"event day {event_day.isoformat()} is not in the series") from None
+
+
+def derived_timeline_lines(
+    events: Sequence[datetime],
+    *,
+    reference_time: datetime,
+    max_lines: int = DERIVED_TIMELINE_MAX_LINES,
+) -> list[str]:
+    """Bounded, deterministic ``[derived]`` lines for a pack's dated items.
+
+    ``events`` is the dated items' event times in ITEM RELEVANCE ORDER
+    (pack rank); same-day events collapse to one line. The block renders:
+
+    1. the reference day: ``[derived] reference date: 2023-06-15 (Thu)``
+    2. when two or more distinct days exist, their span:
+       ``[derived] dated items span 21 days (3 weeks); 2023-05-20 -> 2023-06-10``
+    3. one line per distinct day, in chronological order:
+       ``[derived] 2023-05-30 (Tue): 16 days (2 weeks 2 days) earlier;
+       2023-05-30 -> 2023-06-15; day 4 of 5``
+
+    ``day k of n`` is the chronological ordinal over ALL distinct dated
+    days (``ordinal_position``), even when the line cap drops some lines,
+    so shown ordinals stay honest. When there are more distinct days than
+    the cap allows, the days kept are the highest-RELEVANCE ones (first
+    occurrence order in ``events``); rendering stays chronological.
+    Returns ``[]`` when no events are given — a reference date with no
+    dated items derives nothing.
+    """
+    if not events or max_lines < 2:
+        return []
+    reference = _utc(reference_time)
+    ranked_days: list[date] = []
+    seen_days: set[date] = set()
+    for event in events:
+        day = _utc_day(event)
+        if day in seen_days:
+            continue
+        seen_days.add(day)
+        ranked_days.append(day)
+    chronological = sorted(seen_days)
+    lines = [f"{DERIVED_LINE_MARKER} reference date: {iso_day_with_weekday(reference)}"]
+    day_line_budget = max_lines - 1
+    if len(chronological) >= 2:
+        first = datetime(chronological[0].year, chronological[0].month, chronological[0].day, tzinfo=UTC)
+        last = datetime(chronological[-1].year, chronological[-1].month, chronological[-1].day, tzinfo=UTC)
+        lines.append(f"{DERIVED_LINE_MARKER} dated items span {duration_between(first, last)}")
+        day_line_budget -= 1
+    total = len(chronological)
+    for day in sorted(ranked_days[:day_line_budget]):
+        moment = datetime(day.year, day.month, day.day, tzinfo=UTC)
+        position = chronological.index(day) + 1
+        lines.append(
+            f"{DERIVED_LINE_MARKER} {iso_day_with_weekday(moment)}: "
+            f"{delta_to_reference(moment, reference)}; day {position} of {total}"
+        )
+    return lines
+
+
 def parse_temporal_anchor(query: str, *, reference_time: datetime) -> TemporalAnchor | None:
     """Parse one UTC ``[start, end)`` window from date-bearing query text.
 
@@ -499,9 +693,16 @@ def parse_temporal_anchor(query: str, *, reference_time: datetime) -> TemporalAn
 
 
 __all__ = [
+    "DERIVED_LINE_MARKER",
+    "DERIVED_TIMELINE_MAX_LINES",
     "TemporalAnchor",
     "WINDOW_CEILING",
     "WINDOW_FLOOR",
+    "delta_to_reference",
+    "derived_timeline_lines",
+    "duration_between",
+    "iso_day_with_weekday",
+    "ordinal_position",
     "parse_event_datetime",
     "parse_temporal_anchor",
 ]

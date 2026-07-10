@@ -54,6 +54,15 @@ from alicebot_api import vnext_contradictions
 # compile_context_pack.
 from alicebot_api import vnext_coverage_query
 
+# Currency chains (read-time same-slot update chains): pure grouping of
+# the packed memories by derived fact key + supersession edges + event
+# dates, so a stale value renders labeled SUPERSEDED below its CURRENT
+# replacement. Dormant — memories untouched, no trace stage, packs
+# byte-identical — unless the pack actually contains a confirmable
+# same-slot group; see the marked "currency chains" blocks in
+# compile_context_pack.
+from alicebot_api import vnext_currency
+
 # Reranker (disclosed precision stage): provider-side listwise relevance
 # scoring between fusion and the budget packer. Dormant — zero provider
 # calls, fused order stands, no trace stage — unless the ALICE_RERANKER_*
@@ -73,7 +82,12 @@ from alicebot_api.vnext_grounding import compute_query_grounding
 from alicebot_api.vnext_json import json_safe
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import fts_fallback_tokens
-from alicebot_api.vnext_temporal_query import TemporalAnchor, parse_event_datetime, parse_temporal_anchor
+from alicebot_api.vnext_temporal_query import (
+    TemporalAnchor,
+    derived_timeline_lines,
+    parse_event_datetime,
+    parse_temporal_anchor,
+)
 
 
 DEFAULT_CONTEXT_PACK_LIMIT = 8
@@ -1927,6 +1941,41 @@ class VNextRetrievalService:
             if validity is not None:
                 memory["validity"] = validity
 
+        # ---- currency chains (read-time update chains) begin --------------
+        # Same-slot update chains over the PACKED memories: rows sharing a
+        # derived fact key, confirmed by supersession edges or same
+        # unit/currency-class values plus a shared topic token, regroup
+        # into one contiguous block ordered oldest first with the CURRENT
+        # value last and every entry annotated (memory["currency"]).
+        # Selection, budget, and every non-member row are untouched;
+        # ambiguous groups emit no chain and are only counted. Dormant —
+        # selected_memories unchanged (same list object), no annotations,
+        # no trace stage below — for every pack without a confirmable
+        # same-key group, and always at minimal depth (whose
+        # cheapest-useful-call promise excludes the provenance-source date
+        # lookups this stage may need).
+        currency_record: JsonObject | None = None
+        if depth != CONTEXT_DEPTH_MINIMAL and len(selected_memories) >= 2:
+            currency_source_cache: dict[str, JsonObject | None] = {}
+            currency_get_source = getattr(self.store, "get_source", None)
+
+            def _currency_source(source_id: str) -> JsonObject | None:
+                if source_id not in currency_source_cache:
+                    currency_source_cache[source_id] = (
+                        currency_get_source(source_id) if callable(currency_get_source) else None
+                    )
+                return currency_source_cache[source_id]
+
+            currency_result = vnext_currency.build_currency_chains(
+                selected_memories, source_lookup=_currency_source
+            )
+            if currency_result.considered:
+                selected_memories = vnext_currency.apply_currency_chains(
+                    selected_memories, currency_result
+                )
+                currency_record = vnext_currency.currency_stage_record(currency_result)
+        # ---- currency chains (read-time update chains) end ----------------
+
         supersession_context: list[JsonObject] | None = None
         if depth == CONTEXT_DEPTH_HIGH:
             supersession_context = self._supersession_context(selected_memories)
@@ -2008,6 +2057,11 @@ class VNextRetrievalService:
             # Absent when unconfigured so dormant traces stay byte-identical.
             trace["stages"][vnext_reranker.RERANKER_STAGE] = reranker_record  # type: ignore[index]
         # ---- reranker (disclosed precision stage) end ---------------------
+        # ---- currency chains (read-time update chains) begin --------------
+        if currency_record is not None:
+            # Absent when dormant so ungated traces stay byte-identical.
+            trace["stages"][vnext_currency.CURRENCY_STAGE] = currency_record  # type: ignore[index]
+        # ---- currency chains (read-time update chains) end ----------------
         pack: JsonObject = {
             "context_pack_id": context_pack_id,
             "query_interpretation": interpretation,
@@ -2073,6 +2127,85 @@ class VNextRetrievalService:
                 pack["grounding"] = grounding
                 trace["grounding"] = dict(grounding)
         # -- end entity grounding ----------------------------------------------
+        # ---- temporal precompute (machine-readable time + derived values) begin
+        # Date questions fail on ARITHMETIC, not recall: the dated evidence
+        # is in the pack, but the reader still has to compute deltas,
+        # orderings, and spans from raw timestamps. Two additive,
+        # deterministic presentation moves over the ALREADY-SELECTED items
+        # (selection, ordering, and budget above are untouched):
+        #
+        # (1) Every selected memory/source with a resolvable event date gets
+        #     a machine-readable ISO-8601 ``event_time``. Sources use
+        #     ``_source_event_time`` (the temporal stage's event semantic).
+        #     Memories use their content-honest signals (``valid_from``,
+        #     connector-stamped metadata dates via ``_tiebreak_event_time``)
+        #     and then — at non-minimal depth only, keeping minimal's
+        #     cheapest-call promise of zero extra store reads — fall back to
+        #     their provenance source's event time (``metadata_json.
+        #     source_id`` -> ``get_source``, cached per compile, duck-typed
+        #     like every optional stage). Deliberately NO write-clock
+        #     fallback for memory rows themselves: an imported/replayed
+        #     memory must not present ingest day as its event date.
+        # (2) When the caller supplied ``reference_time`` (the caller's
+        #     "now"; the service NEVER substitutes the wall clock here, so
+        #     identical inputs keep producing byte-identical derived
+        #     values), a bounded derived-values block precomputes the date
+        #     arithmetic for the dated items — delta to the reference,
+        #     chronological ordinal, span — every line marked "[derived]"
+        #     (``vnext_temporal_query.derived_timeline_lines``, at most
+        #     ``DERIVED_TIMELINE_MAX_LINES`` lines). Question-agnostic: it
+        #     fires for ANY dated items, never on question shapes. Dormant
+        #     (no pack key, no trace stage, byte-identical pack) when
+        #     ``reference_time`` is absent.
+        temporal_get_source = (
+            getattr(self.store, "get_source", None) if depth != CONTEXT_DEPTH_MINIMAL else None
+        )
+        temporal_source_dates: dict[str, datetime | None] = {}
+        temporal_anchored_items = 0
+        temporal_dated_events: list[datetime] = []
+
+        def _memory_event_time(memory: JsonObject) -> datetime | None:
+            event = _tiebreak_event_time(memory)
+            if event is not None or temporal_get_source is None:
+                return event
+            metadata = memory.get("metadata_json")
+            source_id = str(metadata.get("source_id") or "") if isinstance(metadata, Mapping) else ""
+            if not source_id:
+                return None
+            if source_id not in temporal_source_dates:
+                source_row = temporal_get_source(source_id)
+                temporal_source_dates[source_id] = (
+                    _source_event_time(source_row) if isinstance(source_row, Mapping) else None
+                )
+            return temporal_source_dates[source_id]
+
+        for pack_item, event_time in (
+            *((item, _memory_event_time(item)) for item in selected_memories),
+            *((item, _source_event_time(item)) for item in selected_sources),
+        ):
+            if event_time is None:
+                continue
+            pack_item["event_time"] = event_time.isoformat()
+            temporal_anchored_items += 1
+            temporal_dated_events.append(event_time)
+        if request.reference_time is not None:
+            derived_lines = derived_timeline_lines(
+                temporal_dated_events,
+                reference_time=request.reference_time,
+            )
+            if derived_lines:
+                pack["derived_values"] = {
+                    # parse_event_datetime is the UTC normalizer the stamps
+                    # above already trust; reference_time is a datetime, so
+                    # this is a pure aware/naive->UTC conversion.
+                    "reference_time": parse_event_datetime(request.reference_time).isoformat(),  # type: ignore[union-attr]
+                    "lines": derived_lines,
+                }
+            trace["stages"]["temporal_precompute"] = {  # type: ignore[index]
+                "anchored_items": temporal_anchored_items,
+                "derived_lines": len(derived_lines),
+            }
+        # ---- temporal precompute (machine-readable time + derived values) end
         append_event(
             self.store,
             event_type="retrieval.context_pack_compiled",

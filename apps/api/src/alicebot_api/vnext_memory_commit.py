@@ -13,6 +13,10 @@ from alicebot_api.vnext_agent_control import (
     append_policy_events,
     evaluate_agent_policy,
 )
+# Currency chains (stored currency): an approved supersession stamps the
+# retired row's valid_to with the replacement's event time — see the marked
+# block in _transition_memory.
+from alicebot_api.vnext_currency import supersession_event_time
 from alicebot_api.vnext_embeddings import attach_memory_embedding
 from alicebot_api.vnext_entities import (
     EntityLinkingService,
@@ -1967,6 +1971,25 @@ class VNextMemoryCommitService:
             successor_id = str(superseded_by["id"])
             patch["superseded_by"] = successor_id
             patch["metadata_json"] = {**metadata, "superseded_by": successor_id, "agentic_memory": agentic}
+            # ---- currency chains (stored currency) begin -------------------
+            # An approved supersession closes the retired row's validity
+            # window: stamp valid_to with the replacement's event time
+            # (its valid_from/metadata event date, its provenance source's
+            # date, else its created_at) so read-time currency is stored,
+            # not inferred. Runs ONLY on transitions that already write
+            # the supersession pointer — the review gate itself is
+            # untouched — and never overwrites a row's existing valid_to
+            # (including the unbounded unexpire sentinel, which records an
+            # explicit reviewed decision).
+            if memory.get("valid_to") is None:
+                patch["valid_to"] = (
+                    supersession_event_time(
+                        superseded_by,
+                        source_lookup=getattr(self.store, "get_source", None),
+                    )
+                    or _utc_iso()
+                )
+            # ---- currency chains (stored currency) end ---------------------
         updated = self.store.update_memory(
             memory_id=str(memory["id"]),
             patch=patch,

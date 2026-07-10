@@ -138,6 +138,18 @@ python scripts/run_longmemeval.py --variant s --workers 3 --resume \
 The 24k-char context roughly doubles the token spend of the baseline
 configuration; budget accordingly.
 
+## The honesty kit
+
+Everything needed to audit these numbers is collected in
+[HONESTY-KIT.md](HONESTY-KIT.md): the exact judge protocol (model, verbatim
+prompts, temperature), dataset revision hashes, the config fingerprint of
+every published run, our negative results as first-class findings, and the
+judge-free **stale-pick metric** — an offline classifier that replays any
+run checkpoint against the dataset's knowledge-update chains and reports how
+often the answer picked a superseded value (baseline:
+[stale-pick-baseline-2026-07-10.json](stale-pick-baseline-2026-07-10.json)).
+No API keys required to check any of it.
+
 ## Evidence files
 
 - [per-question-results-2026-07-07.jsonl](per-question-results-2026-07-07.jsonl)
