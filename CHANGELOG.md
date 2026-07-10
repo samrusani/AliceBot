@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Deterministic retrieval ordering: every equal-score tie (RRF fusion, graph and temporal stages, FTS/vector stage runs) now resolves through a content-stable cascade (event date, content length, text, capture fingerprint) instead of falling through to row ids — re-ingesting the same content yields byte-identical packs (two-seed divergence 7/40 → 0/40); disclosed as `fusion.tie_break: content_stable_v1` in retrieval traces.
+- Benchmark harness gains a disclosed `--accept-rollups` step (default off, fingerprint-stamped) that review-accepts consolidation roll-up proposals through the real acceptance path, modeling the product's human review workflow; offline measurement found current roll-up grouping quality too noisy to help the benchmark, so the flag stays off and grouping quality is queued as product work.
+- Grounding for products: the context-pack entity note now recognizes quantity-qualified and possessive compound entities ("30-gallon tank", "my snake plant") with conservative false-positive guards, and a new answer-verification library seam (`vnext_answer_verification`) lets integrators opt into post-generation grounding checks; nothing changes by default.
+
 - Time-aware retrieval: temporal anchors parsed from the query ("two weeks ago", "in March 2023", "between X and Y") join RRF fusion as one more ranked list against event dates — never a hard filter, dormant on date-free queries, honest `temporal_anchor` trace stage.
 - Coverage mode for aggregation-shaped recall ("how many…", "list every…"): query-surface intent gate, capped clause decomposition, and instance-diversity fusion keyed on `(source_id, source_chunk_id)` so distinct instances fill the slots; dormant path byte-identical.
 - Consolidation roll-up cards: the merge engine proposes review-gated cards that pre-aggregate same-topic instances with per-instance dates, values, and speaker provenance; accepted cards are first-class recallable memories, members stay individually recallable, nothing auto-promotes, zero added commit-path work.

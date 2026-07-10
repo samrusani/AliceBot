@@ -971,6 +971,257 @@ def test_question_run_ingests_and_retrieves_evidence(tmp_path: Path) -> None:
     assert outcome.retrieval_seconds >= 0.0
 
 
+# -- roll-up acceptance (post-ingest consolidation, real acceptance path) -----------
+
+_ROLLUP_QUESTION_TEXT = "How many hours have I spent playing Stardew Valley in total?"
+
+
+def _rollup_question():
+    """Aggregation-shaped fixture: three sessions each asserting one distinct
+    Stardew Valley play instance (same entity, distinct dates/amounts), plus
+    one unrelated filler session."""
+    return parse_question(
+        {
+            "question_id": "q_rollup_agg",
+            "question_type": "multi-session",
+            "question": _ROLLUP_QUESTION_TEXT,
+            "answer": "47 hours",
+            "question_date": "2023/06/01 (Thu) 10:00",
+            "haystack_dates": [
+                "2023/05/01 (Mon) 10:00",
+                "2023/05/08 (Mon) 11:00",
+                "2023/05/15 (Mon) 09:30",
+                "2023/05/22 (Mon) 16:00",
+            ],
+            "haystack_session_ids": ["s_sv1", "s_sv2", "s_sv3", "s_filler"],
+            "haystack_sessions": [
+                [
+                    {"role": "user", "content": "My Stardew Valley playthrough was about 30 hours over the spring break."},
+                    {"role": "assistant", "content": "That sounds like a relaxing break."},
+                ],
+                [
+                    {"role": "user", "content": "The Stardew Valley harvest festival grind was another 12 hours of my weekend."},
+                    {"role": "assistant", "content": "Festival grinding pays off eventually."},
+                ],
+                [
+                    {"role": "user", "content": "Stardew Valley multiplayer with my cousin was 5 hours of pure chaos on Friday."},
+                    {"role": "assistant", "content": "Multiplayer farms get chaotic fast."},
+                ],
+                [
+                    {"role": "user", "content": "My sourdough starter needs feeding twice a day, which is a commitment."},
+                    {"role": "assistant", "content": "Daily feeding keeps it healthy."},
+                ],
+            ],
+            "answer_session_ids": ["s_sv1", "s_sv2", "s_sv3"],
+        }
+    )
+
+
+def _rollup_cards(store) -> list[dict[str, object]]:
+    return [
+        row
+        for row in store.list_memories(status="active")
+        if isinstance(row.get("metadata_json"), dict)
+        and row["metadata_json"].get("candidate_kind") == "memory_rollup"
+    ]
+
+
+def test_accept_rollups_uses_real_acceptance_path(tmp_path: Path) -> None:
+    """The step must go through accept_consolidation_candidate — the same
+    service call the review console endpoint delegates to — never a
+    store-level status patch. The evidence: acceptance metadata, the
+    'promoted' revision, and the agent.memory_consolidation_accepted event
+    that only the real path writes."""
+    question = _rollup_question()
+    with adapter.question_run(question, tmp_path / "q.sqlite3") as run:
+        stats = run.ingest(accept_rollups=True)
+        assert stats.rollups is not None
+        assert stats.rollups.proposal_count >= 1
+        assert stats.rollups.accepted_count == stats.rollups.proposal_count
+        assert len(stats.rollups.accepted_memory_ids) == stats.rollups.accepted_count
+
+        cards = _rollup_cards(run.store)
+        assert {str(card["id"]) for card in cards} == set(stats.rollups.accepted_memory_ids)
+        stardew = [card for card in cards if "Stardew Valley" in str(card.get("canonical_text"))]
+        assert len(stardew) == 1
+        card = stardew[0]
+        text = str(card["canonical_text"])
+        # The deterministic instance list carries the aggregation needles:
+        # one instance per session, with its amount and REAL session date
+        # (stamped at promotion; without the stamp every instance would
+        # show the ingest wall-clock date).
+        assert "3 instances in total" in text
+        for needle in ("30 hours", "12 hours", "5 hours", "2023/05/01", "2023/05/08", "2023/05/15"):
+            assert needle in text
+
+        # Real-path acceptance evidence on the card itself.
+        metadata = card["metadata_json"]
+        assert metadata["review_required"] is False
+        accepted = metadata["consolidation"]["accepted"]
+        assert accepted["actor_type"] == "user"  # identity=None, the human-reviewer shape
+        assert accepted["reason"] == adapter.ROLLUP_ACCEPTANCE_REASON
+        assert accepted["superseded_member_ids"] == []  # members stay active
+        revisions = run.store.list_revisions(str(card["id"]))
+        assert any(
+            revision.get("revision_type") == "promoted"
+            and revision.get("action") == "agentic_memory_consolidation_accept"
+            for revision in revisions
+        )
+        events = run.store.list_events(target_type="memory", target_id=str(card["id"]))
+        assert any(event.get("event_type") == "agent.memory_consolidation_accepted" for event in events)
+
+        # Member memories stay active and individually recallable.
+        member_ids = [str(instance["memory_id"]) for instance in card["value"]["rollup"]["instances"]]
+        assert len(member_ids) == 3
+        for member_id in member_ids:
+            member = run.store.get_memory(member_id)
+            assert member is not None and member["status"] == "active"
+            # Promotion stamped the member's originating session date.
+            assert str(member["metadata_json"]["session_date"]).startswith("2023/05/")
+
+        # The cashed check: the accepted card wins a context-pack slot for
+        # the aggregation query and its instance list reaches the prompt.
+        outcome = run.retrieve(max_items=16, context_char_budget=12_000)
+        assert str(card["id"]) in outcome.memory_ids
+        assert "3 instances in total" in outcome.context_block
+
+        # Ingest record discloses the counts (checkpoint visibility).
+        record = stats.to_record()
+        assert record["rollups"]["accepted_count"] == stats.rollups.accepted_count
+        assert record["rollups"]["proposal_count"] == stats.rollups.proposal_count
+
+
+def test_accept_rollups_off_is_byte_identical_and_dormant(tmp_path: Path) -> None:
+    """Flag off (the default): the ingest record keeps the exact pre-roll-up
+    key set, no roll-up rows exist, and promotion writes the exact old patch
+    (no session_date stamp)."""
+    question = _rollup_question()
+    with adapter.question_run(question, tmp_path / "q.sqlite3") as run:
+        stats = run.ingest()
+        assert stats.rollups is None
+        assert sorted(stats.to_record()) == [
+            "candidate_memory_count",
+            "chunk_count",
+            "duplicate_count",
+            "ingest_seconds",
+            "promoted_memory_count",
+            "session_count",
+            "source_count",
+        ]
+        assert _rollup_cards(run.store) == []
+        assert run.store.list_memories(status="candidate") == []  # nothing left un-promoted
+        for memory in run.store.list_memories(status="active"):
+            assert "session_date" not in memory["metadata_json"]
+
+
+def test_accept_rollups_pass_is_deterministic_and_idempotent(tmp_path: Path) -> None:
+    question = _rollup_question()
+    with adapter.question_run(question, tmp_path / "a.sqlite3") as run_a:
+        stats_a = run_a.ingest(accept_rollups=True)
+        cards_a = sorted(str(card["canonical_text"]) for card in _rollup_cards(run_a.store))
+        # Idempotency: re-running the pass on the same store proposes and
+        # accepts nothing new (groups are already covered by accepted cards).
+        again = run_a._consolidate_and_accept_rollups()
+        assert again.proposal_count == 0
+        assert again.accepted_count == 0
+        assert cards_a == sorted(str(card["canonical_text"]) for card in _rollup_cards(run_a.store))
+    with adapter.question_run(question, tmp_path / "b.sqlite3") as run_b:
+        stats_b = run_b.ingest(accept_rollups=True)
+        cards_b = sorted(str(card["canonical_text"]) for card in _rollup_cards(run_b.store))
+    # Determinism across fresh ingests: same inputs, same cards (grouping
+    # keys are content-derived; instance order comes from stamped session
+    # dates, not wall-clock create times).
+    assert cards_a == cards_b
+    assert stats_a.rollups is not None and stats_b.rollups is not None
+    assert stats_a.rollups.proposal_count == stats_b.rollups.proposal_count
+    assert stats_a.rollups.skipped == stats_b.rollups.skipped
+
+
+def test_fingerprint_records_accept_rollups_flag(tmp_path: Path) -> None:
+    def config_with(accept_rollups: bool) -> runner.RunnerConfig:
+        return runner.RunnerConfig(
+            variant="s",
+            dataset_path=SYNTHETIC_FIXTURE_PATH,
+            limit=None,
+            question_ids=None,
+            question_ids_file=None,
+            resume=False,
+            dry_run=True,
+            cot=False,
+            workers=1,
+            max_items=8,
+            context_char_budget=12_000,
+            work_dir=tmp_path,
+            checkpoint_path=tmp_path / "c.jsonl",
+            report_path=tmp_path / "r.json",
+            keep_stores=False,
+            accept_rollups=accept_rollups,
+        )
+
+    off = runner.config_fingerprint(config_with(False), model=None, judge=None)
+    on = runner.config_fingerprint(config_with(True), model=None, judge=None)
+    assert off["accept_rollups"] is False
+    assert on["accept_rollups"] is True
+    # The step can never run undisclosed: the flag feeds the digest.
+    assert off["digest"] != on["digest"]
+    # And the CLI default is off, so the default replay path is unchanged.
+    args = runner.build_arg_parser().parse_args([])
+    assert args.accept_rollups is False
+
+
+def test_runner_dry_run_with_accept_rollups_records_ingest_stats(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.jsonl"
+    report_path = tmp_path / "report.json"
+    exit_code = runner.main(
+        [
+            "--dry-run",
+            "--accept-rollups",
+            "--dataset-file",
+            str(SYNTHETIC_FIXTURE_PATH),
+            "--work-dir",
+            str(tmp_path / "work"),
+            "--checkpoint",
+            str(checkpoint_path),
+            "--report",
+            str(report_path),
+            "--workers",
+            "1",
+        ]
+    )
+    assert exit_code == runner.EXIT_OK
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["config"]["accept_rollups"] is True
+    records = runner.load_checkpoint(checkpoint_path)
+    for record in records.values():
+        rollups = record["ingest"]["rollups"]
+        assert rollups["accepted_count"] == rollups["proposal_count"]
+        assert isinstance(rollups["accepted_memory_ids"], list)
+        assert len(rollups["accepted_memory_ids"]) == rollups["accepted_count"]
+
+    # Control: without the flag the ingest record has no rollups block.
+    off_checkpoint = tmp_path / "off_checkpoint.jsonl"
+    exit_code = runner.main(
+        [
+            "--dry-run",
+            "--dataset-file",
+            str(SYNTHETIC_FIXTURE_PATH),
+            "--work-dir",
+            str(tmp_path / "work_off"),
+            "--checkpoint",
+            str(off_checkpoint),
+            "--report",
+            str(tmp_path / "off_report.json"),
+            "--workers",
+            "1",
+        ]
+    )
+    assert exit_code == runner.EXIT_OK
+    off_report = json.loads((tmp_path / "off_report.json").read_text(encoding="utf-8"))
+    assert off_report["config"]["accept_rollups"] is False
+    for record in runner.load_checkpoint(off_checkpoint).values():
+        assert "rollups" not in record["ingest"]
+
+
 def test_retrieval_outcome_record_carries_pack_provenance(tmp_path: Path) -> None:
     """Checkpoint rows must make flips offline-attributable: retrieved source
     session ids, selected memory ids, and a digest of the exact rendered
@@ -994,6 +1245,27 @@ def test_retrieval_outcome_record_carries_pack_provenance(tmp_path: Path) -> Non
     assert isinstance(memory_ids, list)
     assert len(memory_ids) == record["memory_count"]
     assert all(isinstance(memory_id, str) and memory_id for memory_id in memory_ids)
+
+
+def test_two_seed_ingest_renders_byte_identical_context(tmp_path: Path) -> None:
+    """Churn hardening: re-ingesting the same haystack (fresh uuids, fresh
+    write clocks) must reproduce the retrieved context block byte for byte.
+    The rendering is uuid-free (session labels + dates + content only) and
+    the retrieval tie cascade is content-stable, so pack composition is a
+    pure function of the ingested content — the paired-run coin flips the
+    loss forensics traced to id tie-breaks cannot re-roll."""
+    for index, question in enumerate(load_dataset(SYNTHETIC_FIXTURE_PATH)):
+        outcomes = []
+        for seed in ("seed_a", "seed_b"):
+            with adapter.question_run(question, tmp_path / f"q{index}_{seed}.sqlite3") as run:
+                run.ingest()
+                outcomes.append(run.retrieve(max_items=8, context_char_budget=12_000))
+        first, second = outcomes
+        assert first.source_session_ids == second.source_session_ids
+        assert first.context_sha256 == second.context_sha256
+        assert first.context_block == second.context_block
+        assert first.memory_count == second.memory_count
+        assert first.excerpt_count == second.excerpt_count
 
 
 def test_knowledge_update_shaped_pack_renders_correction_above_annotated_stale_fact(

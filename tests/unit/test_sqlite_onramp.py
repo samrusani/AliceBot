@@ -206,7 +206,11 @@ def test_capture_review_approve_recall_explain_flow(sqlite_context) -> None:
     assert recall["count"] >= 1
     assert recall["results"][0]["id"] == memory_id
     assert recall["results"][0]["provenance_count"] == 1
-    assert recall["retrieval"]["fusion"] == {"algorithm": "reciprocal_rank_fusion", "k": 60}
+    assert recall["retrieval"]["fusion"] == {
+        "algorithm": "reciprocal_rank_fusion",
+        "k": 60,
+        "tie_break": "content_stable_v1",
+    }
     assert recall["retrieval"]["stages"]["fts"]["candidate_count"] >= 1
 
     audit = call_mcp_tool(sqlite_context, name="alice_explain", arguments={"memory_id": memory_id})

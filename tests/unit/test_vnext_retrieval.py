@@ -35,6 +35,7 @@ from alicebot_api.vnext_retrieval import (
     SUPERSESSION_STAGE_ENABLED,
     TEMPORAL_STAGE_DISABLED_NO_STORE_SUPPORT,
     TEMPORAL_STAGE_ENABLED,
+    TIE_BREAK_CONTENT_STABLE,
     VECTOR_STAGE_DISABLED_NO_PROVIDER,
     VECTOR_STAGE_ENABLED,
     VNextRetrievalRequest,
@@ -528,7 +529,11 @@ def test_context_pack_includes_memories_sources_open_loops_provenance_and_trace(
     assert pack["trace"]["candidate_count"] == 3
     assert pack["trace"]["selected_count"] == 3
     assert pack["trace"]["vector_stage"] == VECTOR_STAGE_DISABLED_NO_PROVIDER
-    assert pack["trace"]["fusion"] == {"algorithm": "reciprocal_rank_fusion", "k": RRF_K}
+    assert pack["trace"]["fusion"] == {
+        "algorithm": "reciprocal_rank_fusion",
+        "k": RRF_K,
+        "tie_break": TIE_BREAK_CONTENT_STABLE,
+    }
     assert pack["trace"]["stages"]["fts"] == {"source": "postgres_fts", "candidate_count": 1}
     assert pack["trace"]["stages"]["vector"] == {
         "status": VECTOR_STAGE_DISABLED_NO_PROVIDER,
