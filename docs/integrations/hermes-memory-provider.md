@@ -131,7 +131,7 @@ For a first memory test, use [../alpha/first-memory.md](../alpha/first-memory.md
 Operational split:
 
 - provider: recall, prefetch, resumption brief, open-loop lookup, and optional structured `sync_turn` capture
-- MCP: `alice_capture` (core) for explicit capture, or the legacy `alice_vnext_commit_memory` tool for user-directed "remember/save this" instructions (legacy tools require the MCP server to run with `ALICE_MCP_LEGACY_TOOLS=1`)
+- MCP: `alice_capture` / `alice_memory_commit` (core) for explicit capture and user-directed "remember/save this" instructions. The older `alice_vnext_commit_memory` example is keyless-local legacy compatibility only.
 - `/vnext`: review, confirmation, audit, undo, correction, and forget
 
 If a tester sees no memory after normal chat, first verify MCP access to a capture/commit tool (core `alice_capture`, or `alice_vnext_commit_memory` with `ALICE_MCP_LEGACY_TOOLS=1`) and check `/vnext` Memory Review before treating it as a storage bug.
@@ -154,7 +154,7 @@ Use this split to avoid overlapping integrations:
 | Integration | Best for | Runtime shape |
 |---|---|---|
 | Alice memory provider | always-on continuity prefetch + memory tools inside Hermes memory stack | one external memory provider + built-in `MEMORY.md`/`USER.md` |
-| Alice MCP server | Alice tool surface in Hermes: nine core tools (`alice_recall`, `alice_resume`, `alice_memory_review`, `alice_memory_correct`, ...) plus the legacy tools (`alice_review_queue`, `alice_review_apply`, ...) with `ALICE_MCP_LEGACY_TOOLS=1` | MCP server attached under `mcp_servers` |
+| Alice MCP server | Alice tool surface in Hermes: eleven core tools (`alice_recall`, `alice_resume`, `alice_memory_review`, `alice_memory_correct`, ...). Legacy tools can be enabled only for deliberately keyless same-host compatibility; a server bound with `ALICE_AGENT_API_KEY` hides and rejects them. | MCP server attached under `mcp_servers` |
 | Hermes Alice skill pack | policy and prompting guidance on when/how to call Alice tools | skill instructions layered on top of provider or MCP |
 
 Practical default:

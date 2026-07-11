@@ -13,6 +13,7 @@ from alicebot_api import vnext_retrieval as vnext_retrieval_module
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_embeddings import VNextEmbeddingProviderError
+from alicebot_api.vnext_project_scope import memory_project_scope
 from alicebot_api.vnext_retrieval import (
     BUDGET_STRATEGIES,
     CONTEXT_DEPTHS,
@@ -133,11 +134,7 @@ class InMemoryVNextRetrievalStore:
             rows = [
                 row
                 for row in rows
-                if row.get("project_id") in projects
-                or (
-                    isinstance(row.get("metadata_json"), dict)
-                    and row["metadata_json"].get("project_id") in projects
-                )
+                if set(memory_project_scope(row)).intersection(projects)
             ]
         if created_by_agent_ids:
             rows = [row for row in rows if row.get("created_by_agent_id") in created_by_agent_ids]
@@ -765,6 +762,62 @@ def test_context_pack_rejects_non_positive_max_tokens() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("overrides", "field_name"),
+    [
+        ({"max_items": 0}, "max_items"),
+        ({"max_items": 51}, "max_items"),
+        ({"max_tokens": 50_001}, "max_tokens"),
+        ({"time_window": "forever"}, "time_window"),
+        ({"time_window": "0d"}, "time_window"),
+    ],
+)
+def test_context_pack_enforces_authoritative_service_bounds(
+    overrides: dict[str, object], field_name: str
+) -> None:
+    store = InMemoryVNextRetrievalStore(memories=[], sources=[])
+
+    with pytest.raises(VNextRetrievalValidationError, match=field_name):
+        VNextRetrievalService(store).compile_context_pack(
+            VNextRetrievalRequest(query="Alice", **overrides)  # type: ignore[arg-type]
+        )
+
+
+def test_context_pack_counts_recent_changes_inside_the_content_budget() -> None:
+    memory = _memory_row("memory-1", "Alice recent-change budget row.")
+    seeded_event = {
+        "id": "event-1",
+        "event_type": "memory.updated",
+        "actor_type": "system",
+        "target_type": "memory",
+        "target_id": "memory-1",
+        "occurred_at": "2026-07-01T00:00:00Z",
+    }
+    store = InMemoryVNextRetrievalStore(
+        memories=[memory], sources=[], seeded_events=[seeded_event]
+    )
+    memory_only_budget = estimate_item_tokens(memory)
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="Alice recent-change budget",
+            max_tokens=memory_only_budget,
+        )
+    )
+
+    assert [item["id"] for item in pack["relevant_memories"]] == ["memory-1"]
+    assert pack["recent_changes"] == []
+    assert pack["budget"]["allocation"]["recent_changes"] == 0
+    assert pack["budget"]["token_estimate"] <= memory_only_budget
+    assert pack["budget"]["truncated"] is True
+    assert "trace" in pack["budget"]["excluded_sections"]
+    assert pack["budget"]["serialized_token_estimate"] > pack["budget"]["token_estimate"]
+    assert pack["budget"]["serialized_token_estimate"] == estimate_item_tokens(pack)
+    assert pack["budget"]["excluded_token_estimate"] == (
+        estimate_item_tokens(pack) - pack["budget"]["token_estimate"]
+    )
+
+
 # -- memory_types and projects filters ---------------------------------------------
 
 
@@ -1377,6 +1430,302 @@ def test_context_pack_filters_memories_by_project_metadata() -> None:
     assert [memory["id"] for memory in pack["relevant_memories"]] == ["memory-alicebot"]
 
 
+def test_context_pack_project_scope_uses_overlap_for_multi_project_memories() -> None:
+    shared = _memory_row(
+        "memory-shared",
+        "Shared release coordination fact.",
+        project_scope=["alicebot", "hermes"],
+        metadata_json={"project_scope": ["alicebot", "hermes"]},
+    )
+    store = InMemoryVNextRetrievalStore(memories=[shared], sources=[])
+
+    alice = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="shared release coordination", projects=("alicebot",))
+    )
+    hermes = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="shared release coordination", projects=("hermes",))
+    )
+    unrelated = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="shared release coordination", projects=("other",))
+    )
+
+    assert [row["id"] for row in alice["relevant_memories"]] == ["memory-shared"]
+    assert [row["id"] for row in hermes["relevant_memories"]] == ["memory-shared"]
+    assert unrelated["relevant_memories"] == []
+
+
+def test_scoped_pack_rejects_cross_project_source_metadata_and_derivations(monkeypatch) -> None:
+    cross_scope_source = {
+        "id": "source-hermes",
+        "title": "Fundraiser history",
+        "captured_at": "2025-01-02T00:00:00Z",
+        "domain": "project",
+        "sensitivity": "private",
+        "metadata_json": {"project_id": "hermes", "session_date": "2025-01-01"},
+    }
+    memories = [
+        _memory_row(
+            "memory-alice-1",
+            "The release fundraiser raised $1,000.",
+            project_id="alicebot",
+            source_created_at="2025-01-01T00:00:00Z",
+            metadata_json={
+                "project_id": "alicebot",
+                "source_id": "source-hermes",
+                "source_refs": ["source:source-hermes"],
+                "source_chunk_id": "chunk-hermes",
+                "capture_content_hash": "sha256:hermes-only",
+                "session_date": "2025-01-01",
+            },
+        ),
+        _memory_row(
+            "memory-alice-2",
+            "The release fundraiser raised $2,000.",
+            project_id="alicebot",
+            metadata_json={
+                "project_id": "alicebot",
+                "source_id": "source-hermes",
+                "source_refs": ["source:source-hermes"],
+                "session_date": "2025-02-01",
+            },
+        ),
+    ]
+    store = InMemoryVNextRetrievalStore(memories=memories, sources=[cross_scope_source])
+    source_resolver_results: list[object] = []
+    original_build_currency_chains = vnext_retrieval_module.vnext_currency.build_currency_chains
+
+    def _capture_currency_source_lookup(rows, *, source_lookup):
+        source_resolver_results.append(source_lookup("source-hermes"))
+        return original_build_currency_chains(rows, source_lookup=source_lookup)
+
+    monkeypatch.setattr(
+        vnext_retrieval_module.vnext_currency,
+        "build_currency_chains",
+        _capture_currency_source_lookup,
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="release fundraiser",
+            projects=("alicebot",),
+            reference_time=datetime(2025, 3, 1, tzinfo=UTC),
+        )
+    )
+
+    assert source_resolver_results == [None]
+    assert pack["sources"] == []
+    assert "derived_values" not in pack
+    assert all("event_time" not in memory for memory in pack["relevant_memories"])
+    first = pack["relevant_memories"][0]
+    assert "source_created_at" not in first
+    assert first["metadata_json"] == {"project_id": "alicebot", "source_refs": []}
+    assert "source-hermes" not in json.dumps(pack, sort_keys=True)
+
+
+def test_context_pack_applies_project_scope_to_every_emitted_content_section() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row(
+                "memory-alicebot",
+                "Release readiness scoped fact.",
+                project_id="alicebot",
+            ),
+            _memory_row(
+                "memory-hermes",
+                "Release readiness scoped fact.",
+                project_id="hermes",
+            ),
+        ],
+        sources=[
+            {
+                "id": "source-alicebot",
+                "title": "Release readiness source A",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"project_id": "alicebot"},
+            },
+            {
+                "id": "source-hermes",
+                "title": "Release readiness source B",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"project_id": "hermes"},
+            },
+        ],
+        open_loops=[
+            {
+                "id": "loop-alicebot",
+                "title": "Ship AliceBot",
+                "status": "open",
+                "domain": "project",
+                "sensitivity": "private",
+                "project_id": "alicebot",
+            },
+            {
+                "id": "loop-hermes",
+                "title": "Ship Hermes",
+                "status": "open",
+                "domain": "project",
+                "sensitivity": "private",
+                "project_id": "hermes",
+            },
+        ],
+        seeded_events=[
+            {
+                "id": "event-alicebot",
+                "event_type": "memory.updated",
+                "actor_type": "system",
+                "target_type": "memory",
+                "target_id": "memory-alicebot",
+                "occurred_at": "2026-07-01T00:00:00Z",
+            },
+            {
+                "id": "event-hermes",
+                "event_type": "memory.updated",
+                "actor_type": "system",
+                "target_type": "memory",
+                "target_id": "memory-hermes",
+                "occurred_at": "2026-07-02T00:00:00Z",
+            },
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="release readiness scoped",
+            projects=("alicebot",),
+        )
+    )
+
+    assert [row["id"] for row in pack["relevant_memories"]] == ["memory-alicebot"]
+    assert [row["id"] for row in pack["sources"]] == ["source-alicebot"]
+    assert [row["id"] for row in pack["open_loops"]] == ["loop-alicebot"]
+    assert [row["target_id"] for row in pack["recent_changes"]] == ["memory-alicebot"]
+
+
+def test_context_pack_applies_people_scope_to_memories_sources_and_loops() -> None:
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row(
+                "memory-sam",
+                "Quarterly planning person-scoped fact.",
+                metadata_json={"people": ["Sam"]},
+            ),
+            _memory_row(
+                "memory-alex",
+                "Quarterly planning person-scoped fact.",
+                metadata_json={"people": ["Alex"]},
+            ),
+        ],
+        sources=[
+            {
+                "id": "source-sam",
+                "title": "Quarterly planning with Sam",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"people": ["Sam"]},
+            },
+            {
+                "id": "source-alex",
+                "title": "Quarterly planning with Alex",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"people": ["Alex"]},
+            },
+        ],
+        open_loops=[
+            {
+                "id": "loop-sam",
+                "title": "Follow up with Sam",
+                "status": "open",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"person": "Sam"},
+            },
+            {
+                "id": "loop-alex",
+                "title": "Follow up with Alex",
+                "status": "open",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"person": "Alex"},
+            },
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(query="quarterly planning", people=("Sam",))
+    )
+
+    assert [row["id"] for row in pack["relevant_memories"]] == ["memory-sam"]
+    assert [row["id"] for row in pack["sources"]] == ["source-sam"]
+    assert [row["id"] for row in pack["open_loops"]] == ["loop-sam"]
+
+
+def test_context_pack_applies_relative_time_window_to_every_content_section() -> None:
+    reference_time = datetime(2026, 7, 10, tzinfo=UTC)
+    store = InMemoryVNextRetrievalStore(
+        memories=[
+            _memory_row(
+                "memory-new",
+                "Time-window deployment fact.",
+                valid_from="2026-07-08T00:00:00Z",
+            ),
+            _memory_row(
+                "memory-old",
+                "Time-window deployment fact.",
+                valid_from="2026-06-01T00:00:00Z",
+            ),
+        ],
+        sources=[
+            {
+                "id": "source-new",
+                "title": "Time-window deployment source",
+                "domain": "project",
+                "sensitivity": "private",
+                "source_created_at": "2026-07-09T00:00:00Z",
+            },
+            {
+                "id": "source-old",
+                "title": "Time-window deployment source",
+                "domain": "project",
+                "sensitivity": "private",
+                "source_created_at": "2026-05-01T00:00:00Z",
+            },
+        ],
+        open_loops=[
+            {
+                "id": "loop-new",
+                "title": "Fresh deployment follow-up",
+                "status": "open",
+                "domain": "project",
+                "sensitivity": "private",
+                "opened_at": "2026-07-07T00:00:00Z",
+            },
+            {
+                "id": "loop-old",
+                "title": "Old deployment follow-up",
+                "status": "open",
+                "domain": "project",
+                "sensitivity": "private",
+                "opened_at": "2026-05-01T00:00:00Z",
+            },
+        ],
+    )
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="time-window deployment",
+            time_window="7d",
+            reference_time=reference_time,
+        )
+    )
+
+    assert [row["id"] for row in pack["relevant_memories"]] == ["memory-new"]
+    assert [row["id"] for row in pack["sources"]] == ["source-new"]
+    assert [row["id"] for row in pack["open_loops"]] == ["loop-new"]
+
+
 def test_context_pack_threads_created_by_agents_and_run_filter_to_recall_stages() -> None:
     store = InMemoryVNextRetrievalStore(
         memories=[
@@ -1895,6 +2244,12 @@ ALL_ALLOCATION_SECTIONS = {
     "sources",
     "supporting_evidence",
     "contradicting_evidence",
+    "item_annotations",
+    "entities",
+    "recent_changes",
+    "supersession_context",
+    "grounding",
+    "derived_values",
 }
 
 
@@ -2443,6 +2798,34 @@ def test_high_depth_supersession_chains_guard_against_cycles_and_cap_hops() -> N
     assert [ref["id"] for ref in notes["memory-head"]["supersedes"]] == [
         f"memory-chain-{index}" for index in range(1, 6)
     ]
+
+
+def test_scoped_supersession_context_does_not_disclose_out_of_scope_ids() -> None:
+    current = _memory_row(
+        "memory-current",
+        "Alice scoped supersession current fact.",
+        project_id="alicebot",
+        supersedes="memory-other-project",
+    )
+    other_project = _memory_row(
+        "memory-other-project",
+        "Hermes private historical fact.",
+        project_id="hermes",
+        status="superseded",
+    )
+    store = InMemoryVNextRetrievalStore(memories=[current, other_project], sources=[])
+
+    pack = VNextRetrievalService(store).compile_context_pack(
+        VNextRetrievalRequest(
+            query="Alice scoped supersession",
+            projects=("alicebot",),
+            context_depth="high",
+        )
+    )
+
+    serialized = json.dumps(pack, sort_keys=True)
+    assert "Hermes private historical fact" not in serialized
+    assert "memory-other-project" not in serialized
 
 
 # -- validity annotations and current-version preference ----------------------------

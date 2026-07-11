@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from hashlib import sha256
 from typing import Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -16,6 +17,8 @@ EMBEDDINGS_MODEL_ENV = "ALICE_EMBEDDINGS_MODEL"
 EMBEDDINGS_API_KEY_ENV = "ALICE_EMBEDDINGS_API_KEY"
 DEFAULT_EMBEDDINGS_TIMEOUT_SECONDS = 30
 MAX_EMBEDDINGS_BATCH_SIZE = 128
+EMBEDDING_SIGNATURE_METADATA_KEY = "_alice_embedding"
+EMBEDDING_SIGNATURE_VERSION = 1
 
 
 class VNextEmbeddingConfigurationError(ValueError):
@@ -170,6 +173,42 @@ def memory_embedding_text(memory: Mapping[str, object]) -> str:
     return "\n".join(dict.fromkeys(parts))
 
 
+def memory_embedding_content_sha256(memory: Mapping[str, object]) -> str:
+    """Digest the exact normalized text used to derive a memory vector."""
+    return sha256(memory_embedding_text(memory).encode("utf-8")).hexdigest()
+
+
+def memory_embedding_signature_is_current(memory: Mapping[str, object]) -> bool:
+    """Return whether persisted vector metadata matches the row's current text.
+
+    Lifecycle hooks and database triggers normally clear stale vectors. This
+    read-time check remains as a fail-closed guard for legacy adapters, restored
+    snapshots, and direct SQL that can bypass those paths.
+    """
+    metadata = memory.get("metadata_json")
+    if not isinstance(metadata, Mapping):
+        return False
+    signature = metadata.get(EMBEDDING_SIGNATURE_METADATA_KEY)
+    if not isinstance(signature, Mapping):
+        return False
+    stored_digest = signature.get("content_sha256")
+    return isinstance(stored_digest, str) and stored_digest == memory_embedding_content_sha256(memory)
+
+
+def memory_embedding_signature(
+    memory: Mapping[str, object],
+    *,
+    provider: EmbeddingProvider,
+) -> JsonObject:
+    """Compatibility metadata for a content-derived memory vector."""
+    return {
+        "version": EMBEDDING_SIGNATURE_VERSION,
+        "provider": provider.provider,
+        "model": provider.model,
+        "content_sha256": memory_embedding_content_sha256(memory),
+    }
+
+
 def attach_memory_embedding(
     store: object,
     memory: Mapping[str, object],
@@ -196,7 +235,22 @@ def attach_memory_embedding(
         return False
     try:
         vector = resolved_provider.embed_text(text)
-        update_memory_embedding(memory_id=str(memory["id"]), vector=vector)
+        signature = memory_embedding_signature(memory, provider=resolved_provider)
+        try:
+            update_memory_embedding(
+                memory_id=str(memory["id"]),
+                vector=vector,
+                provider=str(signature["provider"]),
+                model=str(signature["model"]),
+                content_sha256=str(signature["content_sha256"]),
+                signature_version=int(signature["version"]),
+            )
+        except TypeError as exc:
+            # Third-party store adapters predating signature metadata remain
+            # usable; bundled stores accept the extended contract below.
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            update_memory_embedding(memory_id=str(memory["id"]), vector=vector)
         return True
     except (VNextEmbeddingConfigurationError, VNextEmbeddingProviderError) as exc:
         append_event(
@@ -223,6 +277,8 @@ __all__ = [
     "EMBEDDINGS_API_KEY_ENV",
     "EMBEDDINGS_BASE_URL_ENV",
     "EMBEDDINGS_MODEL_ENV",
+    "EMBEDDING_SIGNATURE_METADATA_KEY",
+    "EMBEDDING_SIGNATURE_VERSION",
     "EmbeddingProvider",
     "MAX_EMBEDDINGS_BATCH_SIZE",
     "OpenAICompatibleEmbeddingProvider",
@@ -230,6 +286,9 @@ __all__ = [
     "VNextEmbeddingProviderError",
     "attach_memory_embedding",
     "get_embedding_provider",
+    "memory_embedding_content_sha256",
+    "memory_embedding_signature_is_current",
     "memory_embedding_text",
+    "memory_embedding_signature",
     "pad_embedding_vector",
 ]

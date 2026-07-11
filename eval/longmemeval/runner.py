@@ -23,6 +23,7 @@ import math
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -33,6 +34,11 @@ if str(_EVAL_DIR) not in sys.path:  # direct execution: python eval/longmemeval/
 
 from alicebot_api import __version__ as alicebot_version
 from alicebot_api.vnext_embeddings import EMBEDDINGS_BASE_URL_ENV, EMBEDDINGS_MODEL_ENV
+from alicebot_api.vnext_reranker import (
+    RERANKER_BASE_URL_ENV,
+    RERANKER_MODEL_ENV,
+    RERANK_PROMPT_SHA256,
+)
 
 from longmemeval.adapter import (
     ANSWER_MAX_TOKENS,
@@ -44,7 +50,13 @@ from longmemeval.adapter import (
     max_items_from_env,
     question_run,
 )
-from longmemeval.chat import ChatModelConfig, chat_completion, judge_config_from_env, model_config_from_env
+from longmemeval.chat import (
+    ChatModelConfig,
+    chat_completion,
+    judge_config_from_env,
+    model_config_from_env,
+    redacted_base_url,
+)
 from longmemeval.dataset import (
     RESULTS_DIR,
     VARIANTS,
@@ -67,6 +79,7 @@ from longmemeval.verification import (
 RESULT_SCHEMA = "longmemeval_result_v1"
 REPORT_SCHEMA = "longmemeval_report_v1"
 HARNESS_VERSION = "1.0"
+INGEST_MARKER_SCHEMA = "longmemeval_ingest_marker_v2"
 GENERATION_TEMPERATURE = 0.0
 
 EXIT_OK = 0
@@ -74,6 +87,20 @@ EXIT_RUN_FAILURES = 1
 EXIT_CONFIG_ERROR = 2
 
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+# Every source file executed while constructing a reusable LongMemEval store.
+# Keep this manifest explicit: a code change in any capture, promotion, or
+# optional roll-up path must invalidate an existing ``*.ingested.json`` marker.
+_INGEST_CODE_MANIFEST = (
+    Path("eval/longmemeval/adapter.py"),
+    Path("apps/api/src/alicebot_api/sqlite_store.py"),
+    Path("apps/api/src/alicebot_api/vnext_capture.py"),
+    Path("apps/api/src/alicebot_api/vnext_embeddings.py"),
+    Path("apps/api/src/alicebot_api/vnext_entities.py"),
+    Path("apps/api/src/alicebot_api/vnext_fact_keys.py"),
+    Path("apps/api/src/alicebot_api/vnext_memory_commit.py"),
+    Path("apps/api/src/alicebot_api/vnext_rollups.py"),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +161,142 @@ def _sha256_prefix(path: Path, *, length: int = 16) -> str:
     return digest.hexdigest()[:length]
 
 
+def _untracked_source_identity(repo_root: Path, untracked_output: bytes) -> dict[str, object]:
+    untracked_paths = sorted(path for path in untracked_output.split(b"\0") if path)
+    untracked_digest = hashlib.sha256()
+    root_absolute = repo_root.absolute()
+    for encoded_path in untracked_paths:
+        relative_path = encoded_path.decode("utf-8", errors="surrogateescape")
+        path = (repo_root / relative_path).absolute()
+        if not path.is_relative_to(root_absolute):
+            raise RuntimeError("untracked benchmark source entry escaped the repository")
+        untracked_digest.update(encoded_path)
+        untracked_digest.update(b"\0")
+        try:
+            if path.is_symlink():
+                untracked_digest.update(b"symlink\0")
+                untracked_digest.update(os.readlink(path).encode("utf-8", errors="surrogateescape"))
+            else:
+                untracked_digest.update(path.read_bytes())
+        except OSError as exc:
+            raise RuntimeError("cannot fingerprint an untracked benchmark source entry") from exc
+        untracked_digest.update(b"\0")
+    return {
+        "untracked_tree_dirty": bool(untracked_paths),
+        "untracked_file_count": len(untracked_paths),
+        "untracked_manifest_sha256_prefix": (
+            untracked_digest.hexdigest()[:16] if untracked_paths else None
+        ),
+    }
+
+
+def _source_provenance() -> dict[str, object]:
+    """Return reviewable source identity without ever serializing the diff.
+
+    Benchmark evidence is only attributable when the exact source tree is
+    recorded.  A dirty tree is supported for development runs, but its
+    tracked diff and every non-ignored untracked file are represented by
+    digests so local source or secrets never enter a checkpoint. Ignored files
+    (including ``.env``) are deliberately outside this source identity.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        diff = subprocess.run(
+            ["git", "diff", "--binary", "HEAD", "--"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        ).stdout
+        untracked_output = subprocess.run(
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("cannot fingerprint benchmark source tree") from exc
+
+    return {
+        "git_commit": commit or None,
+        "tracked_tree_dirty": bool(diff),
+        "tracked_diff_sha256_prefix": hashlib.sha256(diff).hexdigest()[:16] if diff else None,
+        **_untracked_source_identity(repo_root, untracked_output),
+    }
+
+
+def _question_ingest_digest(question: LongMemEvalQuestion) -> str:
+    payload = {
+        "question_id": question.question_id,
+        "sessions": [
+            {
+                "session_id": session_id,
+                "date": date,
+                "turns": [
+                    {"role": turn.role, "content": turn.content, "has_answer": turn.has_answer}
+                    for turn in turns
+                ],
+            }
+            for session_id, date, turns in question.sessions_with_metadata()
+        ],
+    }
+    encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
+def _ingest_code_digest(*, repo_root: Path | None = None) -> str:
+    """Digest the production ingestion implementation used by store reuse."""
+    resolved_root = repo_root if repo_root is not None else Path(__file__).resolve().parents[2]
+    digest = hashlib.sha256()
+    for relative_path in _INGEST_CODE_MANIFEST:
+        path = resolved_root / relative_path
+        digest.update(relative_path.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
+
+
+def _build_ingest_marker_payload(
+    question: LongMemEvalQuestion,
+    *,
+    dataset_path: Path,
+    accept_rollups: bool,
+) -> dict[str, object]:
+    embeddings_base_url = os.environ.get(EMBEDDINGS_BASE_URL_ENV, "").strip()
+    embeddings_model = os.environ.get(EMBEDDINGS_MODEL_ENV, "").strip()
+    return {
+        "schema": INGEST_MARKER_SCHEMA,
+        "question_id": question.question_id,
+        "session_count": len(question.haystack_session_ids),
+        "dataset_sha256_prefix": _sha256_prefix(dataset_path),
+        "question_ingest_sha256_prefix": _question_ingest_digest(question),
+        "ingest_code_sha256_prefix": _ingest_code_digest(),
+        "alicebot_version": alicebot_version,
+        "embeddings_enabled": bool(embeddings_base_url and embeddings_model),
+        "embeddings_model": embeddings_model or None,
+        "embeddings_base_url": redacted_base_url(embeddings_base_url) if embeddings_base_url else None,
+        "accept_rollups": accept_rollups,
+    }
+
+
+def _ingest_marker_payload(question: LongMemEvalQuestion, config: RunnerConfig) -> dict[str, object]:
+    return _build_ingest_marker_payload(
+        question,
+        dataset_path=config.dataset_path,
+        accept_rollups=config.accept_rollups,
+    )
+
+
 def config_fingerprint(
     config: RunnerConfig,
     *,
@@ -144,6 +307,8 @@ def config_fingerprint(
     """Everything needed to interpret a score; digest detects config drift."""
     embeddings_base_url = os.environ.get(EMBEDDINGS_BASE_URL_ENV, "").strip()
     embeddings_model = os.environ.get(EMBEDDINGS_MODEL_ENV, "").strip()
+    reranker_base_url = os.environ.get(RERANKER_BASE_URL_ENV, "").strip()
+    reranker_model = os.environ.get(RERANKER_MODEL_ENV, "").strip()
     fingerprint: dict[str, object] = {
         "harness_version": HARNESS_VERSION,
         "alicebot_version": alicebot_version,
@@ -154,7 +319,13 @@ def config_fingerprint(
         "answer_model": model.redacted() if model is not None else None,
         "judge_model": judge.redacted() if judge is not None else None,
         "embeddings_enabled": bool(embeddings_base_url and embeddings_model),
+        "embeddings_base_url": redacted_base_url(embeddings_base_url) if embeddings_base_url else None,
         "embeddings_model": embeddings_model or None,
+        "reranker_enabled": bool(reranker_base_url and reranker_model),
+        "reranker_base_url": redacted_base_url(reranker_base_url) if reranker_base_url else None,
+        "reranker_model": reranker_model or None,
+        "reranker_prompt_sha256": RERANK_PROMPT_SHA256 if reranker_base_url and reranker_model else None,
+        "source": _source_provenance(),
         "reading_style": "cot" if config.cot else "standard",
         # The grounding gate can never run undisclosed: the flag (and the
         # verifier model when enabled) always feed the fingerprint digest.
@@ -270,7 +441,7 @@ def _cleanup_store(db_path: Path) -> None:
         Path(str(db_path) + suffix).unlink(missing_ok=True)
 
 
-def _reuse_marker_matches(marker_path: Path, question: LongMemEvalQuestion, *, fingerprint_digest, config: RunnerConfig) -> bool:
+def _reuse_marker_matches(marker_path: Path, question: LongMemEvalQuestion, *, config: RunnerConfig) -> bool:
     """Probe-compatible ingest-marker check for --reuse-stores.
 
     The marker was written only after a clean, committed ingest (by the
@@ -281,12 +452,7 @@ def _reuse_marker_matches(marker_path: Path, question: LongMemEvalQuestion, *, f
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return (
-        isinstance(marker, dict)
-        and marker.get("question_id") == question.question_id
-        and marker.get("dataset_sha256_prefix") == _sha256_prefix(config.dataset_path)
-        and marker.get("session_count") == len(question.haystack_session_ids)
-    )
+    return isinstance(marker, dict) and marker == _ingest_marker_payload(question, config)
 
 
 def run_question(
@@ -318,7 +484,7 @@ def run_question(
         reuse = (
             config.reuse_stores
             and db_path.is_file()
-            and _reuse_marker_matches(marker_path, question, fingerprint_digest=None, config=config)
+            and _reuse_marker_matches(marker_path, question, config=config)
         )
         if not reuse:
             _cleanup_store(db_path)
@@ -329,8 +495,16 @@ def run_question(
                 context_char_budget=config.context_char_budget,
                 pack_format=config.pack_format,
             )
-        record["ingest"] = ingest_stats.to_record()
+        ingest_record = ingest_stats.to_record()
+        if config.reuse_stores:
+            ingest_record["reused_store"] = reuse
+        record["ingest"] = ingest_record
         record["retrieval"] = outcome.to_record()
+        if config.keep_stores and not reuse:
+            marker_path.write_text(
+                json.dumps(_ingest_marker_payload(question, config), ensure_ascii=True, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
 
         if not config.dry_run:
             assert model is not None and judge is not None  # validated in main()
@@ -681,17 +855,19 @@ def main(argv: list[str] | None = None) -> int:
     existing_records = load_checkpoint(config.checkpoint_path) if config.resume else {}
     done_ids = completed_question_ids(existing_records, mode=config.mode)
     if config.resume and existing_records:
-        stale = {
+        incompatible = {
             question_id
             for question_id in done_ids
             if existing_records[question_id].get("fingerprint_digest") != fingerprint_digest
         }
-        if stale:
+        if incompatible:
             print(
-                f"[runner] warning: {len(stale)} resumed records were produced with a different config "
-                "fingerprint; the report mixes configs. Delete the checkpoint for a clean run.",
+                f"[runner] refusing to resume: {len(incompatible)} completed records were produced "
+                "with a different config fingerprint. Use a new checkpoint or delete the old one; "
+                "mixed-configuration reports are not valid evidence.",
                 file=sys.stderr,
             )
+            return EXIT_CONFIG_ERROR
     pending = [question for question in questions if question.question_id not in done_ids]
 
     config.work_dir.mkdir(parents=True, exist_ok=True)

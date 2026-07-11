@@ -12,16 +12,15 @@ mcp_servers:
       DATABASE_URL: "postgresql://alicebot_app:alicebot_app@localhost:5432/alicebot"
       ALICEBOT_AUTH_USER_ID: "00000000-0000-0000-0000-000000000001"
       PYTHONPATH: "/path/to/alicebot/apps/api/src:/path/to/alicebot/workers"
-      # Needed only for legacy tools (alice_review_queue, alice_review_apply).
-      # The other tools below are on the default nine-tool core surface.
-      ALICE_MCP_LEGACY_TOOLS: "1"
+      # Recommended for agent-bound runs. Issue with `alicebot agent keys create`.
+      ALICE_AGENT_API_KEY: "alice_sk_replace_with_issued_key"
     tools:
       include:
         - alice_recall
         - alice_resume
         - alice_open_loops
-        - alice_review_queue
-        - alice_review_apply
+        - alice_memory_review
+        - alice_memory_correct
         - alice_explain
       resources: false
       prompts: false

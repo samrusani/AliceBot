@@ -14,13 +14,15 @@ This alpha is intentionally limited.
 - OCR execution is not packaged
 - PDF OCR is not packaged
 - voice transcription execution is not packaged
-- browser clipper is a bookmarklet/MVP path
+- browser clipper is a bookmarklet/MVP path only while zero active agent keys exist; once a key is provisioned, the bookmarklet cannot authenticate safely and capture requires a trusted API client with Bearer authentication plus `capture_token`
 - scheduler is local
 - model providers require user configuration
 - secrets fallback is alpha-grade unless OS or managed secret provider is configured
 - no automatic trusted-memory promotion
 - passive memory capture is structured and English-biased; general conversation is not guaranteed to become memory
 - `/vnext` is the operator console, not the main agent interface
+- after any active agent key exists, the full `/vnext` console requires a dedicated unbound `admin_agent` key entered again for each mounted browser session; `trusted_local_agent` is not full admin-review parity
+- generic thread, approval, task, and trace histories are client-bounded, but their list endpoints do not yet provide cursor pagination
 - team accounts, billing, cloud sync, mobile app, and hosted deployment are out of scope
 
 SQLite mode (`alice-memory mcp`) is the trial/single-agent path and carries extra boundaries:
@@ -30,9 +32,12 @@ SQLite mode (`alice-memory mcp`) is the trial/single-agent path and carries extr
 - no scheduler
 - agent API keys cannot be created (`alicebot agent keys create` requires Postgres); leave `ALICE_AGENT_API_KEY` unset — agent identity is still honored and audited as `unauthenticated_local`, while a set key fails closed and rejects every write
 - one user per local database file
-- no automatic migration to Postgres; `alice-memory export` gets your data out and `alice-memory import` loads an export into another local database (ids and timestamps preserved)
-- embedding vectors are not exported: after `alice-memory import`, memories are keyword-searchable (FTS) immediately but stay out of vector search until re-embedded — configure `ALICE_EMBEDDINGS_*` and touch or re-commit the imported memories
-- import never overwrites existing rows: colliding ids are skipped (default) or abort the import (`--mode fail`)
-- users, agent identities/API keys, and entity relationship history are not part of the export/import surface; soft-deleted rows stay behind
+- no automatic migration to Postgres; `alice-memory export` creates a versioned, integrity-checked local backup and `alice-memory import` restores it into another local database (portable ids and timestamps preserved)
+- embedding vectors are not exported: after `alice-memory import`, memories are keyword-searchable (FTS) immediately; configure `ALICE_EMBEDDINGS_*` and run `alice-memory reindex-embeddings` to restore vector search
+- import never overwrites existing rows: `--mode skip` accepts an existing id only when every portable field is identical; divergent collisions abort, and `--mode fail` aborts on any collision
+- users, agent identities/API keys, embedding vectors, and soft-deleted rows are not portable; fact keys and entity relationship history are included, while nullable references to omitted rows are cleared and graph edges with omitted known endpoints are excluded so the portable set remains foreign-key closed
+- exports contain plaintext memory and source content: protect and encrypt copies that leave the managed owner-only local directory
+
+See [Backup and restore](backup-and-restore.md) before upgrading or moving a store.
 
 Do not describe this alpha as hosted SaaS, production-ready, or automatic memory autopilot.

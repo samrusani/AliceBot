@@ -283,6 +283,13 @@ _UPGRADE_MEMORY_COMPAT_STATEMENTS = (
 )
 
 _UPGRADE_REVISION_COMPAT_STATEMENTS = (
+    # Revision 0004 made memory_revisions append-only. 0067 is the one
+    # migration that must backfill the legacy rows in place, so suspend that
+    # trigger for the duration of this transactional Alembic revision and
+    # restore it immediately after the compatibility update. Without this,
+    # data-bearing pre-vNext databases fail here even though empty-database
+    # upgrades pass.
+    "DROP TRIGGER IF EXISTS memory_revisions_append_only ON memory_revisions",
     """
         ALTER TABLE memory_revisions
           ADD COLUMN revision_number bigint NULL,
@@ -331,6 +338,12 @@ _UPGRADE_REVISION_COMPAT_STATEMENTS = (
         ALTER TABLE memory_revisions
           ADD CONSTRAINT memory_revisions_metadata_json_object_check
           CHECK (jsonb_typeof(metadata_json) = 'object')
+        """,
+    """
+        CREATE TRIGGER memory_revisions_append_only
+        BEFORE UPDATE OR DELETE ON memory_revisions
+        FOR EACH ROW
+        EXECUTE FUNCTION app.reject_memory_revision_mutation()
         """,
 )
 

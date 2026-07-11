@@ -77,11 +77,16 @@ from longmemeval.dataset import (
     load_dataset,
     resolve_dataset_path,
 )
-from longmemeval.runner import _FILENAME_SAFE, _cleanup_store, _sha256_prefix
+from longmemeval.runner import (
+    INGEST_MARKER_SCHEMA,
+    _FILENAME_SAFE,
+    _build_ingest_marker_payload,
+    _cleanup_store,
+    _sha256_prefix,
+)
 
 
 COVERAGE_SCHEMA = "longmemeval_coverage_v1"
-INGEST_MARKER_SCHEMA = "longmemeval_ingest_marker_v1"
 DEFAULT_WORK_DIR = WORK_DIR / "coverage"
 
 EXIT_OK = 0
@@ -222,17 +227,19 @@ def _marker_path_for(db_path: Path) -> Path:
     return Path(str(db_path) + ".ingested.json")
 
 
-def _marker_matches(marker_path: Path, question: LongMemEvalQuestion, dataset_sha256_prefix: str) -> bool:
+def _marker_matches(
+    marker_path: Path,
+    question: LongMemEvalQuestion,
+    dataset_path: Path,
+) -> bool:
     try:
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    return (
-        isinstance(marker, dict)
-        and marker.get("schema") == INGEST_MARKER_SCHEMA
-        and marker.get("question_id") == question.question_id
-        and marker.get("session_count") == len(question.haystack_session_ids)
-        and marker.get("dataset_sha256_prefix") == dataset_sha256_prefix
+    return isinstance(marker, dict) and marker == _build_ingest_marker_payload(
+        question,
+        dataset_path=dataset_path,
+        accept_rollups=False,
     )
 
 
@@ -240,12 +247,12 @@ def probe_question(
     question: LongMemEvalQuestion,
     *,
     work_dir: Path,
-    dataset_sha256_prefix: str,
+    dataset_path: Path,
     max_items: int,
 ) -> dict[str, object]:
     db_path = _db_path_for(work_dir, question.question_id)
     marker_path = _marker_path_for(db_path)
-    reuse = db_path.is_file() and _marker_matches(marker_path, question, dataset_sha256_prefix)
+    reuse = db_path.is_file() and _marker_matches(marker_path, question, dataset_path)
     if not reuse:
         marker_path.unlink(missing_ok=True)
         _cleanup_store(db_path)
@@ -275,12 +282,11 @@ def probe_question(
         # now is the ingested store safe to reuse.
         marker_path.write_text(
             json.dumps(
-                {
-                    "schema": INGEST_MARKER_SCHEMA,
-                    "question_id": question.question_id,
-                    "session_count": len(question.haystack_session_ids),
-                    "dataset_sha256_prefix": dataset_sha256_prefix,
-                },
+                _build_ingest_marker_payload(
+                    question,
+                    dataset_path=dataset_path,
+                    accept_rollups=False,
+                ),
                 ensure_ascii=True,
                 sort_keys=True,
             )
@@ -408,7 +414,7 @@ def main(argv: list[str] | None = None) -> int:
                 probe_question,
                 question,
                 work_dir=args.work_dir,
-                dataset_sha256_prefix=dataset_sha256_prefix,
+                dataset_path=dataset_path,
                 max_items=max_items,
             ): question
             for question in questions

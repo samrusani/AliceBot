@@ -1,10 +1,9 @@
 # Plan: Zero-Infrastructure On-Ramp (`uvx alice-mcp`)
 
-Status: implemented on this branch (`sqlite-onramp`). This page is kept as
-the plan of record plus the delta between what was planned and what
-shipped. The original goal — a no-Docker, no-Postgres trial experience —
-is the single highest-leverage adoption artifact after the retrieval
-rebuild.
+Status: historical implementation record for the `v0.7.0` SQLite on-ramp.
+The nine-tool counts below describe that release; the current public surface
+has eleven core tools. The original goal — a no-Docker, no-Postgres trial
+experience — shipped and remains supported.
 
 ## What shipped vs. plan
 

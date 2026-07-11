@@ -11,6 +11,8 @@ import apps.api.src.alicebot_api.main as main_module
 from apps.api.src.alicebot_api.config import Settings
 from alicebot_api.db import user_connection
 from alicebot_api.store import ContinuityStore
+from alicebot_api.vnext_agent_keys import create_agent_key
+from alicebot_api.vnext_store import PostgresVNextStore
 
 
 def invoke_request(
@@ -19,6 +21,7 @@ def invoke_request(
     *,
     query_params: dict[str, str] | None = None,
     payload: dict[str, Any] | None = None,
+    authorization: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     messages: list[dict[str, object]] = []
     encoded_body = b"" if payload is None else json.dumps(payload).encode()
@@ -36,6 +39,9 @@ def invoke_request(
         messages.append(message)
 
     query_string = urlencode(query_params or {}).encode()
+    headers = [(b"content-type", b"application/json")]
+    if authorization is not None:
+        headers.append((b"authorization", authorization.encode()))
     scope = {
         "type": "http",
         "asgi": {"version": "3.0"},
@@ -45,7 +51,7 @@ def invoke_request(
         "path": path,
         "raw_path": path.encode(),
         "query_string": query_string,
-        "headers": [(b"content-type", b"application/json")],
+        "headers": headers,
         "client": ("testclient", 50000),
         "server": ("testserver", 80),
         "root_path": "",
@@ -205,7 +211,7 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
         "agent_type": "coding_agent",
         "agent_run_id": "openclaw-smoke-run-1",
         "task_id": "openclaw-task-1",
-        "project_scope": ["Alice"],
+        "project_scope": [project_id],
         "permission_profile": "project_scoped_agent",
     }
     openclaw_pack_status, openclaw_pack_payload = invoke_request(
@@ -214,7 +220,7 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
         payload={
             "user_id": user_id_text,
             "agent_identity": openclaw_identity,
-            "project_scope": ["Alice"],
+            "project_scope": [project_id],
             "query": "Alice Live UI uses Postgres",
             "scope": {"domains": ["project"]},
             "options": {"sensitivity_allowed": ["public", "internal", "private", "unknown"], "max_items": 6},
@@ -235,7 +241,7 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
             "title": "OpenClaw project memory proposal",
             "canonical_text": "OpenClaw should use Alice project context through governed memory proposals.",
             "source_refs": [source_id],
-            "project_scope": ["Alice"],
+            "project_scope": [project_id],
             "domain": "project",
             "sensitivity": "private",
             "confidence": 0.72,
@@ -254,7 +260,7 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
             "user_id": user_id_text,
             "agent_identity": openclaw_identity,
             "query": "restricted family and health context",
-            "scope": {"domains": ["family", "health"], "projects": ["Alice"]},
+            "scope": {"domains": ["family", "health"], "projects": [project_id]},
             "options": {"sensitivity_allowed": ["private", "highly_sensitive"], "max_items": 6},
         },
     )
@@ -271,7 +277,7 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
                 "agent_id": "hermes",
                 "agent_type": "personal_assistant",
                 "agent_run_id": "hermes-smoke-run-1",
-                "project_scope": ["Alice"],
+                "project_scope": [project_id],
                 "permission_profile": "trusted_local_agent",
             },
             "title": "Confirm project dashboard updates before release",
@@ -586,3 +592,221 @@ def test_vnext_live_workspace_happy_path_writes_reviewable_postgres_state(
     assert active_artifact_summary_count == 0
     assert openclaw_candidate_count == 1
     assert scheduler_success_count >= 2
+
+
+def test_assign_project_replaces_postgres_scope_for_memory_and_source_retrieval(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="scope-reassignment@example.com")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    user_id_text = str(user_id)
+    old_project = "release-project-old"
+    new_project = "release-project-new"
+    marker = "Canonical scope reassignment sentinel"
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = PostgresVNextStore(conn)
+        source = store.create_source(
+            {
+                "source_type": "manual_text",
+                "title": marker,
+                "content_hash": f"sha256:{uuid4().hex}",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {
+                    "raw_text": marker,
+                    "project_id": old_project,
+                    "project_scope": [old_project],
+                },
+            },
+            actor_type="user",
+        )
+        memory = store.create_memory(
+            {
+                "memory_key": f"project.scope.{uuid4().hex}",
+                "value": {"text": marker},
+                "status": "active",
+                "memory_type": "semantic",
+                "canonical_text": marker,
+                "domain": "project",
+                "sensitivity": "private",
+                "project_id": old_project,
+                "metadata_json": {
+                    "project_id": old_project,
+                    "project_scope": [old_project],
+                },
+            },
+            actor_type="user",
+        )
+
+    source_status, source_payload = invoke_request(
+        "POST",
+        f"/v0/vnext/sources/{source['id']}/review",
+        payload={
+            "user_id": user_id_text,
+            "action": "assign_project",
+            "project_id": new_project,
+        },
+    )
+    memory_status, memory_payload = invoke_request(
+        "POST",
+        f"/v0/vnext/memories/{memory['id']}/review",
+        payload={
+            "user_id": user_id_text,
+            "action": "assign_project",
+            "project_id": new_project,
+        },
+    )
+
+    assert source_status == 200
+    assert source_payload["source"]["metadata_json"]["project_scope"] == [new_project]
+    assert memory_status == 200
+    assert memory_payload["memory"]["project_id"] == new_project
+    assert memory_payload["memory"]["project_scope"] == [new_project]
+    assert memory_payload["memory"]["metadata_json"]["project_scope"] == [new_project]
+
+    def scoped_pack(project_id: str) -> dict[str, Any]:
+        status, payload = invoke_request(
+            "POST",
+            "/v0/vnext/context-packs",
+            payload={
+                "user_id": user_id_text,
+                "query": marker,
+                "scope": {"projects": [project_id]},
+                "options": {
+                    "include_sources": True,
+                    "sensitivity_allowed": ["private"],
+                    "max_items": 8,
+                },
+            },
+        )
+        assert status == 201
+        return payload
+
+    old_pack = scoped_pack(old_project)
+    new_pack = scoped_pack(new_project)
+    assert str(memory["id"]) not in {str(row["id"]) for row in old_pack["relevant_memories"]}
+    assert str(source["id"]) not in {str(row["id"]) for row in old_pack["sources"]}
+    assert str(memory["id"]) in {str(row["id"]) for row in new_pack["relevant_memories"]}
+    assert str(source["id"]) in {str(row["id"]) for row in new_pack["sources"]}
+
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT project_id, metadata_json FROM memories WHERE id = %s::uuid",
+                (str(memory["id"]),),
+            )
+            persisted_memory = cur.fetchone()
+            cur.execute(
+                "SELECT metadata_json FROM sources WHERE id = %s::uuid",
+                (str(source["id"]),),
+            )
+            persisted_source = cur.fetchone()
+    assert persisted_memory["project_id"] == new_project
+    assert persisted_memory["metadata_json"]["project_scope"] == [new_project]
+    assert persisted_source["metadata_json"]["project_scope"] == [new_project]
+
+
+def test_vnext_artifact_routes_enforce_persisted_scope_with_live_postgres(
+    migrated_database_urls,
+    monkeypatch,
+) -> None:
+    user_id = seed_user(migrated_database_urls["app"], email="artifact-scope@example.com")
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: Settings(database_url=migrated_database_urls["app"]),
+    )
+    user_id_text = str(user_id)
+    with user_connection(migrated_database_urls["app"], user_id) as conn:
+        store = PostgresVNextStore(conn)
+        artifact = store.create_artifact(
+            {
+                "artifact_type": "daily_brief",
+                "title": "Project B private brief",
+                "content_markdown": "# Project B\n\nPersisted private content.",
+                "status": "needs_review",
+                "domain": "project",
+                "sensitivity": "private",
+                "metadata_json": {"project_id": "project-b"},
+            },
+            actor_type="user",
+        )
+        _reader_record, reader_key = create_agent_key(
+            store,
+            user_id=user_id,
+            agent_id="project-b-reader",
+            permission_profile="read_only_agent",
+            project_scope="project-b",
+        )
+        _admin_a_record, admin_a_key = create_agent_key(
+            store,
+            user_id=user_id,
+            agent_id="project-a-admin",
+            permission_profile="admin_agent",
+            project_scope="project-a",
+        )
+        _trusted_b_record, trusted_b_key = create_agent_key(
+            store,
+            user_id=user_id,
+            agent_id="project-b-trusted",
+            permission_profile="trusted_local_agent",
+            project_scope="project-b",
+        )
+        _admin_b_record, admin_b_key = create_agent_key(
+            store,
+            user_id=user_id,
+            agent_id="project-b-admin",
+            permission_profile="admin_agent",
+            project_scope="project-b",
+        )
+
+    artifact_id = str(artifact["id"])
+    feedback_status, _feedback_payload = invoke_request(
+        "POST",
+        f"/v0/vnext/artifacts/{artifact_id}/insight-feedback",
+        authorization=f"Bearer {reader_key}",
+        payload={"user_id": user_id_text, "useful_insight": "yes"},
+    )
+    assert feedback_status == 403
+
+    denied_status, denied_payload = invoke_request(
+        "GET",
+        f"/v0/vnext/artifacts/{artifact_id}",
+        authorization=f"Bearer {admin_a_key}",
+        query_params={"user_id": user_id_text},
+    )
+    assert denied_status == 403
+    assert "project_scope_binding_violation" in denied_payload["policy_decision"]["reasons"]
+    assert "content_markdown" not in denied_payload
+
+    allowed_status, allowed_payload = invoke_request(
+        "GET",
+        f"/v0/vnext/artifacts/{artifact_id}",
+        authorization=f"Bearer {trusted_b_key}",
+        query_params={"user_id": user_id_text},
+    )
+    assert allowed_status == 200
+    assert allowed_payload["id"] == artifact_id
+
+    rating_status, _rating_payload = invoke_request(
+        "POST",
+        f"/v0/vnext/artifacts/{artifact_id}/quality-ratings",
+        authorization=f"Bearer {trusted_b_key}",
+        payload={"user_id": user_id_text, "verbosity": "right_sized", "usefulness": 5},
+    )
+    assert rating_status == 201
+
+    review_status, review_payload = invoke_request(
+        "POST",
+        f"/v0/vnext/artifacts/{artifact_id}/review",
+        authorization=f"Bearer {admin_b_key}",
+        payload={"user_id": user_id_text, "action": "accept"},
+    )
+    assert review_status == 200
+    assert review_payload["status"] == "accepted"

@@ -182,6 +182,34 @@ class InMemorySchedulerStore:
     def list_memories(self, *, status: str | None = None) -> list[dict[str, object]]:
         return [memory for memory in self.memories if status is None or memory.get("status") == status]
 
+    def list_rollup_input_memories(
+        self,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        excluded_candidate_kind: str,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        rows = [
+            memory
+            for memory in self.memories
+            if memory.get("status") in {"active", "accepted"}
+            and (not domains or memory.get("domain") in {*domains, "unknown"})
+            and memory.get("sensitivity", "unknown") in sensitivity_allowed
+            and not (
+                isinstance(memory.get("metadata_json"), dict)
+                and memory["metadata_json"].get("candidate_kind") == excluded_candidate_kind
+            )
+        ]
+        rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))), reverse=True)
+        return [dict(row) for row in rows[:limit]]
+
+    def list_pending_rollup_candidates(self, **_kwargs) -> list[dict[str, object]]:
+        return []
+
+    def list_accepted_rollup_cards(self, **_kwargs) -> list[dict[str, object]]:
+        return []
+
     def search_sources(self, **kwargs) -> list[dict[str, object]]:
         return self.sources[: kwargs.get("limit", 8)]
 

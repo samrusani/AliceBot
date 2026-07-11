@@ -14,6 +14,8 @@ type ThreadListProps = {
   unavailableReason?: string;
 };
 
+const THREAD_RENDER_LIMIT = 100;
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("en", {
     month: "short",
@@ -49,6 +51,15 @@ export function ThreadList({
   source,
   unavailableReason,
 }: ThreadListProps) {
+  const boundedThreads = threads.slice(0, THREAD_RENDER_LIMIT);
+  const selectedThread = selectedThreadId
+    ? threads.find((thread) => thread.id === selectedThreadId)
+    : undefined;
+  const visibleThreads =
+    selectedThread && !boundedThreads.some((thread) => thread.id === selectedThread.id)
+      ? [...boundedThreads, selectedThread]
+      : boundedThreads;
+  const hiddenThreadCount = threads.length - boundedThreads.length;
   const description =
     source === "live"
       ? "Visible threads stay explicit and bounded so the operator can anchor work to one continuity record at a time."
@@ -73,8 +84,18 @@ export function ThreadList({
           description="Create a thread first so assistant replies and governed requests stay attached to a visible continuity record."
         />
       ) : (
-        <div className="history-list history-list--scrollable">
-          {threads.map((thread) => {
+        <div className="detail-stack">
+          {hiddenThreadCount > 0 ? (
+            <p className="responsive-note">
+              Showing the {THREAD_RENDER_LIMIT} most recent threads
+              {selectedThread && visibleThreads.length > THREAD_RENDER_LIMIT
+                ? " plus the selected thread"
+                : ""}
+              . Refine the backend query to browse older history.
+            </p>
+          ) : null}
+          <div className="history-list history-list--scrollable">
+          {visibleThreads.map((thread) => {
             const isSelected = thread.id === selectedThreadId;
             const agentProfileId = thread.agent_profile_id || DEFAULT_AGENT_PROFILE_ID;
             const agentProfileName = resolveAgentProfileName(agentProfileId, agentProfiles);
@@ -102,6 +123,7 @@ export function ThreadList({
               </Link>
             );
           })}
+          </div>
         </div>
       )}
     </SectionCard>

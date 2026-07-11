@@ -76,9 +76,9 @@ def agent_key_prefix(raw_key: str) -> str:
 def agent_key_from_authorization(authorization: object) -> str | None:
     """Extract a raw agent API key from an Authorization header value.
 
-    Only ``Bearer alice_sk_...`` (or a bare ``alice_sk_...`` value) is treated
-    as an agent API key; other Authorization values are ignored so unrelated
-    bearer tokens never reach the key verifier.
+    Only ``Bearer alice_sk_...`` is treated as an agent API key. Other
+    authorization values are ignored so unrelated session tokens and bare
+    secrets never reach the key verifier.
     """
 
     if not isinstance(authorization, str):
@@ -90,8 +90,6 @@ def agent_key_from_authorization(authorization: object) -> str | None:
     token = token.strip()
     if scheme.casefold() == "bearer" and token.startswith(AGENT_KEY_PREFIX):
         return token
-    if value.startswith(AGENT_KEY_PREFIX):
-        return value
     return None
 
 
@@ -285,6 +283,34 @@ def resolve_agent_identity(
     )
 
 
+def resolve_protected_agent_identity(
+    store: AgentKeyStore,
+    *,
+    user_id: object,
+    raw_key: str | None,
+    payload: Mapping[str, object],
+) -> AgentIdentity | None:
+    """Authenticate a protected vNext request before endpoint dispatch.
+
+    Fresh local installs retain keyless human/local compatibility while no
+    active keys exist. Once a user provisions a key, every protected request
+    must present a valid Bearer key, even when its payload omits agent claims.
+    """
+
+    if raw_key is None and int(store.count_active_agent_api_keys()) > 0:
+        raise AgentKeyAuthenticationError(
+            "agent API keys are configured for this user; protected vNext requests must "
+            "authenticate with 'Authorization: Bearer alice_sk_...'",
+            status_code=401,
+        )
+    return resolve_agent_identity(
+        store,
+        user_id=user_id,
+        raw_key=raw_key,
+        payload=payload,
+    )
+
+
 def _identity_source(payload: Mapping[str, object]) -> Mapping[str, object]:
     nested = payload.get("agent_identity")
     if isinstance(nested, Mapping):
@@ -352,5 +378,6 @@ __all__ = [
     "hash_agent_key",
     "mint_agent_key",
     "resolve_agent_identity",
+    "resolve_protected_agent_identity",
     "verify_agent_key",
 ]

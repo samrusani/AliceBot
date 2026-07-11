@@ -59,6 +59,109 @@ class SemanticFakeStore:
     def list_memories(self, *, status: str | None = None) -> list[JsonObject]:
         return [dict(row) for row in self.memories if status is None or row.get("status") == status]
 
+    @staticmethod
+    def _in_scope(
+        row: JsonObject,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+    ) -> bool:
+        domain = str(row.get("domain") or "unknown")
+        sensitivity = str(row.get("sensitivity") or "unknown")
+        return (not domains or domain in {*domains, "unknown"}) and sensitivity in sensitivity_allowed
+
+    def list_rollup_input_memories(
+        self,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        excluded_candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]:
+        rows = [
+            dict(row)
+            for row in self.memories
+            if row.get("status") in {"active", "accepted"}
+            and self._in_scope(row, domains=domains, sensitivity_allowed=sensitivity_allowed)
+            and not (
+                isinstance(row.get("metadata_json"), dict)
+                and row["metadata_json"].get("candidate_kind") == excluded_candidate_kind
+            )
+        ]
+        rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))), reverse=True)
+        return rows[:limit]
+
+    def list_pending_rollup_candidates(
+        self,
+        *,
+        rollup_digests: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]:
+        selected: list[JsonObject] = []
+        for digest in sorted(set(rollup_digests)):
+            matches = [
+                row
+                for row in self.memories
+                if row.get("status") == "candidate"
+                and self._in_scope(row, domains=domains, sensitivity_allowed=sensitivity_allowed)
+                and isinstance(row.get("metadata_json"), dict)
+                and row["metadata_json"].get("candidate_kind") == candidate_kind
+                and row["metadata_json"].get("rollup_digest") == digest
+            ]
+            if matches:
+                selected.append(
+                    dict(
+                        max(
+                            matches,
+                            key=lambda row: (
+                                str(row.get("updated_at") or ""),
+                                str(row.get("created_at") or ""),
+                                str(row.get("id")),
+                            ),
+                        )
+                    )
+                )
+        return selected[:limit]
+
+    def list_accepted_rollup_cards(
+        self,
+        *,
+        rollup_keys: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]:
+        selected: list[JsonObject] = []
+        for rollup_key in sorted(set(rollup_keys)):
+            matches = [
+                row
+                for row in self.memories
+                if row.get("status") in {"active", "accepted"}
+                and self._in_scope(row, domains=domains, sensitivity_allowed=sensitivity_allowed)
+                and isinstance(row.get("metadata_json"), dict)
+                and row["metadata_json"].get("candidate_kind") == candidate_kind
+                and row["metadata_json"].get("rollup_key") == rollup_key
+            ]
+            if matches:
+                active = [row for row in matches if row.get("status") == "active"]
+                selected.append(
+                    dict(
+                        max(
+                            active or matches,
+                            key=lambda row: (
+                                str(row.get("updated_at") or ""),
+                                str(row.get("created_at") or ""),
+                                str(row.get("id")),
+                            ),
+                        )
+                    )
+                )
+        return selected[:limit]
+
     def update_memory_embedding(self, *, memory_id: str, vector: list[float]) -> JsonObject:
         self.embeddings[str(memory_id)] = [float(value) for value in vector]
         return {"id": str(memory_id)}

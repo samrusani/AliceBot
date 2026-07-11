@@ -46,7 +46,10 @@ Conventions:
 
 from __future__ import annotations
 
+import json
 import sqlite3
+
+from alicebot_api.vnext_project_scope import normalize_project_scope
 
 DOMAINS = (
     "professional",
@@ -764,13 +767,15 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     # duck-typed fast paths (get_memory_by_commit_digest/confirmation_id)
     # need these to stay O(log n); the scale benchmark measured the Python
     # fallback at 222ms p50 by 10k memories.
+    "DROP INDEX IF EXISTS memories_user_commit_digest_idx",
     """
-    CREATE INDEX IF NOT EXISTS memories_user_commit_digest_idx
+    CREATE UNIQUE INDEX IF NOT EXISTS memories_user_commit_digest_unique_idx
       ON memories (user_id, commit_digest)
       WHERE commit_digest IS NOT NULL
     """,
+    "DROP INDEX IF EXISTS memories_user_confirmation_id_idx",
     """
-    CREATE INDEX IF NOT EXISTS memories_user_confirmation_id_idx
+    CREATE UNIQUE INDEX IF NOT EXISTS memories_user_confirmation_id_unique_idx
       ON memories (user_id, confirmation_id)
       WHERE confirmation_id IS NOT NULL
     """,
@@ -813,6 +818,31 @@ _INDEX_AND_TRIGGER_STATEMENTS: tuple[str, ...] = (
     """
     CREATE INDEX IF NOT EXISTS entity_relationship_events_entity_changed_idx
       ON entity_relationship_events (user_id, entity_id, changed_at DESC, id DESC)
+    """,
+    # Content-derived memory/entity links must never outlive the text that
+    # produced them. Expire them in the same database transaction as any
+    # content update, including writers that do not call the commit service.
+    "DROP TRIGGER IF EXISTS memories_expire_derived_entity_edges",
+    f"""
+    CREATE TRIGGER memories_expire_derived_entity_edges
+    BEFORE UPDATE OF title, canonical_text, summary, value ON memories
+    WHEN NEW.title IS NOT OLD.title
+      OR NEW.canonical_text IS NOT OLD.canonical_text
+      OR NEW.summary IS NOT OLD.summary
+      OR NEW.value IS NOT OLD.value
+    BEGIN
+      UPDATE graph_edges
+      SET valid_to = CASE
+        WHEN valid_from IS NOT NULL AND valid_from > {_NOW_UTC_ISO_SQL}
+          THEN valid_from
+        ELSE {_NOW_UTC_ISO_SQL}
+      END
+      WHERE user_id = OLD.user_id
+        AND from_type = 'memory'
+        AND from_id = OLD.id
+        AND edge_type IN ('mentions', 'related_to_person')
+        AND valid_to IS NULL;
+    END
     """,
     # Append-only enforcement (mirrors app.reject_event_log_mutation and
     # app.reject_memory_revision_mutation in Postgres, as replaced by
@@ -1051,6 +1081,109 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return columns
 
 
+def _table_column_names(conn: sqlite3.Connection, table: str) -> list[str]:
+    """Column names in storage order, tolerant of the caller's row factory."""
+    cursor = conn.execute(f"PRAGMA table_info({table})")
+    name_index = next(
+        index for index, description in enumerate(cursor.description) if description[0] == "name"
+    )
+    names: list[str] = []
+    for row in cursor.fetchall():
+        names.append(str(row["name"] if isinstance(row, dict) else row[name_index]))
+    return names
+
+
+def _memories_table_sql(conn: sqlite3.Connection) -> str | None:
+    cursor = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories'"
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        value = row.get("sql")
+    else:
+        value = row[0]
+    return str(value) if value is not None else None
+
+
+def _current_memories_create_statement() -> str:
+    for statement in _TABLE_STATEMENTS:
+        if "CREATE TABLE IF NOT EXISTS memories (" in statement:
+            return statement
+    raise RuntimeError("current memories CREATE TABLE statement is missing")
+
+
+def _ensure_current_memories_status_constraint(conn: sqlite3.Connection) -> None:
+    """Rebuild pre-staleness ``memories`` tables without losing child rows.
+
+    SQLite cannot alter a named CHECK constraint. Files created by v0.7.0
+    therefore retained a status vocabulary that rejected the later ``stale``
+    lifecycle value even after every additive column had been installed.
+    Rebuild the parent table transactionally with foreign-key enforcement
+    temporarily disabled, copy all common columns, then validate every child
+    reference before commit. FTS is recreated and rebuilt by the ordinary
+    bootstrap path below.
+    """
+    table_sql = _memories_table_sql(conn)
+    if table_sql is None or "'stale'" in table_sql:
+        return
+
+    # bootstrap is an opening-time schema operation. Finish any caller-owned
+    # setup transaction before toggling foreign_keys; SQLite ignores that
+    # PRAGMA while a transaction is active.
+    if conn.in_transaction:
+        conn.commit()
+    foreign_keys_row = conn.execute("PRAGMA foreign_keys").fetchone()
+    foreign_keys_value = (
+        next(iter(foreign_keys_row.values()))
+        if isinstance(foreign_keys_row, dict)
+        else foreign_keys_row[0]
+    )
+    foreign_keys_enabled = int(foreign_keys_value)
+    old_columns = _table_column_names(conn, "memories")
+    temp_table = "memories__schema_upgrade"
+    create_sql = _current_memories_create_statement().replace(
+        "CREATE TABLE IF NOT EXISTS memories (",
+        f"CREATE TABLE {temp_table} (",
+        1,
+    )
+
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for trigger in _FTS_SYNC_TRIGGERS["memories_fts"]:
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute("DROP TABLE IF EXISTS memories_fts")
+        conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
+        conn.execute(create_sql)
+        new_columns = _table_column_names(conn, temp_table)
+        common_columns = [column for column in new_columns if column in old_columns]
+        quoted = ", ".join(f'"{column}"' for column in common_columns)
+        conn.execute(
+            f"INSERT INTO {temp_table} ({quoted}) SELECT {quoted} FROM memories"
+        )
+        conn.execute("DROP TABLE memories")
+        conn.execute(f"ALTER TABLE {temp_table} RENAME TO memories")
+        for table, column, _declaration in _ADDITIVE_COLUMNS:
+            if table == "memories" and column not in old_columns:
+                backfill = _ADDITIVE_COLUMN_BACKFILLS.get((table, column))
+                if backfill is not None:
+                    conn.execute(backfill)
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise sqlite3.IntegrityError(
+                f"memories schema upgrade would leave {len(violations)} foreign-key violation(s)"
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute(f"PRAGMA foreign_keys={'ON' if foreign_keys_enabled else 'OFF'}")
+
+
 def _ensure_additive_columns(conn: sqlite3.Connection) -> None:
     """Upgrade pre-existing database files with columns added after v1 DDL.
 
@@ -1064,6 +1197,156 @@ def _ensure_additive_columns(conn: sqlite3.Connection) -> None:
             backfill = _ADDITIVE_COLUMN_BACKFILLS.get((table, column))
             if backfill is not None:
                 conn.execute(backfill)
+
+
+def _backfill_legacy_memory_project_scopes(conn: sqlite3.Connection) -> None:
+    """Promote the legacy nested agentic scope without guessing.
+
+    Early agentic-memory writers persisted scope only at
+    ``metadata_json.agentic_memory.project_scope``.  Canonical readers use the
+    top-level metadata array, while the singular ``project_id`` column is safe
+    only when the normalized scope contains exactly one project.  The query is
+    deliberately limited to rows without a non-empty top-level array so a
+    stale nested value can never widen an already-canonical scope.
+    """
+    cursor = conn.execute(
+        """
+        SELECT id, project_id, metadata_json
+        FROM memories
+        WHERE json_type(metadata_json, '$.agentic_memory.project_scope') = 'array'
+          AND json_array_length(metadata_json, '$.agentic_memory.project_scope') > 0
+          AND (
+            json_type(metadata_json, '$.project_scope') IS NOT 'array'
+            OR json_array_length(metadata_json, '$.project_scope') = 0
+          )
+        """
+    )
+    column_indexes = {description[0]: index for index, description in enumerate(cursor.description)}
+    for raw_row in cursor.fetchall():
+        if isinstance(raw_row, dict):
+            memory_id = raw_row["id"]
+            project_id = raw_row["project_id"]
+            metadata_text = raw_row["metadata_json"]
+        else:
+            memory_id = raw_row[column_indexes["id"]]
+            project_id = raw_row[column_indexes["project_id"]]
+            metadata_text = raw_row[column_indexes["metadata_json"]]
+        try:
+            metadata = json.loads(str(metadata_text))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        agentic = metadata.get("agentic_memory")
+        if not isinstance(agentic, dict):
+            continue
+        scope = normalize_project_scope(agentic.get("project_scope"))
+        if not scope:
+            continue
+        metadata["project_scope"] = list(scope)
+        singleton_project_id = scope[0] if len(scope) == 1 and project_id is None else project_id
+        conn.execute(
+            """
+            UPDATE memories
+            SET metadata_json = ?, project_id = ?
+            WHERE id = ?
+            """,
+            (
+                json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
+                singleton_project_id,
+                memory_id,
+            ),
+        )
+
+
+def _deduplicate_memory_lookup_values(conn: sqlite3.Connection) -> None:
+    """Preserve rows while making retry/confirmation identifiers unique.
+
+    Old files could contain duplicates because their lookup indexes were not
+    unique. The earliest row remains the canonical replay target; later rows
+    keep their content and audit history but relinquish the ambiguous lookup
+    value, with the canonical row id recorded in metadata.
+    """
+    index_rows = conn.execute("PRAGMA index_list(memories)").fetchall()
+    unique_indexes: set[str] = set()
+    for row in index_rows:
+        if isinstance(row, dict):
+            name, unique = str(row["name"]), int(row["unique"])
+        else:
+            # PRAGMA index_list: seq, name, unique, origin, partial.
+            name, unique = str(row[1]), int(row[2])
+        if unique:
+            unique_indexes.add(name)
+
+    specifications = (
+        (
+            "commit_digest",
+            "$.agentic_memory.idempotency_key",
+            "duplicate_commit_digest_canonical_memory_id",
+            "memories_user_commit_digest_unique_idx",
+        ),
+        (
+            "confirmation_id",
+            "$.agentic_memory.confirmation.confirmation_id",
+            "duplicate_confirmation_id_canonical_memory_id",
+            "memories_user_confirmation_id_unique_idx",
+        ),
+    )
+    if all(specification[3] in unique_indexes for specification in specifications):
+        return
+
+    for column, json_path, migration_key, unique_index_name in specifications:
+        if unique_index_name in unique_indexes:
+            continue
+        duplicate_groups = conn.execute(
+            f"""
+            SELECT user_id, lookup_value, id AS canonical_id
+            FROM (
+              SELECT
+                id,
+                user_id,
+                {column} AS lookup_value,
+                ROW_NUMBER() OVER (
+                  PARTITION BY user_id, {column}
+                  ORDER BY created_at ASC, id ASC
+                ) AS duplicate_rank,
+                COUNT(*) OVER (PARTITION BY user_id, {column}) AS duplicate_count
+              FROM memories
+              WHERE {column} IS NOT NULL
+            ) AS ranked
+            WHERE duplicate_rank = 1
+              AND duplicate_count > 1
+            """
+        ).fetchall()
+        for row in duplicate_groups:
+            if isinstance(row, dict):
+                user_id = row["user_id"]
+                value = row["lookup_value"]
+                canonical_id = row["canonical_id"]
+            else:
+                user_id, value, canonical_id = row
+            conn.execute(
+                f"""
+                UPDATE memories
+                SET {column} = NULL,
+                    metadata_json = json_set(
+                      json_remove(metadata_json, ?),
+                      ?,
+                      ?
+                    )
+                WHERE user_id = ?
+                  AND {column} = ?
+                  AND id <> ?
+                """,
+                (
+                    json_path,
+                    f"$.lifecycle_migration.{migration_key}",
+                    str(canonical_id),
+                    str(user_id),
+                    value,
+                    str(canonical_id),
+                ),
+            )
 
 
 def _missing_fts_tables(conn: sqlite3.Connection) -> list[str]:
@@ -1108,9 +1391,14 @@ def bootstrap_sqlite_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys=ON")
     for statement in _TABLE_STATEMENTS:
         conn.execute(statement)
+    # CREATE TABLE IF NOT EXISTS cannot extend CHECK vocabularies. Upgrade
+    # v0.7-era files before additive columns/indexes are considered.
+    _ensure_current_memories_status_constraint(conn)
     # Existing files created before the scope columns shipped need ALTERs
     # before the index statements reference the new columns.
     _ensure_additive_columns(conn)
+    _backfill_legacy_memory_project_scopes(conn)
+    _deduplicate_memory_lookup_values(conn)
     # The redaction flag row must exist before the append-only triggers
     # reference it, and it must be OFF: a crashed process must never leave
     # a database file with redaction mode stuck open.

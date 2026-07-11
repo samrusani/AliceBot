@@ -35,6 +35,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from hashlib import sha256
+from inspect import Parameter, signature
 import json
 import logging
 from typing import Protocol
@@ -50,6 +51,7 @@ from alicebot_api.vnext_embeddings import (
     memory_embedding_text,
 )
 from alicebot_api.vnext_event_log import append_event
+from alicebot_api.vnext_memory_version import memory_version_snapshot
 from alicebot_api.vnext_model_intelligence import (
     BrainModelProvider,
     ConsolidationMergeRequest,
@@ -70,7 +72,13 @@ DEFAULT_CONSOLIDATION_LIMIT = 12
 DEFAULT_SIMILARITY_THRESHOLD = 0.88
 DEFAULT_MIN_CLUSTER_SIZE = 2
 DEFAULT_MAX_CLUSTERS = 20
-MAX_EMBEDDED_MEMORIES_HARD_CAP = 5000
+# Clustering is quadratic. At 2,000 rows the float32 similarity matrix is
+# 16 MB and there are just under two million unique pairs. Keep both limits
+# explicit so a future corpus-cap change cannot silently reintroduce an
+# unbounded matrix or giant pair-index allocation.
+MAX_EMBEDDED_MEMORIES_HARD_CAP = 2000
+MAX_SIMILARITY_MATRIX_BYTES = 16_000_000
+MAX_PAIRWISE_COMPARISONS = 1_999_000
 PREFERENCE_MEMORY_TYPES = frozenset({"preference", "routine"})
 REINFORCED_PREFERENCE_MIN_DISTINCT = 3
 DEFAULT_SENSITIVITY_ALLOWED = ("public", "internal", "private", "unknown")
@@ -101,7 +109,14 @@ class VNextConsolidationStore(Protocol):
 
     def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
-    def list_memories(self, *, status: str | None = None) -> list[JsonObject]: ...
+    def list_memories(
+        self,
+        *,
+        status: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[JsonObject]: ...
 
     def list_events(self, **kwargs) -> list[JsonObject]: ...
 
@@ -159,6 +174,9 @@ class _ClusteringOutcome:
     active_count: int = 0
     embedded_count: int = 0
     bounded: bool = False
+    active_count_exact: bool = True
+    similarity_matrix_bytes: int = 0
+    pairwise_comparisons: int = 0
     probe_self_distance: float | None = None
     skipped: list[str] = field(default_factory=list)
 
@@ -216,6 +234,45 @@ def _allowed_sensitivity(request: MemoryConsolidationRequest) -> list[str]:
     return list(request.sensitivity_allowed)
 
 
+def _list_memories_bounded(
+    store: VNextConsolidationStore,
+    *,
+    status: str,
+    domains: list[str] | None,
+    sensitivity_allowed: list[str],
+    limit: int,
+) -> list[JsonObject]:
+    """Apply the corpus bound in the database when the store supports it.
+
+    Older third-party store adapters only implement ``status``. Keep those
+    adapters working while ensuring the bundled PostgreSQL and SQLite stores
+    never materialize an unbounded status list for consolidation.
+    """
+
+    list_memories = store.list_memories
+    try:
+        parameters = signature(list_memories).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    supports_kwargs = any(parameter.kind is Parameter.VAR_KEYWORD for parameter in parameters.values())
+    supports_bounded_scope = supports_kwargs or all(
+        field_name in parameters
+        for field_name in ("limit", "domains", "sensitivity_allowed")
+    )
+    if supports_bounded_scope:
+        return list_memories(
+            status=status,
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            limit=limit,
+        )
+    return _scoped_rows(
+        list_memories(status=status),
+        domains=domains,
+        sensitivity_allowed=sensitivity_allowed,
+    )[:limit]
+
+
 def _highest_sensitivity(rows: list[JsonObject]) -> str:
     sensitivities = [str(row.get("sensitivity", "unknown")) for row in rows]
     if not sensitivities:
@@ -248,6 +305,15 @@ def _text(row: JsonObject) -> str:
 def _digest_payload(payload: object) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return sha256(encoded).hexdigest()[:16]
+
+
+def _cluster_digest(rows: list[JsonObject]) -> str:
+    """A cluster identity changes when any reviewed member changes."""
+    snapshots = [
+        memory_version_snapshot(row)
+        for row in sorted(rows, key=lambda item: str(item.get("id")))
+    ]
+    return _digest_payload({"member_snapshots": snapshots})
 
 
 def _scoped_rows(
@@ -372,11 +438,31 @@ class VNextConsolidationService:
         options: _ClusteringOptions,
     ) -> _ClusteringOutcome:
         outcome = _ClusteringOutcome()
+        # Fetch one look-ahead row per status so the report can disclose that
+        # the count is a lower bound when either query itself was truncated.
+        status_query_limit = options.max_embedded_memories + 1
+        active_status_rows = _list_memories_bounded(
+            self.store,
+            status="active",
+            domains=domains,
+            sensitivity_allowed=sensitivity,
+            limit=status_query_limit,
+        )
+        accepted_status_rows = _list_memories_bounded(
+            self.store,
+            status="accepted",
+            domains=domains,
+            sensitivity_allowed=sensitivity,
+            limit=status_query_limit,
+        )
         active_rows = [
-            *self.store.list_memories(status="active"),
-            *self.store.list_memories(status="accepted"),
+            *active_status_rows,
+            *accepted_status_rows,
         ]
-        active_rows = _scoped_rows(active_rows, domains=domains, sensitivity_allowed=sensitivity)
+        outcome.active_count_exact = not (
+            len(active_status_rows) == status_query_limit
+            or len(accepted_status_rows) == status_query_limit
+        )
         active_rows.sort(
             key=lambda row: (str(row.get("updated_at") or row.get("created_at") or ""), str(row.get("id"))),
             reverse=True,
@@ -385,8 +471,9 @@ class VNextConsolidationService:
         if len(active_rows) > options.max_embedded_memories:
             outcome.bounded = True
             logger.info(
-                "memory consolidation bounded to %d most recently updated of %d active memories",
+                "memory consolidation bounded to %d most recently updated of %s%d active memories",
                 options.max_embedded_memories,
+                "at least " if not outcome.active_count_exact else "",
                 len(active_rows),
             )
             active_rows = active_rows[: options.max_embedded_memories]
@@ -435,49 +522,83 @@ class VNextConsolidationService:
             if str(row.get("id")) == probe_row_id and isinstance(row.get("vector_distance"), (int, float)):
                 outcome.probe_self_distance = float(row["vector_distance"])
                 break
-        members = [
+        member_pairs = [
             (row, vector)
             for (row, _), vector in zip(embeddable, vectors, strict=True)
             if str(row.get("id")) in embedded_ids
         ]
-        outcome.embedded_count = len(members)
-        if len(members) < options.min_cluster_size:
+        outcome.embedded_count = len(member_pairs)
+        if len(member_pairs) < options.min_cluster_size:
             outcome.skipped.append("fewer_embedded_memories_than_min_cluster_size")
             return outcome
 
-        width = max(len(vector) for _, vector in members)
-        matrix = np.zeros((len(members), width), dtype=np.float32)
-        for index, (_, vector) in enumerate(members):
+        member_count = len(member_pairs)
+        outcome.similarity_matrix_bytes = member_count * member_count * np.dtype(np.float32).itemsize
+        outcome.pairwise_comparisons = member_count * (member_count - 1) // 2
+        if (
+            outcome.similarity_matrix_bytes > MAX_SIMILARITY_MATRIX_BYTES
+            or outcome.pairwise_comparisons > MAX_PAIRWISE_COMPARISONS
+        ):
+            # Defensive fail-closed guard: request validation should make
+            # this unreachable, but the matrix/pair limits must remain safe
+            # if one constant is changed without the others.
+            outcome.skipped.append("similarity_resource_guard_exceeded")
+            return outcome
+
+        member_rows = [row for row, _vector in member_pairs]
+        member_vectors = [vector for _row, vector in member_pairs]
+        width = max(len(vector) for vector in member_vectors)
+        matrix = np.zeros((member_count, width), dtype=np.float32)
+        for index, vector in enumerate(member_vectors):
             matrix[index, : len(vector)] = np.asarray(vector, dtype=np.float32)
+        # The provider returns Python float lists, which are much larger than
+        # the compact float32 matrix. Drop those references before allocating
+        # the similarity matrix.
+        del member_pairs, member_vectors, vectors, embeddable, texts
         norms = np.linalg.norm(matrix, axis=1)
         norms[norms == 0.0] = 1.0
         normalized = matrix / norms[:, None]
+        del matrix, norms
         similarities = normalized @ normalized.T
+        del normalized
 
-        union_find = _UnionFind(len(members))
-        pair_rows, pair_cols = np.where(np.triu(similarities, k=1) >= options.similarity_threshold)
-        for left, right in zip(pair_rows.tolist(), pair_cols.tolist(), strict=True):
-            union_find.union(left, right)
+        union_find = _UnionFind(member_count)
+        # Scan one upper-triangle row at a time. ``np.triu`` + ``np.where``
+        # materialized another dense matrix, two potentially multi-million
+        # element index arrays, and then Python lists of those indexes.
+        for left in range(member_count - 1):
+            matching_offsets = np.flatnonzero(
+                similarities[left, left + 1 :] >= options.similarity_threshold
+            )
+            for offset in matching_offsets:
+                union_find.union(left, left + 1 + int(offset))
         groups: dict[int, list[int]] = {}
-        for index in range(len(members)):
+        for index in range(member_count):
             groups.setdefault(union_find.find(index), []).append(index)
         clusters = [indices for indices in groups.values() if len(indices) >= options.min_cluster_size]
-        clusters.sort(key=lambda indices: (-len(indices), str(members[min(indices)][0].get("id"))))
+        clusters.sort(key=lambda indices: (-len(indices), str(member_rows[min(indices)].get("id"))))
 
         for indices in clusters:
-            rows = sorted((members[index][0] for index in indices), key=lambda row: str(row.get("id")))
-            pairwise = [
-                float(similarities[i, j])
-                for position, i in enumerate(indices)
-                for j in indices[position + 1 :]
-            ]
-            digest = _digest_payload({"cluster_member_ids": [str(row.get("id")) for row in rows]})
+            rows = sorted((member_rows[index] for index in indices), key=lambda row: str(row.get("id")))
+            pair_count = 0
+            pair_total = 0.0
+            pair_min = float("inf")
+            pair_max = float("-inf")
+            for position, left in enumerate(indices[:-1]):
+                values = similarities[left, indices[position + 1 :]]
+                if values.size == 0:
+                    continue
+                pair_count += int(values.size)
+                pair_total += float(values.sum(dtype=np.float64))
+                pair_min = min(pair_min, float(values.min()))
+                pair_max = max(pair_max, float(values.max()))
+            digest = _cluster_digest(rows)
             outcome.clusters.append(rows)
             outcome.similarity_stats[digest] = {
-                "pair_count": len(pairwise),
-                "min": round(min(pairwise), 4),
-                "max": round(max(pairwise), 4),
-                "mean": round(sum(pairwise) / len(pairwise), 4),
+                "pair_count": pair_count,
+                "min": round(pair_min, 4),
+                "max": round(pair_max, 4),
+                "mean": round(pair_total / pair_count, 4),
             }
         return outcome
 
@@ -532,6 +653,7 @@ class VNextConsolidationService:
             "merge_refusal": merge_refusal,
             "source_refs": _member_source_refs(members),
             "source_event_ids": _union_source_event_ids(members),
+            "member_snapshots": [memory_version_snapshot(row) for row in members],
             "members": members,
         }
 
@@ -587,6 +709,7 @@ class VNextConsolidationService:
                     "review_required": True,
                     "consolidation": {
                         "cluster_member_ids": member_ids,
+                        "member_snapshots": proposal["member_snapshots"],
                         "similarity_stats": proposal["similarity_stats"],
                         "proposal_kind": proposal_kind,
                         "model_provenance": proposal["model_provenance"],
@@ -699,7 +822,7 @@ class VNextConsolidationService:
             )
         for members in clusters_for_proposals:
             member_ids = [str(row.get("id")) for row in members]
-            cluster_digest = _digest_payload({"cluster_member_ids": member_ids})
+            cluster_digest = _cluster_digest(members)
             similarity_stats = clustering.similarity_stats.get(cluster_digest, {})
             proposal = self._build_proposal(
                 request=request,
@@ -820,6 +943,15 @@ class VNextConsolidationService:
                 "min_cluster_size": options.min_cluster_size,
                 "max_embedded_memories": options.max_embedded_memories,
                 "bounded": clustering.bounded,
+                "active_memory_count_exact": clustering.active_count_exact,
+                "resource_guard": {
+                    "matrix_dtype": "float32",
+                    "matrix_bytes": clustering.similarity_matrix_bytes,
+                    "matrix_bytes_hard_cap": MAX_SIMILARITY_MATRIX_BYTES,
+                    "pairwise_comparisons": clustering.pairwise_comparisons,
+                    "pairwise_comparisons_hard_cap": MAX_PAIRWISE_COMPARISONS,
+                    "pair_index_materialization": False,
+                },
                 "probe_self_distance": clustering.probe_self_distance,
                 "cluster_membership": cluster_membership,
                 "proposals": proposal_records,
@@ -829,6 +961,7 @@ class VNextConsolidationService:
             "rollups": {"enabled": True, **rollups.to_metadata()} if rollups is not None else {"enabled": False},
             "input_counts": {
                 "active_memories": clustering.active_count,
+                "active_memories_exact": clustering.active_count_exact,
                 "embedded_memories": clustering.embedded_count,
                 "clusters": len(clustering.clusters),
                 "proposals": len(proposals),
@@ -919,7 +1052,7 @@ class VNextConsolidationService:
         cluster_lines: list[str] = []
         for members in clustering.clusters:
             member_ids = [str(row.get("id")) for row in members]
-            digest = _digest_payload({"cluster_member_ids": member_ids})
+            digest = _cluster_digest(members)
             stats = clustering.similarity_stats.get(digest, {})
             cluster_lines.append(
                 f"- Cluster `{digest}` ({len(members)} members, mean cosine {stats.get('mean')}): "
@@ -954,10 +1087,15 @@ class VNextConsolidationService:
         )
 
         skipped_lines = [f"- {reason}" for reason in skipped]
+        active_count_label = (
+            str(clustering.active_count)
+            if clustering.active_count_exact
+            else f"at least {clustering.active_count}"
+        )
         if clustering.bounded:
             skipped_lines.append(
                 f"- Clustering was bounded to the {options.max_embedded_memories} most recently updated "
-                f"memories of {clustering.active_count} in scope."
+                f"memories of {active_count_label} in scope."
             )
         if clustering.probe_self_distance is not None and clustering.probe_self_distance > (
             1.0 - options.similarity_threshold
@@ -974,7 +1112,7 @@ class VNextConsolidationService:
                 f"# {self._title(request)}",
                 "",
                 "## Consolidation Summary",
-                f"- Active memories in scope: {clustering.active_count}",
+                f"- Active memories in scope: {active_count_label}",
                 f"- Memories with stored embeddings considered: {clustering.embedded_count}",
                 f"- Similarity threshold: {options.similarity_threshold} (min cluster size {options.min_cluster_size})",
                 f"- Clusters found: {len(clustering.clusters)}",
@@ -1020,6 +1158,8 @@ class VNextConsolidationService:
 __all__ = [
     "DEFAULT_SIMILARITY_THRESHOLD",
     "MAX_EMBEDDED_MEMORIES_HARD_CAP",
+    "MAX_PAIRWISE_COMPARISONS",
+    "MAX_SIMILARITY_MATRIX_BYTES",
     "MemoryConsolidationRequest",
     "VNextConsolidationService",
     "VNextConsolidationStore",

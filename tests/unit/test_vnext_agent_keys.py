@@ -15,6 +15,7 @@ from alicebot_api.vnext_agent_keys import (
     hash_agent_key,
     mint_agent_key,
     resolve_agent_identity,
+    resolve_protected_agent_identity,
     verify_agent_key,
 )
 
@@ -413,7 +414,7 @@ def test_resolve_agent_identity_unbound_keys_keep_payload_project_scope() -> Non
     assert identity.project_scope_locked is False
 
 
-def test_policy_blocks_write_actions_outside_the_bound_project_scope() -> None:
+def test_policy_enforces_the_bound_project_scope_for_reads_and_writes() -> None:
     store = FakeAgentKeyStore()
     user_id = uuid4()
     _record, raw_key = create_agent_key(
@@ -446,14 +447,23 @@ def test_policy_blocks_write_actions_outside_the_bound_project_scope() -> None:
     assert allowed.decision != "blocked"
     assert "project_scope_binding_violation" not in allowed.reasons
 
-    # Reads outside the binding are not blocked by the binding rule.
-    read = evaluate_agent_policy(
+    inherited_read = evaluate_agent_policy(
+        identity=identity,
+        action="context_pack.request",
+        domains=("project",),
+    )
+    assert inherited_read.decision != "blocked"
+    assert inherited_read.effective_project_scope == ("alicebot",)
+
+    out_of_scope_read = evaluate_agent_policy(
         identity=identity,
         action="context_pack.request",
         domains=("project",),
         project_scope=("other-project",),
     )
-    assert "project_scope_binding_violation" not in read.reasons
+    assert out_of_scope_read.decision == "blocked"
+    assert "project_scope_binding_violation" in out_of_scope_read.reasons
+    assert out_of_scope_read.effective_project_scope == ()
 
 
 def test_policy_binding_rule_only_applies_when_a_binding_exists() -> None:
@@ -486,12 +496,37 @@ def test_policy_binding_rule_only_applies_when_a_binding_exists() -> None:
 def test_agent_key_from_authorization_parses_bearer_and_ignores_other_tokens() -> None:
     assert agent_key_from_authorization("Bearer alice_sk_abc123") == "alice_sk_abc123"
     assert agent_key_from_authorization("bearer  alice_sk_abc123 ") == "alice_sk_abc123"
-    assert agent_key_from_authorization("alice_sk_abc123") == "alice_sk_abc123"
+    assert agent_key_from_authorization("alice_sk_abc123") is None
     assert agent_key_from_authorization("Bearer hosted-session-token") is None
     assert agent_key_from_authorization("Basic dXNlcjpwYXNz") is None
     assert agent_key_from_authorization("") is None
     assert agent_key_from_authorization(None) is None
     assert agent_key_from_authorization(object()) is None
+
+
+def test_protected_request_requires_bearer_once_any_active_key_exists() -> None:
+    store = FakeAgentKeyStore()
+    user_id = uuid4()
+    _record, raw_key = create_agent_key(
+        store,
+        user_id=user_id,
+        agent_id="reader",
+        permission_profile="read_only_agent",
+        project_scope="project-a",
+    )
+
+    with pytest.raises(AgentKeyAuthenticationError, match="protected vNext requests"):
+        resolve_protected_agent_identity(store, user_id=user_id, raw_key=None, payload={})
+
+    identity = resolve_protected_agent_identity(
+        store,
+        user_id=user_id,
+        raw_key=raw_key,
+        payload={},
+    )
+    assert identity is not None
+    assert identity.agent_id == "reader"
+    assert identity.project_scope == ("project-a",)
 
 
 def test_profile_privilege_order_covers_all_profiles() -> None:

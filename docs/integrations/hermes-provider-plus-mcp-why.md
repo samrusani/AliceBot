@@ -8,7 +8,7 @@ Use **provider plus MCP** as the default Hermes architecture for Alice continuit
 
 - Provider gives always-on turn-start continuity prefetch without requiring tool calls.
 - Provider runs bridge lifecycle hooks (`prefetch`, `queue_prefetch`, `sync_turn`, `on_session_end`) so capture behavior is consistent.
-- MCP preserves explicit deep workflows for operator control: `alice_memory_review`, `alice_memory_correct`, and `alice_explain` on the core surface, plus the legacy `alice_review_queue`/`alice_review_apply` tools when the server runs with `ALICE_MCP_LEGACY_TOOLS=1`.
+- MCP preserves explicit deep workflows for operator control through the core `alice_memory_review`, `alice_memory_correct`, and `alice_explain` tools. The older `alice_review_queue`/`alice_review_apply` pair is keyless-local legacy compatibility only.
 - Keeping both paths avoids workflow regressions while preserving deterministic Alice semantics.
 
 ## Fallback

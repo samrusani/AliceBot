@@ -171,6 +171,10 @@ from alicebot_api.vnext_model_intelligence import (
     VNextModelIntelligenceError,
     provider_for_route,
 )
+from alicebot_api.vnext_memory_version import (
+    memory_matches_snapshot,
+    memory_version_snapshot,
+)
 from alicebot_api.vnext_repositories import JsonObject
 from alicebot_api.vnext_store import FTS_QUERY_STOPWORDS
 
@@ -407,7 +411,34 @@ class VNextRollupStore(Protocol):
 
     def create_memory(self, memory: JsonObject, *, actor_type: str = "system") -> JsonObject: ...
 
-    def list_memories(self, *, status: str | None = None) -> list[JsonObject]: ...
+    def list_rollup_input_memories(
+        self,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        excluded_candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]: ...
+
+    def list_pending_rollup_candidates(
+        self,
+        *,
+        rollup_digests: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]: ...
+
+    def list_accepted_rollup_cards(
+        self,
+        *,
+        rollup_keys: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,6 +502,17 @@ class _RollupGroup:
     # "plant"); rendered on the card head so exact-token retrieval matches
     # whichever inflection the query uses.
     label_variants: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRollupGroup:
+    """Deterministic group identity prepared before bounded state reads."""
+
+    group: _RollupGroup
+    member_ids: tuple[str, ...]
+    current_member_snapshots: tuple[JsonObject, ...]
+    rollup_digest: str
+    group_record: JsonObject
 
 
 @dataclass(slots=True)
@@ -1532,19 +1574,24 @@ class VNextRollupService:
         sensitivity_allowed: list[str],
         options: RollupOptions,
     ) -> tuple[list[JsonObject], bool]:
-        rows = [
-            *self.store.list_memories(status="active"),
-            *self.store.list_memories(status="accepted"),
-        ]
+        # Ask for one sentinel row beyond the configured cap. The store
+        # applies status, scope, roll-up-card exclusion, deterministic order,
+        # and LIMIT in SQL, so neither a large corpus nor existing cards are
+        # materialized before the service enforces its bound.
+        rows = self.store.list_rollup_input_memories(
+            domains=domains,
+            sensitivity_allowed=sensitivity_allowed,
+            excluded_candidate_kind=ROLLUP_CANDIDATE_KIND,
+            limit=options.max_groupable_memories + 1,
+        )
+        bounded = len(rows) > options.max_groupable_memories
+        rows = rows[: options.max_groupable_memories]
+        # Defensive parity for non-SQL protocol implementations. Production
+        # stores already apply these predicates before LIMIT.
         rows = _scoped_rows(rows, domains=domains, sensitivity_allowed=sensitivity_allowed)
-        # Roll-up cards never re-enter grouping: a card's text lists every
-        # instance label and would re-anchor its own topic each run.
         rows = [row for row in rows if not _is_rollup_card(row)]
         # Insertion-order independent: grouping sees one canonical order.
         rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))))
-        bounded = len(rows) > options.max_groupable_memories
-        if bounded:
-            rows = rows[-options.max_groupable_memories :]
         return rows, bounded
 
     def _entity_key_maps(
@@ -1944,10 +1991,29 @@ class VNextRollupService:
 
     # -- accepted / pending state -------------------------------------------------
 
-    def _existing_rollup_state(self) -> tuple[dict[str, str], dict[str, JsonObject]]:
+    def _existing_rollup_state(
+        self,
+        *,
+        rollup_digests: tuple[str, ...],
+        rollup_keys: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+    ) -> tuple[dict[str, str], dict[str, JsonObject]]:
         """(pending candidate by rollup_digest, accepted card by rollup_key)."""
         pending: dict[str, str] = {}
-        for row in self.store.list_memories(status="candidate"):
+        unique_digests = tuple(sorted(set(rollup_digests)))
+        pending_rows = (
+            self.store.list_pending_rollup_candidates(
+                rollup_digests=unique_digests,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                candidate_kind=ROLLUP_CANDIDATE_KIND,
+                limit=len(unique_digests),
+            )
+            if unique_digests
+            else []
+        )
+        for row in pending_rows:
             metadata = row.get("metadata_json")
             if not isinstance(metadata, dict) or row.get("id") is None:
                 continue
@@ -1955,14 +2021,25 @@ class VNextRollupService:
             if isinstance(digest, str) and digest:
                 pending.setdefault(digest, str(row["id"]))
         accepted: dict[str, JsonObject] = {}
-        for status in ("active", "accepted"):
-            for row in self.store.list_memories(status=status):
-                metadata = row.get("metadata_json")
-                if not isinstance(metadata, dict) or metadata.get("candidate_kind") != ROLLUP_CANDIDATE_KIND:
-                    continue
-                key = metadata.get("rollup_key")
-                if isinstance(key, str) and key and key not in accepted:
-                    accepted[key] = row
+        unique_keys = tuple(sorted(set(rollup_keys)))
+        accepted_rows = (
+            self.store.list_accepted_rollup_cards(
+                rollup_keys=unique_keys,
+                domains=domains,
+                sensitivity_allowed=sensitivity_allowed,
+                candidate_kind=ROLLUP_CANDIDATE_KIND,
+                limit=len(unique_keys),
+            )
+            if unique_keys
+            else []
+        )
+        for row in accepted_rows:
+            metadata = row.get("metadata_json")
+            if not isinstance(metadata, dict) or metadata.get("candidate_kind") != ROLLUP_CANDIDATE_KIND:
+                continue
+            key = metadata.get("rollup_key")
+            if isinstance(key, str) and key and key not in accepted:
+                accepted[key] = row
         return pending, accepted
 
 
@@ -2005,7 +2082,7 @@ class VNextRollupService:
         title: str,
         canonical_text: str,
         summary: str,
-        revises_memory_id: str | None,
+        revises_memory: JsonObject | None,
         proposed_supersede: list[str],
         model_provenance: JsonObject | None,
         merge_refusal: str | None,
@@ -2013,6 +2090,18 @@ class VNextRollupService:
         trace_id: str | None,
     ) -> JsonObject:
         member_ids = [str(instance["memory_id"]) for instance in instances]
+        members_by_id = {str(member.get("id")): member for member in group.members}
+        member_snapshots = [
+            memory_version_snapshot(members_by_id[member_id])
+            for member_id in member_ids
+        ]
+        revises_memory_id = str(revises_memory.get("id")) if revises_memory is not None else None
+        if revises_memory is not None:
+            # A revision also depends on the exact accepted card it proposes
+            # to retire. Persist that target in the same reviewed-input
+            # snapshot set so a concurrent edit/retirement invalidates the
+            # proposal before any member can be superseded.
+            member_snapshots.append(memory_version_snapshot(revises_memory))
         source_refs = [f"memory:{member_id}" for member_id in member_ids]
         # Provenance parity with the merge/dedup proposals: the card carries
         # the union of its LISTED instances' source events (bounded by the
@@ -2077,6 +2166,7 @@ class VNextRollupService:
                     "consolidation": {
                         "proposal_kind": ROLLUP_PROPOSAL_KIND,
                         "cluster_member_ids": member_ids,
+                        "member_snapshots": member_snapshots,
                         "proposed_supersede": proposed_supersede,
                         "survivor_memory_id": None,
                         "model_provenance": model_provenance,
@@ -2156,11 +2246,30 @@ class VNextRollupService:
             )
             groups = groups[: options.max_rollups]
 
-        pending, accepted = self._existing_rollup_state()
-
+        prepared_groups: list[_PreparedRollupGroup] = []
         for group in groups:
-            member_ids = [str(row.get("id")) for row in group.members]
-            rollup_digest = _digest({"rollup_key": group.rollup_key, "member_ids": sorted(member_ids)})
+            member_ids = tuple(str(row.get("id")) for row in group.members)
+            current_member_snapshots = tuple(
+                memory_version_snapshot(row)
+                for row in sorted(group.members, key=lambda item: str(item.get("id")))
+            )
+            rollup_digest = _digest(
+                {
+                    "rollup_key": group.rollup_key,
+                    # The review record below keeps ``updated_at`` for strict
+                    # stale detection. Candidate identity only needs stable
+                    # content/status versions, so equivalent corpora remain
+                    # deterministic across insertion order and timestamps.
+                    "member_versions": [
+                        {
+                            "id": snapshot["id"],
+                            "status": snapshot["status"],
+                            "content_digest": snapshot["content_digest"],
+                        }
+                        for snapshot in current_member_snapshots
+                    ],
+                }
+            )
             group_record: JsonObject = {
                 "rollup_key": group.rollup_key,
                 "group_kind": group.group_kind,
@@ -2169,6 +2278,29 @@ class VNextRollupService:
                 "rollup_digest": rollup_digest,
                 "aggregation": group.utility.to_record(),
             }
+            prepared_groups.append(
+                _PreparedRollupGroup(
+                    group=group,
+                    member_ids=member_ids,
+                    current_member_snapshots=current_member_snapshots,
+                    rollup_digest=rollup_digest,
+                    group_record=group_record,
+                )
+            )
+
+        pending, accepted = self._existing_rollup_state(
+            rollup_digests=tuple(item.rollup_digest for item in prepared_groups),
+            rollup_keys=tuple(item.group.rollup_key for item in prepared_groups),
+            domains=domains,
+            sensitivity_allowed=sensitivity,
+        )
+
+        for prepared in prepared_groups:
+            group = prepared.group
+            member_ids = list(prepared.member_ids)
+            current_member_snapshots = list(prepared.current_member_snapshots)
+            rollup_digest = prepared.rollup_digest
+            group_record = prepared.group_record
 
             accepted_card = accepted.get(group.rollup_key)
             revises_memory_id: str | None = None
@@ -2184,7 +2316,26 @@ class VNextRollupService:
                         str(member)
                         for member in (accepted_consolidation.get("cluster_member_ids") or [])
                     }
-                if accepted_members == set(member_ids):
+                accepted_snapshot_rows = (
+                    accepted_consolidation.get("member_snapshots")
+                    if isinstance(accepted_consolidation, dict)
+                    else None
+                )
+                accepted_snapshots = {
+                    str(snapshot.get("id")): snapshot
+                    for snapshot in accepted_snapshot_rows
+                    if isinstance(snapshot, dict) and snapshot.get("id") is not None
+                } if isinstance(accepted_snapshot_rows, list) else {}
+                current_members_by_id = {str(row.get("id")): row for row in group.members}
+                accepted_members_unchanged = (
+                    accepted_members == set(member_ids)
+                    and all(member_id in accepted_snapshots for member_id in member_ids)
+                    and all(
+                        memory_matches_snapshot(current_members_by_id[member_id], accepted_snapshots[member_id])
+                        for member_id in member_ids
+                    )
+                )
+                if accepted_members_unchanged:
                     group_record["state"] = "already_covered_by_accepted"
                     group_record["accepted_memory_id"] = str(accepted_card.get("id"))
                     outcome.groups.append(group_record)
@@ -2246,7 +2397,7 @@ class VNextRollupService:
                     title=title,
                     canonical_text=canonical_text,
                     summary=summary,
-                    revises_memory_id=revises_memory_id,
+                    revises_memory=accepted_card,
                     proposed_supersede=proposed_supersede,
                     model_provenance=model_provenance,
                     merge_refusal=merge_refusal,

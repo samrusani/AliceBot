@@ -8,6 +8,9 @@ apps/web/.env.local.*
 *.sqlite
 *.sqlite3
 .pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
 .venv/
 *.egg-info/
 __pycache__/

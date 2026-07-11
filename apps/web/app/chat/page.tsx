@@ -650,8 +650,8 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
           {mode === "assistant" ? (
             <ResponseComposer
               initialEntries={[]}
-              apiBaseUrl={apiConfig.apiBaseUrl}
-              userId={apiConfig.userId}
+              apiBaseUrl={continuity.continuitySource === "live" ? apiConfig.apiBaseUrl : undefined}
+              userId={continuity.continuitySource === "live" ? apiConfig.userId : undefined}
               selectedThreadId={continuity.selectedThreadId}
               selectedThreadTitle={continuity.selectedThread?.title}
               events={continuity.events}
@@ -670,11 +670,12 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
               />
               <RequestComposer
                 initialEntries={initialRequestEntries}
-                apiBaseUrl={apiConfig.apiBaseUrl}
-                userId={apiConfig.userId}
+                apiBaseUrl={continuity.continuitySource === "live" ? apiConfig.apiBaseUrl : undefined}
+                userId={continuity.continuitySource === "live" ? apiConfig.userId : undefined}
                 selectedThreadId={continuity.selectedThreadId}
                 selectedThreadTitle={continuity.selectedThread?.title}
                 defaultToolId={apiConfig.defaultToolId}
+                source={continuity.continuitySource}
               />
             </>
           )}

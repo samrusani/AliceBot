@@ -160,8 +160,8 @@ export function ApprovalDetail({
           <ApprovalActions
             approval={approval}
             hasExecution={Boolean(execution || executionPreview)}
-            apiBaseUrl={apiBaseUrl}
-            userId={userId}
+            apiBaseUrl={detailSource === "live" ? apiBaseUrl : undefined}
+            userId={detailSource === "live" ? userId : undefined}
             onResolved={setApproval}
             onExecuted={(payload) => {
               setApproval(payload.approval);
@@ -188,8 +188,8 @@ export function ApprovalDetail({
             execution={execution}
             preview={executionPreview}
             source={executionSource ?? null}
-            apiBaseUrl={apiBaseUrl}
-            userId={userId}
+            apiBaseUrl={executionSource === "live" ? apiBaseUrl : undefined}
+            userId={executionSource === "live" ? userId : undefined}
           />
         </div>
       </div>

@@ -1,8 +1,8 @@
 # Architecture
 
 ## Scope Boundary
-- **Shipped baseline:** `v0.9.0` is the latest tagged pre-1.0 public release; `v0.5.1-vnext-preview` packages the local-first vNext public preview.
-- **Current execution posture:** `main` tracks the `v0.9.0` release line (hybrid retrieval, the SQLite on-ramp, per-agent API keys, the eleven-tool MCP core surface, the entity substrate, and the rebuilt eval harness).
+- **Shipped baseline:** `v0.9.1` is the latest published pre-1.0 release.
+- **Current execution posture:** `v0.9.2` is the current release candidate. It hardens project-bound authorization, lifecycle consistency, backup/restore, installed-database upgrades, retrieval contracts, web dependencies, packaging, and release evidence. It has not been tagged or published.
 
 ## Current System Overview
 Alice is the continuity layer for AI agents: a modular continuity platform with shared continuity semantics across local, hosted, provider-runtime, CLI, MCP, Hermes-integrated, and imported-workflow surfaces.
@@ -12,8 +12,12 @@ Alice is the continuity layer for AI agents: a modular continuity platform with 
 - Persistence: Postgres (with `pgvector` for semantic retrieval) and Alembic migrations in [`apps/api/alembic/versions`](apps/api/alembic/versions)
 - Optional cache/runtime support: Redis
 - Web/admin: Next.js app in [`apps/web`](apps/web)
-- CLI + MCP: the `alice-memory` Python package installs the `alicebot`, `alice`, and `alicebot-mcp` entrypoints from a repo checkout (`pip install -e '.[dev]'`)
-- Ops/demo/test scripts: [`scripts`](scripts)
+- CLI + MCP: the `alice-memory` wheel/sdist installs four public entrypoints:
+  `alice-memory`, `alicebot`, `alice`, and `alicebot-mcp`; editable checkout
+  installation is only the contributor variant.
+- Ops/demo/test scripts: [`scripts`](scripts) are checkout-level maintenance,
+  release, evaluation, and demonstration utilities; runtime users should use
+  the packaged entrypoints above.
 
 ## Shipped Module Boundaries
 
@@ -35,7 +39,7 @@ Alice is the continuity layer for AI agents: a modular continuity platform with 
 
 ### Integration Surfaces
 - CLI, MCP, Hermes bridge/provider flows, OpenClaw import/augmentation, deployment profiles such as Alice Lite, and generic external-builder reference examples.
-- The MCP server exposes eleven core tools by default (`alice_capture`, `alice_recall`, `alice_resume`, `alice_context_pack`, `alice_open_loops`, `alice_recent_decisions`, `alice_memory_review`, `alice_memory_correct`, `alice_explain`, `alice_memory_commit`, `alice_memory_manage`); the 65-tool legacy surface stays available behind `ALICE_MCP_LEGACY_TOOLS=1`.
+- The MCP server exposes eleven core tools by default (`alice_capture`, `alice_recall`, `alice_resume`, `alice_context_pack`, `alice_open_loops`, `alice_recent_decisions`, `alice_memory_review`, `alice_memory_correct`, `alice_explain`, `alice_memory_commit`, `alice_memory_manage`). The 65-tool legacy surface is available only for deliberately keyless local-operator compatibility behind `ALICE_MCP_LEGACY_TOOLS=1`; setting `ALICE_AGENT_API_KEY` hides and rejects it.
 - Agent HTTP calls authenticate with per-agent API keys (`alicebot agent keys create --agent-id <id> --profile <profile>`, sent as `Authorization: Bearer`); the key record overrides payload identity, payloads may only downgrade the profile, and keyless agent calls work only while zero active keys exist.
 
 ### vNext Preview Surfaces
@@ -158,7 +162,7 @@ Alice is the continuity layer for AI agents: a modular continuity platform with 
 - docs verification is part of feature completion, not cleanup work
 
 ## Current Architectural Posture
-- `v0.9.0` is the active public release boundary.
-- `v0.5.1-vnext-preview` packages the local-first vNext public preview without changing the stable baseline boundary.
+- `v0.9.1` is the active published release boundary.
+- `v0.9.2` is the current release candidate. Release requires the canonical gates to pass against one exact clean source SHA and its installed artifacts.
 - Alice is now a broader continuity platform with provider/runtime portability, model packs, runnable external-builder integrations, pilot launch/admin support, and safe local logging defaults.
 - The continuity substrate remains the same system of record; the delivered work packages that substrate into practical adoption paths without changing the core continuity semantics.

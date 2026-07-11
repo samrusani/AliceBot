@@ -76,6 +76,28 @@ NEXT_PUBLIC_ALICEBOT_USER_ID=00000000-0000-0000-0000-000000000001
 
 Use the same user id as `ALICEBOT_AUTH_USER_ID`.
 
+### Authenticate the review console after provisioning a key
+
+The local API remains keyless only until the first active agent key exists. After that point,
+every `/v0/vnext` request requires Bearer authentication, including requests from the review
+console. Create a dedicated, unbound operator key (omit any project binding):
+
+```bash
+alicebot agent keys create --agent-id vnext-operator --profile admin_agent --label "Local review console"
+```
+
+The raw `alice_sk_...` value is printed once. Open `http://localhost:3000/vnext`, paste it into
+**Unbound admin_agent API key**, and select **Use key for this session**. The browser holds the key
+only in memory for the mounted console, clears it when the field is edited, cleared, or unmounted,
+and forwards it only to loopback `/v0/vnext` requests. It is not loaded from an environment
+variable or stored in local storage, a URL, logs, or errors. `trusted_local_agent` is insufficient
+for the full human/admin review surface.
+
+The browser-clipper bookmarklet deliberately cannot receive or prompt for this key because it runs
+inside the visited page. It works only while zero active agent keys exist. After key provisioning,
+use a trusted API client that sends both `Authorization: Bearer ...` and the configured
+`capture_token` to the clipper endpoint.
+
 ## Configure Embeddings (Recommended)
 
 Semantic search uses any OpenAI-compatible embeddings endpoint (Ollama, LM Studio, OpenAI). Set in `.env`:

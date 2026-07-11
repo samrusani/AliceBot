@@ -3,8 +3,10 @@
 Measured 2026-07-06 on an Apple Silicon laptop (single machine, no
 concurrency), seeded with a deterministic synthetic corpus and embeddings
 from a deterministic in-process provider (so the vector stage runs at every
-scale without network calls). p50 over ≥50 iterations after warmup;
-reproduction command below. Raw results in [results/](results/).
+scale without network calls). The tables report p50 over the operation-specific
+iteration counts recorded in each raw result (20–50 after warmup; slow
+operations stop at a disclosed time budget). Reproduction command below. Raw
+results are in [results/](results/).
 
 ## The two numbers that matter for agents
 
@@ -47,10 +49,12 @@ optimized).
 - **Postgres**: production-viable across the board — ~20ms commits and
   ~400ms recall at 100k memories. Recall's growth (23 → 98 → 394ms) is a
   known optimization candidate, not a wall.
-- **Scheduled jobs** (staleness sweep, consolidation) scale linearly as
-  expected for full-corpus passes; both are nightly-cadence workloads where
-  seconds are acceptable. Consolidation respects its documented 5k-memory
-  clustering cap.
+- **Scheduled jobs** are nightly-cadence work, not request-path latency.
+  Staleness is a full-corpus scan. Consolidation clustering is worst-case
+  quadratic; the current implementation bounds its corpus to 2,000 memories,
+  its float32 matrix to 16 MB, and unique comparisons to 1,999,000. These
+  historical 2026-07-06 measurements used the then-current implementation and
+  should not be read as proof of linear consolidation scaling.
 
 ## Found and fixed by this benchmark
 

@@ -1,7 +1,9 @@
 # Hermes Bridge Operator Guide
 
-This is the canonical operator guide for the shipped Hermes bridge.
-It is release-scoped for the `v0.5.1` pre-1.0 boundary and does not imply `v1.0.0` guarantees.
+This is the canonical operator guide for the Hermes bridge bundled with the
+Alice `v0.9.x` line. The embedded Hermes provider plugin keeps its own `0.5.1`
+integration-contract version in `plugin.yaml`; that number is not the Alice
+application release and does not imply `v1.0.0` guarantees.
 
 Recommended deployment shape: **provider plus MCP**.
 
@@ -22,7 +24,11 @@ Use MCP-only as a fallback when provider install is temporarily blocked.
 - Recommended mode: `docs/integrations/examples/hermes-config.provider-plus-mcp.yaml`
 - Fallback mode: `docs/integrations/examples/hermes-config.mcp-only.yaml`
 
-Both examples set `ALICE_MCP_LEGACY_TOOLS=1` because they allowlist the legacy `alice_review_queue`/`alice_review_apply` tools; the default MCP surface is the nine core tools (see `docs/integrations/mcp.md`).
+Both examples use the default eleven-tool core surface and its canonical
+`alice_memory_review` / `alice_memory_correct` review flow. For a key-bound
+Hermes server, set `ALICE_AGENT_API_KEY` to an issued key; do not enable the
+legacy flag, because authenticated MCP runs deliberately hide and reject the
+partially authorized legacy surface (see `docs/integrations/mcp.md`).
 
 ### Recommended snippet (provider + MCP)
 
@@ -102,4 +108,5 @@ hermes memory setup
 - `docs/integrations/hermes-memory-provider.md`
 - `docs/integrations/hermes.md`
 - `docs/integrations/hermes-skill-pack.md`
-- `docs/release/v0.5.1-release-checklist.md`
+- `docs/release/v0.9.2-release-notes.md`
+- `RELEASING.md`

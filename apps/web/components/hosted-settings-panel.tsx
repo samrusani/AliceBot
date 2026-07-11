@@ -3,7 +3,7 @@
 import type { FormEvent } from "react";
 import { useState } from "react";
 
-import { getApiConfig } from "../lib/api";
+import { getApiConfig, isSupportedApiBaseUrl, requestJson, sanitizeApiBaseUrl } from "../lib/api";
 import { SectionCard } from "./section-card";
 import { StatusBadge } from "./status-badge";
 
@@ -161,8 +161,9 @@ function trimOrNull(value: string) {
 
 export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
   const apiConfig = getApiConfig();
-  const resolvedApiBaseUrl = (apiBaseUrl ?? apiConfig.apiBaseUrl).trim();
-  const liveModeReady = resolvedApiBaseUrl !== "";
+  const configuredApiBaseUrl = (apiBaseUrl ?? apiConfig.apiBaseUrl).trim();
+  const resolvedApiBaseUrl = sanitizeApiBaseUrl(configuredApiBaseUrl);
+  const liveModeReady = isSupportedApiBaseUrl(configuredApiBaseUrl);
 
   const [sessionToken, setSessionToken] = useState("");
   const [workspaceId, setWorkspaceId] = useState("");
@@ -173,7 +174,9 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
   const [statusText, setStatusText] = useState(
     liveModeReady
       ? "Provide a hosted session token, then run Telegram link start/confirm and status controls."
-      : "Telegram controls are unavailable until NEXT_PUBLIC_ALICEBOT_API_BASE_URL is configured.",
+      : configuredApiBaseUrl
+        ? "Telegram controls require HTTPS for remote APIs; loopback HTTP is allowed for local development."
+        : "Telegram controls are unavailable until NEXT_PUBLIC_ALICEBOT_API_BASE_URL is configured.",
   );
 
   const [latestChallenge, setLatestChallenge] = useState<TelegramLinkChallenge | null>(null);
@@ -193,7 +196,9 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
     query?: Record<string, string | undefined>,
   ): Promise<T> {
     if (!liveModeReady) {
-      throw new Error("NEXT_PUBLIC_ALICEBOT_API_BASE_URL must be configured for live Telegram controls.");
+      throw new Error(
+        "NEXT_PUBLIC_ALICEBOT_API_BASE_URL must use HTTPS remotely or loopback HTTP for local development.",
+      );
     }
 
     const token = sessionToken.trim();
@@ -201,29 +206,13 @@ export function HostedSettingsPanel({ apiBaseUrl }: HostedSettingsPanelProps) {
       throw new Error("Hosted session token is required.");
     }
 
-    const url = new URL(path, `${resolvedApiBaseUrl.replace(/\/$/, "")}/`);
-    for (const [key, value] of Object.entries(query ?? {})) {
-      if (value) {
-        url.searchParams.set(key, value);
-      }
-    }
-
-    const response = await fetch(url.toString(), {
-      cache: "no-store",
+    return requestJson<T>(resolvedApiBaseUrl, path, {
       ...init,
       headers: {
-        "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
         ...(init?.headers ?? {}),
       },
-    });
-
-    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
-    if (!response.ok) {
-      throw new Error(payload?.detail ?? "Request failed");
-    }
-
-    return payload as T;
+    }, query);
   }
 
   async function runOperation(operation: () => Promise<void>, loadingText: string) {

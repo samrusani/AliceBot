@@ -162,10 +162,28 @@ def test_memory_embedding_text_joins_title_canonical_text_and_summary() -> None:
 class _AttachStore:
     def __init__(self) -> None:
         self.embeddings: list[tuple[str, list[float]]] = []
+        self.embedding_signatures: list[dict[str, object]] = []
         self.events: list[dict[str, object]] = []
 
-    def update_memory_embedding(self, *, memory_id: str, vector: list[float]) -> dict[str, object]:
+    def update_memory_embedding(
+        self,
+        *,
+        memory_id: str,
+        vector: list[float],
+        provider: str | None = None,
+        model: str | None = None,
+        content_sha256: str | None = None,
+        signature_version: int = 1,
+    ) -> dict[str, object]:
         self.embeddings.append((memory_id, vector))
+        self.embedding_signatures.append(
+            {
+                "provider": provider,
+                "model": model,
+                "content_sha256": content_sha256,
+                "version": signature_version,
+            }
+        )
         return {"id": memory_id}
 
     def append_event(self, event: dict[str, object]) -> dict[str, object]:
@@ -213,6 +231,14 @@ def test_attach_memory_embedding_writes_vector_with_provider() -> None:
     assert attached is True
     assert store.embeddings[0][0] == "memory-1"
     assert len(store.embeddings[0][1]) == EMBEDDING_VECTOR_DIMENSIONS
+    assert store.embedding_signatures == [
+        {
+            "provider": "stub",
+            "model": "stub-embedding",
+            "content_sha256": "059865dccf302f203a30b051d86bc76007a8c7c006702182189d42ea9fbf48b7",
+            "version": 1,
+        }
+    ]
 
 
 def test_attach_memory_embedding_logs_event_but_never_blocks_on_failure() -> None:

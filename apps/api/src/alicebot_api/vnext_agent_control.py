@@ -35,6 +35,7 @@ ALL_SENSITIVITY = ("public", "internal", "private", "confidential", "highly_sens
 DEFAULT_AGENT_SENSITIVITY = ("public", "internal", "private", "unknown")
 
 READ_ACTIONS = {
+    "memory.recall",
     "context_pack.request",
     "project.dashboard",
     "open_loop.lookup",
@@ -47,6 +48,7 @@ READ_ACTIONS = {
     "memory.audit",
     "memory.recent_commits",
     "scheduler.status",
+    "http.operator.access",
 }
 
 WRITE_ACTIONS = {
@@ -63,15 +65,24 @@ WRITE_ACTIONS = {
     "memory.redact",
     "memory.accept_consolidation",
     "memory.propose",
+    "http.route.mutate",
     "open_loop.create",
     "open_loop.update",
     "artifact.review",
+    "artifact.feedback",
+    "artifact.export",
     "scheduler.run_now",
     "scheduler.run_due",
     "scheduler.pause",
     "scheduler.resume",
     "scheduler.configure",
 }
+
+# ``memory_proposal_agent`` may submit a review-only memory proposal (the
+# ``memory.commit`` entry point is deliberately retained because the commit
+# service downgrades this profile to a candidate).  It may not apply review
+# decisions or mutate any already-persisted object.
+PROPOSAL_ONLY_WRITE_ACTIONS = frozenset({"memory.propose", "memory.commit"})
 
 # Actions only a human (identity=None) or an admin agent may perform:
 # review decisions (artifact/memory review, consolidation acceptance) and
@@ -112,7 +123,8 @@ class AgentIdentity:
     # True only when the authenticated key record carries a project_scope
     # binding. Never payload-settable: resolve_agent_identity sets it, and
     # from_payload always leaves it False. When locked, policy evaluation
-    # blocks write actions whose project scope leaves the bound scope.
+    # inherits the binding for omitted scopes and blocks every read or write
+    # whose explicit project scope leaves the binding.
     project_scope_locked: bool = False
 
     @property
@@ -174,6 +186,8 @@ class PolicyDecision:
     effective_domains: tuple[str, ...] = ()
     requested_sensitivity_allowed: tuple[str, ...] = DEFAULT_AGENT_SENSITIVITY
     effective_sensitivity_allowed: tuple[str, ...] = DEFAULT_AGENT_SENSITIVITY
+    requested_project_scope: tuple[str, ...] = ()
+    effective_project_scope: tuple[str, ...] = ()
     review_required: bool = False
     trace_id: str = ""
     workflow_type: str | None = None
@@ -188,6 +202,8 @@ class PolicyDecision:
             "effective_domains": list(self.effective_domains),
             "requested_sensitivity_allowed": list(self.requested_sensitivity_allowed),
             "effective_sensitivity_allowed": list(self.effective_sensitivity_allowed),
+            "requested_project_scope": list(self.requested_project_scope),
+            "effective_project_scope": list(self.effective_project_scope),
             "review_required": self.review_required,
             "trace_id": self.trace_id,
             "workflow_type": self.workflow_type,
@@ -258,6 +274,46 @@ def _filtered_sensitivity(profile: str, sensitivity_allowed: tuple[str, ...]) ->
     return allowed or tuple(_profile_sensitivity(profile)), filtered
 
 
+def resource_project_scope(resource: Mapping[str, object] | None) -> tuple[str, ...]:
+    """Return the persisted project identifiers carried by one resource.
+
+    Current rows use first-class ``project_id`` where available, while older
+    memories and connector rows may retain ``project_scope`` in metadata.  A
+    lifecycle authorization check must inspect all of these persisted forms;
+    caller-provided scope is never a substitute for the target's scope.
+    """
+
+    if resource is None:
+        return ()
+    values: list[str] = []
+
+    def _add(value: object) -> None:
+        if isinstance(value, (str, int)):
+            normalized = " ".join(str(value).split()).strip()
+            if normalized:
+                values.append(normalized)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                _add(item)
+
+    for key in ("project_id", "project", "project_scope"):
+        _add(resource.get(key))
+    for container_key in ("metadata_json", "scope_json"):
+        container = resource.get(container_key)
+        if not isinstance(container, Mapping):
+            continue
+        for key in ("project_id", "project", "projects", "project_scope"):
+            _add(container.get(key))
+        agentic = container.get("agentic_memory")
+        if isinstance(agentic, Mapping):
+            for key in ("project_id", "project", "projects", "project_scope"):
+                _add(agentic.get(key))
+        agent_identity = container.get("agent_identity")
+        if isinstance(agent_identity, Mapping):
+            _add(agent_identity.get("project_scope"))
+    return tuple(dict.fromkeys(values))
+
+
 def evaluate_agent_policy(
     *,
     identity: AgentIdentity | None,
@@ -267,6 +323,7 @@ def evaluate_agent_policy(
     project_scope: tuple[str, ...] = (),
     workflow_type: str | None = None,
     write_policy: str | None = None,
+    require_explicit_project_scope: bool = False,
 ) -> PolicyDecision:
     trace_id = f"policy-{uuid4()}"
     if identity is None:
@@ -278,6 +335,8 @@ def evaluate_agent_policy(
             effective_domains=domains,
             requested_sensitivity_allowed=sensitivity_allowed,
             effective_sensitivity_allowed=sensitivity_allowed,
+            requested_project_scope=project_scope,
+            effective_project_scope=project_scope,
             trace_id=trace_id,
             workflow_type=workflow_type,
         )
@@ -286,6 +345,7 @@ def evaluate_agent_policy(
     reasons: list[str] = []
     effective_domains, filtered_domains = _filtered_domains(profile, domains)
     effective_sensitivity, filtered_sensitivity = _filtered_sensitivity(profile, sensitivity_allowed)
+    effective_project_scope = project_scope or identity.project_scope
     decision = "allowed"
     review_required = False
 
@@ -303,15 +363,27 @@ def evaluate_agent_policy(
         reasons.append("read_only_agent_cannot_write")
         decision = "blocked"
 
-    # Key-bound project scope: a key issued with project_scope hard-binds
-    # write actions to that scope. Only enforced when a binding exists
-    # (project_scope_locked); unbound keys keep the previous behavior.
-    if identity.project_scope_locked and action in WRITE_ACTIONS:
+    if (
+        profile == "memory_proposal_agent"
+        and action in WRITE_ACTIONS
+        and action not in PROPOSAL_ONLY_WRITE_ACTIONS
+    ):
+        reasons.append("memory_proposal_agent_cannot_mutate")
+        decision = "blocked"
+
+    # Key-bound project scope is an authorization boundary, not merely a write
+    # hint.  An omitted scope inherits the key binding; an explicit scope must
+    # stay wholly inside it.  On a violation the effective scope is empty so a
+    # caller cannot accidentally continue with the unauthorized request.
+    if identity.project_scope_locked:
         bound_scope = set(identity.project_scope)
         out_of_scope = tuple(value for value in project_scope if value not in bound_scope)
-        if out_of_scope:
+        if out_of_scope or (require_explicit_project_scope and not project_scope):
             reasons.append("project_scope_binding_violation")
             decision = "blocked"
+            effective_project_scope = ()
+        else:
+            effective_project_scope = project_scope or identity.project_scope
 
     if action == "memory.propose":
         if profile not in {"project_scoped_agent", "trusted_local_agent", "memory_proposal_agent", "admin_agent"}:
@@ -324,6 +396,18 @@ def evaluate_agent_policy(
 
     if action in HUMAN_OR_ADMIN_ACTIONS and profile != "admin_agent":
         reasons.append("human_or_admin_review_required")
+        decision = "blocked"
+
+    if action == "http.operator.access":
+        if profile not in {"trusted_local_agent", "admin_agent"}:
+            reasons.append("trusted_or_admin_agent_required_for_operator_route")
+            decision = "blocked"
+        if identity.project_scope_locked or identity.project_scope:
+            reasons.append("unbound_operator_key_required")
+            decision = "blocked"
+
+    if action == "artifact.export" and profile not in {"trusted_local_agent", "admin_agent"}:
+        reasons.append("trusted_or_admin_agent_required_for_artifact_export")
         decision = "blocked"
 
     if write_policy and write_policy != "proposal_only" and profile != "admin_agent":
@@ -378,6 +462,8 @@ def evaluate_agent_policy(
         effective_domains=effective_domains,
         requested_sensitivity_allowed=sensitivity_allowed,
         effective_sensitivity_allowed=effective_sensitivity,
+        requested_project_scope=project_scope,
+        effective_project_scope=effective_project_scope,
         review_required=review_required or decision == "requires_review",
         trace_id=trace_id,
         workflow_type=workflow_type,
@@ -625,5 +711,6 @@ __all__ = [
     "append_policy_events",
     "ensure_policy_allowed",
     "evaluate_agent_policy",
+    "resource_project_scope",
     "summarize_agent_policy_telemetry",
 ]

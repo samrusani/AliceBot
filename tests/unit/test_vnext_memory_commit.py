@@ -17,6 +17,7 @@ from alicebot_api.vnext_memory_commit import (
     VNextMemoryCommitValidationError,
     evaluate_memory_commit_policy,
 )
+from alicebot_api.vnext_memory_version import memory_version_snapshot
 
 
 @pytest.fixture(autouse=True)
@@ -286,6 +287,65 @@ def test_commit_idempotent_replay_uses_commit_digest_lookup() -> None:
     assert ("commit_digest", "retry-digest-1") in store.lookup_calls
 
 
+def test_idempotency_key_reuse_with_different_content_is_rejected() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    first = _request(
+        domain="professional",
+        sensitivity="internal",
+        idempotency_key="content-bound-retry",
+    )
+    service.commit(identity=identity, request=first)
+
+    with pytest.raises(VNextMemoryCommitValidationError, match="different memory request"):
+        service.commit(
+            identity=identity,
+            request=_request(
+                domain="professional",
+                sensitivity="internal",
+                canonical_text="This is unrelated content.",
+                idempotency_key="content-bound-retry",
+            ),
+        )
+
+
+class _ConcurrentWinnerSQLiteStore(SQLiteVNextStore):
+    """Hide the winner once so the service exercises its conflict replay."""
+
+    def __init__(self, conn, user_id):
+        super().__init__(conn, user_id)
+        self.lookup_count = 0
+
+    def get_memory_by_commit_digest(self, commit_digest: str):  # type: ignore[override]
+        self.lookup_count += 1
+        if self.lookup_count == 1:
+            return None
+        return super().get_memory_by_commit_digest(commit_digest)
+
+
+def test_concurrent_idempotent_winner_replays_without_duplicate_side_effects() -> None:
+    store = _live_sqlite_store()
+    identity = _identity("trusted_local_agent")
+    request = _request(
+        domain="professional",
+        sensitivity="internal",
+        idempotency_key="concurrent-retry",
+    )
+    first = VNextMemoryCommitService(store).commit(identity=identity, request=request)
+    revisions_before = len(store.list_revisions(str(first["memory"]["id"])))
+
+    racing_store = _ConcurrentWinnerSQLiteStore(store.conn, store.user_id)
+    replay = VNextMemoryCommitService(racing_store).commit(identity=identity, request=request)
+
+    assert replay["idempotent_replay"] is True
+    assert replay["memory"]["id"] == first["memory"]["id"]
+    assert len(store.list_revisions(str(first["memory"]["id"]))) == revisions_before
+    assert store.conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE commit_digest = 'concurrent-retry'"
+    ).fetchone()[0] == 1
+
+
 def test_confirm_uses_confirmation_id_lookup_and_persisted_column() -> None:
     store = TargetedLookupStore()
     service = VNextMemoryCommitService(store)
@@ -433,6 +493,7 @@ def test_committed_memory_persists_first_class_scope_columns() -> None:
 
     assert committed["status"] == "committed"
     row = store.memories[str(committed["memory"]["id"])]
+    assert row["project_scope"] == ["alicebot"]
     assert row["project_id"] == "alicebot"
     assert row["created_by_agent_id"] == "openclaw"
     assert row["run_id"] == "run-2026-07-04-001"
@@ -455,6 +516,7 @@ def test_scope_columns_fall_back_to_identity_project_scope_when_request_has_none
     )
 
     row = store.memories[str(committed["memory"]["id"])]
+    assert row["project_scope"] == ["alicebot"]
     assert row["project_id"] == "alicebot"
 
 
@@ -474,7 +536,9 @@ def test_multi_project_scope_stays_metadata_only_and_project_id_is_null() -> Non
 
     row = store.memories[str(committed["memory"]["id"])]
     # Ambiguous scope: the hard column never guesses.
+    assert row["project_scope"] == ["alicebot", "hermes"]
     assert row["project_id"] is None
+    assert row["metadata_json"]["project_scope"] == ["alicebot", "hermes"]
     assert row["metadata_json"]["agentic_memory"]["project_scope"] == ["alicebot", "hermes"]
     assert row["created_by_agent_id"] == identity.agent_id
 
@@ -739,6 +803,74 @@ def test_correction_links_entities_introduced_by_the_new_text() -> None:
     }
 
 
+def test_correction_replaces_fact_keys_and_expires_obsolete_entity_edges() -> None:
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    committed = service.commit(
+        identity=identity,
+        request=_request(
+            domain="professional",
+            sensitivity="internal",
+            title="Bike-a-Thon result",
+            canonical_text="Sami Rusani said the Bike-a-Thon raised $5,000.",
+        ),
+    )
+    memory_id = str(committed["memory"]["id"])
+    old_person = store.get_entity_by_normalized_name("person", "sami rusani")
+    assert old_person is not None
+    original_fact_keys = store.conn.execute(
+        "SELECT fact_keys FROM memories WHERE id = ?", (memory_id,)
+    ).fetchone()[0]
+    assert "charity event fundraiser fundraising" in str(original_fact_keys)
+
+    service.correct(
+        identity=identity,
+        memory_id=memory_id,
+        canonical_text="We met Zara Quill, who confirmed rainy weather for the picnic.",
+        reason="The original note was attached to the wrong event.",
+    )
+
+    corrected_fact_keys = store.conn.execute(
+        "SELECT fact_keys FROM memories WHERE id = ?", (memory_id,)
+    ).fetchone()[0]
+    assert "charity" not in str(corrected_fact_keys)
+    assert store.search_memories(query="charity event fundraiser fundraising", limit=10) == []
+    new_person = store.get_entity_by_normalized_name("person", "zara quill")
+    assert new_person is not None
+    active_edges = store.list_edges(from_id=memory_id)
+    assert (str(new_person["id"]), ENTITY_MENTION_EDGE_TYPE) in {
+        (str(edge["to_id"]), str(edge["edge_type"])) for edge in active_edges
+    }
+    assert (str(old_person["id"]), ENTITY_MENTION_EDGE_TYPE) not in {
+        (str(edge["to_id"]), str(edge["edge_type"])) for edge in active_edges
+    }
+    historical = store.list_edges_as_of("9999-01-01T00:00:00Z", limit=100)
+    assert (str(old_person["id"]), ENTITY_MENTION_EDGE_TYPE) not in {
+        (str(edge["to_id"]), str(edge["edge_type"])) for edge in historical
+    }
+
+
+def test_correction_cannot_resurrect_a_forgotten_memory() -> None:
+    store = _live_sqlite_store()
+    service = VNextMemoryCommitService(store)
+    identity = _identity("trusted_local_agent")
+    committed = service.commit(
+        identity=identity,
+        request=_request(domain="professional", sensitivity="internal"),
+    )
+    memory_id = str(committed["memory"]["id"])
+    service.forget(identity=identity, memory_id=memory_id, reason="User asked to forget it.")
+
+    with pytest.raises(VNextMemoryCommitValidationError, match="cannot correct a retired superseded memory"):
+        service.correct(
+            identity=identity,
+            memory_id=memory_id,
+            canonical_text="Attempted resurrection.",
+        )
+    assert store.get_memory(memory_id)["status"] == "superseded"
+
+
 class _BrokenEntityLookupSQLiteStore(SQLiteVNextStore):
     def find_entities_by_names(self, normalized_names):  # type: ignore[override]
         raise RuntimeError("entity lookup exploded")
@@ -998,6 +1130,7 @@ def _seed_consolidation_candidate(
             "review_required": True,
             "consolidation": {
                 "cluster_member_ids": member_ids,
+                "member_snapshots": [memory_version_snapshot(store.memories[member_id]) for member_id in member_ids],
                 "proposal_kind": proposal_kind,
                 "survivor_memory_id": survivor_memory_id,
                 "proposed_supersede": proposed_supersede,
@@ -1080,6 +1213,9 @@ def test_accept_replay_is_a_noop_with_a_note() -> None:
     assert second["idempotent_replay"] is True
     assert "already accepted" in second["note"]
     assert second["superseded_member_ids"] == members
+    assert second["skipped_members"] == first["skipped_members"]
+    assert second["supersedes"] == first["supersedes"]
+    assert second["policy_decision"]["decision"] == "allowed"
     assert len(store.revisions) == revisions_after_first
     assert len(store.events) == events_after_first
 
@@ -1115,12 +1251,11 @@ def test_accept_dedup_candidate_points_supersedes_at_the_survivor() -> None:
     assert result["superseded_member_ids"] == dropped
 
 
-def test_accept_skips_members_that_are_already_superseded() -> None:
+def test_accept_rejects_candidate_when_member_changed_after_proposal() -> None:
     store = TargetedLookupStore()
     service = VNextMemoryCommitService(store)
     members = [_seed_row(store, title=f"Member {index}", text=f"Member fact {index}.") for index in range(2)]
     replacement = _seed_row(store, title="Manual replacement", text="Manually corrected fact.")
-    service.undo(identity=None, memory_id=members[0], superseded_by_memory_id=replacement)
     candidate_id = _seed_consolidation_candidate(
         store,
         member_ids=members,
@@ -1128,13 +1263,88 @@ def test_accept_skips_members_that_are_already_superseded() -> None:
         survivor_memory_id=None,
         proposed_supersede=list(members),
     )
+    service.undo(identity=None, memory_id=members[0], superseded_by_memory_id=replacement)
 
-    result = service.accept_consolidation_candidate(candidate_id, reason="Accept with a stale member.")
+    with pytest.raises(VNextMemoryCommitValidationError, match="candidate is stale"):
+        service.accept_consolidation_candidate(candidate_id, reason="Accept with a stale member.")
 
-    assert result["superseded_member_ids"] == [members[1]]
-    assert result["skipped_members"] == [{"member_id": members[0], "state": "already_superseded"}]
-    # The manual supersession pointer was not overwritten.
+    # No partial supersession occurred and the manual pointer was not overwritten.
     assert store.memories[members[0]]["superseded_by"] == replacement
+    assert store.memories[members[1]]["status"] == "active"
+    assert store.memories[candidate_id]["status"] == "candidate"
+
+
+def test_accept_validates_every_snapshot_before_first_supersession() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    members = [_seed_row(store, title=f"Member {index}", text=f"Member fact {index}.") for index in range(3)]
+    candidate_id = _seed_consolidation_candidate(
+        store,
+        member_ids=members,
+        proposal_kind="merge",
+        survivor_memory_id=None,
+        proposed_supersede=list(members),
+    )
+    store.update_memory(
+        memory_id=members[-1],
+        patch={"canonical_text": "The final member changed after review was requested."},
+    )
+
+    with pytest.raises(VNextMemoryCommitValidationError, match="candidate is stale"):
+        service.accept_consolidation_candidate(candidate_id, reason="Accept stale merge.")
+
+    assert all(store.memories[member_id]["status"] == "active" for member_id in members)
+    assert all(store.memories[member_id].get("superseded_by") is None for member_id in members)
+    assert store.memories[candidate_id]["status"] == "candidate"
+    assert not any(revision.get("revision_type") == "superseded" for revision in store.revisions)
+
+
+def test_rollup_candidate_without_snapshots_fails_closed() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    member_id = _seed_row(store, title="Member", text="One reviewed roll-up input.")
+    candidate_id = _seed_row(
+        store,
+        title="Legacy roll-up",
+        text="A legacy roll-up candidate without version evidence.",
+        status="candidate",
+        metadata={
+            "candidate_kind": "memory_rollup",
+            "review_required": True,
+            "consolidation": {
+                "proposal_kind": "rollup",
+                "cluster_member_ids": [member_id],
+                "proposed_supersede": [],
+            },
+        },
+    )
+
+    with pytest.raises(VNextMemoryCommitValidationError, match="lacks member version snapshots"):
+        service.accept_consolidation_candidate(candidate_id, reason="Accept unverifiable roll-up.")
+
+    assert store.memories[member_id]["status"] == "active"
+    assert store.memories[candidate_id]["status"] == "candidate"
+
+
+def test_missing_final_member_stale_fails_before_any_supersession() -> None:
+    store = TargetedLookupStore()
+    service = VNextMemoryCommitService(store)
+    members = [_seed_row(store, title=f"Member {index}", text=f"Member fact {index}.") for index in range(3)]
+    candidate_id = _seed_consolidation_candidate(
+        store,
+        member_ids=members,
+        proposal_kind="merge",
+        survivor_memory_id=None,
+        proposed_supersede=list(members),
+    )
+    del store.memories[members[-1]]
+
+    with pytest.raises(VNextMemoryCommitValidationError, match="member .* is missing"):
+        service.accept_consolidation_candidate(candidate_id, reason="Accept with missing member.")
+
+    assert all(store.memories[member_id]["status"] == "active" for member_id in members[:-1])
+    assert store.memories[candidate_id]["status"] == "candidate"
+    assert not any(revision.get("revision_type") == "superseded" for revision in store.revisions)
 
 
 def test_accept_relinks_entities_on_a_live_sqlite_store() -> None:
@@ -1167,6 +1377,7 @@ def test_accept_relinks_entities_on_a_live_sqlite_store() -> None:
                 "review_required": True,
                 "consolidation": {
                     "cluster_member_ids": [str(member["id"])],
+                    "member_snapshots": [memory_version_snapshot(member)],
                     "proposal_kind": "merge",
                     "survivor_memory_id": None,
                     "proposed_supersede": [str(member["id"])],

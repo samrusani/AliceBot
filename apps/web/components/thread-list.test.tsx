@@ -76,4 +76,31 @@ describe("ThreadList", () => {
     expect(screen.getByText("Profile Assistant Default")).toBeInTheDocument();
     expect(screen.getByText("Profile Coach Default")).toBeInTheDocument();
   });
+
+  it("bounds rendered history while retaining an older selected thread", () => {
+    const threads = Array.from({ length: 102 }, (_, index) => ({
+      id: `thread-${index}`,
+      title: `Thread ${index}`,
+      agent_profile_id: "assistant_default",
+      created_at: "2026-03-17T10:00:00Z",
+      updated_at: "2026-03-17T10:00:00Z",
+    }));
+
+    render(
+      <ThreadList
+        threads={threads}
+        selectedThreadId="thread-101"
+        currentMode="assistant"
+        source="live"
+      />,
+    );
+
+    expect(screen.getAllByRole("link")).toHaveLength(101);
+    expect(screen.getByRole("link", { name: /Thread 101/i })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.queryByRole("link", { name: /Thread 100/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/Showing the 100 most recent threads plus the selected thread/i)).toBeInTheDocument();
+  });
 });

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from importlib.resources import files as package_files
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 from uuid import UUID, NAMESPACE_URL, uuid4, uuid5
 
 from alicebot_api.continuity_contradictions import sync_contradiction_state_for_objects
@@ -44,8 +45,22 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]
 
 
-def _fixture_catalog_path() -> Path:
-    return _repo_root() / PUBLIC_EVAL_FIXTURE_SOURCE_PATH
+class _ReadableTextResource(Protocol):
+    def read_text(self, encoding: str = "utf-8") -> str: ...
+
+
+def _fixture_catalog_path() -> _ReadableTextResource:
+    repo_path = _repo_root() / PUBLIC_EVAL_FIXTURE_SOURCE_PATH
+    if repo_path.is_file():
+        return repo_path
+    packaged_path = package_files("alicebot_api").joinpath(
+        "_resources", "eval", "public_eval_suites.json"
+    )
+    if not packaged_path.is_file():
+        raise FileNotFoundError(
+            "public eval fixture catalog is missing from both the checkout and installed package"
+        )
+    return packaged_path
 
 
 def _load_fixture_catalog() -> JsonObject:

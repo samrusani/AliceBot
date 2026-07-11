@@ -230,4 +230,21 @@ describe("ApprovalDetail", () => {
       screen.getByText("Memory write-back is disabled until live API configuration is present."),
     ).toBeInTheDocument();
   });
+
+  it("does not send fixture approval IDs to a configured live API", () => {
+    render(
+      <ApprovalDetail
+        initialApproval={{ ...approval, status: "pending", resolution: null }}
+        detailSource="fixture"
+        initialExecution={null}
+        executionSource={null}
+        apiBaseUrl="https://api.example.com"
+        userId="user-1"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeDisabled();
+    expect(screen.getByText("Approve and reject controls are disabled in fixture mode.")).toBeInTheDocument();
+  });
 });

@@ -26,6 +26,25 @@ describe("HostedAdminPanel", () => {
     expect(screen.getByText("Flag Posture")).toBeInTheDocument();
   });
 
+  it("rejects insecure non-loopback hosted API configuration", () => {
+    render(<HostedAdminPanel apiBaseUrl="http://api.example.com" />);
+
+    expect(screen.getByRole("button", { name: "Load admin datasets" })).toBeDisabled();
+    expect(screen.getByText(/require HTTPS for remote APIs/i)).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects and does not render credential-bearing hosted API configuration", () => {
+    const { container } = render(
+      <HostedAdminPanel apiBaseUrl="https://user:secret@api.example.com?token=secret#trace" />,
+    );
+
+    expect(screen.getByRole("button", { name: "Load admin datasets" })).toBeDisabled();
+    expect(container.textContent).not.toContain("user:secret");
+    expect(container.textContent).not.toContain("token=secret");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("loads hosted admin datasets with bearer auth", async () => {
     fetchMock
       .mockResolvedValueOnce(new Response(JSON.stringify({ window_hours: 24, workspaces: { total_count: 1, ready_count: 1, pending_count: 0, linked_telegram_workspace_count: 1 }, delivery_receipts: { total_count: 2, failed_count: 0, suppressed_count: 0 }, chat_telemetry: { total_count: 3, failed_count: 0, rollout_blocked_count: 0, rate_limited_count: 0, abuse_blocked_count: 0 }, incidents: { open_count: 0 } })))
@@ -49,8 +68,8 @@ describe("HostedAdminPanel", () => {
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/v1/admin/hosted/overview");
-    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer admin-session-token");
-    expect(screen.getByText("Hosted admin datasets loaded.")).toBeInTheDocument();
-    expect(screen.getByText("hosted_chat_handle_enabled")).toBeInTheDocument();
+    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer admin-session-token");
+    expect(await screen.findByText("Hosted admin datasets loaded.")).toBeInTheDocument();
+    expect(await screen.findByText("hosted_chat_handle_enabled")).toBeInTheDocument();
   });
 });

@@ -11,6 +11,9 @@ import pytest
 from alicebot_api.sqlite_schema import bootstrap_sqlite_schema
 from alicebot_api.sqlite_store import SQLiteVNextStore, ensure_sqlite_user
 from alicebot_api.vnext_consolidation import (
+    MAX_EMBEDDED_MEMORIES_HARD_CAP,
+    MAX_PAIRWISE_COMPARISONS,
+    MAX_SIMILARITY_MATRIX_BYTES,
     MemoryConsolidationRequest,
     VNextConsolidationService,
     VNextConsolidationValidationError,
@@ -34,6 +37,7 @@ class FakeConsolidationStore:
         self.artifacts: list[dict] = []
         self.events: list[dict] = []
         self.embeddings: dict[str, list[float]] = {}
+        self.list_memory_calls: list[dict[str, object]] = []
         self._clock = datetime(2026, 7, 1, tzinfo=UTC)
 
     def _next_timestamp(self) -> str:
@@ -55,8 +59,125 @@ class FakeConsolidationStore:
         self.memories.append(row)
         return dict(row)
 
-    def list_memories(self, *, status: str | None = None) -> list[JsonObject]:
-        return [dict(row) for row in self.memories if status is None or row.get("status") == status]
+    def list_memories(
+        self,
+        *,
+        status: str | None = None,
+        domains: list[str] | None = None,
+        sensitivity_allowed: list[str] | None = None,
+        limit: int | None = None,
+    ) -> list[JsonObject]:
+        self.list_memory_calls.append(
+            {
+                "status": status,
+                "domains": domains,
+                "sensitivity_allowed": sensitivity_allowed,
+                "limit": limit,
+            }
+        )
+        rows = [row for row in self.memories if status is None or row.get("status") == status]
+        if domains:
+            rows = [row for row in rows if row.get("domain") in {*domains, "unknown"}]
+        if sensitivity_allowed is not None:
+            rows = [row for row in rows if row.get("sensitivity", "unknown") in sensitivity_allowed]
+        if limit is not None:
+            rows = rows[:limit]
+        return [dict(row) for row in rows]
+
+    def list_rollup_input_memories(
+        self,
+        *,
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        excluded_candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]:
+        rows = [
+            row
+            for row in self.memories
+            if row.get("status") in {"active", "accepted"}
+            and (not domains or row.get("domain") in {*domains, "unknown"})
+            and row.get("sensitivity", "unknown") in sensitivity_allowed
+            and not (
+                isinstance(row.get("metadata_json"), dict)
+                and row["metadata_json"].get("candidate_kind") == excluded_candidate_kind
+            )
+        ]
+        rows.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))), reverse=True)
+        return [dict(row) for row in rows[:limit]]
+
+    def list_pending_rollup_candidates(
+        self,
+        *,
+        rollup_digests: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]:
+        selected: list[JsonObject] = []
+        for digest in sorted(set(rollup_digests)):
+            matches = [
+                row
+                for row in self.memories
+                if row.get("status") == "candidate"
+                and (not domains or row.get("domain") in {*domains, "unknown"})
+                and row.get("sensitivity", "unknown") in sensitivity_allowed
+                and isinstance(row.get("metadata_json"), dict)
+                and row["metadata_json"].get("candidate_kind") == candidate_kind
+                and row["metadata_json"].get("rollup_digest") == digest
+            ]
+            if matches:
+                selected.append(
+                    dict(
+                        max(
+                            matches,
+                            key=lambda row: (
+                                str(row.get("updated_at") or ""),
+                                str(row.get("created_at") or ""),
+                                str(row.get("id")),
+                            ),
+                        )
+                    )
+                )
+        return selected[:limit]
+
+    def list_accepted_rollup_cards(
+        self,
+        *,
+        rollup_keys: tuple[str, ...],
+        domains: list[str] | None,
+        sensitivity_allowed: list[str],
+        candidate_kind: str,
+        limit: int,
+    ) -> list[JsonObject]:
+        selected: list[JsonObject] = []
+        for rollup_key in sorted(set(rollup_keys)):
+            matches = [
+                row
+                for row in self.memories
+                if row.get("status") in {"active", "accepted"}
+                and (not domains or row.get("domain") in {*domains, "unknown"})
+                and row.get("sensitivity", "unknown") in sensitivity_allowed
+                and isinstance(row.get("metadata_json"), dict)
+                and row["metadata_json"].get("candidate_kind") == candidate_kind
+                and row["metadata_json"].get("rollup_key") == rollup_key
+            ]
+            if matches:
+                active = [row for row in matches if row.get("status") == "active"]
+                selected.append(
+                    dict(
+                        max(
+                            active or matches,
+                            key=lambda row: (
+                                str(row.get("updated_at") or ""),
+                                str(row.get("created_at") or ""),
+                                str(row.get("id")),
+                            ),
+                        )
+                    )
+                )
+        return selected[:limit]
 
     def list_events(self, **kwargs) -> list[JsonObject]:
         return [dict(event) for event in self.events]
@@ -255,7 +376,16 @@ def test_invalid_metadata_option_overrides_are_rejected() -> None:
 def test_max_embedded_memories_request_field_cannot_exceed_hard_cap() -> None:
     service = VNextConsolidationService(FakeConsolidationStore(), embedding_provider=None)
     with pytest.raises(VNextConsolidationValidationError):
-        service.generate_memory_consolidation(MemoryConsolidationRequest(max_embedded_memories=5001))
+        service.generate_memory_consolidation(
+            MemoryConsolidationRequest(max_embedded_memories=MAX_EMBEDDED_MEMORIES_HARD_CAP + 1)
+        )
+
+
+def test_resource_guards_cover_the_entire_allowed_corpus() -> None:
+    assert MAX_SIMILARITY_MATRIX_BYTES == MAX_EMBEDDED_MEMORIES_HARD_CAP**2 * 4
+    assert MAX_PAIRWISE_COMPARISONS == (
+        MAX_EMBEDDED_MEMORIES_HARD_CAP * (MAX_EMBEDDED_MEMORIES_HARD_CAP - 1) // 2
+    )
 
 
 # -- deterministic clustering ------------------------------------------------------
@@ -301,6 +431,15 @@ def test_near_duplicates_produce_one_dedup_candidate_with_correct_members() -> N
     assert metadata["input_counts"]["proposals"] == 1
     assert metadata["candidate_memory_ids"] == [str(candidate["id"])]
     assert metadata["consolidation"]["embedding_access"] == "provider_reembed_plus_vector_search_probe"
+    resource_guard = metadata["consolidation"]["resource_guard"]
+    assert resource_guard == {
+        "matrix_dtype": "float32",
+        "matrix_bytes": 6 * 6 * 4,
+        "matrix_bytes_hard_cap": MAX_SIMILARITY_MATRIX_BYTES,
+        "pairwise_comparisons": 15,
+        "pairwise_comparisons_hard_cap": MAX_PAIRWISE_COMPARISONS,
+        "pair_index_materialization": False,
+    }
     assert "## Near-Duplicate Clusters" in artifact["content_markdown"]
     assert "## Merge / Dedup Proposals" in artifact["content_markdown"]
     assert "## Skipped / Bounds" in artifact["content_markdown"]
@@ -377,6 +516,32 @@ def test_cap_bound_is_applied_and_logged(caplog: pytest.LogCaptureFixture) -> No
     assert artifact["metadata_json"]["consolidation"]["bounded"] is True
     assert any("bounded" in record.message for record in caplog.records)
     assert "bounded" in artifact["content_markdown"]
+    clustering_calls = [
+        call
+        for call in store.list_memory_calls
+        if call["status"] in {"active", "accepted"} and call["limit"] is not None
+    ]
+    assert [call["limit"] for call in clustering_calls[:2]] == [3, 3]
+
+
+def test_clustering_does_not_materialize_triangle_or_pair_index_lists(monkeypatch) -> None:
+    store = FakeConsolidationStore()
+    mapping: dict[str, list[float]] = {}
+    _seed_six_memories(store, mapping)
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("dense triangle and global pair indexes must not be materialized")
+
+    monkeypatch.setattr(np, "triu", _forbidden)
+    monkeypatch.setattr(np, "where", _forbidden)
+    artifact = _service(store, mapping).generate_memory_consolidation(
+        MemoryConsolidationRequest(propose_rollups=False)
+    )
+
+    assert artifact["metadata_json"]["input_counts"]["clusters"] == 1
+    assert artifact["metadata_json"]["consolidation"]["resource_guard"][
+        "pair_index_materialization"
+    ] is False
 
 
 def test_threshold_override_via_metadata_json_options() -> None:

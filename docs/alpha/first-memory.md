@@ -155,4 +155,4 @@ If that works, Alice memory is functioning. The missing piece is agent prompting
 
 ---
 
-Footnote: earlier previews taught this flow through the legacy `alice_vnext_commit_memory` / `alice_vnext_ingest_agent_output` tools. Those remain available behind `ALICE_MCP_LEGACY_TOOLS=1` on the Postgres backend, but new integrations should use the core tools above.
+Footnote: earlier previews taught this flow through the legacy `alice_vnext_commit_memory` / `alice_vnext_ingest_agent_output` tools. Those remain available only on a deliberately keyless Postgres server behind `ALICE_MCP_LEGACY_TOOLS=1`; key-bound and new integrations use the core tools above.

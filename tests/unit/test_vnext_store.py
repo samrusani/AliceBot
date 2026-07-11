@@ -8,6 +8,7 @@ import pytest
 from psycopg.types.json import Jsonb
 
 from alicebot_api.store import ContinuityStoreInvariantError
+from alicebot_api.vnext_embeddings import memory_embedding_content_sha256
 from alicebot_api.vnext_event_log import build_event_log_record
 from alicebot_api.vnext_store import PostgresVNextStore, _search_patterns
 
@@ -205,7 +206,8 @@ def test_keyword_search_methods_apply_domain_sensitivity_and_limit_filters() -> 
     assert "domain = ANY" in memory_query
     assert "sensitivity = ANY" in memory_query
     assert "memory_type = ANY" in memory_query
-    assert "COALESCE(project_id, metadata_json ->> 'project_id')" in memory_query
+    assert "metadata_json -> 'project_scope'" in memory_query
+    assert "?| %s::text[]" in memory_query
     assert "created_by_agent_id = ANY" in memory_query
     assert "run_id = %s" in memory_query
     assert "valid_to IS NULL OR valid_to >= clock_timestamp()" in memory_query
@@ -532,7 +534,12 @@ def test_memory_revision_provenance_and_graph_methods_write_audit_events() -> No
     assert "domain" in memory_insert_query
     assert "sensitivity" in memory_insert_query
     assert "metadata_json" in memory_insert_query
-    assert any("WITH next_revision" in query for query, _params in cursor.executed)
+    assert "ON CONFLICT DO NOTHING" in memory_insert_query
+    assert "WHERE commit_digest IS NOT NULL" not in memory_insert_query
+    revision_queries = [query for query, _params in cursor.executed if "next_revision AS" in query]
+    assert len(revision_queries) == 1
+    assert "locked_memory AS" in revision_queries[0]
+    assert "FOR UPDATE" in revision_queries[0]
     assert any("INSERT INTO provenance_links" in query for query, _params in cursor.executed)
     assert any("INSERT INTO graph_edges" in query for query, _params in cursor.executed)
     assert any("UPDATE graph_edges" in query for query, _params in cursor.executed)
@@ -541,6 +548,188 @@ def test_memory_revision_provenance_and_graph_methods_write_audit_events() -> No
     assert "metadata_json = metadata_json || %s" in update_edge_query
     assert update_edge_params is not None
     assert update_edge_params[1] == "accepted"
+
+
+def test_create_memory_persists_canonical_multi_project_scope_metadata() -> None:
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {
+                "id": memory_id,
+                "memory_key": "shared.scope",
+                    "canonical_text": "Shared scope",
+                    "metadata_json": {"project_scope": ["alicebot", "hermes"]},
+                    "project_id": "alicebot",
+            },
+            _event_row(memory_id),
+        ],
+        fetchall_result=[],
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    row = store.create_memory(
+        {
+            "id": memory_id,
+            "memory_key": "shared.scope",
+            "canonical_text": "Shared scope",
+            "project_scope": ["alicebot", "hermes"],
+        }
+    )
+
+    assert row["project_scope"] == ["alicebot", "hermes"]
+    insert_params = cursor.executed[0][1]
+    assert insert_params is not None
+    metadata_values = [param.obj for param in insert_params if isinstance(param, Jsonb)]
+    assert {"project_scope": ["alicebot", "hermes"]} in metadata_values
+
+
+def test_get_memory_for_update_uses_a_row_lock() -> None:
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(fetchone_results=[{"id": memory_id}])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    assert store.get_memory_for_update(memory_id) == {"id": memory_id}
+    query, params = cursor.executed[0]
+    assert "FROM memories" in query
+    assert "FOR UPDATE" in query
+    assert params == (memory_id,)
+
+
+def test_pending_derived_candidate_lookup_uses_snapshots_and_row_locks() -> None:
+    member_id = str(uuid4())
+    excluded_id = str(uuid4())
+    candidate_id = str(uuid4())
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[{"id": candidate_id}])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    assert store.list_pending_derived_candidates_for_member(
+        member_id=member_id,
+        exclude_memory_id=excluded_id,
+    ) == [{"id": candidate_id}]
+
+    query, params = cursor.executed[0]
+    assert "status IN ('candidate', 'needs_review')" in query
+    assert "member_snapshots" in query
+    assert "jsonb_array_elements" in query
+    assert "FOR UPDATE OF candidate" in query
+    assert params == (excluded_id, excluded_id, member_id)
+
+
+def test_list_memories_pushes_scope_and_limit_into_postgres_query() -> None:
+    cursor = RecordingCursor(fetchone_results=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    assert (
+        store.list_memories(
+            status="active",
+            domains=["project"],
+            sensitivity_allowed=["private"],
+            limit=7,
+        )
+        == []
+    )
+
+    query, params = cursor.executed[-1]
+    assert "status = %s" in query
+    assert "domain = ANY(%s::text[]) OR domain = 'unknown'" in query
+    assert "COALESCE(sensitivity, 'unknown') = ANY(%s::text[])" in query
+    assert "LIMIT %s" in query
+    assert params == ("active", ["project"], ["private"], 7)
+    with pytest.raises(ValueError, match="limit must be positive"):
+        store.list_memories(limit=0)
+
+
+def test_rollup_reads_push_status_scope_exact_keys_order_and_limits_into_postgres() -> None:
+    cursor = RecordingCursor(fetchone_results=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.list_rollup_input_memories(
+        domains=["project"],
+        sensitivity_allowed=["private"],
+        excluded_candidate_kind="memory_rollup",
+        limit=501,
+    )
+    store.list_pending_rollup_candidates(
+        rollup_digests=("digest-b", "digest-a", "digest-a"),
+        domains=["project"],
+        sensitivity_allowed=["private"],
+        candidate_kind="memory_rollup",
+        limit=99,
+    )
+    store.list_accepted_rollup_cards(
+        rollup_keys=("topic:zeta", "topic:alpha", "topic:alpha"),
+        domains=["project"],
+        sensitivity_allowed=["private"],
+        candidate_kind="memory_rollup",
+        limit=99,
+    )
+
+    input_query, input_params = cursor.executed[0]
+    assert "status IN ('active', 'accepted')" in input_query
+    assert "COALESCE(metadata_json ->> 'candidate_kind', '') <> %s" in input_query
+    assert "domain = ANY(%s::text[]) OR domain = 'unknown'" in input_query
+    assert "COALESCE(sensitivity, 'unknown') = ANY(%s::text[])" in input_query
+    assert "ORDER BY created_at DESC, id DESC" in input_query
+    assert "LIMIT %s" in input_query
+    assert input_params == (
+        "memory_rollup",
+        ["project"],
+        ["project"],
+        ["private"],
+        501,
+    )
+
+    pending_query, pending_params = cursor.executed[1]
+    assert "DISTINCT ON (metadata_json ->> 'rollup_digest')" in pending_query
+    assert "status = 'candidate'" in pending_query
+    assert "metadata_json ->> 'rollup_digest' = ANY(%s::text[])" in pending_query
+    assert "ORDER BY metadata_json ->> 'rollup_digest', updated_at DESC" in pending_query
+    assert "LIMIT %s" in pending_query
+    assert pending_params == (
+        "memory_rollup",
+        ["digest-a", "digest-b"],
+        ["project"],
+        ["project"],
+        ["private"],
+        2,
+    )
+
+    accepted_query, accepted_params = cursor.executed[2]
+    assert "DISTINCT ON (metadata_json ->> 'rollup_key')" in accepted_query
+    assert "status IN ('active', 'accepted')" in accepted_query
+    assert "metadata_json ->> 'rollup_key' = ANY(%s::text[])" in accepted_query
+    assert "CASE WHEN status = 'active' THEN 0 ELSE 1 END" in accepted_query
+    assert "LIMIT %s" in accepted_query
+    assert accepted_params == (
+        "memory_rollup",
+        ["topic:alpha", "topic:zeta"],
+        ["project"],
+        ["project"],
+        ["private"],
+        2,
+    )
+
+    store.list_rollup_input_memories(
+        domains=[],
+        sensitivity_allowed=["internal"],
+        excluded_candidate_kind="memory_rollup",
+        limit=1,
+    )
+    assert cursor.executed[3][1] == (
+        "memory_rollup",
+        None,
+        None,
+        ["internal"],
+        1,
+    )
+
+    with pytest.raises(ValueError, match="limit must be positive"):
+        store.list_rollup_input_memories(
+            domains=None,
+            sensitivity_allowed=["internal"],
+            excluded_candidate_kind="memory_rollup",
+            limit=0,
+        )
 
 
 def test_project_people_belief_and_open_loop_methods_write_audit_events() -> None:
@@ -605,6 +794,22 @@ def test_project_people_belief_and_open_loop_methods_write_audit_events() -> Non
     assert "INSERT INTO open_loops" in cursor.executed[16][0]
     assert "UPDATE open_loops" in cursor.executed[19][0]
     assert "UPDATE open_loops" in cursor.executed[21][0]
+
+
+def test_get_artifact_for_update_locks_the_persisted_authorization_target() -> None:
+    artifact_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[{"id": artifact_id, "artifact_type": "daily_brief"}]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    artifact = store.get_artifact_for_update(artifact_id)
+
+    assert artifact == {"id": artifact_id, "artifact_type": "daily_brief"}
+    query, params = cursor.executed[0]
+    assert "FROM generated_artifacts" in query
+    assert "FOR UPDATE" in query
+    assert params == (artifact_id,)
 
 
 def test_artifact_task_and_brain_charter_methods_write_audit_events() -> None:
@@ -913,7 +1118,8 @@ def test_fts_search_builds_websearch_tsquery_with_pushed_down_filters() -> None:
     assert "domain = ANY" in query
     assert "sensitivity = ANY" in query
     assert "memory_type = ANY" in query
-    assert "COALESCE(project_id, metadata_json ->> 'project_id')" in query
+    assert "metadata_json -> 'project_scope'" in query
+    assert "?| %s::text[]" in query
     assert "created_by_agent_id = ANY" in query
     assert "run_id = %s" in query
     assert "valid_to IS NULL OR valid_to >= clock_timestamp()" in query
@@ -1063,7 +1269,8 @@ def test_vector_search_orders_by_cosine_distance_and_skips_null_embeddings() -> 
     assert "embedding_vector IS NOT NULL" in query
     assert "status IN ('active', 'accepted')" in query
     assert "memory_type = ANY" in query
-    assert "COALESCE(project_id, metadata_json ->> 'project_id')" in query
+    assert "metadata_json -> 'project_scope'" in query
+    assert "?| %s::text[]" in query
     assert "created_by_agent_id = ANY" in query
     assert "run_id = %s" in query
     assert "valid_to IS NULL OR valid_to >= clock_timestamp()" in query
@@ -1089,6 +1296,55 @@ def test_vector_search_orders_by_cosine_distance_and_skips_null_embeddings() -> 
     )
 
 
+def test_vector_search_can_require_matching_embedding_signature() -> None:
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.search_memories_vector(
+        query_vector=[1.0, 0.0],
+        embedding_provider="openai_compatible",
+        embedding_model="embed-v1",
+        embedding_signature_version=1,
+    )
+
+    query, params = cursor.executed[0]
+    assert "metadata_json -> '_alice_embedding' ->> 'provider' = %s" in query
+    assert "metadata_json -> '_alice_embedding' ->> 'model' = %s" in query
+    assert "->> 'version' = %s" in query
+    assert params[-6:-3] == ("openai_compatible", "embed-v1", "1")
+
+
+def test_vector_search_discards_stale_content_signatures_after_database_read() -> None:
+    current = {
+        "id": "memory-current",
+        "canonical_text": "Current vector content",
+        "metadata_json": {},
+        "vector_distance": 0.2,
+    }
+    current["metadata_json"] = {
+        "_alice_embedding": {"content_sha256": memory_embedding_content_sha256(current)}
+    }
+    stale = {
+        "id": "memory-stale",
+        "canonical_text": "Text changed after this vector was made",
+        "metadata_json": {"_alice_embedding": {"content_sha256": "0" * 64}},
+        "vector_distance": 0.1,
+    }
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[stale, current])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    rows = store.search_memories_vector(
+        query_vector=[1.0, 0.0],
+        limit=1,
+        embedding_provider="openai_compatible",
+        embedding_model="embed-v1",
+        embedding_signature_version=1,
+    )
+
+    assert [row["id"] for row in rows] == ["memory-current"]
+    assert cursor.executed[0][1][-1] == 4
+
+
 def test_update_memory_embedding_and_missing_embedding_listing() -> None:
     memory_id = str(uuid4())
     cursor = RecordingCursor(
@@ -1110,6 +1366,36 @@ def test_update_memory_embedding_and_missing_embedding_listing() -> None:
     assert "%s::uuid IS NULL OR id > %s::uuid" in missing_query
     assert "ORDER BY id ASC" in missing_query
     assert missing_params == (memory_id, memory_id, 64)
+
+
+def test_embedding_backfill_includes_unsigned_or_incompatible_vectors() -> None:
+    cursor = RecordingCursor(fetchone_results=[], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    store.list_memories_missing_embeddings(
+        limit=32,
+        embedding_provider="openai_compatible",
+        embedding_model="embed-v2",
+        embedding_signature_version=1,
+    )
+
+    query, params = cursor.executed[0]
+    assert "embedding_vector IS NULL" in query
+    assert "IS DISTINCT FROM %s" in query
+    assert "embedding_present" in query
+    assert params == ("openai_compatible", "embed-v2", "1", None, None, 32)
+
+
+def test_clear_memory_embedding_removes_signature_metadata() -> None:
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(fetchone_results=[{"id": memory_id}], fetchall_result=[])
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    assert store.clear_memory_embedding(memory_id=memory_id) == {"id": memory_id}
+    query, _params = cursor.executed[0]
+    assert "embedding_vector = NULL" in query
+    assert "metadata_json = metadata_json - '_alice_embedding'" in query
+    assert "{EMBEDDING_SIGNATURE_METADATA_KEY}" not in query
 
 
 def test_targeted_memory_lookups_use_indexed_columns() -> None:
@@ -1383,6 +1669,45 @@ def test_memory_writes_accept_supersession_pointer_columns() -> None:
     assert "supersedes = COALESCE(%s::uuid, supersedes)" in update_query
     assert update_params is not None
     assert successor_id in update_params
+
+
+def test_update_memory_reassigns_first_class_and_canonical_project_scope_together() -> None:
+    memory_id = str(uuid4())
+    cursor = RecordingCursor(
+        fetchone_results=[
+            {
+                "id": memory_id,
+                "memory_key": "project.release.scope",
+                "canonical_text": "Release scope moved.",
+                "project_id": "project-new",
+                "metadata_json": {
+                    "project_id": "project-new",
+                    "project_scope": ["project-new"],
+                },
+            },
+            _event_row(memory_id),
+        ]
+    )
+    store = PostgresVNextStore(RecordingConnection(cursor))
+
+    row = store.update_memory(
+        memory_id=memory_id,
+        patch={
+            "project_id": "project-new",
+            "metadata_json": {
+                "project_id": "project-new",
+                "project_scope": ["project-new"],
+            },
+        },
+    )
+
+    query, params = cursor.executed[0]
+    assert "project_id = COALESCE(%s, project_id)" in query
+    assert params is not None
+    metadata_param = next(param for param in params if isinstance(param, Jsonb))
+    assert metadata_param.obj["project_scope"] == ["project-new"]
+    assert "project-new" in params
+    assert row["project_scope"] == ["project-new"]
 
 
 # -- entity substrate: resolution, mentions, relationship history ---------------

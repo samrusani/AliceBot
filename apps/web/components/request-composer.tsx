@@ -17,6 +17,7 @@ type RequestComposerProps = {
   selectedThreadId?: string;
   selectedThreadTitle?: string;
   defaultToolId?: string;
+  source?: "live" | "fixture" | "unavailable";
 };
 
 function formatDate(value: string) {
@@ -35,6 +36,7 @@ export function RequestComposer({
   selectedThreadId,
   selectedThreadTitle,
   defaultToolId,
+  source = "fixture",
 }: RequestComposerProps) {
   const activeThreadId = selectedThreadId?.trim() ?? "";
   const [toolId, setToolId] = useState(defaultToolId ?? "");
@@ -55,20 +57,29 @@ export function RequestComposer({
   );
   const [entries, setEntries] = useState(initialEntries);
   const [statusText, setStatusText] = useState(
-    activeThreadId
-      ? "Ready to submit a governed approval request for the selected thread."
-      : "Select a thread before submitting a governed approval request.",
+    source === "unavailable"
+      ? "Governed submission is unavailable until live continuity can be loaded."
+      : activeThreadId
+        ? "Ready to submit a governed approval request for the selected thread."
+        : "Select a thread before submitting a governed approval request.",
   );
   const [statusTone, setStatusTone] = useState<"info" | "success" | "danger">("info");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const liveModeReady = Boolean(apiBaseUrl && userId);
+  const liveModeReady = Boolean(apiBaseUrl && userId && source === "live");
+  const interactionAvailable = source !== "unavailable";
   const visibleEntries = activeThreadId
     ? entries.filter((entry) => entry.threadId === activeThreadId)
     : [];
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+
+    if (!interactionAvailable) {
+      setStatusTone("danger");
+      setStatusText("Governed submission is unavailable until live continuity can be loaded.");
+      return;
+    }
 
     const nextToolId = toolId.trim();
     const nextAction = action.trim();
@@ -292,7 +303,12 @@ export function RequestComposer({
             type="submit"
             className="button"
             disabled={
-              isSubmitting || !activeThreadId || !toolId.trim() || !action.trim() || !scope.trim()
+              !interactionAvailable ||
+              isSubmitting ||
+              !activeThreadId ||
+              !toolId.trim() ||
+              !action.trim() ||
+              !scope.trim()
             }
           >
             {isSubmitting ? "Submitting..." : "Submit governed request"}

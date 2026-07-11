@@ -39,14 +39,17 @@ export function ResponseComposer({
   const [message, setMessage] = useState("");
   const [entries, setEntries] = useState(initialEntries);
   const [statusText, setStatusText] = useState(
-    selectedThreadId
+    source === "unavailable"
+      ? "Assistant submission is unavailable until live continuity can be loaded."
+      : selectedThreadId
       ? "Ready to ask the assistant inside the selected thread."
       : "Select a thread before sending an assistant message.",
   );
   const [statusTone, setStatusTone] = useState<"info" | "success" | "danger">("info");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const liveModeReady = Boolean(apiBaseUrl && userId);
+  const liveModeReady = Boolean(apiBaseUrl && userId && source === "live");
+  const interactionAvailable = source !== "unavailable";
   const activeThreadId = selectedThreadId?.trim() ?? "";
   const visibleEntries = activeThreadId
     ? entries.filter((entry) => entry.threadId === activeThreadId)
@@ -56,6 +59,12 @@ export function ResponseComposer({
     event.preventDefault();
 
     const nextMessage = message.trim();
+
+    if (!interactionAvailable) {
+      setStatusTone("danger");
+      setStatusText("Assistant submission is unavailable until live continuity can be loaded.");
+      return;
+    }
 
     if (!activeThreadId || !nextMessage) {
       setStatusTone("danger");
@@ -210,7 +219,7 @@ export function ResponseComposer({
             <button
               type="submit"
               className="button"
-              disabled={isSubmitting || !activeThreadId || !message.trim()}
+              disabled={!interactionAvailable || isSubmitting || !activeThreadId || !message.trim()}
             >
               {isSubmitting ? "Asking..." : "Ask assistant"}
             </button>

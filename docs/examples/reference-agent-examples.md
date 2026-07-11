@@ -54,6 +54,6 @@ Expected JSON output:
 
 ## When To Use Something Else
 
-- use the MCP surface instead of HTTP when your host runtime is already speaking MCP: the core `alice_resume`/`alice_context_pack` tools cover most continuity lookups, and `alice_brief` remains available on the legacy surface with `ALICE_MCP_LEGACY_TOOLS=1`
+- use the MCP surface instead of HTTP when your host runtime is already speaking MCP: the core `alice_resume`/`alice_context_pack` tools cover most continuity lookups; `alice_brief` is available only on a deliberately keyless local legacy server with `ALICE_MCP_LEGACY_TOOLS=1`
 - use `docs/integrations/hermes.md` when Hermes owns orchestration
 - use `docs/integrations/openclaw.md` when imported OpenClaw memory is part of the adoption path

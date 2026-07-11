@@ -16,6 +16,7 @@ from alicebot_api.contracts import (
     ContradictionCaseListSummary,
     ContradictionCaseRecord,
     ContradictionKind,
+    ContradictionResolutionAction,
     ContradictionResolveInput,
     ContradictionResolveResponse,
     ContradictionStatus,

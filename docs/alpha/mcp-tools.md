@@ -90,11 +90,15 @@ For the full Postgres stack from a checkout:
   (`facts_first` / `recent_first` reorder results; `balanced` is the
   default).
 - `alice_context_pack` — a scoped context bundle for a task: relevant
-  memories, open loops, and sources with supporting evidence. Accepts the
-  same `memory_types` filter, and `max_tokens` is enforced: lowest-ranked
-  items are dropped to fit the budget and the response carries a
-  `token_report` (`token_budget`, `token_estimate`, `truncated`,
-  `dropped_item_count`). `context_depth` picks the cost/coverage tier
+  memories, open loops, and sources with supporting evidence. `projects`,
+  `people`, and `time_window` are hard filters across every content section;
+  time windows use `all` or a bounded relative form such as `7d` or `30d`.
+  Accepts the same `memory_types` filter, and `max_tokens` budgets each
+  unique content-bearing section: lowest-ranked items are dropped to fit.
+  The `budget` object reports the charged estimate, truncation, dropped
+  items, complete serialized-envelope estimate, and the diagnostic or
+  duplicate navigation views excluded from the unique-content budget.
+  `context_depth` picks the cost/coverage tier
   (`minimal` | `low` | `medium` | `high`) and `budget_strategy` decides how
   a tight token budget is spent (`balanced` | `facts_first` |
   `recent_first` | `contradictions_first` | `sources_first`). The
@@ -119,6 +123,10 @@ To run the MCP server under a specific agent identity, set
 as local operator tooling. Key creation requires Postgres — in SQLite
 on-ramp mode, leave `ALICE_AGENT_API_KEY` unset; payload identity is
 honored and audited as `unauthenticated_local`.
+
+A key-bound MCP server exposes only the eleven core tools. The legacy flag
+is deliberately ignored while `ALICE_AGENT_API_KEY` is set, and direct
+legacy calls fail closed instead of attempting partial authorization.
 
 ## The debug flag
 
@@ -236,6 +244,10 @@ available behind an environment flag for integrations that depend on it:
 ```bash
 ALICE_MCP_LEGACY_TOOLS=1
 ```
+
+This compatibility mode is local-operator-only and requires
+`ALICE_AGENT_API_KEY` to be unset. If a key is configured, legacy tools are
+omitted from `tools/list` and direct legacy calls are rejected.
 
 The legacy surface requires Postgres: on the SQLite backend the legacy
 tools are listed but their calls fail.

@@ -54,6 +54,7 @@ from alicebot_api.contracts import (
 from alicebot_api.artifacts import (
     TASK_ARTIFACT_CHUNK_RETRIEVAL_MATCHING_RULE,
     TaskArtifactNotFoundError,
+    TaskArtifactChunkRetrievalValidationError,
     build_task_artifact_chunk_retrieval_scope,
     infer_task_artifact_media_type,
     resolve_artifact_chunk_retrieval_query_terms,

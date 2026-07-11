@@ -8,6 +8,35 @@ export type ApiConfig = {
   defaultToolId: string;
 };
 
+const DEFAULT_READ_TIMEOUT_MS = 15_000;
+const DEFAULT_MUTATION_TIMEOUT_MS = 30_000;
+const LONG_RUNNING_MUTATION_TIMEOUT_MS = 120_000;
+const MAX_API_TIMEOUT_MS = 120_000;
+
+// Client-memory only. The vNext operator console owns this value for the
+// lifetime of its mounted browser session; it is never read from persistent
+// configuration or included in request URLs.
+let vNextOperatorAgentApiKey = "";
+
+export type ApiRequestInit = RequestInit & {
+  timeoutMs?: number;
+};
+
+export function setVNextOperatorAgentApiKey(agentApiKey: string) {
+  vNextOperatorAgentApiKey = agentApiKey.trim();
+}
+
+export function clearVNextOperatorAgentApiKey() {
+  vNextOperatorAgentApiKey = "";
+}
+
+function redactVNextOperatorAgentApiKey(value: string, requestSecrets: string[] = []) {
+  return Array.from(new Set([vNextOperatorAgentApiKey, ...requestSecrets].filter(Boolean))).reduce(
+    (sanitized, secret) => sanitized.split(secret).join("[redacted agent key]"),
+    value,
+  );
+}
+
 export const DEFAULT_AGENT_PROFILE_ID = "assistant_default";
 
 export type ThreadItem = {
@@ -638,6 +667,22 @@ export type VNextMemoryReviewPayload = {
   sensitivity?: string;
   project_id?: string;
   reason?: string;
+};
+
+export type VNextMemoryConfirmationPayload = {
+  user_id: string;
+  confirmation_id: string;
+  action: "confirm" | "edit" | "reject";
+  canonical_text?: string;
+  rationale?: string;
+};
+
+export type VNextMemoryConfirmationResponse = {
+  status: "committed" | "rejected";
+  write_mode: "confirm_inline" | "reject";
+  confirmation_id?: string;
+  reason?: string;
+  memory: VNextMemoryRecord;
 };
 
 export type VNextProjectCreatePayload = {
@@ -2815,11 +2860,87 @@ export type ResponseHistoryEntry = {
 
 export class ApiError extends Error {
   status: number;
+  code: string;
+  detail: unknown;
+  retryAfterSeconds: number | null;
 
-  constructor(message: string, status: number) {
-    super(message);
+  constructor(
+    message: string,
+    status: number,
+    code = "request_failed",
+    detail: unknown = null,
+    retryAfterSeconds: number | null = null,
+    requestSecrets: string[] = [],
+  ) {
+    const sanitizedDetail = sanitizeApiErrorDetail(detail, requestSecrets);
+    super(sanitizePublicErrorText(message, requestSecrets));
     this.name = "ApiError";
     this.status = status;
+    const sanitizedCode = redactVNextOperatorAgentApiKey(code, requestSecrets);
+    this.code = /^[a-z0-9_.-]{1,80}$/i.test(sanitizedCode) ? sanitizedCode : "request_failed";
+    this.detail = sanitizedDetail;
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+const PUBLIC_URL_PATTERN = /https?:\/\/\S+/gi;
+
+export function sanitizePublicErrorText(message: string, requestSecrets: string[] = []) {
+  return redactVNextOperatorAgentApiKey(message, requestSecrets).replace(PUBLIC_URL_PATTERN, (candidate) => {
+    try {
+      const parsed = new URL(candidate);
+      parsed.username = "";
+      parsed.password = "";
+      parsed.search = "";
+      parsed.hash = "";
+      return parsed.toString().replace(/\/$/, parsed.pathname === "/" ? "" : "/");
+    } catch {
+      return "[redacted URL]";
+    }
+  });
+}
+
+function sanitizeApiErrorDetail(value: unknown, requestSecrets: string[] = []): unknown {
+  if (typeof value === "string") {
+    return sanitizePublicErrorText(value, requestSecrets);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeApiErrorDetail(item, requestSecrets));
+  }
+  if (typeof value === "object" && value !== null) {
+    const sanitizedEntries: Array<[string, unknown]> = [];
+    const usedKeys = new Set<string>();
+    for (const [key, item] of Object.entries(value)) {
+      const sanitizedKey = sanitizePublicErrorText(key, requestSecrets);
+      let outputKey = sanitizedKey;
+      let collisionIndex = 2;
+      while (usedKeys.has(outputKey)) {
+        outputKey = `${sanitizedKey}#${collisionIndex}`;
+        collisionIndex += 1;
+      }
+      usedKeys.add(outputKey);
+      sanitizedEntries.push([outputKey, sanitizeApiErrorDetail(item, requestSecrets)]);
+    }
+    return Object.fromEntries(sanitizedEntries);
+  }
+  return value;
+}
+
+export function sanitizeApiBaseUrl(apiBaseUrl: string) {
+  const normalized = apiBaseUrl.trim();
+  if (!normalized) {
+    return "";
+  }
+  try {
+    const parsed = new URL(normalized);
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+      return "";
+    }
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, parsed.pathname === "/" ? "" : "/");
+  } catch {
+    return "";
   }
 }
 
@@ -2833,9 +2954,11 @@ function readEnv(publicValue: string | undefined, serverValue: string | undefine
 
 export function getApiConfig(): ApiConfig {
   return {
-    apiBaseUrl: readEnv(
-      process.env.NEXT_PUBLIC_ALICEBOT_API_BASE_URL,
-      process.env.ALICEBOT_API_BASE_URL,
+    apiBaseUrl: sanitizeApiBaseUrl(
+      readEnv(
+        process.env.NEXT_PUBLIC_ALICEBOT_API_BASE_URL,
+        process.env.ALICEBOT_API_BASE_URL,
+      ),
     ),
     userId: readEnv(process.env.NEXT_PUBLIC_ALICEBOT_USER_ID, process.env.ALICEBOT_USER_ID),
     defaultThreadId: readEnv(
@@ -2847,21 +2970,35 @@ export function getApiConfig(): ApiConfig {
 }
 
 export function isLocalApiBaseUrl(apiBaseUrl: string) {
-  const normalized = apiBaseUrl.trim();
-  if (normalized === "") {
+  const normalized = sanitizeApiBaseUrl(apiBaseUrl);
+  if (!normalized) {
     return false;
   }
 
   try {
     const parsed = new URL(normalized);
-    return ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
+    return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function isSupportedApiBaseUrl(apiBaseUrl: string) {
+  const normalized = sanitizeApiBaseUrl(apiBaseUrl);
+  if (!normalized) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    return parsed.protocol === "https:" || (parsed.protocol === "http:" && isLocalApiBaseUrl(normalized));
   } catch {
     return false;
   }
 }
 
 export function hasLiveApiConfig(config: Pick<ApiConfig, "apiBaseUrl" | "userId">) {
-  return Boolean(config.userId && isLocalApiBaseUrl(config.apiBaseUrl));
+  return Boolean(config.userId.trim() && isLocalApiBaseUrl(config.apiBaseUrl));
 }
 
 export function combinePageModes(...modes: Array<ApiSource | null | undefined>): PageDataMode {
@@ -2986,7 +3123,11 @@ function buildApiUrl(
   path: string,
   query?: Record<string, string | undefined>,
 ) {
-  const url = new URL(path, `${apiBaseUrl.replace(/\/$/, "")}/`);
+  const sanitizedBaseUrl = sanitizeApiBaseUrl(apiBaseUrl);
+  if (!sanitizedBaseUrl) {
+    throw new ApiError("The configured API base URL is invalid", 0, "invalid_api_base_url");
+  }
+  const url = new URL(path, `${sanitizedBaseUrl.replace(/\/$/, "")}/`);
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value) {
       url.searchParams.set(key, value);
@@ -2995,27 +3136,178 @@ function buildApiUrl(
   return url.toString();
 }
 
-async function requestJson<T>(
-  apiBaseUrl: string,
-  path: string,
-  init?: RequestInit,
-  query?: Record<string, string | undefined>,
-): Promise<T> {
-  const response = await fetch(buildApiUrl(apiBaseUrl, path, query), {
-    cache: "no-store",
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-
-  const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
-  if (!response.ok) {
-    throw new ApiError(payload?.detail ?? "Request failed", response.status);
+function shouldAttachVNextOperatorAgentApiKey(requestUrl: string) {
+  if (!vNextOperatorAgentApiKey) {
+    return false;
   }
 
-  return payload as T;
+  try {
+    const parsed = new URL(requestUrl);
+    return (
+      isLocalApiBaseUrl(parsed.origin) &&
+      (parsed.pathname === "/v0/vnext" || parsed.pathname.startsWith("/v0/vnext/"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function serializeRequestHeaders(headers: Headers) {
+  const serialized: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    const normalizedKey = key.toLowerCase();
+    const outputKey =
+      normalizedKey === "content-type"
+        ? "Content-Type"
+        : normalizedKey === "authorization"
+          ? "Authorization"
+          : key;
+    serialized[outputKey] = value;
+  });
+  return serialized;
+}
+
+function parseRetryAfterSeconds(value: string | null) {
+  if (!value) {
+    return null;
+  }
+  const numericSeconds = Number(value);
+  if (Number.isFinite(numericSeconds) && numericSeconds >= 0) {
+    return Math.ceil(numericSeconds);
+  }
+  const retryAt = Date.parse(value);
+  if (!Number.isFinite(retryAt)) {
+    return null;
+  }
+  return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+}
+
+function detailMessage(detail: unknown) {
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) =>
+        typeof item === "object" && item !== null && "msg" in item
+          ? String(item.msg)
+          : typeof item === "string"
+            ? item
+            : "",
+      )
+      .filter(Boolean);
+    return messages.length ? messages.join("; ") : null;
+  }
+  if (typeof detail === "object" && detail !== null) {
+    for (const key of ["message", "detail", "error", "reason"]) {
+      const value = (detail as Record<string, unknown>)[key];
+      if (typeof value === "string" && value.trim()) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
+export async function requestJson<T>(
+  apiBaseUrl: string,
+  path: string,
+  init?: ApiRequestInit,
+  query?: Record<string, string | undefined>,
+): Promise<T> {
+  const requestMethod = (init?.method ?? "GET").toUpperCase();
+  const defaultTimeoutMs = requestMethod === "GET" ? DEFAULT_READ_TIMEOUT_MS : DEFAULT_MUTATION_TIMEOUT_MS;
+  const requestedTimeoutMs = init?.timeoutMs;
+  const timeoutMs =
+    typeof requestedTimeoutMs === "number" && Number.isFinite(requestedTimeoutMs)
+      ? Math.min(MAX_API_TIMEOUT_MS, Math.max(1, Math.trunc(requestedTimeoutMs)))
+      : defaultTimeoutMs;
+  const fetchInit: ApiRequestInit = { ...(init ?? {}) };
+  delete fetchInit.timeoutMs;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  const callerSignal = fetchInit.signal;
+  const abortFromCaller = () => controller.abort(callerSignal?.reason);
+  if (callerSignal?.aborted) {
+    abortFromCaller();
+  } else {
+    callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+
+  try {
+    const requestUrl = buildApiUrl(apiBaseUrl, path, query);
+    const requestHeaders = new Headers(fetchInit.headers);
+    if (!requestHeaders.has("Content-Type")) {
+      requestHeaders.set("Content-Type", "application/json");
+    }
+    let autoAttachedAgentApiKey = "";
+    if (
+      shouldAttachVNextOperatorAgentApiKey(requestUrl) &&
+      !requestHeaders.has("Authorization")
+    ) {
+      autoAttachedAgentApiKey = vNextOperatorAgentApiKey;
+      requestHeaders.set("Authorization", `Bearer ${autoAttachedAgentApiKey}`);
+    }
+    const authorizationHeader = requestHeaders.get("Authorization")?.trim() ?? "";
+    const bearerMatch = /^Bearer\s+(.+)$/i.exec(authorizationHeader);
+    const requestSecrets = bearerMatch?.[1] ? [bearerMatch[1]] : [];
+
+    const response = await fetch(requestUrl, {
+      cache: "no-store",
+      ...fetchInit,
+      signal: controller.signal,
+      headers: serializeRequestHeaders(requestHeaders),
+    });
+
+    const payload = (await response.json().catch(() => null)) as
+      | { detail?: unknown; message?: unknown; code?: unknown }
+      | null;
+    if (!response.ok) {
+      const detail = sanitizeApiErrorDetail(
+        payload?.detail ?? payload?.message ?? null,
+        requestSecrets,
+      );
+      const message = detailMessage(detail) ?? `Request failed with status ${response.status}`;
+      const nestedCode =
+        typeof detail === "object" && detail !== null && !Array.isArray(detail)
+          ? (detail as Record<string, unknown>).code
+          : null;
+      const codeCandidate = payload?.code ?? nestedCode;
+      const code = typeof codeCandidate === "string" ? codeCandidate : "request_failed";
+      throw new ApiError(
+        message,
+        response.status,
+        code,
+        detail,
+        parseRetryAfterSeconds(response.headers.get("Retry-After")),
+        requestSecrets,
+      );
+    }
+
+    return payload as T;
+  } catch (error) {
+    if (timedOut) {
+      throw new ApiError(
+        `Request timed out after ${timeoutMs / 1000} seconds`,
+        0,
+        "request_timeout",
+      );
+    }
+    if (controller.signal.aborted && !(error instanceof ApiError)) {
+      throw new ApiError("Request was cancelled", 0, "request_cancelled");
+    }
+    if (error instanceof ApiError) {
+      throw error;
+    }
+    throw new ApiError("Unable to reach the configured API", 0, "transport_error");
+  } finally {
+    clearTimeout(timeoutId);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
+  }
 }
 
 export function submitApprovalRequest(
@@ -3035,6 +3327,7 @@ export function submitAssistantResponse(
   return requestJson<AssistantResponseSuccess>(apiBaseUrl, "/v0/responses", {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
   });
 }
 
@@ -3562,6 +3855,7 @@ export function executeApproval(
   return requestJson<ApprovalExecutionResponse>(apiBaseUrl, `/v0/approvals/${approvalId}/execute`, {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
   });
 }
 
@@ -3582,6 +3876,7 @@ export function extractExplicitCommitments(
     {
       method: "POST",
       body: JSON.stringify(payload),
+      timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
     },
   );
 }
@@ -3837,6 +4132,7 @@ export function ingestGmailMessage(
     {
       method: "POST",
       body: JSON.stringify(payload),
+      timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
     },
   );
 }
@@ -3911,6 +4207,7 @@ export function ingestCalendarEvent(
     {
       method: "POST",
       body: JSON.stringify(payload),
+      timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
     },
   );
 }
@@ -4187,6 +4484,7 @@ export function createVNextContextPack(
   return requestJson<VNextContextPack>(apiBaseUrl, "/v0/vnext/context-packs", {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
   });
 }
 
@@ -4197,6 +4495,7 @@ export function generateVNextDailyBrief(
   return requestJson<VNextArtifactRecord>(apiBaseUrl, "/v0/vnext/artifacts/generate/daily-brief", {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
   });
 }
 
@@ -4210,6 +4509,7 @@ export function generateVNextWeeklySynthesis(
     {
       method: "POST",
       body: JSON.stringify(payload),
+      timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
     },
   );
 }
@@ -4325,6 +4625,7 @@ export function syncVNextTelegramConnector(
   return requestJson<JsonObject>(apiBaseUrl, "/v0/vnext/connectors/telegram/sync", {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
   });
 }
 
@@ -4343,6 +4644,7 @@ export function syncVNextLocalFolderConnector(
   return requestJson<JsonObject>(apiBaseUrl, "/v0/vnext/connectors/local-folder/sync", {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
   });
 }
 
@@ -4380,6 +4682,7 @@ export function runVNextDoctor(
   return requestJson<VNextDoctorPayload>(apiBaseUrl, "/v0/vnext/doctor/run", {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
   });
 }
 
@@ -4414,6 +4717,20 @@ export function reviewVNextMemory(
   );
 }
 
+export function confirmVNextMemory(
+  apiBaseUrl: string,
+  payload: VNextMemoryConfirmationPayload,
+) {
+  return requestJson<VNextMemoryConfirmationResponse>(
+    apiBaseUrl,
+    "/v0/vnext/memories/confirm",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
 export function createVNextProject(apiBaseUrl: string, payload: VNextProjectCreatePayload) {
   return requestJson<{ project: VNextProjectRecord }>(apiBaseUrl, "/v0/vnext/projects", {
     method: "POST",
@@ -4428,6 +4745,7 @@ export function generateVNextProjectUpdate(
   return requestJson<VNextArtifactRecord>(apiBaseUrl, "/v0/vnext/projects/update-candidates", {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
   });
 }
 
@@ -4533,6 +4851,7 @@ export function runVNextSchedulerWorkflowNow(
   }>(apiBaseUrl, `/v0/vnext/scheduler/workflows/${workflowType}/run-now`, {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
   });
 }
 
@@ -4548,5 +4867,6 @@ export function runVNextSchedulerDue(
   }>(apiBaseUrl, "/v0/vnext/scheduler/run-due", {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: LONG_RUNNING_MUTATION_TIMEOUT_MS,
   });
 }
